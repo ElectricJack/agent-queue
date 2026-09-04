@@ -47,6 +47,7 @@ PR_IDENTITY = PullRequestIdentity(
     base_oid="a" * 40,
     head_ref="task/c5",
     head_oid="b" * 40,
+    changed_files=1,
 )
 
 

@@ -238,7 +238,8 @@ class TestSyncAndMergeRebaseFallback:
 
         with patch.object(mgr, "_run", side_effect=mock_run):
             with patch.object(mgr, "rebase_onto", return_value=True) as mock_rebase:
-                success, err = mgr.sync_and_merge("/ws", "task/feat")
+                with patch.object(mgr, "push_validated_delivery"):
+                    success, _err = mgr.sync_and_merge("/ws", "task/feat")
 
         mock_rebase.assert_called_once_with("/ws", "task/feat", "main")
         assert success is True
@@ -268,7 +269,8 @@ class TestSyncAndMergeRebaseFallback:
 
         with patch.object(mgr, "_run", side_effect=mock_run):
             with patch.object(mgr, "rebase_onto") as mock_rebase:
-                success, err = mgr.sync_and_merge("/ws", "task/feat")
+                with patch.object(mgr, "push_validated_delivery"):
+                    success, _err = mgr.sync_and_merge("/ws", "task/feat")
 
         assert success is True
         mock_rebase.assert_not_called()

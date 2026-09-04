@@ -1176,7 +1176,12 @@ class TestPhaseVerifyNormalTask:
         mock_git.apush_validated_delivery = AsyncMock(return_value="a" * 40)
         mock_git.aabort_in_progress_operations = AsyncMock()
         mock_git.aforce_clean_workspace = AsyncMock(return_value=True)
+        # The delivery guard runs before every merge and push in
+        # ``_phase_verify`` and fails closed.  Unstubbed, a spec'd
+        # AsyncMock answers with a truthy MagicMock, which the guard
+        # reads as "this delivery changes reserved daemon paths".
         mock_git.areserved_paths_in_diff = AsyncMock(return_value=[])
+        mock_git.apush_validated_delivery = AsyncMock(return_value="a" * 40)
         o.git = mock_git
 
         yield o
@@ -1514,9 +1519,7 @@ class TestPhaseVerifyNormalTask:
         # Auto-push rev-list returns "3" (ahead) — triggers push
         # Push fails, so scenario behind check gets "0", ahead check gets "3"
         orch.git._arun = AsyncMock(side_effect=["3", "0", "3"])
-        orch.git.apush_validated_delivery = AsyncMock(
-            side_effect=Exception("push failed")
-        )
+        orch.git.apush_validated_delivery = AsyncMock(side_effect=Exception("push failed"))
 
         ws = await orch.db.get_workspace("ws-1")
         ctx = self._make_ctx(orch, task, ws.workspace_path)
@@ -1567,7 +1570,12 @@ class TestPhaseVerifyApprovalTask:
         mock_git.apush_validated_delivery = AsyncMock(return_value="a" * 40)
         mock_git.aabort_in_progress_operations = AsyncMock()
         mock_git.aforce_clean_workspace = AsyncMock(return_value=True)
+        # The delivery guard runs before every merge and push in
+        # ``_phase_verify`` and fails closed.  Unstubbed, a spec'd
+        # AsyncMock answers with a truthy MagicMock, which the guard
+        # reads as "this delivery changes reserved daemon paths".
         mock_git.areserved_paths_in_diff = AsyncMock(return_value=[])
+        mock_git.apush_validated_delivery = AsyncMock(return_value="a" * 40)
         o.git = mock_git
 
         yield o
@@ -1785,7 +1793,12 @@ class TestPhaseVerifyIntermediateSubtask:
         mock_git.apush_validated_delivery = AsyncMock(return_value="a" * 40)
         mock_git.aabort_in_progress_operations = AsyncMock()
         mock_git.aforce_clean_workspace = AsyncMock(return_value=True)
+        # The delivery guard runs before every merge and push in
+        # ``_phase_verify`` and fails closed.  Unstubbed, a spec'd
+        # AsyncMock answers with a truthy MagicMock, which the guard
+        # reads as "this delivery changes reserved daemon paths".
         mock_git.areserved_paths_in_diff = AsyncMock(return_value=[])
+        mock_git.apush_validated_delivery = AsyncMock(return_value="a" * 40)
         o.git = mock_git
 
         yield o, sub1

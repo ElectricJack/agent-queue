@@ -62,7 +62,7 @@ def orchestrator_factory(tmp_path):
         # merges; a bare MagicMock is not awaitable, so stub it.
         o.git.avalidate_pr_for_merge = AsyncMock(
             return_value=PullRequestIdentity(
-                "org/repo", 1, "main", "a" * 40, "feature", "b" * 40
+                "org/repo", 1, "main", "a" * 40, "feature", "b" * 40, 1
             )
         )
         o.bus = MagicMock()
@@ -220,6 +220,7 @@ async def test_full_review_chain_end_to_end(
             base_oid="a" * 40,
             head_ref=branch,
             head_oid="b" * 40,
+            changed_files=1,
         )
     )
     merge_result = await h.execute(

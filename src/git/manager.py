@@ -108,11 +108,49 @@ class PullRequestIdentity:
     base_oid: str
     head_ref: str
     head_oid: str
+    #: GitHub's own count of files the PR changes, read in the same snapshot
+    #: as the OIDs.  It counts entries of the PR-files listing (a rename or
+    #: copy is one entry with two names), and the listing is only trusted
+    #: when it has exactly this many entries and is below
+    #: :data:`_PR_FILES_API_CAP`.
+    changed_files: int
 
     @property
-    def pin(self) -> tuple[str, int, str, str, str]:
-        """The facts that fix *what* a review of this PR reviewed."""
-        return (self.repository, self.number, self.base_ref, self.head_ref, self.head_oid)
+    def pin(self) -> tuple[str, int, str, str, str, int]:
+        """The facts that fix *what* a review of this PR reviewed.
+
+        The changed-file count belongs here: it is a property of the head
+        being merged, and a count that differs between the two identity
+        snapshots means the listing inspected in between may not be the
+        PR's diff any more.
+        """
+        return (
+            self.repository,
+            self.number,
+            self.base_ref,
+            self.head_ref,
+            self.head_oid,
+            self.changed_files,
+        )
+
+
+@dataclass(frozen=True)
+class PullRequestFile:
+    """One entry of GitHub's PR-files listing.
+
+    A renamed or copied file is reported under its new ``filename`` with the
+    old name in ``previous_filename``; the reserved-path guard checks both.
+    """
+
+    filename: str
+    previous_filename: str | None = None
+
+    @property
+    def paths(self) -> tuple[str, ...]:
+        """Every name this entry touches: the destination and, for a rename or copy, the source."""
+        if self.previous_filename is None:
+            return (self.filename,)
+        return (self.filename, self.previous_filename)
 
 
 # ---------------------------------------------------------------------------
@@ -133,6 +171,28 @@ _PR_URL_RE = re.compile(
     r"^https://(?P<host>[A-Za-z0-9.-]+)/(?P<owner>[A-Za-z0-9_.-]+)/(?P<repo>[A-Za-z0-9_.-]+)"
     r"/pull/(?P<number>[1-9][0-9]*)/?(?:[?#].*)?$"
 )
+#: GitHub's "List pull request files" endpoint documents "Responses include a
+#: maximum of 3000 files"; pagination simply stops there, so a listing that
+#: long may be a truncated prefix of the real diff.
+_PR_FILES_API_CAP = 3000
+
+
+def _pr_changed_file_count(data: dict) -> int:
+    """GitHub's changed-file count from the REST ``pulls/{n}`` snapshot, or raise.
+
+    The count comes from the same response as the OIDs, so it belongs to the
+    exact base/head pair the PR-files listing is later checked against, and
+    it counts that listing's entries: a renamed or copied file is one entry
+    carrying two names.  Only the REST spelling ``changed_files`` is read —
+    the identity never comes from ``gh pr view --json`` (whose field is
+    ``changedFiles``), so accepting it would only widen the guard.  Anything
+    but a non-negative integer (``bool`` is an ``int`` subclass and is not a
+    count) is an incomplete identity and fails closed.
+    """
+    count = data.get("changed_files")
+    if isinstance(count, bool) or not isinstance(count, int) or count < 0:
+        raise GitError("could not resolve complete PR identity")
+    return count
 
 
 def _validate_ref(name: str, *, field: str = "branch") -> str:
@@ -649,12 +709,20 @@ class GitManager:
         #    if a previous mid-chain sync already pushed + rebased, so fall
         #    back to --force-with-lease which is safe for agent-owned branches.
         try:
-            self._run(["push", "origin", branch_name], cwd=checkout_path)
+            self.push_validated_delivery(
+                checkout_path,
+                f"origin/{default_branch}",
+                branch_name,
+                branch_name,
+            )
         except GitError:
             try:
-                self._run(
-                    ["push", "--force-with-lease", "origin", branch_name],
-                    cwd=checkout_path,
+                self.push_validated_delivery(
+                    checkout_path,
+                    f"origin/{default_branch}",
+                    branch_name,
+                    branch_name,
+                    force_with_lease=True,
                 )
             except GitError:
                 pass  # Push failed — continue with rebase anyway
@@ -678,9 +746,12 @@ class GitManager:
 
         # 4. Force-push the rebased branch so remote matches local.
         try:
-            self._run(
-                ["push", "--force-with-lease", "origin", branch_name],
-                cwd=checkout_path,
+            self.push_validated_delivery(
+                checkout_path,
+                f"origin/{default_branch}",
+                "HEAD",
+                branch_name,
+                force_with_lease=True,
             )
         except GitError:
             pass  # Rebased locally but push failed — next subtask will try
@@ -711,7 +782,7 @@ class GitManager:
         *,
         force_with_lease: bool = False,
     ) -> None:
-        """Push a local branch to the ``origin`` remote.
+        """Safely publish a local branch relative to the repository default.
 
         When *force_with_lease* is ``True``, uses ``--force-with-lease`` so the
         push is safe for retries: if the branch was already pushed in a
@@ -719,17 +790,108 @@ class GitManager:
         succeed as long as no *other* user pushed to the same branch in the
         meantime.  This resolves **Gap G5** for PR branch pushes.
 
-        Plain push (default) is used for the ``sync_and_merge`` flow where
-        only the default branch is pushed and force-push is never appropriate.
+        The source is resolved once (a plain branch name as
+        ``refs/heads/<name>``, so a same-named tag can neither shadow nor
+        block it) and its merge-base diff is checked for daemon-owned paths
+        before the exact object ID is pushed. This keeps the retained
+        synchronous API safe for task-delivery use.
         """
-        _validate_ref(branch_name)
-        # An explicit refs/heads/ source: a bare name is looked up in git's
-        # ref order, where a same-named tag shadows (or, on push, collides
-        # with) the branch.
-        args = ["push", "origin", f"refs/heads/{branch_name}:refs/heads/{branch_name}"]
+        default_branch = self.get_default_branch(checkout_path)
+        self.push_validated_delivery(
+            checkout_path,
+            f"origin/{default_branch}",
+            branch_name,
+            branch_name,
+            force_with_lease=force_with_lease,
+        )
+
+    def _resolve_delivery_tip(self, checkout_path: str, source: str) -> str:
+        """Synchronous twin of :meth:`_aresolve_delivery_tip`.
+
+        A plain branch name is resolved as ``refs/heads/<name>`` so a
+        same-named tag cannot shadow it (see :func:`_delivery_source_rev`);
+        a missing branch fails closed rather than falling back to whatever
+        else carries the name.
+        """
+        rev = _delivery_source_rev(source)
+        try:
+            tip = self._run(["rev-parse", "--verify", rev], cwd=checkout_path).strip()
+        except GitError as e:
+            raise GitError(f"could not resolve delivery source {rev}: {e}") from e
+        if not _OID_RE.fullmatch(tip.lower()):
+            raise GitError(f"could not resolve immutable delivery tip for {source}")
+        return tip
+
+    def push_validated_delivery(
+        self,
+        checkout_path: str,
+        base_ref: str,
+        source_ref: str,
+        branch: str,
+        *,
+        force_with_lease: bool = False,
+    ) -> str:
+        """Synchronously resolve once, validate, and push an exact delivery OID.
+
+        The synchronous twin of :meth:`apush_validated_delivery` for the
+        retained sync delivery paths (:meth:`push_branch`,
+        :meth:`mid_chain_sync`, :meth:`sync_and_merge`).  ``force_with_lease``
+        only changes how the remote ref may move; it cannot bypass the
+        reserved-path check.
+        """
+        source_ref = _validate_rev(source_ref, field="delivery source")
+        base_ref = _validate_rev(base_ref, field="delivery base")
+        branch = _validate_ref(branch)
+        tip = self._resolve_delivery_tip(checkout_path, source_ref)
+        paths = self.reserved_paths_in_diff(checkout_path, base_ref, tip)
+        if paths:
+            raise GitError("reserved delivery paths: " + ", ".join(paths))
+        self._push_oid(
+            checkout_path,
+            tip,
+            branch,
+            force_with_lease=force_with_lease,
+        )
+        return tip
+
+    def _push_oid(
+        self,
+        checkout_path: str,
+        tip: str,
+        branch: str,
+        *,
+        force_with_lease: bool = False,
+    ) -> None:
+        """Synchronously push an OID without consulting a mutable ref."""
+        if not _OID_RE.fullmatch(tip.lower()):
+            raise GitError("invalid immutable push tip")
+        branch = _validate_ref(branch)
+        args = ["push", "origin", f"{tip}:refs/heads/{branch}"]
         if force_with_lease:
             args.insert(2, "--force-with-lease")
         self._run(args, cwd=checkout_path)
+
+    def reserved_paths_in_diff(
+        self,
+        checkout_path: str,
+        base_ref: str,
+        tip_ref: str,
+    ) -> list[str]:
+        """Synchronously return daemon-owned paths changed by a delivery tip.
+
+        The synchronous twin of :meth:`areserved_paths_in_diff`: the
+        comparison starts at the merge-base and runs with ``--no-renames`` so
+        a rename lists both its source and its destination. Git failures
+        propagate — this is a fail-closed delivery gate.
+        """
+        base_ref = _validate_rev(base_ref, field="delivery base")
+        tip_ref = _validate_rev(tip_ref, field="delivery tip")
+        merge_base = self._run(["merge-base", base_ref, tip_ref], cwd=checkout_path)
+        changed = self._run(
+            ["diff", "--no-renames", "--name-only", "-z", merge_base, tip_ref, "--"],
+            cwd=checkout_path,
+        )
+        return sorted(self._daemon_bookkeeping_paths(changed))
 
     def rebase_onto(
         self,
@@ -871,9 +1033,16 @@ class GitManager:
         # 4. Push with retry
         for attempt in range(max_retries + 1):
             try:
-                self._run(["push", "origin", default_branch], cwd=checkout_path)
+                self.push_validated_delivery(
+                    checkout_path,
+                    f"origin/{default_branch}",
+                    default_branch,
+                    default_branch,
+                )
                 return (True, "")
             except GitError as e:
+                if str(e).startswith("reserved delivery paths:"):
+                    return (False, f"delivery_guard_failed: {e}")
                 if attempt < max_retries:
                     # Re-pull (rebase) to incorporate whatever was pushed
                     # in the meantime, then retry the push.
@@ -1604,11 +1773,20 @@ class GitManager:
         _validate_ref(branch_name)
         _validate_ref(default_branch, field="default branch")
         try:
-            await self.apush_validated_ref(checkout_path, branch_name, branch_name)
+            await self.apush_validated_delivery(
+                checkout_path,
+                f"origin/{default_branch}",
+                branch_name,
+                branch_name,
+            )
         except GitError:
             try:
-                await self.apush_validated_ref(
-                    checkout_path, branch_name, branch_name, force_with_lease=True
+                await self.apush_validated_delivery(
+                    checkout_path,
+                    f"origin/{default_branch}",
+                    branch_name,
+                    branch_name,
+                    force_with_lease=True,
                 )
             except GitError:
                 pass
@@ -1658,6 +1836,12 @@ class GitManager:
         event_bus: EventBus | None = None,
         project_id: str | None = None,
     ) -> None:
+        """Push a named branch for an explicit, non-delivery Git command.
+
+        This primitive pins the branch to an object ID but intentionally does
+        not apply the daemon delivery-path policy. Automatic task delivery
+        must use :meth:`apush_validated_delivery` with its target base.
+        """
         _validate_ref(branch_name)
         remote_ref_before = await self._aremote_ref_before_push(
             checkout_path, branch_name, event_bus=event_bus
@@ -2457,6 +2641,11 @@ class GitManager:
         worktree is routinely left in.  Never forced: a rejected push means
         the remote branch has commits this HEAD does not, and the caller
         picks a different name rather than overwriting them.
+
+        This is a non-delivery recovery primitive: stranded-work preservation
+        must save the complete commit even when it contains daemon-owned
+        paths. Automatic task delivery must use
+        :meth:`apush_validated_delivery` instead.
         """
         remote_ref_before = await self._aremote_ref_before_push(
             checkout_path, branch, event_bus=event_bus
@@ -2501,15 +2690,37 @@ class GitManager:
         A merge/rebase hook or another local process may move a named ref after
         its content has been guarded. The object-ID refspec makes Git deliver
         precisely the validated object rather than resolving the name again.
+
+        This low-level helper does not enforce reserved-path policy. Automatic
+        task delivery must use :meth:`apush_validated_delivery`.
         """
         source_ref = _validate_rev(source_ref, field="push source")
         branch = _validate_ref(branch)
         tip = await self._aresolve_delivery_tip(checkout_path, source_ref)
+        await self._apush_oid(
+            checkout_path,
+            tip,
+            branch,
+            force_with_lease=force_with_lease,
+        )
+        return tip
+
+    async def _apush_oid(
+        self,
+        checkout_path: str,
+        tip: str,
+        branch: str,
+        *,
+        force_with_lease: bool = False,
+    ) -> None:
+        """Push an already-resolved commit without consulting a mutable ref."""
+        if not _OID_RE.fullmatch(tip.lower()):
+            raise GitError("invalid immutable push tip")
+        branch = _validate_ref(branch)
         args = ["push", "origin", f"{tip}:refs/heads/{branch}"]
         if force_with_lease:
             args.insert(2, "--force-with-lease")
         await self._arun(args, cwd=checkout_path)
-        return tip
 
     async def apush_validated_delivery(
         self,
@@ -2548,18 +2759,21 @@ class GitManager:
         remote_ref_before = await self._aremote_ref_before_push(
             checkout_path, branch, event_bus=event_bus
         )
-        pushed = await self.apush_validated_ref(
-            checkout_path, tip, branch, force_with_lease=force_with_lease
+        await self._apush_oid(
+            checkout_path,
+            tip,
+            branch,
+            force_with_lease=force_with_lease,
         )
         await self._aemit_push_event(
             checkout_path,
             branch,
             remote_ref_before,
-            pushed,
+            tip,
             event_bus=event_bus,
             project_id=project_id,
         )
-        return pushed
+        return tip
 
     async def alist_prs(
         self,
@@ -2668,6 +2882,7 @@ class GitManager:
             head_ref = data["head"]["ref"]
             base_oid = data["base"]["sha"].lower()
             head_oid = data["head"]["sha"].lower()
+            changed_files = _pr_changed_file_count(data)
         except (KeyError, TypeError, ValueError, AttributeError) as exc:
             raise GitError("could not resolve complete PR identity") from exc
         if (
@@ -2687,16 +2902,65 @@ class GitManager:
             base_oid=base_oid,
             head_ref=head_ref,
             head_oid=head_oid,
+            changed_files=changed_files,
         )
 
-    async def _apr_changed_paths(
+    # jq program for the PR-files endpoint: one JSON object per entry, with
+    # the destination ``filename`` and, for a rename or copy, the source
+    # ``previous_filename`` (``null`` otherwise).  Emitting an object per
+    # entry keeps the entry count — what GitHub's ``changed_files`` counts —
+    # distinct from the number of names, while still surfacing the source so
+    # a rename out of ``.aq/`` cannot read as a clean addition.  gh prints
+    # non-scalar jq results as JSON, one value per result.
+    _PR_FILES_JQ = ".[] | {filename, previous_filename}"
+
+    @staticmethod
+    def _parse_pr_files(stdout: str) -> list[PullRequestFile]:
+        """Decode the concatenated JSON objects gh prints for :data:`_PR_FILES_JQ`.
+
+        Any value that is not an object with a non-empty string ``filename``
+        and a null or non-empty string ``previous_filename`` fails closed:
+        an entry the guard cannot read is an entry it cannot clear.
+        """
+        decoder = json.JSONDecoder()
+        entries: list[PullRequestFile] = []
+        text = stdout or ""
+        position = 0
+        length = len(text)
+        while True:
+            while position < length and text[position].isspace():
+                position += 1
+            if position >= length:
+                break
+            try:
+                value, position = decoder.raw_decode(text, position)
+            except ValueError as exc:
+                raise GitError("could not inspect PR delivery diff: malformed PR-files entry") from exc
+            if not isinstance(value, dict):
+                raise GitError("could not inspect PR delivery diff: malformed PR-files entry")
+            filename = value.get("filename")
+            previous = value.get("previous_filename")
+            if not isinstance(filename, str) or not filename:
+                raise GitError("could not inspect PR delivery diff: malformed PR-files entry")
+            if previous is not None and (not isinstance(previous, str) or not previous):
+                raise GitError("could not inspect PR delivery diff: malformed PR-files entry")
+            entries.append(PullRequestFile(filename=filename, previous_filename=previous))
+        return entries
+
+    async def _apr_changed_files(
         self, checkout_path: str, identity: PullRequestIdentity
-    ) -> list[str]:
-        """Return every PR-file path from GitHub's paginated merge-base diff."""
+    ) -> list[PullRequestFile]:
+        """Return every entry of GitHub's paginated merge-base PR diff.
+
+        Rename and copy sources (``previous_filename``) travel with their
+        destinations so a reserved path leaving the tree is visible.  A copy
+        source is unchanged by the copy itself, so listing it is
+        conservative: the guard fails closed rather than trusting the status.
+        """
         endpoint = f"repos/{identity.repository}/pulls/{identity.number}/files"
         try:
             result = await self._arun_subprocess(
-                ["gh", "api", "--paginate", endpoint, "--jq", ".[].filename"],
+                ["gh", "api", "--paginate", endpoint, "--jq", self._PR_FILES_JQ],
                 cwd=checkout_path,
                 timeout=self._GIT_TIMEOUT,
             )
@@ -2704,7 +2968,7 @@ class GitManager:
             raise GitError(f"could not inspect PR delivery diff: {exc}") from exc
         if result.returncode != 0:
             raise GitError(f"could not inspect PR delivery diff: {result.stderr.strip()}")
-        return [path for path in (result.stdout or "").splitlines() if path]
+        return self._parse_pr_files(result.stdout)
 
     async def avalidate_pr_for_merge(
         self, checkout_path: str, pr_url: str
@@ -2712,14 +2976,32 @@ class GitManager:
         """Fail closed unless a PR identity and its reserved-path diff are stable.
 
         The REST PR-files endpoint is GitHub's merge-base PR diff and supports
-        pagination. Re-reading the identity after that potentially long query
-        proves the inspected diff still belongs to the precise head and target
-        branch.  The base branch's tip is not compared: it advances with every
+        pagination, but only up to :data:`_PR_FILES_API_CAP` entries, after
+        which it silently stops.  The listing is therefore trusted only when
+        it has exactly as many entries as the PR's own changed-file count and
+        that count is below the cap; otherwise a reserved path could hide in
+        the unlisted tail.  Completeness is judged on entries because that is
+        what GitHub counts — a rename is one entry — while the reserved-path
+        check then inspects every name an entry carries.  Re-reading the
+        identity after that potentially long query proves the inspected diff
+        still belongs to the precise head, target branch and changed-file
+        count.  The base branch's tip is not compared: it advances with every
         concurrent delivery and does not change a merge-base diff (see
         :attr:`PullRequestIdentity.pin`).
         """
         identity = await self.aget_pr_identity(checkout_path, pr_url)
-        paths = await self._apr_changed_paths(checkout_path, identity)
+        files = await self._apr_changed_files(checkout_path, identity)
+        if identity.changed_files >= _PR_FILES_API_CAP or len(files) >= _PR_FILES_API_CAP:
+            raise GitError(
+                f"PR changes {identity.changed_files} files but GitHub lists at most "
+                f"{_PR_FILES_API_CAP}; the reserved-path check cannot be complete"
+            )
+        if len(files) != identity.changed_files:
+            raise GitError(
+                f"PR delivery diff is incomplete: GitHub listed {len(files)} of "
+                f"{identity.changed_files} changed files"
+            )
+        paths = [path for entry in files for path in entry.paths]
         reserved = self._daemon_bookkeeping_paths("\0".join(paths))
         if reserved:
             raise GitError(
@@ -2835,9 +3117,15 @@ class GitManager:
 
         The comparison starts at the merge-base so an unchanged reserved
         path already tracked by the target branch is harmless, while an
-        addition, deletion, or modification made by task commits is caught.
-        Unlike preview helpers, Git failures propagate: callers use this as
-        a fail-closed delivery gate before merge, push, or PR acceptance.
+        addition, deletion, modification, or rename made by task commits is
+        caught. Rename detection is disabled (``--no-renames``, overriding
+        any ``diff.renames`` setting) because git would otherwise report
+        ``git mv .aq/claim.json moved.json`` as the single path
+        ``moved.json`` and hide that a daemon-owned file was deleted; with
+        detection off both the source and the destination of a rename are
+        listed. Unlike preview helpers, Git failures propagate: callers use
+        this as a fail-closed delivery gate before merge, push, or PR
+        acceptance.
         """
         base_ref = _validate_rev(base_ref, field="delivery base")
         tip_ref = _validate_rev(tip_ref, field="delivery tip")
@@ -2845,7 +3133,7 @@ class GitManager:
             ["merge-base", base_ref, tip_ref], cwd=checkout_path
         )
         changed = await self._arun(
-            ["diff", "--name-only", "-z", merge_base, tip_ref, "--"],
+            ["diff", "--no-renames", "--name-only", "-z", merge_base, tip_ref, "--"],
             cwd=checkout_path,
         )
         return sorted(self._daemon_bookkeeping_paths(changed))

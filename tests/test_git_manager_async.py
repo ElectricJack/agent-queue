@@ -9,7 +9,7 @@ import json
 import pathlib
 import subprocess
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, call
 
 import pytest
 from src.git.manager import GitManager, GitError
@@ -604,15 +604,12 @@ async def test_delivery_push_checks_and_pushes_one_immutable_tip_despite_head_mu
     clean_tip = "d" * 40
     unsafe_tip = "e" * 40
     pushed: list[list[str]] = []
-    head_reads = 0
+    resolved_sources: list[str] = []
 
     async def fake_arun(args, cwd=None, **_kwargs):
-        nonlocal head_reads
         if args[:2] == ["rev-parse", "--verify"]:
-            if args[-1] == "HEAD":
-                head_reads += 1
-                return clean_tip if head_reads == 1 else unsafe_tip
-            return clean_tip
+            resolved_sources.append(args[-1])
+            return clean_tip if len(resolved_sources) == 1 else unsafe_tip
         pushed.append(args)
         return ""
 
@@ -623,7 +620,135 @@ async def test_delivery_push_checks_and_pushes_one_immutable_tip_despite_head_mu
     await mgr.apush_validated_delivery("/repo", "origin/main", "HEAD", "main")
 
     inspect.assert_awaited_once_with("/repo", "origin/main", clean_tip)
+    # The source is resolved exactly once; the push consults no ref again.
+    assert resolved_sources == ["HEAD"]
     assert pushed == [["push", "origin", f"{clean_tip}:refs/heads/main"]]
+
+
+_RENAMEABLE_CONTENT = "".join(f"line {i}\n" for i in range(30))
+
+
+@pytest.mark.parametrize(
+    ("reserved_path", "change"),
+    [
+        (".aq/claim.json", "add"),
+        (".aq-worktree.json", "modify"),
+        (".codex/settings.json", "delete"),
+        (".aq/claim.json", "rename-out"),
+        (".codex/settings.json", "rename-in"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_delivery_push_rejects_every_reserved_path_change_kind(
+    clone, mgr, reserved_path, change
+):
+    """Task delivery rejects added, modified, deleted, and renamed daemon-owned paths.
+
+    ``rename-out`` moves a tracked reserved file to an ordinary path (a
+    deletion of daemon state that git's rename detection would otherwise
+    collapse into the destination); ``rename-in`` moves an ordinary tracked
+    file onto a reserved path.
+    """
+    repo = pathlib.Path(clone)
+    path = repo / reserved_path
+    plain = repo / "plain.json"
+    if change in {"modify", "delete", "rename-out"}:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(_RENAMEABLE_CONTENT)
+        _git(["add", "-f", reserved_path], cwd=clone)
+        _git(["commit", "-m", f"track {reserved_path}"], cwd=clone)
+    elif change == "rename-in":
+        plain.write_text(_RENAMEABLE_CONTENT)
+        _git(["add", "plain.json"], cwd=clone)
+        _git(["commit", "-m", "track plain.json"], cwd=clone)
+
+    _git(["switch", "-c", f"task/reserved-{change}"], cwd=clone)
+    if change == "delete":
+        path.unlink()
+        _git(["add", "-u", reserved_path], cwd=clone)
+    elif change == "rename-out":
+        _git(["mv", reserved_path, "moved.json"], cwd=clone)
+    elif change == "rename-in":
+        path.parent.mkdir(parents=True, exist_ok=True)
+        _git(["mv", "plain.json", reserved_path], cwd=clone)
+    else:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("task\n")
+        _git(["add", "-f", reserved_path], cwd=clone)
+    _git(["commit", "-m", f"{change} reserved path"], cwd=clone)
+
+    with pytest.raises(GitError, match=f"reserved delivery paths: {reserved_path}"):
+        await mgr.apush_validated_delivery(
+            clone,
+            "main",
+            f"task/reserved-{change}",
+            f"delivery/reserved-{change}",
+        )
+
+    remote = _git(
+        ["ls-remote", "--heads", "origin", f"refs/heads/delivery/reserved-{change}"],
+        cwd=clone,
+    )
+    assert remote == ""
+
+
+@pytest.mark.asyncio
+async def test_reserved_path_guard_reports_both_sides_of_a_rename(clone, mgr):
+    """The delivery guard sees rename sources, not just destinations.
+
+    Git's default rename detection reports ``git mv .aq/claim.json moved.json``
+    as a single changed path, ``moved.json``, hiding that a daemon-owned file
+    left the tree. The guard must diff without rename detection, even when
+    the repository configures the most aggressive detection.
+    """
+    repo = pathlib.Path(clone)
+    _git(["config", "diff.renames", "copies"], cwd=clone)
+    reserved = repo / ".aq" / "claim.json"
+    reserved.parent.mkdir()
+    reserved.write_text(_RENAMEABLE_CONTENT)
+    (repo / "plain.json").write_text(_RENAMEABLE_CONTENT * 2)
+    _git(["add", "-f", ".aq/claim.json", "plain.json"], cwd=clone)
+    _git(["commit", "-m", "track reserved and plain files"], cwd=clone)
+
+    _git(["switch", "-c", "task/renames"], cwd=clone)
+    _git(["mv", ".aq/claim.json", "moved.json"], cwd=clone)
+    (repo / ".codex").mkdir()
+    _git(["mv", "plain.json", ".codex/settings.json"], cwd=clone)
+    _git(["commit", "-m", "rename across the reserved boundary"], cwd=clone)
+
+    # Premise: git's own rename detection collapses the reserved source path.
+    detected = _git(["diff", "--name-only", "main", "task/renames", "--"], cwd=clone)
+    assert ".aq/claim.json" not in detected.splitlines()
+
+    expected = [".aq/claim.json", ".codex/settings.json"]
+    assert await mgr.areserved_paths_in_diff(clone, "main", "task/renames") == expected
+    # The retained synchronous guard is the same gate for the sync delivery
+    # paths (``push_branch``, ``mid_chain_sync``, ``sync_and_merge``).
+    assert mgr.reserved_paths_in_diff(clone, "main", "task/renames") == expected
+
+
+@pytest.mark.asyncio
+async def test_mid_chain_delivery_guards_both_pre_and_post_rebase_pushes(mgr, monkeypatch):
+    """Intermediate task publication cannot bypass the reserved-path guard."""
+    unchecked = AsyncMock(return_value="a" * 40)
+    guarded = AsyncMock(return_value="a" * 40)
+    monkeypatch.setattr(mgr, "apush_validated_ref", unchecked)
+    monkeypatch.setattr(mgr, "apush_validated_delivery", guarded)
+    monkeypatch.setattr(mgr, "_arun", AsyncMock(return_value=""))
+
+    assert await mgr.amid_chain_sync("/repo", "task/chain", "main") is True
+
+    assert guarded.await_args_list == [
+        call("/repo", "origin/main", "task/chain", "task/chain"),
+        call(
+            "/repo",
+            "origin/main",
+            "HEAD",
+            "task/chain",
+            force_with_lease=True,
+        ),
+    ]
+    unchecked.assert_not_awaited()
 
 
 class TestBranchSourceIsNotShadowedByASameNamedTag:
@@ -1440,7 +1565,7 @@ async def test_async_merge_pr_handles_invalid_method_timeout_and_sha(mgr, monkey
     from src.git.manager import PullRequestIdentity
 
     mgr.avalidate_pr_for_merge = AsyncMock(
-        return_value=PullRequestIdentity("org/repo", 42, "main", "a" * 40, "feature", "b" * 40)
+        return_value=PullRequestIdentity("org/repo", 42, "main", "a" * 40, "feature", "b" * 40, 1)
     )
 
     # Invalid method: rejected before any gh invocation.
