@@ -434,7 +434,11 @@ class GitOpsMixin:
         has_remote: bool,
     ) -> int | None:
         """Return a strict task-delivery count relative to its actual base."""
-        base = f"origin/{default_branch}" if has_remote else default_branch
+        base = (
+            f"refs/remotes/origin/{default_branch}"
+            if has_remote
+            else f"refs/heads/{default_branch}"
+        )
         return await self.git.acount_commits_ahead(workspace, ref, base)
 
     async def _resolve_task_delivery(
@@ -455,10 +459,11 @@ class GitOpsMixin:
         workspace = ctx.workspace_path
         default_branch = ctx.default_branch or "main"
         assigned_branch = ctx.delivery_branch or ctx.task.branch_name
+        current_ref = f"refs/heads/{current_branch}"
 
         current_count = await self._commits_ahead_of_default(
             workspace,
-            current_branch,
+            current_ref,
             default_branch,
             has_remote=has_remote,
         )
@@ -466,23 +471,23 @@ class GitOpsMixin:
             return _DeliveryResolution(
                 None,
                 None,
-                (current_branch,),
+                (current_ref,),
                 error=f"Could not verify delivery commits on `{current_branch}`.",
             )
 
         if not assigned_branch or assigned_branch == current_branch:
             if current_count > 0:
                 return _DeliveryResolution(
-                    current_branch, current_branch, (current_branch,)
+                    current_branch, current_ref, (current_ref,)
                 )
             if current_branch == default_branch and not has_remote:
                 return _DeliveryResolution(
                     None,
                     None,
-                    (current_branch,),
+                    (current_ref,),
                     error="Cannot prove an untracked default checkout has no work.",
                 )
-            return _DeliveryResolution(None, None, (current_branch,), no_work=True)
+            return _DeliveryResolution(None, None, (current_ref,), no_work=True)
 
         assigned_ref, ref_error = await self._resolve_assigned_ref(
             workspace, assigned_branch
@@ -491,20 +496,20 @@ class GitOpsMixin:
             return _DeliveryResolution(
                 None,
                 None,
-                (current_branch,),
+                (current_ref,),
                 error=ref_error,
             )
         if not assigned_ref:
             if current_count > 0:
                 return _DeliveryResolution(
-                    current_branch, current_branch, (current_branch,)
+                    current_branch, current_ref, (current_ref,)
                 )
             if current_branch == default_branch and has_remote:
-                return _DeliveryResolution(None, None, (current_branch,), no_work=True)
+                return _DeliveryResolution(None, None, (current_ref,), no_work=True)
             return _DeliveryResolution(
                 None,
                 None,
-                (current_branch,),
+                (current_ref,),
                 error=(
                     f"Delivery branch `{assigned_branch}` does not exist and the "
                     "current branch does not prove a default-checkout no-work result."
@@ -517,7 +522,7 @@ class GitOpsMixin:
             default_branch,
             has_remote=has_remote,
         )
-        checked_refs = (current_branch, assigned_ref)
+        checked_refs = (current_ref, assigned_ref)
         if assigned_count is None:
             return _DeliveryResolution(
                 None,
@@ -539,7 +544,7 @@ class GitOpsMixin:
         if assigned_count > 0:
             return _DeliveryResolution(assigned_branch, assigned_ref, checked_refs)
         if current_count > 0:
-            return _DeliveryResolution(current_branch, current_branch, checked_refs)
+            return _DeliveryResolution(current_branch, current_ref, checked_refs)
         return _DeliveryResolution(None, None, checked_refs, no_work=True)
 
     async def _resolve_assigned_ref(
@@ -554,7 +559,7 @@ class GitOpsMixin:
                 f"Could not verify whether delivery branch `{assigned_branch}` exists.",
             )
         if local_exists:
-            return assigned_branch, None
+            return local_ref, None
 
         remote_ref = f"refs/remotes/origin/{assigned_branch}"
         remote_exists = await self.git.aref_exists(workspace, remote_ref)
@@ -564,7 +569,7 @@ class GitOpsMixin:
                 f"Could not verify whether delivery branch `{assigned_branch}` exists.",
             )
         if remote_exists:
-            return f"origin/{assigned_branch}", None
+            return remote_ref, None
         return None, None
 
     async def _task_proves_no_work(
@@ -1101,7 +1106,7 @@ class GitOpsMixin:
                         integrated = await self.git.ais_ancestor(
                             workspace,
                             pr_delivery_ref or pr_delivery_branch,
-                            f"origin/{default_branch}",
+                            f"refs/remotes/origin/{default_branch}",
                             strict=True,
                         )
                     if not pr_url and integrated is True:
@@ -1328,7 +1333,11 @@ class GitOpsMixin:
         remains valid, while task-authored additions, modifications, and
         deletions are all rejected before merge, push, or PR acceptance.
         """
-        base_ref = f"origin/{default_branch}" if has_remote else default_branch
+        base_ref = (
+            f"refs/remotes/origin/{default_branch}"
+            if has_remote
+            else f"refs/heads/{default_branch}"
+        )
         try:
             paths = await self.git.areserved_paths_in_diff(
                 workspace, base_ref, delivery_ref

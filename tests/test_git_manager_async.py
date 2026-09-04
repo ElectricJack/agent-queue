@@ -13,6 +13,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 from src.git.manager import GitManager, GitError
+from src.orchestrator.git_ops import GitOpsMixin
 
 
 def _git(args: list[str], cwd: str) -> str:
@@ -549,6 +550,39 @@ class TestBranchSourceIsNotShadowedByASameNamedTag:
         with pytest.raises(GitError, match="refs/heads/release/only-a-tag"):
             await mgr.apush_validated_ref(clone, "release/only-a-tag", "release/only-a-tag")
         assert "release/only-a-tag" not in _git(["branch", "-r"], cwd=clone)
+
+    @pytest.mark.asyncio
+    async def test_delivery_resolver_inspects_exact_branch_and_base_refs(self, clone, mgr):
+        """Same-named tags cannot turn a one-commit branch into apparent no-work."""
+        _git(["switch", "-c", "task/shadowed"], cwd=clone)
+        branch_tip = _commit_file(clone, "work.txt", "real work", "branch work")
+        _git(["tag", "task/shadowed", branch_tip], cwd=clone)
+        _git(["tag", "main", branch_tip], cwd=clone)
+        _git(["tag", "origin/main", branch_tip], cwd=clone)
+        _git(["switch", "main"], cwd=clone)
+
+        ops = GitOpsMixin()
+        ops.git = mgr
+        ctx = SimpleNamespace(
+            workspace_path=clone,
+            default_branch="main",
+            delivery_branch=None,
+            task=SimpleNamespace(branch_name="task/shadowed"),
+        )
+
+        resolution = await ops._resolve_task_delivery(
+            ctx, current_branch="main", has_remote=True
+        )
+
+        assert resolution.error is None
+        assert resolution.no_work is False
+        assert resolution.delivery_branch == "task/shadowed"
+        assert resolution.delivery_ref == "refs/heads/task/shadowed"
+        assert resolution.checked_refs == (
+            "refs/heads/main",
+            "refs/heads/task/shadowed",
+        )
+        assert await mgr.arev_parse(clone, resolution.delivery_ref) == branch_tip
 
     @pytest.mark.asyncio
     async def test_head_oid_and_revision_expressions_keep_bare_resolution(self, clone, mgr):

@@ -305,8 +305,8 @@ class TestPhaseVerifyByMode:
         assert result == PhaseResult.STOP
         orch.git.ais_ancestor.assert_awaited_once_with(
             ws.workspace_path,
-            "feature-2",
-            "origin/main",
+            "refs/heads/feature-2",
+            "refs/remotes/origin/main",
             strict=True,
         )
 
@@ -321,7 +321,7 @@ class TestPhaseVerifyByMode:
         orch.git.ais_ancestor = AsyncMock(return_value=False)
         orch.git.acount_commits_ahead = AsyncMock(
             side_effect=lambda _workspace, branch, _base: (
-                1 if branch == "feature-2" else 0
+                1 if branch == "refs/heads/feature-2" else 0
             )
         )
         ws = await orch.db.get_workspace("ws-1")
@@ -340,7 +340,7 @@ class TestPhaseVerifyByMode:
         orch.git.ais_ancestor = AsyncMock(return_value=False)
         orch.git.acount_commits_ahead = AsyncMock(
             side_effect=lambda _workspace, branch, _base: (
-                1 if branch == "feature-2" else 0
+                1 if branch == "refs/heads/feature-2" else 0
             )
         )
 
@@ -365,7 +365,7 @@ class TestPhaseVerifyByMode:
         orch.git.aget_current_branch = AsyncMock(return_value="feature/delivery")
         orch.git.acount_commits_ahead = AsyncMock(
             side_effect=lambda _workspace, branch, _base: (
-                0 if branch == "aq/t-pr-alt-delivery" else 1
+                0 if branch == "refs/heads/aq/t-pr-alt-delivery" else 1
             )
         )
         orch.git.afind_open_pr = AsyncMock(return_value="https://github.com/org/repo/pull/alt")
@@ -396,7 +396,7 @@ class TestPhaseVerifyByMode:
         orch.git.aget_current_branch = AsyncMock(return_value="feature/current")
         orch.git.acount_commits_ahead = AsyncMock(
             side_effect=lambda _workspace, branch, _base: (
-                2 if branch == "feature/assigned" else 0
+                2 if branch == "refs/heads/feature/assigned" else 0
             )
         )
         ws = await orch.db.get_workspace("ws-1")
@@ -418,7 +418,7 @@ class TestPhaseVerifyByMode:
         orch.git.aref_exists = AsyncMock(side_effect=ref_exists)
         orch.git.acount_commits_ahead = AsyncMock(
             side_effect=lambda _workspace, branch, _base: (
-                2 if branch == "origin/feature/assigned" else 0
+                2 if branch == "refs/remotes/origin/feature/assigned" else 0
             )
         )
         ws = await orch.db.get_workspace("ws-1")
@@ -429,7 +429,7 @@ class TestPhaseVerifyByMode:
             ws.workspace_path, "feature/assigned", include_workspace_head=False
         )
         assert any(
-            call.args[1] == "origin/feature/assigned"
+            call.args[1] == "refs/remotes/origin/feature/assigned"
             for call in orch.git.acount_commits_ahead.await_args_list
         )
 
@@ -440,7 +440,7 @@ class TestPhaseVerifyByMode:
         orch.git.aref_exists = AsyncMock(return_value=True)
         orch.git.acount_commits_ahead = AsyncMock(
             side_effect=lambda _workspace, branch, _base: (
-                2 if branch == "feature/assigned" else 0
+                2 if branch == "refs/heads/feature/assigned" else 0
             )
         )
         ws = await orch.db.get_workspace("ws-1")
@@ -451,7 +451,7 @@ class TestPhaseVerifyByMode:
             ws.workspace_path, "refs/heads/feature/assigned"
         )
         assert all(
-            call.args[1] != "origin/feature/assigned"
+            call.args[1] != "refs/remotes/origin/feature/assigned"
             for call in orch.git.acount_commits_ahead.await_args_list
         )
 
@@ -474,7 +474,7 @@ class TestPhaseVerifyByMode:
         orch.git.aget_current_branch = AsyncMock(return_value="feature/delivery")
         orch.git.acount_commits_ahead = AsyncMock(
             side_effect=lambda _workspace, branch, _base: (
-                0 if branch == "aq/t-pr-stale-alternate" else 1
+                0 if branch == "refs/heads/aq/t-pr-stale-alternate" else 1
             )
         )
         orch.git.ais_ancestor = AsyncMock(return_value=False)
@@ -513,7 +513,7 @@ class TestPhaseVerifyByMode:
         orch.git.aget_current_branch = AsyncMock(return_value="main")
         orch.git.acount_commits_ahead = AsyncMock(
             side_effect=lambda _workspace, branch, _base: (
-                1 if branch == "feature-assigned" else 0
+                1 if branch == "refs/heads/feature-assigned" else 0
             )
         )
         ws = await orch.db.get_workspace("ws-1")
@@ -525,7 +525,7 @@ class TestPhaseVerifyByMode:
             for call in orch.git._arun.await_args_list
             if call.args and call.args[0][:1] == ["merge"]
         ]
-        assert ["merge", "feature-assigned", "--no-edit"] in merge_calls
+        assert ["merge", "refs/heads/feature-assigned", "--no-edit"] in merge_calls
 
     async def test_direct_mode_rejects_distinct_assigned_and_current_work(self, orch):
         task = _direct_task("t-direct-ambiguous", branch_name="feature/assigned")
@@ -549,7 +549,7 @@ class TestPhaseVerifyByMode:
         orch.git.aget_current_branch = AsyncMock(return_value="feature/current")
         orch.git.acount_commits_ahead = AsyncMock(
             side_effect=lambda _workspace, branch, _base: (
-                2 if branch == "feature/assigned" else 0
+                2 if branch == "refs/heads/feature/assigned" else 0
             )
         )
         ws = await orch.db.get_workspace("ws-1")
@@ -561,8 +561,8 @@ class TestPhaseVerifyByMode:
             for call in orch.git._arun.await_args_list
             if call.args and call.args[0][:1] == ["merge"]
         ]
-        assert ["merge", "feature/assigned", "--no-edit"] in merge_calls
-        assert ["merge", "feature/current", "--no-edit"] not in merge_calls
+        assert ["merge", "refs/heads/feature/assigned", "--no-edit"] in merge_calls
+        assert ["merge", "refs/heads/feature/current", "--no-edit"] not in merge_calls
 
     async def test_direct_mode_probe_error_fails_closed(self, orch):
         task = _direct_task("t-direct-probe")
@@ -1116,7 +1116,10 @@ class TestEmptyBranchSkipsThePrGate:
         orch.git.aget_current_branch = AsyncMock(return_value="main")
         orch.git.acount_commits_ahead = AsyncMock(
             side_effect=lambda _workspace, branch, base: (
-                0 if branch == "main" and base == "origin/main" else None
+                0
+                if branch == "refs/heads/main"
+                and base == "refs/remotes/origin/main"
+                else None
             )
         )
         orch.git.aref_exists = AsyncMock(return_value=False)
@@ -1192,7 +1195,10 @@ class TestEmptyBranchIsFlaggedNoCode:
         # The task branch is empty; the alternate branch carries work; the
         # final pipeline flag must also inspect that alternate branch.
         async def commits_ahead(_workspace, branch, _base):
-            return {"aq/t-flag-alternate": 0, "feature/delivery": 1}[branch]
+            return {
+                "refs/heads/aq/t-flag-alternate": 0,
+                "refs/heads/feature/delivery": 1,
+            }[branch]
 
         orch.git.acount_commits_ahead = AsyncMock(side_effect=commits_ahead)
         orch.git.afind_open_pr = AsyncMock(return_value="https://github.com/org/repo/pull/alt")
