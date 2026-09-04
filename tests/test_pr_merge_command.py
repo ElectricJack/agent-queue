@@ -11,12 +11,11 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from src.commands.handler import CommandHandler
-from src.git.manager import GitError
 from src.config import AppConfig, DiscordConfig
 from src.database import Database
+from src.git.manager import GitError
 from src.models import Project, RepoSourceType, Workspace
 from src.orchestrator import Orchestrator
-
 
 # ---------------------------------------------------------------------------
 # GitManager.amerge_pr unit tests
@@ -253,44 +252,6 @@ async def test_pr_identity_uses_the_host_from_the_url(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_pr_validation_uses_the_url_host_for_files_listing(monkeypatch):
-    from src.git.manager import GitManager
-
-    gm = GitManager()
-    commands: list[list[str]] = []
-
-    async def fake_arun_subprocess(cmd, cwd, timeout):
-        commands.append(cmd)
-        if _is_identity_call(cmd):
-            return MagicMock(returncode=0, stdout=_pr_identity_payload(), stderr="")
-        return MagicMock(
-            returncode=0,
-            stdout=_pr_files_stdout([{"filename": "work.py"}]),
-            stderr="",
-        )
-
-    monkeypatch.setattr(gm, "_arun_subprocess", fake_arun_subprocess)
-    await gm.avalidate_pr_for_merge(
-        "/some/checkout", "https://ghe.example.com/org/repo/pull/42"
-    )
-
-    assert commands == [
-        ["gh", "api", "--hostname", "ghe.example.com", "repos/org/repo/pulls/42"],
-        [
-            "gh",
-            "api",
-            "--hostname",
-            "ghe.example.com",
-            "--paginate",
-            "repos/org/repo/pulls/42/files",
-            "--jq",
-            _PR_FILES_JQ,
-        ],
-        ["gh", "api", "--hostname", "ghe.example.com", "repos/org/repo/pulls/42"],
-    ]
-
-
-@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "pr_url",
     [
@@ -358,209 +319,301 @@ async def test_pr_identity_resolves_against_a_real_gh():
     assert identity.head_oid == "e9a3253762e768badaa1d4a5b3d267416d1e42f4"
 
 
-# The exact jq program handed to ``gh api``: one JSON object per PR-files
-# entry carrying the destination ``filename`` and the rename or copy source
-# ``previous_filename`` (``null`` for an ordinary change).
-_PR_FILES_JQ = ".[] | {filename, previous_filename}"
+# ---------------------------------------------------------------------------
+# The pinned-OID delivery diff (gate stark-impact-60.10, M2)
+# ---------------------------------------------------------------------------
+
+_HEAD_A = "b" * 40
+_HEAD_B = "c" * 40
+_BASE = "a" * 40
+_MERGE_BASE = "d" * 40
+_CACHE = "/some/checkout/pr-diff-cache/github.com/org/repo.git"
+_CLONE_URL = "https://github.com/org/repo.git"
 
 
-def _pr_files_stdout(files: list[dict]) -> str:
-    """Emulate what ``gh api --jq _PR_FILES_JQ`` prints for a PR-files payload.
+def _diff(*paths: str) -> str:
+    """What ``git diff-tree --name-only -z`` prints for ``paths``."""
+    return "".join(path + "\0" for path in paths)
 
-    gh prints each non-scalar jq result as compact JSON on its own line.
+
+class _FakeGit:
+    """A faked ``git`` for the pinned-OID delivery diff.
+
+    Models a remote whose PR head is ``remote_head`` while the guard runs.
+    A fetch that names an OID yields exactly that commit (or fails when the
+    OID is not in ``fetchable``), while a fetch that names a ref
+    (``refs/pull/<n>/head``) yields whatever the remote head is right now.
+    ``diffs`` maps a commit OID to the ``diff-tree`` output of that commit
+    against the merge-base, so an implementation that diffs a ref or
+    ``FETCH_HEAD`` instead of the pinned OID sees the *remote head's* diff.
     """
-    import json
 
-    return "".join(
-        json.dumps({"filename": e["filename"], "previous_filename": e.get("previous_filename")})
-        + "\n"
-        for e in files
-    )
+    def __init__(
+        self,
+        diffs: dict[str, str],
+        *,
+        remote_head: str = _HEAD_A,
+        fetchable: set[str] | None = None,
+        merge_base: str = _MERGE_BASE,
+    ) -> None:
+        self.diffs = diffs
+        self.remote_head = remote_head
+        self.fetchable = fetchable
+        self.merge_base = merge_base
+        self.calls: list[tuple[list[str], str | None, int | None]] = []
+        self.available: set[str] = set()
+        self.fetch_head: str | None = None
+
+    @staticmethod
+    def subcommand(args: list[str]) -> str:
+        it = iter(args)
+        for arg in it:
+            if arg == "-c":
+                next(it, None)
+                continue
+            if arg.startswith("-"):
+                continue
+            return arg
+        raise AssertionError(f"no git subcommand in {args}")
+
+    def commands(self, sub: str) -> list[list[str]]:
+        return [args for args, _, _ in self.calls if self.subcommand(args) == sub]
+
+    def _resolve(self, rev: str) -> str:
+        rev = rev.split("^")[0]
+        if rev == "FETCH_HEAD":
+            assert self.fetch_head is not None, "nothing fetched yet"
+            return self.fetch_head
+        if rev.startswith("refs/"):
+            return self.remote_head
+        return rev
+
+    async def __call__(self, args, cwd=None, timeout=None):
+        self.calls.append((list(args), cwd, timeout))
+        sub = self.subcommand(args)
+        if sub == "init":
+            return ""
+        if sub == "fetch":
+            url_at = next(i for i, a in enumerate(args) if a.startswith("https://"))
+            for want in args[url_at + 1 :]:
+                if want.startswith("refs/"):
+                    self.available.add(self.remote_head)
+                    self.fetch_head = self.remote_head
+                elif self.fetchable is None or want in self.fetchable:
+                    self.available.add(want)
+                    self.fetch_head = want
+                else:
+                    raise GitError(
+                        f"git fetch failed: remote error: upload-pack: not our ref {want}"
+                    )
+            return ""
+        if sub == "rev-parse":
+            oid = self._resolve(args[-1])
+            if oid not in self.available:
+                raise GitError(f"git rev-parse failed: {args[-1]}")
+            return oid
+        if sub == "merge-base":
+            return self.merge_base
+        if sub == "diff-tree":
+            return self.diffs.get(self._resolve(args[-1]), "")
+        raise AssertionError(f"unexpected git call: {args}")
 
 
-def _clean_paths(count: int) -> str:
-    """``count`` distinct non-reserved entries, as gh prints them."""
-    return _pr_files_stdout([{"filename": f".a/{i:05d}"} for i in range(count)])
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("operation", "entry", "reserved"),
-    [
-        ("added", {"filename": ".aq/claim.json", "status": "added"}, ".aq/claim.json"),
-        ("modified", {"filename": ".aq-worktree.json", "status": "modified"}, ".aq-worktree.json"),
-        ("deleted", {"filename": ".codex/config.json", "status": "deleted"}, ".codex/config.json"),
-        (
-            "renamed out of a reserved path",
-            {"filename": "moved.json", "status": "renamed", "previous_filename": ".aq/claim.json"},
-            ".aq/claim.json",
-        ),
-        (
-            "renamed onto a reserved path",
-            {"filename": ".codex/config.json", "status": "renamed", "previous_filename": "c.json"},
-            ".codex/config.json",
-        ),
-        (
-            "copied out of a reserved path",
-            {"filename": "copy.json", "status": "copied", "previous_filename": ".aq/claim.json"},
-            ".aq/claim.json",
-        ),
-    ],
-)
-async def test_pr_validation_rejects_added_modified_and_deleted_reserved_paths(
-    monkeypatch, operation, entry, reserved
-):
+def _gm_with_git(monkeypatch, git: _FakeGit, *, views: list[str] | None = None):
+    """A GitManager whose gh serves ``views`` identity snapshots and whose git is ``git``."""
     from src.git.manager import GitManager
 
     gm = GitManager()
-    files = [{"filename": "work.py", "status": "modified"}, entry]
+    snapshots = iter(views if views is not None else [_pr_identity_payload()] * 2)
 
     async def fake_arun_subprocess(cmd, cwd, timeout):
-        if _is_identity_call(cmd):
-            return MagicMock(returncode=0, stdout=_pr_identity_payload(changed_files=2), stderr="")
-        assert cmd == [
-            "gh",
-            "api",
-            "--hostname",
-            "github.com",
-            "--paginate",
-            "repos/org/repo/pulls/42/files",
-            "--jq",
-            _PR_FILES_JQ,
-        ]
-        # GitHub reports a rename or copy under its new ``filename`` and keeps
-        # the old name in ``previous_filename``; the guard must ask for both.
-        assert cmd[cmd.index("--jq") + 1] == _PR_FILES_JQ
-        return MagicMock(returncode=0, stdout=_pr_files_stdout(files), stderr="")
+        assert _is_identity_call(cmd), f"the guard must not list the PR's files: {cmd}"
+        return MagicMock(returncode=0, stdout=next(snapshots), stderr="")
 
     monkeypatch.setattr(gm, "_arun_subprocess", fake_arun_subprocess)
+    monkeypatch.setattr(gm, "_arun", git)
+    return gm
 
-    # Safety must not vary with whether the reserved path was added, modified,
-    # deleted, or moved across the reserved boundary in either direction.
-    with pytest.raises(GitError, match=f"reserved daemon bookkeeping.*{reserved}") as excinfo:
-        await gm.avalidate_pr_for_merge("/some/checkout", "https://github.com/org/repo/pull/42")
-    assert operation
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("reserved", [".aq/claim.json", ".aq-worktree.json", ".codex/config.json"])
+async def test_pr_validation_rejects_reserved_paths_in_the_pinned_diff(monkeypatch, reserved):
+    # ``--no-renames`` reports a rename as a deletion plus an addition, so a
+    # reserved path leaving or entering the tree is listed under its reserved
+    # name whichever direction it moved; added, modified and deleted paths
+    # are indistinguishable in a name-only diff and equally refused.
+    import re
+
+    git = _FakeGit({_HEAD_A: _diff("work.py", reserved)})
+    gm = _gm_with_git(monkeypatch, git)
+    with pytest.raises(
+        GitError, match="reserved daemon bookkeeping.*" + re.escape(reserved)
+    ) as excinfo:
+        await gm.avalidate_pr_for_merge("/some/checkout", _PR_URL)
     assert "work.py" not in str(excinfo.value)
 
 
 @pytest.mark.asyncio
-async def test_pr_changed_files_include_rename_sources(monkeypatch):
-    """``_apr_changed_files`` keeps one entry per file and every previous_filename."""
-    from src.git.manager import GitManager, PullRequestFile, PullRequestIdentity
+async def test_pr_validation_derives_the_diff_from_the_pinned_oids(monkeypatch):
+    """The delivery diff is git's diff from the pinned base/head merge-base to the pinned head.
 
-    gm = GitManager()
-    identity = PullRequestIdentity("org/repo", 42, "main", "a" * 40, "feature", "b" * 40, 3)
-    files = [
-        {"filename": "work.py", "status": "modified"},
-        {"filename": "moved.json", "status": "renamed", "previous_filename": ".aq/claim.json"},
-        {"filename": "new.py", "status": "added"},
-    ]
-
-    async def fake_arun_subprocess(cmd, cwd, timeout):
-        assert cmd[cmd.index("--jq") + 1] == _PR_FILES_JQ
-        return MagicMock(returncode=0, stdout=_pr_files_stdout(files), stderr="")
-
-    monkeypatch.setattr(gm, "_arun_subprocess", fake_arun_subprocess)
-    entries = await gm._apr_changed_files("/some/checkout", identity)
-    assert entries == [
-        PullRequestFile("work.py"),
-        PullRequestFile("moved.json", ".aq/claim.json"),
-        PullRequestFile("new.py"),
-    ]
-    assert [path for e in entries for path in e.paths] == [
-        "work.py",
-        "moved.json",
-        ".aq/claim.json",
-        "new.py",
-    ]
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    "stdout",
-    [
-        "work.py\n",  # a bare path: the pre-entry listing format
-        '{"filename": "work.py", "previous_filename": null}\n{"filename": ""}\n',
-        '{"filename": "work.py", "previous_filename": ""}\n',
-        '{"previous_filename": "old.py"}\n',
-        '["work.py", null]\n',
-        '{"filename": "work.py"',
-    ],
-)
-async def test_pr_changed_files_fail_closed_on_an_unreadable_entry(monkeypatch, stdout):
-    """An entry the guard cannot decode is an entry it cannot clear."""
-    from src.git.manager import GitManager, PullRequestIdentity
-
-    gm = GitManager()
-    identity = PullRequestIdentity("org/repo", 42, "main", "a" * 40, "feature", "b" * 40, 1)
-
-    async def fake_arun_subprocess(cmd, cwd, timeout):
-        return MagicMock(returncode=0, stdout=stdout, stderr="")
-
-    monkeypatch.setattr(gm, "_arun_subprocess", fake_arun_subprocess)
-    with pytest.raises(GitError, match="could not inspect PR delivery diff"):
-        await gm._apr_changed_files("/some/checkout", identity)
-
-
-@pytest.mark.asyncio
-async def test_pr_changed_files_accept_pretty_printed_entries(monkeypatch):
-    """gh indents jq output on a TTY; the parser reads concatenated JSON either way."""
-    from src.git.manager import GitManager, PullRequestFile, PullRequestIdentity
-
-    gm = GitManager()
-    identity = PullRequestIdentity("org/repo", 42, "main", "a" * 40, "feature", "b" * 40, 2)
-    stdout = (
-        '{\n  "filename": "work.py",\n  "previous_filename": null\n}\n'
-        '{\n  "filename": "b.py",\n  "previous_filename": "a.py"\n}\n'
-    )
-
-    async def fake_arun_subprocess(cmd, cwd, timeout):
-        return MagicMock(returncode=0, stdout=stdout, stderr="")
-
-    monkeypatch.setattr(gm, "_arun_subprocess", fake_arun_subprocess)
-    entries = await gm._apr_changed_files("/some/checkout", identity)
-    assert entries == [PullRequestFile("work.py"), PullRequestFile("b.py", "a.py")]
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("entry", "reserved"),
-    [
-        ({"filename": "new.py", "status": "renamed", "previous_filename": "old.py"}, None),
-        (
-            {"filename": "moved.json", "status": "renamed", "previous_filename": ".aq/claim.json"},
-            ".aq/claim.json",
-        ),
-    ],
-)
-async def test_pr_validation_counts_a_renamed_entry_as_one_changed_file(
-    monkeypatch, entry, reserved
-):
-    """A rename is one entry of the PR-files listing carrying two names.
-
-    GitHub's ``changed_files`` counts listing entries, while the reserved-path
-    guard must inspect both the destination and the source of a rename. The
-    completeness check therefore compares entries, not names: a PR whose only
-    change is a rename is complete at one entry, and is then accepted or
-    refused on its paths alone — never reported as an incomplete listing.
+    Both commits are fetched *by OID* into a daemon-owned, blob-less bare
+    cache under the directory ``pr_merge`` runs in — which is not a checkout
+    — with gh's credentials.  A content-addressed fetch either yields exactly
+    that commit or fails, so nothing addressed by the mutable PR number is
+    ever diffed, and neither GitHub's 3000-entry listing cap nor its
+    changed-file count is relied on.
     """
-    from src.git.manager import GitManager
+    git = _FakeGit({_HEAD_A: _diff("work.py")})
+    gm = _gm_with_git(monkeypatch, git)
 
-    gm = GitManager()
+    identity = await gm.avalidate_pr_for_merge("/some/checkout", _PR_URL)
 
-    async def fake_arun_subprocess(cmd, cwd, timeout):
-        if _is_identity_call(cmd):
-            return MagicMock(returncode=0, stdout=_pr_identity_payload(changed_files=1), stderr="")
-        assert cmd[cmd.index("--jq") + 1] == _PR_FILES_JQ
-        return MagicMock(returncode=0, stdout=_pr_files_stdout([entry]), stderr="")
+    assert identity.head_oid == _HEAD_A
+    assert [git.subcommand(args) for args, _, _ in git.calls] == [
+        "init", "fetch", "rev-parse", "rev-parse", "merge-base", "diff-tree",
+    ]  # fmt: skip
+    (init,) = git.commands("init")
+    assert init == ["init", "--bare", "--quiet", _CACHE]
+    (fetch,) = git.commands("fetch")
+    credentials = ["-c", "credential.helper=", "-c", "credential.helper=!gh auth git-credential"]
+    assert fetch[:4] == credentials
+    assert fetch[4:] == [
+        "fetch", "--quiet", "--no-tags", "--filter=blob:none", _CLONE_URL, _HEAD_A, _BASE,
+    ]  # fmt: skip
+    assert all(cwd == _CACHE for args, cwd, _ in git.calls if args[0] != "init")
+    # Fetch is the one slow step: it gets its own generous window.
+    assert next(timeout for args, _, timeout in git.calls if "fetch" in args) >= 600
+    assert git.commands("rev-parse") == [
+        ["rev-parse", "--verify", "--quiet", f"{_HEAD_A}^{{commit}}"],
+        ["rev-parse", "--verify", "--quiet", f"{_BASE}^{{commit}}"],
+    ]
+    assert git.commands("merge-base") == [["merge-base", _BASE, _HEAD_A]]
+    assert git.commands("diff-tree") == [
+        ["diff-tree", "-r", "--no-renames", "--name-only", "-z", _MERGE_BASE, _HEAD_A]
+    ]
 
-    monkeypatch.setattr(gm, "_arun_subprocess", fake_arun_subprocess)
-    if reserved is None:
-        identity = await gm.avalidate_pr_for_merge("/some/checkout", _PR_URL)
-        assert identity.changed_files == 1
-    else:
-        with pytest.raises(GitError, match=f"reserved daemon bookkeeping.*{reserved}"):
-            await gm.avalidate_pr_for_merge("/some/checkout", _PR_URL)
+
+@pytest.mark.asyncio
+async def test_pr_validation_refuses_a_head_that_flipped_while_the_diff_was_derived(monkeypatch):
+    """Gate stark-impact-60.10 M2: a head force-pushed A -> B -> A must not merge B's diff as A.
+
+    Both identity reads see A and agree on the changed-file count, so the
+    pin compares equal and ``--match-head-commit A`` would succeed; only the
+    diff itself can tell.  The faked remote's head is B while the diff is
+    derived: anything addressed by the PR (``refs/pull/42/head``,
+    ``FETCH_HEAD``) resolves to B, whose diff is clean, while A adds a
+    reserved path.  The guard must inspect A's diff and refuse.
+    """
+    git = _FakeGit(
+        {_HEAD_A: _diff("work.py", ".aq/claim.json"), _HEAD_B: _diff("work.py")},
+        remote_head=_HEAD_B,
+    )
+    gm = _gm_with_git(monkeypatch, git)
+    with pytest.raises(GitError, match=r"reserved daemon bookkeeping.*\.aq/claim\.json"):
+        await gm.avalidate_pr_for_merge("/some/checkout", _PR_URL)
+    (diff,) = git.commands("diff-tree")
+    assert diff[-1] == _HEAD_A
+
+
+@pytest.mark.asyncio
+async def test_pr_validation_fails_closed_when_the_pinned_head_cannot_be_fetched(monkeypatch):
+    """The flip left A unreachable: fetching it by OID fails, and so must the merge."""
+    git = _FakeGit({_HEAD_B: _diff("work.py")}, remote_head=_HEAD_B, fetchable={_HEAD_B, _BASE})
+    gm = _gm_with_git(monkeypatch, git)
+    with pytest.raises(GitError, match="could not inspect PR delivery diff.*not our ref"):
+        await gm.avalidate_pr_for_merge("/some/checkout", _PR_URL)
+    assert not git.commands("diff-tree")
+
+
+@pytest.mark.asyncio
+async def test_pr_validation_fails_closed_when_a_fetched_commit_is_missing(monkeypatch):
+    """A fetch that exits 0 without delivering the pinned commit is not trusted."""
+
+    class _SilentFetch(_FakeGit):
+        async def __call__(self, args, cwd=None, timeout=None):
+            if self.subcommand(args) == "fetch":
+                self.calls.append((list(args), cwd, timeout))
+                return ""
+            return await super().__call__(args, cwd, timeout)
+
+    git = _SilentFetch({_HEAD_A: _diff("work.py")})
+    gm = _gm_with_git(monkeypatch, git)
+    with pytest.raises(GitError, match="could not inspect PR delivery diff"):
+        await gm.avalidate_pr_for_merge("/some/checkout", _PR_URL)
+    assert not git.commands("diff-tree")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("merge_base", ["", "not-an-oid", "d" * 40 + "\n" + "e" * 40])
+async def test_pr_validation_fails_closed_without_a_single_merge_base_oid(monkeypatch, merge_base):
+    git = _FakeGit({_HEAD_A: _diff("work.py")}, merge_base=merge_base)
+    gm = _gm_with_git(monkeypatch, git)
+    with pytest.raises(GitError, match="could not inspect PR delivery diff.*merge-base"):
+        await gm.avalidate_pr_for_merge("/some/checkout", _PR_URL)
+    assert not git.commands("diff-tree")
+
+
+@pytest.mark.asyncio
+async def test_pr_validation_caches_per_host_and_repository(monkeypatch):
+    """The cache is keyed by the PR URL's host and GitHub's repository name."""
+    import json
+
+    payload = json.loads(_pr_identity_payload())
+    payload["base"]["repo"]["full_name"] = "Org/Repo.Name"
+    git = _FakeGit({_HEAD_A: _diff("work.py")})
+    gm = _gm_with_git(monkeypatch, git, views=[json.dumps(payload)] * 2)
+
+    await gm.avalidate_pr_for_merge("/data", "https://ghe.example.com/org/repo/pull/42")
+
+    (init,) = git.commands("init")
+    assert init[-1] == "/data/pr-diff-cache/ghe.example.com/Org/Repo.Name.git"
+    (fetch,) = git.commands("fetch")
+    assert "https://ghe.example.com/Org/Repo.Name.git" in fetch
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("repository", ["../evil", "org/..", "./x", "org/."])
+async def test_pr_validation_refuses_a_repository_name_that_escapes_the_cache(
+    monkeypatch, repository
+):
+    import json
+
+    payload = json.loads(_pr_identity_payload())
+    payload["base"]["repo"]["full_name"] = repository
+    git = _FakeGit({_HEAD_A: _diff("work.py")})
+    gm = _gm_with_git(monkeypatch, git, views=[json.dumps(payload)] * 2)
+    with pytest.raises(GitError, match="complete PR identity"):
+        await gm.avalidate_pr_for_merge("/data", _PR_URL)
+    assert not git.calls
+
+
+@pytest.mark.asyncio
+async def test_pr_validation_serializes_fetches_into_one_cache(monkeypatch):
+    """Two merges of the same repository share one cache and never fetch into it at once."""
+    import asyncio
+
+    class _SlowFetch(_FakeGit):
+        active = 0
+        overlap = False
+
+        async def __call__(self, args, cwd=None, timeout=None):
+            if self.subcommand(args) == "fetch":
+                _SlowFetch.active += 1
+                _SlowFetch.overlap |= _SlowFetch.active > 1
+                await asyncio.sleep(0)
+                _SlowFetch.active -= 1
+            return await super().__call__(args, cwd, timeout)
+
+    git = _SlowFetch({_HEAD_A: _diff("work.py")})
+    gm = _gm_with_git(monkeypatch, git, views=[_pr_identity_payload()] * 4)
+
+    await asyncio.gather(
+        gm.avalidate_pr_for_merge("/some/checkout", _PR_URL),
+        gm.avalidate_pr_for_merge("/some/checkout", _PR_URL),
+    )
+    assert len(git.commands("fetch")) == 2
+    assert _SlowFetch.overlap is False
 
 
 @pytest.mark.asyncio
@@ -568,6 +621,8 @@ async def test_pr_validation_fails_closed_for_malformed_or_unavailable_identity(
     from src.git.manager import GitManager
 
     gm = GitManager()
+    git = _FakeGit({_HEAD_A: _diff("work.py")})
+    monkeypatch.setattr(gm, "_arun", git)
 
     async def malformed(cmd, cwd, timeout):
         return MagicMock(returncode=0, stdout='{"headRefOid": "not-an-oid"}', stderr="")
@@ -582,53 +637,32 @@ async def test_pr_validation_fails_closed_for_malformed_or_unavailable_identity(
     monkeypatch.setattr(gm, "_arun_subprocess", unavailable)
     with pytest.raises(GitError, match="could not resolve PR identity"):
         await gm.avalidate_pr_for_merge("/some/checkout", "https://github.com/org/repo/pull/42")
-
-    calls = 0
-
-    async def unavailable_diff(cmd, cwd, timeout):
-        nonlocal calls
-        calls += 1
-        if calls == 1:
-            return MagicMock(returncode=0, stdout=_pr_identity_payload(), stderr="")
-        return MagicMock(returncode=1, stdout="", stderr="API unavailable")
-
-    monkeypatch.setattr(gm, "_arun_subprocess", unavailable_diff)
-    with pytest.raises(GitError, match="could not inspect PR delivery diff"):
-        await gm.avalidate_pr_for_merge("/some/checkout", "https://github.com/org/repo/pull/42")
+    assert not git.calls
 
 
 @pytest.mark.asyncio
 async def test_pr_validation_accepts_clean_paths_and_detects_a_changed_head(monkeypatch):
-    from src.git.manager import GitManager
+    git = _FakeGit({_HEAD_A: _diff("work.py")})
 
-    gm = GitManager()
-    views = iter([_pr_identity_payload(), _pr_identity_payload()])
-
-    async def fake_arun_subprocess(cmd, cwd, timeout):
-        if _is_identity_call(cmd):
-            return MagicMock(returncode=0, stdout=next(views), stderr="")
-        return MagicMock(
-            returncode=0, stdout=_pr_files_stdout([{"filename": "work.py"}]), stderr=""
-        )
-
-    monkeypatch.setattr(gm, "_arun_subprocess", fake_arun_subprocess)
-
+    gm = _gm_with_git(monkeypatch, git)
     identity = await gm.avalidate_pr_for_merge(
         "/some/checkout", "https://github.com/org/repo/pull/42"
     )
     assert identity.head_oid == "b" * 40
 
-    views = iter([_pr_identity_payload(), _pr_identity_payload(head_oid="c" * 40)])
-
+    gm = _gm_with_git(
+        monkeypatch, git, views=[_pr_identity_payload(), _pr_identity_payload(head_oid="c" * 40)]
+    )
     with pytest.raises(GitError, match="identity changed"):
         await gm.avalidate_pr_for_merge("/some/checkout", "https://github.com/org/repo/pull/42")
 
     # The base OID moves on every push to the default branch, which says
-    # nothing about this PR: the PR-files diff is a merge-base diff, so what
+    # nothing about this PR: the delivery diff is a merge-base diff, so what
     # the PR introduces is unchanged.  Concurrent delivery must not turn
     # validation into a coin toss.
-    views = iter([_pr_identity_payload(), _pr_identity_payload(base_oid="e" * 40)])
-
+    gm = _gm_with_git(
+        monkeypatch, git, views=[_pr_identity_payload(), _pr_identity_payload(base_oid="e" * 40)]
+    )
     identity = await gm.avalidate_pr_for_merge(
         "/some/checkout", "https://github.com/org/repo/pull/42"
     )
@@ -636,93 +670,11 @@ async def test_pr_validation_accepts_clean_paths_and_detects_a_changed_head(monk
 
     # Retargeting the PR onto another branch is an identity change: the
     # commits would land somewhere the review never looked at.
-    views = iter([_pr_identity_payload(), _pr_identity_payload(base_ref="develop")])
-
+    gm = _gm_with_git(
+        monkeypatch, git, views=[_pr_identity_payload(), _pr_identity_payload(base_ref="develop")]
+    )
     with pytest.raises(GitError, match="identity changed"):
         await gm.avalidate_pr_for_merge("/some/checkout", "https://github.com/org/repo/pull/42")
-
-
-def _gm_with_pr(monkeypatch, *, changed_files: object, listed: str, views: int = 2):
-    """A GitManager whose gh reports ``changed_files`` and lists ``listed``."""
-    from src.git.manager import GitManager
-
-    gm = GitManager()
-    snapshots = iter([_pr_identity_payload(changed_files=changed_files)] * views)
-
-    async def fake_arun_subprocess(cmd, cwd, timeout):
-        if _is_identity_call(cmd):
-            return MagicMock(returncode=0, stdout=next(snapshots), stderr="")
-        assert cmd == [
-            "gh",
-            "api",
-            "--hostname",
-            "github.com",
-            "--paginate",
-            "repos/org/repo/pulls/42/files",
-            "--jq",
-            _PR_FILES_JQ,
-        ]
-        return MagicMock(returncode=0, stdout=listed, stderr="")
-
-    monkeypatch.setattr(gm, "_arun_subprocess", fake_arun_subprocess)
-    return gm
-
-
-_PR_FILES_API_CAP = 3000
-
-
-@pytest.mark.asyncio
-async def test_pr_validation_fails_closed_when_the_files_listing_stops_at_the_api_cap(
-    monkeypatch,
-):
-    # GitHub's "List pull request files" returns at most 3000 entries, so a PR
-    # with 3000 clean paths sorting before ``.aq/`` hides ``.aq/claim.json`` in
-    # the unlisted tail.  The listing is exactly the cap while the PR reports
-    # one more file: the guard must refuse rather than trust the visible prefix.
-    gm = _gm_with_pr(
-        monkeypatch,
-        changed_files=_PR_FILES_API_CAP + 1,
-        listed=_clean_paths(_PR_FILES_API_CAP),
-    )
-    with pytest.raises(GitError, match="3000"):
-        await gm.avalidate_pr_for_merge("/some/checkout", _PR_URL)
-
-
-@pytest.mark.asyncio
-async def test_pr_validation_fails_closed_exactly_at_the_api_cap(monkeypatch):
-    # At the cap the listing and the count agree, yet nothing proves the
-    # listing was not truncated at precisely that boundary: fail closed.
-    gm = _gm_with_pr(
-        monkeypatch,
-        changed_files=_PR_FILES_API_CAP,
-        listed=_clean_paths(_PR_FILES_API_CAP),
-    )
-    with pytest.raises(GitError, match="3000"):
-        await gm.avalidate_pr_for_merge("/some/checkout", _PR_URL)
-
-
-@pytest.mark.asyncio
-async def test_pr_validation_accepts_a_complete_listing_just_below_the_api_cap(monkeypatch):
-    gm = _gm_with_pr(
-        monkeypatch,
-        changed_files=_PR_FILES_API_CAP - 1,
-        listed=_clean_paths(_PR_FILES_API_CAP - 1),
-    )
-    identity = await gm.avalidate_pr_for_merge("/some/checkout", _PR_URL)
-    assert identity.changed_files == _PR_FILES_API_CAP - 1
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(("changed_files", "listed"), [(3, 2), (1, 2), (2, 0)])
-async def test_pr_validation_fails_closed_when_listing_and_changed_file_count_disagree(
-    monkeypatch, changed_files, listed
-):
-    # A listing that does not match the PR's own changed-file count cannot be
-    # a complete merge-base diff, whichever side is larger.
-    gm = _gm_with_pr(monkeypatch, changed_files=changed_files, listed=_clean_paths(listed))
-    expected = rf"incomplete.*\b{listed}\b.*\b{changed_files}\b"
-    with pytest.raises(GitError, match=expected):
-        await gm.avalidate_pr_for_merge("/some/checkout", _PR_URL)
 
 
 @pytest.mark.asyncio
@@ -731,7 +683,8 @@ async def test_pr_validation_fails_closed_without_a_usable_changed_file_count(
     monkeypatch, changed_files
 ):
     # ``None`` omits the field entirely; the others are not a non-negative int.
-    gm = _gm_with_pr(monkeypatch, changed_files=changed_files, listed=_clean_paths(1))
+    git = _FakeGit({_HEAD_A: _diff("work.py")})
+    gm = _gm_with_git(monkeypatch, git, views=[_pr_identity_payload(changed_files=changed_files)])
     with pytest.raises(GitError, match="complete PR identity"):
         await gm.avalidate_pr_for_merge("/some/checkout", _PR_URL)
 
@@ -752,8 +705,9 @@ async def test_pr_identity_pins_the_changed_file_count_in_the_same_snapshot(monk
 
     assert identity.changed_files == 7
     # One REST ``pulls/{n}`` read carries the OIDs and the count together, so
-    # the count belongs to the same base/head pair the listing is checked
-    # against.
+    # the count belongs to the same base/head pair and a count that differs
+    # between the two snapshots means the head that was diffed is not the
+    # head that would be merged.
     assert commands == [_PR_IDENTITY_CMD]
 
 
@@ -781,19 +735,51 @@ async def test_pr_identity_reads_only_the_rest_changed_files_spelling(monkeypatc
 
 @pytest.mark.asyncio
 async def test_pr_validation_detects_a_changed_file_count_between_snapshots(monkeypatch):
-    from src.git.manager import GitManager
-
-    gm = GitManager()
-    views = iter([_pr_identity_payload(changed_files=1), _pr_identity_payload(changed_files=2)])
-
-    async def fake_arun_subprocess(cmd, cwd, timeout):
-        if _is_identity_call(cmd):
-            return MagicMock(returncode=0, stdout=next(views), stderr="")
-        return MagicMock(returncode=0, stdout=_clean_paths(1), stderr="")
-
-    monkeypatch.setattr(gm, "_arun_subprocess", fake_arun_subprocess)
+    git = _FakeGit({_HEAD_A: _diff("work.py")})
+    gm = _gm_with_git(
+        monkeypatch,
+        git,
+        views=[_pr_identity_payload(changed_files=1), _pr_identity_payload(changed_files=2)],
+    )
     with pytest.raises(GitError, match="identity changed"):
         await gm.avalidate_pr_for_merge("/some/checkout", _PR_URL)
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_pr_validation_derives_the_diff_against_a_real_repository(tmp_path):
+    """The faked git cannot prove GitHub serves a fetch by OID with gh's credentials.
+
+    Needs a ``gh`` on PATH that is logged in and can reach github.com; skips
+    otherwise.  cli/cli#1 is a merged, immutable public PR whose one changed
+    file is ``command/pr.go``.
+    """
+    import asyncio
+    import shutil
+
+    from src.git.manager import GitManager
+
+    if shutil.which("gh") is None:
+        pytest.skip("gh is not installed")
+    auth = await asyncio.create_subprocess_exec(
+        "gh", "auth", "status", stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL
+    )
+    if await auth.wait() != 0:
+        pytest.skip("gh is not authenticated")
+
+    gm = GitManager()
+    identity = await gm.avalidate_pr_for_merge(str(tmp_path), "https://github.com/cli/cli/pull/1")
+    assert identity.head_oid == "e9a3253762e768badaa1d4a5b3d267416d1e42f4"
+    cache = tmp_path / "pr-diff-cache" / "github.com" / "cli" / "cli.git"
+    assert (cache / "HEAD").is_file()
+    paths = await gm._arun(
+        [
+            "diff-tree", "-r", "--no-renames", "--name-only", "-z",
+            identity.base_oid, identity.head_oid,
+        ],
+        cwd=str(cache),
+    )  # fmt: skip
+    assert paths.split("\0") == ["command/pr.go", ""]
 
 
 @pytest.mark.asyncio
@@ -807,13 +793,12 @@ async def test_pr_merge_refuses_when_head_changes_after_ci_validation(monkeypatc
         nonlocal merge_called
         if _is_identity_call(cmd):
             return MagicMock(returncode=0, stdout=_pr_identity_payload(head_oid="c" * 40), stderr="")
-        if "--paginate" in cmd:
-            return MagicMock(returncode=0, stdout=_clean_paths(1), stderr="")
         if cmd[:3] == ["gh", "pr", "merge"]:
             merge_called = True
         return MagicMock(returncode=0, stdout="Merged\n", stderr="")
 
     monkeypatch.setattr(gm, "_arun_subprocess", fake_arun_subprocess)
+    monkeypatch.setattr(gm, "_arun", _FakeGit({_HEAD_B: _diff("work.py")}))
     result = await gm.amerge_pr(
         "/some/checkout",
         "https://github.com/org/repo/pull/42",
@@ -849,11 +834,10 @@ async def test_pr_merge_proceeds_when_only_the_base_moved_after_ci_validation(mo
             return MagicMock(returncode=0, stdout=_pr_identity_payload(base_oid="e" * 40), stderr="")
         if cmd[:3] == ["gh", "pr", "merge"]:
             merge_cmd = cmd
-        return MagicMock(
-            returncode=0, stdout=_pr_files_stdout([{"filename": "work.py"}]), stderr=""
-        )
+        return MagicMock(returncode=0, stdout="Merged\n", stderr="")
 
     monkeypatch.setattr(gm, "_arun_subprocess", fake_arun_subprocess)
+    monkeypatch.setattr(gm, "_arun", _FakeGit({_HEAD_A: _diff("work.py")}))
     result = await gm.amerge_pr(
         "/some/checkout",
         "https://github.com/org/repo/pull/42",
@@ -888,11 +872,10 @@ async def test_pr_merge_refuses_when_pr_is_retargeted_after_ci_validation(monkey
             )
         if cmd[:3] == ["gh", "pr", "merge"]:
             merge_called = True
-        return MagicMock(
-            returncode=0, stdout=_pr_files_stdout([{"filename": "work.py"}]), stderr=""
-        )
+        return MagicMock(returncode=0, stdout="Merged\n", stderr="")
 
     monkeypatch.setattr(gm, "_arun_subprocess", fake_arun_subprocess)
+    monkeypatch.setattr(gm, "_arun", _FakeGit({_HEAD_A: _diff("work.py")}))
     result = await gm.amerge_pr(
         "/some/checkout",
         "https://github.com/org/repo/pull/42",
