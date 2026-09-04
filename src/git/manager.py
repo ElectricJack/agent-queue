@@ -111,6 +111,8 @@ class PullRequestIdentity:
     #: when it has exactly this many entries and is below
     #: :data:`_PR_FILES_API_CAP`.
     changed_files: int
+    #: The GitHub host serving this PR, preserved for all follow-up API calls.
+    host: str = "github.com"
 
     @property
     def pin(self) -> tuple[str, int, str, str, str, int]:
@@ -2782,6 +2784,7 @@ class GitManager:
             head_ref=head_ref,
             head_oid=head_oid,
             changed_files=changed_files,
+            host=host,
         )
 
     # jq program for the PR-files endpoint: one JSON object per entry, with
@@ -2839,7 +2842,16 @@ class GitManager:
         endpoint = f"repos/{identity.repository}/pulls/{identity.number}/files"
         try:
             result = await self._arun_subprocess(
-                ["gh", "api", "--paginate", endpoint, "--jq", self._PR_FILES_JQ],
+                [
+                    "gh",
+                    "api",
+                    "--hostname",
+                    identity.host,
+                    "--paginate",
+                    endpoint,
+                    "--jq",
+                    self._PR_FILES_JQ,
+                ],
                 cwd=checkout_path,
                 timeout=self._GIT_TIMEOUT,
             )

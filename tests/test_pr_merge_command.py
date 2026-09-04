@@ -253,6 +253,44 @@ async def test_pr_identity_uses_the_host_from_the_url(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_pr_validation_uses_the_url_host_for_files_listing(monkeypatch):
+    from src.git.manager import GitManager
+
+    gm = GitManager()
+    commands: list[list[str]] = []
+
+    async def fake_arun_subprocess(cmd, cwd, timeout):
+        commands.append(cmd)
+        if _is_identity_call(cmd):
+            return MagicMock(returncode=0, stdout=_pr_identity_payload(), stderr="")
+        return MagicMock(
+            returncode=0,
+            stdout=_pr_files_stdout([{"filename": "work.py"}]),
+            stderr="",
+        )
+
+    monkeypatch.setattr(gm, "_arun_subprocess", fake_arun_subprocess)
+    await gm.avalidate_pr_for_merge(
+        "/some/checkout", "https://ghe.example.com/org/repo/pull/42"
+    )
+
+    assert commands == [
+        ["gh", "api", "--hostname", "ghe.example.com", "repos/org/repo/pulls/42"],
+        [
+            "gh",
+            "api",
+            "--hostname",
+            "ghe.example.com",
+            "--paginate",
+            "repos/org/repo/pulls/42/files",
+            "--jq",
+            _PR_FILES_JQ,
+        ],
+        ["gh", "api", "--hostname", "ghe.example.com", "repos/org/repo/pulls/42"],
+    ]
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "pr_url",
     [
@@ -380,7 +418,16 @@ async def test_pr_validation_rejects_added_modified_and_deleted_reserved_paths(
     async def fake_arun_subprocess(cmd, cwd, timeout):
         if _is_identity_call(cmd):
             return MagicMock(returncode=0, stdout=_pr_identity_payload(changed_files=2), stderr="")
-        assert cmd[:4] == ["gh", "api", "--paginate", "repos/org/repo/pulls/42/files"]
+        assert cmd == [
+            "gh",
+            "api",
+            "--hostname",
+            "github.com",
+            "--paginate",
+            "repos/org/repo/pulls/42/files",
+            "--jq",
+            _PR_FILES_JQ,
+        ]
         # GitHub reports a rename or copy under its new ``filename`` and keeps
         # the old name in ``previous_filename``; the guard must ask for both.
         assert cmd[cmd.index("--jq") + 1] == _PR_FILES_JQ
@@ -605,7 +652,16 @@ def _gm_with_pr(monkeypatch, *, changed_files: object, listed: str, views: int =
     async def fake_arun_subprocess(cmd, cwd, timeout):
         if _is_identity_call(cmd):
             return MagicMock(returncode=0, stdout=next(snapshots), stderr="")
-        assert cmd[:4] == ["gh", "api", "--paginate", "repos/org/repo/pulls/42/files"]
+        assert cmd == [
+            "gh",
+            "api",
+            "--hostname",
+            "github.com",
+            "--paginate",
+            "repos/org/repo/pulls/42/files",
+            "--jq",
+            _PR_FILES_JQ,
+        ]
         return MagicMock(returncode=0, stdout=listed, stderr="")
 
     monkeypatch.setattr(gm, "_arun_subprocess", fake_arun_subprocess)
