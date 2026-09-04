@@ -9,6 +9,8 @@ import os
 import re
 from typing import Any
 
+import yaml
+
 logger = logging.getLogger(__name__)
 
 _AUTONOMOUS_PERMISSION_HARNESSES = {
@@ -95,6 +97,86 @@ def _replace_json_section(markdown: str, heading: str, data: dict | list) -> str
     else:
         replacement_body = body.rstrip() + "\n\n" + rendered + "\n"
     return markdown[: match.start(2)] + replacement_body + markdown[match.end(2) :]
+
+
+def _patch_frontmatter_fields(markdown: str, updates: dict) -> str:
+    """Patch selected frontmatter scalars without reserializing metadata."""
+    if not updates or not markdown.startswith("---"):
+        return markdown
+
+    close = re.search(r"^---\s*$", markdown[3:], re.MULTILINE)
+    if not close:
+        return markdown
+    end = close.end() + 3
+    frontmatter = markdown[:end]
+    for key, value in updates.items():
+        line_re = re.compile(rf"^{re.escape(key)}:[^\n]*(?:\n|$)", re.MULTILINE)
+        if value in ("", None):
+            frontmatter = line_re.sub("", frontmatter, count=1)
+            continue
+        # YAML renders quoting only where it is required, while changing no
+        # unrelated metadata such as tags or operator-defined keys.
+        rendered = yaml.safe_dump({key: value}, default_flow_style=False, sort_keys=False)
+        frontmatter = line_re.sub(rendered, frontmatter, count=1)
+        if not line_re.search(markdown[:end]):
+            frontmatter = frontmatter[:-3].rstrip("\n") + "\n" + rendered + "---"
+    return frontmatter + markdown[end:]
+
+
+def _replace_prompt_section(markdown: str, heading: str, content: str) -> str:
+    """Replace one managed prompt section, retaining all other document text."""
+    section_re = re.compile(rf"(?ms)^(## {re.escape(heading)}\s*\n)(.*?)(?=^## |\Z)")
+    match = section_re.search(markdown)
+    if not content:
+        return markdown[: match.start()] + markdown[match.end() :] if match else markdown
+    body = content.strip() + "\n"
+    if match:
+        return markdown[: match.start(2)] + body + markdown[match.end(2) :]
+    return markdown.rstrip() + f"\n\n## {heading}\n" + body
+
+
+def _patch_modern_profile(markdown: str, parsed: Any, updates: dict, merged: dict) -> str:
+    """Apply every supported edit to a modern profile without legacy rendering."""
+    patched = _patch_frontmatter_fields(
+        markdown, {key: merged[key] for key in ("name", "description") if key in updates}
+    )
+
+    config_updates = {
+        key: merged.get(key, "")
+        for key in (
+            "harness",
+            "permission_mode",
+            "codex_full_auto",
+            "claude_dangerously_skip_permissions",
+            "default_class",
+        )
+        if key in updates
+    }
+    if (
+        parsed.config.get("permission_mode") == "bypassPermissions"
+        and merged.get("harness") == "claude"
+    ):
+        config_updates["permission_mode"] = ""
+        config_updates["claude_dangerously_skip_permissions"] = merged.get(
+            "claude_dangerously_skip_permissions", False
+        )
+    patched = _patch_profile_config(patched, parsed.config, config_updates)
+
+    if "allowed_tools" in updates:
+        capabilities = dict(parsed.capabilities or {})
+        capabilities["harness_tools"] = list(merged["allowed_tools"])
+        patched = _replace_json_section(patched, "Capabilities", capabilities)
+    if "mcp_servers" in updates:
+        patched = _replace_json_section(patched, "MCP Servers", merged["mcp_servers"])
+    if "install" in updates:
+        patched = _replace_json_section(patched, "Install", merged["install"])
+    if "system_prompt_suffix" in updates:
+        from src.profiles.parser import _split_system_prompt_suffix
+
+        role, rules, reflection = _split_system_prompt_suffix(merged["system_prompt_suffix"])
+        for heading, content in (("Role", role), ("Rules", rules), ("Reflection", reflection)):
+            patched = _replace_prompt_section(patched, heading, content)
+    return patched
 
 
 def _patch_profile_config(markdown: str, config: dict, updates: dict) -> str:
@@ -361,27 +443,9 @@ class ProfileCommandsMixin:
         if os.path.isfile(vault_path) and "capabilities" in parsed.sections:
             # Do not round-trip a current profile through the legacy database
             # model: it cannot represent modern Config keys, Capabilities, or
-            # arbitrary authored sections.  Patch only managed Config values.
-            config_updates = {
-                key: merged.get(key, "")
-                for key in (
-                    "harness",
-                    "permission_mode",
-                    "codex_full_auto",
-                    "claude_dangerously_skip_permissions",
-                    "default_class",
-                )
-                if key in updates
-            }
-            if (
-                parsed.config.get("permission_mode") == "bypassPermissions"
-                and merged.get("harness") == "claude"
-            ):
-                config_updates["permission_mode"] = ""
-                config_updates["claude_dangerously_skip_permissions"] = merged.get(
-                    "claude_dangerously_skip_permissions", False
-                )
-            markdown = _patch_profile_config(text, parsed.config, config_updates)
+            # arbitrary authored sections. Patch each requested field in its
+            # native location instead.
+            markdown = _patch_modern_profile(text, parsed, updates, merged)
         else:
             # Legacy and DB-only profiles remain on the established renderer.
             markdown = agent_profile_to_markdown(

@@ -488,21 +488,32 @@ class TestCommandVaultWrite:
         assert profile.description == "Updated description"
 
     @pytest.mark.parametrize(
-        ("updates", "expected_config"),
+        ("updates", "expected_config", "expected_description", "expected_harness_tools"),
         [
-            ({"harness": "codex"}, {"harness": "codex"}),
+            ({"harness": "codex"}, {"harness": "codex"}, None, None),
             (
                 {"harness": "codex", "codex_full_auto": True},
                 {"harness": "codex", "codex_full_auto": True},
+                None,
+                None,
             ),
             (
                 {"harness": "claude", "claude_dangerously_skip_permissions": True},
                 {"harness": "claude", "claude_dangerously_skip_permissions": True},
+                None,
+                None,
+            ),
+            ({"description": "Updated modern description"}, {}, "Updated modern description", None),
+            (
+                {"harness": "codex", "allowed_tools": ["Read", "Bash"]},
+                {"harness": "codex"},
+                None,
+                ["Read", "Bash"],
             ),
         ],
     )
     async def test_edit_modern_profile_preserves_unrelated_authored_sections(
-        self, handler, updates, expected_config
+        self, handler, updates, expected_config, expected_description, expected_harness_tools
     ):
         """Modern profiles retain their schema and rationale on a managed edit."""
         vault_path = handler._vault_profile_path("modern")
@@ -558,6 +569,11 @@ Keep this operator note exactly as authored.
         assert parsed.is_valid
         for key, value in expected_config.items():
             assert parsed.config[key] == value
+        if expected_description is not None:
+            assert parsed.frontmatter.extra["description"] == expected_description
+        if expected_harness_tools is not None:
+            assert parsed.capabilities is not None
+            assert parsed.capabilities["harness_tools"] == expected_harness_tools
         assert parsed.config["lifecycle"] == "pool"
         assert parsed.config["needs_workspace"] is True
         assert parsed.config["read_only"] is False
