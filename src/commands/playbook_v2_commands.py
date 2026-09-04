@@ -589,9 +589,9 @@ class PlaybookV2CommandsMixin:
         daemon's live command, profile and event registries before any write.
 
         The command writes the immutable content-addressed file and artifact
-        row under one per-hash critical section.  If the row write fails, a
-        file created by this attempt is removed before the lock is released.
-        No activation row is read or written.
+        row under one per-hash critical section.  If the write transaction
+        fails, including while its context manager exits, a file created by
+        this attempt is removed.  No activation row is read or written.
 
         Args:
             path: Vault-relative or absolute path to the reviewed bundle
@@ -772,34 +772,43 @@ class PlaybookV2CommandsMixin:
             sort_keys=True,
             separators=(",", ":"),
         )
+        remove_file_on_failure = False
         try:
             async with self.db.artifact_hash_lock([actual_sha]) as conn:
                 existing_row = await self.db.get_playbook_artifact_row(actual_sha, conn=conn)
                 file_existed = store.exists(actual_sha)
-                try:
-                    ref = store.put(
-                        definition,
-                        source_digest=definition.source_hash,
-                        contract_fingerprint=definition.contract_fingerprint(),
-                        profile_fingerprint=aggregate_profile_fingerprint,
-                        compiler_build=definition.compiler_build or "unknown",
-                        version=definition.version,
-                    )
-                    await self.db.upsert_playbook_artifact(
-                        ref,
-                        scope=scope,
-                        scope_identifier=scope_identifier,
-                        profile_fingerprint=aggregate_profile_fingerprint,
-                        path=store.path_for(ref.artifact_sha256),
-                        size_bytes=len(artifact_bytes),
-                        validation=validation,
-                        conn=conn,
-                    )
-                except BaseException:
-                    if existing_row is None and not file_existed:
-                        store.delete(actual_sha)
-                    raise
-        except Exception as exc:  # noqa: BLE001 - operator-facing storage failure
+                # Set this before put(): it may publish the destination and then
+                # fail while making the containing directory durable.  An
+                # existing row or file belongs to an earlier attempt and must
+                # survive rollback of this one.
+                remove_file_on_failure = existing_row is None and not file_existed
+                ref = store.put(
+                    definition,
+                    source_digest=definition.source_hash,
+                    contract_fingerprint=definition.contract_fingerprint(),
+                    profile_fingerprint=aggregate_profile_fingerprint,
+                    compiler_build=definition.compiler_build or "unknown",
+                    version=definition.version,
+                )
+                await self.db.upsert_playbook_artifact(
+                    ref,
+                    scope=scope,
+                    scope_identifier=scope_identifier,
+                    profile_fingerprint=aggregate_profile_fingerprint,
+                    path=store.path_for(ref.artifact_sha256),
+                    size_bytes=len(artifact_bytes),
+                    validation=validation,
+                    conn=conn,
+                )
+        except BaseException as exc:
+            # This handler deliberately surrounds the whole async-with.  A
+            # transaction commit happens in __aexit__, after the suite above,
+            # and cancellation there must receive the same compensation as a
+            # failed upsert without converting CancelledError into a result.
+            if remove_file_on_failure:
+                store.delete(actual_sha)
+            if not isinstance(exc, Exception):
+                raise
             logger.warning("could not import reviewed V2 artifact %s", actual_sha, exc_info=True)
             return {"success": False, "error": f"reviewed artifact import failed: {exc}"}
 

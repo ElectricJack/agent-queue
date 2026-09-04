@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import shutil
+from contextlib import asynccontextmanager
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -102,6 +103,19 @@ def _write_review(path: Path, frontmatter: dict, body: str) -> None:
 
 async def _import(handler: _Handler, relative: Path) -> dict:
     return await handler._cmd_playbook_v2_import({"path": relative.as_posix()})
+
+
+def _fail_when_artifact_lock_exits(db, monkeypatch, error: BaseException) -> None:
+    """Inject a rollback after the import body, where transaction commit lives."""
+    original_lock = db.artifact_hash_lock
+
+    @asynccontextmanager
+    async def failing_lock(shas):
+        async with original_lock(shas) as conn:
+            yield conn
+            raise error
+
+    monkeypatch.setattr(db, "artifact_hash_lock", failing_lock)
 
 
 @pytest.mark.asyncio
@@ -291,6 +305,68 @@ async def test_cancelled_database_upsert_removes_a_new_artifact_file(db, tmp_pat
         await _import(handler, relative)
 
     assert handler._store.exists(recorded_sha) is False
+    assert await db.list_playbook_artifacts("default-pipeline") == []
+
+
+@pytest.mark.asyncio
+async def test_failed_transaction_exit_removes_a_new_artifact_file(db, tmp_path, monkeypatch):
+    """Commit/__aexit__ failure is still inside the compensating boundary."""
+    handler = _Handler(tmp_path, db)
+    relative = _copy_bundle(tmp_path)
+    recorded_sha = (
+        tmp_path / "vault" / relative / "artifact.sha256"
+    ).read_text(encoding="utf-8").strip()
+    _fail_when_artifact_lock_exits(
+        db, monkeypatch, RuntimeError("transaction commit failed")
+    )
+
+    result = await _import(handler, relative)
+
+    assert result["success"] is False
+    assert "transaction commit failed" in result["error"]
+    assert handler._store.exists(recorded_sha) is False
+    assert await db.list_playbook_artifacts("default-pipeline") == []
+
+
+@pytest.mark.asyncio
+async def test_cancelled_transaction_exit_removes_a_new_artifact_file(
+    db, tmp_path, monkeypatch
+):
+    """Cancellation during commit rolls back bytes without being swallowed."""
+    handler = _Handler(tmp_path, db)
+    relative = _copy_bundle(tmp_path)
+    recorded_sha = (
+        tmp_path / "vault" / relative / "artifact.sha256"
+    ).read_text(encoding="utf-8").strip()
+    _fail_when_artifact_lock_exits(db, monkeypatch, asyncio.CancelledError())
+
+    with pytest.raises(asyncio.CancelledError):
+        await _import(handler, relative)
+
+    assert handler._store.exists(recorded_sha) is False
+    assert await db.list_playbook_artifacts("default-pipeline") == []
+
+
+@pytest.mark.asyncio
+async def test_failed_transaction_exit_preserves_an_adopted_artifact_file(
+    db, tmp_path, monkeypatch
+):
+    """Compensation must not delete identical bytes that predated this import."""
+    handler = _Handler(tmp_path, db)
+    relative = _copy_bundle(tmp_path)
+    directory = tmp_path / "vault" / relative
+    recorded_sha = (directory / "artifact.sha256").read_text(encoding="utf-8").strip()
+    stored_path = Path(handler._store.path_for(recorded_sha))
+    stored_path.parent.mkdir(parents=True)
+    stored_path.write_bytes((directory / "artifact.json").read_bytes())
+    _fail_when_artifact_lock_exits(
+        db, monkeypatch, RuntimeError("transaction commit failed")
+    )
+
+    result = await _import(handler, relative)
+
+    assert result["success"] is False
+    assert stored_path.is_file()
     assert await db.list_playbook_artifacts("default-pipeline") == []
 
 
