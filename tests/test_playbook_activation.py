@@ -3,8 +3,7 @@
 from __future__ import annotations
 
 import pytest
-from sqlalchemy import insert, select
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy import select
 
 from src.database import Database
 from src.database.tables import playbook_activations
@@ -201,51 +200,6 @@ async def test_distinct_scopes_get_their_own_activation_rows(db):
     rows = await _activations(db)
     assert [row["scope_identifier"] for row in rows] == ["", "proj-a", "proj-b"]
     assert len({row["activation_id"] for row in rows}) == 3
-
-
-@pytest.mark.parametrize(
-    "review_fields",
-    [
-        {
-            "reviewed_artifact_sha256": "sha256:" + "a" * 64,
-            "reviewed_by": None,
-            "reviewed_at": 1.0,
-        },
-        {
-            "active_artifact_sha256": None,
-            "reviewed_artifact_sha256": "sha256:" + "a" * 64,
-            "reviewed_by": "reviewer",
-            "reviewed_at": 1.0,
-        },
-        {
-            "reviewed_artifact_sha256": "sha256:" + "a" * 64,
-            "reviewed_by": "   ",
-            "reviewed_at": 1.0,
-        },
-    ],
-)
-async def test_database_rejects_partial_project_review_evidence(db, review_fields):
-    """SQL NULLs cannot turn an incomplete review CHECK into UNKNOWN/pass."""
-    ref = _artifact("a")
-    await _store(db, ref)
-    values = {
-        "activation_id": "activation-with-partial-review",
-        "playbook_id": ref.playbook_id,
-        "scope": "project",
-        "scope_identifier": "project-a",
-        "active_artifact_sha256": ref.artifact_sha256,
-        "enabled": True,
-        "health": "ready",
-        "reasons": "[]",
-        "activated_at": 1.0,
-        "activated_by": "operator",
-        "updated_at": 1.0,
-        **review_fields,
-    }
-
-    with pytest.raises(IntegrityError):
-        async with db.immediate() as conn:
-            await conn.execute(insert(playbook_activations).values(**values))
 
 
 @pytest.mark.asyncio

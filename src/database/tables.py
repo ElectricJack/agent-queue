@@ -1032,93 +1032,7 @@ plugin_data = Table(
     Index("idx_plugin_data_plugin_id", "plugin_id"),
 )
 
-playbook_runs = Table(
-    "playbook_runs",
-    metadata,
-    Column("run_id", Text, primary_key=True),
-    Column("playbook_id", Text, nullable=False),
-    Column("playbook_version", Integer, nullable=False),
-    Column("trigger_event", Text, nullable=False, server_default="{}"),
-    Column(
-        "status",
-        Text,
-        nullable=False,
-        server_default="running",
-    ),
-    Column("current_node", Text, nullable=True),
-    Column("conversation_history", Text, nullable=False, server_default="[]"),
-    Column("node_trace", Text, nullable=False, server_default="[]"),
-    Column("tokens_used", Integer, nullable=False, server_default="0"),
-    Column("started_at", Float, nullable=False),
-    Column("completed_at", Float, nullable=True),
-    Column("error", Text, nullable=True),
-    Column("pinned_graph", Text, nullable=True),
-    Column("paused_at", Float, nullable=True),
-    Column("waiting_for_event", Text, nullable=True),
-    Column("event_id", Text, nullable=True),
-    Index(
-        "uq_playbook_runs_pb_event",
-        "playbook_id",
-        "event_id",
-        unique=True,
-        sqlite_where=text("event_id IS NOT NULL"),
-        postgresql_where=text("event_id IS NOT NULL"),
-    ),
-    CheckConstraint(
-        "status IN ('running', 'paused', 'completed', 'failed', 'timed_out', 'cancelled')",
-        name="ck_playbook_runs_status",
-    ),
-    Index("idx_playbook_runs_playbook_id", "playbook_id"),
-    Index("idx_playbook_runs_status", "status"),
-)
-
-
-# ---------------------------------------------------------------------------
-# Playbook V2 cutover audit (docs/superpowers/plans/2026-09-01-playbook-v2-
-# cutover-cleanup.md §6).  One additive, append-only table recording who moved
-# the fleet between runtimes and why.  Package 7's *commands* are deleted at
-# the end of the cutover; this table is not — the audit of who switched the
-# fleet outlives the code that wrote it, and the rollback-window status reads
-# it to detect a runtime flipped outside the cutover command.
-# ---------------------------------------------------------------------------
-
-#: Closed set, matching the ``ck_playbook_cutover_events_kind`` constraint.
-#: Closed rather than free-form for the same reason the migration reason codes
-#: are: operator tooling switches on it.
-CUTOVER_EVENT_KINDS = (
-    "v1_admission_closed",
-    "v1_admission_reopened",
-    "drain_completed",
-    "cutover_authorized",
-    "switched_to_v2",
-    "rolled_back_to_v1",
-    "window_coverage_rehearsal",
-    "rollback_window_closed",
-)
-
-playbook_cutover_events = Table(
-    "playbook_cutover_events",
-    metadata,
-    Column("event_id", Text, primary_key=True),
-    Column("kind", Text, nullable=False),
-    Column("at", Float, nullable=False),
-    Column("actor", Text, nullable=False),
-    Column("reason", Text, nullable=False),
-    Column("detail", Text, nullable=False, server_default="{}"),
-    CheckConstraint(
-        "kind IN (" + ", ".join(f"'{_k}'" for _k in CUTOVER_EVENT_KINDS) + ")",
-        name="ck_playbook_cutover_events_kind",
-    ),
-    Index("idx_playbook_cutover_events_kind_at", "kind", "at"),
-)
-
-
-# ---------------------------------------------------------------------------
-# Playbook V2 storage (docs/superpowers/plans/2026-09-01-playbook-v2-durable-
-# state-storage.md §6).  V1's ``playbook_runs`` above is untouched and stays
-# readable after cutover; the V2 tables below are additive and inert until
-# Package 4's engine writes to them.
-# ---------------------------------------------------------------------------
+# Playbook V2 durable storage.
 
 playbook_artifacts = Table(
     "playbook_artifacts",
@@ -1165,23 +1079,11 @@ playbook_activations = Table(
     Column("reasons", Text, nullable=False, server_default="[]"),
     Column("activated_at", Float, nullable=True),
     Column("activated_by", Text, nullable=True),
-    Column("reviewed_artifact_sha256", Text, nullable=True),
-    Column("reviewed_by", Text, nullable=True),
-    Column("reviewed_at", Float, nullable=True),
     Column("updated_at", Float, nullable=False),
     CheckConstraint(
         "health IN ('ready', 'question_required', 'invalid', 'disabled', "
         "'stale_contract', 'unavailable')",
         name="ck_playbook_activations_health",
-    ),
-    CheckConstraint(
-        "(reviewed_artifact_sha256 IS NULL AND reviewed_by IS NULL AND reviewed_at IS NULL) "
-        "OR (scope = 'project' AND active_artifact_sha256 IS NOT NULL "
-        "AND reviewed_artifact_sha256 IS NOT NULL AND reviewed_by IS NOT NULL "
-        "AND reviewed_at IS NOT NULL "
-        "AND reviewed_artifact_sha256 = active_artifact_sha256 "
-        "AND length(trim(reviewed_by)) > 0)",
-        name="ck_playbook_activations_review_evidence",
     ),
     UniqueConstraint(
         "playbook_id", "scope", "scope_identifier",
@@ -1410,26 +1312,6 @@ playbook_pending_events = Table(
     Index("idx_playbook_pending_events_expiry", "expires_at"),
 )
 
-playbook_migration_acks = Table(
-    "playbook_migration_acks",
-    metadata,
-    # Package 6 of the Playbook V2 roadmap: an operator's written waiver that a
-    # playbook cannot be migrated to V2 and the fleet may cut over without it.
-    # Keyed by the source hash so any edit to the authoring Markdown silently
-    # invalidates the waiver rather than letting it outlive its justification.
-    Column("playbook_id", Text, primary_key=True),
-    Column("scope", Text, primary_key=True),
-    # System- and supervisor-scoped rows store '', never NULL: a nullable
-    # primary-key column is illegal on PostgreSQL.
-    Column("scope_identifier", Text, primary_key=True, server_default=""),
-    Column("source_sha256", Text, nullable=False),
-    Column("reason", Text, nullable=False),
-    Column("acknowledged_by", Text, nullable=False),
-    Column("acknowledged_at", Float, nullable=False),
-    CheckConstraint("length(reason) >= 12", name="ck_playbook_migration_acks_reason"),
-    Index("idx_playbook_migration_acks_source", "source_sha256"),
-)
-
 task_assignment_routes = Table(
     "task_assignment_routes",
     metadata,
@@ -1450,7 +1332,7 @@ task_assignment_routes = Table(
     Column(
         "playbook_run_id",
         Text,
-        ForeignKey("playbook_runs.run_id", ondelete="CASCADE"),
+        ForeignKey("playbook_v2_runs.run_id", ondelete="CASCADE"),
         nullable=False,
     ),
     Column("reason", Text, nullable=False),
@@ -1463,7 +1345,7 @@ workflows = Table(
     metadata,
     Column("workflow_id", Text, primary_key=True),
     Column("playbook_id", Text, nullable=False),
-    Column("playbook_run_id", Text, ForeignKey("playbook_runs.run_id"), nullable=False),
+    Column("playbook_run_id", Text, ForeignKey("playbook_v2_runs.run_id"), nullable=False),
     Column("project_id", Text, ForeignKey("projects.id"), nullable=False),
     Column(
         "status",

@@ -80,3 +80,15 @@ def test_activation_has_no_core_review_acknowledgement_gate() -> None:
     assert "acknowledge_diff" not in properties
     assert "reviewed_by" not in properties
     assert "reviewed_at" not in properties
+
+
+def test_database_metadata_contains_only_v2_playbook_tables() -> None:
+    from src.database.tables import metadata
+
+    names = {name for name in metadata.tables if name.startswith("playbook_")}
+    assert "playbook_runs" not in names
+    assert "playbook_cutover_events" not in names
+    assert "playbook_migration_acks" not in names
+    assert "playbook_v2_runs" in names
+    activation_columns = set(metadata.tables["playbook_activations"].columns.keys())
+    assert not {"reviewed_artifact_sha256", "reviewed_by", "reviewed_at"} & activation_columns

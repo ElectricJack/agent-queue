@@ -34,9 +34,6 @@ _ACTIVATION_UPDATE_COLUMNS = (
     "reasons",
     "activated_at",
     "activated_by",
-    "reviewed_artifact_sha256",
-    "reviewed_by",
-    "reviewed_at",
     "updated_at",
 )
 
@@ -265,18 +262,7 @@ class PlaybookArtifactQueryMixin:
         activated_by: str | None,
         health: str,
         reasons: str,
-        reviewed_artifact_sha256: str | None = None,
-        reviewed_by: str | None = None,
     ) -> None:
-        if (reviewed_artifact_sha256 is None) != (reviewed_by is None):
-            raise ValueError("reviewed_artifact_sha256 and reviewed_by must be supplied together")
-        if reviewed_artifact_sha256 is not None:
-            if scope != "project":
-                raise ValueError("persisted review evidence is only valid for project activations")
-            if reviewed_artifact_sha256 != artifact_sha256:
-                raise ValueError("reviewed_artifact_sha256 must equal artifact_sha256")
-            if not reviewed_by.strip():
-                raise ValueError("reviewed_by must not be empty")
         async with self.immediate() as conn:
             if artifact_sha256 is not None:
                 found = await conn.execute(
@@ -298,9 +284,6 @@ class PlaybookArtifactQueryMixin:
                 "reasons": reasons,
                 "activated_at": now if artifact_sha256 else None,
                 "activated_by": activated_by,
-                "reviewed_artifact_sha256": reviewed_artifact_sha256,
-                "reviewed_by": reviewed_by,
-                "reviewed_at": now if reviewed_artifact_sha256 is not None else None,
                 "updated_at": now,
             }
             # An upsert, never insert-then-recover-from-IntegrityError: on

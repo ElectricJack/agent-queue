@@ -38,10 +38,7 @@ from src.database.tables import (
     metrics_samples,
     playbook_activations,
     playbook_artifacts,
-    playbook_cutover_events,
-    playbook_migration_acks,
     playbook_pending_events,
-    playbook_runs,
     playbook_step_receipts,
     playbook_v2_runs,
     playbook_waits,
@@ -98,7 +95,6 @@ _ORDERED_TABLES = [
     rate_limits,
     events,
     workspace_kinds,
-    playbook_runs,
     playbook_artifacts,
     api_session_tokens,
     chat_analyzer_suggestions,
@@ -111,8 +107,6 @@ _ORDERED_TABLES = [
     metrics_samples,
     transcript_checkpoints,
     playbook_pending_events,
-    playbook_cutover_events,
-    playbook_migration_acks,
     layout_dirty,
     layout_jobs,
     task_layout_cells,
@@ -130,7 +124,7 @@ _ORDERED_TABLES = [
     gates,
     merge_slots,
     project_constraints,
-    # FK → projects, playbook_runs
+    # FK → projects, playbook_v2_runs
     workflows,
     # FK → projects (reply_to_id is a self-FK — deferred)
     messages,
@@ -140,7 +134,7 @@ _ORDERED_TABLES = [
     # FK → projects, repos, agents, agent_profiles, workflows
     # (preferred_workspace_id and parent_task_id deferred)
     tasks,
-    # FK → projects, playbook_runs, tasks
+    # FK → projects, playbook_v2_runs, tasks
     task_assignment_routes,
     # FK → projects, agents, tasks
     workspaces,
