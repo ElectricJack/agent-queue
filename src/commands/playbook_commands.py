@@ -131,7 +131,33 @@ class PlaybookCommandsMixin:
 
     async def _cmd_list_playbooks(self, args: dict) -> dict:
         rows = await self.db.list_playbook_activations(enabled_only=False)
-        return {"playbooks": [dict(row) for row in rows], "count": len(rows)}
+        requested_scope = str(args.get("scope") or "").strip()
+        engine = self._v2_engine()
+        playbooks: list[dict[str, Any]] = []
+        for raw_row in rows:
+            row = dict(raw_row)
+            if requested_scope and row.get("scope") != requested_scope:
+                continue
+            artifact = engine.services.artifact_store.load(row["active_artifact_sha256"])
+            compiled_at = artifact.compiled_at
+            playbooks.append({
+                "id": row["playbook_id"],
+                "scope": row["scope"],
+                "scope_identifier": row.get("scope_identifier") or "",
+                "triggers": list(dict.fromkeys(
+                    rule.trigger.event_type for rule in artifact.rules
+                )),
+                "version": artifact.version,
+                "compiled_at": (
+                    compiled_at.isoformat()
+                    if hasattr(compiled_at, "isoformat")
+                    else str(compiled_at)
+                ),
+                "node_count": len(artifact.steps),
+                "status": row.get("health") or "active",
+                "enabled": bool(row.get("enabled", True)),
+            })
+        return {"playbooks": playbooks, "count": len(playbooks)}
 
     async def _cmd_list_playbook_runs(self, args: dict) -> dict:
         limit = int(args.get("limit", 50))
