@@ -899,3 +899,202 @@ class TestRootFilingCLI:
         assert result.exit_code == 2
         assert "--root only applies to single-task creation" in result.output
         client.execute.assert_not_awaited()
+
+
+class TestWorkerReparent:
+    """A worker may move a task it filed, within the scope it could file in.
+
+    Seen on stark-impact-60.8: findings filed under the held task blocked the
+    worker's own close (``hierarchy.open_children``) and the only way out was
+    re-filing them at project level and closing the originals as no-op.
+    """
+
+    async def _filed_under_held(self, handler, db, sid, title="finding"):
+        res = await scoped(handler, sid)._cmd_create_task({
+            "title": title, "description": "d", "parent_id": "epic.1",
+            "reason": "epic.1 surfaced it",
+        })
+        assert res["success"] is True, res
+        return res["task_id"]
+
+    async def test_worker_moves_its_own_filing_beside_the_held_task(self, handler, db):
+        sid = await holding_child_session(db)
+        filed = await self._filed_under_held(handler, db, sid)
+        assert await db.open_children("epic.1") == [filed]
+
+        res = await scoped(handler, sid)._cmd_reparent_task(
+            {"task_id": filed, "parent_id": "epic"}
+        )
+
+        assert res.get("success") is True, res
+        assert (await db.get_task(filed)).parent_task_id == "epic"
+        assert await db.open_children("epic.1") == []
+        deps = await db.get_typed_dependencies(filed)
+        assert ("epic", "parent-child") in deps
+        assert ("epic.1", "parent-child") not in deps
+        # Provenance survives the move: the filing under epic.1 had no
+        # separate discovered-from edge, so the move writes one.
+        assert ("epic.1", "discovered-from") in deps
+
+    async def test_a_moved_filing_can_be_moved_again(self, handler, db):
+        sid = await holding_child_session(db)
+        filed = await self._filed_under_held(handler, db, sid)
+        first = await scoped(handler, sid)._cmd_reparent_task(
+            {"task_id": filed, "parent_id": "epic"}
+        )
+        assert first.get("success") is True, first
+
+        back = await scoped(handler, sid)._cmd_reparent_task(
+            {"task_id": filed, "parent_id": "epic.1"}
+        )
+
+        assert back.get("success") is True, back
+        assert (await db.get_task(filed)).parent_task_id == "epic.1"
+
+    async def test_worker_moves_its_own_filing_to_root_and_gets_a_routing_gate(
+        self, handler, db
+    ):
+        sid = await holding_child_session(db)
+        filed = await self._filed_under_held(handler, db, sid)
+        assert await db.get_gates_for_task(filed) == []
+
+        res = await scoped(handler, sid)._cmd_reparent_task({"task_id": filed, "root": True})
+
+        assert res.get("success") is True, res
+        moved = await db.get_task(filed)
+        assert moved.parent_task_id is None
+        gates = await db.get_gates_for_task(filed)
+        assert [g["gate_type"] for g in gates] == ["routing"]
+        assert res["gate_id"] == gates[0]["id"]
+        assert moved.is_blocked is True
+
+    async def test_worker_move_to_root_does_not_duplicate_an_open_routing_gate(
+        self, handler, db
+    ):
+        sid = await holding_child_session(db)
+        filed = await self._filed_under_held(handler, db, sid)
+        first = await scoped(handler, sid)._cmd_reparent_task({"task_id": filed, "root": True})
+        assert first.get("success") is True, first
+
+        again = await scoped(handler, sid)._cmd_reparent_task({"task_id": filed, "root": True})
+
+        assert again.get("success") is True, again
+        assert len(await db.get_gates_for_task(filed)) == 1
+
+    async def test_worker_may_move_a_filing_under_its_own_task(self, handler, db):
+        sid = await holding_child_session(db)
+        res = await scoped(handler, sid)._cmd_create_task({
+            "title": "finding", "description": "d", "reason": "epic.1 surfaced it",
+        })
+        filed = res["task_id"]
+        assert (await db.get_task(filed)).parent_task_id == "epic"
+
+        res = await scoped(handler, sid)._cmd_reparent_task(
+            {"task_id": filed, "parent_id": "epic.1"}
+        )
+
+        assert res.get("success") is True, res
+        assert (await db.get_task(filed)).parent_task_id == "epic.1"
+
+    async def test_worker_cannot_move_a_task_it_did_not_file(self, handler, db):
+        sid = await holding_child_session(db)
+        # A plan subtask under the held task: not worker-filed, a deliverable.
+        await db.create_task(Task(id="epic.1.1", project_id=PROJECT_ID, title="plan step",
+                                  description="d", status=TaskStatus.DEFINED))
+        async with db._engine.begin() as conn:
+            await db.set_parent("epic.1.1", "epic.1", conn=conn)
+
+        res = await scoped(handler, sid)._cmd_reparent_task(
+            {"task_id": "epic.1.1", "parent_id": "epic"}
+        )
+
+        assert res.get("success") is False
+        assert res["code"] == "hierarchy.reparent_out_of_scope"
+        assert (await db.get_task("epic.1.1")).parent_task_id == "epic.1"
+
+    async def test_worker_cannot_move_a_filing_from_unrelated_work(self, handler, db):
+        sid = await holding_child_session(db)
+        # Filed by another worker holding an unrelated task.
+        await db.create_agent(Agent(id="agent-2", name="b", profile_id="worker",
+                                    state=AgentState.BUSY))
+        await db.create_task(Task(id="other-held", project_id=PROJECT_ID, title="o",
+                                  description="x", status=TaskStatus.IN_PROGRESS,
+                                  assigned_agent_id="agent-2", claim_epoch=1))
+        await db.create_session(SessionRecord(
+            id="s2", project_id=PROJECT_ID, profile_id="worker", harness="claude",
+            provider="fake", name="s2", lifecycle="pool", work_dir="/wd", epoch="e",
+            instance_token="t", started_at=time.time(), state="running", agent_id="agent-2",
+            task_id="other-held", claim_phase="active"))
+        other = "s2"
+        res = await scoped(handler, other)._cmd_create_task({
+            "title": "theirs", "description": "d", "reason": "other-held surfaced it",
+        })
+        theirs = res["task_id"]
+
+        res = await scoped(handler, sid)._cmd_reparent_task(
+            {"task_id": theirs, "parent_id": "epic"}
+        )
+
+        assert res.get("success") is False
+        assert res["code"] == "hierarchy.reparent_out_of_scope"
+        assert (await db.get_task(theirs)).parent_task_id is None
+
+    async def test_worker_cannot_move_a_filing_outside_its_filing_scope(self, handler, db):
+        sid = await holding_child_session(db)
+        filed = await self._filed_under_held(handler, db, sid)
+        await db.create_task(Task(id="elsewhere", project_id=PROJECT_ID, title="elsewhere",
+                                  description="d", status=TaskStatus.IN_PROGRESS))
+
+        res = await scoped(handler, sid)._cmd_reparent_task(
+            {"task_id": filed, "parent_id": "elsewhere"}
+        )
+
+        assert res.get("success") is False
+        assert res["code"] == "hierarchy.parent_out_of_scope"
+        assert (await db.get_task(filed)).parent_task_id == "epic.1"
+
+    async def test_worker_cannot_move_a_filing_that_is_already_claimed(self, handler, db):
+        sid = await holding_child_session(db)
+        filed = await self._filed_under_held(handler, db, sid)
+        await db.transition_task(filed, TaskStatus.READY, context="test")
+        await db.transition_task(filed, TaskStatus.IN_PROGRESS, context="test")
+
+        res = await scoped(handler, sid)._cmd_reparent_task(
+            {"task_id": filed, "parent_id": "epic"}
+        )
+
+        assert res.get("success") is False
+        assert res["code"] == "hierarchy.reparent_out_of_scope"
+        assert (await db.get_task(filed)).parent_task_id == "epic.1"
+
+    async def test_idle_session_cannot_reparent(self, handler, db):
+        sid = await holding_child_session(db)
+        filed = await self._filed_under_held(handler, db, sid)
+        await db.create_session(SessionRecord(
+            id="idle", project_id=PROJECT_ID, profile_id="worker", harness="claude",
+            provider="fake", name="idle", lifecycle="pool", work_dir="/wd", epoch="e",
+            instance_token="t", started_at=time.time(), state="running", agent_id="agent-1",
+            task_id=None))
+
+        res = await scoped(handler, "idle")._cmd_reparent_task(
+            {"task_id": filed, "parent_id": "epic"}
+        )
+
+        assert res.get("success") is False
+        assert res["code"] == "idle_session_cannot_file"
+
+    async def test_worker_reparent_unblocks_its_own_close(self, handler, db):
+        sid = await holding_child_session(db)
+        filed = await self._filed_under_held(handler, db, sid)
+        assert await db.open_children("epic.1") == [filed]
+
+        res = await scoped(handler, sid)._cmd_reparent_task(
+            {"task_id": filed, "parent_id": "epic"}
+        )
+        assert res.get("success") is True, res
+
+        # The close rule (spec §7) now sees no open children under epic.1
+        # while the finding still exists, DEFINED, under the shared epic.
+        assert await db.open_children("epic.1") == []
+        assert (await db.get_task(filed)).status == TaskStatus.DEFINED
+        assert await db.open_children("epic") == ["epic.1", filed]

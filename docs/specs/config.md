@@ -357,8 +357,9 @@ The related top-level keys `max_daily_playbook_tokens` and
 `max_concurrent_playbook_runs` remain top-level (see §4.1) and are unchanged.
 
 Note that `supervisor.observation.enabled` is also paused by default for the
-same reason (it gates `ChatObserver` construction — it is the real chat
-analyzer switch; there is no `chat_analyzer.enabled`).
+same reason (it gates `ChatObserver` construction — it is the only chat
+analyzer switch; there is no `chat_analyzer` section, which was deleted as
+dead by prime-torrent-81).
 
 ### 4.9.2 `sessions` Section
 
@@ -532,28 +533,7 @@ This section replaces the retired per-task `requires_approval` boolean
 (dropped by Alembic revision `c4d5e6f7a8b9`, which backfills it into
 `integration_mode` on `tasks` and `archived_tasks`).
 
-### 4.13 `chat_analyzer` Section
-
-Maps to `ChatAnalyzerConfig`. The YAML key is `chat_analyzer`.
-
-Thresholds for the Discord chat-analyzer suggester gate stack. There is no
-`chat_analyzer.enabled`: the real switch is `supervisor.observation.enabled`,
-which gates `ChatObserver` construction (see §4.9.1).
-
-| YAML key | Type | Default | Description |
-|---|---|---|---|
-| `min_confidence` | `float` | `0.6` | Minimum `intent_confidence × novelty × actionability` product a suggestion must reach before it is posted. Below it, the suggestion is dropped and tagged `gate="confidence"`. Must be in `[0, 1]`. |
-| `in_flight_min_confidence` | `float` | `0.85` | Elevated minimum that replaces `min_confidence` while the project has at least one `IN_PROGRESS` task. Suppressions are tagged `gate="in_flight_active_task"`. Set it `>= min_confidence` for the escalation to mean anything. Must be in `[0, 1]`. |
-| `dismiss_cooldown_seconds` | `int` | `600` | Seconds of silence in a `(project_id, channel_id)` pair after a user dismisses a suggestion. `0` disables the gate. Suppressions are tagged `gate="dismiss_cooldown"`. Must be `>= 0`. |
-
-> **Inert today.** The gate stack that read these three values is not in the
-> tree; only the reader half survives (`get_chat_analyzer_metrics`,
-> `src/database/queries/chat_queries.py`, the `chat_analyzer_suggestions`
-> table). The keys load and validate, but nothing consumes them until the
-> suggester is restored. Tracked separately from grand-glacier-97, which made
-> them reachable rather than deciding their fate.
-
-### 4.14 `streams` Section
+### 4.13 `streams` Section
 
 Maps to `StreamsConfig`. The YAML key is `streams`. Backs the console-stream
 pane view — see
@@ -574,7 +554,7 @@ Validation (`StreamsConfig.validate`): `buffer_max_lines`, `buffer_max_bytes`,
 all be positive. `client_reconnect_attempts` is unvalidated because `0` is a
 meaningful setting.
 
-### 4.15 `metrics` Section
+### 4.14 `metrics` Section
 
 Maps to `MetricsConfig`. The YAML key is `metrics`. Full behaviour in
 [`design/fleet-metrics.md`](design/fleet-metrics.md).
@@ -612,7 +592,7 @@ Maps to `MetricsConfig`. The YAML key is `metrics`. Full behaviour in
 
 Each config section is optional. If a section key is absent from the YAML, the corresponding `AppConfig` field retains its default-constructed value. The loader passes only explicitly supplied fields to the dataclass, so a partial section (for example, `sessions` with only `lease_ttl_seconds`) receives exactly the same defaults as no section at all. A key written with no value at all (`level:` alone on its line) parses as `None`, asserts nothing, and is treated as not supplied.
 
-Two helpers do this: `_present_kwargs(section, spec)` takes a hand-written `{name: coercion}` spec, and `_dataclass_kwargs(cls, section)` reads that spec off `dataclasses.fields(cls)` instead. The second exists because a hand-written list is how a declared field becomes an unreachable key — the operator writes it, nothing happens, and nothing says so. That is what happened to `playbooks.v2_api` and four siblings (steady-ridge-97) and to 54 more fields across `chat_analyzer`, `streams`, `logging`, `monitoring`, `memory` and `metrics` (grand-glacier-97). `tests/test_config_section_roundtrip.py` writes a non-default value for every scalar field of every section, loads the file and compares, so a new gap fails there rather than shipping.
+Two helpers do this: `_present_kwargs(section, spec)` takes a hand-written `{name: coercion}` spec, and `_dataclass_kwargs(cls, section)` reads that spec off `dataclasses.fields(cls)` instead. The second exists because a hand-written list is how a declared field becomes an unreachable key — the operator writes it, nothing happens, and nothing says so. That is what happened to `playbooks.v2_api` and four siblings (steady-ridge-97) and to 54 more fields across `chat_analyzer` (since deleted as dead — prime-torrent-81), `streams`, `logging`, `monitoring`, `memory` and `metrics` (grand-glacier-97). `tests/test_config_section_roundtrip.py` writes a non-default value for every scalar field of every section, loads the file and compares, so a new gap fails there rather than shipping.
 
 ### 5.3 Unrecognized Keys
 
@@ -802,6 +782,25 @@ intervals, reflection knobs). Others (DB DSN, MCP server, plugin enable
 list) require a daemon restart. The `update_config` response surfaces the
 distinction so the dashboard can show `Applied live` vs `Restart required`
 toasts.
+
+The set of sections `ConfigWatcher` compares comes from
+`dataclasses.fields(AppConfig)` (`config_section_names()`), not from a
+hand-written list — the same reason `_dataclass_kwargs` exists on the load
+path (§5.2). A hand-written list is how a section becomes invisible to
+reload: nine sections (`database`, `events`, `inbox`, `integration`,
+`mcp_server`, `memory_extractor`, `streams`, `supervisor`,
+`validate_events`) were missing from it, so editing them emitted neither
+`config.reloaded` nor `config.restart_needed` and the operator was told
+nothing at all (sound-bridge-70).
+
+The hot/restart split stays an explicit registry — it encodes a judgement
+about each subsystem that no dataclass can carry — but
+`HOT_RELOADABLE_SECTIONS ∪ RESTART_REQUIRED_SECTIONS` must cover every
+section, which `tests/test_config_watcher.py` checks per section against
+`AppConfig`. `ConfigWatcher.reload` additionally treats anything that is
+not hot-reloadable as restart-required, so an unclassified section is
+still reported rather than dropped, matching the safe default
+`config_editor.classify_sections()`'s `other` bucket already implied.
 
 ### CLI
 

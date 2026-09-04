@@ -336,6 +336,63 @@ class TestPruneBranches:
 
 
 class TestAdoptExisting:
+    async def test_skips_explicit_non_git_base(self, tmp_path):
+        o = await _orch(tmp_path)
+        try:
+            await o.db.create_project(Project(id="p1", name="alpha"))
+            await o.db.upsert_workspace_kind(
+                WorkspaceKind(
+                    project_id="p1",
+                    id="notes",
+                    is_git_repo=False,
+                    lockable=True,
+                    writable=True,
+                    mode="exclusive-clone",
+                    default_lock_mode="exclusive",
+                )
+            )
+            notes = tmp_path / "notes"
+            notes.mkdir()
+            await o.db.create_workspace(
+                Workspace(
+                    id="ws-notes",
+                    project_id="p1",
+                    workspace_path=str(notes),
+                    source_type=RepoSourceType.LINK,
+                    kind_id="notes",
+                )
+            )
+            project = await o.db.get_project("p1")
+
+            report = await o._worktree_slots().adopt_existing(project)
+
+            assert report.exclude_failures == []
+            assert report.repaired == []
+        finally:
+            await o.shutdown()
+
+    async def test_rejects_git_subdirectory_base(self, tmp_path, base_repo):
+        nested = base_repo / "nested"
+        nested.mkdir()
+        o = await _orch(tmp_path)
+        try:
+            await _seed(o, nested)
+            project = await o.db.get_project("p1")
+
+            report = await o._worktree_slots().adopt_existing(project)
+
+            assert report.repaired == []
+            assert report.adopted == []
+            assert report.exclude_failures == [
+                {
+                    "workspace_id": "ws-base",
+                    "path": str(nested),
+                    "error": "managed exclude could not be installed",
+                }
+            ]
+        finally:
+            await o.shutdown()
+
     async def test_repairs_missing_exclude_block(self, tmp_path, base_repo):
         o = await _orch(tmp_path)
         try:
@@ -355,6 +412,62 @@ class TestAdoptExisting:
             assert exclude.exists()
             content = exclude.read_text()
             assert EXCLUDE_BEGIN.split(" ")[0] in content or "agent-queue" in content
+        finally:
+            await o.shutdown()
+
+    async def test_repairs_exact_exclude_for_separate_git_dir(self, tmp_path):
+        origin = tmp_path / "origin.git"
+        subprocess.run(
+            ["git", "init", "--bare", "--initial-branch=main", str(origin)],
+            check=True,
+            capture_output=True,
+        )
+        base = tmp_path / "base"
+        metadata = tmp_path / "metadata"
+        subprocess.run(
+            ["git", "clone", f"--separate-git-dir={metadata}", str(origin), str(base)],
+            check=True,
+            capture_output=True,
+        )
+        (base / "README.md").write_text("init\n")
+        _git(["add", "README.md"], cwd=base)
+        _git(["commit", "-m", "init"], cwd=base)
+        _git(["push", "origin", "main"], cwd=base)
+        o = await _orch(tmp_path)
+        try:
+            await _seed(o, base)
+            project = (await o.db.list_projects())[0]
+
+            report = await o._worktree_slots().adopt_existing(project)
+
+            assert "ws-base" in report.repaired
+            assert EXCLUDE_BEGIN in (metadata / "info" / "exclude").read_text()
+            assert not (base / ".git" / "info" / "exclude").exists()
+        finally:
+            await o.shutdown()
+
+    async def test_reports_exclude_verification_failure_separately_from_unchanged(
+        self, tmp_path, base_repo
+    ):
+        o = await _orch(tmp_path)
+        try:
+            await _seed(o, base_repo)
+            info_dir = base_repo / ".git" / "info"
+            (info_dir / "exclude").unlink()
+            info_dir.rmdir()
+            info_dir.write_text("not a directory\n")
+            project = (await o.db.list_projects())[0]
+
+            report = await o._worktree_slots().adopt_existing(project)
+
+            assert report.repaired == []
+            assert report.exclude_failures == [
+                {
+                    "workspace_id": "ws-base",
+                    "path": str(base_repo),
+                    "error": "managed exclude could not be installed",
+                }
+            ]
         finally:
             await o.shutdown()
 

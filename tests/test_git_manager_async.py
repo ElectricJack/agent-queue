@@ -9,10 +9,12 @@ import json
 import pathlib
 import subprocess
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, call
 
 import pytest
 from src.git.manager import GitManager, GitError
+from src.models import PhaseResult
+from src.orchestrator.git_ops import GitOpsMixin
 
 
 def _git(args: list[str], cwd: str) -> str:
@@ -220,6 +222,43 @@ class TestAsyncFindOpenPr:
         """An unknown base is "unknown", never a silent zero."""
         assert await mgr.acount_commits_ahead(clone, "main", "origin/nope") is None
 
+    @pytest.mark.asyncio
+    async def test_branch_exists_distinguishes_absence_from_command_failure(
+        self, mgr, clone, monkeypatch
+    ):
+        assert await mgr.abranch_exists(clone, "missing") is False
+        monkeypatch.setattr(
+            mgr,
+            "_arun_subprocess",
+            AsyncMock(
+                return_value=SimpleNamespace(returncode=128, stdout="", stderr="broken")
+            ),
+        )
+        assert await mgr.abranch_exists(clone, "missing") is None
+
+    @pytest.mark.asyncio
+    async def test_exact_ref_exists_distinguishes_local_remote_and_missing(self, mgr, clone):
+        assert await mgr.aref_exists(clone, "refs/heads/main") is True
+        assert await mgr.aref_exists(clone, "refs/remotes/origin/main") is True
+        assert await mgr.aref_exists(clone, "refs/heads/missing") is False
+
+    @pytest.mark.asyncio
+    async def test_strict_boolean_probes_preserve_unknown(self, mgr, monkeypatch):
+        monkeypatch.setattr(
+            mgr,
+            "_arun_subprocess",
+            AsyncMock(
+                return_value=SimpleNamespace(returncode=128, stdout="", stderr="broken")
+            ),
+        )
+        assert await mgr.ahas_remote("/repo", strict=True) is None
+        assert await mgr.ais_ancestor("/repo", "topic", "main", strict=True) is None
+
+    @pytest.mark.asyncio
+    async def test_strict_current_branch_preserves_unknown(self, mgr, monkeypatch):
+        monkeypatch.setattr(mgr, "_arun", AsyncMock(side_effect=GitError("broken")))
+        assert await mgr.aget_current_branch("/repo", strict=True) is None
+
 
 class TestAsyncGetStatus:
     @pytest.mark.asyncio
@@ -245,6 +284,17 @@ class TestAsyncCreateBranch:
 
 
 class TestAsyncCommitAll:
+    @pytest.mark.asyncio
+    async def test_uses_native_pre_commit_hook_once(self, clone, mgr):
+        repo = pathlib.Path(clone)
+        (repo / "work.txt").write_text("real work\n")
+        hook = repo / ".git" / "hooks" / "pre-commit"
+        hook.write_text("#!/bin/sh\necho invoked >> hook-ran\n")
+        hook.chmod(0o755)
+
+        assert await mgr.acommit_all(clone, "task work", exclude_plans=False)
+        assert (repo / "hook-ran").read_text().splitlines() == ["invoked"]
+
     @pytest.mark.asyncio
     async def test_commit_with_changes(self, clone, mgr):
         pathlib.Path(clone, "newfile.txt").write_text("hello")
@@ -350,6 +400,364 @@ class TestAsyncCommitAll:
         assert committed is True
         assert len(received) == 1
         assert set(received[0]["changed_files"]) == {"a.txt", "b.txt"}
+
+
+class TestAsyncReservedDeliveryDiff:
+    @pytest.mark.asyncio
+    async def test_reports_task_changes_to_reserved_paths(self, clone, mgr):
+        repo = pathlib.Path(clone)
+        tracked = repo / ".codex" / "settings.json"
+        tracked.parent.mkdir()
+        tracked.write_text('{"base": true}\n')
+        _git(["add", ".codex/settings.json"], cwd=clone)
+        _git(["commit", "-m", "track project codex settings"], cwd=clone)
+        _git(["switch", "-c", "task/reserved"], cwd=clone)
+        tracked.write_text('{"task": true}\n')
+        forced = repo / ".aq" / "claim.json"
+        forced.parent.mkdir()
+        forced.write_text("daemon state\n")
+        _git(["add", "-f", ".aq/claim.json", ".codex/settings.json"], cwd=clone)
+        _git(["commit", "-m", "bad delivery"], cwd=clone)
+
+        assert await mgr.areserved_paths_in_diff(clone, "main", "task/reserved") == [
+            ".aq/claim.json",
+            ".codex/settings.json",
+        ]
+
+    @pytest.mark.asyncio
+    async def test_ignores_reserved_path_unchanged_from_base(self, clone, mgr):
+        repo = pathlib.Path(clone)
+        tracked = repo / ".codex" / "settings.json"
+        tracked.parent.mkdir()
+        tracked.write_text('{"base": true}\n')
+        _git(["add", ".codex/settings.json"], cwd=clone)
+        _git(["commit", "-m", "track project codex settings"], cwd=clone)
+        _git(["switch", "-c", "task/legitimate"], cwd=clone)
+        (repo / "work.txt").write_text("real work\n")
+        _git(["add", "work.txt"], cwd=clone)
+        _git(["commit", "-m", "task work"], cwd=clone)
+
+        assert await mgr.areserved_paths_in_diff(clone, "main", "task/legitimate") == []
+
+
+@pytest.mark.asyncio
+async def test_validated_push_uses_the_resolved_oid_not_a_mutable_local_ref(mgr, monkeypatch):
+    """A post-merge hook cannot substitute content between validation and push."""
+    pushed: list[list[str]] = []
+    tip = "d" * 40
+
+    async def fake_arun(args, cwd=None, **_kwargs):
+        if args[:2] == ["rev-parse", "--verify"]:
+            return tip
+        pushed.append(args)
+        return ""
+
+    monkeypatch.setattr(mgr, "_arun", fake_arun)
+
+    await mgr.apush_validated_ref("/repo", "HEAD", "main")
+
+    assert pushed == [["push", "origin", f"{tip}:refs/heads/main"]]
+
+
+@pytest.mark.asyncio
+async def test_delivery_push_checks_and_pushes_one_immutable_tip_despite_head_mutation(
+    mgr, monkeypatch
+):
+    """A hook moving HEAD after diff inspection cannot replace the delivered commit."""
+    clean_tip = "d" * 40
+    unsafe_tip = "e" * 40
+    pushed: list[list[str]] = []
+    resolved_sources: list[str] = []
+
+    async def fake_arun(args, cwd=None, **_kwargs):
+        if args[:2] == ["rev-parse", "--verify"]:
+            resolved_sources.append(args[-1])
+            return clean_tip if len(resolved_sources) == 1 else unsafe_tip
+        pushed.append(args)
+        return ""
+
+    monkeypatch.setattr(mgr, "_arun", fake_arun)
+    inspect = AsyncMock(return_value=[])
+    monkeypatch.setattr(mgr, "areserved_paths_in_diff", inspect)
+
+    await mgr.apush_validated_delivery("/repo", "origin/main", "HEAD", "main")
+
+    inspect.assert_awaited_once_with("/repo", "origin/main", clean_tip)
+    # The source is resolved exactly once; the push consults no ref again.
+    assert resolved_sources == ["HEAD"]
+    assert pushed == [["push", "origin", f"{clean_tip}:refs/heads/main"]]
+
+
+_RENAMEABLE_CONTENT = "".join(f"line {i}\n" for i in range(30))
+
+
+@pytest.mark.parametrize(
+    ("reserved_path", "change"),
+    [
+        (".aq/claim.json", "add"),
+        (".aq-worktree.json", "modify"),
+        (".codex/settings.json", "delete"),
+        (".aq/claim.json", "rename-out"),
+        (".codex/settings.json", "rename-in"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_delivery_push_rejects_every_reserved_path_change_kind(
+    clone, mgr, reserved_path, change
+):
+    """Task delivery rejects added, modified, deleted, and renamed daemon-owned paths.
+
+    ``rename-out`` moves a tracked reserved file to an ordinary path (a
+    deletion of daemon state that git's rename detection would otherwise
+    collapse into the destination); ``rename-in`` moves an ordinary tracked
+    file onto a reserved path.
+    """
+    repo = pathlib.Path(clone)
+    path = repo / reserved_path
+    plain = repo / "plain.json"
+    if change in {"modify", "delete", "rename-out"}:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(_RENAMEABLE_CONTENT)
+        _git(["add", "-f", reserved_path], cwd=clone)
+        _git(["commit", "-m", f"track {reserved_path}"], cwd=clone)
+    elif change == "rename-in":
+        plain.write_text(_RENAMEABLE_CONTENT)
+        _git(["add", "plain.json"], cwd=clone)
+        _git(["commit", "-m", "track plain.json"], cwd=clone)
+
+    _git(["switch", "-c", f"task/reserved-{change}"], cwd=clone)
+    if change == "delete":
+        path.unlink()
+        _git(["add", "-u", reserved_path], cwd=clone)
+    elif change == "rename-out":
+        _git(["mv", reserved_path, "moved.json"], cwd=clone)
+    elif change == "rename-in":
+        path.parent.mkdir(parents=True, exist_ok=True)
+        _git(["mv", "plain.json", reserved_path], cwd=clone)
+    else:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("task\n")
+        _git(["add", "-f", reserved_path], cwd=clone)
+    _git(["commit", "-m", f"{change} reserved path"], cwd=clone)
+
+    with pytest.raises(GitError, match=f"reserved delivery paths: {reserved_path}"):
+        await mgr.apush_validated_delivery(
+            clone,
+            "main",
+            f"task/reserved-{change}",
+            f"delivery/reserved-{change}",
+        )
+
+    remote = _git(
+        ["ls-remote", "--heads", "origin", f"refs/heads/delivery/reserved-{change}"],
+        cwd=clone,
+    )
+    assert remote == ""
+
+
+@pytest.mark.asyncio
+async def test_reserved_path_guard_reports_both_sides_of_a_rename(clone, mgr):
+    """The delivery guard sees rename sources, not just destinations.
+
+    Git's default rename detection reports ``git mv .aq/claim.json moved.json``
+    as a single changed path, ``moved.json``, hiding that a daemon-owned file
+    left the tree. The guard must diff without rename detection, even when
+    the repository configures the most aggressive detection.
+    """
+    repo = pathlib.Path(clone)
+    _git(["config", "diff.renames", "copies"], cwd=clone)
+    reserved = repo / ".aq" / "claim.json"
+    reserved.parent.mkdir()
+    reserved.write_text(_RENAMEABLE_CONTENT)
+    (repo / "plain.json").write_text(_RENAMEABLE_CONTENT * 2)
+    _git(["add", "-f", ".aq/claim.json", "plain.json"], cwd=clone)
+    _git(["commit", "-m", "track reserved and plain files"], cwd=clone)
+
+    _git(["switch", "-c", "task/renames"], cwd=clone)
+    _git(["mv", ".aq/claim.json", "moved.json"], cwd=clone)
+    (repo / ".codex").mkdir()
+    _git(["mv", "plain.json", ".codex/settings.json"], cwd=clone)
+    _git(["commit", "-m", "rename across the reserved boundary"], cwd=clone)
+
+    # Premise: git's own rename detection collapses the reserved source path.
+    detected = _git(["diff", "--name-only", "main", "task/renames", "--"], cwd=clone)
+    assert ".aq/claim.json" not in detected.splitlines()
+
+    expected = [".aq/claim.json", ".codex/settings.json"]
+    assert await mgr.areserved_paths_in_diff(clone, "main", "task/renames") == expected
+    # The retained synchronous guard is the same gate for the sync delivery
+    # paths (``push_branch``, ``mid_chain_sync``, ``sync_and_merge``).
+    assert mgr.reserved_paths_in_diff(clone, "main", "task/renames") == expected
+
+
+@pytest.mark.asyncio
+async def test_mid_chain_delivery_guards_both_pre_and_post_rebase_pushes(mgr, monkeypatch):
+    """Intermediate task publication cannot bypass the reserved-path guard."""
+    unchecked = AsyncMock(return_value="a" * 40)
+    guarded = AsyncMock(return_value="a" * 40)
+    monkeypatch.setattr(mgr, "apush_validated_ref", unchecked)
+    monkeypatch.setattr(mgr, "apush_validated_delivery", guarded)
+    monkeypatch.setattr(mgr, "_arun", AsyncMock(return_value=""))
+
+    assert await mgr.amid_chain_sync("/repo", "task/chain", "main") is True
+
+    assert guarded.await_args_list == [
+        call("/repo", "origin/main", "task/chain", "task/chain"),
+        call(
+            "/repo",
+            "origin/main",
+            "HEAD",
+            "task/chain",
+            force_with_lease=True,
+        ),
+    ]
+    unchecked.assert_not_awaited()
+
+
+class TestBranchSourceIsNotShadowedByASameNamedTag:
+    """A delivery source given as a *branch name* must resolve ``refs/heads/<name>``.
+
+    Bare ``git rev-parse <name>`` tries ``refs/<name>`` and ``refs/tags/<name>``
+    before ``refs/heads/<name>``, so a tag planted with the branch's name is what
+    gets validated and pushed.  Only ``HEAD``, object ids and explicit revision
+    expressions keep bare resolution.
+    """
+
+    @staticmethod
+    def _plant_shadowing_tag(clone: str, branch: str) -> tuple[str, str]:
+        """Return ``(branch_tip, decoy_tip)`` after tagging ``<branch>`` elsewhere."""
+        branch_tip = _git(["rev-parse", f"refs/heads/{branch}"], cwd=clone)
+        _git(["switch", "--detach", branch_tip], cwd=clone)
+        decoy_tip = _commit_file(clone, "decoy.txt", "not the branch", "decoy")
+        _git(["tag", branch, decoy_tip], cwd=clone)
+        _git(["switch", branch], cwd=clone)
+        # Sanity: the shadowing is real — bare resolution finds the tag.
+        assert _git(["rev-parse", "--verify", branch], cwd=clone) == decoy_tip
+        return branch_tip, decoy_tip
+
+    @pytest.mark.asyncio
+    async def test_apush_validated_delivery_pushes_the_branch_not_the_tag(self, clone, mgr):
+        branch_tip = _commit_file(clone, "work.txt", "real work", "branch work")
+        _, decoy_tip = self._plant_shadowing_tag(clone, "main")
+
+        pushed = await mgr.apush_validated_delivery(clone, "origin/main", "main", "main")
+
+        assert pushed == branch_tip
+        assert _git(["rev-parse", "origin/main"], cwd=clone) == branch_tip
+        assert _git(["rev-parse", "origin/main"], cwd=clone) != decoy_tip
+
+    @pytest.mark.asyncio
+    async def test_apush_validated_ref_pushes_the_branch_not_the_tag(self, clone, mgr):
+        _git(["switch", "-c", "task/shadowed"], cwd=clone)
+        branch_tip = _commit_file(clone, "work.txt", "real work", "branch work")
+        self._plant_shadowing_tag(clone, "task/shadowed")
+
+        pushed = await mgr.apush_validated_ref(clone, "task/shadowed", "task/shadowed")
+
+        assert pushed == branch_tip
+        assert _git(["rev-parse", "origin/task/shadowed"], cwd=clone) == branch_tip
+
+    @pytest.mark.asyncio
+    async def test_apush_branch_pushes_the_branch_not_the_tag(self, clone, mgr):
+        _git(["switch", "-c", "task/shadowed"], cwd=clone)
+        branch_tip = _commit_file(clone, "work.txt", "real work", "branch work")
+        self._plant_shadowing_tag(clone, "task/shadowed")
+
+        await mgr.apush_branch(clone, "task/shadowed")
+
+        assert _git(["rev-parse", "origin/task/shadowed"], cwd=clone) == branch_tip
+
+    @pytest.mark.asyncio
+    async def test_branch_name_without_a_local_branch_fails_closed(self, clone, mgr):
+        """A tag is never a substitute for a missing branch of the same name."""
+        decoy_tip = _commit_file(clone, "decoy.txt", "decoy", "decoy")
+        _git(["tag", "release/only-a-tag", decoy_tip], cwd=clone)
+
+        with pytest.raises(GitError, match="refs/heads/release/only-a-tag"):
+            await mgr.apush_validated_ref(clone, "release/only-a-tag", "release/only-a-tag")
+        assert "release/only-a-tag" not in _git(["branch", "-r"], cwd=clone)
+
+    @pytest.mark.asyncio
+    async def test_delivery_resolver_inspects_exact_branch_and_base_refs(self, clone, mgr):
+        """Same-named tags cannot turn a one-commit branch into apparent no-work."""
+        _git(["switch", "-c", "task/shadowed"], cwd=clone)
+        branch_tip = _commit_file(clone, "work.txt", "real work", "branch work")
+        _git(["tag", "task/shadowed", branch_tip], cwd=clone)
+        _git(["tag", "main", branch_tip], cwd=clone)
+        _git(["tag", "origin/main", branch_tip], cwd=clone)
+        _git(["switch", "main"], cwd=clone)
+
+        ops = GitOpsMixin()
+        ops.git = mgr
+        ctx = SimpleNamespace(
+            workspace_path=clone,
+            default_branch="main",
+            delivery_branch=None,
+            task=SimpleNamespace(branch_name="task/shadowed"),
+        )
+
+        resolution = await ops._resolve_task_delivery(
+            ctx, current_branch="main", has_remote=True
+        )
+
+        assert resolution.error is None
+        assert resolution.no_work is False
+        assert resolution.delivery_branch == "task/shadowed"
+        assert resolution.delivery_ref == "refs/heads/task/shadowed"
+        assert resolution.checked_refs == (
+            "refs/heads/main",
+            "refs/heads/task/shadowed",
+        )
+        assert await mgr.arev_parse(clone, resolution.delivery_ref) == branch_tip
+
+    @pytest.mark.asyncio
+    async def test_skip_verification_inspects_reserved_paths_on_exact_current_ref(
+        self, clone, mgr
+    ):
+        """A safe same-named tag cannot hide reserved paths on the branch."""
+        main_tip = _git(["rev-parse", "refs/heads/main"], cwd=clone)
+        _git(["switch", "-c", "task/shadowed"], cwd=clone)
+        pathlib.Path(clone, ".aq").mkdir()
+        _commit_file(clone, ".aq/claim.json", "reserved", "reserved work")
+        _git(["tag", "task/shadowed", main_tip], cwd=clone)
+
+        ops = GitOpsMixin()
+        ops.git = mgr
+        ops._task_uses_git = AsyncMock(return_value=True)
+        inspect = AsyncMock(wraps=mgr.areserved_paths_in_diff)
+        mgr.areserved_paths_in_diff = inspect
+        ctx = SimpleNamespace(
+            workspace_path=clone,
+            default_branch="main",
+            delivery_branch=None,
+            output=SimpleNamespace(exit_code=0),
+            agent=SimpleNamespace(id="agent-1"),
+            task=SimpleNamespace(
+                id="task-1",
+                project_id="project-1",
+                branch_name="task/shadowed",
+                skip_verification=True,
+            ),
+            verification_issues=[],
+        )
+
+        assert await ops._phase_verify(ctx) is PhaseResult.STOP
+        assert "reserved daemon" in ctx.verification_issues[0].lower()
+        inspect.assert_awaited_once_with(
+            clone,
+            "refs/remotes/origin/main",
+            "refs/heads/task/shadowed",
+        )
+
+    @pytest.mark.asyncio
+    async def test_head_oid_and_revision_expressions_keep_bare_resolution(self, clone, mgr):
+        first = _git(["rev-parse", "HEAD"], cwd=clone)
+        second = _commit_file(clone, "work.txt", "more", "second")
+
+        assert await mgr.apush_validated_ref(clone, "HEAD", "by-head") == second
+        assert await mgr.apush_validated_ref(clone, first, "by-oid") == first
+        assert await mgr.apush_validated_ref(clone, "HEAD~1", "by-expr") == first
+        assert await mgr.apush_validated_ref(clone, "refs/heads/main", "by-full") == second
 
 
 class TestAsyncPrepareForTask:
@@ -1089,6 +1497,11 @@ async def test_async_merge_pr_handles_invalid_method_timeout_and_sha(mgr, monkey
 
     monkeypatch.setattr(mgr, "_arun_subprocess", fake_subprocess)
     pr_url = "https://github.com/org/repo/pull/42"
+    from src.git.manager import PullRequestIdentity
+
+    mgr.avalidate_pr_for_merge = AsyncMock(
+        return_value=PullRequestIdentity("org/repo", 42, "main", "a" * 40, "feature", "b" * 40, 1)
+    )
 
     # Invalid method: rejected before any gh invocation.
     result = await mgr.amerge_pr("/repo", pr_url, method="octopus")
@@ -1112,7 +1525,16 @@ async def test_async_merge_pr_handles_invalid_method_timeout_and_sha(mgr, monkey
     )
     result = await mgr.amerge_pr("/repo", pr_url, method="rebase")
     assert result == {"success": True, "sha": sha, "error": None}
-    assert calls[-1] == ["gh", "pr", "merge", pr_url, "--rebase", "--delete-branch"]
+    assert calls[-1] == [
+        "gh",
+        "pr",
+        "merge",
+        pr_url,
+        "--rebase",
+        "--match-head-commit",
+        "b" * 40,
+        "--delete-branch",
+    ]
 
 
 # ------------------------------------------------------------------
@@ -1182,6 +1604,33 @@ class TestAfindOpenPr:
             ],
         )
         assert await mgr.afind_open_pr(clone, "aq/t-1") == "https://gh/org/repo/pull/43"
+
+    @pytest.mark.asyncio
+    async def test_exact_head_ref_ignores_a_same_named_tag(self, clone, mgr, monkeypatch):
+        _git(["switch", "-c", "aq/t-shadowed"], cwd=clone)
+        branch_tip = _commit_file(clone, "work.txt", "done", "work")
+        _git(["switch", "--detach", "refs/remotes/origin/main"], cwd=clone)
+        tag_tip = _commit_file(clone, "decoy.txt", "decoy", "decoy")
+        _git(["tag", "aq/t-shadowed", tag_tip], cwd=clone)
+
+        self._fake_gh(
+            mgr,
+            monkeypatch,
+            prs=[
+                {
+                    "url": "https://gh/org/repo/pull/47",
+                    "headRefName": "delivery",
+                    "headRefOid": branch_tip,
+                }
+            ],
+        )
+
+        assert await mgr.afind_open_pr(
+            clone,
+            "aq/t-shadowed",
+            head_ref="refs/heads/aq/t-shadowed",
+            include_workspace_head=False,
+        ) == "https://gh/org/repo/pull/47"
 
     @pytest.mark.asyncio
     async def test_open_prs_at_other_commits_are_not_accepted(
@@ -1265,3 +1714,51 @@ class TestAfindOpenPr:
 
         monkeypatch.setattr(mgr, "_arun_subprocess", fake_subprocess)
         assert await mgr.afind_open_pr(clone, "aq/t-1") is None
+
+
+class TestRootDeliveryGatesTheWholeTree:
+    """``apush_validated_delivery(..., base_ref=None, ...)`` publishes a tree origin has never seen.
+
+    With no base on origin there is no merge-base to diff from, so the reserved
+    delivery gate covers every tracked path in the tip: a daemon bookkeeping
+    file that would be "unchanged on the base" in a normal delivery is here
+    being published for the first time.
+    """
+
+    @pytest.mark.asyncio
+    async def test_refuses_a_tree_that_tracks_reserved_paths(self, bare_repo, clone, mgr):
+        pathlib.Path(clone, ".aq").mkdir()
+        _commit_file(clone, ".aq/claim.json", "{}", "leak daemon state")
+
+        with pytest.raises(GitError, match=r"^reserved delivery paths: \.aq/claim\.json$"):
+            await mgr.apush_validated_delivery(clone, None, "HEAD", "develop")
+
+        assert _git(["branch", "--list", "develop"], cwd=bare_repo) == ""
+
+    @pytest.mark.asyncio
+    async def test_pushes_the_resolved_head_oid_to_a_new_branch(self, bare_repo, clone, mgr):
+        tip = _commit_file(clone, "feature.txt", "content", "clean work")
+
+        pushed = await mgr.apush_validated_delivery(clone, None, "HEAD", "develop")
+
+        assert pushed == tip
+        assert _git(["rev-parse", "refs/heads/develop"], cwd=bare_repo) == tip
+        # The exact-OID refspec still updates the remote-tracking ref, so
+        # callers that read ``origin/<branch>`` afterwards see the new branch.
+        assert _git(["rev-parse", "refs/remotes/origin/develop"], cwd=clone) == tip
+
+    @pytest.mark.asyncio
+    async def test_the_tree_gate_lists_every_reserved_kind(self, clone, mgr):
+        pathlib.Path(clone, ".aq").mkdir()
+        pathlib.Path(clone, ".codex").mkdir()
+        pathlib.Path(clone, "src").mkdir()
+        _commit_file(clone, ".aq/claim.json", "{}", "aq")
+        _commit_file(clone, ".codex/config.toml", "", "codex")
+        _commit_file(clone, ".aq-worktree.json", "{}", "worktree")
+        _commit_file(clone, "src/ok.py", "", "legit")
+
+        assert await mgr.areserved_paths_in_tree(clone, "HEAD") == [
+            ".aq-worktree.json",
+            ".aq/claim.json",
+            ".codex/config.toml",
+        ]

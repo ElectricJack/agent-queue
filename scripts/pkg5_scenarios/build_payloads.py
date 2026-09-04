@@ -25,14 +25,14 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
-from src.commands.playbook_v2_commands import RegistryContractLookup
-from src.playbooks.activation import evaluate_health, profile_fingerprint
-from src.playbooks.artifact_diff import diff_artifacts
-from src.playbooks.artifact_ref import ArtifactRef
-from src.playbooks.definition import load_definition_json
-from src.playbooks.graph_projection import project_graph
-from src.playbooks.run_overlay import project_overlay
-from tests.playbook_v2_helpers import StubProfiles
+from src.commands.playbook_v2_commands import RegistryContractLookup  # noqa: E402
+from src.playbooks.activation import evaluate_health, profile_fingerprint  # noqa: E402
+from src.playbooks.artifact_diff import diff_artifacts  # noqa: E402
+from src.playbooks.artifact_ref import ArtifactRef  # noqa: E402
+from src.playbooks.definition import load_definition_json  # noqa: E402
+from src.playbooks.graph_projection import project_graph  # noqa: E402
+from src.playbooks.run_overlay import project_overlay  # noqa: E402
+from tests.playbook_v2_helpers import StubProfiles  # noqa: E402
 
 FIXTURES = ROOT / "tests" / "fixtures" / "playbooks" / "v2"
 

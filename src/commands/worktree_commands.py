@@ -20,6 +20,7 @@ import logging
 from pathlib import Path
 
 from src.models import KIND_MODE_WORKTREE
+from src.orchestrator.worktree_manager import resolve_managed_exclude_path
 
 logger = logging.getLogger(__name__)
 
@@ -35,7 +36,9 @@ class WorktreeCommandsMixin:
                                             "detail": str}, ...]}
 
         Kinds emitted:
-        * ``exclude_missing`` — base's ``.git/info/exclude`` lacks the block.
+        * ``exclude_missing`` — Git's exact exclude file lacks the block.
+        * ``exclude_unverifiable`` — resolving or reading that exact path
+          failed, so doctor cannot claim the workspace is protected.
         * ``stale_registration`` — git worktree list has an entry whose
           directory no longer exists.
         * ``dirty_unlocked_slot`` — slot dir has uncommitted work but is
@@ -122,26 +125,40 @@ class WorktreeCommandsMixin:
                         }
                     )
 
-            # Exclude / stale-registration / dirty-slot checks require the
-            # slot manager and live git.
+            # Managed excludes apply to every Git handoff, independently of
+            # whether worktree slots are enabled. Slot-specific diagnosis
+            # remains behind the rollout flag.
             worktrees_cfg = getattr(self.config, "worktrees", None)
-            if worktrees_cfg is None or not worktrees_cfg.enabled:
-                continue
-            mgr = self.orchestrator._worktree_slots() if hasattr(self.orchestrator, "_worktree_slots") else None
+            mgr_factory = getattr(self.orchestrator, "_worktree_slots", None)
+            mgr = mgr_factory() if callable(mgr_factory) else None
             if mgr is None:
                 continue
 
             for base in bases:
+                try:
+                    kind = await self.db.resolve_workspace_kind(
+                        project.id, base.kind_id or "project-repo"
+                    )
+                except Exception:
+                    kind = None
+                if kind is not None and not kind.is_git_repo:
+                    continue
                 base_path = base.workspace_path
-                exclude = Path(base_path) / ".git" / "info" / "exclude"
-                needs_repair = True
-                if exclude.exists():
-                    try:
-                        text = exclude.read_text(encoding="utf-8", errors="replace")
-                        if "agent-queue managed" in text:
-                            needs_repair = False
-                    except OSError:
-                        pass
+                try:
+                    exclude = await resolve_managed_exclude_path(
+                        self.orchestrator.git,
+                        base_path,
+                    )
+                    needs_repair = not mgr.git_exclude_is_current_path(exclude)
+                except Exception as exc:
+                    findings.append(
+                        {
+                            "kind": "exclude_unverifiable",
+                            "workspace_id": base.id,
+                            "detail": f"managed exclude path cannot be verified: {exc}",
+                        }
+                    )
+                    continue
                 if needs_repair:
                     findings.append(
                         {
@@ -150,6 +167,9 @@ class WorktreeCommandsMixin:
                             "detail": f"{exclude} is missing our exclude block",
                         }
                     )
+
+                if worktrees_cfg is None or not worktrees_cfg.enabled:
+                    continue
 
                 # Stale git worktree registrations
                 try:
@@ -170,6 +190,9 @@ class WorktreeCommandsMixin:
                                 "detail": f"{p} is registered but the dir is gone",
                             }
                         )
+
+            if worktrees_cfg is None or not worktrees_cfg.enabled:
+                continue
 
             for slot in slots:
                 if slot.locked_by_task_id:

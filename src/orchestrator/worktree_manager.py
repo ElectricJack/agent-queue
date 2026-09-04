@@ -19,7 +19,8 @@ What lives here (P1 + P2)
   a ``task_context`` row rather than stashing it.  ``git stash`` is
   deliberately never used: the stash stack is shared by every worktree of a
   repository, so a pop in one slot can restore another slot's work.
-* :meth:`ensure_git_exclude` — the idempotent ``.git/info/exclude`` marker.
+* :meth:`ensure_git_exclude` — the idempotent Git-resolved ``info/exclude``
+  marker, serialised by an ``flock`` and written by atomic replacement.
 * Sentinel I/O (``<slot>/.aq-worktree.json``).
 
 Deliberately **not** here yet: ``adopt_existing``, ``reap_slot`` and
@@ -32,13 +33,21 @@ but development happens on Windows, so no separator is ever assumed.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import os
 import shlex
+import tempfile
+import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from pathlib import Path
+
+try:  # POSIX only — the runtime target is WSL2; see ``_exclude_lock``.
+    import fcntl
+except ImportError:  # pragma: no cover - Windows dev boxes
+    fcntl = None  # type: ignore[assignment]
 
 from dataclasses import dataclass, field
 
@@ -64,11 +73,14 @@ class AdoptReport:
       block was missing or drifted and has now been rewritten.
     * ``pruned`` — worktree paths (or "prune" sentinel) that had a stale
       ``.git/worktrees`` registration and were pruned.
+    * ``exclude_failures`` — bases whose exact Git-resolved exclude path
+      could not be installed and verified; their slots are not adopted.
     """
 
     adopted: list[str] = field(default_factory=list)
     repaired: list[str] = field(default_factory=list)
     pruned: list[str] = field(default_factory=list)
+    exclude_failures: list[dict[str, str]] = field(default_factory=list)
 
 logger = logging.getLogger(__name__)
 
@@ -106,6 +118,62 @@ EXCLUDE_BLOCK = f"{EXCLUDE_BEGIN}\n{EXCLUDE_BODY}\n{EXCLUDE_END}\n"
 #: every start instead of rewriting the first.
 _EXCLUDE_BEGIN_ASCII = "# >>> agent-queue managed"
 _EXCLUDE_END_ASCII = "# <<< agent-queue managed <<<"
+
+#: Sibling of ``info/exclude`` that serialises every managed rewrite of it.
+#: ``info/exclude`` lives in the *common* git dir, so slot provisioning,
+#: pool reconciliation, the clone/linked-checkout launch path, adoption and
+#: ``aq doctor`` — in the daemon and in operator CLIs — all converge on one
+#: file per repository.  The lock is an ``flock`` (cross-process, released by
+#: the kernel on crash) plus a per-path :class:`threading.Lock` so two
+#: threads of one process never share the file description's flock.
+_EXCLUDE_LOCK_NAME = "exclude.aq-lock"
+_exclude_thread_locks: dict[str, threading.Lock] = {}
+_exclude_thread_locks_guard = threading.Lock()
+
+
+@contextlib.contextmanager
+def _exclude_lock(lock_path: Path) -> Iterator[None]:
+    key = os.path.realpath(lock_path)
+    with _exclude_thread_locks_guard:
+        local = _exclude_thread_locks.setdefault(key, threading.Lock())
+    with local:
+        fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o644)
+        try:
+            if fcntl is not None:
+                fcntl.flock(fd, fcntl.LOCK_EX)
+            yield
+        finally:
+            # Closing the descriptor releases the flock.
+            os.close(fd)
+
+
+def _read_pointer_file(path: Path, key: str) -> Path | None:
+    """Read ``<key>: <path>`` from a git pointer file, resolved against *path*."""
+    text = path.read_text(encoding="utf-8", errors="surrogateescape").strip()
+    if key:
+        if not text.startswith(key + ":"):
+            return None
+        text = text[len(key) + 1 :].strip()
+    if not text:
+        return None
+    target = Path(text)
+    if not target.is_absolute():
+        target = (path.parent / target).resolve()
+    return target
+
+
+async def resolve_managed_exclude_path(git, checkout_path: str | Path) -> Path:
+    """Validate a repository-root checkout and resolve its exact exclude path."""
+    checkout = Path(checkout_path)
+    if not await git.avalidate_checkout(str(checkout)):
+        raise GitError(f"cannot install managed excludes: {checkout} is not a checkout")
+    repo_root = await git._arun(["rev-parse", "--show-toplevel"], cwd=str(checkout))
+    if Path(repo_root).resolve() != checkout.resolve():
+        raise GitError(
+            "Git workspace handoff requires the repository root: "
+            f"configured {checkout}, repository root {repo_root}"
+        )
+    return Path(await git.aget_git_path(str(checkout), "info/exclude"))
 
 #: Branch prefix every task branch carries.  Fixed — no title slug — so the
 #: branch is derivable from the task id alone (design §3.2).
@@ -175,37 +243,86 @@ class WorktreeSlotManager:
 
     # ───────────────────────────── exclude block ─────────────────────────
 
-    @staticmethod
-    def ensure_git_exclude(base_path: str | Path) -> bool:
-        """Idempotently maintain the ``.aq/`` block in ``.git/info/exclude``.
+    async def ensure_git_exclude(self, checkout_path: str | Path) -> bool:
+        """Idempotently maintain the managed block at Git's exact exclude path.
 
         Returns True when the file was written.  Foreign content outside the
         markers is preserved verbatim; a drifted block is rewritten in place.
-        No commit is involved, so this works for repos we do not own
-        (design §2.4).
+        False means the exact file was already correct.  Resolution or I/O
+        failures raise, so callers can never confuse an unprotected checkout
+        with an already-protected one.
         """
-        info_dir = Path(base_path) / ".git" / "info"
-        exclude = info_dir / "exclude"
-        try:
-            # git's shipped template is not guaranteed UTF-8 (it is cp1252 on
-            # some Windows installs) and an operator's own rules may be in any
-            # encoding.  ``surrogateescape`` round-trips undecodable bytes
-            # untouched instead of raising or corrupting them.
-            #
-            # ``newline=""`` on both read and write disables universal-newline
-            # translation, so an LF-terminated exclude file is not silently
-            # rewritten as CRLF on Windows (and vice versa) just because we
-            # appended one block to it.
-            if exclude.exists():
-                with exclude.open(
-                    encoding="utf-8", errors="surrogateescape", newline=""
-                ) as f:
-                    existing = f.read()
-            else:
-                existing = ""
-        except OSError as e:
-            logger.warning("Cannot read %s: %s", exclude, e)
+        exclude_path = await resolve_managed_exclude_path(self.git, checkout_path)
+        return self.ensure_git_exclude_path(exclude_path)
+
+    @staticmethod
+    def resolve_exclude_path(base_path: str | Path) -> Path:
+        """Resolve the conventional common-dir exclude path for *base_path*.
+
+        Runtime writes use :meth:`GitManager.aget_git_path`, which also covers
+        separate Git dirs and Git-version-specific path semantics.  This pure
+        helper remains useful for diagnostics and lock-path inspection.
+        """
+        dot_git = Path(base_path) / ".git"
+        git_dir = dot_git
+        if dot_git.is_file():
+            git_dir = _read_pointer_file(dot_git, "gitdir") or dot_git
+        commondir = git_dir / "commondir"
+        if commondir.is_file():
+            git_dir = _read_pointer_file(commondir, "") or git_dir
+        return git_dir / "info" / "exclude"
+
+    @classmethod
+    def exclude_lock_path(cls, base_path: str | Path) -> Path:
+        """The lock file every rewrite of *base_path*'s ``info/exclude`` takes."""
+        return cls.resolve_exclude_path(base_path).with_name(_EXCLUDE_LOCK_NAME)
+
+    @staticmethod
+    def git_exclude_is_current_path(exclude_path: str | Path) -> bool:
+        """Return whether an exact exclude path contains the managed block."""
+        exclude = Path(exclude_path)
+        if not exclude.exists():
             return False
+        with exclude.open(encoding="utf-8", errors="surrogateescape", newline="") as f:
+            existing = f.read()
+        start = existing.find(_EXCLUDE_BEGIN_ASCII)
+        end = existing.find(_EXCLUDE_END_ASCII)
+        if start == -1 or end == -1 or end <= start:
+            return False
+        current = existing[start : end + len(_EXCLUDE_END_ASCII)]
+        return current.strip() == EXCLUDE_BLOCK.strip()
+
+    @classmethod
+    def ensure_git_exclude_path(cls, exclude_path: str | Path) -> bool:
+        """Write and verify the managed block at an exact Git-resolved path."""
+        exclude = Path(exclude_path)
+        exclude.parent.mkdir(parents=True, exist_ok=True)
+        with _exclude_lock(exclude.parent / _EXCLUDE_LOCK_NAME):
+            changed = cls._ensure_git_exclude_locked(exclude)
+        if not cls.git_exclude_is_current_path(exclude):
+            raise OSError(f"managed Git exclude block could not be verified at {exclude}")
+        return changed
+
+    @staticmethod
+    def _ensure_git_exclude_locked(exclude: Path) -> bool:
+        # git's shipped template is not guaranteed UTF-8 (it is cp1252 on
+        # some Windows installs) and an operator's own rules may be in any
+        # encoding.  ``surrogateescape`` round-trips undecodable bytes
+        # untouched instead of raising or corrupting them.
+        #
+        # ``newline=""`` on read disables universal-newline translation, so
+        # an LF-terminated exclude file is not silently rewritten as CRLF on
+        # Windows (and vice versa) just because we appended one block to it.
+        # The write goes through bytes, so nothing is translated there.
+        mode: int | None = None
+        if exclude.exists():
+            mode = exclude.stat().st_mode
+            with exclude.open(
+                encoding="utf-8", errors="surrogateescape", newline=""
+            ) as f:
+                existing = f.read()
+        else:
+            existing = ""
 
         start = existing.find(_EXCLUDE_BEGIN_ASCII)
         end = existing.find(_EXCLUDE_END_ASCII)
@@ -222,14 +339,34 @@ class WorktreeSlotManager:
             prefix = existing if not existing or existing.endswith("\n") else existing + "\n"
             updated = prefix + EXCLUDE_BLOCK
 
+        payload = updated.encode("utf-8", errors="surrogateescape")
+        tmp_path: str | None = None
         try:
-            info_dir.mkdir(parents=True, exist_ok=True)
-            exclude.write_text(
-                updated, encoding="utf-8", errors="surrogateescape", newline=""
+            fd, tmp_path = tempfile.mkstemp(
+                prefix="exclude.", suffix=".tmp", dir=str(exclude.parent)
             )
-        except OSError as e:
-            logger.warning("Cannot write %s: %s", exclude, e)
-            return False
+            with os.fdopen(fd, "wb") as f:
+                f.write(payload)
+                f.flush()
+                os.fsync(f.fileno())
+            if mode is not None:
+                os.chmod(tmp_path, mode & 0o7777)
+            os.replace(tmp_path, exclude)
+            tmp_path = None
+        finally:
+            if tmp_path is not None:
+                with contextlib.suppress(OSError):
+                    os.remove(tmp_path)
+
+        # Verify: what is on disk now must be exactly what was meant to land.
+        landed = exclude.read_bytes()
+        if landed != payload:
+            raise OSError(
+                f"managed Git exclude replacement could not be verified at {exclude}: "
+                f"{len(landed)} bytes on disk, {len(payload)} expected"
+            )
+        if not WorktreeSlotManager.git_exclude_is_current_path(exclude):
+            raise OSError(f"managed Git exclude block could not be verified at {exclude}")
         return True
 
     # ─────────────────────────────── sentinel ────────────────────────────
@@ -318,7 +455,7 @@ class WorktreeSlotManager:
         default_branch = await self._default_branch(base_path)
 
         async with self._git_mutex(base_path):
-            self.ensure_git_exclude(base_path)
+            await self.ensure_git_exclude(base_path)
             try:
                 await self.git.aworktree_prune(base_path)
             except GitError as e:
@@ -409,6 +546,7 @@ class WorktreeSlotManager:
             _validate_ref(resume_branch, field="resume branch")
 
         slot_dir = Path(slot_ws.workspace_path)
+        await self.ensure_git_exclude(slot_dir)
         from src.orchestrator.task_checkpoint import prepare_checkpoint, restore_checkpoint
         checkpoint = await prepare_checkpoint(self.db, self.git, task.id, str(slot_dir))
         if checkpoint:
@@ -1296,15 +1434,31 @@ class WorktreeSlotManager:
         slots = [ws for ws in workspaces if ws.is_slot]
 
         for base in bases:
+            try:
+                kind = await self.db.resolve_workspace_kind(
+                    project.id, base.kind_id or "project-repo"
+                )
+            except Exception:
+                kind = None
+            if kind is not None and not kind.is_git_repo:
+                continue
             base_path = base.workspace_path
             if not Path(base_path).is_dir():
                 continue
             # Repair exclude block idempotently.
             try:
-                if self.ensure_git_exclude(base_path):
+                if await self.ensure_git_exclude(base_path):
                     report.repaired.append(base.id)
             except Exception as e:
                 logger.warning("ensure_git_exclude failed for %s: %s", base_path, e)
+                report.exclude_failures.append(
+                    {
+                        "workspace_id": base.id,
+                        "path": base_path,
+                        "error": "managed exclude could not be installed",
+                    }
+                )
+                continue
 
             # Prune stale git worktree registrations.  Only add to the
             # report when we actually pruned something (diff porcelain

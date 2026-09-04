@@ -975,7 +975,7 @@ Stages all changes and creates a commit.
     "project_id": <str>,
     "repo_id": <str>,
     "status": "nothing_to_commit",
-    "message": "No changes to commit",
+    "message": "No eligible changes to commit",
 }
 ```
 
@@ -1173,7 +1173,7 @@ Stage all changes and commit in a repository.
 
 **Returns on success (nothing to commit):**
 ```python
-{"repo_id": <str>, "committed": False, "message": "Nothing to commit — working tree clean"}
+{"repo_id": <str>, "committed": False, "message": "No eligible changes to commit"}
 ```
 
 **Errors:**
@@ -2078,7 +2078,7 @@ vault watcher pick the change up.
 - `git_pull` — pull (fetch + merge) from remote
 - `create_github_repo` — create a GitHub repo via `gh` CLI
 - `generate_readme` — generate and commit a README.md
-- `set_default_branch` — set/change a project's default branch
+- `set_default_branch` — set/change a project's default branch. A branch missing on origin is created under the exact-OID push contract (see [[git#operator-initiated-pushes]]); a workspace `HEAD` that tracks reserved daemon paths refuses the switch
 
 ### System Extensions
 - `reload_config` — manual config hot-reload

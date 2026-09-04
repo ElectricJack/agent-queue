@@ -766,6 +766,179 @@ async def test_generated_at_defaults_to_now(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# 13 — unread evidence is not clean evidence
+# ---------------------------------------------------------------------------
+
+
+class BrokenActivationRepo:
+    """Both activation reads fail — the fleet's activations are unknowable."""
+
+    def __init__(self, message: str = "activations table is gone") -> None:
+        self.message = message
+
+    async def list_playbook_activations_with_artifacts(self, **kwargs):
+        raise RuntimeError(self.message)
+
+    async def list_playbook_activations(self, **kwargs):
+        raise RuntimeError(self.message)
+
+
+class JoinlessActivationRepo(StubActivationRepo):
+    """The joined read fails; the unjoined fallback still answers."""
+
+    async def list_playbook_activations_with_artifacts(self, **kwargs):
+        raise RuntimeError("no such column: artifact_sha256")
+
+
+class BrokenAckRepo:
+    async def list_acks(self):
+        raise RuntimeError("acks table is gone")
+
+
+class BrokenPendingRepo:
+    async def list_pending_events(self, **kwargs):
+        raise RuntimeError("pending events table is gone")
+
+
+class BrokenStore(ExplodingStore):
+    def list_all(self):
+        raise RuntimeError("compiled tree is unreadable")
+
+
+class BrokenContractRegistry(StubContractRegistry):
+    def registry_fingerprint(self):
+        raise RuntimeError("contract registry is unavailable")
+
+
+@pytest.mark.asyncio
+async def test_complete_reads_record_no_evidence_errors(tmp_path):
+    vault_root = _vault_root(tmp_path)
+    inv = await _inventory(
+        vault_root,
+        activation_repo=StubActivationRepo(),
+        ack_repo=StubAckRepo(),
+        pending_repo=StubPendingRepo(),
+    )
+    assert inv.evidence_errors == ()
+    assert inv.evidence_complete is True
+    assert inv.unread_sources() == ()
+    assert inv.blocking_reasons() == ()
+    payload = inv.to_dict()
+    assert payload["evidence_complete"] is True
+    assert payload["evidence_errors"] == []
+    assert payload["blocking_reasons"] == []
+
+
+@pytest.mark.asyncio
+async def test_absent_repositories_are_not_reported_as_failures(tmp_path):
+    """``None`` is the documented optional path, not an unread source."""
+    inv = await _inventory(_vault_root(tmp_path))
+    assert inv.evidence_complete is True
+    assert inv.evidence_errors == ()
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "source"),
+    [
+        ({"activation_repo": BrokenActivationRepo()}, "activations"),
+        ({"ack_repo": BrokenAckRepo()}, "migration_acks"),
+        ({"pending_repo": BrokenPendingRepo()}, "pending_events"),
+        ({"store": BrokenStore()}, "v1_store"),
+        ({"contract_registry": BrokenContractRegistry()}, "contract_registry"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_each_failing_evidence_read_is_recorded_not_swallowed(tmp_path, kwargs, source):
+    """One repository raising while everything else is clean must be visible.
+
+    Without this the caller cannot tell "no activations" from "the activations
+    could not be read", and ``aq playbook migration-inventory`` renders an
+    unreadable database as a clean, migratable fleet.
+    """
+    vault_root = _vault_root(tmp_path)
+    defaults = {
+        "activation_repo": StubActivationRepo(),
+        "ack_repo": StubAckRepo(),
+        "pending_repo": StubPendingRepo(),
+    }
+    defaults.update(kwargs)
+    inv = await _inventory(vault_root, **defaults)
+
+    assert inv.evidence_complete is False
+    assert inv.unread_sources() == (source,)
+    assert [row["source"] for row in inv.evidence_errors] == [source]
+    assert "RuntimeError" in inv.evidence_errors[0]["error"]
+
+    reasons = inv.blocking_reasons()
+    assert len(reasons) == 1
+    assert source in reasons[0]
+    assert "never collected" in reasons[0]
+
+    payload = inv.to_dict()
+    assert payload["evidence_complete"] is False
+    assert payload["evidence_errors"] == [dict(row) for row in inv.evidence_errors]
+    assert payload["blocking_reasons"] == list(reasons)
+    # The report still renders: an unread source degrades it, never aborts it.
+    assert payload["entries"]
+
+
+@pytest.mark.asyncio
+async def test_every_read_failing_leaves_no_entry_silently_clean(tmp_path):
+    vault_root = _vault_root(tmp_path)
+    inv = await _inventory(
+        vault_root,
+        store=BrokenStore(),
+        contract_registry=BrokenContractRegistry(),
+        activation_repo=BrokenActivationRepo(),
+        ack_repo=BrokenAckRepo(),
+        pending_repo=BrokenPendingRepo(),
+    )
+    assert set(inv.unread_sources()) == {
+        "v1_store",
+        "activations",
+        "migration_acks",
+        "pending_events",
+        "contract_registry",
+    }
+    assert len(inv.blocking_reasons()) == len(inv.evidence_errors)
+    assert inv.evidence_complete is False
+
+
+@pytest.mark.asyncio
+async def test_joined_activation_read_failure_falls_back_without_a_false_alarm(tmp_path):
+    """The documented degradation stays silent — the fallback read succeeded."""
+    vault_root = _vault_root(tmp_path)
+    body = _source("fallback-pb")
+    _write_playbook(vault_root, "system/playbooks", "fallback-pb.md", body)
+    registry = StubContractRegistry()
+    activation = _ready_activation(
+        "fallback-pb",
+        registry.registry_fingerprint(),
+        source_digest=_sha(body),
+    )
+    inv = await _inventory(
+        vault_root,
+        contract_registry=registry,
+        activation_repo=JoinlessActivationRepo([activation]),
+    )
+    assert inv.evidence_complete is True
+    assert inv.evidence_errors == ()
+    # The unjoined row still reached the classifier.
+    assert _entry(inv, "fallback-pb").activation_health is not None
+
+
+@pytest.mark.asyncio
+async def test_activation_evidence_unread_when_the_fallback_read_is_missing(tmp_path):
+    class JoinOnlyBrokenRepo:
+        async def list_playbook_activations_with_artifacts(self, **kwargs):
+            raise RuntimeError("no such table: playbook_activations")
+
+    inv = await _inventory(_vault_root(tmp_path), activation_repo=JoinOnlyBrokenRepo())
+    assert inv.unread_sources() == ("activations",)
+    assert "no such table" in inv.evidence_errors[0]["error"]
+
+
+# ---------------------------------------------------------------------------
 # Closure check — must be the last test in the module
 # ---------------------------------------------------------------------------
 

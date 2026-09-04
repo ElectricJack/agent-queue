@@ -42,9 +42,8 @@ class GitCommandsMixin:
             method: Merge strategy — ``"squash"`` (default), ``"merge"``,
                 or ``"rebase"``.
             force: Merge even when ``merge_ci_policy: required`` would
-                refuse.  For a human who has looked at the failure and
-                decided it is unrelated; the override is recorded in the
-                result as ``ci.forced`` and logged.
+                refuse. This waives only the CI policy: immutable PR identity
+                and reserved-path delivery checks always remain mandatory.
 
         Returns:
             ``{"success": bool, "pr_url": str, "sha": str | None, "error": str | None}``,
@@ -83,6 +82,20 @@ class GitCommandsMixin:
         cwd = self.config.data_dir or os.getcwd()
         os.makedirs(cwd, exist_ok=True)
 
+        # Validate the concrete base/head pair and the merge-base PR diff
+        # before CI is consulted. ``force`` is deliberately unavailable here:
+        # it can waive a policy opinion about CI, never delivery identity or
+        # daemon-owned paths.
+        try:
+            identity = await self.orchestrator.git.avalidate_pr_for_merge(cwd, pr_url)
+        except Exception as exc:
+            return {
+                "success": False,
+                "pr_url": pr_url,
+                "sha": None,
+                "error": f"Could not validate immutable PR delivery: {exc}",
+            }
+
         ci = await self._check_ci_before_merge(cwd, pr_url, force=force)
         if ci is not None and ci.get("blocked"):
             return {
@@ -93,7 +106,13 @@ class GitCommandsMixin:
                 "ci": ci,
             }
 
-        result = await self.orchestrator.git.amerge_pr(cwd, pr_url, method=method)
+        result = await self.orchestrator.git.amerge_pr(
+            cwd,
+            pr_url,
+            method=method,
+            expected_head_oid=identity.head_oid,
+            expected_base_ref=identity.base_ref,
+        )
         response = {
             "success": result["success"],
             "pr_url": pr_url,

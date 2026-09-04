@@ -8,7 +8,7 @@ errors.
 Coverage:
   - ``push_branch(force_with_lease=False)`` (default) uses plain push.
   - ``push_branch(force_with_lease=True)`` uses ``--force-with-lease``.
-  - ``_create_pr_for_task()`` calls ``push_branch`` with ``force_with_lease=True``.
+  - ``_create_pr_for_task()`` uses guarded delivery with ``force_with_lease=True``.
   - Integration test: push succeeds on a previously-pushed branch when
     force_with_lease is enabled, and fails without it.
 """
@@ -107,6 +107,22 @@ class TestPushBranchForceWithLease:
         # Verify branch exists on remote
         remote_branches = _git(["branch", "-r"], cwd=clone)
         assert "origin/feature/plain-push" in remote_branches
+
+    def test_push_pushes_the_branch_even_when_a_same_named_tag_exists(self, git_repo):
+        """``refs/heads/<name>`` is pushed, so a planted tag can neither shadow nor block."""
+        mgr = GitManager()
+        clone = git_repo["clone"]
+
+        _git(["checkout", "-b", "feature/shadowed"], cwd=clone)
+        branch_tip = _git_commit(clone, "file.txt", "content", "add file")
+        _git(["checkout", "--detach", "main"], cwd=clone)
+        decoy_tip = _git_commit(clone, "decoy.txt", "decoy", "decoy")
+        _git(["tag", "feature/shadowed", decoy_tip], cwd=clone)
+        _git(["checkout", "feature/shadowed"], cwd=clone)
+
+        mgr.push_branch(clone, "feature/shadowed")
+
+        assert _git(["rev-parse", "origin/feature/shadowed"], cwd=clone) == branch_tip
 
     def test_force_with_lease_push(self, git_repo):
         """With force_with_lease=True, push_branch uses --force-with-lease."""
@@ -292,22 +308,27 @@ class TestCreatePrForTaskForceWithLease:
     async def test_push_uses_force_with_lease(self, orch, git):
         """_create_pr_for_task should push with force_with_lease=True."""
         git.acreate_pr = AsyncMock(return_value="https://github.com/test/repo/pull/42")
-        git.apush_branch = AsyncMock()
+        git.apush_validated_delivery = AsyncMock()
         task = _make_task()
         repo = _make_repo()
 
         result = await orch._create_pr_for_task(task, repo, "/workspace")
 
-        git.apush_branch.assert_called_once()
-        call_args = git.apush_branch.call_args
-        assert call_args[0] == ("/workspace", "task/test-branch")
+        git.apush_validated_delivery.assert_awaited_once()
+        call_args = git.apush_validated_delivery.call_args
+        assert call_args[0] == (
+            "/workspace",
+            "origin/main",
+            "task/test-branch",
+            "task/test-branch",
+        )
         assert call_args[1].get("force_with_lease") is True
         assert result == "https://github.com/test/repo/pull/42"
 
     @pytest.mark.asyncio
     async def test_push_failure_notifies(self, orch, git):
         """Push failure should send notification and return None."""
-        git.apush_branch = AsyncMock(side_effect=GitError("push rejected"))
+        git.apush_validated_delivery = AsyncMock(side_effect=GitError("push rejected"))
         task = _make_task()
         repo = _make_repo()
 
@@ -321,13 +342,13 @@ class TestCreatePrForTaskForceWithLease:
     async def test_link_repo_skips_push(self, orch, git):
         """LINK repos should not push at all — just notify for manual review."""
         git.ahas_remote = AsyncMock(return_value=False)
-        git.apush_branch = AsyncMock()
+        git.apush_validated_delivery = AsyncMock()
         task = _make_task()
         repo = _make_repo(source_type=RepoSourceType.LINK)
 
         result = await orch._create_pr_for_task(task, repo, "/workspace")
 
-        git.apush_branch.assert_not_called()
+        git.apush_validated_delivery.assert_not_awaited()
         assert result is None
         assert len(orch._notifications) == 1
         assert "Review needed" in orch._notifications[0]  # plain text via _emit_text_notify
@@ -335,16 +356,21 @@ class TestCreatePrForTaskForceWithLease:
     @pytest.mark.asyncio
     async def test_pr_creation_after_push(self, orch, git):
         """After successful push, create_pr should be called with correct args."""
-        git.apush_branch = AsyncMock()
+        git.apush_validated_delivery = AsyncMock()
         git.acreate_pr = AsyncMock(return_value="https://github.com/test/repo/pull/99")
         task = _make_task(title="My Feature", description="A long description " * 50)
         repo = _make_repo(default_branch="develop")
 
         result = await orch._create_pr_for_task(task, repo, "/workspace")
 
-        git.apush_branch.assert_called_once()
-        call_args = git.apush_branch.call_args
-        assert call_args[0] == ("/workspace", "task/test-branch")
+        git.apush_validated_delivery.assert_awaited_once()
+        call_args = git.apush_validated_delivery.call_args
+        assert call_args[0] == (
+            "/workspace",
+            "origin/develop",
+            "task/test-branch",
+            "task/test-branch",
+        )
         assert call_args[1].get("force_with_lease") is True
         git.acreate_pr.assert_called_once()
         call_kwargs = git.acreate_pr.call_args
@@ -354,7 +380,7 @@ class TestCreatePrForTaskForceWithLease:
     @pytest.mark.asyncio
     async def test_pr_creation_failure_notifies(self, orch, git):
         """PR creation failure should notify but push already succeeded."""
-        git.apush_branch = AsyncMock()
+        git.apush_validated_delivery = AsyncMock()
         git.acreate_pr = AsyncMock(side_effect=GitError("gh not found"))
         task = _make_task()
         repo = _make_repo()
@@ -362,7 +388,7 @@ class TestCreatePrForTaskForceWithLease:
         result = await orch._create_pr_for_task(task, repo, "/workspace")
 
         # Push should have been called (and succeeded, since no side_effect)
-        git.apush_branch.assert_called_once()
+        git.apush_validated_delivery.assert_awaited_once()
         assert result is None
         assert len(orch._notifications) == 1
         assert "PR Creation Failed" in orch._notifications[0]  # plain text via _emit_text_notify

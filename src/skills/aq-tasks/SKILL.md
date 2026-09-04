@@ -226,6 +226,10 @@ capped at 3 (root = 1).
 ```bash
 aq task reparent --task-id <task_id> --parent-id <new_parent_id>  # move under another container
 aq task reparent --task-id <task_id> --root           # detach to root (clears parent)
+# On a worker token, reparent moves only unclaimed tasks you filed from the task
+# you hold, to the parents you could have filed under (your task, a descendant,
+# its immediate parent, or --root, which attaches the routing gate). Use it when a
+# finding nested under your own task blocks your close with hierarchy.open_children.
 aq task delete --task-id <task_id> --cascade          # delete a container + its whole subtree
 aq task close <id> --abandon-children \
   --outcome pass|fail --summary "..."                 # close a container, abandoning

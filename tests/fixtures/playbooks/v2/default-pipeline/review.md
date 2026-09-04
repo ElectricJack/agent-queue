@@ -1,9 +1,9 @@
 ---
 playbook_id: default-pipeline
-artifact_sha256: "sha256:7c3c162f2bc084618d8778579cfd3f2e44311eabc0fdf8ff427810f19334d7bd"
-source_sha256: "sha256:4c5af240e58db3c4a3ce6012dd933305965054a6afeb59827952efd1ecdab123"
+artifact_sha256: "sha256:36f25f93328d04b1fe2fc07b630d4481c0e2bd5bcc573ac26b57011b784f6bdf"
+source_sha256: "sha256:889c839015d2b2f91aa22d46fd8c49a1782d6e66a4e055dbeaad43ffb053aa95"
 contract_fingerprint: "sha256:64868157d0d987401d13d954e0bd3edc0c01fc427c626b2947d760a57cc855fe"
-reviewed_by: "aq task solid-harbor.52, re-recorded by nimble-apex-17 (worker-standard-high-claude); operator sign-off is this fixture's PR review"
+reviewed_by: "aq task solid-harbor.52, re-recorded by nimble-apex-17 and quick-falcon-91 (worker-standard-high-claude); operator sign-off is this fixture's PR review"
 reviewed_at: "2026-09-03"
 decision: approved
 questions_resolved: 3
@@ -93,6 +93,23 @@ should confirm by reading:
 The only fields that differ from a naive V1 read are presentation: `source`
 references (Q2) and the step id namespacing V2 requires (`<rule-id>--<node-id>`,
 plus `-body` for a loop body), which V1 expressed as per-rule `nodes` maps.
+
+**Re-record for the prose edit in `164b425b`** (`quick-falcon-91`). That commit
+rewrote two explanatory paragraphs of the authoring source — how the close path
+decides `event.no_code`, and why `event.review_task` is structural — without
+re-recording this fixture, so the shipped Markdown's `source_digest` moved to
+`sha256:889c8390…` while the artifact still carried `sha256:4c5af240…`. Migration
+inventory read that, correctly, as `compile_question` ("the authoring Markdown
+changed after the active artifact was reviewed"), which is
+`tests/test_playbook_migration_commands.py::test_inventory_accepts_canonical_fingerprints_from_artifact_store`
+and both `default-pipeline` cases in `tests/test_default_playbook_v2_artifacts.py`
+going red on main. The edit touches no rule, guard, argument, binding or
+terminal, and the semantic body is still the lowering of the frozen V1 graph, so
+relative to the recording above **only three things moved**: `compiled_at`,
+`source_hash`, and every `source` line reference, each shifted uniformly by the
+ten lines the edit removed with its `excerpt` unchanged. Source references are
+presentation-only (spec §4.8) and outside the executable fingerprint;
+`contract_fingerprint` and `compiled_against` are byte-identical.
 
 ## Capabilities and why each is needed
 

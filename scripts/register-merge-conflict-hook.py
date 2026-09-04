@@ -17,7 +17,6 @@ import asyncio
 import json
 import os
 import sys
-import time
 
 # Add the src directory to the path so we can import project modules
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
@@ -130,11 +129,11 @@ If a conflict resolution task likely already exists for a branch (based on the t
         await db.create_hook(hook)
         print(f"Created hook '{hook_id}' for project '{project_id}'")
 
-    print(f"\nHook Details:")
+    print("\nHook Details:")
     print(f"  ID:       {hook_id}")
     print(f"  Name:     {hook_name}")
-    print(f"  Trigger:  Periodic every 30 minutes")
-    print(f"  Cooldown: 30 minutes")
+    print("  Trigger:  Periodic every 30 minutes")
+    print("  Cooldown: 30 minutes")
     print(f"  Repo:     {repo_path}")
     print(f"  Script:   {check_script}")
 

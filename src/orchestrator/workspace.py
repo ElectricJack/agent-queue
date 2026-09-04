@@ -245,6 +245,7 @@ class WorkspaceMixin:
 
         ws = primary.workspace
         workspace = ws.workspace_path
+        is_git_workspace = primary.kind.is_git_repo
 
         if worktrees_enabled and ws.is_slot:
             # Worktree mode replaces the whole CLONE/LINK provisioning block
@@ -337,7 +338,8 @@ class WorkspaceMixin:
             try:
                 branch = await restore_checkpoint(self.db, self.git, task.id, workspace)
                 await self.db.update_task(task.id, branch_name=branch)
-                await self._ensure_control_files_excluded(workspace)
+                if is_git_workspace:
+                    await self._ensure_control_files_excluded(workspace)
                 return workspace  # Preserve the resumed task's plan files too.
             except Exception as exc:
                 logger.error("Cannot restore paused task %s: %s", task.id, exc)
@@ -346,7 +348,11 @@ class WorkspaceMixin:
                 return None
 
         repo_url = project.repo_url if project else ""
-        default_branch = await self._get_default_branch(project, workspace)
+        default_branch = (
+            await self._get_default_branch(project, workspace)
+            if is_git_workspace
+            else (project.repo_default_branch if project else None) or "main"
+        )
 
         # Branch naming strategy:
         # - Root tasks get a fresh branch derived from their ID + title.
@@ -364,11 +370,8 @@ class WorkspaceMixin:
         else:
             branch_name = GitManager.make_branch_name(task.id, task.title)
 
-        # Git operations may fail (network issues, auth errors, merge
-        # conflicts) but should never prevent returning the workspace path.
-        # The agent can still work in the directory; it just won't have
-        # proper branch management.  Errors are reported via Discord
-        # notification so operators are aware.
+        # Git handoff is fail-closed. A workspace without verified managed
+        # excludes or usable branch state is released instead of launched.
         try:
             if is_worktree:
                 # Legacy WORKTREE row: a pre-existing branch-isolated worktree
@@ -378,10 +381,13 @@ class WorkspaceMixin:
                 # the retired ``.worktrees-<base>/`` filename convention.
                 # Fetch is automatically serialized by the GitManager lock
                 # provider — no need for explicit mutex acquisition here.
+                if not is_git_workspace or not await self.git.avalidate_checkout(workspace):
+                    raise GitError(f"legacy worktree is not a valid Git checkout: {workspace}")
+                await self._ensure_control_files_excluded(workspace)
                 base_path = await self.git.aworktree_base_path(workspace)
                 if base_path and await self.git.ahas_remote(base_path):
                     await self.git._arun(["fetch", "origin"], cwd=base_path)
-            else:
+            elif is_git_workspace:
                 # Workspace source types determine the git setup strategy:
                 #
                 # CLONE: The orchestrator manages the full clone lifecycle.
@@ -407,17 +413,15 @@ class WorkspaceMixin:
 
                 elif ws.source_type == RepoSourceType.LINK:
                     if not os.path.isdir(workspace):
-                        await self._emit_text_notify(
-                            f"**Warning:** Linked workspace path `{workspace}` does not exist.",
-                            project_id=task.project_id,
-                        )
+                        raise GitError(f"linked workspace path does not exist: {workspace}")
 
                 # Ensure workspace is on a clean, up-to-date default branch.
                 # The agent will create/switch to the task branch per its prompt.
                 if await self.git.avalidate_checkout(workspace):
                     # The daemon's own control files (``.aq/claim.json``, the
                     # worktree sentinel, ``.agent-queue-lock``) live untracked
-                    # inside this checkout.  Only ``.git/info/exclude`` keeps
+                    # inside this checkout.  Only Git's resolved
+                    # ``info/exclude`` keeps
                     # them out of ``git status`` — and therefore out of the
                     # verify phase's ``git add -A`` auto-commit — and until
                     # now only worktree-slot provisioning wrote that block.
@@ -450,6 +454,8 @@ class WorkspaceMixin:
                             ["reset", "--hard", f"origin/{default_branch}"],
                             cwd=workspace,
                         )
+                else:
+                    raise GitError(f"workspace is not a valid Git checkout: {workspace}")
 
             # Update task branch in DB
             await self.db.update_task(task.id, branch_name=branch_name)
@@ -477,32 +483,26 @@ class WorkspaceMixin:
 
         return workspace
 
-    async def _ensure_control_files_excluded(self, workspace: str) -> None:
-        """Write the managed ``.git/info/exclude`` block into *workspace*.
+    async def _ensure_control_files_excluded(self, workspace: str) -> bool:
+        """Write and verify the managed block at Git's exact exclude path.
 
         Worktree slots get this from :class:`WorktreeSlotManager` at
         provisioning; an exclusive clone or linked checkout (``worktrees.enabled:
         false``) has to get it here, or ``.aq/claim.json`` and friends end up in
         ``auto-commit: uncommitted changes from task <id>`` and — in direct
-        mode — on the project's default branch.  Best-effort: the block is
-        hygiene, not a precondition for launching the agent.
+        mode — on the project's default branch.  Resolution uses
+        ``git rev-parse --path-format=absolute --git-path info/exclude`` with
+        the older-Git fallback in :class:`GitManager`, so separate Git dirs
+        and linked worktrees are covered.  Failure is fatal to handoff: an
+        agent or pool session must never receive an unprotected checkout.
         """
-        from src.orchestrator.worktree_manager import WorktreeSlotManager
+        from src.orchestrator.worktree_manager import (
+            WorktreeSlotManager,
+            resolve_managed_exclude_path,
+        )
 
-        try:
-            if not await self.git.avalidate_checkout(workspace):
-                return
-            # ``info/exclude`` lives in the common dir.  For a linked checkout
-            # that is itself a worktree ``<workspace>/.git`` is a file
-            # pointing elsewhere, so resolve the base repository; everywhere
-            # else the workspace is its own common dir and no subprocess is
-            # needed.
-            base = workspace
-            if os.path.isfile(os.path.join(workspace, ".git")):
-                base = await self.git.aworktree_base_path(workspace) or workspace
-            WorktreeSlotManager.ensure_git_exclude(base)
-        except (OSError, GitError) as e:  # pragma: no cover - defensive
-            logger.warning("ensure_git_exclude failed for %s: %s", workspace, e)
+        exclude_path = await resolve_managed_exclude_path(self.git, workspace)
+        return WorktreeSlotManager.ensure_git_exclude_path(exclude_path)
 
     @staticmethod
     def _project_slot_cap(project) -> int:

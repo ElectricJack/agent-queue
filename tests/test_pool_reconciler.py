@@ -110,6 +110,7 @@ async def orch(db, tmp_path):
     # so ``_schedule()`` (which reconciles agents first) works end to end.
     o._agent_reconciler._db = db
     o.git = MagicMock()
+    o._ensure_control_files_excluded = AsyncMock(return_value=True)
     o.bus.emit = AsyncMock()
     o.harness_registry.upsert(
         Harness(
@@ -139,6 +140,40 @@ async def ready(db, tid, *, profile_id="worker", intelligence_class=None):
 
 
 class TestReconcilePools:
+    async def test_pool_handoff_detects_git_without_literal_dot_git(
+        self, orch, db, tmp_path
+    ):
+        """Pool launch protects its checkout before the session receives it."""
+        orch.config.worktrees.enabled = False
+        workspace = tmp_path / "ws0"
+        workspace.mkdir(parents=True)
+
+        session_id = await orch._launch_pool_session(
+            await db.get_project(PROJECT_ID), await db.get_profile("worker")
+        )
+
+        assert session_id is not None
+        orch._ensure_control_files_excluded.assert_awaited_once_with(str(workspace))
+
+    async def test_pool_handoff_refuses_unverifiable_daemon_excludes(
+        self, orch, db, tmp_path
+    ):
+        """A pool session must not receive a checkout without the managed block."""
+        orch.config.worktrees.enabled = False
+        workspace = tmp_path / "ws0"
+        (workspace / ".git").mkdir(parents=True)
+        orch._ensure_control_files_excluded = AsyncMock(
+            side_effect=OSError("exclude is read-only")
+        )
+
+        session_id = await orch._launch_pool_session(
+            await db.get_project(PROJECT_ID), await db.get_profile("worker")
+        )
+
+        assert session_id is None
+        assert await db.list_sessions(lifecycle="pool", project_id=PROJECT_ID) == []
+        assert all(ws.locked_by_agent_id is None for ws in await db.list_workspaces(PROJECT_ID))
+
     async def test_starts_sessions_for_ready_work(self, orch, db):
         for t in ("t1", "t2", "t3"):
             await ready(db, t)

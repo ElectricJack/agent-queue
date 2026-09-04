@@ -237,6 +237,7 @@ markers = [
 [tool.ruff]
 target-version = "py312"
 line-length = 100
+extend-exclude = ["packages/aq-client"]
 
 [tool.ruff.format]
 quote-style = "double"
@@ -244,6 +245,9 @@ quote-style = "double"
 
 - **Line length: 100.** This applies to both formatting and lint warnings.
 - **Target: py312.** Ruff's `pyupgrade` and related rules assume Python 3.12+.
+- **Generated client excluded.** `packages/aq-client/` is wholly owned by the pinned
+  `openapi-python-client` generator and is verified by generated-client contract tests;
+  repository-wide Ruff runs do not lint or rewrite it.
 - **Quote style: double.** The formatter rewrites single quotes unless a double
   would require escaping.
 

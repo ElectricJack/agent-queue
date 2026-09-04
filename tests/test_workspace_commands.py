@@ -26,6 +26,7 @@ from src.models import (
     WorkspaceKind as _WorkspaceKind,
 )
 from src.orchestrator import Orchestrator
+from src.orchestrator.worktree_manager import EXCLUDE_BLOCK
 from src.runtimes.base import Runtime
 
 
@@ -240,6 +241,56 @@ async def _make_slot_for(orch, task_id="tsk-1"):
     return await orch.db.get_workspace_for_task(task_id), Path(p)
 
 
+async def test_resumed_exclusive_clone_handoff_excludes_daemon_bookkeeping(
+    base_repo_for_wt, tmp_path, monkeypatch
+):
+    """Checkpoint resume keeps daemon state out of an exclusive clone's diff."""
+    from src.orchestrator import task_checkpoint
+
+    config = AppConfig(
+        data_dir=str(tmp_path / "data"),
+        database_path=str(tmp_path / "aq.db"),
+        workspace_dir=str(tmp_path / "workspaces"),
+    )
+    config.worktrees.enabled = False
+    orch = Orchestrator(config, runtimes=_NullRuntimeFactory())
+    await orch.initialize()
+    try:
+        await orch.db.create_project(
+            Project(id="p1", name="alpha", repo_default_branch="main")
+        )
+        await orch.db.create_workspace(
+            _Workspace(
+                id="ws-clone",
+                project_id="p1",
+                workspace_path=str(base_repo_for_wt),
+                source_type=RepoSourceType.CLONE,
+                kind_id="project-repo",
+            )
+        )
+        await orch.db.create_agent(Agent(id="agent", name="agent", profile_id="p"))
+        await orch.db.create_task(Task(id="task", project_id="p1", title="task", description=""))
+        await orch.db.set_task_meta("task", "manual_pause_checkpoint", {"saved": True})
+        monkeypatch.setattr(task_checkpoint, "restore_checkpoint", AsyncMock(return_value="aq/task"))
+
+        task = await orch.db.get_task("task")
+        agent = await orch.db.get_agent("agent")
+        assert await orch._prepare_workspace(task, agent) == str(base_repo_for_wt)
+
+        (base_repo_for_wt / ".aq").mkdir()
+        (base_repo_for_wt / ".aq" / "claim.json").write_text("{}\n")
+        (base_repo_for_wt / ".aq-worktree.json").write_text("{}\n")
+        (base_repo_for_wt / ".codex").mkdir()
+        (base_repo_for_wt / ".codex" / "hooks.json").write_text("{}\n")
+
+        status = _git_cli(["status", "--porcelain", "--untracked-files=all"], base_repo_for_wt)
+        assert ".aq/claim.json" not in status
+        assert ".aq-worktree.json" not in status
+        assert ".codex/hooks.json" not in status
+    finally:
+        await orch.shutdown()
+
+
 class TestWorkspaceDoctor:
     async def test_dirty_unlocked_slot_finding(self, worktree_handler):
         handler, orch, base = worktree_handler
@@ -281,6 +332,117 @@ class TestWorkspaceDoctor:
         result = await handler._cmd_workspace_doctor({"project_id": "p1"})
         kinds = {(f["kind"], f["workspace_id"]) for f in result["findings"]}
         assert ("exclude_missing", "ws-base") in kinds
+
+    async def test_exclude_check_runs_when_worktrees_are_disabled(self, worktree_handler):
+        handler, orch, base = worktree_handler
+        orch.config.worktrees.enabled = False
+        exclude = base / ".git" / "info" / "exclude"
+        if exclude.exists():
+            exclude.unlink()
+
+        result = await handler._cmd_workspace_doctor({"project_id": "p1"})
+
+        kinds = {(finding["kind"], finding["workspace_id"]) for finding in result["findings"]}
+        assert ("exclude_missing", "ws-base") in kinds
+
+    async def test_exclude_check_ignores_explicit_non_git_kind(
+        self, worktree_handler, tmp_path
+    ):
+        handler, orch, base = worktree_handler
+        await orch.db.upsert_workspace_kind(
+            _WorkspaceKind(
+                project_id="p1",
+                id="notes",
+                is_git_repo=False,
+                lockable=True,
+                writable=True,
+                mode="exclusive-clone",
+                default_lock_mode="exclusive",
+            )
+        )
+        non_git = tmp_path / "notes"
+        non_git.mkdir()
+        await orch.db.create_workspace(
+            _Workspace(
+                id="ws-notes",
+                project_id="p1",
+                workspace_path=str(non_git),
+                source_type=RepoSourceType.LINK,
+                kind_id="notes",
+            )
+        )
+
+        result = await handler._cmd_workspace_doctor({"project_id": "p1"})
+
+        assert not [
+            finding
+            for finding in result["findings"]
+            if finding["workspace_id"] == "ws-notes" and finding["kind"].startswith("exclude_")
+        ]
+
+    async def test_separate_git_dir_checks_the_exact_exclude_path(
+        self, worktree_handler, tmp_path
+    ):
+        handler, orch, base = worktree_handler
+        metadata = tmp_path / "separate-metadata"
+        workspace = tmp_path / "separate-workspace"
+        subprocess.run(
+            [
+                "git",
+                "clone",
+                f"--separate-git-dir={metadata}",
+                str(base.parent / "origin.git"),
+                str(workspace),
+            ],
+            check=True,
+            capture_output=True,
+        )
+        (metadata / "info" / "exclude").write_text(EXCLUDE_BLOCK)
+        await orch.db.create_workspace(
+            _Workspace(
+                id="ws-separate",
+                project_id="p1",
+                workspace_path=str(workspace),
+                source_type=RepoSourceType.CLONE,
+                kind_id="project-repo",
+            )
+        )
+
+        result = await handler._cmd_workspace_doctor({"project_id": "p1"})
+
+        findings = [
+            finding
+            for finding in result["findings"]
+            if finding["workspace_id"] == "ws-separate"
+        ]
+        assert not [finding for finding in findings if finding["kind"] == "exclude_missing"]
+
+    async def test_git_subdirectory_base_is_unverifiable(
+        self, worktree_handler
+    ):
+        handler, orch, base = worktree_handler
+        nested = base / "nested"
+        nested.mkdir()
+        await orch.db.create_workspace(
+            _Workspace(
+                id="ws-subdir",
+                project_id="p1",
+                workspace_path=str(nested),
+                source_type=RepoSourceType.LINK,
+                kind_id="project-repo",
+            )
+        )
+
+        result = await handler._cmd_workspace_doctor({"project_id": "p1"})
+
+        findings = [
+            finding
+            for finding in result["findings"]
+            if finding["workspace_id"] == "ws-subdir"
+            and finding["kind"].startswith("exclude_")
+        ]
+        assert [finding["kind"] for finding in findings] == ["exclude_unverifiable"]
+        assert "repository root" in findings[0]["detail"]
 
     async def test_redundant_clone_finding(self, worktree_handler, tmp_path):
         handler, orch, base = worktree_handler

@@ -733,7 +733,8 @@ close is skipped for pools; the token is revoked at drain.
 ### 12. Worker-filed work
 
 **Scope.** `AGENT_COMMAND_SET` += `create_task`, `task_claim`, `task_children`,
-`task_progress`, `project_ready`, `formula_list`, `formula_show`.
+`task_progress`, `project_ready`, `formula_list`, `formula_show`, `reparent_task`
+(constrained, see *Repairing placement* below).
 
 **Server-enforced constraints on `create_task` for non-elevated sessions** (in
 `enforce_scope` + `_cmd_create_task`), all in the creation transaction:
@@ -829,6 +830,33 @@ waits for a human", never "unrouted work runs".
 as the task. The former claim that a fire-and-forget pipeline "always lands" before the
 next tick is withdrawn.
 
+**Repairing placement (`reparent_task` on the worker surface).** A finding a worker
+parented under the task it holds is an open child, and the §7 close rule refuses the
+worker's own close with `hierarchy.open_children`. Before this rule the only ways out
+were destructive or duplicating — `--abandon-children` fails the findings, re-filing them
+at root duplicates them — so `reparent_task` is admitted for non-elevated sessions with
+the filing path's own scope, decided under the same `lock_filing_scope` locks:
+
+- the moved task must be **worker-filed** (`created_by_kind = 'session'`) and
+  **provenance-linked to the held task `T`**: its current parent is `T` or a descendant,
+  or it carries a `discovered-from` edge to one; a plan subtask (no session provenance)
+  or another worker's filing is refused with `hierarchy.reparent_out_of_scope`;
+- it must be **unclaimed**: not `IN_PROGRESS`/`COMPLETED`/`FAILED` and not assigned;
+- the new parent is constrained exactly as a filing's: `T`, a descendant of `T`, `T`'s
+  own immediate parent, or root (`hierarchy.parent_out_of_scope` otherwise);
+- a move **to root attaches the routing gate** a root filing is born with (deduplicated
+  against an open one), so the finding still waits for triage rather than running;
+- a filing whose only provenance was the parent-child edge to `T` (a filing under `T`
+  writes no separate `discovered-from`, above) gets a `discovered-from` edge to that
+  former parent written in the same transaction as the move, so placement and provenance
+  never disagree and a moved filing is still recognisably the worker's own.
+
+The `task_id` pin in `check_command_scope` is lifted for `reparent_task` only — the moved
+task is by construction never the held task — while `project_id`/`session_id` stay
+pinned. Elevated and local callers are unchanged. The close rule itself is **not**
+relaxed: open children under a `COMPLETED` container would contradict settlement and
+`hierarchy.container_closed`.
+
 ---
 
 ## Part III — Formulas
@@ -901,7 +929,7 @@ regenerate from it. `*` = new. Response models: add `src/api/models/task.py` ent
 | `aq task close <id> --outcome … [--claim-next]` | `task_close` | yes |
 | `aq task children <id> [--recursive] [--status S] [--brief]`* | `task_children`* | yes |
 | `aq task progress <id>`* | `task_progress`* | yes |
-| `aq task reparent <id> (--parent <id> \| --root)`* | `reparent_task`* | no |
+| `aq task reparent <id> (--parent <id> \| --root)`* | `reparent_task`* | yes (own unclaimed filings, to the filing parents; §12) |
 | `aq task tree <id>` | `get_task_tree` | yes |
 | `aq task delete <id> [--cascade]` | `delete_task` | no |
 | `aq task close <id> … [--abandon-children]` (containers) | `task_close` | yes (own container only) |

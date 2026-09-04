@@ -394,72 +394,6 @@ class LoggingConfig:
 
 
 @dataclass
-class ChatAnalyzerConfig:
-    """Configuration for the Discord chat-analyzer suggester gate stack.
-
-    The chat analyzer is the post-``observe()`` pipeline that decides
-    whether to surface a suggestion to Discord.  Each field is a knob on
-    one of the gates introduced by the chat-analyzer suggestion-quality
-    overhaul plan.
-
-    * ``min_confidence`` (Phase 4) — minimum
-      ``intent_confidence × novelty × actionability`` product required
-      before a suggestion is posted.  Suggestions below this threshold
-      are dropped silently and tagged ``gate="confidence"`` in the
-      structured log.
-    * ``in_flight_min_confidence`` (Phase 5) — elevated minimum that
-      replaces ``min_confidence`` whenever the project has at least one
-      ``IN_PROGRESS`` task.  When a ``Stop Task`` button is showing in
-      the channel header the user is watching execution, not shopping
-      for new work, so we substantially raise the bar — only
-      high-signal suggestions (e.g. "two stuck tasks older than 30
-      min") clear it.  Default ``0.85``.  Suppressions are tagged
-      ``gate="in_flight_active_task"``.  Set this to a value ``>=
-      min_confidence`` for the escalation to mean anything; a value
-      ``<= min_confidence`` is technically valid but a no-op.
-    * ``dismiss_cooldown_seconds`` (Phase 6) — number of seconds after
-      a user dismisses a suggestion in a channel during which no new
-      suggestions are posted to that ``(project_id, channel_id)``
-      pair.  A user dismissal is the strongest negative signal we
-      have; honor it by going quiet for that channel for a window.
-      Default ``600`` (10 minutes).  Set to ``0`` to disable the gate
-      entirely.  Suppressions are tagged ``gate="dismiss_cooldown"``.
-    """
-
-    min_confidence: float = 0.6
-    in_flight_min_confidence: float = 0.85
-    dismiss_cooldown_seconds: int = 600
-
-    def validate(self) -> list[ConfigError]:
-        errors: list[ConfigError] = []
-        if not 0.0 <= self.min_confidence <= 1.0:
-            errors.append(
-                ConfigError(
-                    "chat_analyzer",
-                    "min_confidence",
-                    "must be in [0, 1]",
-                )
-            )
-        if not 0.0 <= self.in_flight_min_confidence <= 1.0:
-            errors.append(
-                ConfigError(
-                    "chat_analyzer",
-                    "in_flight_min_confidence",
-                    "must be in [0, 1]",
-                )
-            )
-        if self.dismiss_cooldown_seconds < 0:
-            errors.append(
-                ConfigError(
-                    "chat_analyzer",
-                    "dismiss_cooldown_seconds",
-                    "must be >= 0",
-                )
-            )
-        return errors
-
-
-@dataclass
 class GlobalSupervisorConfig:
     """Configuration for the *global* supervisor session (``supervisor-global``).
 
@@ -1942,7 +1876,6 @@ class AppConfig:
     scheduling: SchedulingConfig = field(default_factory=SchedulingConfig)
     pause_retry: PauseRetryConfig = field(default_factory=PauseRetryConfig)
     llm: LLMConfig = field(default_factory=LLMConfig)
-    chat_analyzer: ChatAnalyzerConfig = field(default_factory=ChatAnalyzerConfig)
     supervisor: SupervisorConfig = field(default_factory=SupervisorConfig)
     health_check: HealthCheckConfig = field(default_factory=HealthCheckConfig)
     logging: LoggingConfig = field(default_factory=LoggingConfig)
@@ -2122,7 +2055,6 @@ class AppConfig:
         errors.extend(self.scheduling.validate())
         errors.extend(self.pause_retry.validate())
         errors.extend(self.llm.validate())
-        errors.extend(self.chat_analyzer.validate())
         errors.extend(self.supervisor.validate())
         errors.extend(self.auto_task.validate())
         errors.extend(self.archive.validate())
@@ -2240,7 +2172,6 @@ class AppConfig:
         updated.archive = fresh.archive
         updated.monitoring = fresh.monitoring
         updated.llm_logging = fresh.llm_logging
-        updated.chat_analyzer = fresh.chat_analyzer
         updated.max_daily_playbook_tokens = fresh.max_daily_playbook_tokens
         updated.max_concurrent_playbook_runs = fresh.max_concurrent_playbook_runs
         # Substrate sections classified hot-reloadable (work-graph spec §9,
@@ -2260,6 +2191,18 @@ class AppConfig:
 # Hot-reload classification
 # ---------------------------------------------------------------------------
 
+
+def config_section_names() -> tuple[str, ...]:
+    """Every top-level config section name, in ``AppConfig`` declaration order.
+
+    Derived from the dataclass instead of hand-listed, so a section added to
+    ``AppConfig`` is covered by :func:`diff_configs` — and by the test that
+    every section is classified below — the moment it is declared.  Internal
+    bookkeeping fields (``_``-prefixed) are not config sections and are skipped.
+    """
+    return tuple(f.name for f in dataclasses.fields(AppConfig) if not f.name.startswith("_"))
+
+
 HOT_RELOADABLE_SECTIONS = {
     "scheduling",
     "monitoring",
@@ -2270,10 +2213,10 @@ HOT_RELOADABLE_SECTIONS = {
     "auto_task",
     "logging",
     "agent_profiles",
+    "global_token_budget_daily",
     "max_daily_playbook_tokens",
     "max_concurrent_playbook_runs",
     "rate_limits",
-    "chat_analyzer",
     # -- Framework-overhaul substrate sections (inert until their lane) ----
     "state_machine",
     "work_graph",
@@ -2308,65 +2251,44 @@ RESTART_REQUIRED_SECTIONS = {
     "messages",
     "supervisor_agent",
     "api_auth",
-}
-"""Config sections that require a full restart to take effect."""
-
-# Mapping from AppConfig field names to the section names used in diff output.
-# Most fields map to themselves; these are the exceptions.
-_SECTION_FIELDS = {
-    "data_dir",
-    "workspace_dir",
-    "database_path",
-    "profile",
+    # -- Sections that gate startup construction ---------------------------
+    # Each of these is read once while the process is coming up: the engine
+    # and pool (``database``), the event bus (``events``, ``validate_events``),
+    # the embedded MCP server (``mcp_server``), the stream reader
+    # (``streams``), the supervisor (``supervisor``), the memory extractor
+    # (``memory_extractor``), the inbox poller (``inbox``), and the two fields
+    # that select which files ``load_config`` even reads (``profile``, ``env``).
+    "database",
     "env",
-    "messaging_platform",
-    "discord",
-    "agents_config",
-    "scheduling",
-    "pause_retry",
-    "llm",
-    "chat_analyzer",
-    "health_check",
-    "logging",
-    "monitoring",
-    "archive",
-    "auto_task",
-    "memory",
-    "llm_logging",
-    # -- Framework-overhaul substrate sections ----------------------------
-    "playbooks",
-    "sessions",
-    "worktrees",
-    "security",
-    "pricing",
-    "messages",
-    "supervisor_agent",
-    "api_auth",
-    "surface",
-    "state_machine",
-    "work_graph",
-    "swarm",
-    "resources",
-    "metrics",
-    "graph_layout",
-    "agent_profiles",
-    "global_token_budget_daily",
-    "max_daily_playbook_tokens",
-    "max_concurrent_playbook_runs",
-    "rate_limits",
+    "events",
+    "inbox",
+    "mcp_server",
+    "memory_extractor",
+    "profile",
+    "streams",
+    "supervisor",
+    "validate_events",
 }
+"""Config sections that require a full restart to take effect.
+
+Together with :data:`HOT_RELOADABLE_SECTIONS` this covers every section in
+:func:`config_section_names` — restart-required is the safe default for a
+section whose owner does not re-read it, and an unclassified section would
+otherwise be reported to the operator as nothing at all."""
 
 
 def diff_configs(old: AppConfig, new: AppConfig) -> set[str]:
     """Compare two AppConfig instances and return the set of changed section names.
 
     Uses ``dataclasses.asdict()`` for deep comparison of each section.
-    Skips internal fields (prefixed with ``_``).
+    The section list comes from :func:`config_section_names`, i.e. from
+    ``AppConfig`` itself, so no section can be silently absent from the diff;
+    internal fields (prefixed with ``_``) are skipped.
     """
     changed: set[str] = set()
     old_dict = dataclasses.asdict(old)
     new_dict = dataclasses.asdict(new)
-    for field_name in _SECTION_FIELDS:
+    for field_name in config_section_names():
         old_val = old_dict.get(field_name)
         new_val = new_dict.get(field_name)
         if old_val != new_val:
@@ -2461,9 +2383,13 @@ class ConfigWatcher:
         if not changed:
             return {"changed_sections": [], "restart_required": [], "applied": []}
 
-        # Classify changes
+        # Classify changes.  Anything not hot-reloadable needs a restart —
+        # including a section missing from RESTART_REQUIRED_SECTIONS, which the
+        # UI already treats as restart-required (config_editor.classify_sections'
+        # "other" bucket).  Reporting it is what keeps an edit from being met
+        # with silence.
         hot_reloadable = changed & HOT_RELOADABLE_SECTIONS
-        restart_needed = changed & RESTART_REQUIRED_SECTIONS
+        restart_needed = changed - HOT_RELOADABLE_SECTIONS
 
         # Apply only hot-reloadable sections
         if hot_reloadable:
@@ -2637,14 +2563,15 @@ def _dataclass_kwargs(cls: type, section: object) -> dict:
 
     A hand-written keyword list is how a declared field becomes an
     unreachable config key.  ``playbooks.v2_api`` and four siblings
-    (steady-ridge-97), and 54 more fields across ``chat_analyzer``,
-    ``streams``, ``logging``, ``monitoring``, ``memory`` and ``metrics``
-    (grand-glacier-97), were all declared, documented and silently pinned to
-    their code default because nobody added a line to the loader.  Deriving
-    the spec from :func:`dataclasses.fields` removes the bug class instead of
-    one instance of it: a field is reachable from YAML the moment it is
-    declared, and ``tests/test_config_section_roundtrip.py`` holds every
-    section at zero gaps.
+    (steady-ridge-97), and 54 more fields across ``chat_analyzer`` (since
+    deleted as dead — prime-torrent-81), ``streams``, ``logging``,
+    ``monitoring``, ``memory`` and ``metrics`` (grand-glacier-97), were all
+    declared, documented and silently pinned to their code default because
+    nobody added a line to the loader.  Deriving the spec from
+    :func:`dataclasses.fields` removes the bug class instead of one instance
+    of it: a field is reachable from YAML the moment it is declared, and
+    ``tests/test_config_section_roundtrip.py`` holds every section at zero
+    gaps.
 
     Only keys the section actually supplies are returned, so the dataclass
     stays the single source of truth for defaults.  A key present with no
@@ -2925,11 +2852,6 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
     if "monitoring" in raw:
         config.monitoring = MonitoringConfig(
             **_dataclass_kwargs(MonitoringConfig, raw["monitoring"])
-        )
-
-    if "chat_analyzer" in raw:
-        config.chat_analyzer = ChatAnalyzerConfig(
-            **_dataclass_kwargs(ChatAnalyzerConfig, raw["chat_analyzer"])
         )
 
     if "streams" in raw:

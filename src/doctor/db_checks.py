@@ -16,10 +16,12 @@ questions the operator actually has:
   "``aq/bold-dune-47``, ``migrations/versions/f2a4c6e8b0d2_....py``" rather
   than a hex string with no provenance.
 * **How do I get back?**  When the file is found, ``--fix`` materialises it
-  into ``migrations/versions/`` just long enough to run *its own*
-  ``downgrade()``, leaving the database stamped at its parent — a revision
-  this checkout does have — and removes it again.  That is the only repair
-  that undoes the schema change rather than lying about it.
+  into a private temporary directory that Alembic reads *alongside*
+  ``migrations/versions/`` (``version_locations``) just long enough to run
+  *its own* ``downgrade()``, leaving the database stamped at its parent — a
+  revision this checkout does have.  The checkout is never written to.  That
+  is the only repair that undoes the schema change rather than lying about
+  it.
 
 The stamp fallback (for an orphan whose file cannot be found anywhere) is
 deliberately *not* reachable from ``--fix`` alone: rewriting
@@ -35,7 +37,6 @@ import asyncio
 import logging
 import os
 import re
-import shutil
 from pathlib import Path
 
 from src.doctor.models import CheckResult, DoctorCheck, DoctorContext, Severity
@@ -275,30 +276,54 @@ def _downgrade_with_borrowed_file(ctx_db_url: str, revision: str, source: str) -
     """Run *revision*'s own ``downgrade()`` by borrowing its file from *ref*.
 
     Alembic can only walk a chain whose files it can see, so the orphan's
-    revision file is written into ``migrations/versions`` for the duration of
-    one ``downgrade`` and removed afterwards — including when the downgrade
-    raises, which is the case that would otherwise leave a stray migration in
-    a working tree.
+    revision file has to be somewhere Alembic enumerates.  It is written to
+    a private temporary directory and Alembic is pointed at *both* that
+    directory and the checkout's ``migrations/versions`` through
+    ``version_locations`` — never into the checkout itself.  Writing it into
+    the real ``versions/`` (and unlinking it afterwards) mutates state every
+    concurrent Alembic scan reads: another process that lists the directory
+    during that window sees the file appear and then vanish before it is
+    loaded and fails with ``Can't find Python file``.  That is what made the
+    migration-marked CI arm flaky under pytest-xdist, and on an operator's
+    machine it would have been a second ``alembic`` shell.  The temp dir is
+    removed afterwards — including when the downgrade raises.
     """
+    import tempfile
+
     from alembic import command
-    from alembic.config import Config
 
     parent = _parent_revision(source)
     if not parent:
         raise RuntimeError(f"revision {revision} declares no single down_revision to fall back to")
 
-    borrowed = _VERSIONS_DIR / f"_orphan_{revision}.py"
-    if borrowed.exists():
-        raise RuntimeError(f"{borrowed} already exists — refusing to overwrite")
-    borrowed.write_text(source, encoding="utf-8")
-    try:
-        cfg = Config(str(_PROJECT_ROOT / "alembic.ini"))
-        cfg.set_main_option("sqlalchemy.url", ctx_db_url)
+    with tempfile.TemporaryDirectory(prefix="aq-doctor-orphan-") as borrowed_dir:
+        (Path(borrowed_dir) / f"_orphan_{revision}.py").write_text(source, encoding="utf-8")
+        cfg = _alembic_config(ctx_db_url, extra_version_locations=[Path(borrowed_dir)])
         command.downgrade(cfg, parent)
-    finally:
-        borrowed.unlink(missing_ok=True)
-        shutil.rmtree(_VERSIONS_DIR / "__pycache__", ignore_errors=True)
     return parent
+
+
+def _alembic_config(ctx_db_url: str, *, extra_version_locations: list[Path] = ()):
+    """The checkout's ``alembic.ini`` bound to *ctx_db_url*.
+
+    With *extra_version_locations*, Alembic also enumerates those directories
+    for revision files.  Setting ``version_locations`` at all replaces the
+    implicit ``<script_location>/versions``, so that directory is always
+    listed first.  Values go through ``ConfigParser`` interpolation, hence the
+    ``%`` escaping — a temp dir under an unusual ``TMPDIR`` must not turn into
+    an interpolation error.
+    """
+    from alembic.config import Config
+
+    cfg = Config(str(_PROJECT_ROOT / "alembic.ini"))
+    cfg.set_main_option("sqlalchemy.url", ctx_db_url)
+    if extra_version_locations:
+        locations = [_VERSIONS_DIR, *extra_version_locations]
+        cfg.set_main_option(
+            "version_locations",
+            os.pathsep.join(str(loc).replace("%", "%%") for loc in locations),
+        )
+    return cfg
 
 
 def _stamp(ctx_db_url: str, target: str) -> None:
@@ -312,11 +337,8 @@ def _stamp(ctx_db_url: str, target: str) -> None:
     reaching one.
     """
     from alembic import command
-    from alembic.config import Config
 
-    cfg = Config(str(_PROJECT_ROOT / "alembic.ini"))
-    cfg.set_main_option("sqlalchemy.url", ctx_db_url)
-    command.stamp(cfg, target, purge=True)
+    command.stamp(_alembic_config(ctx_db_url), target, purge=True)
 
 
 def _alembic_url(ctx: DoctorContext) -> str:

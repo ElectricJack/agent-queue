@@ -501,6 +501,10 @@ class TestStaticSections:
         assert "--root" in body
         assert "receives a routing gate" in body
         assert "--parent` and `--root` cannot be combined" in body
+        # A finding nested under the held task blocks the close; the guidance
+        # names the non-destructive repair rather than re-filing or abandoning.
+        assert "aq task reparent --task-id <finding-id>" in body
+        assert "hierarchy.open_children" in body
 
     async def test_emergent_work_is_omitted_when_the_profile_denies_create_task(
         self, db, config, task
@@ -657,6 +661,7 @@ _CLI_TO_COMMAND: dict[str, str | None] = {
     "aq task delete": "delete_task",
     "aq task heartbeat": "task_heartbeat",
     "aq task list": "list_tasks",
+    "aq task reparent": "reparent_task",
     "aq task restart": "restart_task",
     "aq task set": "task_set",
     "aq task show": "task_show",
