@@ -25,6 +25,7 @@ from src.config import (
     HOT_RELOADABLE_SECTIONS,
     RESTART_REQUIRED_SECTIONS,
     AppConfig,
+    config_section_names,
 )
 
 _ENV_VAR_RE = re.compile(r"\$\{(\w+)\}")
@@ -143,7 +144,7 @@ def find_env_var_refs(raw: Any, _path: str = "") -> list[dict[str, Any]]:
 
 def _top_level_sections() -> list[str]:
     """Names of every top-level config key (matching AppConfig fields)."""
-    return [f.name for f in dataclasses.fields(AppConfig) if not f.name.startswith("_")]
+    return list(config_section_names())
 
 
 def classify_sections() -> dict[str, list[str]]:
