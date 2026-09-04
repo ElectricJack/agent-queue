@@ -33,10 +33,11 @@ reason to pin it. Temporary worker occupancy is not a reason to change the
 required intelligence class.
 
 Return one decision for every supplied task and no others. Copy each task's
-`task_id` and `input_hash` exactly. Choose `intelligence_class` and optional
+`task_id` exactly. AQ attaches the freshness hash deterministically; do not
+return `input_hash`. Choose `intelligence_class` and optional
 `provider` only from the supplied options. Give a concise, non-empty `reason`.
 Return exactly one JSON object with this shape and no extra fields:
 
 ```json
-{"decisions":[{"task_id":"<task_id>","input_hash":"<input_hash>","intelligence_class":"<available class>","provider":null,"reason":"<why this class fits>"}]}
+{"decisions":[{"task_id":"<task_id>","intelligence_class":"<available class>","provider":null,"reason":"<why this class fits>"}]}
 ```

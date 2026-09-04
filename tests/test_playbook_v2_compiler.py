@@ -260,14 +260,14 @@ def test_default_assignment_lowers_to_one_ai_node():
     assert schema["required"] == ["decisions"]
     assert schema["additionalProperties"] is False
     decision = schema["properties"]["decisions"]["items"]
-    assert decision["required"] == [
-        "task_id", "input_hash", "intelligence_class", "reason"
-    ]
+    assert decision["required"] == ["task_id", "intelligence_class", "reason"]
+    assert "input_hash" not in decision["properties"]
     assert decision["additionalProperties"] is False
     assert body["steps"]["assignment-route--done"]["result"] == {
         "type": "binding_ref",
         "binding": "routing_result",
     }
+    assert body["steps"]["assignment-route--failed"]["outcome"] == "failed"
 
 
 def test_non_loop_output_reference_lowers_to_binding_ref():

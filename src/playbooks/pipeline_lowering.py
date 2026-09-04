@@ -370,13 +370,12 @@ def lower_assignment(source: PlaybookSource) -> tuple[Mapping[str, Any], list[Di
                                 "type": "object",
                                 "properties": {
                                     "task_id": {"type": "string"},
-                                    "input_hash": {"type": "string"},
                                     "intelligence_class": {"type": "string"},
                                     "provider": {"type": ["string", "null"]},
                                     "reason": {"type": "string", "minLength": 1, "maxLength": 400},
                                 },
                                 "required": [
-                                    "task_id", "input_hash", "intelligence_class", "reason"
+                                    "task_id", "intelligence_class", "reason"
                                 ],
                                 "additionalProperties": False,
                             },
@@ -392,7 +391,10 @@ def lower_assignment(source: PlaybookSource) -> tuple[Mapping[str, Any], list[Di
                     "timeout_seconds": 300,
                 },
                 "save_result_as": "routing_result",
-                "transitions": {"completed": done, "runtime_error": done},
+                "transitions": {
+                    "completed": done,
+                    "runtime_error": "assignment-route--failed",
+                },
             },
             done: {
                 "type": "terminal",
@@ -401,6 +403,13 @@ def lower_assignment(source: PlaybookSource) -> tuple[Mapping[str, Any], list[Di
                 "source": source_ref,
                 "outcome": "completed",
                 "result": {"type": "binding_ref", "binding": "routing_result"},
+            },
+            "assignment-route--failed": {
+                "type": "terminal",
+                "rule": rule_id,
+                "title": "Assignment routing failed",
+                "source": source_ref,
+                "outcome": "failed",
             },
         },
     }, []

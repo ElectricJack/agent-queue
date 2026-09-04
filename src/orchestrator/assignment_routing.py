@@ -94,8 +94,8 @@ def validate_assignment_response(
         providers_by_class[class_id].add(provider)
     seen: set[str] = set()
     decisions: list[AssignmentDecision] = []
-    required = {"task_id", "input_hash", "intelligence_class", "reason"}
-    allowed = required | {"provider"}
+    required = {"task_id", "intelligence_class", "reason"}
+    allowed = required | {"provider", "input_hash"}
     for index, item in enumerate(raw):
         if not isinstance(item, dict):
             raise AssignmentRoutingValidationError(f"decision {index} must be an object")
@@ -109,7 +109,7 @@ def validate_assignment_response(
         if task_id in seen:
             raise AssignmentRoutingValidationError(f"duplicate decision for task {task_id}")
         seen.add(task_id)
-        if item.get("input_hash") != expected[task_id]:
+        if "input_hash" in item and item["input_hash"] != expected[task_id]:
             raise AssignmentRoutingValidationError(f"input_hash mismatch for task {task_id}")
         class_id = item.get("intelligence_class")
         provider = item.get("provider")
