@@ -13,6 +13,10 @@ const scaleFor = (density: LayoutDensity = "comfortable") => DENSITY_SCALE[densi
 export const toPx = (x: number, y: number, density?: LayoutDensity) => ({
   x: x * UNIT_W * scaleFor(density), y: y * UNIT_H * scaleFor(density),
 });
+export const fromPx = (position: { x: number; y: number }, density?: LayoutDensity) => {
+  const scale = scaleFor(density);
+  return { x: position.x / UNIT_W / scale, y: position.y / UNIT_H / scale };
+};
 export const sizePx = (w: number, h: number, density?: LayoutDensity) => ({
   width: w * UNIT_W * scaleFor(density), height: h * UNIT_H * scaleFor(density),
 });

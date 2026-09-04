@@ -12,6 +12,7 @@ vi.mock("@aq/ts-client", async () => ({
 
 import { useTidyLayout } from "../graphLayout";
 import { registerLayoutRefetch } from "../../pages/command-center/layout-v2/liveRegistry";
+import { GRAPH_POSITIONS_STORAGE_KEY, saveGraphPosition } from "../../pages/command-center/layout-v2/manualPositions";
 
 const clients: QueryClient[] = [];
 // One client per test: a fresh one per render would reset the mutation observer.
@@ -22,7 +23,7 @@ function makeWrapper() {
     <QueryClientProvider client={client}>{children}</QueryClientProvider>;
 }
 
-beforeEach(() => { transport.tidy.mockReset(); transport.job.mockReset(); });
+beforeEach(() => { transport.tidy.mockReset(); transport.job.mockReset(); localStorage.clear(); });
 afterEach(() => { cleanup(); clients.splice(0).forEach((c) => c.clear()); vi.useRealTimers(); });
 
 describe("useTidyLayout", () => {
@@ -33,6 +34,7 @@ describe("useTidyLayout", () => {
     transport.job
       .mockResolvedValueOnce({ data: { id: "job-1", status: "running" } })
       .mockResolvedValue({ data: { id: "job-1", status: "done" } });
+    saveGraphPosition("p1", "task-1", { x: 2, y: 3 });
 
     const { result } = renderHook(() => useTidyLayout("p1"), { wrapper: makeWrapper() });
     vi.useFakeTimers();
@@ -43,6 +45,7 @@ describe("useTidyLayout", () => {
 
     await act(async () => { await vi.advanceTimersByTimeAsync(2000); });
     expect(refetch).toHaveBeenCalledOnce();
+    expect(JSON.parse(localStorage.getItem(GRAPH_POSITIONS_STORAGE_KEY)!)).not.toHaveProperty("p1");
     // One more turn: the observer's notification lands after the tick that
     // resolved the mutation.
     await act(async () => { await vi.advanceTimersByTimeAsync(100); });

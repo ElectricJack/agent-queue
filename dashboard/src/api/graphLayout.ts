@@ -25,6 +25,7 @@ import {
 import { client } from "./client";
 import type { Rect } from "../pages/command-center/layout-v2/units";
 import { refetchLayout } from "../pages/command-center/layout-v2/liveRegistry";
+import { clearGraphPositions } from "../pages/command-center/layout-v2/manualPositions";
 
 export type Variant = "all" | "active";
 
@@ -239,6 +240,7 @@ export function useTidyLayout(projectId: string) {
       if (failed.length > 0) throw new Error(`layout job failed: ${failed.join(", ")}`);
       return r.data;
     },
+    onSuccess: () => clearGraphPositions(projectId),
     onSettled: () => {
       // The extent moves and every tile is stale: the cached query and the
       // mounted layers both have to be told.

@@ -127,7 +127,7 @@ export function toFlowElements(store: LayoutStore, ctx: FlowContext, previous?: 
     } else {
       push(n.id, sig, () => ({
         id: n.id, type: "task", position: toPx(n.x, n.y + ctx.offsetY, ctx.density), ...sizePx(1, 1, ctx.density),
-        zIndex: 100 + n.depth, draggable: false, connectable: false, data: taskNodeData(n, ctx, gates),
+        zIndex: 100 + n.depth, draggable: true, connectable: false, data: taskNodeData(n, ctx, gates),
       }));
     }
   }

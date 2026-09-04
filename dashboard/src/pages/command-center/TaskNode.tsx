@@ -66,7 +66,7 @@ export function TaskCard({ data, selected = false, fluid = false, layoutScale = 
         aria-label={`Open task ${task.title}`}
         aria-pressed={selected}
         data-task-id={task.id}
-        className="nodrag nopan flex min-h-0 flex-1 cursor-pointer flex-col overflow-hidden rounded-md p-2 text-left focus-visible:outline focus-visible:outline-2 focus-visible:outline-indigo-300"
+        className="nopan flex min-h-0 flex-1 cursor-grab flex-col overflow-hidden rounded-md p-2 text-left active:cursor-grabbing focus-visible:outline focus-visible:outline-2 focus-visible:outline-indigo-300"
         onClick={(event) => {
           if (onOpenTask) {
             event.stopPropagation();

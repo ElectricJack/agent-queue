@@ -1,4 +1,5 @@
 import type { ReactNode } from "react";
+import type { NodeChange } from "@xyflow/react";
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MemoryRouter } from "react-router-dom";
@@ -10,6 +11,7 @@ interface FlowNode {
   type?: string;
   position: { x: number; y: number };
   selected?: boolean;
+  draggable?: boolean;
   data: Record<string, unknown>;
 }
 
@@ -19,6 +21,9 @@ interface FlowProps {
   onlyRenderVisibleElements?: boolean;
   onMove?: (event: unknown, viewport: { x: number; y: number; zoom: number }) => void;
   onNodeClick?: (event: unknown, node: FlowNode) => void;
+  onNodesChange?: (changes: NodeChange[]) => void;
+  onNodeDragStop?: (event: unknown, node: FlowNode) => void;
+  nodesDraggable?: boolean;
 }
 
 const flow = vi.hoisted(() => ({ current: null as FlowProps | null }));
@@ -119,6 +124,26 @@ beforeEach(() => {
 afterEach(cleanup);
 
 describe("LayoutCanvas", () => {
+  it("moves task cards and restores their saved positions", () => {
+    const first = render(<MemoryRouter><LayoutCanvas {...base} /></MemoryRouter>);
+    expect(flow.current?.nodesDraggable).toBe(true);
+    expect(flow.current?.nodes.find((node) => node.id === "z")?.draggable).toBe(true);
+
+    act(() => flow.current!.onNodesChange!([
+      { id: "z", type: "position", position: { x: 720, y: 312 }, dragging: true },
+    ]));
+    const moved = flow.current!.nodes.find((node) => node.id === "z")!;
+    expect(moved.position).toEqual({ x: 720, y: 312 });
+    act(() => flow.current!.onNodeDragStop!(null, moved));
+    expect(JSON.parse(localStorage.getItem("aq.command-center.graph-positions")!)).toMatchObject({
+      p1: { z: { x: 3, y: 2 } },
+    });
+
+    first.unmount();
+    render(<MemoryRouter><LayoutCanvas {...base} /></MemoryRouter>);
+    expect(flow.current!.nodes.find((node) => node.id === "z")?.position).toEqual({ x: 720, y: 312 });
+  });
+
   it("renders server nodes with visibility culling and sends viewport-derived params", () => {
     render(<MemoryRouter><LayoutCanvas {...base} /></MemoryRouter>);
     expect(screen.getByTestId("node-e")).toBeInTheDocument();

@@ -23,6 +23,11 @@ const card = (status: string, over: Partial<TaskNodeData["hierarchy"]> = {}): Ta
 });
 
 describe("finished cards", () => {
+  it("leaves the main card available as the node drag surface", () => {
+    render(<TaskCard data={card("READY")} />);
+    expect(screen.getByRole("button", { name: "Open task Ship it" })).not.toHaveClass("nodrag");
+  });
+
   it("drops the progress ring once a card is settled", () => {
     render(<TaskCard data={card("COMPLETED")} />);
     // The number stays — it is the card's only completion signal now.

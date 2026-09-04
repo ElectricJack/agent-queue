@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import {
   Background, Controls, Panel, ReactFlow, ReactFlowProvider, useReactFlow, type Edge, type Node,
+  type NodeChange,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import TaskNode from "../TaskNode";
@@ -14,8 +15,15 @@ import { useLayoutExtents, useLayoutNode, type TilesParams, type Variant } from 
 import { useLayoutTiles } from "./useLayoutTiles";
 import { refetchLayout, registerLayoutRefetch } from "./liveRegistry";
 import { toFlowElements, type FlowCache, type FlowHandlers } from "./flowNodes";
-import { CELL, maxDepthForZoom, sizePx, toPx, worldRectFromViewport, type Rect } from "./units";
+import { CELL, fromPx, maxDepthForZoom, sizePx, toPx, worldRectFromViewport, type Rect } from "./units";
 import { DENSITY_STORAGE_KEY, DEFAULT_DENSITY, storedDensity, type LayoutDensity } from "./density";
+import {
+  GRAPH_POSITIONS_CHANGED,
+  PLAYBOOK_POSITION_SCOPE,
+  saveGraphPosition,
+  storedGraphPositions,
+  type ManualPositions,
+} from "./manualPositions";
 import {
   NODE_HEIGHT, NODE_WIDTH, type ContainerNodeData, type GraphViewProps, type GraphWorker,
   type SelectableTask, type TaskNodeData,
@@ -66,6 +74,18 @@ const RELATION_LABELS: Record<string, string> = {
 };
 
 interface Viewport { x: number; y: number; zoom: number }
+
+function movable(node: Node): boolean {
+  return node.type === "playbook" || (node.type === "task" && !node.className?.includes("aq-stub"));
+}
+
+function positionScope(node: Node): string | null {
+  if (node.type === "playbook") return PLAYBOOK_POSITION_SCOPE;
+  const projectId = (node.data as Partial<TaskNodeData>).projectId;
+  return typeof projectId === "string" && projectId ? projectId : null;
+}
+
+const snapPosition = (value: number) => Math.round(value * 10) / 10;
 
 export interface LayoutCanvasProps extends Pick<GraphViewProps,
   "onTaskClick" | "onBackgroundClick" | "selectedTaskId" | "playbooks" | "selectedPlaybookId" | "onPlaybookClick"> {
@@ -203,6 +223,8 @@ function Inner(props: LayoutCanvasProps) {
   const [localSelectedId, setLocalSelectedId] = useState<string | null>(null);
   const [kbFocusId, setKbFocusId] = useState<string | null>(null);
   const [density, setDensity] = useState<LayoutDensity>(storedDensity);
+  const [manualPositions, setManualPositions] = useState<ManualPositions>(storedGraphPositions);
+  const [dragPositions, setDragPositions] = useState<Record<string, { x: number; y: number }>>({});
   const frame = useRef<number | null>(null);
   const trailing = useRef<Viewport | null>(null);
 
@@ -218,6 +240,11 @@ function Inner(props: LayoutCanvasProps) {
   }, []);
   useEffect(() => () => { if (frame.current !== null) cancelAnimationFrame(frame.current); }, []);
   useEffect(() => { window.localStorage.setItem(DENSITY_STORAGE_KEY, density); }, [density]);
+  useEffect(() => {
+    const reload = () => setManualPositions(storedGraphPositions());
+    window.addEventListener(GRAPH_POSITIONS_CHANGED, reload);
+    return () => window.removeEventListener(GRAPH_POSITIONS_CHANGED, reload);
+  }, []);
 
   // Leading-edge rAF throttle: the first move of a gesture lands immediately
   // (so the level of detail reacts at once) and the rest coalesce into the
@@ -360,7 +387,7 @@ function Inner(props: LayoutCanvasProps) {
     position: toPx(i % PLAYBOOKS_PER_ROW, -1.5 - Math.floor(i / PLAYBOOKS_PER_ROW) * 1.3, density),
     width: NODE_WIDTH,
     height: NODE_HEIGHT,
-    draggable: false,
+    draggable: true,
     connectable: false,
     data: { playbook, onOpenPlaybook: openPlaybook },
   })), [playbooks, openPlaybook, density]);
@@ -380,18 +407,52 @@ function Inner(props: LayoutCanvasProps) {
   // and React Flow re-renders nothing for them.
   const nodes = useMemo(() => {
     const all = [...playbookNodes, ...headers, ...projectIds.flatMap((pid) => layers.get(pid)?.nodes ?? [])];
-    if (!selectedId && !kbFocusId) return all;
     return all.map((node) => {
+      const scope = positionScope(node);
+      const saved = scope ? manualPositions[scope]?.[node.id] : undefined;
+      const offsetY = scope && scope !== PLAYBOOK_POSITION_SCOPE ? (offsets.get(scope) ?? 0) : 0;
+      const position = dragPositions[node.id]
+        ?? (saved ? toPx(saved.x, saved.y + offsetY, density) : node.position);
       const selected = node.id === selectedId;
       const focused = node.id === kbFocusId;
-      if (!selected && !focused) return node;
+      if (!saved && !dragPositions[node.id] && !selected && !focused) return node;
       return {
         ...node,
+        position,
         selected,
         className: focused ? [node.className, "aq-focused"].filter(Boolean).join(" ") : node.className,
       };
     });
-  }, [playbookNodes, headers, projectIds, layers, selectedId, kbFocusId]);
+  }, [playbookNodes, headers, projectIds, layers, selectedId, kbFocusId, manualPositions, dragPositions, offsets, density]);
+
+  const onNodesChange = useCallback((changes: NodeChange[]) => {
+    const allowed = new Set(nodes.filter(movable).map((node) => node.id));
+    setDragPositions((current) => {
+      let next = current;
+      for (const change of changes) {
+        if (change.type !== "position" || !change.position || !allowed.has(change.id)) continue;
+        if (next === current) next = { ...current };
+        next[change.id] = change.position;
+      }
+      return next;
+    });
+  }, [nodes]);
+
+  const onNodeDragStop = useCallback((_: MouseEvent | TouchEvent, node: Node) => {
+    if (!movable(node)) return;
+    const scope = positionScope(node);
+    if (!scope) return;
+    const world = fromPx(node.position, density);
+    const offsetY = scope === PLAYBOOK_POSITION_SCOPE ? 0 : (offsets.get(scope) ?? 0);
+    const position = { x: snapPosition(world.x), y: snapPosition(world.y - offsetY) };
+    setManualPositions(saveGraphPosition(scope, node.id, position));
+    setDragPositions((current) => {
+      if (!(node.id in current)) return current;
+      const next = { ...current };
+      delete next[node.id];
+      return next;
+    });
+  }, [density, offsets]);
   const edges = useMemo(
     () => projectIds.flatMap((pid) => layers.get(pid)?.edges ?? []),
     [projectIds, layers],
@@ -549,7 +610,7 @@ function Inner(props: LayoutCanvasProps) {
           minZoom={0.15}
           maxZoom={2}
           onMove={onMove}
-          nodesDraggable={false}
+          nodesDraggable
           nodesConnectable={false}
           nodesFocusable={false}
           edgesFocusable={false}
@@ -562,6 +623,8 @@ function Inner(props: LayoutCanvasProps) {
           zoomOnScroll={false}
           proOptions={{ hideAttribution: true }}
           onNodeClick={(_, node) => openNode(node)}
+          onNodesChange={onNodesChange}
+          onNodeDragStop={onNodeDragStop}
           onPaneClick={clearSelection}
         >
           <Background gap={24} color="#1f2937" />
