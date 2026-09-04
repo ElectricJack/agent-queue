@@ -145,6 +145,11 @@ async def orch(db, config):
     o.db = db
     o._agent_reconciler._db = db
     o.git = MagicMock()
+    # Pool launch installs the managed git excludes before it hands a
+    # checkout to a session (src/orchestrator/pools.py), which reaches for
+    # the real GitManager; these fixtures have no checkout.  Same stub as
+    # tests/test_pool_reconciler.py's ``orch`` fixture.
+    o._ensure_control_files_excluded = AsyncMock(return_value=True)
     o._last_scheduler_state = None  # no snapshot yet → admissible
     o._run_completion_pipeline = AsyncMock(return_value=(None, True))
     o._worktree_slots = MagicMock(
