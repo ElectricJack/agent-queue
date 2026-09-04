@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
 import time
 from dataclasses import asdict
+from pathlib import Path
 from typing import Any
 
 
@@ -212,8 +212,10 @@ class PlaybookCommandsMixin:
             path = vault_root / "system" / "playbooks" / f"{playbook_id}.md"
         elif scope == "project":
             path = vault_root / "projects" / identifier / "playbooks" / f"{playbook_id}.md"
-        else:
+        elif scope == "agent_type":
             path = vault_root / "agent-types" / identifier / "playbooks" / f"{playbook_id}.md"
+        else:
+            return {"error": f"Unsupported playbook scope: {scope}"}
         resolved = path.resolve()
         try:
             resolved.relative_to(vault_root)
@@ -227,6 +229,278 @@ class PlaybookCommandsMixin:
             "path": str(resolved),
             "markdown": markdown,
             "source_hash": source_digest(markdown),
+        }
+
+    async def _cmd_update_playbook_source(self, args: dict) -> dict:
+        """Atomically save Markdown, compile a V2 artifact, and activate it.
+
+        A failed compile leaves the newly saved source in the vault for the
+        author to repair while the previous immutable artifact remains active.
+        There is no V1 manager or compiled-registry fallback in this path.
+        """
+        import os
+        import tempfile
+
+        from src.commands.principal import current_principal
+        from src.playbooks.activation import profile_fingerprint
+        from src.playbooks.authoring import PlaybookSource, SourceError
+        from src.playbooks.definition import canonical_bytes, source_digest
+        from src.playbooks.pipeline_lowering import lower_assignment, lower_pipeline
+        from src.playbooks.proposal import propose
+        from src.playbooks.run_state import PlaybookStorageError
+
+        playbook_id = str(args.get("playbook_id") or "").strip()
+        markdown = args.get("markdown")
+        expected_hash = str(args.get("expected_source_hash") or "").strip()
+        if not playbook_id:
+            return {"error": "playbook_id is required"}
+        if not isinstance(markdown, str) or not markdown:
+            return {"error": "markdown is required"}
+
+        rows = [
+            dict(row)
+            for row in await self.db.list_playbook_activations(enabled_only=False)
+            if dict(row).get("playbook_id") == playbook_id
+        ]
+        if not rows:
+            return {"error": f"Playbook '{playbook_id}' not found"}
+        row = rows[0]
+        configured = getattr(self.config, "vault_root", None)
+        vault_root = Path(configured or (Path(self.config.data_dir) / "vault")).resolve()
+        scope = row["scope"]
+        identifier = row.get("scope_identifier") or ""
+        if scope == "system":
+            path = vault_root / "system" / "playbooks" / f"{playbook_id}.md"
+        elif scope == "project":
+            path = vault_root / "projects" / identifier / "playbooks" / f"{playbook_id}.md"
+        elif scope == "agent_type":
+            path = vault_root / "agent-types" / identifier / "playbooks" / f"{playbook_id}.md"
+        else:
+            return {"error": f"Unsupported playbook scope: {scope}"}
+        path = path.resolve()
+        try:
+            path.relative_to(vault_root)
+        except ValueError:
+            return {"error": f"Playbook source path escapes vault: {playbook_id}"}
+        if not path.is_file():
+            return {"error": f"Playbook source not found: {playbook_id}"}
+
+        try:
+            current = path.read_text(encoding="utf-8")
+        except OSError as exc:
+            return {"error": f"Failed to read current source: {exc}"}
+        current_hash = source_digest(current)
+        if expected_hash and current_hash != expected_hash:
+            return {
+                "playbook_id": playbook_id,
+                "source_hash": current_hash,
+                "compiled": False,
+                "error": "conflict",
+                "reason": "vault_changed_underneath",
+                "current_source_hash": current_hash,
+                "expected_source_hash": expected_hash,
+            }
+
+        try:
+            fd, tmp_name = tempfile.mkstemp(
+                prefix=f".{playbook_id}.", suffix=".md.tmp", dir=str(path.parent)
+            )
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                    handle.write(markdown)
+                    handle.flush()
+                    os.fsync(handle.fileno())
+                os.replace(tmp_name, path)
+            except BaseException:
+                Path(tmp_name).unlink(missing_ok=True)
+                raise
+        except OSError as exc:
+            return {"error": f"Failed to write source: {exc}"}
+
+        digest = source_digest(markdown)
+        loaded = PlaybookSource.load(path, vault_root=vault_root)
+        if isinstance(loaded, SourceError):
+            return {
+                "playbook_id": playbook_id,
+                "source_hash": digest,
+                "compiled": False,
+                "errors": list(loaded.errors),
+                "retries_used": 0,
+            }
+        if loaded.frontmatter.get("id") != playbook_id:
+            return {
+                "playbook_id": playbook_id,
+                "source_hash": digest,
+                "compiled": False,
+                "errors": ["frontmatter id must match the playbook being edited"],
+                "retries_used": 0,
+            }
+
+        contracts, profiles, events = await self._v2_lookups()
+        kind = str(loaded.frontmatter.get("kind") or "")
+        if kind == "pipeline":
+            body, lowering_diagnostics = lower_pipeline(loaded, contracts=contracts)
+        elif kind == "assignment-routing":
+            body, lowering_diagnostics = lower_assignment(loaded)
+        else:
+            body, lowering_diagnostics = {}, []
+        if not body:
+            errors = [diagnostic.message for diagnostic in lowering_diagnostics]
+            if not errors:
+                errors = ["prose playbook requires a compiler-agent proposal"]
+            return {
+                "playbook_id": playbook_id,
+                "source_hash": digest,
+                "compiled": False,
+                "errors": errors,
+                "retries_used": 0,
+            }
+
+        store = self._v2_engine().services.artifact_store
+        baseline = None
+        active_sha = row.get("active_artifact_sha256")
+        if active_sha:
+            try:
+                baseline = store.load(active_sha)
+            except (OSError, ValueError, PlaybookStorageError) as exc:
+                return {
+                    "playbook_id": playbook_id,
+                    "source_hash": digest,
+                    "compiled": False,
+                    "errors": [f"active V2 artifact could not be loaded: {exc}"],
+                    "retries_used": 0,
+                }
+        proposal = propose(
+            loaded,
+            body,
+            baseline=baseline,
+            contracts=contracts,
+            profiles=profiles,
+            events=events,
+            version=(baseline.version + 1) if baseline is not None else 1,
+            enforce_inventory=False,
+        )
+        diagnostics = [*lowering_diagnostics, *proposal.diagnostics]
+        errors = [
+            diagnostic.message
+            for diagnostic in diagnostics
+            if diagnostic.severity in {"error", "question"}
+        ]
+        if proposal.artifact is None or errors:
+            return {
+                "playbook_id": playbook_id,
+                "source_hash": digest,
+                "compiled": False,
+                "errors": errors or ["V2 compiler did not produce an artifact"],
+                "retries_used": 0,
+            }
+
+        artifact = proposal.artifact
+        artifact_sha = proposal.artifact_sha256
+        if artifact_sha is None:
+            return {
+                "playbook_id": playbook_id,
+                "source_hash": digest,
+                "compiled": False,
+                "errors": ["V2 compiler did not hash the artifact"],
+                "retries_used": 0,
+            }
+        artifact_scope, artifact_identifier = self._v2_scope(artifact)
+        if (artifact_scope, artifact_identifier) != (scope, identifier):
+            return {
+                "playbook_id": playbook_id,
+                "source_hash": digest,
+                "compiled": False,
+                "errors": [
+                    (
+                        "frontmatter scope must match the installed activation "
+                        f"({scope}:{identifier or '<root>'})"
+                    )
+                ],
+                "retries_used": 0,
+            }
+        artifact_bytes = canonical_bytes(artifact)
+        aggregate_profiles = profile_fingerprint(dict(artifact.compiled_against.profiles))
+        validation = json.dumps(
+            {
+                "errors": [],
+                "diagnostics": [asdict(diagnostic) for diagnostic in diagnostics],
+                "save_and_compile": True,
+            },
+            default=str,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        remove_file_on_failure = False
+        try:
+            async with self.db.artifact_hash_lock([artifact_sha]) as conn:
+                existing_row = await self.db.get_playbook_artifact_row(artifact_sha, conn=conn)
+                file_existed = store.exists(artifact_sha)
+                remove_file_on_failure = existing_row is None and not file_existed
+                ref = store.put(
+                    artifact,
+                    source_digest=proposal.source_digest,
+                    contract_fingerprint=proposal.contract_fingerprint,
+                    profile_fingerprint=aggregate_profiles,
+                    compiler_build=proposal.compiler_build,
+                    version=artifact.version,
+                )
+                await self.db.upsert_playbook_artifact(
+                    ref,
+                    scope=artifact_scope,
+                    scope_identifier=artifact_identifier,
+                    profile_fingerprint=aggregate_profiles,
+                    path=store.path_for(ref.artifact_sha256),
+                    size_bytes=len(artifact_bytes),
+                    validation=validation,
+                    conn=conn,
+                )
+        except BaseException as exc:
+            if remove_file_on_failure:
+                store.delete(artifact_sha)
+            if not isinstance(exc, Exception):
+                raise
+            return {
+                "playbook_id": playbook_id,
+                "source_hash": digest,
+                "compiled": False,
+                "errors": [f"V2 artifact persistence failed: {exc}"],
+                "retries_used": 0,
+            }
+
+        principal = current_principal()
+        actor = principal.describe() if principal is not None else "local"
+        try:
+            await self.db.set_playbook_activation(
+                playbook_id=playbook_id,
+                scope=artifact_scope,
+                scope_identifier=artifact_identifier,
+                artifact_sha256=ref.artifact_sha256,
+                enabled=bool(row.get("enabled", True)),
+                activated_by=actor,
+                health="ready" if row.get("enabled", True) else "disabled",
+                reasons="[]",
+            )
+        except BaseException as exc:
+            if not isinstance(exc, Exception):
+                raise
+            return {
+                "playbook_id": playbook_id,
+                "source_hash": digest,
+                "compiled": False,
+                "errors": [f"V2 activation failed: {exc}"],
+                "retries_used": 0,
+            }
+
+        return {
+            "playbook_id": playbook_id,
+            "source_hash": digest,
+            "compiled": True,
+            "version": artifact.version,
+            "node_count": len(artifact.steps),
+            "scope": artifact_scope,
+            "triggers": list(dict.fromkeys(rule.trigger.event_type for rule in artifact.rules)),
+            "retries_used": 0,
         }
 
     async def _cmd_inspect_playbook_run(self, args: dict) -> dict:
