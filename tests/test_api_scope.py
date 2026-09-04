@@ -38,6 +38,7 @@ EXPECTED_AGENT_COMMANDS = {
     "formula_list",
     "formula_show",
     "subagent_event",
+    "reparent_task",
 }
 
 
@@ -187,6 +188,23 @@ class TestCheckCommandScope:
 
     def test_agent_command_set_contents(self):
         assert set(AGENT_COMMAND_SET) == EXPECTED_AGENT_COMMANDS
+
+    def test_reparent_task_names_a_task_other_than_the_held_one(self):
+        """The moved task is a worker filing, never the held task itself.
+
+        The generic ``task_id`` pin would refuse every worker reparent on a
+        task-lifecycle token; authorisation for the *moved* task is derived
+        from the held task inside ``_cmd_reparent_task`` instead.
+        """
+        args = {"task_id": "t1.2", "parent_id": "epic"}
+        assert check_command_scope("reparent_task", args, SESSION) is None
+        assert args["task_id"] == "t1.2"
+        assert args["project_id"] == "p1" and args["session_id"] == "s1"
+
+    def test_reparent_task_still_pins_project_and_session(self):
+        other = {"task_id": "t1.2", "root": True, "project_id": "p2"}
+        msg = check_command_scope("reparent_task", other, SESSION)
+        assert msg is not None and "project_id mismatch" in msg
 
 
 class TestScopeAndCapabilityCompose:

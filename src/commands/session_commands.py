@@ -810,7 +810,8 @@ class SessionCommandsMixin:
                     "code": "hierarchy.open_children",
                     "error": (
                         f"task {task_id} has {len(open_children)} open child(ren); close them "
-                        "first or pass abandon_children=true"
+                        "first, move findings you filed aside with `aq task reparent` "
+                        "(--parent-id <container> or --root), or pass abandon_children=true"
                     ),
                     "open_children": open_children,
                 }

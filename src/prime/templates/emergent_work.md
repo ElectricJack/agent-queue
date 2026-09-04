@@ -26,3 +26,9 @@ further up or across the tree can be selected as a parent. Pass `--root` when re
 exit-gate, or other cross-cutting work does not belong to the epic's deliverable. The root
 filing keeps its `discovered-from` edge to the task you hold and receives a routing gate;
 `--parent` and `--root` cannot be combined.
+
+A finding parented under your own task counts as an open child and blocks your close
+(`hierarchy.open_children`). Do not re-file it or abandon it: move it with
+`aq task reparent --task-id <finding-id> --parent-id <container-id>` (or `--root`). You may
+move only unclaimed tasks you filed, to the same parents you could have filed under; a move
+to root receives the routing gate a root filing gets.
