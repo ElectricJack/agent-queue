@@ -671,6 +671,9 @@ from .playbook_migration_acknowledge_response_422 import PlaybookMigrationAcknow
 from .playbook_migration_inventory_request import PlaybookMigrationInventoryRequest
 from .playbook_migration_inventory_response import PlaybookMigrationInventoryResponse
 from .playbook_migration_inventory_response_422 import PlaybookMigrationInventoryResponse422
+from .playbook_migration_inventory_response_evidence_errors_item import (
+    PlaybookMigrationInventoryResponseEvidenceErrorsItem,
+)
 from .playbook_migration_unacknowledge_request import PlaybookMigrationUnacknowledgeRequest
 from .playbook_migration_unacknowledge_response_422 import PlaybookMigrationUnacknowledgeResponse422
 from .playbook_node_llm_config import PlaybookNodeLlmConfig
@@ -1819,6 +1822,7 @@ __all__ = (
     "PlaybookMigrationInventoryRequest",
     "PlaybookMigrationInventoryResponse",
     "PlaybookMigrationInventoryResponse422",
+    "PlaybookMigrationInventoryResponseEvidenceErrorsItem",
     "PlaybookMigrationUnacknowledgeRequest",
     "PlaybookMigrationUnacknowledgeResponse422",
     "PlaybookNodeLlmConfig",

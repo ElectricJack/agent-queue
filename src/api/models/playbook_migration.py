@@ -79,6 +79,14 @@ class PlaybookMigrationInventoryResponse(V2Model):
     #: ``ready``, minus acknowledged and frontmatter-disabled playbooks.
     blocking: int
     pending_events_total: int
+    #: False when an evidence source could not be read.  The counts and
+    #: ``blocking`` above are then computed against evidence that was never
+    #: collected, so a zero ``blocking`` does not mean the fleet can cut over.
+    evidence_complete: bool = True
+    #: The reads that failed, one ``{"source", "error"}`` each.
+    evidence_errors: list[dict[str, Any]] = []
+    #: One reason per unread evidence source; empty when the report is complete.
+    blocking_reasons: list[str] = []
     entries: list[MigrationInventoryEntryDTO] = []
     #: Present only when the caller filtered; the counts above always describe
     #: the whole fleet regardless.

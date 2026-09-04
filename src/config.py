@@ -394,72 +394,6 @@ class LoggingConfig:
 
 
 @dataclass
-class ChatAnalyzerConfig:
-    """Configuration for the Discord chat-analyzer suggester gate stack.
-
-    The chat analyzer is the post-``observe()`` pipeline that decides
-    whether to surface a suggestion to Discord.  Each field is a knob on
-    one of the gates introduced by the chat-analyzer suggestion-quality
-    overhaul plan.
-
-    * ``min_confidence`` (Phase 4) — minimum
-      ``intent_confidence × novelty × actionability`` product required
-      before a suggestion is posted.  Suggestions below this threshold
-      are dropped silently and tagged ``gate="confidence"`` in the
-      structured log.
-    * ``in_flight_min_confidence`` (Phase 5) — elevated minimum that
-      replaces ``min_confidence`` whenever the project has at least one
-      ``IN_PROGRESS`` task.  When a ``Stop Task`` button is showing in
-      the channel header the user is watching execution, not shopping
-      for new work, so we substantially raise the bar — only
-      high-signal suggestions (e.g. "two stuck tasks older than 30
-      min") clear it.  Default ``0.85``.  Suppressions are tagged
-      ``gate="in_flight_active_task"``.  Set this to a value ``>=
-      min_confidence`` for the escalation to mean anything; a value
-      ``<= min_confidence`` is technically valid but a no-op.
-    * ``dismiss_cooldown_seconds`` (Phase 6) — number of seconds after
-      a user dismisses a suggestion in a channel during which no new
-      suggestions are posted to that ``(project_id, channel_id)``
-      pair.  A user dismissal is the strongest negative signal we
-      have; honor it by going quiet for that channel for a window.
-      Default ``600`` (10 minutes).  Set to ``0`` to disable the gate
-      entirely.  Suppressions are tagged ``gate="dismiss_cooldown"``.
-    """
-
-    min_confidence: float = 0.6
-    in_flight_min_confidence: float = 0.85
-    dismiss_cooldown_seconds: int = 600
-
-    def validate(self) -> list[ConfigError]:
-        errors: list[ConfigError] = []
-        if not 0.0 <= self.min_confidence <= 1.0:
-            errors.append(
-                ConfigError(
-                    "chat_analyzer",
-                    "min_confidence",
-                    "must be in [0, 1]",
-                )
-            )
-        if not 0.0 <= self.in_flight_min_confidence <= 1.0:
-            errors.append(
-                ConfigError(
-                    "chat_analyzer",
-                    "in_flight_min_confidence",
-                    "must be in [0, 1]",
-                )
-            )
-        if self.dismiss_cooldown_seconds < 0:
-            errors.append(
-                ConfigError(
-                    "chat_analyzer",
-                    "dismiss_cooldown_seconds",
-                    "must be >= 0",
-                )
-            )
-        return errors
-
-
-@dataclass
 class GlobalSupervisorConfig:
     """Configuration for the *global* supervisor session (``supervisor-global``).
 
@@ -1930,7 +1864,6 @@ class AppConfig:
     scheduling: SchedulingConfig = field(default_factory=SchedulingConfig)
     pause_retry: PauseRetryConfig = field(default_factory=PauseRetryConfig)
     llm: LLMConfig = field(default_factory=LLMConfig)
-    chat_analyzer: ChatAnalyzerConfig = field(default_factory=ChatAnalyzerConfig)
     supervisor: SupervisorConfig = field(default_factory=SupervisorConfig)
     health_check: HealthCheckConfig = field(default_factory=HealthCheckConfig)
     logging: LoggingConfig = field(default_factory=LoggingConfig)
@@ -2110,7 +2043,6 @@ class AppConfig:
         errors.extend(self.scheduling.validate())
         errors.extend(self.pause_retry.validate())
         errors.extend(self.llm.validate())
-        errors.extend(self.chat_analyzer.validate())
         errors.extend(self.supervisor.validate())
         errors.extend(self.auto_task.validate())
         errors.extend(self.archive.validate())
@@ -2228,7 +2160,6 @@ class AppConfig:
         updated.archive = fresh.archive
         updated.monitoring = fresh.monitoring
         updated.llm_logging = fresh.llm_logging
-        updated.chat_analyzer = fresh.chat_analyzer
         updated.max_daily_playbook_tokens = fresh.max_daily_playbook_tokens
         updated.max_concurrent_playbook_runs = fresh.max_concurrent_playbook_runs
         # Substrate sections classified hot-reloadable (work-graph spec §9,
@@ -2274,7 +2205,6 @@ HOT_RELOADABLE_SECTIONS = {
     "max_daily_playbook_tokens",
     "max_concurrent_playbook_runs",
     "rate_limits",
-    "chat_analyzer",
     # -- Framework-overhaul substrate sections (inert until their lane) ----
     "state_machine",
     "work_graph",
@@ -2621,14 +2551,15 @@ def _dataclass_kwargs(cls: type, section: object) -> dict:
 
     A hand-written keyword list is how a declared field becomes an
     unreachable config key.  ``playbooks.v2_api`` and four siblings
-    (steady-ridge-97), and 54 more fields across ``chat_analyzer``,
-    ``streams``, ``logging``, ``monitoring``, ``memory`` and ``metrics``
-    (grand-glacier-97), were all declared, documented and silently pinned to
-    their code default because nobody added a line to the loader.  Deriving
-    the spec from :func:`dataclasses.fields` removes the bug class instead of
-    one instance of it: a field is reachable from YAML the moment it is
-    declared, and ``tests/test_config_section_roundtrip.py`` holds every
-    section at zero gaps.
+    (steady-ridge-97), and 54 more fields across ``chat_analyzer`` (since
+    deleted as dead — prime-torrent-81), ``streams``, ``logging``,
+    ``monitoring``, ``memory`` and ``metrics`` (grand-glacier-97), were all
+    declared, documented and silently pinned to their code default because
+    nobody added a line to the loader.  Deriving the spec from
+    :func:`dataclasses.fields` removes the bug class instead of one instance
+    of it: a field is reachable from YAML the moment it is declared, and
+    ``tests/test_config_section_roundtrip.py`` holds every section at zero
+    gaps.
 
     Only keys the section actually supplies are returned, so the dataclass
     stays the single source of truth for defaults.  A key present with no
@@ -2909,11 +2840,6 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
     if "monitoring" in raw:
         config.monitoring = MonitoringConfig(
             **_dataclass_kwargs(MonitoringConfig, raw["monitoring"])
-        )
-
-    if "chat_analyzer" in raw:
-        config.chat_analyzer = ChatAnalyzerConfig(
-            **_dataclass_kwargs(ChatAnalyzerConfig, raw["chat_analyzer"])
         )
 
     if "streams" in raw:
