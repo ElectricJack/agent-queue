@@ -225,8 +225,10 @@ class GitOpsMixin:
             # branch was previously pushed (e.g. task retries or subtask
             # chains that push intermediate results).  Task branches are
             # owned by a single agent, so force-pushing is safe.
-            await self.git.apush_branch(
+            await self.git.apush_validated_delivery(
                 workspace,
+                f"origin/{repo.default_branch}",
+                task.branch_name,
                 task.branch_name,
                 force_with_lease=True,
                 event_bus=self.bus,

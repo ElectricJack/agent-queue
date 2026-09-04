@@ -27,12 +27,24 @@ from src.api.scope import _FINAL_REVIEWER_COMMANDS, _TRIAGE_COMMANDS
 from src.commands.handler import CommandHandler
 from src.config import AppConfig, DiscordConfig
 from src.database import Database
+from src.git.manager import PullRequestIdentity
 from src.models import Agent, AgentProfile, AgentState, Project, SessionRecord, Task, TaskStatus
 from src.orchestrator import Orchestrator
 from src.vault import ensure_default_intelligence_classes
 
-pytestmark = pytest.mark.asyncio
+#: The identity ``pr_merge`` resolves for the final reviewer's PR.  ``gh``
+#: never runs in this test, so the OIDs only have to be well-formed.
+PR_IDENTITY = PullRequestIdentity(
+    repository="o/r",
+    number=1,
+    base_ref="main",
+    base_oid="a" * 40,
+    head_ref="feature/reviewed",
+    head_oid="b" * 40,
+    changed_files=1,
+)
 
+pytestmark = pytest.mark.asyncio
 
 @pytest.fixture(scope="module")
 def generated_routers():
@@ -125,6 +137,11 @@ async def api(tmp_path, monkeypatch, request, generated_routers):
     }
     merge_pr = AsyncMock(return_value={"success": True, "sha": "merged"})
     monkeypatch.setattr(orch.git, "amerge_pr", merge_pr)
+    # ``pr_merge`` pins the merge to the identity GitHub will merge and fails
+    # closed when it cannot resolve one; there is no real PR behind this URL.
+    monkeypatch.setattr(
+        orch.git, "avalidate_pr_for_merge", AsyncMock(return_value=PR_IDENTITY),
+    )
     monkeypatch.setattr(deps, "_command_handler", handler)
     monkeypatch.setattr(deps, "_orchestrator", orch)
     monkeypatch.setattr(deps, "_token_store", store)
@@ -254,7 +271,12 @@ async def test_final_reviewer_can_merge_its_review_branch_pr(api):
     assert result["sha"] == "merged"
     api.merge_pr.assert_awaited_once()
     assert api.merge_pr.await_args.args[1] == "https://example.invalid/pr/1"
-    assert api.merge_pr.await_args.kwargs == {"method": "squash"}
+    # The merge is pinned to the validated identity, not just the URL.
+    assert api.merge_pr.await_args.kwargs == {
+        "method": "squash",
+        "expected_head_oid": PR_IDENTITY.head_oid,
+        "expected_base_ref": PR_IDENTITY.base_ref,
+    }
 
 
 async def test_final_reviewer_can_call_git_diff(api):

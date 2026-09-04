@@ -277,6 +277,9 @@ class TestTwoAgentsAcquireBranchIsolated:
         mock_git.ahas_remote = AsyncMock(return_value=True)
         mock_git.ahas_uncommitted_changes = AsyncMock(return_value=False)
         mock_git._arun = AsyncMock(return_value="")
+        mock_git.aget_git_path = AsyncMock(
+            side_effect=lambda checkout, path: os.path.join(checkout, ".git", path)
+        )
         mock_git.aforce_clean_workspace = AsyncMock(return_value=True)
         mock_git.make_branch_name = GitManager.make_branch_name
         mock_git.aget_git_path = AsyncMock(
@@ -286,6 +289,12 @@ class TestTwoAgentsAcquireBranchIsolated:
         mock_git.acreate_worktree = AsyncMock()
         mock_git.aremove_worktree = AsyncMock()
         mock_git.set_lock_provider = MagicMock()
+        # ``_prepare_workspace`` installs the managed ``info/exclude``
+        # block and fails closed when Git's path for it cannot be
+        # resolved, so this has to answer awaitably.
+        mock_git.aget_git_path = AsyncMock(
+            side_effect=lambda cwd, path: os.path.join(cwd, ".git", path)
+        )
         orch.git = mock_git
 
         # Agent 1 acquires workspace — should get the original workspace
@@ -758,6 +767,9 @@ class TestThreeOrMoreAgentsConcurrent:
         mock_git.ahas_remote = AsyncMock(return_value=True)
         mock_git.ahas_uncommitted_changes = AsyncMock(return_value=False)
         mock_git._arun = AsyncMock(return_value="")
+        mock_git.aget_git_path = AsyncMock(
+            side_effect=lambda checkout, path: os.path.join(checkout, ".git", path)
+        )
         mock_git.aforce_clean_workspace = AsyncMock(return_value=True)
         mock_git.make_branch_name = GitManager.make_branch_name
         mock_git.aget_git_path = AsyncMock(
@@ -767,6 +779,12 @@ class TestThreeOrMoreAgentsConcurrent:
         mock_git.acreate_worktree = AsyncMock()
         mock_git.aremove_worktree = AsyncMock()
         mock_git.set_lock_provider = MagicMock()
+        # ``_prepare_workspace`` installs the managed ``info/exclude``
+        # block and fails closed when Git's path for it cannot be
+        # resolved, so this has to answer awaitably.
+        mock_git.aget_git_path = AsyncMock(
+            side_effect=lambda cwd, path: os.path.join(cwd, ".git", path)
+        )
         orch.git = mock_git
 
         # All three agents acquire workspaces
@@ -1212,12 +1230,21 @@ class TestGitMutexRegistration:
         mock_git.ahas_remote = AsyncMock(return_value=True)
         mock_git.ahas_uncommitted_changes = AsyncMock(return_value=False)
         mock_git._arun = AsyncMock(return_value="")
+        mock_git.aget_git_path = AsyncMock(
+            side_effect=lambda checkout, path: os.path.join(checkout, ".git", path)
+        )
         mock_git.aforce_clean_workspace = AsyncMock(return_value=True)
         mock_git.make_branch_name = GitManager.make_branch_name
         mock_git.aget_git_path = AsyncMock(
             return_value=os.path.join(clone, ".git", "info", "exclude")
         )
         mock_git.set_lock_provider = MagicMock()
+        # ``_prepare_workspace`` installs the managed ``info/exclude``
+        # block and fails closed when Git's path for it cannot be
+        # resolved, so this has to answer awaitably.
+        mock_git.aget_git_path = AsyncMock(
+            side_effect=lambda cwd, path: os.path.join(cwd, ".git", path)
+        )
         orch.git = mock_git
 
         # Before: no mutex registered
@@ -1268,12 +1295,21 @@ class TestGitMutexRegistration:
         mock_git.ahas_remote = AsyncMock(return_value=True)
         mock_git.ahas_uncommitted_changes = AsyncMock(return_value=False)
         mock_git._arun = AsyncMock(return_value="")
+        mock_git.aget_git_path = AsyncMock(
+            side_effect=lambda checkout, path: os.path.join(checkout, ".git", path)
+        )
         mock_git.aforce_clean_workspace = AsyncMock(return_value=True)
         mock_git.make_branch_name = GitManager.make_branch_name
         mock_git.aget_git_path = AsyncMock(
             return_value=os.path.join(clone, ".git", "info", "exclude")
         )
         mock_git.set_lock_provider = MagicMock()
+        # ``_prepare_workspace`` installs the managed ``info/exclude``
+        # block and fails closed when Git's path for it cannot be
+        # resolved, so this has to answer awaitably.
+        mock_git.aget_git_path = AsyncMock(
+            side_effect=lambda cwd, path: os.path.join(cwd, ".git", path)
+        )
         orch.git = mock_git
 
         await orch._prepare_workspace(task, agent)

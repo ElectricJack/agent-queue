@@ -9,9 +9,13 @@ When you are done with this task, close it explicitly — do not just stop:
 If this task lists **Deliverables**, re-read the plan section you implemented and reconcile
 each listed file, test, command, flag, or registration before you close. A passing close
 checks files and symbols in the worktree; declared test deliverables must also be named in a
-recorded repeatable `--test "..."` command. If an item is intentionally not shipped, make it
-visible to the reviewer with one `--deliverable-unmet 'id: reason'` option per item. A pass
-with an unlisted gap is refused and keeps the task claimed so you can correct it.
+recorded repeatable `--test "..."` command. A test or command item whose target is a command
+line (`aq test tests/a.py tests/b.py`, `ruff check <changed files>`) is met by a recorded
+`--test` / `--command` value that matches it (`<placeholder>` matches any arguments), or,
+for tests, by running each named suite in its own `--test`. If an item is intentionally not
+shipped, make it visible to the reviewer with one `--deliverable-unmet 'id: reason'` option
+per item. A pass with an unlisted gap is refused and keeps the task claimed so you can
+correct it.
 
 An explicit close is what lets the scheduler promote the next task. If you're blocked on a human decision, report it with aq message send --to user:dashboard --project "$AQ_PROJECT_ID" --body "Blocked: <question>" instead of stopping silently. The canonical human-operator recipient is `user:dashboard`.
 

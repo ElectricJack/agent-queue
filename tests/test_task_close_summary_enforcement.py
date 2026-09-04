@@ -460,3 +460,52 @@ async def test_close_records_an_explicit_reason_for_an_unmet_deliverable(handler
             "reason": "explicitly deferred to the follow-up task",
         }
     ]
+
+
+@pytest.mark.asyncio
+async def test_close_accepts_test_and_command_deliverables_declared_as_shell_commands(
+    handler, db
+):
+    """A test suite declared as its ``aq test`` command line and a lint step
+    declared as ``ruff check <changed files>`` are met by the recorded
+    ``--test`` / ``--command`` values (regression for azure-current-84)."""
+    await db.create_project(Project(id="p", name="P"))
+    suite = "aq test tests/test_deliverables.py tests/test_task_close_summary_enforcement.py"
+    created = await handler.execute(
+        "create_task",
+        {
+            "project_id": "p",
+            "title": "t",
+            "deliverables": [
+                {"id": "focused-suite", "kind": "test", "target": suite},
+                {"id": "ruff", "kind": "command", "target": "ruff check <changed files>"},
+            ],
+        },
+    )
+    tid = created["created"]
+    await db.transition_task(tid, TaskStatus.IN_PROGRESS, context="test")
+
+    refused = await handler.execute(
+        "task_close", {"task_id": tid, "outcome": "pass", "tests": [suite]}
+    )
+    assert refused["success"] is False
+    assert refused["code"] == "deliverables.unmet"
+    assert [item["id"] for item in refused["unmet_deliverables"]] == ["ruff"]
+
+    result = await handler.execute(
+        "task_close",
+        {
+            "task_id": tid,
+            "outcome": "pass",
+            "tests": [suite],
+            "commands": ["ruff check src/deliverables.py"],
+        },
+    )
+
+    assert result["success"] is True, result
+    completion = await db.get_task_completion(tid)
+    assert completion is not None
+    assert [(item["id"], item["met"]) for item in completion.deliverables] == [
+        ("focused-suite", True),
+        ("ruff", True),
+    ]
