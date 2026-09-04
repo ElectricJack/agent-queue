@@ -168,9 +168,9 @@ async def run(config_path: str, profile: str | None = None) -> bool:
 
     registry = default_registry(config=config)
     orch._runtimes = registry
-    await orch.initialize()
     handler = CommandHandler(orch, config)
     orch.set_command_handler(handler)
+    await orch.initialize()
     orch.set_tool_registry(ToolRegistry())
 
     # Fleet metrics sampler.  Owned here rather than by the orchestrator so
