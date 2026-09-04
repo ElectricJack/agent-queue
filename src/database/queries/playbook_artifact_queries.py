@@ -122,6 +122,7 @@ class PlaybookArtifactQueryMixin:
         path: str,
         size_bytes: int,
         validation: str = "{}",
+        conn: AsyncConnection | None = None,
     ) -> None:
         """Insert immutable artifact identity or refresh its mutable storage metadata.
 
@@ -144,6 +145,11 @@ class PlaybookArtifactQueryMixin:
         file and no tombstone is left alone — an artifact whose file was never
         written is the ``file_missing`` fault ``playbooks.artifact_integrity``
         exists to report, not something this write invents an answer for.
+
+        When *conn* is supplied, its caller already owns the transaction and
+        per-hash lock.  Reviewed-artifact import uses that form to span the
+        filesystem write and row upsert with one compensatable critical
+        section; ordinary callers omit it and retain the original behaviour.
         """
         values = {
             **ref.as_dict(),
@@ -155,25 +161,41 @@ class PlaybookArtifactQueryMixin:
             "validation": validation,
             "created_at": time.time(),
         }
-        async with self.artifact_hash_lock([ref.artifact_sha256]) as conn:
-            insert_fn = pg_insert if conn.dialect.name == "postgresql" else sqlite_insert
-            statement = insert_fn(playbook_artifacts).values(**values)
-            await conn.execute(
-                statement.on_conflict_do_update(
-                    index_elements=[playbook_artifacts.c.artifact_sha256],
-                    set_={
-                        field: getattr(statement.excluded, field)
-                        for field in ("profile_fingerprint", "path", "size_bytes", "validation")
-                    },
-                )
+        if conn is not None:
+            await self._upsert_playbook_artifact(conn, values, path=path)
+            return
+        async with self.artifact_hash_lock([ref.artifact_sha256]) as locked_conn:
+            await self._upsert_playbook_artifact(locked_conn, values, path=path)
+
+    @staticmethod
+    async def _upsert_playbook_artifact(
+        conn: AsyncConnection, values: dict, *, path: str
+    ) -> None:
+        """Write one artifact row on a caller-owned transaction.
+
+        The public method normally owns the per-hash lock.  Reviewed-artifact
+        import holds that same lock across ``ArtifactStore.put`` and this
+        statement so a failed row write can compensate the new file before a
+        concurrent retention/import operation observes it.
+        """
+        insert_fn = pg_insert if conn.dialect.name == "postgresql" else sqlite_insert
+        statement = insert_fn(playbook_artifacts).values(**values)
+        await conn.execute(
+            statement.on_conflict_do_update(
+                index_elements=[playbook_artifacts.c.artifact_sha256],
+                set_={
+                    field: getattr(statement.excluded, field)
+                    for field in ("profile_fingerprint", "path", "size_bytes", "validation")
+                },
             )
-            if path and restore_any(Path(path)):
-                logger.warning(
-                    "Artifact %s was re-adopted while retention was removing it; "
-                    "restored %s from its tombstone",
-                    ref.artifact_sha256,
-                    path,
-                )
+        )
+        if path and restore_any(Path(path)):
+            logger.warning(
+                "Artifact %s was re-adopted while retention was removing it; restored %s "
+                "from its tombstone",
+                values["artifact_sha256"],
+                path,
+            )
 
     async def get_playbook_artifact(self, artifact_sha256: str) -> ArtifactRef | None:
         async with self._engine.begin() as conn:
@@ -186,7 +208,9 @@ class PlaybookArtifactQueryMixin:
             ).mappings().fetchone()
         return ArtifactRef.from_row(row) if row else None
 
-    async def get_playbook_artifact_row(self, artifact_sha256: str) -> dict | None:
+    async def get_playbook_artifact_row(
+        self, artifact_sha256: str, *, conn: AsyncConnection | None = None
+    ) -> dict | None:
         """The whole artifact row, or ``None`` when the hash is unknown.
 
         ``get_playbook_artifact`` projects the immutable identity into an
@@ -196,14 +220,14 @@ class PlaybookArtifactQueryMixin:
         compiled against — so it reads the row rather than issuing three
         single-column queries for one activation.
         """
-        async with self._engine.connect() as conn:
-            row = (
-                await conn.execute(
-                    select(playbook_artifacts).where(
-                        playbook_artifacts.c.artifact_sha256 == artifact_sha256
-                    )
-                )
-            ).mappings().fetchone()
+        statement = select(playbook_artifacts).where(
+            playbook_artifacts.c.artifact_sha256 == artifact_sha256
+        )
+        if conn is not None:
+            row = (await conn.execute(statement)).mappings().fetchone()
+            return dict(row) if row else None
+        async with self._engine.connect() as owned_conn:
+            row = (await owned_conn.execute(statement)).mappings().fetchone()
         return dict(row) if row else None
 
     async def list_playbook_artifacts(self, playbook_id: str, *, limit: int = 50) -> list[dict]:

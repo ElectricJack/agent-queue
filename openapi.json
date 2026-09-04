@@ -7243,6 +7243,53 @@
         }
       }
     },
+    "/api/playbook/v2-import": {
+      "post": {
+        "tags": [
+          "playbook"
+        ],
+        "summary": "Import one approved Playbook V2 review bundle from inside the vault. Validates the exact canonical artifact and source bytes against the recorded review metadata and the daemon's live command, profile, and event registries, then stores the content-addressed artifact and its database reference atomically. Operator-only. Never activates the artifact; use playbook_activate separately with the returned full hash.",
+        "description": "Import one approved Playbook V2 review bundle from inside the vault. Validates the exact canonical artifact and source bytes against the recorded review metadata and the daemon's live command, profile, and event registries, then stores the content-addressed artifact and its database reference atomically. Operator-only. Never activates the artifact; use playbook_activate separately with the returned full hash.",
+        "operationId": "playbook_v2_import",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PlaybookV2ImportRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlaybookV2ImportResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/playbook/v2-propose": {
       "post": {
         "tags": [
@@ -32591,6 +32638,111 @@
         ],
         "title": "PlaybookV2GraphResponse",
         "description": "Filtering is server-side and lossless.  ``playbook_v2_graph(event_type=...)``\nnarrows ``rules``/``nodes``/``edges`` to the rules triggered by that event and\nevery node reachable from them.  ``event_groups`` always lists all events, so\nthe selector never depends on the current filter."
+      },
+      "PlaybookV2ImportRequest": {
+        "properties": {
+          "path": {
+            "type": "string",
+            "title": "Path",
+            "description": "Vault-relative or absolute path to a reviewed bundle directory containing artifact.json, artifact.sha256, source.md, and review.md."
+          }
+        },
+        "type": "object",
+        "required": [
+          "path"
+        ],
+        "title": "PlaybookV2ImportRequest"
+      },
+      "PlaybookV2ImportResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success"
+          },
+          "playbook_id": {
+            "type": "string",
+            "title": "Playbook Id"
+          },
+          "artifact_sha256": {
+            "type": "string",
+            "title": "Artifact Sha256"
+          },
+          "scope": {
+            "type": "string",
+            "enum": [
+              "system",
+              "project",
+              "agent_type"
+            ],
+            "title": "Scope"
+          },
+          "scope_identifier": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scope Identifier"
+          },
+          "schema_version": {
+            "type": "integer",
+            "const": 2,
+            "title": "Schema Version"
+          },
+          "version": {
+            "type": "integer",
+            "title": "Version"
+          },
+          "source_sha256": {
+            "type": "string",
+            "title": "Source Sha256"
+          },
+          "contract_fingerprint": {
+            "type": "string",
+            "title": "Contract Fingerprint"
+          },
+          "reviewed_by": {
+            "type": "string",
+            "title": "Reviewed By"
+          },
+          "reviewed_at": {
+            "type": "string",
+            "title": "Reviewed At"
+          },
+          "activated": {
+            "type": "boolean",
+            "const": false,
+            "title": "Activated"
+          },
+          "diagnostics": {
+            "items": {
+              "$ref": "#/components/schemas/CompilerDiagnosticDTO"
+            },
+            "type": "array",
+            "title": "Diagnostics",
+            "default": []
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "success",
+          "playbook_id",
+          "artifact_sha256",
+          "scope",
+          "schema_version",
+          "version",
+          "source_sha256",
+          "contract_fingerprint",
+          "reviewed_by",
+          "reviewed_at",
+          "activated"
+        ],
+        "title": "PlaybookV2ImportResponse",
+        "description": "A reviewed artifact persisted as an inactive activation candidate."
       },
       "PlaybookV2ProposeRequest": {
         "properties": {

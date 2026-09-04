@@ -908,6 +908,7 @@ _PLAYBOOK_COMMANDS = [
     # Playbook V2 review-only compiler (Package 2).
     "playbook_v2_validate",
     "playbook_v2_propose",
+    "playbook_v2_import",
     "playbook_v2_shadow_compile",
     # Playbook V1->V2 migration readiness (Package 6).
     "playbook_migration_inventory",

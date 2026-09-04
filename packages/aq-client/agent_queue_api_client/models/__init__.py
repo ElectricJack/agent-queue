@@ -715,6 +715,10 @@ from .playbook_v1_run_cancel_response_ownership_type_0 import PlaybookV1RunCance
 from .playbook_v2_graph_request import PlaybookV2GraphRequest
 from .playbook_v2_graph_response import PlaybookV2GraphResponse
 from .playbook_v2_graph_response_422 import PlaybookV2GraphResponse422
+from .playbook_v2_import_request import PlaybookV2ImportRequest
+from .playbook_v2_import_response import PlaybookV2ImportResponse
+from .playbook_v2_import_response_422 import PlaybookV2ImportResponse422
+from .playbook_v2_import_response_scope import PlaybookV2ImportResponseScope
 from .playbook_v2_propose_request import PlaybookV2ProposeRequest
 from .playbook_v2_propose_response import PlaybookV2ProposeResponse
 from .playbook_v2_propose_response_422 import PlaybookV2ProposeResponse422
@@ -1865,6 +1869,10 @@ __all__ = (
     "PlaybookV2GraphRequest",
     "PlaybookV2GraphResponse",
     "PlaybookV2GraphResponse422",
+    "PlaybookV2ImportRequest",
+    "PlaybookV2ImportResponse",
+    "PlaybookV2ImportResponse422",
+    "PlaybookV2ImportResponseScope",
     "PlaybookV2ProposeRequest",
     "PlaybookV2ProposeResponse",
     "PlaybookV2ProposeResponse422",
