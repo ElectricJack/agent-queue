@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
+import re
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -68,6 +70,56 @@ def _mcp_server_names(value: Any) -> list[str]:
     if isinstance(value, str):
         return [value]
     return [str(name) for name in value]
+
+
+def _replace_json_section(markdown: str, heading: str, data: dict | list) -> str:
+    """Replace one structured section's JSON while preserving its prose.
+
+    Profile markdown is operator-authored source of truth.  This deliberately
+    changes only the fenced JSON payload of a managed section, leaving every
+    other section (including forward-compatible sections and rationale) byte
+    for byte intact.
+    """
+    section_re = re.compile(
+        rf"(?ms)^(## {re.escape(heading)}\s*\n)(.*?)(?=^## |\Z)",
+    )
+    match = section_re.search(markdown)
+    rendered = "```json\n" + json.dumps(data, indent=2) + "\n```"
+    if not match:
+        return markdown.rstrip() + f"\n\n## {heading}\n" + rendered + "\n"
+
+    body = match.group(2)
+    json_re = re.compile(r"```json\s*\n.*?```", re.DOTALL)
+    if json_re.search(body):
+        replacement_body = json_re.sub(rendered, body, count=1)
+    else:
+        replacement_body = body.rstrip() + "\n\n" + rendered + "\n"
+    return markdown[: match.start(2)] + replacement_body + markdown[match.end(2) :]
+
+
+def _patch_profile_config(markdown: str, config: dict, updates: dict) -> str:
+    """Apply Config edits without re-rendering an authored profile document."""
+    managed = (
+        "harness",
+        "permission_mode",
+        "codex_full_auto",
+        "claude_dangerously_skip_permissions",
+        "default_class",
+    )
+    changed = {key for key in managed if key in updates}
+    if not changed:
+        return markdown
+
+    patched = dict(config)
+    for key in changed:
+        value = updates[key]
+        # Empty optional strings and disabled opt-ins use the established
+        # omission convention, rather than leaving stale values effective.
+        if value in ("", False, None):
+            patched.pop(key, None)
+        else:
+            patched[key] = value
+    return _replace_json_section(markdown, "Config", patched)
 
 
 class ProfileCommandsMixin:
@@ -303,36 +355,54 @@ class ProfileCommandsMixin:
             return {"error": validation_error}
         merged = _canonical_permission_values(merged, updates)
 
-        # If the user is updating system_prompt_suffix, clear the
-        # individual prompt section overrides so the new suffix is used.
-        if "system_prompt_suffix" in updates:
-            role = ""
-            rules = ""
-            reflection = ""
-
         # Ensure vault dirs exist (handles DB-only → vault migration).
         ensure_vault_profile_dirs(self.config.data_dir, profile_id)
 
-        # Re-render and write the updated markdown.
-        markdown = agent_profile_to_markdown(
-            id=merged.get("id", profile_id),
-            name=merged.get("name", profile_id),
-            description=merged.get("description", ""),
-            permission_mode=merged.get("permission_mode", ""),
-            harness=merged.get("harness"),
-            codex_full_auto=merged.get("codex_full_auto", False),
-            claude_dangerously_skip_permissions=merged.get(
-                "claude_dangerously_skip_permissions", False
-            ),
-            allowed_tools=merged.get("allowed_tools", []),
-            mcp_servers=_mcp_server_names(merged.get("mcp_servers")),
-            system_prompt_suffix=merged.get("system_prompt_suffix", ""),
-            install=merged.get("install", {}),
-            default_class=merged.get("default_class", "") or "",
-            role=role,
-            rules=rules,
-            reflection=reflection,
-        )
+        if os.path.isfile(vault_path) and "capabilities" in parsed.sections:
+            # Do not round-trip a current profile through the legacy database
+            # model: it cannot represent modern Config keys, Capabilities, or
+            # arbitrary authored sections.  Patch only managed Config values.
+            config_updates = {
+                key: merged.get(key, "")
+                for key in (
+                    "harness",
+                    "permission_mode",
+                    "codex_full_auto",
+                    "claude_dangerously_skip_permissions",
+                    "default_class",
+                )
+                if key in updates
+            }
+            if (
+                parsed.config.get("permission_mode") == "bypassPermissions"
+                and merged.get("harness") == "claude"
+            ):
+                config_updates["permission_mode"] = ""
+                config_updates["claude_dangerously_skip_permissions"] = merged.get(
+                    "claude_dangerously_skip_permissions", False
+                )
+            markdown = _patch_profile_config(text, parsed.config, config_updates)
+        else:
+            # Legacy and DB-only profiles remain on the established renderer.
+            markdown = agent_profile_to_markdown(
+                id=merged.get("id", profile_id),
+                name=merged.get("name", profile_id),
+                description=merged.get("description", ""),
+                permission_mode=merged.get("permission_mode", ""),
+                harness=merged.get("harness"),
+                codex_full_auto=merged.get("codex_full_auto", False),
+                claude_dangerously_skip_permissions=merged.get(
+                    "claude_dangerously_skip_permissions", False
+                ),
+                allowed_tools=merged.get("allowed_tools", []),
+                mcp_servers=_mcp_server_names(merged.get("mcp_servers")),
+                system_prompt_suffix=merged.get("system_prompt_suffix", ""),
+                install=merged.get("install", {}),
+                default_class=merged.get("default_class", "") or "",
+                role=role,
+                rules=rules,
+                reflection=reflection,
+            )
         Path(vault_path).write_text(markdown, encoding="utf-8")
 
         # Immediate sync to DB.
