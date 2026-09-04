@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 import time
 from dataclasses import asdict
 from typing import Any
@@ -164,7 +165,69 @@ class PlaybookCommandsMixin:
         runs = await self.db.list_runs(
             playbook_id=args.get("playbook_id"), lifecycle=args.get("status"), limit=limit
         )
-        return {"runs": [asdict(run) for run in runs], "count": len(runs)}
+        engine = self._v2_engine()
+        versions: dict[str, int] = {}
+        summaries: list[dict[str, Any]] = []
+        for run in runs:
+            artifact_sha = str(run.artifact_sha256)
+            if artifact_sha not in versions:
+                versions[artifact_sha] = engine.services.artifact_store.load(artifact_sha).version
+            status = run.lifecycle.value if hasattr(run.lifecycle, "value") else str(run.lifecycle)
+            tokens_used = int(getattr(getattr(run, "budget", None), "total_tokens", 0) or 0)
+            completed_at = getattr(run, "completed_at", None)
+            started_at = getattr(run, "started_at", None)
+            summaries.append({
+                "run_id": run.run_id,
+                "playbook_id": run.playbook_id,
+                "playbook_version": versions[artifact_sha],
+                "status": status,
+                "current_node": getattr(run, "current_step_id", None),
+                "tokens_used": tokens_used,
+                "started_at": started_at,
+                "completed_at": completed_at,
+                "duration_seconds": (
+                    max(0.0, completed_at - started_at)
+                    if completed_at is not None and started_at is not None
+                    else None
+                ),
+                "error": getattr(run, "error", None),
+            })
+        return {"runs": summaries, "count": len(summaries)}
+
+    async def _cmd_get_playbook_source(self, args: dict) -> dict:
+        from src.playbooks.definition import source_digest
+
+        playbook_id = str(args.get("playbook_id") or "").strip()
+        if not playbook_id:
+            return {"error": "playbook_id is required"}
+        rows = await self.db.list_playbook_activations(enabled_only=False)
+        row = next((dict(item) for item in rows if dict(item)["playbook_id"] == playbook_id), None)
+        if row is None:
+            return {"error": f"Playbook '{playbook_id}' not found"}
+        configured = getattr(self.config, "vault_root", None)
+        vault_root = Path(configured or (Path(self.config.data_dir) / "vault")).resolve()
+        scope = row["scope"]
+        identifier = row.get("scope_identifier") or ""
+        if scope == "system":
+            path = vault_root / "system" / "playbooks" / f"{playbook_id}.md"
+        elif scope == "project":
+            path = vault_root / "projects" / identifier / "playbooks" / f"{playbook_id}.md"
+        else:
+            path = vault_root / "agent-types" / identifier / "playbooks" / f"{playbook_id}.md"
+        resolved = path.resolve()
+        try:
+            resolved.relative_to(vault_root)
+        except ValueError:
+            return {"error": f"Playbook source path escapes vault: {playbook_id}"}
+        if not resolved.is_file():
+            return {"error": f"Playbook source not found: {playbook_id}"}
+        markdown = resolved.read_text(encoding="utf-8")
+        return {
+            "playbook_id": playbook_id,
+            "path": str(resolved),
+            "markdown": markdown,
+            "source_hash": source_digest(markdown),
+        }
 
     async def _cmd_inspect_playbook_run(self, args: dict) -> dict:
         run_id = str(args.get("run_id") or "").strip()
