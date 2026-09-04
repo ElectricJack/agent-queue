@@ -743,15 +743,15 @@ class TestPhaseIntegrateLeaseGuardedPush:
 
             o.git._arun = spy_arun
 
-            # Also spy on apush_branch to catch the branch push.
+            # Also spy on apush_validated_delivery to catch the branch push.
             push_branch_calls: list[str] = []
-            orig_push = o.git.apush_branch
+            orig_push = o.git.apush_validated_delivery
 
             async def spy_push(*args, **kw):
-                push_branch_calls.append(args[1] if len(args) > 1 else kw.get("branch"))
+                push_branch_calls.append(args[3] if len(args) > 3 else kw.get("branch"))
                 return await orig_push(*args, **kw)
 
-            o.git.apush_branch = spy_push
+            o.git.apush_validated_delivery = spy_push
 
             ws = await o.db.get_workspace_for_task(task.id)
             ctx = _make_pipeline_ctx(task, agent, slot, ws.id)

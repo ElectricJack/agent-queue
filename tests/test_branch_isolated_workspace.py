@@ -282,6 +282,9 @@ class TestTwoAgentsAcquireBranchIsolated:
         )
         mock_git.aforce_clean_workspace = AsyncMock(return_value=True)
         mock_git.make_branch_name = GitManager.make_branch_name
+        mock_git.aget_git_path = AsyncMock(
+            return_value=os.path.join(clone, ".git", "info", "exclude")
+        )
         mock_git.slugify = GitManager.slugify
         mock_git.acreate_worktree = AsyncMock()
         mock_git.aremove_worktree = AsyncMock()
@@ -769,6 +772,9 @@ class TestThreeOrMoreAgentsConcurrent:
         )
         mock_git.aforce_clean_workspace = AsyncMock(return_value=True)
         mock_git.make_branch_name = GitManager.make_branch_name
+        mock_git.aget_git_path = AsyncMock(
+            return_value=os.path.join(clone, ".git", "info", "exclude")
+        )
         mock_git.slugify = GitManager.slugify
         mock_git.acreate_worktree = AsyncMock()
         mock_git.aremove_worktree = AsyncMock()
@@ -1229,6 +1235,9 @@ class TestGitMutexRegistration:
         )
         mock_git.aforce_clean_workspace = AsyncMock(return_value=True)
         mock_git.make_branch_name = GitManager.make_branch_name
+        mock_git.aget_git_path = AsyncMock(
+            return_value=os.path.join(clone, ".git", "info", "exclude")
+        )
         mock_git.set_lock_provider = MagicMock()
         # ``_prepare_workspace`` installs the managed ``info/exclude``
         # block and fails closed when Git's path for it cannot be
@@ -1291,6 +1300,9 @@ class TestGitMutexRegistration:
         )
         mock_git.aforce_clean_workspace = AsyncMock(return_value=True)
         mock_git.make_branch_name = GitManager.make_branch_name
+        mock_git.aget_git_path = AsyncMock(
+            return_value=os.path.join(clone, ".git", "info", "exclude")
+        )
         mock_git.set_lock_provider = MagicMock()
         # ``_prepare_workspace`` installs the managed ``info/exclude``
         # block and fails closed when Git's path for it cannot be

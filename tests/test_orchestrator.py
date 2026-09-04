@@ -1181,7 +1181,6 @@ class TestPhaseVerifyNormalTask:
         # AsyncMock answers with a truthy MagicMock, which the guard
         # reads as "this delivery changes reserved daemon paths".
         mock_git.areserved_paths_in_diff = AsyncMock(return_value=[])
-        mock_git.apush_validated_delivery = AsyncMock(return_value="a" * 40)
         o.git = mock_git
 
         yield o
@@ -1575,7 +1574,6 @@ class TestPhaseVerifyApprovalTask:
         # AsyncMock answers with a truthy MagicMock, which the guard
         # reads as "this delivery changes reserved daemon paths".
         mock_git.areserved_paths_in_diff = AsyncMock(return_value=[])
-        mock_git.apush_validated_delivery = AsyncMock(return_value="a" * 40)
         o.git = mock_git
 
         yield o
@@ -1798,7 +1796,6 @@ class TestPhaseVerifyIntermediateSubtask:
         # AsyncMock answers with a truthy MagicMock, which the guard
         # reads as "this delivery changes reserved daemon paths".
         mock_git.areserved_paths_in_diff = AsyncMock(return_value=[])
-        mock_git.apush_validated_delivery = AsyncMock(return_value="a" * 40)
         o.git = mock_git
 
         yield o, sub1
