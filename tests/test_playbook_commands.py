@@ -1213,8 +1213,6 @@ class TestAllPlaybookCommandsRegistered:
         "playbook_v1_admission_open",
         "playbook_v1_run_cancel",
         "playbook_cutover_gate_status",
-        "playbook_cutover_drain_signoff",
-        "playbook_cutover_authorize",
         "playbook_cutover_switch",
         "playbook_cutover_window_status",
         "playbook_cutover_window_rehearsal",

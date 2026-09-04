@@ -38,6 +38,7 @@ PLAYBOOK_IDS = (
     "default-assignment-routing",
     "memory-consolidation",
     "coding-reflection",
+    "pr-merge-sweep",
 )
 
 
@@ -132,7 +133,7 @@ async def test_imports_all_four_reviewed_fixtures_without_activating(db, tmp_pat
     assert all(result["activated"] is False for result in results)
     assert all(result["schema_version"] == 2 for result in results)
     assert all(result["version"] == 1 for result in results)
-    assert all(result["scope"] in {"system", "agent_type"} for result in results)
+    assert all(result["scope"] in {"system", "project", "agent_type"} for result in results)
     for result in results:
         assert result["artifact_sha256"].startswith("sha256:")
         assert await db.get_playbook_artifact(result["artifact_sha256"]) is not None
@@ -172,7 +173,7 @@ async def test_import_refuses_a_bundle_file_symlinked_outside_the_vault(db, tmp_
 
 
 @pytest.mark.asyncio
-async def test_import_refuses_a_review_that_is_not_approved(db, tmp_path):
+async def test_import_does_not_treat_review_decision_as_core_policy(db, tmp_path):
     handler = _Handler(tmp_path, db)
     relative = _copy_bundle(tmp_path)
     review_path = tmp_path / "vault" / relative / "review.md"
@@ -182,14 +183,14 @@ async def test_import_refuses_a_review_that_is_not_approved(db, tmp_path):
 
     result = await _import(handler, relative)
 
-    assert result["success"] is False
-    assert "decision: approved" in result["error"]
-    assert await db.list_playbook_artifacts("default-pipeline") == []
+    assert result["success"] is True
+    assert result["activated"] is False
+    assert len(await db.list_playbook_artifacts("default-pipeline")) == 1
 
 
 @pytest.mark.asyncio
 async def test_import_refuses_duplicate_review_frontmatter_keys(db, tmp_path):
-    """A second decision key must not turn rejected evidence into approved evidence."""
+    """Duplicate metadata keys are rejected even when they are not policy gates."""
     handler = _Handler(tmp_path, db)
     relative = _copy_bundle(tmp_path)
     review_path = tmp_path / "vault" / relative / "review.md"

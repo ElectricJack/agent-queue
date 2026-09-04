@@ -320,12 +320,8 @@ class _WindowDB:
         self.events: list[dict] = [
             {"event_id": "e0", "kind": "v1_admission_closed", "at": SWITCHED_AT - 100,
              "actor": "op", "reason": "draining", "detail": {}},
-            {"event_id": "e1", "kind": "drain_completed", "at": SWITCHED_AT - 50,
-             "actor": "op", "reason": "drained",
-             "detail": {"v1_baseline": {"sample_size": 40, "dispatch_p95": 0.64,
-                                        "resume_p95": 1.0}}},
             {"event_id": "e2", "kind": "switched_to_v2", "at": SWITCHED_AT, "actor": "op",
-             "reason": "cutting over", "detail": {"from": "v1", "to": "v2"}},
+             "reason": "cutting over", "detail": {"from": "v1", "to": "v2", "v1_baseline": {"sample_size": 40, "dispatch_p95": 0.64, "resume_p95": 1.0}}},
             {"event_id": "e3", "kind": "window_coverage_rehearsal", "at": NOW - 3600.0,
              "actor": "op", "reason": "rehearsal",
              "detail": {"playbooks": ["default-pipeline", "memory-consolidation",
@@ -589,12 +585,8 @@ async def test_window_status_still_flags_a_runtime_flipped_by_hand():
 
 
 @pytest.mark.asyncio
-async def test_the_g1_signoff_records_the_v1_baseline_and_the_switch_adds_no_second_row():
-    """Measure 6 is expressed as a multiple of ``v1_baseline.dispatch_p95``.
-    The G1 sign-off (§3.9) is the moment the drain is verified, so its
-    ``drain_completed`` row carries the baseline; the switch that follows
-    appends only ``switched_to_v2`` — a second, unsigned ``drain_completed``
-    would orphan the G2 authorizations bound to the signed one."""
+async def test_policy_free_switch_event_supplies_the_v1_baseline():
+    """The switch event starts the window and owns its mechanical baseline."""
     from tests.test_playbook_cutover import _passing, _run
 
     db = _WindowDB(_parity_sha())
@@ -605,8 +597,6 @@ async def test_the_g1_signoff_records_the_v1_baseline_and_the_switch_adds_no_sec
     ]
     config = _config(v2_engine=False, v1_admission="closed")
     handler = _handler(db, config)
-    # The drain check stays real; the report, activation and pending-event
-    # checks are stubbed at the seam the gate tests use.
     handler._cutover_check_report = _passing("cutover_report")
     handler._cutover_check_activations = _passing("activations")
     handler._cutover_check_pending_events = _passing("pending_events")
@@ -616,31 +606,18 @@ async def test_the_g1_signoff_records_the_v1_baseline_and_the_switch_adds_no_sec
 
     handler._cutover_write_playbooks_field = _write
 
-    signoff = await handler._cmd_playbook_cutover_drain_signoff(
-        {"reason": "drain verified by hand", "signed_by": "Alice"}
-    )
-    assert signoff["success"] is True, signoff
-    assert signoff["event"]["detail"]["v1_baseline"] == {
-        "sample_size": 2, "dispatch_p95": 5.0, "resume_p95": None
-    }
-    for role, name in (("author", "Alice"), ("release_operator", "Bob")):
-        authorized = await handler._cmd_playbook_cutover_authorize(
-            {"reason": f"{name} authorizes the switch", "signed_by": name, "role": role}
-        )
-        assert authorized["success"] is True, authorized
-
     result = await handler._cmd_playbook_cutover_switch(
         {"to": "v2", "reason": "cutting over after a clean drain"}
     )
 
     assert result["success"] is True, result
-    kinds = [e["kind"] for e in db.events]
-    assert kinds == [
-        "drain_completed", "cutover_authorized", "cutover_authorized", "switched_to_v2"
-    ]
-    assert result["event"]["detail"]["drain_signoff_event_id"] == signoff["event"]["event_id"]
+    assert [event["kind"] for event in db.events] == ["switched_to_v2"]
+    assert result["event"]["detail"]["v1_baseline"] == {
+        "sample_size": 2,
+        "dispatch_p95": 5.0,
+        "resume_p95": None,
+    }
 
-    # Measure 6 reads its baseline off that signed row.
     status = await handler._cmd_playbook_cutover_window_status({})
     dispatch = next(row for row in status["measures"] if row["measure"] == 6)
     assert dispatch["observed"]["baseline_p95_ms"] == 5000.0
@@ -739,6 +716,7 @@ async def test_rehearsal_dispatches_one_event_per_enabled_playbook():
 @pytest.mark.asyncio
 async def test_rehearsal_names_playbooks_that_produced_no_run():
     parity_sha = _parity_sha()
+
     db = _WindowDB(parity_sha)
     engine = _RehearsalEngine(
         {

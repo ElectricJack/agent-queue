@@ -100,7 +100,7 @@ MEASURE_SOURCES: dict[int, str] = {
     5: "events table, playbook.snapshot_conflict rows since the switch, over "
        "playbook_step_receipts boundaries",
     6: "playbook_v2_runs.started_at - event._received_at, since the switch; baseline from "
-       "the drain_completed event",
+       "the switched_to_v2 event",
     7: "playbook_waits.claimed_at - playbook_pending_events.received_at of the causing event",
     8: "playbook_step_receipts, step_kind=llm, error_code=budget_exceeded",
     9: "playbook_step_receipts, step_kind=llm, error_code=invalid_output",
@@ -366,7 +366,7 @@ def _dispatch_row(evidence: WindowEvidence) -> dict[str, Any]:
     if baseline_ms is None:
         return _row(
             6, observed, gate, False, now=evidence.now,
-            blocking="no v1 baseline recorded (no drain_completed event carries v1_baseline)",
+            blocking="no v1 baseline recorded (no switched_to_v2 event carries v1_baseline)",
         )
     if observed_p95 is None:
         return _row(

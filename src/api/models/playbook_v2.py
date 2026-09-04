@@ -875,7 +875,7 @@ class PlaybookV2ProposeResponse(V2Model):
 
 
 class PlaybookV2ImportResponse(V2Model):
-    """A reviewed artifact persisted as an inactive activation candidate."""
+    """A validated artifact persisted as an inactive activation candidate."""
 
     success: bool
     playbook_id: str
@@ -886,8 +886,6 @@ class PlaybookV2ImportResponse(V2Model):
     version: int
     source_sha256: str
     contract_fingerprint: str
-    reviewed_by: str
-    reviewed_at: str
     activated: Literal[False]
     diagnostics: list[CompilerDiagnosticDTO] = []
 

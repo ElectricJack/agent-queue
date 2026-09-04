@@ -39,7 +39,6 @@ import yaml
 from pydantic import ValidationError
 
 from src.commands.principal import SERVER_OWNED_ARG_KEYS
-from src.database.queries.playbook_migration_queries import MIN_ACK_REASON_LENGTH
 from src.playbooks.authoring import PlaybookSource, SourceError
 from src.playbooks.definition import (
     DuplicateJsonKey,
@@ -81,7 +80,7 @@ _PENDING_EVENT_DISPATCH_RENEW_SECONDS = 60.0
 #: A discard drops a real event that a playbook was entitled to see, so it
 #: carries the same justification floor as a migration acknowledgement
 #: (Package 6 §4.2, §5.5 T-16 assertion 10) — an empty waiver is not a waiver.
-MIN_PENDING_EVENT_REASON_LENGTH = MIN_ACK_REASON_LENGTH
+MIN_PENDING_EVENT_REASON_LENGTH = 20
 PENDING_EVENT_REASON_TOO_SHORT_ERROR = (
     f"a discard reason must be at least {MIN_PENDING_EVENT_REASON_LENGTH} characters — "
     "an event dropped without a recorded reason is a silently lost event"
@@ -354,11 +353,11 @@ class PlaybookV2CommandsMixin:
 
     def _v2_api_enabled(self) -> bool:
         playbooks = getattr(self.config, "playbooks", None)
-        return bool(getattr(playbooks, "v2_api", False))
+        return bool(getattr(playbooks, "enabled", False))
 
     def _v2_activation_writes_enabled(self) -> bool:
         playbooks = getattr(self.config, "playbooks", None)
-        return bool(getattr(playbooks, "v2_activation_writes", False))
+        return bool(getattr(playbooks, "enabled", False))
 
     def _v2_activation_storage_ready(self) -> bool:
         """Whether activation health can actually be read from this build.
@@ -371,8 +370,6 @@ class PlaybookV2CommandsMixin:
         rather than raising.
         """
         playbooks = getattr(self.config, "playbooks", None)
-        if not bool(getattr(playbooks, "v2_storage_enabled", False)):
-            return False
         return hasattr(self.db, "list_playbook_activations") and hasattr(
             self.db, "get_playbook_artifact_row"
         )
@@ -387,15 +384,13 @@ class PlaybookV2CommandsMixin:
         than raise.
         """
         playbooks = getattr(self.config, "playbooks", None)
-        if not bool(getattr(playbooks, "v2_storage_enabled", False)):
-            return False
         return hasattr(self.db, "list_playbook_artifacts") and hasattr(
             self.db, "list_playbook_activations"
         )
 
     def _v2_compiler_enabled(self) -> bool:
         playbooks = getattr(self.config, "playbooks", None)
-        return bool(getattr(playbooks, "v2_compiler_enabled", False))
+        return bool(getattr(playbooks, "enabled", False))
 
     def _v2_vault_root(self) -> Path:
         configured = getattr(self.config, "vault_root", None)
@@ -578,13 +573,13 @@ class PlaybookV2CommandsMixin:
         }
 
     async def _cmd_playbook_v2_import(self, args: dict) -> dict:
-        """Persist one operator-reviewed V2 artifact bundle without activation.
+        """Persist one mechanically validated V2 artifact bundle without activation.
 
         ``path`` names a directory inside the configured vault containing the
-        Package 6 reviewed-fixture layout: ``artifact.json``,
-        ``artifact.sha256``, ``source.md`` and ``review.md``.  The review must
-        say ``decision: approved`` and bind the exact playbook, artifact,
-        source and command-contract fingerprints.  The artifact is parsed
+        Package 6 bundle layout: ``artifact.json``, ``artifact.sha256``,
+        ``source.md`` and ``review.md``.  The metadata binds the exact playbook,
+        artifact, source, profiles, and command-contract fingerprints; it does
+        not impose a human approval policy.  The artifact is parsed
         strictly, must already be canonical, and is revalidated against the
         daemon's live command, profile and event registries before any write.
 
@@ -694,15 +689,6 @@ class PlaybookV2CommandsMixin:
         except (OSError, ValueError, yaml.YAMLError) as exc:
             return {"success": False, "error": f"review evidence is invalid: {exc}"}
 
-        if review.get("decision") != "approved":
-            return {
-                "success": False,
-                "error": "review.md must record decision: approved",
-            }
-        if not isinstance(review.get("reviewed_by"), str) or not review["reviewed_by"].strip():
-            return {"success": False, "error": "review.md reviewed_by is required"}
-        if not isinstance(review.get("reviewed_at"), str) or not review["reviewed_at"].strip():
-            return {"success": False, "error": "review.md reviewed_at is required"}
 
         expected = {
             "playbook_id": definition.id,
@@ -766,8 +752,7 @@ class PlaybookV2CommandsMixin:
             {
                 "errors": [],
                 "diagnostics": diagnostic_rows,
-                "reviewed_by": review["reviewed_by"].strip(),
-                "reviewed_at": review["reviewed_at"].strip(),
+                "validated_bundle": True,
             },
             sort_keys=True,
             separators=(",", ":"),
@@ -822,8 +807,6 @@ class PlaybookV2CommandsMixin:
             "version": definition.version,
             "source_sha256": definition.source_hash,
             "contract_fingerprint": definition.contract_fingerprint(),
-            "reviewed_by": review["reviewed_by"].strip(),
-            "reviewed_at": review["reviewed_at"].strip(),
             "activated": False,
             "diagnostics": diagnostic_rows,
         }
@@ -890,7 +873,7 @@ class PlaybookV2CommandsMixin:
 
     def _v2_storage_ready(self, *methods: str) -> bool:
         playbooks = getattr(self.config, "playbooks", None)
-        return bool(getattr(playbooks, "v2_storage_enabled", False)) and all(
+        return all(
             hasattr(self.db, method) for method in methods
         )
 
@@ -1358,7 +1341,7 @@ class PlaybookV2CommandsMixin:
     # ------------------------------------------------------------------
 
     async def _cmd_playbook_activate(self, args: dict) -> dict:
-        """Activate one reviewed artifact hash for a playbook.
+        """Activate one validated artifact hash for a playbook.
 
         Activation is an explicit database operation against a reviewed hash;
         compilation never activates.  The command refuses unless
@@ -1373,10 +1356,8 @@ class PlaybookV2CommandsMixin:
 
         Args:
             playbook_id: Required — the playbook to activate against.
-            artifact_sha256: Required — the reviewed artifact hash.
+            artifact_sha256: Required — the validated artifact hash.
             enabled: Whether the activation is enabled. Default: ``True``.
-            acknowledge_diff: Required when the diff against the active
-                artifact is executable; must equal ``artifact_sha256``.
         """
         if not self._v2_api_enabled():
             return {"error": V2_API_DISABLED_ERROR}
@@ -1393,15 +1374,6 @@ class PlaybookV2CommandsMixin:
         invalid = _validate_sha(artifact_sha256, "artifact_sha256")
         if invalid:
             return {"error": invalid}
-
-        acknowledge_diff = _clean_str(args, "acknowledge_diff")
-        if acknowledge_diff and acknowledge_diff != artifact_sha256:
-            return {
-                "error": (
-                    "acknowledge_diff must equal artifact_sha256; an "
-                    "acknowledgement cannot be replayed against another artifact"
-                )
-            }
 
         if not self._v2_storage_ready(
             "list_playbook_activations",
@@ -1460,8 +1432,6 @@ class PlaybookV2CommandsMixin:
             for diagnostic in validation
             if diagnostic.severity in {"error", "question"}
         )
-        if diff["executable_change"] and acknowledge_diff != artifact_sha256:
-            blockers.append(f"executable change requires acknowledge_diff={artifact_sha256}")
         if blockers:
             activation = (
                 await self._v2_activation_payload(current)
@@ -1504,8 +1474,6 @@ class PlaybookV2CommandsMixin:
             activated_by=actor,
             health="ready" if enabled else "disabled",
             reasons="[]",
-            reviewed_artifact_sha256=(artifact_sha256 if scope == "project" else None),
-            reviewed_by=(actor if scope == "project" else None),
         )
         manager = getattr(getattr(self, "orchestrator", None), "playbook_manager", None)
         if manager is not None:

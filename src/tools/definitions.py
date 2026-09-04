@@ -147,23 +147,8 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "playbook_v2_import": "playbook",
     "playbook_v2_shadow_compile": "playbook",
     # playbook V1->V2 migration readiness -- Package 6
-    "playbook_migration_inventory": "playbook",
-    "playbook_migration_acknowledge": "playbook",
     "playbook_release_check": "playbook",
-    "playbook_cutover_report": "playbook",
-    "playbook_migration_unacknowledge": "playbook",
     # playbook V1 drain / runtime cutover -- Package 7
-    "playbook_v1_drain_status": "playbook",
-    "playbook_v1_admission_close": "playbook",
-    "playbook_v1_admission_open": "playbook",
-    "playbook_v1_run_cancel": "playbook",
-    "playbook_cutover_gate_status": "playbook",
-    "playbook_cutover_drain_signoff": "playbook",
-    "playbook_cutover_authorize": "playbook",
-    "playbook_cutover_switch": "playbook",
-    "playbook_cutover_window_status": "playbook",
-    "playbook_cutover_window_rehearsal": "playbook",
-    "playbook_cutover_window_close": "playbook",
     # plugin — installation, configuration, lifecycle
     "plugin_list": "plugin",
     "plugin_info": "plugin",
@@ -3784,14 +3769,9 @@ _ALL_TOOL_DEFINITIONS = [
     {
         "name": "playbook_activate",
         "description": (
-            "Activate one reviewed Playbook V2 artifact hash. Activation is an "
-            "explicit operation against a reviewed artifact -- compilation never "
-            "activates. Refused when playbooks.v2_activation_writes is off, when "
-            "the artifact's health is invalid, or when the diff against the "
-            "currently active artifact carries an executable change and "
-            "acknowledge_diff was not supplied. Project artifacts require "
-            "matching project authority and persist the caller as the reviewer "
-            "of that exact hash. Every refusal returns "
+            "Activate one validated Playbook V2 artifact hash. Compilation never "
+            "activates. Refused when the artifact is invalid or incompatible. "
+            "Project artifacts require matching project authority. Every refusal returns "
             "blocked=true with machine-readable blockers."
         ),
         "input_schema": {
@@ -3803,20 +3783,12 @@ _ALL_TOOL_DEFINITIONS = [
                 },
                 "artifact_sha256": {
                     "type": "string",
-                    "description": "The reviewed artifact hash, full 'sha256:<64 hex>' form.",
+                    "description": "The artifact hash, full 'sha256:<64 hex>' form.",
                 },
                 "enabled": {
                     "type": "boolean",
                     "description": "Whether the activation is enabled. Default: true.",
                     "default": True,
-                },
-                "acknowledge_diff": {
-                    "type": "string",
-                    "description": (
-                        "Required when the diff against the active artifact is "
-                        "executable. Must equal artifact_sha256, so an "
-                        "acknowledgement cannot be replayed against another artifact."
-                    ),
                 },
             },
             "required": ["playbook_id", "artifact_sha256"],
@@ -5411,26 +5383,6 @@ _ALL_TOOL_DEFINITIONS = [
         },
     },
     {
-        "name": "playbook_migration_inventory",
-        "description": (
-            "Report every installed playbook's V1->V2 migration readiness: its "
-            "disposition (ready, question_required, invalid, disabled), the "
-            "operator-facing reasons behind it, the active V2 artifact and its "
-            "activation health. Read-only: it never compiles, activates or "
-            "writes anything."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "disposition": {
-                    "type": "string",
-                    "enum": ["ready", "question_required", "invalid", "disabled"],
-                    "description": "Optional filter; counts always describe the whole fleet.",
-                }
-            },
-        },
-    },
-    {
         "name": "playbook_release_check",
         "description": (
             "Check that every reviewed V2 artifact still matches the command "
@@ -5444,243 +5396,6 @@ _ALL_TOOL_DEFINITIONS = [
             "activation table is never reported as a clean fleet."
         ),
         "input_schema": {"type": "object", "properties": {}},
-    },
-    {
-        "name": "playbook_cutover_report",
-        "description": (
-            "Render the read-only V2 cutover evidence report: enabled artifacts and "
-            "hashes, contract fingerprint, unresolved migration entries, pending events, "
-            "active V1 runs, recorded shadow parity, and rollback readiness. Any "
-            "evidence source the daemon could not read is reported in "
-            "evidence_errors and blocks cutover; it is never shown as clean."
-        ),
-        "input_schema": {"type": "object", "properties": {}},
-    },
-    {
-        "name": "playbook_v1_drain_status",
-        "description": (
-            "List every non-terminal V1 playbook run, each classified live (a "
-            "coroutine owns it) or orphaned (the row outlived the process that "
-            "started it, so only an operator write can clear it), with the "
-            "options available for each. Read-only. Answers while playbooks are "
-            "paused, because a paused fleet with running rows is exactly the one "
-            "that needs draining. 'drained' requires admission closed AND zero "
-            "active runs -- a zero count alone is a snapshot, not a gate."
-        ),
-        "input_schema": {"type": "object", "properties": {}},
-    },
-    {
-        "name": "playbook_v1_admission_close",
-        "description": (
-            "Refuse new V1 playbook runs. Operator-only. Already-paused V1 runs "
-            "stay resumable -- this closes the door, it does not strand what is "
-            "already inside. Appends a v1_admission_closed audit row."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {"reason": {"type": "string", "description": "Why, at least 10 characters. Stored verbatim in the append-only cutover audit."}},
-            "required": ["reason"],
-        },
-    },
-    {
-        "name": "playbook_v1_admission_open",
-        "description": (
-            "Re-open V1 playbook admission. Operator-only. Refused while the "
-            "fleet is on the V2 runtime: admission open under V2 would let a "
-            "rollback silently start new V1 runs against unreviewed artifacts."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {"reason": {"type": "string", "description": "Why, at least 10 characters. Stored verbatim in the append-only cutover audit."}},
-            "required": ["reason"],
-        },
-    },
-    {
-        "name": "playbook_v1_run_cancel",
-        "description": (
-            "Cancel one V1 playbook run during the drain -- a cancel that "
-            "actually cancels. Operator-only. Unlike cancel_playbook_run it "
-            "signals the running coroutine and waits for it to stop before "
-            "writing the terminal row, so the run cannot overwrite its own "
-            "cancellation on a later persistence write. A run that will not "
-            "stop within 30s leaves the row untouched and the command fails."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "run_id": {"type": "string", "description": "The V1 run to cancel."},
-                "reason": {"type": "string", "description": "Why, at least 10 characters. Stored verbatim in the append-only cutover audit."},
-            },
-            "required": ["run_id", "reason"],
-        },
-    },
-    {
-        "name": "playbook_cutover_gate_status",
-        "description": (
-            "Where the V2 switch stands: the readiness table (drain complete, "
-            "cutover report clean and rollback-ready, every enabled activation "
-            "ready, zero pending events), the current G1 drain sign-off, the G2 "
-            "authorizations on record, and everything that still blocks. "
-            "Read-only and recomputed from source on every call."
-        ),
-        "input_schema": {"type": "object", "properties": {}},
-    },
-    {
-        "name": "playbook_cutover_drain_signoff",
-        "description": (
-            "Gate G1: a named human signs off the V1 drain. Operator-only. The "
-            "command re-verifies every readiness check itself and refuses while "
-            "any one blocks, naming it; a second sign-off for the same attempt is "
-            "refused. Appends a drain_completed audit row carrying the attested "
-            "name, the readiness table it verified and the V1 latency baseline."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "reason": {"type": "string", "description": "Why, at least 10 characters. Stored verbatim in the append-only cutover audit."},
-                "signed_by": {"type": "string", "description": "The attesting human's name, at least 2 characters. Recorded alongside the server-derived actor."},
-            },
-            "required": ["reason", "signed_by"],
-        },
-    },
-    {
-        "name": "playbook_cutover_authorize",
-        "description": (
-            "Gate G2: one named human authorizes the switch to v2 in one role, "
-            "author or release_operator. Operator-only. Bound to the current G1 "
-            "drain sign-off and refused without one; one signature per role and "
-            "one role per person, so the switch needs two different people. "
-            "Appends a cutover_authorized audit row."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "reason": {"type": "string", "description": "Why, at least 10 characters. Stored verbatim in the append-only cutover audit."},
-                "signed_by": {"type": "string", "description": "The authorizing human's name, at least 2 characters."},
-                "role": {"type": "string", "enum": ["author", "release_operator"], "description": "Which of the two required signatures this is."},
-            },
-            "required": ["reason", "signed_by", "role"],
-        },
-    },
-    {
-        "name": "playbook_cutover_switch",
-        "description": (
-            "Move the fleet between the V1 and V2 playbook runtimes. "
-            "Operator-only, and the highest-privilege operation in the "
-            "subsystem. Switching to v2 is refused unless, re-verified at that "
-            "moment, every readiness check passes, a current G1 drain sign-off "
-            "exists and both G2 roles are authorized by two different people; "
-            "switching back to v1 is the rollback, needs no gate, and is refused "
-            "once the rollback window has been closed."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "to": {
-                    "type": "string",
-                    "enum": ["v1", "v2"],
-                    "description": "Which runtime the fleet should dispatch through.",
-                },
-                "reason": {"type": "string", "description": "Why, at least 10 characters. Stored verbatim in the append-only cutover audit."},
-            },
-            "required": ["to", "reason"],
-        },
-    },
-    {
-        "name": "playbook_cutover_window_status",
-        "description": (
-            "Measure the rollback observation window and the cutover acceptance "
-            "table. Read-only, and recomputed from source on every call -- it "
-            "never reads a cached verdict. Every measure names its evidence "
-            "source, what was observed and when; a source that cannot be read "
-            "is reported as unreadable and fails the measures it feeds, never "
-            "as fine. The window needs 72h since the switch, one V2 run per "
-            "enabled playbook, and 200 V2 runs in total."
-        ),
-        "input_schema": {"type": "object", "properties": {}},
-    },
-    {
-        "name": "playbook_cutover_window_rehearsal",
-        "description": (
-            "Dispatch one synthetic live event per enabled playbook so an idle "
-            "fleet can satisfy the observation window's coverage condition. "
-            "Operator-only. Records a window_coverage_rehearsal audit row naming "
-            "every enabled playbook, the runs it started and any it could not; "
-            "a window later closed on this traffic says so. Also where the "
-            "manual dashboard time-to-interactive review (measure 13) is recorded."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "reason": {"type": "string", "description": "Why, at least 10 characters. Stored verbatim in the append-only cutover audit."},
-                "dashboard_tti_ms": {
-                    "type": "number",
-                    "description": (
-                        "The semantic-tab time-to-interactive measured in the manual "
-                        "scenario review, in milliseconds. Optional; the window cannot "
-                        "close until one rehearsal has recorded it."
-                    ),
-                },
-            },
-            "required": ["reason"],
-        },
-    },
-    {
-        "name": "playbook_cutover_window_close",
-        "description": (
-            "Close the playbook rollback window, after which the V1 runtime may "
-            "be deleted and rollback is no longer available. Operator-only. "
-            "Recomputes every acceptance measure itself and refuses while any "
-            "one of them blocks, naming it. There is deliberately no force flag."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {"reason": {"type": "string", "description": "Why, at least 10 characters. Stored verbatim in the append-only cutover audit."}},
-            "required": ["reason"],
-        },
-    },
-    {
-        "name": "playbook_migration_acknowledge",
-        "description": (
-            "Record a written operator waiver that one playbook cannot be "
-            "migrated to V2, so cutover may proceed without it. Operator-only. "
-            "The waiver binds to the source bytes present now, so editing the "
-            "authoring markdown invalidates it."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "playbook_id": {
-                    "type": "string",
-                    "description": "The playbook's frontmatter id.",
-                },
-                "reason": {
-                    "type": "string",
-                    "description": (
-                        "Why this playbook cannot migrate. At least 12 characters; "
-                        "an empty waiver is not a waiver."
-                    ),
-                },
-            },
-            "required": ["playbook_id", "reason"],
-        },
-    },
-    {
-        "name": "playbook_migration_unacknowledge",
-        "description": (
-            "Withdraw a migration waiver. The playbook returns to its computed "
-            "disposition and blocks cutover again if it is not ready."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "playbook_id": {
-                    "type": "string",
-                    "description": "The playbook's frontmatter id.",
-                },
-            },
-            "required": ["playbook_id"],
-        },
     },
     {
         "name": "playbook_validate",
