@@ -160,6 +160,64 @@ async def test_inventory_rejects_an_unknown_disposition(handler):
     assert "probably-fine" in result["error"]
 
 
+async def test_inventory_reports_a_complete_read_as_complete(handler):
+    result = await handler._cmd_playbook_migration_inventory({})
+    assert result["evidence_complete"] is True
+    assert result["evidence_errors"] == []
+    assert result["blocking_reasons"] == []
+
+
+@pytest.mark.parametrize(
+    ("method", "source"),
+    [
+        ("list_playbook_activations_with_artifacts", "activations"),
+        ("list_acks", "migration_acks"),
+        ("list_pending_events", "pending_events"),
+    ],
+)
+async def test_inventory_reports_an_unreadable_database_as_unread_not_clean(
+    handler, monkeypatch, method, source
+):
+    """A query that fails must never render as an empty — that is, clean — result.
+
+    ``aq playbook migration-inventory`` is the operator's read on whether the
+    fleet can cut over.  A database it could not query used to be
+    indistinguishable from a fleet with no activations, no acknowledgements and
+    no pending events.
+    """
+
+    async def boom(*a, **k):
+        raise RuntimeError(f"{source} query failed")
+
+    monkeypatch.setattr(handler.db, method, boom, raising=False)
+    if method == "list_playbook_activations_with_artifacts":
+        monkeypatch.setattr(handler.db, "list_playbook_activations", boom, raising=False)
+
+    result = await handler._cmd_playbook_migration_inventory({})
+
+    assert result["success"] is True
+    assert result["evidence_complete"] is False
+    assert [row["source"] for row in result["evidence_errors"]] == [source]
+    assert result["blocking_reasons"]
+    assert source in result["blocking_reasons"][0]
+    # Degraded, not aborted: the operator still sees what could be read.
+    assert result["entries"]
+
+
+async def test_cutover_report_inherits_the_inventory_unread_sources(handler, monkeypatch):
+    """The report derives ``unresolved`` from the inventory, so it inherits its gaps."""
+
+    async def boom(*a, **k):
+        raise RuntimeError("acks query failed")
+
+    monkeypatch.setattr(handler.db, "list_acks", boom, raising=False)
+    monkeypatch.setattr(handler.db, "list_playbook_migration_acks", boom, raising=False)
+
+    inputs = await handler._cutover_report_inputs()
+
+    assert "migration_acks" in {row["source"] for row in inputs["evidence_errors"]}
+
+
 # ---------------------------------------------------------------------------
 # Acknowledgement
 # ---------------------------------------------------------------------------

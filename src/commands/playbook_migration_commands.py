@@ -174,6 +174,12 @@ class PlaybookMigrationCommandsMixin:
 
         Read-only: it never compiles, activates or writes anything.
 
+        Any evidence the daemon could not read is reported as
+        ``evidence_errors`` with ``evidence_complete: false`` and a blocking
+        reason each.  A database that cannot be queried would otherwise render
+        as a fleet with no activations, no acknowledgements and no pending
+        events — that is, as a clean one.
+
         Args:
             disposition: Optional filter — ``ready``, ``question_required``,
                 ``invalid`` or ``disabled``.  The counts and the blocking
@@ -507,6 +513,14 @@ class PlaybookMigrationCommandsMixin:
 
         fixture_root = self._reviewed_fixture_root()
         inventory = await self._migration_inventory()
+        # ``unresolved`` below is the inventory's own blocking set, so evidence
+        # the inventory could not read understates it exactly the way an unread
+        # activation query understates this report.  Carry those failures over
+        # rather than re-deriving them: each becomes a blocking reason.
+        for row in getattr(inventory, "evidence_errors", None) or ():
+            candidate = dict(row)
+            if candidate not in evidence_errors:
+                evidence_errors.append(candidate)
         enabled = await self._enabled_activations(evidence_errors=evidence_errors)
 
         live_health: dict[tuple[str, str, str], str] = {}
