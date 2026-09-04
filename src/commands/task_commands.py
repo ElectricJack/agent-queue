@@ -8,6 +8,7 @@ import os
 import time
 from collections.abc import Callable
 from dataclasses import asdict
+from pathlib import PurePosixPath, PureWindowsPath
 
 from src.models import (
     BLOCKING_DEP_TYPES,
@@ -90,12 +91,29 @@ def _normalize_label_list(raw) -> list[str]:
 _DELIVERABLE_KINDS = frozenset({"file", "test", "command", "flag", "registration"})
 
 
+def _path_target_error(target: str) -> str | None:
+    """Explain why ``target`` is not one repo-relative file path, or ``None``."""
+    if any(ch.isspace() for ch in target):
+        return "contains whitespace (a command or several paths)"
+    if "::" in target:
+        return "contains a '::' node id"
+    if PurePosixPath(target).is_absolute() or PureWindowsPath(target).is_absolute():
+        return "is an absolute path"
+    if ".." in PurePosixPath(target).parts:
+        return "escapes the repository with '..'"
+    return None
+
+
 def normalize_deliverables(raw) -> tuple[list[dict[str, str]], str | None]:
     """Validate a plan-derived implementation contract.
 
     IDs make explicit close waivers unambiguous, while the deliberately small
     ``id``/``kind``/``target`` shape works for direct, batch, and graph task
     creation without coupling those surfaces to each other.
+
+    A ``file`` target must be one repo-relative file path. A ``test`` target
+    may instead be a command line (which close-time evidence matches against
+    ``--test``), but a path-shaped test target must also be repo-relative.
     """
     if raw is None:
         return [], None
@@ -119,6 +137,17 @@ def normalize_deliverables(raw) -> tuple[list[dict[str, str]], str | None]:
             )
         if not target:
             return [], f"deliverables[{index}].target is required"
+        path_only = kind == "file" or (kind == "test" and not any(ch.isspace() for ch in target))
+        if path_only and (why := _path_target_error(target)):
+            shape = (
+                "one repo-relative file path"
+                if kind == "file"
+                else "one repo-relative file path or a test command line"
+            )
+            return [], (
+                f"deliverables[{index}].target {why}; a [{kind}] target must be {shape} "
+                "such as 'tests/test_x.py'"
+            )
         seen.add(item_id)
         result.append({"id": item_id, "kind": kind, "target": target})
     return result, None

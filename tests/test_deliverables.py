@@ -12,7 +12,53 @@ from pathlib import Path
 
 import pytest
 
+from src.commands.task_commands import normalize_deliverables
 from src.deliverables import evaluate_deliverables
+
+
+def _one(kind: str, target: str):
+    return normalize_deliverables([{"id": "item", "kind": kind, "target": target}])
+
+
+class TestDeclarationRejectsUnsatisfiablePathTargets:
+    def test_file_target_that_contains_whitespace_is_rejected(self):
+        items, error = _one("file", "src/a.py src/b.py")
+        assert items == []
+        assert error and "one repo-relative file path" in error
+
+    def test_absolute_target_is_rejected(self):
+        items, error = _one("file", "/etc/passwd")
+        assert items == []
+        assert error and "repo-relative" in error
+
+    def test_parent_escape_is_rejected(self):
+        items, error = _one("test", "../other-repo/tests/test_x.py")
+        assert items == []
+        assert error and "repo-relative" in error
+
+    def test_pytest_node_id_is_rejected(self):
+        items, error = _one("test", "tests/test_x.py::test_case")
+        assert items == []
+        assert error and "one repo-relative file path" in error
+
+
+class TestDeclarationKeepsSatisfiableItems:
+    @pytest.mark.parametrize("kind", ["file", "test"])
+    def test_single_relative_path_is_stored(self, kind):
+        items, error = _one(kind, "tests/test_x.py")
+        assert error is None
+        assert items == [{"id": "item", "kind": kind, "target": "tests/test_x.py"}]
+
+    def test_grep_kinds_still_accept_command_shaped_targets(self):
+        items, error = _one("command", "aq task close --deliverable-unmet")
+        assert error is None
+        assert items[0]["target"] == "aq task close --deliverable-unmet"
+
+    def test_test_command_is_stored_for_close_time_evidence(self):
+        command = "aq test tests/test_a.py tests/test_b.py"
+        items, error = _one("test", command)
+        assert error is None
+        assert items[0]["target"] == command
 
 
 @pytest.fixture
