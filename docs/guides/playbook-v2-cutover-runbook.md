@@ -65,6 +65,71 @@ table.
 
 ## Procedure
 
+### 0. Import the reviewed artifacts
+
+Package 6 checks four reviewed bundles into
+`tests/fixtures/playbooks/v2/`, but checked-in bytes are not an activation
+candidate until an operator adopts them into the daemon's content-addressed
+artifact store. Do not insert `playbook_artifacts` rows directly.
+
+First copy the complete bundle directories into a staging directory beneath
+the configured `vault_root`. Keep `artifact.json`, `artifact.sha256`,
+`source.md`, `review.md`, and `diagnostics.json` together. For example, from
+the deployed checkout, after replacing `/configured/vault/root` with the
+daemon's configured vault root:
+
+```bash
+PLAYBOOK_REVIEW_STAGING=/configured/vault/root/reviewed-playbooks
+install -d "$PLAYBOOK_REVIEW_STAGING"
+cp -R tests/fixtures/playbooks/v2/default-pipeline "$PLAYBOOK_REVIEW_STAGING/"
+cp -R tests/fixtures/playbooks/v2/default-assignment-routing "$PLAYBOOK_REVIEW_STAGING/"
+cp -R tests/fixtures/playbooks/v2/memory-consolidation "$PLAYBOOK_REVIEW_STAGING/"
+cp -R tests/fixtures/playbooks/v2/coding-reflection "$PLAYBOOK_REVIEW_STAGING/"
+```
+
+With `playbooks.enabled`, `playbooks.v2_api`,
+`playbooks.v2_storage_enabled`, and `playbooks.v2_activation_writes` enabled,
+import each bundle through the supported operator command:
+
+```bash
+aq playbook v2-import --path reviewed-playbooks/default-pipeline --json
+aq playbook v2-import --path reviewed-playbooks/default-assignment-routing --json
+aq playbook v2-import --path reviewed-playbooks/memory-consolidation --json
+aq playbook v2-import --path reviewed-playbooks/coding-reflection --json
+```
+
+Each successful response names the full `artifact_sha256`, `scope`,
+`scope_identifier`, `schema_version`, and playbook `version`, and always
+reports `activated: false`. The command refuses a path outside the vault, a
+missing or rejected `review.md`, noncanonical JSON, any hash/source/review
+mismatch, or an artifact that no longer validates against the live command,
+profile, and event registries. A failed import leaves neither a new artifact
+file nor a database reference.
+
+Rehearse the handoff before activating: list each playbook and confirm the
+returned import hash is present with `is_active: false`.
+
+```bash
+aq playbook artifacts --playbook-id default-pipeline --json
+aq playbook artifacts --playbook-id default-assignment-routing --json
+aq playbook artifacts --playbook-id memory-consolidation --json
+aq playbook artifacts --playbook-id coding-reflection --json
+```
+
+Activation remains a separate, explicit operation. Diff the candidate against
+the currently active artifact, review the result, then acknowledge the exact
+hash when required:
+
+```bash
+aq playbook artifact-diff --playbook-id <id> --target-sha256 <sha256> --json
+aq playbook activate --playbook-id <id> --artifact-sha256 <sha256> \
+  --acknowledge-diff <sha256> --json
+```
+
+Never substitute a truncated digest. Re-run `aq playbook release-check` and
+`aq playbook cutover-report --json` after all four activations; activation
+health must be `ready` before the drain can be signed.
+
 ### 1. Look before you close
 
 ```bash

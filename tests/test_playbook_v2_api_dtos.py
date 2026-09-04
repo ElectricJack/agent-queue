@@ -23,6 +23,7 @@ from src.commands.playbook_v2_commands import (
     PLAYBOOK_V2_ARTIFACT_COMMANDS,
     PLAYBOOK_V2_COMMANDS,
     PLAYBOOK_V2_COMPILER_COMMANDS,
+    PLAYBOOK_V2_IMPORT_COMMANDS,
 )
 from src.tools.definitions import _ALL_TOOL_DEFINITIONS, _TOOL_CATEGORIES
 
@@ -46,7 +47,9 @@ COMPILER_COMMANDS = {
 #: out of ``SEVEN_COMMANDS`` on purpose so that set keeps pinning §4.8.
 ARTIFACT_COMMANDS = {"playbook_artifacts"}
 
-ALL_V2_COMMANDS = SEVEN_COMMANDS | COMPILER_COMMANDS | ARTIFACT_COMMANDS
+IMPORT_COMMANDS = {"playbook_v2_import"}
+
+ALL_V2_COMMANDS = SEVEN_COMMANDS | COMPILER_COMMANDS | ARTIFACT_COMMANDS | IMPORT_COMMANDS
 
 
 def _v2_models() -> list[type[BaseModel]]:
@@ -88,6 +91,7 @@ class TestRegistration:
         assert PLAYBOOK_V2_COMMANDS == frozenset(SEVEN_COMMANDS)
         assert PLAYBOOK_V2_COMPILER_COMMANDS == frozenset(COMPILER_COMMANDS)
         assert PLAYBOOK_V2_ARTIFACT_COMMANDS == frozenset(ARTIFACT_COMMANDS)
+        assert PLAYBOOK_V2_IMPORT_COMMANDS == frozenset(IMPORT_COMMANDS)
 
     def test_v2_commands_are_not_in_response_exclude_none(self):
         """Optional blocks serialize as explicit ``null`` so the TS client can

@@ -874,6 +874,24 @@ class PlaybookV2ProposeResponse(V2Model):
     artifact: dict[str, Any] | None = None
 
 
+class PlaybookV2ImportResponse(V2Model):
+    """A reviewed artifact persisted as an inactive activation candidate."""
+
+    success: bool
+    playbook_id: str
+    artifact_sha256: str
+    scope: Literal["system", "project", "agent_type"]
+    scope_identifier: str | None = None
+    schema_version: Literal[2]
+    version: int
+    source_sha256: str
+    contract_fingerprint: str
+    reviewed_by: str
+    reviewed_at: str
+    activated: Literal[False]
+    diagnostics: list[CompilerDiagnosticDTO] = []
+
+
 class ShadowCompileRowDTO(V2Model):
     playbook_id: str
     vault_path: str
@@ -914,5 +932,6 @@ RESPONSE_MODELS: dict[str, type[BaseModel]] = {
     "playbook_run_overlay": PlaybookRunOverlayResponse,
     "playbook_v2_validate": PlaybookV2ValidateResponse,
     "playbook_v2_propose": PlaybookV2ProposeResponse,
+    "playbook_v2_import": PlaybookV2ImportResponse,
     "playbook_v2_shadow_compile": PlaybookV2ShadowCompileResponse,
 }

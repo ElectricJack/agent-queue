@@ -57,6 +57,7 @@ from src.commands.playbook_v2_commands import (
     PLAYBOOK_V2_ARTIFACT_COMMANDS,
     PLAYBOOK_V2_COMMANDS,
     PLAYBOOK_V2_COMPILER_COMMANDS,
+    PLAYBOOK_V2_IMPORT_COMMANDS,
     PlaybookV2CommandsMixin,
 )
 from src.commands.workflow_commands import WorkflowCommandsMixin
@@ -208,6 +209,7 @@ PAUSED_PLAYBOOK_COMMANDS: frozenset[str] = frozenset(
     | PLAYBOOK_V2_COMMANDS
     | PLAYBOOK_V2_ARTIFACT_COMMANDS
     | PLAYBOOK_V2_COMPILER_COMMANDS
+    | PLAYBOOK_V2_IMPORT_COMMANDS
 )
 
 #: Memory command names not caught by the prefix rule below.  The names are
