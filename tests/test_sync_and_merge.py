@@ -503,9 +503,8 @@ class TestSyncAndMergeRetry:
                 return "b" * 40
             if args[0] == "diff":
                 return ""
-            if args[0] == "push":
-                if sum(1 for c in calls if c[0] == "push") == 1:
-                    raise GitError("rejected")
+            if args[0] == "push" and sum(1 for c in calls if c[0] == "push") == 1:
+                raise GitError("rejected")
             # For all other commands (and second push), just record but don't execute
             return ""
 
