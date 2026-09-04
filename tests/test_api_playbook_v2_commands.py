@@ -207,6 +207,7 @@ def _backend_handler():
     )
     store = MagicMock()
     store.load.return_value = definition
+    store.load_layout.return_value = {}
     handler._v2_engine = MagicMock(
         return_value=SimpleNamespace(services=SimpleNamespace(artifact_store=store))
     )
@@ -227,6 +228,53 @@ async def test_v2_graph_honours_artifact_sha256():
     )
     handler.db.get_playbook_artifact.assert_awaited_once_with(ref.artifact_sha256)
     assert result["artifact"]["artifact_sha256"] == ref.artifact_sha256
+
+
+async def test_graph_layout_save_persists_positions_for_the_selected_artifact():
+    handler, _definition, ref = _backend_handler()
+    store = handler._v2_engine().services.artifact_store
+    positions = {"classify-risk": {"x": 8, "y": 9}}
+
+    result = await handler._cmd_playbook_graph_layout_save(
+        {
+            "playbook_id": "default-pipeline",
+            "artifact_sha256": ref.artifact_sha256,
+            "positions": positions,
+        }
+    )
+
+    assert result == {
+        "success": True,
+        "playbook_id": "default-pipeline",
+        "artifact_sha256": ref.artifact_sha256,
+        "positions": positions,
+    }
+    store.save_layout.assert_called_once_with(ref.artifact_sha256, positions)
+
+
+async def test_v2_graph_applies_the_saved_layout_for_its_artifact():
+    handler, _definition, _ref = _backend_handler()
+    handler._v2_engine().services.artifact_store.load_layout.return_value = {
+        "classify-risk": {"x": 8, "y": 9}
+    }
+
+    result = await handler._cmd_playbook_v2_graph({"playbook_id": "default-pipeline"})
+
+    assert result["layout"]["grid_positions"]["classify-risk"] == {"x": 8, "y": 9}
+
+
+async def test_graph_layout_save_rejects_unknown_steps():
+    handler, _definition, ref = _backend_handler()
+
+    result = await handler._cmd_playbook_graph_layout_save(
+        {
+            "playbook_id": "default-pipeline",
+            "artifact_sha256": ref.artifact_sha256,
+            "positions": {"missing": {"x": 1, "y": 2}},
+        }
+    )
+
+    assert result == {"error": "Unknown step_id 'missing'"}
 
 
 async def test_run_overlay_command_returns_pinned_artifact_ref():

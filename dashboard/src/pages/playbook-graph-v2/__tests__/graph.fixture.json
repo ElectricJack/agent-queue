@@ -1667,8 +1667,8 @@
       ],
       "out_degree": 2,
       "position": {
-        "x": 0,
-        "y": 5
+        "x": 4,
+        "y": 0
       }
     },
     {
@@ -1890,8 +1890,8 @@
       "diagnostics": [],
       "out_degree": 4,
       "position": {
-        "x": 0,
-        "y": 6
+        "x": 4,
+        "y": 1
       }
     },
     {
@@ -2276,8 +2276,8 @@
       "diagnostics": [],
       "out_degree": 5,
       "position": {
-        "x": 0,
-        "y": 7
+        "x": 4,
+        "y": 2
       }
     },
     {
@@ -2437,8 +2437,8 @@
       "diagnostics": [],
       "out_degree": 2,
       "position": {
-        "x": 0,
-        "y": 8
+        "x": 4,
+        "y": 3
       }
     },
     {
@@ -2513,8 +2513,8 @@
       "diagnostics": [],
       "out_degree": 0,
       "position": {
-        "x": 1,
-        "y": 7
+        "x": 5,
+        "y": 2
       }
     },
     {
@@ -2589,8 +2589,8 @@
       "diagnostics": [],
       "out_degree": 0,
       "position": {
-        "x": 1,
-        "y": 6
+        "x": 5,
+        "y": 1
       }
     }
   ],
@@ -3036,28 +3036,28 @@
         "y": 3
       },
       "list-downstream": {
-        "x": 0,
-        "y": 5
+        "x": 4,
+        "y": 0
       },
       "for-each-task": {
-        "x": 0,
-        "y": 6
+        "x": 4,
+        "y": 1
       },
       "sweep-failed": {
-        "x": 1,
-        "y": 6
+        "x": 5,
+        "y": 1
       },
       "open-gate": {
-        "x": 0,
-        "y": 7
+        "x": 4,
+        "y": 2
       },
       "sweep-done": {
-        "x": 1,
-        "y": 7
+        "x": 5,
+        "y": 2
       },
       "check-gate": {
-        "x": 0,
-        "y": 8
+        "x": 4,
+        "y": 3
       }
     },
     "cluster_bounds": {
@@ -3068,8 +3068,8 @@
         "height": 4
       },
       "sweep-on-spec-approved": {
-        "x": 0,
-        "y": 5,
+        "x": 4,
+        "y": 0,
         "width": 2,
         "height": 4
       }

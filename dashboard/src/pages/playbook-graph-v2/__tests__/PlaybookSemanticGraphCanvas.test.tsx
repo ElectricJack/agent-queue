@@ -1,5 +1,5 @@
-import type { ComponentType, MouseEvent, ReactNode } from "react";
-import type { Edge, EdgeChange, Node } from "@xyflow/react";
+import type { ComponentType, MouseEvent as ReactMouseEvent, ReactNode } from "react";
+import type { Edge, EdgeChange, Node, NodeChange } from "@xyflow/react";
 import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -12,9 +12,11 @@ interface FlowProps {
   edges: Edge[];
   nodeTypes: Record<string, ComponentType<Record<string, unknown>>>;
   children: ReactNode;
-  onPaneClick?: (event: MouseEvent) => void;
-  onNodeClick?: (event: MouseEvent, node: { id: string; type?: string }) => void;
+  onPaneClick?: (event: ReactMouseEvent) => void;
+  onNodeClick?: (event: ReactMouseEvent, node: { id: string; type?: string }) => void;
   onEdgesChange?: (changes: EdgeChange[]) => void;
+  onNodesChange?: (changes: NodeChange[]) => void;
+  onNodeDragStop?: (event: MouseEvent | TouchEvent, node: Node<Record<string, unknown>>) => void;
   nodesDraggable?: boolean;
   elementsSelectable?: boolean;
   edgesFocusable?: boolean;
@@ -100,6 +102,23 @@ beforeEach(() => {
 afterEach(cleanup);
 
 describe("PlaybookSemanticGraphCanvas", () => {
+  it("allows step dragging and saves the resulting grid positions", () => {
+    const save = vi.fn();
+    render(
+      <PlaybookSemanticGraphCanvas graph={graph} onSelectNode={vi.fn()} onSaveLayout={save} />,
+    );
+    expect(flow.current?.nodesDraggable).toBe(true);
+    const step = flow.current!.nodes.find((node) => node.type === SEMANTIC_NODE_TYPE)!;
+
+    flow.current!.onNodeDragStop!(new MouseEvent("mouseup"), {
+      ...step,
+      position: { x: step.position.x + 300, y: step.position.y + 200 },
+    });
+
+    expect(save).toHaveBeenCalledOnce();
+    expect(save.mock.calls[0]![0][step.id]).toEqual(expect.objectContaining({ x: expect.any(Number), y: expect.any(Number) }));
+  });
+
   it("renders every step inside its rule cluster group node", () => {
     render(<PlaybookSemanticGraphCanvas graph={graph} onSelectNode={vi.fn()} />);
     for (const rule of graph.rules!) {

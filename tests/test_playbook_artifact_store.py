@@ -120,6 +120,27 @@ def test_put_writes_hash_named_canonical_bytes_and_is_idempotent(tmp_path):
     ) == ref
 
 
+def test_layout_overrides_are_scoped_to_one_artifact_and_removed_with_it(tmp_path):
+    from src.playbooks.artifact_store import ArtifactStore
+
+    store = ArtifactStore(str(tmp_path))
+    ref = store.put(
+        _definition(),
+        source_digest="sha256:" + "a" * 64,
+        contract_fingerprint="sha256:" + "b" * 64,
+        profile_fingerprint="profile-opaque",
+        compiler_build="test-build",
+    )
+    positions = {"start": {"x": 4, "y": 7}}
+
+    store.save_layout(ref.artifact_sha256, positions)
+
+    assert store.load_layout(ref.artifact_sha256) == positions
+    assert store.load_layout("sha256:" + "c" * 64) == {}
+    assert store.delete(ref.artifact_sha256) is True
+    assert store.load_layout(ref.artifact_sha256) == {}
+
+
 def test_load_verifies_hash_before_parsing_and_rejects_invalid_identifiers(tmp_path):
     from src.playbooks.artifact_store import ArtifactStore, ArtifactVerificationFailed
 

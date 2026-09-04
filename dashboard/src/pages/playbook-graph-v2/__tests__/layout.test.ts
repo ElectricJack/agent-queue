@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { clusterPixelBounds, layoutSemanticGraph, toPixels } from "../layout";
+import { clusterPixelBounds, layoutSemanticGraph, toGrid, toPixels } from "../layout";
 import {
   EDGE_KIND_LABELS,
   EDGE_KIND_STYLES,
@@ -12,6 +12,10 @@ import {
 import { graph, doneNode } from "./fixtures";
 
 describe("layoutSemanticGraph", () => {
+  it("round-trips compiler grid positions through canvas pixels", () => {
+    expect(toGrid(toPixels({ x: 7, y: 3 }))).toEqual({ x: 7, y: 3 });
+  });
+
   it("maps every DTO edge to exactly one flow edge and preserves its id verbatim", () => {
     const result = layoutSemanticGraph(graph);
     expect(result.edges).toHaveLength(graph.edges!.length);

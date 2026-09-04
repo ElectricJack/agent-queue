@@ -3,16 +3,21 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 from pathlib import Path
 from uuid import uuid4
 
-from src.playbooks.artifact_ref import ARTIFACT_SCHEMA_GENERATION, ArtifactRef, SHA256_RE
+from src.playbooks.artifact_ref import ARTIFACT_SCHEMA_GENERATION, SHA256_RE, ArtifactRef
 from src.playbooks.definition import (
     PlaybookDefinition,
-    artifact_sha256 as definition_artifact_sha256,
-    canonical_bytes as definition_canonical_bytes,
     load_definition_json,
+)
+from src.playbooks.definition import (
+    artifact_sha256 as definition_artifact_sha256,
+)
+from src.playbooks.definition import (
+    canonical_bytes as definition_canonical_bytes,
 )
 from src.playbooks.run_state import (
     ArtifactHashCollision,
@@ -26,6 +31,7 @@ class ArtifactStore:
 
     def __init__(self, compiled_root: str, *, max_artifact_bytes: int = 1_048_576) -> None:
         self._root = Path(compiled_root) / "artifacts"
+        self._layout_root = Path(compiled_root) / "layouts"
         self._max_artifact_bytes = max_artifact_bytes
 
     canonical_bytes = staticmethod(definition_canonical_bytes)
@@ -38,6 +44,64 @@ class ArtifactStore:
         if not SHA256_RE.fullmatch(artifact_sha256):
             raise ValueError(f"invalid artifact SHA-256: {artifact_sha256!r}")
         return str(self._root / f"{artifact_sha256[7:]}.json")
+
+    def layout_path_for(self, artifact_sha256: str) -> str:
+        if not SHA256_RE.fullmatch(artifact_sha256):
+            raise ValueError(f"invalid artifact SHA-256: {artifact_sha256!r}")
+        return str(self._layout_root / f"{artifact_sha256[7:]}.json")
+
+    def load_layout(self, artifact_sha256: str) -> dict[str, dict[str, int]]:
+        """Return mutable presentation coordinates for one immutable artifact."""
+        path = Path(self.layout_path_for(artifact_sha256))
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (FileNotFoundError, OSError, json.JSONDecodeError):
+            return {}
+        if not isinstance(payload, dict):
+            return {}
+        positions = payload.get("positions")
+        if not isinstance(positions, dict):
+            return {}
+        clean: dict[str, dict[str, int]] = {}
+        for step_id, position in positions.items():
+            if not isinstance(step_id, str) or not isinstance(position, dict):
+                continue
+            x, y = position.get("x"), position.get("y")
+            if isinstance(x, bool) or isinstance(y, bool):
+                continue
+            if isinstance(x, int) and isinstance(y, int):
+                clean[step_id] = {"x": x, "y": y}
+        return clean
+
+    def save_layout(
+        self, artifact_sha256: str, positions: dict[str, dict[str, int]]
+    ) -> None:
+        """Atomically replace presentation coordinates for one stored artifact."""
+        if not self.exists(artifact_sha256):
+            raise FileNotFoundError(f"artifact {artifact_sha256} is not stored")
+        self._layout_root.mkdir(mode=0o700, parents=True, exist_ok=True)
+        path = Path(self.layout_path_for(artifact_sha256))
+        data = json.dumps(
+            {"artifact_sha256": artifact_sha256, "positions": positions},
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        tmp = self._layout_root / f"{path.name}.tmp-{os.getpid()}-{uuid4().hex}"
+        try:
+            fd = os.open(tmp, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+            try:
+                os.write(fd, data)
+                os.fsync(fd)
+            finally:
+                os.close(fd)
+            os.replace(tmp, path)
+            directory_fd = os.open(self._layout_root, os.O_RDONLY)
+            try:
+                os.fsync(directory_fd)
+            finally:
+                os.close(directory_fd)
+        finally:
+            tmp.unlink(missing_ok=True)
 
     def exists(self, artifact_sha256: str) -> bool:
         return Path(self.path_for(artifact_sha256)).is_file()
@@ -155,4 +219,5 @@ class ArtifactStore:
         if not path.exists():
             return False
         path.unlink()
+        Path(self.layout_path_for(artifact_sha256)).unlink(missing_ok=True)
         return True

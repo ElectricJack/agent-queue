@@ -51,7 +51,6 @@ from src.playbooks.definition import (
 )
 from src.playbooks.pipeline_lowering import shadow_compile
 from src.playbooks.proposal import DuplicateSemanticKey, load_semantic_body_json, propose
-from src.playbooks.waits import PENDING_EVENT_DISPATCH_LEASE_SECONDS
 from src.playbooks.validation import (
     Diagnostic,
     RegisteredEventLookup,
@@ -59,6 +58,7 @@ from src.playbooks.validation import (
     VaultProfileLookup,
     validate_definition,
 )
+from src.playbooks.waits import PENDING_EVENT_DISPATCH_LEASE_SECONDS
 
 logger = logging.getLogger(__name__)
 
@@ -183,12 +183,13 @@ def _unreadable_activation_payload(
     }
 
 
-#: The seven command names this mixin owns, in child-plan §4.8 order.  Imported
+#: Semantic graph command names this mixin owns. Imported
 #: by ``src/commands/handler.py`` (feature pause) and by the tests that pin the
 #: registration surface.
 PLAYBOOK_V2_COMMANDS: frozenset[str] = frozenset(
     {
         "playbook_v2_graph",
+        "playbook_graph_layout_save",
         "playbook_activation_health",
         "playbook_activate",
         "playbook_artifact_diff",
@@ -198,9 +199,8 @@ PLAYBOOK_V2_COMMANDS: frozenset[str] = frozenset(
     }
 )
 
-#: Package 2's review-only compiler surface.  Kept separate from the Package 5
-#: projection constant because several API-contract tests intentionally pin
-#: that seven-command set.
+#: Package 2's review-only compiler surface. Kept separate from the graph
+#: projection and layout commands.
 PLAYBOOK_V2_COMPILER_COMMANDS: frozenset[str] = frozenset(
     {
         "playbook_v2_validate",
@@ -209,10 +209,9 @@ PLAYBOOK_V2_COMPILER_COMMANDS: frozenset[str] = frozenset(
     }
 )
 
-#: The activation chooser's read.  Deliberately its own constant rather than an
-#: eighth member of ``PLAYBOOK_V2_COMMANDS``: several API-contract tests pin
-#: that set to the child plan's seven §4.8 commands, and this command answers a
-#: question none of them do — *which artifacts could be activated*, including
+#: The activation chooser's read. Deliberately its own constant rather than a
+#: member of ``PLAYBOOK_V2_COMMANDS`` because it answers a question
+#: none of them do — *which artifacts could be activated*, including
 #: the inactive candidates an operator diffs before activating one.
 PLAYBOOK_V2_ARTIFACT_COMMANDS: frozenset[str] = frozenset({"playbook_artifacts"})
 
@@ -369,7 +368,6 @@ class PlaybookV2CommandsMixin:
         database adapter without the V2 tables still reports the seam error
         rather than raising.
         """
-        playbooks = getattr(self.config, "playbooks", None)
         return hasattr(self.db, "list_playbook_activations") and hasattr(
             self.db, "get_playbook_artifact_row"
         )
@@ -383,7 +381,6 @@ class PlaybookV2CommandsMixin:
         adapter without the V2 tables must still report the seam error rather
         than raise.
         """
-        playbooks = getattr(self.config, "playbooks", None)
         return hasattr(self.db, "list_playbook_artifacts") and hasattr(
             self.db, "list_playbook_activations"
         )
@@ -685,8 +682,8 @@ class PlaybookV2CommandsMixin:
                 raise ValueError("manifest.md has no closing YAML frontmatter marker")
             manifest = yaml.load(manifest_text[4:end], Loader=_UniqueReviewLoader)
             if not isinstance(manifest, dict):
-                raise ValueError("manifest.md frontmatter is not a mapping")
-        except (OSError, ValueError, yaml.YAMLError) as exc:
+                raise TypeError("manifest.md frontmatter is not a mapping")
+        except (OSError, TypeError, ValueError, yaml.YAMLError) as exc:
             return {"success": False, "error": f"artifact manifest is invalid: {exc}"}
 
 
@@ -872,7 +869,6 @@ class PlaybookV2CommandsMixin:
         return {"error": V2_STORAGE_UNAVAILABLE_ERROR}
 
     def _v2_storage_ready(self, *methods: str) -> bool:
-        playbooks = getattr(self.config, "playbooks", None)
         return all(
             hasattr(self.db, method) for method in methods
         )
@@ -911,7 +907,7 @@ class PlaybookV2CommandsMixin:
             return None, None, f"Artifact '{sha}' does not belong to playbook '{playbook_id}'"
         try:
             definition = self._v2_engine().services.artifact_store.load(sha)
-        except Exception as exc:  # noqa: BLE001 - storage failures are operator-facing
+        except Exception as exc:
             logger.warning("could not load V2 artifact %s", sha, exc_info=True)
             return None, None, f"Playbook artifact '{sha}' is unavailable: {exc}"
         return ref, definition, None
@@ -989,11 +985,55 @@ class PlaybookV2CommandsMixin:
             contracts=contracts,
             profiles=profiles,
             direction=direction,
+            layout_overrides=(
+                self._v2_engine().services.artifact_store.load_layout(selected_sha)
+                if hasattr(self._v2_engine().services.artifact_store, "load_layout")
+                else {}
+            ),
         )
         if args.get("include_advanced", True) is False:
             for node in response["nodes"]:
                 node["advanced"]["typed_step"] = {}
         return response
+
+    async def _cmd_playbook_graph_layout_save(self, args: dict) -> dict:
+        """Persist user-arranged node coordinates for one immutable artifact."""
+        if not self._v2_api_enabled():
+            return {"error": V2_API_DISABLED_ERROR}
+        playbook_id = _clean_str(args, "playbook_id")
+        if not playbook_id:
+            return {"error": "playbook_id is required"}
+        artifact_sha256 = _clean_str(args, "artifact_sha256")
+        invalid = _validate_sha(artifact_sha256, "artifact_sha256")
+        if invalid:
+            return {"error": invalid}
+        if not self._v2_storage_ready("get_playbook_artifact"):
+            return self._v2_storage_unavailable()
+        _ref, definition, error = await self._v2_load_artifact(artifact_sha256, playbook_id)
+        if error:
+            return {"error": error}
+        raw_positions = args.get("positions")
+        if not isinstance(raw_positions, dict) or not raw_positions:
+            return {"error": "positions must be a non-empty object"}
+        positions: dict[str, dict[str, int]] = {}
+        for step_id, raw in raw_positions.items():
+            if step_id not in definition.steps:
+                return {"error": f"Unknown step_id '{step_id}'"}
+            if not isinstance(raw, dict):
+                return {"error": f"Position for '{step_id}' must contain integer x and y"}
+            x, y = raw.get("x"), raw.get("y")
+            if isinstance(x, bool) or isinstance(y, bool) or not isinstance(x, int) or not isinstance(y, int):
+                return {"error": f"Position for '{step_id}' must contain integer x and y"}
+            positions[step_id] = {"x": x, "y": y}
+        store = self._v2_engine().services.artifact_store
+        positions = {**store.load_layout(artifact_sha256), **positions}
+        store.save_layout(artifact_sha256, positions)
+        return {
+            "success": True,
+            "playbook_id": playbook_id,
+            "artifact_sha256": artifact_sha256,
+            "positions": positions,
+        }
 
     async def _cmd_playbook_activation_health(self, args: dict) -> dict:
         """List playbook activations with their computed health.
@@ -1701,7 +1741,7 @@ class PlaybookV2CommandsMixin:
             if not finalized:
                 raise RuntimeError("pending event dispatch claim was lost before finalization")
             return True, tuple(result.run_ids), None
-        except BaseException as exc:  # noqa: BLE001 - cancellation must release the claim
+        except BaseException as exc:
             cancelled = isinstance(exc, asyncio.CancelledError)
             error = "dispatch cancelled" if cancelled else str(exc)
             if not cancelled:
@@ -1719,7 +1759,7 @@ class PlaybookV2CommandsMixin:
             except asyncio.CancelledError as recovery_cancel:
                 cancelled_during_recovery = recovery_cancel
                 restored = await recovery
-            except Exception as restore_exc:  # noqa: BLE001 - report both failures
+            except Exception as restore_exc:
                 logger.exception(
                     "pending V2 event %s could not restore its failed dispatch",
                     event_id,

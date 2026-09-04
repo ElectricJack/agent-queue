@@ -134,6 +134,7 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "set_playbook_enabled": "playbook",
     # playbook V2 semantic graph -- src/commands/playbook_v2_commands.py
     "playbook_v2_graph": "playbook",
+    "playbook_graph_layout_save": "playbook",
     "playbook_activation_health": "playbook",
     "playbook_activate": "playbook",
     "playbook_artifacts": "playbook",
@@ -3728,6 +3729,34 @@ _ALL_TOOL_DEFINITIONS = [
                 },
             },
             "required": ["playbook_id"],
+        },
+    },
+    {
+        "name": "playbook_graph_layout_save",
+        "description": (
+            "Persist user-arranged grid coordinates for the nodes of one "
+            "immutable playbook artifact. A later compile creates a new artifact "
+            "and therefore starts with compiler-generated coordinates."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "playbook_id": {"type": "string"},
+                "artifact_sha256": {"type": "string"},
+                "positions": {
+                    "type": "object",
+                    "additionalProperties": {
+                        "type": "object",
+                        "properties": {
+                            "x": {"type": "integer"},
+                            "y": {"type": "integer"},
+                        },
+                        "required": ["x", "y"],
+                        "additionalProperties": False,
+                    },
+                },
+            },
+            "required": ["playbook_id", "artifact_sha256", "positions"],
         },
     },
     {

@@ -91,6 +91,13 @@ export function toPixels(grid: GridPositionDTO): { x: number; y: number } {
   };
 }
 
+export function toGrid(position: { x: number; y: number }): { x: number; y: number } {
+  return {
+    x: Math.round((position.x - PADDING) / (NODE_WIDTH + COLUMN_GAP)),
+    y: Math.round((position.y - PADDING) / (NODE_HEIGHT + ROW_GAP)),
+  };
+}
+
 /** The pixel box of one rule cluster: the grid cells its steps occupy, grown
  *  by the cluster padding and a header strip for the rule's name. */
 export function clusterPixelBounds(bounds: ClusterBoundsDTO): {

@@ -1079,6 +1079,7 @@ def project_graph(
     contracts: Any = None,
     profiles: Any = None,
     direction: str = "TD",
+    layout_overrides: dict[str, dict[str, int]] | None = None,
 ) -> dict[str, Any]:
     """Return a deterministic, DTO-validated graph without I/O."""
     definition = PlaybookDefinition.model_validate(definition)
@@ -1107,6 +1108,21 @@ def project_graph(
     selected_ids = {rule.id for rule in selected_rules}
     edges = [edge for edge in all_edges if edge["rule_id"] in selected_ids]
     positions, bounds = _layout(selected_rules, all_rule_nodes, edges, direction)
+    for step_id, position in (layout_overrides or {}).items():
+        if step_id in positions:
+            positions[step_id] = {"x": position["x"], "y": position["y"]}
+    for rule in selected_rules:
+        owned_positions = [positions[step_id] for step_id in all_rule_nodes[rule.id]]
+        left = min(position["x"] for position in owned_positions)
+        top = min(position["y"] for position in owned_positions)
+        right = max(position["x"] for position in owned_positions)
+        bottom = max(position["y"] for position in owned_positions)
+        bounds[rule.id] = {
+            "x": left,
+            "y": top,
+            "width": right - left + 1,
+            "height": bottom - top + 1,
+        }
     nodes = []
     for rule in selected_rules:
         for step_id in all_rule_nodes[rule.id]:

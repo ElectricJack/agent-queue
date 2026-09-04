@@ -13,12 +13,15 @@ import {
   Panel,
   ReactFlow,
   ReactFlowProvider,
+  applyNodeChanges,
   type EdgeChange,
+  type Node,
+  type NodeChange,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import RuleClusterNode from "./RuleClusterNode";
 import SemanticStepNode from "./StepNodeCard";
-import { layoutSemanticGraph, type SemanticGraphInput } from "./layout";
+import { layoutSemanticGraph, toGrid, type SemanticGraphInput } from "./layout";
 import {
   EDGE_KIND_LABELS,
   EDGE_KIND_STYLES,
@@ -44,9 +47,10 @@ export interface PlaybookSemanticGraphCanvasProps {
   /** Run state to draw over the graph. It is drawn only when the run pinned
    *  this exact artifact; otherwise the canvas says why it is not. */
   overlay?: RunOverlayInput;
+  onSaveLayout?: (positions: Record<string, { x: number; y: number }>) => void;
 }
 
-/** Read-only canvas for one playbook artifact.
+/** Interactive canvas for one playbook artifact.
  *
  *  Camera state belongs entirely to React Flow: the graph fits once on mount
  *  and a selection change never re-fits, because only `selected` changes on the
@@ -57,11 +61,33 @@ export default function PlaybookSemanticGraphCanvas({
   selectedNodeId = null,
   onSelectNode,
   overlay,
+  onSaveLayout,
 }: PlaybookSemanticGraphCanvasProps) {
   const wrapRef = useRef<HTMLDivElement>(null);
   const { nodes, edges, droppedEdgeCount, overlayApplied, overlayMismatch } = useMemo(
     () => layoutSemanticGraph(graph, overlay),
     [graph, overlay],
+  );
+  const [positionedNodes, setPositionedNodes] = useState(nodes);
+  useEffect(() => setPositionedNodes(nodes), [nodes]);
+  const onNodesChange = useCallback(
+    (changes: NodeChange[]) =>
+      setPositionedNodes(
+        (current) => applyNodeChanges(changes, current) as typeof current,
+      ),
+    [],
+  );
+  const onNodeDragStop = useCallback(
+    (_event: MouseEvent | TouchEvent, dragged: Node) => {
+      if (!onSaveLayout || dragged.type !== SEMANTIC_NODE_TYPE) return;
+      const parent = positionedNodes.find((node) => node.id === dragged.parentId);
+      const absolute = {
+        x: dragged.position.x + (parent?.position.x ?? 0),
+        y: dragged.position.y + (parent?.position.y ?? 0),
+      };
+      onSaveLayout({ [dragged.id]: toGrid(absolute) });
+    },
+    [onSaveLayout, positionedNodes],
   );
 
   const select = useCallback((nodeId: string) => onSelectNode(nodeId), [onSelectNode]);
@@ -117,16 +143,17 @@ export default function PlaybookSemanticGraphCanvas({
 
   const decorated = useMemo(
     () =>
-      nodes.map((node) =>
+      positionedNodes.map((node) =>
         node.type === RULE_CLUSTER_NODE_TYPE
           ? node
           : {
               ...node,
+              draggable: Boolean(onSaveLayout),
               selected: node.id === selectedNodeId,
               data: { ...node.data, onSelect: select },
             },
       ),
-    [nodes, selectedNodeId, select],
+    [positionedNodes, selectedNodeId, select, onSaveLayout],
   );
 
   const decoratedEdges = useMemo(
@@ -182,13 +209,12 @@ export default function PlaybookSemanticGraphCanvas({
           fitViewOptions={{ padding: 0.2 }}
           minZoom={0.1}
           maxZoom={2}
-          nodesDraggable={false}
+          nodesDraggable={Boolean(onSaveLayout)}
           nodesConnectable={false}
           nodesFocusable={false}
           edgesFocusable
           edgesReconnectable={false}
-          // Off so the cards and cluster chrome stay read-only and drag-select
-          // never competes with panning. Edges opt in per element instead (see
+          // Off so drag-select never competes with panning. Edges opt in per element (see
           // `layout.ts`), which is what xyflow's `edge.selectable` is for.
           elementsSelectable={false}
           deleteKeyCode={null}
@@ -198,6 +224,8 @@ export default function PlaybookSemanticGraphCanvas({
           zoomOnScroll={false}
           proOptions={{ hideAttribution: true }}
           onNodeClick={onNodeClick}
+          onNodesChange={onNodesChange}
+          onNodeDragStop={onNodeDragStop}
           onEdgesChange={onEdgesChange}
           onPaneClick={clearSelection}
         >

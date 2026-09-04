@@ -560,6 +560,13 @@ class PlaybookV2GraphResponse(V2Model):
     legend: GraphLegendDTO = GraphLegendDTO()
 
 
+class PlaybookGraphLayoutSaveResponse(V2Model):
+    success: bool = True
+    playbook_id: str
+    artifact_sha256: str
+    positions: dict[str, GridPositionDTO] = {}
+
+
 # ---------------------------------------------------------------------------
 # §4.5 Semantic diff
 # ---------------------------------------------------------------------------
@@ -921,6 +928,7 @@ class PlaybookV2ShadowCompileResponse(V2Model):
 
 RESPONSE_MODELS: dict[str, type[BaseModel]] = {
     "playbook_v2_graph": PlaybookV2GraphResponse,
+    "playbook_graph_layout_save": PlaybookGraphLayoutSaveResponse,
     "playbook_activation_health": PlaybookActivationHealthResponse,
     "playbook_activate": SetPlaybookActivationResponse,
     "playbook_artifacts": ListPlaybookArtifactsResponse,

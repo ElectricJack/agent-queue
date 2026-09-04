@@ -116,6 +116,7 @@ class ArtifactRetentionSweeper:
         self._db = db
         self._config = config
         self._artifacts_dir = Path(compiled_root) / "artifacts"
+        self._layouts_dir = Path(compiled_root) / "layouts"
 
     async def sweep(self, now: float | None = None) -> dict[str, int]:
         now = time.time() if now is None else now
@@ -251,6 +252,7 @@ class ArtifactRetentionSweeper:
                         )
                     continue
                 if discard(grave):
+                    (self._layouts_dir / f"{sha[7:]}.json").unlink(missing_ok=True)
                     removed += 1
         return removed
 

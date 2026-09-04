@@ -4,7 +4,7 @@ The DTO module is the frozen interface contract of the Package 5 child plan
 (``docs/superpowers/plans/2026-09-01-playbook-v2-graph-api-ui.md`` §4): it is
 what lets the backend and dashboard slices proceed in parallel.  These tests
 pin the properties the parallel slices depend on — strictness, registration,
-serialization of explicit nulls, and reachability of the seven commands through
+serialization of explicit nulls, and reachability of the graph commands through
 the codegen surface.
 """
 
@@ -27,8 +27,9 @@ from src.commands.playbook_v2_commands import (
 )
 from src.tools.definitions import _ALL_TOOL_DEFINITIONS, _TOOL_CATEGORIES
 
-SEVEN_COMMANDS = {
+GRAPH_COMMANDS = {
     "playbook_v2_graph",
+    "playbook_graph_layout_save",
     "playbook_activation_health",
     "playbook_activate",
     "playbook_artifact_diff",
@@ -43,13 +44,13 @@ COMPILER_COMMANDS = {
     "playbook_v2_shadow_compile",
 }
 
-#: The activation chooser's read.  Not one of the child plan's seven, and kept
-#: out of ``SEVEN_COMMANDS`` on purpose so that set keeps pinning §4.8.
+#: The activation chooser's read stays separate because it has its own
+#: registration constant.
 ARTIFACT_COMMANDS = {"playbook_artifacts"}
 
 IMPORT_COMMANDS = {"playbook_v2_import"}
 
-ALL_V2_COMMANDS = SEVEN_COMMANDS | COMPILER_COMMANDS | ARTIFACT_COMMANDS | IMPORT_COMMANDS
+ALL_V2_COMMANDS = GRAPH_COMMANDS | COMPILER_COMMANDS | ARTIFACT_COMMANDS | IMPORT_COMMANDS
 
 
 def _v2_models() -> list[type[BaseModel]]:
@@ -80,15 +81,15 @@ class TestStrictness:
 
 
 class TestRegistration:
-    def test_response_models_registered_for_seven_commands(self):
+    def test_response_models_registered_for_graph_commands(self):
         merged = api_models.get_all_response_models()
-        assert SEVEN_COMMANDS | ARTIFACT_COMMANDS <= set(merged)
+        assert GRAPH_COMMANDS | ARTIFACT_COMMANDS <= set(merged)
         for name, model in playbook_v2.RESPONSE_MODELS.items():
             assert merged[name] is model
 
     def test_response_models_dict_covers_package_two_and_five_surfaces(self):
         assert set(playbook_v2.RESPONSE_MODELS) == ALL_V2_COMMANDS
-        assert PLAYBOOK_V2_COMMANDS == frozenset(SEVEN_COMMANDS)
+        assert PLAYBOOK_V2_COMMANDS == frozenset(GRAPH_COMMANDS)
         assert PLAYBOOK_V2_COMPILER_COMMANDS == frozenset(COMPILER_COMMANDS)
         assert PLAYBOOK_V2_ARTIFACT_COMMANDS == frozenset(ARTIFACT_COMMANDS)
         assert PLAYBOOK_V2_IMPORT_COMMANDS == frozenset(IMPORT_COMMANDS)
@@ -107,12 +108,12 @@ class TestRegistration:
             assert _TOOL_CATEGORIES[name] == "playbook"
 
     def test_every_command_pauses_with_the_playbook_subsystem(self):
-        assert SEVEN_COMMANDS | ARTIFACT_COMMANDS <= PAUSED_PLAYBOOK_COMMANDS
+        assert GRAPH_COMMANDS | ARTIFACT_COMMANDS <= PAUSED_PLAYBOOK_COMMANDS
 
     def test_every_command_is_implemented_on_the_handler(self):
         from src.commands.handler import CommandHandler
 
-        for name in SEVEN_COMMANDS | ARTIFACT_COMMANDS:
+        for name in GRAPH_COMMANDS | ARTIFACT_COMMANDS:
             assert hasattr(CommandHandler, f"_cmd_{name}"), name
 
 

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
-import { usePlaybookV2Graph } from "../../api/hooks";
+import { usePlaybookV2Graph, useSavePlaybookGraphLayout } from "../../api/hooks";
 import DiagnosticsBanner from "./DiagnosticsBanner";
 import EventScopeSelector, { ALL_EVENTS } from "./EventScopeSelector";
 import PlaybookSemanticGraphCanvas from "./PlaybookSemanticGraphCanvas";
@@ -44,6 +44,7 @@ export default function PlaybookSemanticGraphView({
   const [eventType, setEventType] = useState<string>(ALL_EVENTS);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [advanced, setAdvanced] = useState(false);
+  const saveLayout = useSavePlaybookGraphLayout();
 
   const { data, isPending, isError, error, refetch } = usePlaybookV2Graph(playbookId, {
     artifactSha,
@@ -71,6 +72,17 @@ export default function PlaybookSemanticGraphView({
   }, [nodes, selectedNodeId]);
 
   const onSelectNode = useCallback((nodeId: string | null) => setSelectedNodeId(nodeId), []);
+  const onSaveLayout = useCallback(
+    (positions: Record<string, { x: number; y: number }>) => {
+      if (!data?.artifact?.artifact_sha256) return;
+      saveLayout.mutate({
+        playbook_id: playbookId,
+        artifact_sha256: data.artifact.artifact_sha256,
+        positions,
+      });
+    },
+    [data?.artifact?.artifact_sha256, playbookId, saveLayout],
+  );
 
   // The inspector shows run facts under exactly the rule the canvas draws them
   // under: only when the run pinned the artifact being projected. A run against
@@ -161,6 +173,7 @@ export default function PlaybookSemanticGraphView({
             selectedNodeId={selectedNodeId}
             onSelectNode={onSelectNode}
             overlay={overlay}
+            onSaveLayout={onSaveLayout}
           />
         </div>
         {selected && (

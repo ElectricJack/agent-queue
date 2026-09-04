@@ -6162,6 +6162,53 @@
         }
       }
     },
+    "/api/playbook/graph-layout-save": {
+      "post": {
+        "tags": [
+          "playbook"
+        ],
+        "summary": "Persist user-arranged grid coordinates for the nodes of one immutable playbook artifact. A later compile creates a new artifact and therefore starts with compiler-generated coordinates.",
+        "description": "Persist user-arranged grid coordinates for the nodes of one immutable playbook artifact. A later compile creates a new artifact and therefore starts with compiler-generated coordinates.",
+        "operationId": "playbook_graph_layout_save",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PlaybookGraphLayoutSaveRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlaybookGraphLayoutSaveResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/playbook/graph-view": {
       "post": {
         "tags": [
@@ -28622,6 +28669,65 @@
         },
         "type": "object",
         "title": "PlaybookGraphLayout"
+      },
+      "PlaybookGraphLayoutSaveRequest": {
+        "properties": {
+          "playbook_id": {
+            "type": "string",
+            "title": "Playbook Id",
+            "description": ""
+          },
+          "artifact_sha256": {
+            "type": "string",
+            "title": "Artifact Sha256",
+            "description": ""
+          },
+          "positions": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Positions",
+            "description": ""
+          }
+        },
+        "type": "object",
+        "required": [
+          "playbook_id",
+          "artifact_sha256",
+          "positions"
+        ],
+        "title": "PlaybookGraphLayoutSaveRequest"
+      },
+      "PlaybookGraphLayoutSaveResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "playbook_id": {
+            "type": "string",
+            "title": "Playbook Id"
+          },
+          "artifact_sha256": {
+            "type": "string",
+            "title": "Artifact Sha256"
+          },
+          "positions": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/GridPositionDTO"
+            },
+            "type": "object",
+            "title": "Positions",
+            "default": {}
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "playbook_id",
+          "artifact_sha256"
+        ],
+        "title": "PlaybookGraphLayoutSaveResponse"
       },
       "PlaybookGraphNode": {
         "properties": {

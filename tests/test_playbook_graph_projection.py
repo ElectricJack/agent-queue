@@ -141,6 +141,15 @@ def test_event_graphs_are_arranged_in_columns_from_left_to_right():
     assert second["y"] >= first["y"] + first["height"] + 1
 
 
+def test_saved_positions_override_compiler_layout_and_resize_the_rule_cluster():
+    graph = _project(layout_overrides={"classify-risk": {"x": 8, "y": 9}})
+
+    assert graph["layout"]["grid_positions"]["classify-risk"] == {"x": 8, "y": 9}
+    bounds = graph["layout"]["cluster_bounds"]["review-on-task-completed"]
+    assert bounds["x"] <= 8 < bounds["x"] + bounds["width"]
+    assert bounds["y"] <= 9 < bounds["y"] + bounds["height"]
+
+
 def test_explanation_is_copied_not_rederived(monkeypatch):
     from src.playbooks.validation import RegistryContractLookup
 

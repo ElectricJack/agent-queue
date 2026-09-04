@@ -48,6 +48,7 @@ import {
   reopenWithFeedback,
   restartTask,
   playbookV2Graph,
+  playbookGraphLayoutSave,
   resumePlaybook,
   runPlaybook,
   inspectPlaybookRun,
@@ -859,6 +860,25 @@ export function usePlaybookV2Graph(playbookId?: string, opts: PlaybookV2GraphOpt
   });
 }
 export function usePlaybookActivationHealth(playbookId?: string) { return useQuery({ queryKey: ["playbook-activation-health", playbookId ?? "all"], queryFn: async () => (await playbookActivationHealth({ body: { playbook_id: playbookId }, throwOnError: true })).data as PlaybookActivationHealthResponse, enabled: !!playbookId, refetchInterval: 30_000 }); }
+
+export function useSavePlaybookGraphLayout() {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: async (input: {
+      playbook_id: string;
+      artifact_sha256: string;
+      positions: Record<string, { x: number; y: number }>;
+    }) =>
+      (
+        await playbookGraphLayoutSave({
+          body: input,
+          throwOnError: true,
+        })
+      ).data,
+    onSuccess: (_data, input) =>
+      client.invalidateQueries({ queryKey: ["playbook-v2-graph", input.playbook_id] }),
+  });
+}
 /** Query key for one playbook's stored artifacts.
  *
  *  Not keyed by hash: this is the list an operator picks a hash *from*, and it

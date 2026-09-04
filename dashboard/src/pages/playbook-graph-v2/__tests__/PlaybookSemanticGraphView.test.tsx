@@ -8,10 +8,12 @@ import { activeGraph, artifact, foreignRunOverlay, graph, runOverlay } from "./f
 
 const api = vi.hoisted(() => ({
   useGraph: vi.fn(),
+  saveLayout: vi.fn(),
   refetch: vi.fn(),
 }));
 vi.mock("../../../api/hooks", () => ({
   usePlaybookV2Graph: (...args: unknown[]) => api.useGraph(...args),
+  useSavePlaybookGraphLayout: () => ({ mutate: api.saveLayout }),
 }));
 
 interface FlowProps {
@@ -23,6 +25,7 @@ interface FlowProps {
   onNodeClick?: (event: MouseEvent, node: { id: string; type?: string }) => void;
 }
 vi.mock("@xyflow/react", () => ({
+  applyNodeChanges: (_changes: unknown[], nodes: unknown[]) => nodes,
   MarkerType: { ArrowClosed: "arrowclosed" },
   Position: { Top: "top", Bottom: "bottom", Left: "left", Right: "right" },
   ReactFlowProvider: ({ children }: { children: ReactNode }) => children,
