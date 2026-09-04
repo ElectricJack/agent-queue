@@ -10,6 +10,9 @@ from ..types import UNSET, Unset
 if TYPE_CHECKING:
     from ..models.migration_disposition_counts_dto import MigrationDispositionCountsDTO
     from ..models.migration_inventory_entry_dto import MigrationInventoryEntryDTO
+    from ..models.playbook_migration_inventory_response_evidence_errors_item import (
+        PlaybookMigrationInventoryResponseEvidenceErrorsItem,
+    )
 
 
 T = TypeVar("T", bound="PlaybookMigrationInventoryResponse")
@@ -25,6 +28,9 @@ class PlaybookMigrationInventoryResponse:
         counts (MigrationDispositionCountsDTO):
         blocking (int):
         pending_events_total (int):
+        evidence_complete (bool | Unset):  Default: True.
+        evidence_errors (list[PlaybookMigrationInventoryResponseEvidenceErrorsItem] | Unset):
+        blocking_reasons (list[str] | Unset):
         entries (list[MigrationInventoryEntryDTO] | Unset):
         filtered_by (None | str | Unset):
         error (None | str | Unset):
@@ -36,6 +42,9 @@ class PlaybookMigrationInventoryResponse:
     counts: MigrationDispositionCountsDTO
     blocking: int
     pending_events_total: int
+    evidence_complete: bool | Unset = True
+    evidence_errors: list[PlaybookMigrationInventoryResponseEvidenceErrorsItem] | Unset = UNSET
+    blocking_reasons: list[str] | Unset = UNSET
     entries: list[MigrationInventoryEntryDTO] | Unset = UNSET
     filtered_by: None | str | Unset = UNSET
     error: None | str | Unset = UNSET
@@ -52,6 +61,19 @@ class PlaybookMigrationInventoryResponse:
         blocking = self.blocking
 
         pending_events_total = self.pending_events_total
+
+        evidence_complete = self.evidence_complete
+
+        evidence_errors: list[dict[str, Any]] | Unset = UNSET
+        if not isinstance(self.evidence_errors, Unset):
+            evidence_errors = []
+            for evidence_errors_item_data in self.evidence_errors:
+                evidence_errors_item = evidence_errors_item_data.to_dict()
+                evidence_errors.append(evidence_errors_item)
+
+        blocking_reasons: list[str] | Unset = UNSET
+        if not isinstance(self.blocking_reasons, Unset):
+            blocking_reasons = self.blocking_reasons
 
         entries: list[dict[str, Any]] | Unset = UNSET
         if not isinstance(self.entries, Unset):
@@ -84,6 +106,12 @@ class PlaybookMigrationInventoryResponse:
                 "pending_events_total": pending_events_total,
             }
         )
+        if evidence_complete is not UNSET:
+            field_dict["evidence_complete"] = evidence_complete
+        if evidence_errors is not UNSET:
+            field_dict["evidence_errors"] = evidence_errors
+        if blocking_reasons is not UNSET:
+            field_dict["blocking_reasons"] = blocking_reasons
         if entries is not UNSET:
             field_dict["entries"] = entries
         if filtered_by is not UNSET:
@@ -97,6 +125,9 @@ class PlaybookMigrationInventoryResponse:
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
         from ..models.migration_disposition_counts_dto import MigrationDispositionCountsDTO
         from ..models.migration_inventory_entry_dto import MigrationInventoryEntryDTO
+        from ..models.playbook_migration_inventory_response_evidence_errors_item import (
+            PlaybookMigrationInventoryResponseEvidenceErrorsItem,
+        )
 
         d = dict(src_dict)
         success = d.pop("success")
@@ -110,6 +141,21 @@ class PlaybookMigrationInventoryResponse:
         blocking = d.pop("blocking")
 
         pending_events_total = d.pop("pending_events_total")
+
+        evidence_complete = d.pop("evidence_complete", UNSET)
+
+        _evidence_errors = d.pop("evidence_errors", UNSET)
+        evidence_errors: list[PlaybookMigrationInventoryResponseEvidenceErrorsItem] | Unset = UNSET
+        if _evidence_errors is not UNSET:
+            evidence_errors = []
+            for evidence_errors_item_data in _evidence_errors:
+                evidence_errors_item = PlaybookMigrationInventoryResponseEvidenceErrorsItem.from_dict(
+                    evidence_errors_item_data
+                )
+
+                evidence_errors.append(evidence_errors_item)
+
+        blocking_reasons = cast(list[str], d.pop("blocking_reasons", UNSET))
 
         _entries = d.pop("entries", UNSET)
         entries: list[MigrationInventoryEntryDTO] | Unset = UNSET
@@ -145,6 +191,9 @@ class PlaybookMigrationInventoryResponse:
             counts=counts,
             blocking=blocking,
             pending_events_total=pending_events_total,
+            evidence_complete=evidence_complete,
+            evidence_errors=evidence_errors,
+            blocking_reasons=blocking_reasons,
             entries=entries,
             filtered_by=filtered_by,
             error=error,

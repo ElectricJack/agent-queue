@@ -31288,6 +31288,28 @@
             "type": "integer",
             "title": "Pending Events Total"
           },
+          "evidence_complete": {
+            "type": "boolean",
+            "title": "Evidence Complete",
+            "default": true
+          },
+          "evidence_errors": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Evidence Errors",
+            "default": []
+          },
+          "blocking_reasons": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Blocking Reasons",
+            "default": []
+          },
           "entries": {
             "items": {
               "$ref": "#/components/schemas/MigrationInventoryEntryDTO"
