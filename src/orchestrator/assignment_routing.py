@@ -146,12 +146,29 @@ def _effective_profiles(project_id: str, profiles):
     return [profile for profile in profiles if ":" not in profile.id]
 
 
+def profile_provider(profile, harness_registry=None, project_id: str | None = None) -> str:
+    """Return the provider selected by a profile's harness."""
+
+    harness_id = getattr(profile, "harness", "") or ""
+    if not harness_id:
+        return ""
+    harness = harness_registry.get(harness_id, project_id) if harness_registry else None
+    if harness is None:
+        harness = type(
+            "HarnessRef",
+            (),
+            {"id": harness_id, "command": harness_id, "provider": ""},
+        )()
+    return str(getattr(harness, "provider", "") or _infer_provider_from_harness(harness))
+
+
 def task_assignment_options(
     task: Task,
     options: Sequence[AssignmentOption],
     profiles,
+    harness_registry=None,
 ) -> tuple[AssignmentOption, ...]:
-    """Narrow a pinned task's catalog to its profile's fixed class.
+    """Narrow a pinned task's catalog to its profile's fixed class and provider.
 
     A task without a pinned profile, or a profile without ``default_class``,
     keeps the ordinary project-wide catalog.  Profile resolution mirrors the
@@ -164,7 +181,13 @@ def task_assignment_options(
     fixed_class = (getattr(profile, "default_class", "") or "").strip()
     if not fixed_class:
         return tuple(options)
-    return tuple(option for option in options if option.intelligence_class == fixed_class)
+    provider = profile_provider(profile, harness_registry, task.project_id)
+    return tuple(
+        option
+        for option in options
+        if option.intelligence_class == fixed_class
+        and (not provider or option.provider == provider)
+    )
 
 
 def _catalog_hash(
@@ -208,12 +231,7 @@ def build_assignment_options(
             or not profile.harness
         ):
             continue
-        harness = harness_registry.get(profile.harness, project_id) if harness_registry else None
-        if harness is None:
-            harness = type("HarnessRef", (), {
-                "id": profile.harness, "command": profile.harness, "provider": ""
-            })()
-        provider = str(getattr(harness, "provider", "") or _infer_provider_from_harness(harness))
+        provider = profile_provider(profile, harness_registry, project_id)
         if not provider:
             continue
         fixed_class = (profile.default_class or "").strip()
@@ -545,7 +563,12 @@ class AssignmentRoutingCoordinator:
                     or task.status not in _ACTIVE_ROUTE_STATUSES
                     or (task.intelligence_class or "").strip()
                     or assignment_input_hash(task) != decision.input_hash
-                    or options_hash(task_assignment_options(task, current_options, current_profiles))
+                    or options_hash(task_assignment_options(
+                        task,
+                        current_options,
+                        current_profiles,
+                        getattr(self.owner, "harness_registry", None),
+                    ))
                     != batch_options_hash
                 ):
                     continue
@@ -657,7 +680,12 @@ class AssignmentRoutingCoordinator:
                         ):
                             drifted[task.id] = row
                     else:
-                        task_options = task_assignment_options(task, options, profiles)
+                        task_options = task_assignment_options(
+                            task,
+                            options,
+                            profiles,
+                            getattr(self.owner, "harness_registry", None),
+                        )
                         if task_options:
                             key = options_hash(task_options)
                             _batch_options, batch_tasks = pending_by_options.setdefault(
@@ -759,7 +787,12 @@ class AssignmentRoutingCoordinator:
             if project is None:
                 raise AssignmentPlaybookError(f"project '{task.project_id}' is missing")
             await self._assignment_artifact(project)
-            if not task_assignment_options(task, options, profiles):
+            if not task_assignment_options(
+                task,
+                options,
+                profiles,
+                getattr(self.owner, "harness_registry", None),
+            ):
                 raise AssignmentPlaybookError(
                     "no compatible intelligence class/provider options are configured"
                 )

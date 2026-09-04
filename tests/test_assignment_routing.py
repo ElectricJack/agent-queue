@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from types import SimpleNamespace
 
 from src.assignment_routing import (
     EffectiveAssignmentRoute,
@@ -9,6 +10,7 @@ from src.assignment_routing import (
     resolve_effective_route,
 )
 from src.models import AssignmentOption, Task, TaskAssignmentRoute
+from src.orchestrator.assignment_routing import task_assignment_options
 
 
 def _task(**changes) -> Task:
@@ -90,3 +92,31 @@ def test_assignment_hashes_are_canonical_and_include_material_changes() -> None:
     ])
     assert assignment_input_hash(task) != assignment_input_hash(replace(task, priority=21))
     assert assignment_input_hash(task) == assignment_input_hash(replace(task, retry_count=2))
+
+
+def test_pinned_profile_narrows_catalog_to_its_harness_provider() -> None:
+    task = _task(profile_id="standard-high-claude")
+    profiles = [
+        SimpleNamespace(
+            id="standard-high-claude",
+            default_class="standard-high",
+            harness="claude",
+        )
+    ]
+    options = [
+        AssignmentOption("standard-high", "anthropic", 2, 1, 1, "available"),
+        AssignmentOption("standard-high", "openai", 2, 1, 1, "available"),
+    ]
+    harness_registry = SimpleNamespace(
+        get=lambda harness_id, project_id=None: SimpleNamespace(
+            id=harness_id,
+            command=harness_id,
+            provider="anthropic",
+        )
+    )
+
+    constrained = task_assignment_options(task, options, profiles, harness_registry)
+
+    assert [(option.intelligence_class, option.provider) for option in constrained] == [
+        ("standard-high", "anthropic")
+    ]
