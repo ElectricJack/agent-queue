@@ -344,7 +344,9 @@ class TestPhaseVerifyByMode:
             )
         )
 
-        async def find_open_pr(_workspace, _branch, *, include_workspace_head=True):
+        async def find_open_pr(
+            _workspace, _branch, *, head_ref=None, include_workspace_head=True
+        ):
             if include_workspace_head:
                 return "https://github.com/org/repo/pull/unrelated-main"
             return None
@@ -375,7 +377,10 @@ class TestPhaseVerifyByMode:
         assert await orch._phase_verify(ctx) == PhaseResult.CONTINUE
         assert ctx.pr_url == "https://github.com/org/repo/pull/alt"
         orch.git.afind_open_pr.assert_awaited_once_with(
-            ws.workspace_path, "feature/delivery", include_workspace_head=False
+            ws.workspace_path,
+            "feature/delivery",
+            head_ref="refs/heads/feature/delivery",
+            include_workspace_head=False,
         )
 
     async def test_pr_mode_rejects_distinct_assigned_and_current_work(self, orch):
@@ -404,7 +409,10 @@ class TestPhaseVerifyByMode:
 
         assert await orch._phase_verify(ctx) == PhaseResult.CONTINUE
         orch.git.afind_open_pr.assert_awaited_once_with(
-            ws.workspace_path, "feature/assigned", include_workspace_head=False
+            ws.workspace_path,
+            "feature/assigned",
+            head_ref="refs/heads/feature/assigned",
+            include_workspace_head=False,
         )
 
     async def test_pr_mode_uses_remote_only_assigned_ref_but_logical_pr_branch(self, orch):
@@ -426,7 +434,10 @@ class TestPhaseVerifyByMode:
 
         assert await orch._phase_verify(ctx) == PhaseResult.CONTINUE
         orch.git.afind_open_pr.assert_awaited_once_with(
-            ws.workspace_path, "feature/assigned", include_workspace_head=False
+            ws.workspace_path,
+            "feature/assigned",
+            head_ref="refs/remotes/origin/feature/assigned",
+            include_workspace_head=False,
         )
         assert any(
             call.args[1] == "refs/remotes/origin/feature/assigned"
@@ -479,7 +490,9 @@ class TestPhaseVerifyByMode:
         )
         orch.git.ais_ancestor = AsyncMock(return_value=False)
 
-        async def find_open_pr(_workspace, _branch, *, include_workspace_head=True):
+        async def find_open_pr(
+            _workspace, _branch, *, head_ref=None, include_workspace_head=True
+        ):
             if include_workspace_head:
                 return "https://github.com/org/repo/pull/stale-alt"
             return None
@@ -505,6 +518,45 @@ class TestPhaseVerifyByMode:
             c for c in orch.git._arun.await_args_list if c.args and "merge" in c.args[0]
         ]
         assert merge_calls, "direct mode should auto-merge the task branch into default"
+        commands = [call.args[0] for call in orch.git._arun.await_args_list]
+        assert [
+            "rev-list",
+            "HEAD..refs/remotes/origin/main",
+            "--count",
+        ] in commands
+        assert [
+            "rev-list",
+            "refs/remotes/origin/main..HEAD",
+            "--count",
+        ] in commands
+
+    async def test_pr_auto_push_inspects_exact_remote_and_delivery_base(self, orch):
+        task = _pr_task("t-pr-exact-push", branch_name="feature-1")
+        await orch.db.create_task(task)
+
+        async def git_output(args, cwd=None):
+            if args[:1] == ["rev-list"]:
+                return "1"
+            return "0"
+
+        orch.git._arun = AsyncMock(side_effect=git_output)
+        ws = await orch.db.get_workspace("ws-1")
+        ctx = _ctx(orch, task, ws.workspace_path)
+
+        assert await orch._phase_verify(ctx) == PhaseResult.CONTINUE
+        assert [
+            "rev-list",
+            "refs/remotes/origin/feature-1..HEAD",
+            "--count",
+        ] in [call.args[0] for call in orch.git._arun.await_args_list]
+        orch.git.apush_validated_delivery.assert_awaited_once_with(
+            ws.workspace_path,
+            "refs/remotes/origin/main",
+            "HEAD",
+            "feature-1",
+            event_bus=orch.bus,
+            project_id="p-1",
+        )
 
     async def test_direct_mode_does_not_ignore_assigned_branch_from_default(self, orch):
         """Committed task work follows delivery even after checkout returned to main."""
@@ -608,6 +660,11 @@ class TestPhaseIntegrateByMode:
         result = await self._run_integrate(orch, task, monkeypatch)
         assert result == PhaseResult.CONTINUE
         orch.git.amerge_branch.assert_not_awaited()
+        assert orch.git.apush_validated_delivery.await_count == 1
+        assert all(
+            call.args[1] == "refs/remotes/origin/main"
+            for call in orch.git.apush_validated_delivery.await_args_list
+        )
 
     async def test_direct_mode_merges_into_default(self, orch, monkeypatch):
         task = _direct_task("t-int-direct")
@@ -615,6 +672,11 @@ class TestPhaseIntegrateByMode:
         result = await self._run_integrate(orch, task, monkeypatch)
         assert result == PhaseResult.CONTINUE
         orch.git.amerge_branch.assert_awaited_once()
+        assert orch.git.apush_validated_delivery.await_count == 2
+        assert all(
+            call.args[1] == "refs/remotes/origin/main"
+            for call in orch.git.apush_validated_delivery.await_args_list
+        )
 
     async def test_reserved_delivery_never_acquires_merge_slot(self, orch, monkeypatch):
         from src.orchestrator import git_ops

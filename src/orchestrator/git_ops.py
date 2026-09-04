@@ -302,14 +302,18 @@ class GitOpsMixin:
             # Find the merge-base between HEAD and the default branch
             try:
                 merge_base = await self.git._arun(
-                    ["merge-base", f"origin/{default_branch}", "HEAD"],
+                    [
+                        "merge-base",
+                        f"refs/remotes/origin/{default_branch}",
+                        "HEAD",
+                    ],
                     cwd=workspace,
                 )
             except GitError:
                 # No remote tracking or no common ancestor — can't compare
                 try:
                     merge_base = await self.git._arun(
-                        ["merge-base", default_branch, "HEAD"],
+                        ["merge-base", f"refs/heads/{default_branch}", "HEAD"],
                         cwd=workspace,
                     )
                 except GitError:
@@ -458,6 +462,9 @@ class GitOpsMixin:
         """
         workspace = ctx.workspace_path
         default_branch = ctx.default_branch or "main"
+        current_branch = current_branch.removeprefix("refs/heads/").removeprefix(
+            "heads/"
+        )
         assigned_branch = ctx.delivery_branch or ctx.task.branch_name
         current_ref = f"refs/heads/{current_branch}"
 
@@ -756,6 +763,9 @@ class GitOpsMixin:
         if has_remote is None or not current_branch or has_uncommitted is None:
             logger.error("Task %s: required Git state could not be verified", task.id)
             return PhaseResult.STOP
+        current_branch = current_branch.removeprefix("refs/heads/").removeprefix(
+            "heads/"
+        )
 
         # Explicit opt-out retains its public meaning: suppress ordinary
         # branch/PR policy after strict cleanliness and the reserved-path
@@ -775,7 +785,7 @@ class GitOpsMixin:
                     )
             if has_uncommitted is not False:
                 return PhaseResult.STOP
-            delivery_refs = [current_branch]
+            delivery_refs = [f"refs/heads/{current_branch}"]
             assigned_branch = ctx.delivery_branch or task.branch_name
             if assigned_branch and assigned_branch != current_branch:
                 assigned_ref, ref_error = await self._resolve_assigned_ref(
@@ -1006,13 +1016,17 @@ class GitOpsMixin:
             if current_branch == expected_push_branch:
                 try:
                     ahead_output = await self.git._arun(
-                        ["rev-list", f"origin/{current_branch}..HEAD", "--count"],
+                        [
+                            "rev-list",
+                            f"refs/remotes/origin/{current_branch}..HEAD",
+                            "--count",
+                        ],
                         cwd=workspace,
                     )
                     if ahead_output.strip() != "0":
                         await self.git.apush_validated_delivery(
                             workspace,
-                            f"origin/{default_branch}",
+                            f"refs/remotes/origin/{default_branch}",
                             "HEAD",
                             current_branch,
                             event_bus=self.bus,
@@ -1098,6 +1112,7 @@ class GitOpsMixin:
                     pr_url = await self.git.afind_open_pr(
                         workspace,
                         pr_delivery_branch,
+                        head_ref=pr_delivery_ref,
                         include_workspace_head=False,
                     )
                     if pr_url:
@@ -1172,7 +1187,11 @@ class GitOpsMixin:
                 if has_remote:
                     try:
                         behind = await self.git._arun(
-                            ["rev-list", "HEAD..origin/" + default_branch, "--count"],
+                            [
+                                "rev-list",
+                                f"HEAD..refs/remotes/origin/{default_branch}",
+                                "--count",
+                            ],
                             cwd=workspace,
                         )
                         if behind.strip() != "0":
@@ -1226,7 +1245,11 @@ class GitOpsMixin:
                         )
                     try:
                         ahead = await self.git._arun(
-                            ["rev-list", "origin/" + default_branch + "..HEAD", "--count"],
+                            [
+                                "rev-list",
+                                f"refs/remotes/origin/{default_branch}..HEAD",
+                                "--count",
+                            ],
                             cwd=workspace,
                         )
                         if ahead.strip() != "0":
@@ -1696,6 +1719,9 @@ class GitOpsMixin:
         current_branch = await self.git.aget_current_branch(workspace, strict=True)
         if has_remote is None or not current_branch:
             return PhaseResult.STOP
+        current_branch = current_branch.removeprefix("refs/heads/").removeprefix(
+            "heads/"
+        )
 
         try:
             resolution = await self._resolve_task_delivery(
@@ -1772,7 +1798,9 @@ class GitOpsMixin:
                     return PhaseResult.STOP
 
             rebase_target = (
-                f"origin/{default_branch}" if has_remote else default_branch
+                f"refs/remotes/origin/{default_branch}"
+                if has_remote
+                else f"refs/heads/{default_branch}"
             )
             try:
                 await self.git._arun(["switch", branch], cwd=workspace)
@@ -1858,7 +1886,7 @@ class GitOpsMixin:
                 try:
                     await self.git.apush_validated_delivery(
                         workspace,
-                        f"origin/{default_branch}",
+                        f"refs/remotes/origin/{default_branch}",
                         "HEAD",
                         branch,
                         force_with_lease=True,
@@ -1963,7 +1991,7 @@ class GitOpsMixin:
                         # pushes the exact revalidated merge tip.
                         await self.git.apush_validated_delivery(
                             base_path,
-                            f"origin/{default_branch}",
+                            f"refs/remotes/origin/{default_branch}",
                             "HEAD",
                             default_branch,
                             event_bus=self.bus,

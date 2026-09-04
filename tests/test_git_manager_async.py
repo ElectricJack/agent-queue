@@ -13,6 +13,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 from src.git.manager import GitManager, GitError
+from src.models import PhaseResult
 from src.orchestrator.git_ops import GitOpsMixin
 
 
@@ -583,6 +584,45 @@ class TestBranchSourceIsNotShadowedByASameNamedTag:
             "refs/heads/task/shadowed",
         )
         assert await mgr.arev_parse(clone, resolution.delivery_ref) == branch_tip
+
+    @pytest.mark.asyncio
+    async def test_skip_verification_inspects_reserved_paths_on_exact_current_ref(
+        self, clone, mgr
+    ):
+        """A safe same-named tag cannot hide reserved paths on the branch."""
+        main_tip = _git(["rev-parse", "refs/heads/main"], cwd=clone)
+        _git(["switch", "-c", "task/shadowed"], cwd=clone)
+        pathlib.Path(clone, ".aq").mkdir()
+        _commit_file(clone, ".aq/claim.json", "reserved", "reserved work")
+        _git(["tag", "task/shadowed", main_tip], cwd=clone)
+
+        ops = GitOpsMixin()
+        ops.git = mgr
+        ops._task_uses_git = AsyncMock(return_value=True)
+        inspect = AsyncMock(wraps=mgr.areserved_paths_in_diff)
+        mgr.areserved_paths_in_diff = inspect
+        ctx = SimpleNamespace(
+            workspace_path=clone,
+            default_branch="main",
+            delivery_branch=None,
+            output=SimpleNamespace(exit_code=0),
+            agent=SimpleNamespace(id="agent-1"),
+            task=SimpleNamespace(
+                id="task-1",
+                project_id="project-1",
+                branch_name="task/shadowed",
+                skip_verification=True,
+            ),
+            verification_issues=[],
+        )
+
+        assert await ops._phase_verify(ctx) is PhaseResult.STOP
+        assert "reserved daemon" in ctx.verification_issues[0].lower()
+        inspect.assert_awaited_once_with(
+            clone,
+            "refs/remotes/origin/main",
+            "refs/heads/task/shadowed",
+        )
 
     @pytest.mark.asyncio
     async def test_head_oid_and_revision_expressions_keep_bare_resolution(self, clone, mgr):
@@ -1439,6 +1479,33 @@ class TestAfindOpenPr:
             ],
         )
         assert await mgr.afind_open_pr(clone, "aq/t-1") == "https://gh/org/repo/pull/43"
+
+    @pytest.mark.asyncio
+    async def test_exact_head_ref_ignores_a_same_named_tag(self, clone, mgr, monkeypatch):
+        _git(["switch", "-c", "aq/t-shadowed"], cwd=clone)
+        branch_tip = _commit_file(clone, "work.txt", "done", "work")
+        _git(["switch", "--detach", "refs/remotes/origin/main"], cwd=clone)
+        tag_tip = _commit_file(clone, "decoy.txt", "decoy", "decoy")
+        _git(["tag", "aq/t-shadowed", tag_tip], cwd=clone)
+
+        self._fake_gh(
+            mgr,
+            monkeypatch,
+            prs=[
+                {
+                    "url": "https://gh/org/repo/pull/47",
+                    "headRefName": "delivery",
+                    "headRefOid": branch_tip,
+                }
+            ],
+        )
+
+        assert await mgr.afind_open_pr(
+            clone,
+            "aq/t-shadowed",
+            head_ref="refs/heads/aq/t-shadowed",
+            include_workspace_head=False,
+        ) == "https://gh/org/repo/pull/47"
 
     @pytest.mark.asyncio
     async def test_open_prs_at_other_commits_are_not_accepted(

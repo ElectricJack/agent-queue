@@ -2810,6 +2810,7 @@ class GitManager:
         checkout_path: str,
         branch_name: str,
         *,
+        head_ref: str | None = None,
         include_workspace_head: bool = True,
     ) -> str | None:
         """Return an open or merged PR URL delivering *branch_name*, or ``None``.
@@ -2826,6 +2827,8 @@ class GitManager:
 
         A merged pull request is evidence that the branch's work has already
         shipped. Closed-but-unmerged PRs deliberately remain a failure.
+        ``head_ref`` supplies the exact local or remote-tracking ref whose tip
+        must match, while ``branch_name`` remains the GitHub branch identity.
         Best-effort throughout: any gh/git failure returns ``None``.
         """
         if include_workspace_head:
@@ -2833,7 +2836,7 @@ class GitManager:
             if url:
                 return url
 
-        refs = [branch_name]
+        refs = [_validate_rev(head_ref, field="PR head") if head_ref else branch_name]
         if include_workspace_head:
             refs.append("HEAD")
         tips = {sha for ref in refs if (sha := await self.arev_parse(checkout_path, ref))}
