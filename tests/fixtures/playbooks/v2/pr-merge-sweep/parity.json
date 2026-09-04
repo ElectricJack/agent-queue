@@ -1,14 +1,13 @@
 {
-  "artifact_sha256": "sha256:8b1c7bec5aee1aa4d864d75e203a581a2f8289cbe6a5847b442c545e515d2525",
+  "artifact_sha256": "sha256:711083ff17e87b279db2a4b791071bb5f14c0f022d806de15465369573c5e1a6",
   "coverage": [
     {
       "event_type": "timer.30m",
       "guard": "absent",
       "project_id": "agent-queue",
-      "result": "identical commands, arguments, binding, and terminal transitions"
+      "result": "commands, arguments, binding, and terminal transitions covered"
     }
   ],
-  "legacy_source": "legacy-v1.md",
-  "limit": "A single unconditional timer rule has one reachable guard outcome; project scope is asserted independently from the path-derived V1 scope.",
-  "method": "lower_pipeline(legacy-v1.md) compared field-for-field to artifact.json, excluding presentation-only source references."
+  "limit": "A single unconditional timer rule has one reachable guard outcome; project scope is asserted independently.",
+  "method": "Current source and artifact fields are checked directly by the focused regression tests."
 }

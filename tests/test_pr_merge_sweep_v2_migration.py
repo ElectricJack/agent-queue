@@ -1,9 +1,4 @@
-"""Staged V2 evidence for the live ``pr-merge-sweep`` V1 playbook.
-
-The production vault remains on V1 until the operator completes the atomic
-cutover.  These tests therefore exercise the repository migration bundle,
-not the live vault file.
-"""
+"""Source and artifact checks for the shipped ``pr-merge-sweep`` playbook."""
 
 from __future__ import annotations
 
@@ -16,13 +11,10 @@ from src.playbooks.authoring import PlaybookSource
 from src.playbooks.definition import (
     canonical_bytes,
     load_definition_json,
-    scope_to_v1,
     source_digest,
 )
-from src.playbooks.pipeline_lowering import lower_pipeline
-from src.playbooks.validation import RegistryContractLookup, VaultProfileLookup
+from src.playbooks.validation import VaultProfileLookup
 from src.profiles.parser import parse_profile, parsed_profile_to_agent_profile
-
 
 FIXTURE = Path("tests/fixtures/playbooks/v2/pr-merge-sweep")
 
@@ -34,7 +26,7 @@ def test_authoring_accepts_a_project_qualified_scope() -> None:
     assert loaded.frontmatter["scope"] == "project:agent-queue"
 
 
-def test_staged_source_is_prose_and_names_the_project_scope() -> None:
+def test_source_is_prose_and_names_the_project_scope() -> None:
     source = (FIXTURE / "source.md").read_text(encoding="utf-8")
 
     assert "scope: project:agent-queue" in source
@@ -43,7 +35,7 @@ def test_staged_source_is_prose_and_names_the_project_scope() -> None:
     assert "`task_route`" in source
 
 
-def test_staged_artifact_preserves_the_v1_merge_sweep_commands_and_arguments() -> None:
+def test_artifact_defines_the_merge_sweep_commands_and_arguments() -> None:
     definition = load_definition_json((FIXTURE / "artifact.json").read_text(encoding="utf-8"))
     steps = definition.steps
     ensure = steps["sweep-open-prs--ensure_sweep_task"]
@@ -52,7 +44,6 @@ def test_staged_artifact_preserves_the_v1_merge_sweep_commands_and_arguments() -
     assert definition.id == "pr-merge-sweep"
     assert definition.scope.type == "project"
     assert definition.scope.project_id == "agent-queue"
-    assert scope_to_v1(definition.scope) == "project:agent-queue"
     assert [rule.trigger.event_type for rule in definition.rules] == ["timer.30m"]
     assert definition.rules[0].guard is None
     assert ensure.command == "ensure_task"
@@ -96,22 +87,7 @@ def test_staged_artifact_preserves_the_v1_merge_sweep_commands_and_arguments() -
     }
 
 
-def test_staged_artifact_is_the_supported_lowering_of_the_frozen_v1_graph() -> None:
-    legacy = PlaybookSource.load(FIXTURE / "legacy-v1.md", vault_root=FIXTURE)
-    assert isinstance(legacy, PlaybookSource)
-    body, diagnostics = lower_pipeline(legacy, contracts=RegistryContractLookup())
-    artifact = json.loads((FIXTURE / "artifact.json").read_text(encoding="utf-8"))
-
-    assert diagnostics == []
-    assert artifact["rules"][0]["id"] == body["rules"][0]["id"]
-    for step_id, expected in body["steps"].items():
-        actual = artifact["steps"][step_id]
-        for field in ("type", "rule", "title", "command", "inputs", "save_result_as", "transitions"):
-            if field in expected:
-                assert actual[field] == expected[field], (step_id, field)
-
-
-def test_staged_profile_snapshot_is_the_profile_fingerprint_bound_into_the_artifact() -> None:
+def test_profile_snapshot_is_the_profile_fingerprint_bound_into_the_artifact() -> None:
     parsed = parse_profile((FIXTURE / "pr-merger-profile.md").read_text(encoding="utf-8"))
     assert parsed.is_valid, parsed.errors
     fields = parsed_profile_to_agent_profile(parsed)
@@ -123,7 +99,7 @@ def test_staged_profile_snapshot_is_the_profile_fingerprint_bound_into_the_artif
     }
 
 
-def test_staged_artifact_is_canonical_and_bound_to_the_staged_source() -> None:
+def test_artifact_is_canonical_and_bound_to_the_source() -> None:
     raw = (FIXTURE / "artifact.json").read_bytes()
     definition = load_definition_json(raw.decode("utf-8"))
     source = (FIXTURE / "source.md").read_text(encoding="utf-8")
@@ -136,23 +112,15 @@ def test_staged_artifact_is_canonical_and_bound_to_the_staged_source() -> None:
     assert json.loads((FIXTURE / "diagnostics.json").read_text(encoding="utf-8")) == []
 
 
-def test_review_record_requires_operator_approval_before_import() -> None:
-    review = (FIXTURE / "review.md").read_text(encoding="utf-8")
-
-    assert "decision: pending_operator_approval" in review
-    assert "atomic deployment/switch sequence" in review
-
-
 def test_parity_coverage_records_the_timer_case_and_project_boundary() -> None:
     parity = json.loads((FIXTURE / "parity.json").read_text(encoding="utf-8"))
 
-    assert parity["legacy_source"] == "legacy-v1.md"
     assert parity["artifact_sha256"] == (FIXTURE / "artifact.sha256").read_text().strip()
     assert parity["coverage"] == [
         {
             "event_type": "timer.30m",
             "guard": "absent",
             "project_id": "agent-queue",
-            "result": "identical commands, arguments, binding, and terminal transitions",
+            "result": "commands, arguments, binding, and terminal transitions covered",
         }
     ]

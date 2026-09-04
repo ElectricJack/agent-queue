@@ -81,8 +81,8 @@ PIPELINE_RULE_IDS = frozenset(
     }
 )
 
-#: `src/playbooks/routing.py` suppresses these; they exist only in cached V1
-#: artifacts and must never reappear in a reviewed V2 one.
+#: `src/playbooks/routing.py` suppresses these retired rules; they must never
+#: reappear in a reviewed artifact.
 SUPERSEDED_RULE_IDS = frozenset({"task-created-routing", "worker-filed-triage"})
 
 
@@ -228,6 +228,12 @@ def test_source_matches_live_shipped_file(playbook_id: str) -> None:
         f"shipped Markdown changed since review ({SHIPPED_SOURCES[playbook_id]}) — "
         "recompile, re-review, and update the fixture"
     )
+
+
+@pytest.mark.parametrize("playbook_id", PLAYBOOK_IDS)
+def test_shipped_source_uses_only_current_playbook_terms(playbook_id: str) -> None:
+    source = (REPO_ROOT / SHIPPED_SOURCES[playbook_id]).read_text(encoding="utf-8")
+    assert re.search(r"\bV[1]\b", source, flags=re.IGNORECASE) is None
 
 
 @pytest.mark.parametrize("playbook_id", PLAYBOOK_IDS)

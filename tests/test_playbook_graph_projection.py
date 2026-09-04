@@ -18,6 +18,12 @@ def _definition():
     return load_definition_json((FIXTURES / "review-pipeline.artifact.json").read_text())
 
 
+def _default_pipeline_definition():
+    return load_definition_json(
+        (FIXTURES / "default-pipeline" / "artifact.json").read_text()
+    )
+
+
 def _ref(definition):
     return ArtifactRef(
         playbook_id=definition.id,
@@ -110,6 +116,29 @@ def test_event_filter_preserves_every_reachable_branch():
         edge["id"] for edge in complete["edges"] if edge["rule_id"] in rule_ids
     }
     assert len(filtered["event_groups"]) == 2
+
+
+def test_event_graphs_are_arranged_in_columns_from_left_to_right():
+    definition = _default_pipeline_definition()
+    graph = _project(definition)
+    bounds = graph["layout"]["cluster_bounds"]
+    event_rule_ids = {
+        group["event_type"]: group["rule_ids"] for group in graph["event_groups"]
+    }
+
+    previous_right = None
+    for rule_ids in event_rule_ids.values():
+        event_bounds = [bounds[rule_id] for rule_id in rule_ids]
+        left = min(box["x"] for box in event_bounds)
+        right = max(box["x"] + box["width"] for box in event_bounds)
+        assert {box["x"] for box in event_bounds} == {left}
+        if previous_right is not None:
+            assert left > previous_right
+        previous_right = right
+
+    task_rules = event_rule_ids["task.completed"]
+    first, second = (bounds[rule_id] for rule_id in task_rules)
+    assert second["y"] >= first["y"] + first["height"] + 1
 
 
 def test_explanation_is_copied_not_rederived(monkeypatch):

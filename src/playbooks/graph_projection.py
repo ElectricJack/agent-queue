@@ -213,7 +213,7 @@ def _command_explanation(
     if isinstance(rendered, Mapping):
         try:
             return StepExplanationDTO.model_validate(rendered).model_dump(mode="json"), info
-        except Exception:  # noqa: BLE001 - old renderer payload is adapted below
+        except Exception:  # noqa: BLE001, S110 - old renderer payload is adapted below
             pass
 
     execution = contract.execution if contract is not None else None
@@ -1025,40 +1025,48 @@ def _node(
 def _layout(rules: list[Any], node_ids: dict[str, list[str]], edges: list[dict], direction: str):
     positions: dict[str, dict[str, int]] = {}
     bounds: dict[str, dict[str, int]] = {}
-    cluster_offset = 0
-    for rule in rules:
-        owned = node_ids[rule.id]
-        outgoing = {node_id: [] for node_id in owned}
-        for edge in edges:
-            if edge["rule_id"] == rule.id:
-                outgoing[edge["source"]].append(edge["target"])
-        depth = {rule.entry_step: 0}
-        queue = deque([rule.entry_step])
-        while queue:
-            source = queue.popleft()
-            for target in outgoing.get(source, ()):
-                if target not in depth:
-                    depth[target] = depth[source] + 1
-                    queue.append(target)
-        for node_id in owned:
-            depth.setdefault(node_id, max(depth.values(), default=-1) + 1)
-        per_depth: dict[int, list[str]] = {}
-        for node_id in owned:
-            per_depth.setdefault(depth[node_id], []).append(node_id)
-        width = max((len(row) for row in per_depth.values()), default=1)
-        height = max(per_depth, default=0) + 1
-        for layer, row in sorted(per_depth.items()):
-            for lane, node_id in enumerate(row):
-                if direction == "TD":
-                    positions[node_id] = {"x": lane, "y": cluster_offset + layer}
-                else:
-                    positions[node_id] = {"x": cluster_offset + layer, "y": lane}
-        if direction == "TD":
-            bounds[rule.id] = {"x": 0, "y": cluster_offset, "width": width, "height": height}
-            cluster_offset += height + 1
-        else:
-            bounds[rule.id] = {"x": cluster_offset, "y": 0, "width": height, "height": width}
-            cluster_offset += height + 1
+    event_offset = 0
+    event_types = dict.fromkeys(rule.trigger.event_type for rule in rules)
+    for event_type in event_types:
+        rule_offset = 0
+        event_width = 1
+        for rule in (item for item in rules if item.trigger.event_type == event_type):
+            owned = node_ids[rule.id]
+            outgoing = {node_id: [] for node_id in owned}
+            for edge in edges:
+                if edge["rule_id"] == rule.id:
+                    outgoing[edge["source"]].append(edge["target"])
+            depth = {rule.entry_step: 0}
+            queue = deque([rule.entry_step])
+            while queue:
+                source = queue.popleft()
+                for target in outgoing.get(source, ()):
+                    if target not in depth:
+                        depth[target] = depth[source] + 1
+                        queue.append(target)
+            for node_id in owned:
+                depth.setdefault(node_id, max(depth.values(), default=-1) + 1)
+            per_depth: dict[int, list[str]] = {}
+            for node_id in owned:
+                per_depth.setdefault(depth[node_id], []).append(node_id)
+            lanes = max((len(row) for row in per_depth.values()), default=1)
+            layers = max(per_depth, default=0) + 1
+            for layer, row in sorted(per_depth.items()):
+                for lane, node_id in enumerate(row):
+                    if direction == "TD":
+                        positions[node_id] = {"x": event_offset + lane, "y": rule_offset + layer}
+                    else:
+                        positions[node_id] = {"x": event_offset + layer, "y": rule_offset + lane}
+            rule_width, rule_height = (lanes, layers) if direction == "TD" else (layers, lanes)
+            bounds[rule.id] = {
+                "x": event_offset,
+                "y": rule_offset,
+                "width": rule_width,
+                "height": rule_height,
+            }
+            event_width = max(event_width, rule_width)
+            rule_offset += rule_height + 1
+        event_offset += event_width + 1
     return positions, bounds
 
 

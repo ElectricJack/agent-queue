@@ -8,24 +8,20 @@ and only then checks the output in beside a hand-written ``review.md``.  The
 fixtures are the approved recording; the suites validate them and never
 regenerate them (child plan §5.3, "Determinism note").
 
-Two of the four shipped playbooks are mechanically lowered from V1 sources
-here, without an LLM:
+Two of the four shipped playbooks retain reviewer-approved deterministic
+semantic bodies, without an LLM:
 
-* ``default-pipeline`` — lowered from the **frozen** V1 graph at
-  ``tests/fixtures/playbooks/v1/default-pipeline.md``, which is what makes the
-  reviewed artifact behaviourally identical to its V1 predecessor by
-  construction rather than by assertion.  Its source references are then
-  remapped onto the rewritten prose, because a reference into a file that no
-  longer contains a graph would point a reviewer at nothing.
+* ``default-pipeline`` — reads the semantic body from its reviewed artifact and
+  remaps source references onto the current prose.
 * ``default-assignment-routing`` — lowered from its own live source, which has
   no graph to remove; ``lower_assignment`` derives the single AI node from the
   frontmatter and prose.
 
-The two LLM playbooks (``memory-consolidation``, ``coding-reflection``) have no
-V1 machine graph at all. Their deterministic, reviewer-authored semantic bodies
-preserve the prose as the LLM prompt and add only the typed V2 envelope:
+``memory-consolidation`` uses a deterministic, reviewer-authored semantic body
+that preserves the prose as the LLM prompt and adds the typed envelope:
 triggers, profiles, budgets, tool ceilings, output schemas, and terminal
-transitions.
+transitions. ``pr-merge-sweep`` follows the same reviewed-artifact approach as
+``default-pipeline``.
 
 Usage::
 
@@ -47,35 +43,26 @@ from typing import Any
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
-from src.playbooks.authoring import PlaybookSource  # noqa: E402
-from src.playbooks.definition import canonical_bytes  # noqa: E402
-from src.playbooks.migration import shipped_profile_lookup  # noqa: E402
-from src.playbooks.pipeline_lowering import lower_assignment, lower_pipeline  # noqa: E402
-from src.playbooks.proposal import propose  # noqa: E402
-from src.playbooks.validation import (  # noqa: E402
+from src.playbooks.authoring import PlaybookSource
+from src.playbooks.definition import canonical_bytes
+from src.playbooks.pipeline_lowering import lower_assignment
+from src.playbooks.profiles import shipped_profile_lookup
+from src.playbooks.proposal import propose
+from src.playbooks.validation import (
     RegisteredEventLookup,
     RegistryContractLookup,
     VaultProfileLookup,
 )
-from src.profiles.parser import parse_profile, parsed_profile_to_agent_profile  # noqa: E402
+from src.profiles.parser import parse_profile, parsed_profile_to_agent_profile
 
 FIXTURE_ROOT = REPO_ROOT / "tests" / "fixtures" / "playbooks" / "v2"
-FROZEN_V1 = REPO_ROOT / "tests" / "fixtures" / "playbooks" / "v1"
-
 SHIPPED = {
     "default-pipeline": "src/prompts/default_playbooks/default-pipeline.md",
     "default-assignment-routing": "src/prompts/default_playbooks/default-assignment-routing.md",
     "memory-consolidation": "src/prompts/default_playbooks/memory-consolidation.md",
-    "coding-reflection": "src/prompts/default_agent_type_playbooks/claude-opus/reflection.md",
+    "pr-merge-sweep": "src/prompts/project_playbooks/agent-queue/pr-merge-sweep.md",
 }
-
-# Project playbooks stay in their live V1 vault path until an operator closes
-# V1 admission.  Their reviewed V2 candidates are staged beside the other
-# fixture evidence rather than copied over the running source.
-STAGED = {
-    "pr-merge-sweep": "tests/fixtures/playbooks/v2/pr-merge-sweep/source.md",
-}
-SOURCES = {**SHIPPED, **STAGED}
+SOURCES = SHIPPED
 
 #: Which numbered prose item authorises which lowered step (§5.3 review record).
 #: A terminal step is authorised by the "Failure handling, uniformly" section,
@@ -170,6 +157,14 @@ def _remap_pipeline_refs(body: dict[str, Any], index: ProseIndex) -> dict[str, A
     return body
 
 
+def _recorded_semantic_body(playbook_id: str) -> dict[str, Any]:
+    """Read executable semantics from the artifact that reviewers approved."""
+    payload = json.loads(
+        (FIXTURE_ROOT / playbook_id / "artifact.json").read_text(encoding="utf-8")
+    )
+    return {"rules": payload["rules"], "steps": payload["steps"]}
+
+
 def profile_lookup(playbook_id: str | None = None) -> Any:
     """Resolve profiles from ``src/profiles/defaults/``, the shipped set.
 
@@ -199,12 +194,7 @@ def _load(rel_path: str) -> PlaybookSource:
 
 def semantic_body(playbook_id: str, source: PlaybookSource) -> dict[str, Any]:
     if playbook_id == "default-pipeline":
-        frozen = FROZEN_V1 / "default-pipeline.md"
-        loaded = PlaybookSource.load(frozen, vault_root=frozen.parent)
-        assert isinstance(loaded, PlaybookSource)
-        body, diagnostics = lower_pipeline(loaded, contracts=RegistryContractLookup())
-        if diagnostics:
-            raise SystemExit(f"frozen V1 graph no longer lowers cleanly: {diagnostics}")
+        body = _recorded_semantic_body(playbook_id)
         return _remap_pipeline_refs(json.loads(json.dumps(body)), ProseIndex(source, source.vault_path))
     if playbook_id == "default-assignment-routing":
         body, diagnostics = lower_assignment(source)
@@ -212,12 +202,7 @@ def semantic_body(playbook_id: str, source: PlaybookSource) -> dict[str, Any]:
             raise SystemExit(f"{playbook_id}: {diagnostics}")
         return json.loads(json.dumps(body))
     if playbook_id == "pr-merge-sweep":
-        frozen = FIXTURE_ROOT / "pr-merge-sweep" / "legacy-v1.md"
-        loaded = PlaybookSource.load(frozen, vault_root=frozen.parent)
-        assert isinstance(loaded, PlaybookSource)
-        body, diagnostics = lower_pipeline(loaded, contracts=RegistryContractLookup())
-        if diagnostics:
-            raise SystemExit(f"frozen V1 graph no longer lowers cleanly: {diagnostics}")
+        body = _recorded_semantic_body(playbook_id)
         remapped = json.loads(json.dumps(body))
         index = ProseIndex(source, source.vault_path)
         for rule in remapped["rules"]:
@@ -228,8 +213,6 @@ def semantic_body(playbook_id: str, source: PlaybookSource) -> dict[str, Any]:
         return remapped
     if playbook_id == "memory-consolidation":
         return _memory_consolidation_body(source)
-    if playbook_id == "coding-reflection":
-        return _coding_reflection_body(source)
     return {}
 
 
@@ -330,66 +313,6 @@ def _memory_consolidation_body(source: PlaybookSource) -> dict[str, Any]:
     }
 
 
-def _coding_reflection_body(source: PlaybookSource) -> dict[str, Any]:
-    source_ref = _source_ref_for_heading(source, "# Coding Agent Reflection")
-    terminal_ref = _source_ref_for_heading(source, "## Skip conditions")
-    steps: dict[str, Any] = {}
-    rules: list[dict[str, Any]] = []
-    for suffix, event_type in (("completed", "task.completed"), ("failed", "task.failed")):
-        rule = f"reflect-{suffix}"
-        run = f"{rule}--run"
-        done = f"{rule}--done"
-        failed = f"{rule}--failed"
-        rules.append(
-            {
-                "id": rule,
-                "name": f"Reflect on {suffix} coding tasks",
-                "trigger": {"event_type": event_type},
-                "entry_step": run,
-                "source": source_ref,
-            }
-        )
-        steps[run] = {
-            "type": "llm",
-            "rule": rule,
-            "title": "Extract and save reusable coding insights",
-            "source": source_ref,
-            "profile_id": "worker-deep-high-claude",
-            "prompt": {"type": "literal", "value": source.body.strip()},
-            "inputs": {
-                "task_id": {"type": "event_ref", "path": "task_id"},
-                "project_id": {"type": "event_ref", "path": "project_id"},
-                "title": {"type": "event_ref", "path": "title"},
-                "task_outcome": {"type": "literal", "value": suffix},
-            },
-            "output_schema": {
-                "type": "object",
-                "properties": {
-                    "insights_saved": {"type": "integer", "minimum": 0},
-                    "skipped": {"type": "boolean"},
-                    "summary": {"type": "string"},
-                },
-                "required": ["insights_saved", "skipped", "summary"],
-                "additionalProperties": False,
-            },
-            "budget": {
-                "max_calls": 20,
-                "max_output_tokens": 4096,
-                "max_total_tokens": 32768,
-                "timeout_seconds": 600,
-            },
-            "tool_use": {
-                "enabled": True,
-                "aq_commands": ["get_task"],
-                "plugin_tools": ["git_diff", "memory_search", "memory_save"],
-            },
-            "transitions": _llm_transitions(done, failed),
-        }
-        steps[done] = _terminal(rule, "completed", terminal_ref)
-        steps[failed] = _terminal(rule, "failed", terminal_ref)
-    return {"rules": rules, "steps": steps}
-
-
 def build(playbook_id: str) -> dict[str, Any]:
     """Compile one shipped source and report what a reviewer would see."""
     rel_path = SOURCES[playbook_id]
@@ -405,8 +328,8 @@ def build(playbook_id: str) -> dict[str, Any]:
                     "severity": "question",
                     "code": "requires_agent_proposal",
                     "message": (
-                        "prose playbook with no V1 machine graph: a semantic body "
-                        "requires a compiler-agent run a human reviews"
+                        "prose playbook requires a compiler-agent proposal "
+                        "that a human reviews"
                     ),
                 }
             ],

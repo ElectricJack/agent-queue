@@ -11,17 +11,15 @@ cooldown: 1500
 
 # PR merge sweep
 
-This staged V2 authoring source replaces the V1 machine graph only during the
-operator's atomic V1-to-V2 switch. Every `timer.30m` event for
-`project:agent-queue` begins the one `sweep-open-prs` rule. The existing
-`cooldown: 1500` remains documentary V1 metadata: the `timer.30m` interval is
-longer than 1500 seconds, so it does not suppress any timer event.
+Every `timer.30m` event for `project:agent-queue` begins the one
+`sweep-open-prs` rule. The `cooldown: 1500` field is documentary metadata: the
+timer interval is longer than 1500 seconds, so it does not suppress any event.
 
 ## Rule: sweep-open-prs
 
 There is no guard. The rule always performs the following two steps and then
-ends. Both a successful command outcome and every rejected or runtime-error
-outcome use the same terminal path, exactly as the V1 graph did.
+ends. Successful, rejected, and runtime-error outcomes all use the same terminal
+path.
 
 1. Call `ensure_task` with `project_id` `agent-queue`, `dedup_key`
    `pr-merge-sweep`, `title` `Merge open PRs (sweep)`, `priority` `15`, and
