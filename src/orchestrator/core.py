@@ -471,6 +471,15 @@ class Orchestrator(
         self.mcp_tool_catalog = McpToolCatalog()
         self.workspace_spec_watcher = None  # WorkspaceSpecWatcher | None (vault.md §4)
         self.timer_service = None  # TimerService | None — initialized in initialize()
+        # PlaybookManager | None — built in initialize() (or left None when
+        # ``playbooks.enabled=false``).  Declared here so the attribute always
+        # exists: ``select_assignment_playbook`` promises callers an
+        # ``AssignmentPlaybookError`` for an unavailable manager, and the
+        # direct ``self.owner.playbook_manager`` reads in
+        # src/orchestrator/assignment_routing.py raised ``AttributeError``
+        # instead whenever a cycle ran on an orchestrator that had not
+        # completed ``initialize()``.
+        self.playbook_manager = None
         # Reference to the command handler, set by the bot after initialization.
         # Used to pass handler references to interactive Discord views (e.g.
         # Retry/Skip buttons on failed task notifications).

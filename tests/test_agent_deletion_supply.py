@@ -70,6 +70,11 @@ async def orch(db, tmp_path):
     orch = Orchestrator(cfg)
     orch.db = db
     orch.git = MagicMock()
+    # Pool launch installs the managed git excludes before it hands a
+    # checkout to a session (src/orchestrator/pools.py), which reaches for
+    # the real GitManager; these fixtures have no checkout.  Same stub as
+    # tests/test_pool_reconciler.py's ``orch`` fixture.
+    orch._ensure_control_files_excluded = AsyncMock(return_value=True)
     orch.bus.emit = AsyncMock()
     orch.harness_registry.upsert(Harness(id="claude", command="claude"))
     return orch
