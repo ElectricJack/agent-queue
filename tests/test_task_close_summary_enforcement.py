@@ -460,3 +460,66 @@ async def test_close_records_an_explicit_reason_for_an_unmet_deliverable(handler
             "reason": "explicitly deferred to the follow-up task",
         }
     ]
+
+
+@pytest.mark.asyncio
+async def test_create_rejects_a_test_deliverable_whose_target_is_a_command(handler, db):
+    """A [test] item is checked as a path at close, so a command-shaped target is never met."""
+    await db.create_project(Project(id="p", name="P"))
+    result = await handler.execute(
+        "create_task",
+        {
+            "project_id": "p",
+            "title": "t",
+            "deliverables": [
+                {
+                    "id": "compat-tests",
+                    "kind": "test",
+                    "target": "aq test tests/test_a.py tests/test_b.py",
+                }
+            ],
+        },
+    )
+
+    assert "created" not in result
+    assert "one repo-relative file path" in result["error"]
+
+
+@pytest.mark.asyncio
+async def test_worker_who_recorded_the_declared_test_command_closes_pass_without_waiving(
+    handler, db
+):
+    """The declared shape (one path per item) is satisfiable by recording the run command."""
+    await db.create_project(Project(id="p", name="P"))
+    created = await handler.execute(
+        "create_task",
+        {
+            "project_id": "p",
+            "title": "t",
+            "deliverables": [
+                {"id": "close-tests", "kind": "test", "target": "tests/test_deliverables.py"},
+                {
+                    "id": "enforcement-tests",
+                    "kind": "test",
+                    "target": "tests/test_task_close_summary_enforcement.py",
+                },
+            ],
+        },
+    )
+    tid = created["created"]
+    await db.transition_task(tid, TaskStatus.IN_PROGRESS, context="test")
+
+    result = await handler.execute(
+        "task_close",
+        {
+            "task_id": tid,
+            "outcome": "pass",
+            "tests": [
+                "aq test tests/test_deliverables.py tests/test_task_close_summary_enforcement.py"
+            ],
+        },
+    )
+
+    assert result["success"] is True, result
+    completion = await db.get_task_completion(tid)
+    assert [item["met"] for item in completion.deliverables] == [True, True]

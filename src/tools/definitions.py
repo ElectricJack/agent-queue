@@ -1185,7 +1185,7 @@ _ALL_TOOL_DEFINITIONS = [
                 },
                 "deliverables": {
                     "type": "array",
-                    "description": "Plan-derived implementation contract checked before a passing close.",
+                    "description": "Plan-derived implementation contract checked before a passing close. A file/test target is one repo-relative file path (one item per path); command/flag/registration targets are grep'd for in repo text.",
                     "items": {
                         "type": "object",
                         "properties": {
@@ -5202,7 +5202,7 @@ _ALL_TOOL_DEFINITIONS = [
                             },
                             "deliverables": {
                                 "type": "array",
-                                "description": "Plan-derived implementation contract for this proposed task.",
+                                "description": "Plan-derived implementation contract for this proposed task. A file/test target is one repo-relative file path (one item per path); command/flag/registration targets are grep'd for in repo text.",
                                 "items": {
                                     "type": "object",
                                     "properties": {

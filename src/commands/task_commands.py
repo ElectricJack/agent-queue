@@ -8,6 +8,7 @@ import os
 import time
 from collections.abc import Callable
 from dataclasses import asdict
+from pathlib import PurePosixPath, PureWindowsPath
 
 from src.models import (
     BLOCKING_DEP_TYPES,
@@ -88,6 +89,23 @@ def _normalize_label_list(raw) -> list[str]:
 
 
 _DELIVERABLE_KINDS = frozenset({"file", "test", "command", "flag", "registration"})
+# Kinds whose target is resolved as a path under the worktree at close time
+# (``src.deliverables._is_met``). Anything that is not a single repo-relative
+# file path can never evaluate true, so it is refused when declared.
+_PATH_DELIVERABLE_KINDS = frozenset({"file", "test"})
+
+
+def _path_target_error(target: str) -> str | None:
+    """Explain why ``target`` is not one repo-relative file path, or ``None``."""
+    if any(ch.isspace() for ch in target):
+        return "contains whitespace (a command or several paths)"
+    if "::" in target:
+        return "contains a '::' node id"
+    if PurePosixPath(target).is_absolute() or PureWindowsPath(target).is_absolute():
+        return "is an absolute path"
+    if ".." in PurePosixPath(target).parts:
+        return "escapes the repository with '..'"
+    return None
 
 
 def normalize_deliverables(raw) -> tuple[list[dict[str, str]], str | None]:
@@ -96,6 +114,11 @@ def normalize_deliverables(raw) -> tuple[list[dict[str, str]], str | None]:
     IDs make explicit close waivers unambiguous, while the deliberately small
     ``id``/``kind``/``target`` shape works for direct, batch, and graph task
     creation without coupling those surfaces to each other.
+
+    A ``file`` or ``test`` target must be one repo-relative file path: the
+    close-time check resolves it under the worktree, so a whole ``aq test ...``
+    command as the target would be unsatisfiable and force a false
+    ``--deliverable-unmet`` waiver on a delivered item.
     """
     if raw is None:
         return [], None
@@ -119,6 +142,12 @@ def normalize_deliverables(raw) -> tuple[list[dict[str, str]], str | None]:
             )
         if not target:
             return [], f"deliverables[{index}].target is required"
+        if kind in _PATH_DELIVERABLE_KINDS and (why := _path_target_error(target)):
+            return [], (
+                f"deliverables[{index}].target {why}; a [{kind}] target must be one "
+                "repo-relative file path such as 'tests/test_x.py' (declare one item "
+                "per path and record the run with --test at close)"
+            )
         seen.add(item_id)
         result.append({"id": item_id, "kind": kind, "target": target})
     return result, None

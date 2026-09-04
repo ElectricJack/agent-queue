@@ -222,7 +222,10 @@ def _create_task_graph(
     "--deliverable",
     "deliverables",
     multiple=True,
-    help="Plan item JSON with id, kind, and target; repeatable.",
+    help=(
+        "Plan item JSON with id, kind, and target; repeatable. A file/test target is one "
+        "repo-relative file path (one item per path), not a command."
+    ),
 )
 @click.pass_context
 @_handle_errors
