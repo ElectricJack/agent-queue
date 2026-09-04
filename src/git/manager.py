@@ -111,7 +111,7 @@ class PullRequestIdentity:
     #: the two identity reads; the delivery diff itself is derived from the
     #: OIDs and does not depend on it.
     changed_files: int
-    #: The host the PR URL names; where the repository is fetched from.
+    #: The GitHub host serving this PR, preserved for the pinned-OID fetch.
     host: str = "github.com"
 
     @property
