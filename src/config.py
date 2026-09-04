@@ -2179,6 +2179,18 @@ class AppConfig:
 # Hot-reload classification
 # ---------------------------------------------------------------------------
 
+
+def config_section_names() -> tuple[str, ...]:
+    """Every top-level config section name, in ``AppConfig`` declaration order.
+
+    Derived from the dataclass instead of hand-listed, so a section added to
+    ``AppConfig`` is covered by :func:`diff_configs` — and by the test that
+    every section is classified below — the moment it is declared.  Internal
+    bookkeeping fields (``_``-prefixed) are not config sections and are skipped.
+    """
+    return tuple(f.name for f in dataclasses.fields(AppConfig) if not f.name.startswith("_"))
+
+
 HOT_RELOADABLE_SECTIONS = {
     "scheduling",
     "monitoring",
@@ -2189,6 +2201,7 @@ HOT_RELOADABLE_SECTIONS = {
     "auto_task",
     "logging",
     "agent_profiles",
+    "global_token_budget_daily",
     "max_daily_playbook_tokens",
     "max_concurrent_playbook_runs",
     "rate_limits",
@@ -2226,64 +2239,44 @@ RESTART_REQUIRED_SECTIONS = {
     "messages",
     "supervisor_agent",
     "api_auth",
-}
-"""Config sections that require a full restart to take effect."""
-
-# Mapping from AppConfig field names to the section names used in diff output.
-# Most fields map to themselves; these are the exceptions.
-_SECTION_FIELDS = {
-    "data_dir",
-    "workspace_dir",
-    "database_path",
-    "profile",
+    # -- Sections that gate startup construction ---------------------------
+    # Each of these is read once while the process is coming up: the engine
+    # and pool (``database``), the event bus (``events``, ``validate_events``),
+    # the embedded MCP server (``mcp_server``), the stream reader
+    # (``streams``), the supervisor (``supervisor``), the memory extractor
+    # (``memory_extractor``), the inbox poller (``inbox``), and the two fields
+    # that select which files ``load_config`` even reads (``profile``, ``env``).
+    "database",
     "env",
-    "messaging_platform",
-    "discord",
-    "agents_config",
-    "scheduling",
-    "pause_retry",
-    "llm",
-    "health_check",
-    "logging",
-    "monitoring",
-    "archive",
-    "auto_task",
-    "memory",
-    "llm_logging",
-    # -- Framework-overhaul substrate sections ----------------------------
-    "playbooks",
-    "sessions",
-    "worktrees",
-    "security",
-    "pricing",
-    "messages",
-    "supervisor_agent",
-    "api_auth",
-    "surface",
-    "state_machine",
-    "work_graph",
-    "swarm",
-    "resources",
-    "metrics",
-    "graph_layout",
-    "agent_profiles",
-    "global_token_budget_daily",
-    "max_daily_playbook_tokens",
-    "max_concurrent_playbook_runs",
-    "rate_limits",
+    "events",
+    "inbox",
+    "mcp_server",
+    "memory_extractor",
+    "profile",
+    "streams",
+    "supervisor",
+    "validate_events",
 }
+"""Config sections that require a full restart to take effect.
+
+Together with :data:`HOT_RELOADABLE_SECTIONS` this covers every section in
+:func:`config_section_names` — restart-required is the safe default for a
+section whose owner does not re-read it, and an unclassified section would
+otherwise be reported to the operator as nothing at all."""
 
 
 def diff_configs(old: AppConfig, new: AppConfig) -> set[str]:
     """Compare two AppConfig instances and return the set of changed section names.
 
     Uses ``dataclasses.asdict()`` for deep comparison of each section.
-    Skips internal fields (prefixed with ``_``).
+    The section list comes from :func:`config_section_names`, i.e. from
+    ``AppConfig`` itself, so no section can be silently absent from the diff;
+    internal fields (prefixed with ``_``) are skipped.
     """
     changed: set[str] = set()
     old_dict = dataclasses.asdict(old)
     new_dict = dataclasses.asdict(new)
-    for field_name in _SECTION_FIELDS:
+    for field_name in config_section_names():
         old_val = old_dict.get(field_name)
         new_val = new_dict.get(field_name)
         if old_val != new_val:
@@ -2378,9 +2371,13 @@ class ConfigWatcher:
         if not changed:
             return {"changed_sections": [], "restart_required": [], "applied": []}
 
-        # Classify changes
+        # Classify changes.  Anything not hot-reloadable needs a restart —
+        # including a section missing from RESTART_REQUIRED_SECTIONS, which the
+        # UI already treats as restart-required (config_editor.classify_sections'
+        # "other" bucket).  Reporting it is what keeps an edit from being met
+        # with silence.
         hot_reloadable = changed & HOT_RELOADABLE_SECTIONS
-        restart_needed = changed & RESTART_REQUIRED_SECTIONS
+        restart_needed = changed - HOT_RELOADABLE_SECTIONS
 
         # Apply only hot-reloadable sections
         if hot_reloadable:

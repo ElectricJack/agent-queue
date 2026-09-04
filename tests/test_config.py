@@ -281,7 +281,7 @@ def test_chat_analyzer_section_is_gone_from_appconfig_and_every_registry():
     deciding their fate, and this task deleted them.
 
     Deleting a dataclass is easy to do halfway: a stale name left in
-    ``HOT_RELOADABLE_SECTIONS``, ``_SECTION_FIELDS`` or ``reload_non_critical``
+    ``HOT_RELOADABLE_SECTIONS``, ``config_section_names()`` or ``reload_non_critical``
     would surface only later — as an ``AttributeError`` on the next hot
     reload, or as a section the config editor still offers.  Assert every
     registry at once.
@@ -299,7 +299,7 @@ def test_chat_analyzer_section_is_gone_from_appconfig_and_every_registry():
     assert "chat_analyzer" not in {f.name for f in dataclasses.fields(AppConfig)}
     assert "chat_analyzer" not in HOT_RELOADABLE_SECTIONS
     assert "chat_analyzer" not in RESTART_REQUIRED_SECTIONS
-    assert "chat_analyzer" not in config_module._SECTION_FIELDS
+    assert "chat_analyzer" not in config_module.config_section_names()
 
 
 def test_a_leftover_chat_analyzer_block_still_loads(config_dir):

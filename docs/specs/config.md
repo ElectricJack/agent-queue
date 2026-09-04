@@ -782,6 +782,25 @@ list) require a daemon restart. The `update_config` response surfaces the
 distinction so the dashboard can show `Applied live` vs `Restart required`
 toasts.
 
+The set of sections `ConfigWatcher` compares comes from
+`dataclasses.fields(AppConfig)` (`config_section_names()`), not from a
+hand-written list — the same reason `_dataclass_kwargs` exists on the load
+path (§5.2). A hand-written list is how a section becomes invisible to
+reload: nine sections (`database`, `events`, `inbox`, `integration`,
+`mcp_server`, `memory_extractor`, `streams`, `supervisor`,
+`validate_events`) were missing from it, so editing them emitted neither
+`config.reloaded` nor `config.restart_needed` and the operator was told
+nothing at all (sound-bridge-70).
+
+The hot/restart split stays an explicit registry — it encodes a judgement
+about each subsystem that no dataclass can carry — but
+`HOT_RELOADABLE_SECTIONS ∪ RESTART_REQUIRED_SECTIONS` must cover every
+section, which `tests/test_config_watcher.py` checks per section against
+`AppConfig`. `ConfigWatcher.reload` additionally treats anything that is
+not hot-reloadable as restart-required, so an unclassified section is
+still reported rather than dropped, matching the safe default
+`config_editor.classify_sections()`'s `other` bucket already implied.
+
 ### CLI
 
 ```bash

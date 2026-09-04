@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import copy
+import dataclasses
 import os
 
 import pytest
@@ -17,9 +19,11 @@ from src.config import (
     ArchiveConfig,
     DiscordConfig,
     GraphLayoutConfig,
+    config_section_names,
     diff_configs,
     load_config,
 )
+from src.config_editor import classify_sections
 from src.event_bus import EventBus
 
 
@@ -115,6 +119,91 @@ class TestClassificationConstants:
 
 
 # ---------------------------------------------------------------------------
+# Exhaustive coverage of every AppConfig section
+# ---------------------------------------------------------------------------
+
+
+class _Unmutatable(Exception):
+    """Raised when the helper cannot build a differing value for a field."""
+
+
+def _mutated(value):
+    """Return a value that compares unequal to ``value`` under ``asdict``.
+
+    Walks nested dataclasses so the probe changes a real leaf rather than
+    replacing a whole section with a sentinel of a different shape.
+    """
+    if dataclasses.is_dataclass(value) and not isinstance(value, type):
+        for f in dataclasses.fields(value):
+            if f.name.startswith("_"):
+                continue
+            try:
+                replacement = _mutated(getattr(value, f.name))
+            except _Unmutatable:
+                continue
+            clone = copy.deepcopy(value)
+            setattr(clone, f.name, replacement)
+            return clone
+        raise _Unmutatable(f"no mutatable leaf in {type(value).__name__}")
+    if value is None:
+        return "__diff_probe__"
+    if isinstance(value, bool):
+        return not value
+    if isinstance(value, (int, float)):
+        return value + 1
+    if isinstance(value, str):
+        return value + "__diff_probe__"
+    if isinstance(value, dict):
+        return {**value, "__diff_probe__": True}
+    if isinstance(value, (list, tuple)):
+        return [*value, "__diff_probe__"]
+    raise _Unmutatable(f"cannot mutate {type(value).__name__}")
+
+
+class TestEverySectionIsCovered:
+    """Nothing in AppConfig may be invisible to the reload path.
+
+    ``diff_configs`` and the hot/restart classification used to be
+    hand-maintained lists; nine sections were missing from the diff list and
+    eleven from the classification, so editing them produced no event at all
+    (sound-bridge-70).  Both lists are now checked against ``AppConfig``
+    itself, so a new section fails here instead of failing silently.
+    """
+
+    def test_section_names_match_appconfig_fields(self):
+        expected = [f.name for f in dataclasses.fields(AppConfig) if not f.name.startswith("_")]
+        assert list(config_section_names()) == expected
+
+    def test_section_names_exclude_private_fields(self):
+        assert not [name for name in config_section_names() if name.startswith("_")]
+
+    @pytest.mark.parametrize("section", config_section_names())
+    def test_diff_configs_reports_every_section(self, section, tmp_path):
+        a = AppConfig(data_dir=str(tmp_path / "data"))
+        b = AppConfig(data_dir=str(tmp_path / "data"))
+        try:
+            setattr(b, section, _mutated(getattr(b, section)))
+        except _Unmutatable as exc:  # pragma: no cover - helper limitation
+            pytest.fail(f"could not build a differing value for {section!r}: {exc}")
+        assert diff_configs(a, b) == {section}
+
+    @pytest.mark.parametrize("section", config_section_names())
+    def test_every_section_is_classified(self, section):
+        assert section in HOT_RELOADABLE_SECTIONS or section in RESTART_REQUIRED_SECTIONS, (
+            f"{section!r} is in neither HOT_RELOADABLE_SECTIONS nor "
+            "RESTART_REQUIRED_SECTIONS, so a change to it would be reported "
+            "to nobody"
+        )
+
+    def test_classification_sets_name_only_real_sections(self):
+        known = set(config_section_names())
+        assert (HOT_RELOADABLE_SECTIONS | RESTART_REQUIRED_SECTIONS) - known == set()
+
+    def test_config_editor_has_no_unclassified_bucket(self):
+        assert classify_sections()["other"] == []
+
+
+# ---------------------------------------------------------------------------
 # ConfigWatcher tests
 # ---------------------------------------------------------------------------
 
@@ -200,6 +289,69 @@ class TestConfigWatcher:
         # Verify restart_needed event was emitted
         assert len(restart_events) == 1
         assert "workspace_dir" in restart_events[0]["changed_sections"]
+
+    @pytest.mark.asyncio
+    async def test_reload_reports_previously_blind_section(self, config_dir, bus):
+        """``database`` was missing from the hand-written diff list.
+
+        Editing it used to produce no ``config.reloaded`` and no
+        ``config.restart_needed`` — the operator changed the file and nothing
+        at all was said (sound-bridge-70).
+        """
+        tmp_path, config_path = config_dir
+        config = load_config(str(config_path))
+        watcher = ConfigWatcher(str(config_path), bus, config)
+
+        config_data = yaml.safe_load(config_path.read_text())
+        config_data["database"] = {
+            "url": str(tmp_path / "test.db"),
+            "pool_max_size": 20,
+        }
+        config_path.write_text(yaml.dump(config_data))
+
+        restart_events = []
+        bus.subscribe("config.restart_needed", lambda d: restart_events.append(d))
+
+        result = await watcher.reload()
+        assert "database" in result["changed_sections"]
+        assert "database" in result["restart_required"]
+        assert len(restart_events) == 1
+        assert "database" in restart_events[0]["changed_sections"]
+
+    @pytest.mark.asyncio
+    async def test_reload_reports_unclassified_section_as_restart(
+        self, config_dir, bus, monkeypatch
+    ):
+        """A section in neither classification set is still reported.
+
+        The classification registry stays hand-maintained (a test asserts it
+        covers every section), so the reload path treats "not hot-reloadable"
+        as restart-required rather than dropping the change on the floor.
+        """
+        _tmp_path, config_path = config_dir
+        config = load_config(str(config_path))
+        watcher = ConfigWatcher(str(config_path), bus, config)
+
+        monkeypatch.setattr(
+            "src.config.HOT_RELOADABLE_SECTIONS",
+            HOT_RELOADABLE_SECTIONS - {"archive"},
+        )
+        monkeypatch.setattr(
+            "src.config.RESTART_REQUIRED_SECTIONS",
+            RESTART_REQUIRED_SECTIONS - {"archive"},
+        )
+
+        config_data = yaml.safe_load(config_path.read_text())
+        config_data["archive"]["after_hours"] = 72.0
+        config_path.write_text(yaml.dump(config_data))
+
+        restart_events = []
+        bus.subscribe("config.restart_needed", lambda d: restart_events.append(d))
+
+        result = await watcher.reload()
+        assert result["applied"] == []
+        assert "archive" in result["restart_required"]
+        assert len(restart_events) == 1
 
     @pytest.mark.asyncio
     async def test_reload_invalid_config_keeps_current(self, config_dir, bus):
