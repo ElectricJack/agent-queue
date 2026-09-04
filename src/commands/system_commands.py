@@ -710,7 +710,7 @@ class SystemCommandsMixin:
         wait_for_tasks = args.get("wait_for_tasks", False)
         orch = self.orchestrator
         # Determine the repo root (where this source lives)
-        repo_dir = str(Path(__file__).resolve().parent.parent)
+        repo_dir = str(Path(__file__).resolve().parents[2])
 
         # git pull
         pull_rc, pull_stdout, pull_stderr = await _run_subprocess(
@@ -738,6 +738,21 @@ class SystemCommandsMixin:
         if pip_rc != 0:
             stderr = pip_stderr.strip() or pip_stdout.strip()
             return {"error": f"pip install failed: {stderr}"}
+
+        # The TypeScript client is generated and gitignored, so a pull cannot
+        # update it when the committed OpenAPI contract changes.
+        client_rc, client_stdout, client_stderr = await _run_subprocess(
+            "npm",
+            "run",
+            "generate:ts-client",
+            "--",
+            "--from-file",
+            cwd=repo_dir,
+            timeout=120,
+        )
+        if client_rc != 0:
+            stderr = client_stderr.strip() or client_stdout.strip()
+            return {"error": f"TypeScript client generation failed: {stderr}"}
 
         running_count = len(orch._running_tasks)
 

@@ -1,7 +1,11 @@
 """Unit tests for system command handlers."""
 
+import os
+import signal
+from pathlib import Path
+
 import pytest
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 from src.commands.handler import CommandHandler
 from src.config import AppConfig, DiscordConfig
@@ -63,6 +67,60 @@ class TestGetStatusGraphLayoutFlag:
         h.config.graph_layout.enabled = False
         r2 = await h.execute("get_status", {})
         assert r2["graph_layout_enabled"] is False
+
+
+class TestUpdateAndRestart:
+    async def test_regenerates_dashboard_client_from_committed_spec_before_restart(
+        self, handler, monkeypatch
+    ):
+        from src.commands import system_commands
+
+        calls = []
+
+        async def fake_run(*command, cwd, timeout):
+            calls.append((command, Path(cwd), timeout))
+            return 0, "updated", ""
+
+        kills = []
+        monkeypatch.setattr(system_commands, "_run_subprocess", fake_run)
+        monkeypatch.setattr(system_commands.os, "kill", lambda pid, sig: kills.append((pid, sig)))
+        handler.orchestrator._emit_text_notify = AsyncMock()
+
+        result = await handler._cmd_update_and_restart({"reason": "test update"})
+
+        repo_root = Path(system_commands.__file__).resolve().parents[2]
+        assert calls == [
+            (("git", "pull", "--ff-only"), repo_root, 30),
+            (("pip", "install", "-e", "."), repo_root, 120),
+            (
+                ("npm", "run", "generate:ts-client", "--", "--from-file"),
+                repo_root,
+                120,
+            ),
+        ]
+        assert result["status"] == "updating"
+        assert kills == [(os.getpid(), signal.SIGTERM)]
+
+    async def test_does_not_restart_when_dashboard_client_generation_fails(
+        self, handler, monkeypatch
+    ):
+        from src.commands import system_commands
+
+        async def fake_run(*command, cwd, timeout):
+            if command[0] == "npm":
+                return 1, "", "generator failed"
+            return 0, "updated", ""
+
+        kills = []
+        monkeypatch.setattr(system_commands, "_run_subprocess", fake_run)
+        monkeypatch.setattr(system_commands.os, "kill", lambda pid, sig: kills.append((pid, sig)))
+        handler.orchestrator._emit_text_notify = AsyncMock()
+
+        result = await handler._cmd_update_and_restart({"reason": "test update"})
+
+        assert result == {"error": "TypeScript client generation failed: generator failed"}
+        assert kills == []
+        handler.orchestrator._emit_text_notify.assert_not_awaited()
 
 
 class TestRunCommand:
