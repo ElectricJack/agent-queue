@@ -929,3 +929,43 @@ async def test_a_collapsed_subtree_far_from_the_rect_is_not_read(db, client_fact
     finally:
         db.load_paths_by_prefixes = real
     assert not any("/e/" in p for batch in seen for p in batch), seen
+
+
+async def test_tiles_expand_a_finished_epic_from_the_active_view(db, client_factory):
+    async def create(tid, parent=None):
+        await db.create_task(
+            Task(id=tid, project_id="p1", title=tid, description="", status=TaskStatus.DEFINED)
+        )
+        if parent:
+            async with db._engine.begin() as conn:
+                await db.set_parent(tid, parent, conn=conn)
+
+    await create("done")
+    await create("child", "done")
+    await create("live")
+    for tid in ("child", "done"):
+        await db.transition_task(tid, TaskStatus.COMPLETED, force=True)
+    driver = LayoutDriver(db)
+    await driver.full_layout("p1", "all")
+    await driver.full_layout("p1", "active")
+
+    async with client_factory() as client:
+        response = await client.post(
+            "/api/projects/p1/graph/tiles",
+            json={
+                "variant": "active",
+                "rect": {"x0": -1, "y0": -1, "x1": 60, "y1": 60},
+                "expanded": ["done"],
+            },
+        )
+        list_response = await client.post(
+            "/api/projects/p1/graph/list",
+            json={"variant": "active", "expanded": ["done"], "limit": 50},
+        )
+
+    assert response.status_code == 200
+    nodes = {node["id"]: node for node in response.json()["nodes"]}
+    assert nodes["done"]["kind"] == "container"
+    assert nodes["child"]["container_id"] == "done"
+    assert list_response.status_code == 200
+    assert {node["id"] for node in list_response.json()["nodes"]} >= {"done", "child"}

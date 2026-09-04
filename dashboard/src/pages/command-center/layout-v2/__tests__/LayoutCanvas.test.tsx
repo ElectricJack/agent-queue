@@ -152,6 +152,26 @@ describe("LayoutCanvas", () => {
     expect(tiles.params).toMatchObject({ variant: "active", expanded: [], root: null, q: "", status: "" });
   });
 
+  it("uses the full layout while a finished container is expanded", async () => {
+    tiles.store = mergeTiles(emptyStore(), ["0:0"], {
+      nodes: [n("done", "stub", 0, 0, { status: "COMPLETED" })],
+      edges: [], stubs: [], stub_overflow: [], workers: [], gates: [], layout_version: 1,
+    } as unknown as TilesResponse);
+    render(<MemoryRouter><LayoutCanvas {...base} /></MemoryRouter>);
+    const toggle = () => {
+      const node = flow.current!.nodes.find((candidate) => candidate.id === "done")!;
+      return (node.data as { onToggleChildren: (id: string, finished?: boolean) => void }).onToggleChildren;
+    };
+
+    act(() => toggle()("done", true));
+    await screen.findByTestId("node-done");
+    expect(tiles.params).toMatchObject({ variant: "all", expanded: ["done"] });
+
+    act(() => toggle()("done", true));
+    await screen.findByTestId("node-done");
+    expect(tiles.params).toMatchObject({ variant: "active", expanded: [] });
+  });
+
   it("uses comfortable density by default and persists a user-selected density", () => {
     render(<MemoryRouter><LayoutCanvas {...base} /></MemoryRouter>);
     const density = screen.getByRole("combobox", { name: "Graph density" });

@@ -54,7 +54,7 @@ export interface TaskNodeData extends Record<string, unknown> {
   projectId: string;
   hierarchy: TaskHierarchy;
   onOpenTask?: (taskId: string, task?: SelectableTask) => void;
-  onToggleChildren?: (taskId: string) => void;
+  onToggleChildren?: (taskId: string, finished?: boolean) => void;
   onFocus?: (taskId: string) => void;
   /** Presentation-only scale selected in the tiled graph. */
   layoutScale?: number;
@@ -64,7 +64,7 @@ export interface ContainerNodeData extends Record<string, unknown> {
   node: import("@aq/ts-client").LayoutNode;
   projectId: string;
   onFocus?: (taskId: string) => void;
-  onToggleChildren?: (taskId: string) => void;
+  onToggleChildren?: (taskId: string, finished?: boolean) => void;
   onOpenTask?: (taskId: string, task?: SelectableTask) => void;
   layoutScale?: number;
 }

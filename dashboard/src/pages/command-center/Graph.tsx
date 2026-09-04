@@ -98,7 +98,8 @@ export default function CommandCenterGraph() {
     [selectTask],
   );
   const mobile = usePortraitMobile();
-  const variant = filters.showCompleted || focusId ? "all" : "active";
+  const { expandedTaskIds, expandedFinishedIds, toggleExpanded } = useExpandedTaskIds();
+  const variant = filters.showCompleted || focusId || expandedFinishedIds.size > 0 ? "all" : "active";
   const extents = useLayoutExtents(projectIds, variant);
   const nodeCount = extents.reduce(
     (total, extent) => total + (extent && !("pending" in extent) ? extent.node_count : 0), 0,
@@ -108,7 +109,6 @@ export default function CommandCenterGraph() {
     () => new Map(projects.map((project) => [project.id, project.name || project.id])),
     [projects],
   );
-  const { expandedTaskIds, toggleExpanded } = useExpandedTaskIds();
   const jumpTarget = useJumpTarget();
 
   return (

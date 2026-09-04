@@ -4,6 +4,8 @@ import { Handle, Position } from "@xyflow/react";
 import type { ContainerNodeData } from "../types";
 import { UNIT_H } from "./units";
 
+const FINISHED = new Set(["COMPLETED", "CANCELED", "CANCELLED", "SKIPPED"]);
+
 export interface ContainerNodeProps { id: string; data: ContainerNodeData; selected?: boolean }
 
 function ContainerNode({ data, selected }: ContainerNodeProps) {
@@ -25,7 +27,7 @@ function ContainerNode({ data, selected }: ContainerNodeProps) {
         <button type="button" aria-label={`Focus on ${node.title}`} className="nodrag nopan rounded p-0.5 hover:bg-white/10"
           onClick={(e) => { e.stopPropagation(); onFocus?.(node.id); }}><MagnifyingGlassPlusIcon className="h-3.5 w-3.5" /></button>
         <button type="button" aria-label={`Collapse children of ${node.title}`} aria-expanded={true} className="nodrag nopan rounded p-0.5 hover:bg-white/10"
-          onClick={(e) => { e.stopPropagation(); onToggleChildren?.(node.id); }}><ChevronDownIcon className="h-3.5 w-3.5" /></button>
+          onClick={(e) => { e.stopPropagation(); onToggleChildren?.(node.id, FINISHED.has(node.status)); }}><ChevronDownIcon className="h-3.5 w-3.5" /></button>
       </div>
       <Handle id="out-left" type="source" position={Position.Left} isConnectable={false} />
       <Handle id="out-right" type="source" position={Position.Right} isConnectable={false} />

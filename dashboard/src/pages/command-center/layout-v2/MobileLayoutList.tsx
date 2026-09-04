@@ -16,7 +16,7 @@ interface Props {
   variant: Variant;
   filters: TaskFilters;
   expanded: ReadonlySet<string>;
-  toggleExpanded: (id: string) => void;
+  toggleExpanded: (id: string, finished?: boolean) => void;
   onTaskClick: (id: string, task?: SelectableTask) => void;
   onFocus?: (id: string) => void;
   selectedTaskId?: string | null;

@@ -17,8 +17,17 @@ describe("ContainerNode", () => {
     await userEvent.click(screen.getByRole("button", { name: "Collapse children of Epic" }));
     await userEvent.click(screen.getByRole("button", { name: "Open task Epic" }));
     expect(onFocus).toHaveBeenCalledWith("e");
-    expect(onToggleChildren).toHaveBeenCalledWith("e");
+    expect(onToggleChildren).toHaveBeenCalledWith("e", false);
     expect(onOpenTask).toHaveBeenCalledWith("e", { id: "e", playbook_run_id: undefined });
+  });
+
+  it("reports when the expanded container is finished", async () => {
+    const onToggleChildren = vi.fn();
+    render(<ContainerNode id="e" data={{ node: { ...node, status: "COMPLETED" }, projectId: "p1", onToggleChildren }} /> as never);
+
+    await userEvent.click(screen.getByRole("button", { name: "Collapse children of Epic" }));
+
+    expect(onToggleChildren).toHaveBeenCalledWith("e", true);
   });
 
   it("passes the container's own run id so a run task keeps its routing", async () => {

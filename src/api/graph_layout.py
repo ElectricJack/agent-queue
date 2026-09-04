@@ -181,6 +181,16 @@ def build_graph_layout_router(*, db, command_handler=None) -> APIRouter:
         """
         return (v or "").strip().upper()
 
+    async def _variant_for_expanded(
+        project_id: str, variant: str, expanded: list[str]
+    ) -> str:
+        """Use the full layout when an expanded container is an active-view stub."""
+
+        if variant == "all" or not expanded:
+            return variant
+        rows = await db.load_layout_rows(project_id, variant, expanded)
+        return "all" if any(row.kind == "stub" for row in rows.values()) else variant
+
     @router.get(
         "/api/projects/{project_id}/graph/extent",
         response_model=ExtentResponse,
@@ -360,6 +370,8 @@ def build_graph_layout_router(*, db, command_handler=None) -> APIRouter:
             raise HTTPException(status_code=400, detail=f"expanded exceeds {EXPANDED_CAP}")
         if req.root is not None or status in FINISHED_STATUSES:
             variant = "all"
+        else:
+            variant = await _variant_for_expanded(project_id, variant, req.expanded)
         meta = await _meta_or_pending(project_id, variant)
         if meta is None:
             return None
@@ -538,6 +550,8 @@ def build_graph_layout_router(*, db, command_handler=None) -> APIRouter:
                 raise HTTPException(status_code=400, detail="bad cursor") from None
             if offset < 0:
                 raise HTTPException(status_code=400, detail="bad cursor")
+        if status not in FINISHED_STATUSES:
+            variant = await _variant_for_expanded(project_id, variant, req.expanded)
         meta = await _meta_or_pending(project_id, variant)
         if meta is None:
             return JSONResponse(status_code=202, content={"status": "layout_pending"})

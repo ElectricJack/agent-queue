@@ -13,7 +13,7 @@ const OVERFLOW_W = 0.4;
 const OVERFLOW_H = 0.3;
 const OVERFLOW_GAP = 0.05;
 
-export interface FlowHandlers { onOpenTask: (id: string, task?: SelectableTask) => void; onToggleChildren: (id: string) => void; onFocus: (id: string) => void }
+export interface FlowHandlers { onOpenTask: (id: string, task?: SelectableTask) => void; onToggleChildren: (id: string, finished?: boolean) => void; onFocus: (id: string) => void }
 export interface FlowContext {
   projectId: string;
   offsetY: number;

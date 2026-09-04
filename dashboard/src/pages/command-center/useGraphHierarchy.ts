@@ -1,10 +1,11 @@
 import { useCallback, useSyncExternalStore } from "react";
 
 const EXPANDED_TASKS_KEY = "aq:command-center:expanded-task-ids:v1";
+const EXPANDED_FINISHED_KEY = "aq:command-center:expanded-finished-task-ids:v1";
 
-function readExpandedTaskIds(): ReadonlySet<string> {
+function readExpandedTaskIds(key = EXPANDED_TASKS_KEY): ReadonlySet<string> {
   try {
-    const stored: unknown = JSON.parse(localStorage.getItem(EXPANDED_TASKS_KEY) ?? "[]");
+    const stored: unknown = JSON.parse(localStorage.getItem(key) ?? "[]");
     if (!Array.isArray(stored)) return new Set();
     return new Set(stored.filter((id): id is string => typeof id === "string"));
   } catch {
@@ -12,9 +13,9 @@ function readExpandedTaskIds(): ReadonlySet<string> {
   }
 }
 
-function persistExpandedTaskIds(ids: ReadonlySet<string>) {
+function persistExpandedTaskIds(ids: ReadonlySet<string>, key = EXPANDED_TASKS_KEY) {
   try {
-    localStorage.setItem(EXPANDED_TASKS_KEY, JSON.stringify([...ids]));
+    localStorage.setItem(key, JSON.stringify([...ids]));
   } catch {
     // The graph remains usable when storage is disabled or full.
   }
@@ -39,18 +40,26 @@ function persistExpandedTaskIds(ids: ReadonlySet<string>) {
 // has to send the SAME set to `locate`, or a jump would be computed against a
 // layout nobody is looking at. Storage alone only synchronised them on mount.
 let expandedIds: ReadonlySet<string> = readExpandedTaskIds();
+let expandedFinishedIds: ReadonlySet<string> = readExpandedTaskIds(EXPANDED_FINISHED_KEY);
 const expandedListeners = new Set<() => void>();
 
 /** Replace the expanded set outright (persisted, and broadcast to every consumer). */
 export function setExpandedTaskIds(next: ReadonlySet<string>) {
   expandedIds = next;
   persistExpandedTaskIds(next);
+  expandedFinishedIds = new Set([...expandedFinishedIds].filter((id) => next.has(id)));
+  persistExpandedTaskIds(expandedFinishedIds, EXPANDED_FINISHED_KEY);
   for (const listener of [...expandedListeners]) listener();
 }
 
-function toggleExpandedId(id: string) {
+function toggleExpandedId(id: string, finished = false) {
+  const opening = !expandedIds.has(id);
   const next = new Set(expandedIds);
-  if (!next.delete(id)) next.add(id);
+  if (opening) next.add(id); else next.delete(id);
+  const nextFinished = new Set(expandedFinishedIds);
+  if (opening && finished) nextFinished.add(id); else nextFinished.delete(id);
+  expandedFinishedIds = nextFinished;
+  persistExpandedTaskIds(nextFinished, EXPANDED_FINISHED_KEY);
   setExpandedTaskIds(next);
 }
 
@@ -61,6 +70,10 @@ function sameExpandedIds(left: ReadonlySet<string>, right: ReadonlySet<string>) 
 export function useExpandedTaskIds() {
   const persistedIds = readExpandedTaskIds();
   if (!sameExpandedIds(expandedIds, persistedIds)) expandedIds = persistedIds;
+  const persistedFinished = readExpandedTaskIds(EXPANDED_FINISHED_KEY);
+  if (!sameExpandedIds(expandedFinishedIds, persistedFinished)) {
+    expandedFinishedIds = persistedFinished;
+  }
 
   const expandedTaskIds = useSyncExternalStore(
     (listener) => {
@@ -69,6 +82,16 @@ export function useExpandedTaskIds() {
     },
     () => expandedIds,
   );
-  const toggleExpanded = useCallback((id: string) => toggleExpandedId(id), []);
-  return { expandedTaskIds, toggleExpanded };
+  const finishedIds = useSyncExternalStore(
+    (listener) => {
+      expandedListeners.add(listener);
+      return () => expandedListeners.delete(listener);
+    },
+    () => expandedFinishedIds,
+  );
+  const toggleExpanded = useCallback(
+    (id: string, finished = false) => toggleExpandedId(id, finished),
+    [],
+  );
+  return { expandedTaskIds, expandedFinishedIds: finishedIds, toggleExpanded };
 }

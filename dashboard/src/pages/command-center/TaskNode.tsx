@@ -120,7 +120,7 @@ export function TaskCard({ data, selected = false, fluid = false, layoutScale = 
             disabled={cannotToggle}
             title={toggleHelp}
             className="nodrag nopan flex h-7 flex-1 items-center gap-1 rounded-bl-md px-2 text-[10px] hover:bg-white/5 focus-visible:outline focus-visible:outline-2 focus-visible:outline-indigo-300 disabled:cursor-default disabled:opacity-60"
-            onClick={(event) => { event.stopPropagation(); onToggleChildren?.(task.id); }}
+            onClick={(event) => { event.stopPropagation(); onToggleChildren?.(task.id, SETTLED.has(task.status)); }}
             onKeyDown={(event) => { if (event.key !== "Escape") event.stopPropagation(); }}
           >
             {hierarchy.expanded ? <ChevronDownIcon aria-hidden className="h-3 w-3" /> : <ChevronRightIcon aria-hidden className="h-3 w-3" />}

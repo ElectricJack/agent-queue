@@ -213,7 +213,8 @@ function Inner(props: LayoutCanvasProps) {
     projectIds, projectNames, variant, filters, focusId, setFocus, jumpTarget, onTaskClick, onBackgroundClick,
     selectedTaskId, playbooks = NO_PLAYBOOKS, selectedPlaybookId, onPlaybookClick,
   } = props;
-  const { expandedTaskIds, toggleExpanded } = useExpandedTaskIds();
+  const { expandedTaskIds, expandedFinishedIds, toggleExpanded } = useExpandedTaskIds();
+  const requestVariant: Variant = focusId || expandedFinishedIds.size > 0 ? "all" : variant;
   const { fitBounds, setCenter, getViewport, setViewport: setFlowViewport } = useReactFlow();
   const wrapRef = useRef<HTMLDivElement>(null);
   const [size, setSize] = useState({ w: 0, h: 0 });
@@ -264,7 +265,7 @@ function Inner(props: LayoutCanvasProps) {
   const simpleEdges = (viewport?.zoom ?? 1) < SIMPLE_EDGE_ZOOM;
   const zoomDepth = maxDepthForZoom(viewport?.zoom ?? 1);
   const maxDepth = depthOverride === null ? zoomDepth : Math.min(depthOverride, zoomDepth ?? Infinity);
-  const paramsSignature = `${focusId ?? ""}|${variant}|${filters.query.trim()}|${filters.status}|${[...expandedTaskIds].sort().join(",")}`;
+  const paramsSignature = `${focusId ?? ""}|${requestVariant}|${filters.query.trim()}|${filters.status}|${[...expandedTaskIds].sort().join(",")}`;
   // A new query means a new node population: the previous budget cut no longer
   // describes it.
   useEffect(() => { setDepthOverride(null); }, [viewport?.zoom, paramsSignature]);
@@ -274,7 +275,7 @@ function Inner(props: LayoutCanvasProps) {
   );
 
   // Projects stack vertically: each starts below the previous project's extent.
-  const extents = useLayoutExtents(projectIds, focusId ? "all" : variant);
+  const extents = useLayoutExtents(projectIds, requestVariant);
   const heights = projectIds.map((_, i) => {
     const extent = extents[i];
     return extent && !("pending" in extent) ? extent.extent_h : 0;
@@ -314,13 +315,13 @@ function Inner(props: LayoutCanvasProps) {
   }, [pendingExtents]);
 
   const params = useMemo<TilesParams>(() => ({
-    variant: focusId ? "all" : variant,
+    variant: requestVariant,
     expanded: [...expandedTaskIds].sort(),
     root: focusId,
     maxDepth: maxDepth === null || maxDepth === Infinity ? null : maxDepth,
     q: filters.query.trim(),
     status: filters.status,
-  }), [variant, focusId, expandedTaskIds, maxDepth, filters.query, filters.status]);
+  }), [requestVariant, focusId, expandedTaskIds, maxDepth, filters.query, filters.status]);
 
   const selectedId = selectedPlaybookId
     ? `playbook:${selectedPlaybookId}`
@@ -352,7 +353,7 @@ function Inner(props: LayoutCanvasProps) {
   // then reads as the siblings moving, not as the canvas jumping.
   const reflowAnchor = useRef<ReflowAnchor | null>(null);
   const nodesRef = useRef<Node[]>([]);
-  const toggleChildren = useCallback((id: string) => {
+  const toggleChildren = useCallback((id: string, finished = false) => {
     const node = nodesRef.current.find((candidate) => candidate.id === id);
     if (node) {
       const vp = getViewport();
@@ -365,7 +366,7 @@ function Inner(props: LayoutCanvasProps) {
         sawLoading: false,
       };
     }
-    toggleExpanded(id);
+    toggleExpanded(id, finished);
   }, [getViewport, toggleExpanded]);
 
   const handlers = useMemo<FlowHandlers>(
