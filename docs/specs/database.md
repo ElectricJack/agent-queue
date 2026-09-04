@@ -486,7 +486,10 @@ UNIQUE constraint on `(project_id, workspace_path)`. Has extensive CRUD methods:
 | `permission_mode` | TEXT | NOT NULL DEFAULT '' | Permission level |
 | `codex_full_auto` | BOOLEAN | NOT NULL DEFAULT false | Codex `--full-auto` profile opt-in |
 | `claude_dangerously_skip_permissions` | BOOLEAN | NOT NULL DEFAULT false | Claude permission-bypass profile opt-in |
-| `allowed_tools` | TEXT | NOT NULL DEFAULT '[]' | JSON-encoded list of tool names |
+| `allowed_tools` | TEXT | NOT NULL DEFAULT '[]' | Compatibility shape superseded by the three capability namespace columns below |
+| `harness_tools` | TEXT | nullable | JSON array for the `harness_tools` capability namespace |
+| `aq_commands` | TEXT | nullable | JSON array for the `aq_commands` capability namespace |
+| `plugin_tools` | TEXT | nullable | JSON array for the `plugin_tools` capability namespace |
 | `mcp_servers` | TEXT | NOT NULL DEFAULT '{}' | JSON-encoded server configurations |
 | `system_prompt_suffix` | TEXT | NOT NULL DEFAULT '' | Additional system prompt text |
 | `install` | TEXT | NOT NULL DEFAULT '{}' | JSON-encoded install manifest |
@@ -494,6 +497,12 @@ UNIQUE constraint on `(project_id, workspace_path)`. Has extensive CRUD methods:
 | `updated_at` | REAL | NOT NULL | Set on insert and every update |
 
 Full CRUD: `create_profile`, `get_profile`, `list_profiles`, `update_profile`, `delete_profile`.
+
+The three namespace columns intentionally distinguish `NULL` from `'[]'` and must not be
+backfilled. `NULL` means the profile has no `## Capabilities` block, so its policy is reconstructed
+from `allowed_tools` through the compatibility adapter. `'[]'` means the operator explicitly
+authored that namespace as empty. Capability enforcement uses this distinction to separate an
+inferred denial from an explicitly authored denial. See `src/profiles/capabilities.py`.
 
 ### Table: `chat_analyzer_suggestions`
 
@@ -883,29 +892,6 @@ each other's data.
 | `value` | TEXT | NOT NULL DEFAULT '{}' | JSON value |
 | `updated_at` | REAL | NOT NULL | Set on every write |
 
-### Table: `playbook_runs`
-
-One row per playbook execution. Playbooks replaced the removed `hooks` /
-`hook_runs` tables.
-
-| Column | Type | Constraints | Notes |
-|---|---|---|---|
-| `run_id` | TEXT | PRIMARY KEY | UUID string |
-| `playbook_id` | TEXT | NOT NULL | Playbook that was run |
-| `playbook_version` | INTEGER | NOT NULL | Compiled version, so a run is reproducible |
-| `trigger_event` | TEXT | NOT NULL DEFAULT '{}' | JSON of the event that started the run |
-| `status` | TEXT | NOT NULL DEFAULT 'running' | One of: running, paused, completed, failed |
-| `current_node` | TEXT | nullable | Node the run is sitting on |
-| `conversation_history` | TEXT | NOT NULL DEFAULT '[]' | JSON transcript |
-| `node_trace` | TEXT | NOT NULL DEFAULT '[]' | JSON list of visited nodes |
-| `tokens_used` | INTEGER | NOT NULL DEFAULT 0 | Run token total |
-| `started_at` | REAL | NOT NULL | Set on insert |
-| `completed_at` | REAL | nullable | NULL while running |
-| `error` | TEXT | nullable | Failure detail |
-| `pinned_graph` | TEXT | nullable | JSON of the compiled graph used by this run |
-| `paused_at` | REAL | nullable | Set when the run pauses on a human/event wait |
-| `waiting_for_event` | TEXT | nullable | Event type the run is waiting for |
-
 ### Table: `playbook_artifacts`
 
 One row per immutable compiled Playbook V2 artifact, addressed by the SHA-256 of
@@ -935,11 +921,7 @@ payload.  See `docs/superpowers/specs/2026-09-01-playbook-v2-semantic-graph-desi
 ### Table: `playbook_activations`
 
 Operational activation metadata for a playbook in one scope: which artifact hash
-is live, whether an operator has enabled it, and its readiness health. Project
-activations also persist the exact hash and server-derived attribution of the
-review decision; the all-or-none review constraint requires that hash to equal
-the active hash, so a later activation write cannot reuse approval of older
-bytes. Checked-in review fixtures remain authoritative for shipped scopes. Kept
+is live, whether an operator has enabled it, and its readiness health. It stays
 outside the artifact so pausing a playbook never rewrites immutable content.
 
 | Column | Type | Constraints | Notes |
@@ -954,16 +936,11 @@ outside the artifact so pausing a playbook never rewrites immutable content.
 | `reasons` | TEXT | NOT NULL DEFAULT '[]' | JSON list of health reason objects |
 | `activated_at` | REAL | nullable | When the current artifact was activated |
 | `activated_by` | TEXT | nullable | Server-derived principal that activated it |
-| `reviewed_artifact_sha256` | TEXT | nullable, CHECK | Exact project artifact hash approved by `reviewed_by`; must equal the active hash |
-| `reviewed_by` | TEXT | nullable, CHECK | Server-derived principal that reviewed a project artifact |
-| `reviewed_at` | REAL | nullable, CHECK | When the project artifact review decision was recorded |
 | `updated_at` | REAL | NOT NULL | Set on every write |
 
 ### Table: `playbook_v2_runs`
 
-One row per Playbook V2 run.  Named `playbook_v2_runs` rather than reusing
-`playbook_runs` because V1 runs must stay readable after V1 execution is
-removed.  `snapshot` holds the whole durable run state as canonical JSON;
+One row per durable playbook run. `snapshot` holds the whole durable run state as canonical JSON;
 the columns beside it are the indexed projection of that same state, so an
 operator query is an index scan rather than a JSON parse of every row.
 `snapshot_version` is the optimistic-concurrency token every durable advance
@@ -1142,67 +1119,6 @@ either producer path from growing the table without bound.
 | `resolved_at` | REAL | nullable | NULL while unresolved |
 | `resolved_by` | TEXT | nullable | Server-derived principal that resolved it |
 | `resolution` | TEXT | nullable, CHECK | One of: dispatched, discarded, expired |
-
-### Table: `playbook_migration_acks`
-
-An operator's written waiver that a V1 playbook cannot be migrated to V2 and the
-fleet may cut over without it (Playbook V2 roadmap, Package 6). One row per
-`(playbook_id, scope, scope_identifier)` entry in the migration inventory, with
-system- and supervisor-scoped rows storing `''` rather than NULL because a
-nullable primary-key column is illegal on PostgreSQL.
-
-The waiver is keyed by `source_sha256`, the hash of the playbook's authoring
-Markdown: any edit to the source silently invalidates the waiver rather than
-letting it outlive its justification, and the entry returns to its computed
-disposition. `acknowledged_by` is the caller's server-derived principal — the
-command layer never reads it from a request body.
-`ck_playbook_migration_acks_reason` enforces a substantive reason
-(>= 12 characters), because this is the one mechanism capable of moving the
-fleet past a real migration problem. Deleting a row also returns the entry to
-its computed disposition.
-
-| Column | Type | Constraints | Notes |
-|---|---|---|---|
-| `playbook_id` | TEXT | PRIMARY KEY | Waived playbook |
-| `scope` | TEXT | PRIMARY KEY | Activation scope of the waived entry |
-| `scope_identifier` | TEXT | PRIMARY KEY DEFAULT '' | Project/agent-type id; `''` for system and supervisor scope |
-| `source_sha256` | TEXT | NOT NULL | Hash of the authoring Markdown the waiver was granted against |
-| `reason` | TEXT | NOT NULL, CHECK | Operator's justification; at least 12 characters |
-| `acknowledged_by` | TEXT | NOT NULL | Server-derived principal that granted the waiver |
-| `acknowledged_at` | REAL | NOT NULL | Unix timestamp |
-
-### Table: `playbook_cutover_events`
-
-Append-only audit of the Playbook V1 → V2 cutover (Playbook V2 roadmap,
-Package 7). One row per operator action that changed which runtime the fleet
-dispatches through, or that moved the drain forward.
-
-There is no update and no delete path, deliberately: the point of the table is
-that an operator cannot rewrite the record of which runtime the fleet was on at
-a given moment. `actor` is the caller's server-derived principal, never a
-request-body field, and `reason` is a mandatory justification of at least 10
-characters enforced in the command layer.
-
-It also does load-bearing work rather than sitting inert: `cutover-window-status`
-compares the newest `switched_to_v2` / `rolled_back_to_v1` row against the live
-`playbooks.v2_engine` value, so a runtime flipped by hand-editing the config —
-which an operator must be able to do at 3am, without a gate row — is surfaced as
-a disagreement instead of going unnoticed.
-
-The table **outlives the commands that write it.** Package 7's V1-removal commit
-deletes the drain and switch surface but keeps this table: the record of who
-switched the fleet and when is worth more than the code that wrote it.
-
-| Column | Type | Constraints | Notes |
-|---|---|---|---|
-| `event_id` | TEXT | PRIMARY KEY | uuid4 hex |
-| `kind` | TEXT | NOT NULL, CHECK | One of `v1_admission_closed`, `v1_admission_reopened`, `drain_completed`, `switched_to_v2`, `rolled_back_to_v1`, `window_coverage_rehearsal`, `rollback_window_closed` |
-| `at` | REAL | NOT NULL | Unix timestamp, matching `playbook_runs.started_at` |
-| `actor` | TEXT | NOT NULL | Server-derived operator principal |
-| `reason` | TEXT | NOT NULL | Operator's justification; at least 10 characters |
-| `detail` | TEXT | NOT NULL DEFAULT '{}' | JSON blob; per-kind payload (drain counts, V1 latency baseline, measured gates) |
-
-Indexed on `(kind, at)` — every read is "the newest event of one kind".
 
 ### Table: `task_completion_records`
 
