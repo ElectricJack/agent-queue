@@ -1175,6 +1175,18 @@ class ExecutionMixin:
             close_session_live=session_live,
             work_outcome=work_outcome,
         )
+        repair_scope = await self.db.get_repair_filing_scope(task.id)
+        repair_delegate = repair_scope is not None
+        if repair_delegate and not repair_scope["active"]:
+            return {
+                "status": task.status.value,
+                "pr_url": None,
+                "pipeline_ok": False,
+                "retry_count": None,
+                "verification_retry": True,
+                "issues": ["Repair stage is no longer active; close is stale."],
+                "feedback": "Repair stage is no longer active; close is stale.",
+            }
 
         # A close that is not a pass runs no completion pipeline, so nothing
         # else in this function would ever look at the workspace — which is
@@ -1184,7 +1196,7 @@ class ExecutionMixin:
         # it.  Runs before any transition: a refused close must leave the
         # task exactly as it found it.
         stranded = None
-        if outcome != "pass":
+        if outcome != "pass" and not repair_delegate:
             stranded = await self._preserve_unpushed_on_failure(
                 task, workspace_path, project_id=task.project_id
             )
@@ -1208,11 +1220,28 @@ class ExecutionMixin:
                     "feedback": issues[0],
                     "unmerged": stranded.to_dict(),
                 }
+        if outcome != "pass" and repair_delegate:
+            return {
+                "status": task.status.value,
+                "pr_url": None,
+                "pipeline_ok": False,
+                "retry_count": None,
+                "verification_retry": True,
+                "issues": [
+                    "Repair failure is retained on its owned workspace; record exact "
+                    "check evidence or await the stage deadline before handoff."
+                ],
+                "feedback": (
+                    "Repair failure is retained for the bounded repair ladder; "
+                    "the generic close path cannot push or discard it."
+                ),
+            }
 
         pr_url = None
         completed_ok = True
         managed_parent_suspended = False
         managed_parent_completed = False
+        repair_writer_closed = False
         if outcome == "pass":
             try:
                 children = await self.db.get_children(task.id, limit=1)
@@ -1227,7 +1256,26 @@ class ExecutionMixin:
                 )
                 hierarchy_managed = bool(hierarchy_enabled and checkpoint)
                 verifier_operation = await self.db.get_integration_verifier_operation(task.id)
-                if verifier_operation is not None:
+                if repair_delegate:
+                    from src.integration.hierarchy import resolve_workspace_checkpoint
+
+                    repair_repo = await self.db.get_repo(task.repo_id or "")
+                    if repair_repo is None:
+                        raise HierarchyError(
+                            "invariant_error", "repair repository is not configured"
+                        )
+                    await resolve_workspace_checkpoint(
+                        self.db,
+                        self.git,
+                        {
+                            "id": task.id,
+                            "repo_id": task.repo_id,
+                            "branch_name": task.branch_name,
+                        },
+                        repair_repo,
+                    )
+                    repair_writer_closed = True
+                elif verifier_operation is not None:
                     # A branchless verifier owns no source branch and must
                     # never enter the legacy direct/main integration path.
                     # It may close only after it has used the guarded parent
@@ -1363,6 +1411,9 @@ class ExecutionMixin:
         if managed_parent_suspended:
             new_status = TaskStatus.PAUSED
             context = "integration_parent_suspended"
+        elif repair_writer_closed:
+            new_status = TaskStatus.COMPLETED
+            context = "integration_repair_delegate_closed"
         elif outcome == "pass" and completed_ok:
             new_status = TaskStatus.COMPLETED
             context = "session_close"
@@ -1458,6 +1509,14 @@ class ExecutionMixin:
             if refreshed:
                 new_status = refreshed.status
 
+        if repair_writer_closed and new_status is TaskStatus.COMPLETED:
+            await self.db.log_event(
+                "integration.repair_delegate_closed",
+                project_id=task.project_id,
+                task_id=task.id,
+                payload=str(repair_scope["operation_id"]),
+            )
+
         # ``task.failed`` is the trigger for the reflection playbook
         # (``vault/templates/reflection-playbook.md`` -> deep tier) and for
         # the failure-notification path.  The legacy execution tail raised it
@@ -1474,7 +1533,7 @@ class ExecutionMixin:
         # Emitted before ``task.closed`` so a subscriber sees the failure
         # ahead of the close, and best-effort so a blowing-up subscriber
         # cannot undo a committed transition.
-        if new_status == TaskStatus.BLOCKED:
+        if new_status == TaskStatus.BLOCKED and not repair_delegate:
             try:
                 await self._emit_task_failure(
                     task,
@@ -1507,7 +1566,7 @@ class ExecutionMixin:
         # payload — ``_dispatch_playbook`` hydrates ``event.task`` from a fresh
         # ``db.get_task``, so the transition above must already have committed
         # ``pr_url`` for ``event.task.pr_url`` to read as truthy.
-        if new_status == TaskStatus.COMPLETED:
+        if new_status == TaskStatus.COMPLETED and not repair_delegate:
             try:
                 # ``no_code`` requires both explicit no-code intent and the
                 # central strict Git no-work proof. Direct delivery can make
@@ -1599,11 +1658,16 @@ class ExecutionMixin:
         # Pool sessions skip this: they keep their agent-lock and token, and
         # ``_cmd_task_close`` releases the claim itself via ``db.release_claim``.
         if not pool:
-            if managed_parent_suspended:
+            if managed_parent_suspended or repair_writer_closed:
                 # Stop/detach the worker while preserving its durable
                 # reserved fence so the collector transfer can be proven.
                 await self.arelease_integration_writer_for_retry(
-                    task, reason="integration_parent_suspended"
+                    task,
+                    reason=(
+                        "integration_repair_delegate_closed"
+                        if repair_writer_closed
+                        else "integration_parent_suspended"
+                    ),
                 )
             await self.release_session_task_resources(
                 task.id, agent_id=task.assigned_agent_id, workspace_path=workspace_path,

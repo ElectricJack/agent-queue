@@ -6,7 +6,7 @@ import logging
 import os
 from dataclasses import dataclass, field
 
-from src.git.manager import GitError, GitManager
+from src.git.manager import GitError, GitManager, is_valid_git_oid
 from src.integration.models import BranchKey, Fence
 from src.integration.ownership import (
     BranchBusy,
@@ -529,6 +529,60 @@ class WorkspaceMixin:
         repository_id = getattr(project, "integration_repository_id", None)
         if not repository_id or task.repo_id != repository_id:
             raise ValueError("task is not bound to the designated repository")
+        repair = await self.db.get_active_integration_repair_for_task(task.id)
+        if repair is not None:
+            if repair.get("writer_kind") != "repair_delegate":
+                raise ValueError("integration repair writer kind is not a delegate")
+            if repair["target_kind"] == "parent":
+                subject_id = repair["parent_task_id"]
+                subject = await self.db.get_task(subject_id)
+                if subject is None or subject.repo_id != repository_id:
+                    raise ValueError("repair parent target does not exist")
+                branch = subject.branch_name or ""
+                origin = await self.db.get_task_branch_origin_for_promotion(
+                    subject_id, repository_id
+                )
+                if origin is None:
+                    raise ValueError("repair parent has no persisted branch origin")
+                origin = dict(origin) | {"base_sha": repair["stage_starting_sha"]}
+            elif repair["target_kind"] == "batch":
+                batch = await self.db.get_integration_batch(repair["batch_id"])
+                if (
+                    batch is None
+                    or batch["project_id"] != task.project_id
+                    or batch["repository_id"] != repository_id
+                    or not batch["integration_branch"]
+                ):
+                    raise ValueError("repair batch target does not exist")
+                branch = batch["integration_branch"]
+                origin = {
+                    "base_sha": repair["stage_starting_sha"],
+                    "reserved": True,
+                    "materialized": True,
+                    "operation_id": repair["id"],
+                }
+            else:
+                raise ValueError("repair operation target kind is invalid")
+            if task.branch_name != branch:
+                raise ValueError("repair delegate branch does not match its target")
+            target = BranchKey(repository_id=repository_id, branch=branch)
+            owner = await BranchOwnership(self.db).get_owner(target)
+            if (
+                owner is None
+                or owner["owner_id"] != task.id
+                or owner["owner_role"] != "repair"
+                or owner["handoff_state"] != "reserved"
+            ):
+                raise BranchBusy("repair branch is not reserved by this delegate")
+            return (
+                origin,
+                Fence(
+                    target=target,
+                    owner_id=task.id,
+                    token=int(owner["fence_token"]),
+                ),
+                "repair",
+            )
         subject_id = task.id
         operation = await self.db.get_active_integration_verifier_for_task(task.id)
         if operation is not None:
@@ -578,6 +632,28 @@ class WorkspaceMixin:
         workspace = ws.workspace_path
         branch = fence.target.branch
         base_sha = str(origin["base_sha"])
+        repair = await self.db.get_active_integration_repair_for_task(task.id)
+        if repair is not None and repair.get("retained_workspace_id"):
+            provenance = repair.get("retained_handoff") or {}
+            if (
+                repair["retained_workspace_id"] != ws.id
+                or task.preferred_workspace_id != ws.id
+                or ws.locked_by_task_id != task.id
+                or provenance.get("new_task_id") != task.id
+                or provenance.get("new_fence_token") != fence.token
+                or provenance.get("workspace_id") != ws.id
+            ):
+                raise BranchBusy("retained repair workspace binding is stale")
+            current_branch = await self.git.aget_current_branch(workspace, strict=True)
+            current_head = (
+                await self.git._arun(["rev-parse", "HEAD"], cwd=workspace)
+            ).strip().lower()
+            if (
+                current_branch != branch
+                or current_head != provenance.get("head_sha")
+            ):
+                raise BranchBusy("retained repair workspace contents changed")
+            return branch
         owner = await BranchOwnership(self.db).get_owner(fence.target)
         role = owner["owner_role"] if owner else None
         async with BranchOwnership(self.db).mutation_exclusion(
@@ -1144,6 +1220,71 @@ class WorkspaceMixin:
             return False
         released = await self.db.get_workspace(workspace.id)
         return released is not None and released.locked_by_task_id is None
+
+    async def aconfirm_integration_owner_stopped_for_repair(
+        self, owner: dict
+    ) -> dict | None:
+        """Stop one exact writer without touching its retained repair checkout."""
+        session_id = owner.get("session_id")
+        workspace_id = owner.get("workspace_id")
+        if not session_id or not workspace_id or owner.get("handoff_state") != "attached":
+            return None
+        session = await self.db.get_session(session_id)
+        workspace = await self.db.get_workspace(workspace_id)
+        repository = await self.db.get_repo(str(owner.get("repository_id") or ""))
+        task = await self.db.get_task(session.task_id) if session and session.task_id else None
+        if (
+            session is None
+            or workspace is None
+            or repository is None
+            or task is None
+            or workspace.locked_by_task_id != task.id
+            or workspace.project_id != repository.project_id
+            or session.project_id != repository.project_id
+            or session.task_id != task.id
+            or task.repo_id != repository.id
+            or task.branch_name != owner.get("ref")
+            or owner.get("owner_id") != task.id
+            or os.path.realpath(session.work_dir)
+            != os.path.realpath(workspace.workspace_path)
+        ):
+            return None
+        try:
+            provider = self.session_providers.create(session.provider, self.config)
+            handle = SessionHandle(
+                name=session.name,
+                provider=session.provider,
+                instance_token=session.instance_token,
+            )
+            await provider.stop(handle, grace=2.0)
+            if not await provider.confirm_stopped(handle):
+                return None
+            current_branch = await self.git.aget_current_branch(
+                workspace.workspace_path, strict=True
+            )
+            head_sha = (
+                await self.git._arun(["rev-parse", "HEAD"], cwd=workspace.workspace_path)
+            ).strip().lower()
+        except Exception:
+            logger.warning(
+                "Could not prove retained repair writer %s stopped",
+                session_id,
+                exc_info=True,
+            )
+            return None
+        if current_branch != owner.get("ref") or not is_valid_git_oid(head_sha):
+            return None
+        await self.db.update_session(
+            session.id,
+            state="stopped",
+            desired_state="stopped",
+            end_reason="integration_repair_retained_handoff",
+        )
+        return {
+            "session_id": session.id,
+            "workspace_id": workspace.id,
+            "head_sha": head_sha,
+        }
 
     async def arelease_integration_writer_for_retry(self, task, *, reason: str) -> bool | None:
         """Prove an enabled writer stopped, then restore its task reservation.

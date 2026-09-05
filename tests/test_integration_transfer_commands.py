@@ -12,6 +12,7 @@ from src.commands.principal import ExecutionPrincipal, PrincipalKind, principal_
 from src.database.tables import (
     integration_batches,
     integration_branch_owners,
+    integration_parent_episodes,
     integration_repair_operations,
     integration_repair_stages,
 )
@@ -42,6 +43,16 @@ async def _seed(handler) -> None:
         )
     )
     async with handler.db.immediate() as conn:
+        await conn.execute(
+            insert(integration_parent_episodes).values(
+                id="episode",
+                parent_task_id="parent",
+                repository_id="repo",
+                generation=0,
+                pre_collection_checkpoint_sha="a" * 40,
+                created_at=time.time(),
+            )
+        )
         await conn.execute(
             insert(integration_branch_owners).values(
                 id="owner",
@@ -201,11 +212,21 @@ async def test_transfer_rejects_a_collector_operation_bound_to_another_branch(
     )
     async with handler.db.immediate() as conn:
         await conn.execute(
+            insert(integration_parent_episodes).values(
+                id="other-episode",
+                parent_task_id="other-parent",
+                repository_id="repo",
+                generation=0,
+                pre_collection_checkpoint_sha="a" * 40,
+                created_at=time.time(),
+            )
+        )
+        await conn.execute(
             insert(integration_repair_operations).values(
                 id="operation",
                 target_kind="parent",
                 parent_task_id="other-parent",
-                episode_id="episode",
+                episode_id="other-episode",
                 active_stage=0,
                 state="active",
                 policy_snapshot={},
@@ -266,6 +287,7 @@ async def test_transfer_accepts_repair_task_bound_by_current_active_stage(
                 policy={},
                 intelligence_class="primary",
                 repair_task_id="repair-task",
+                writer_kind="repair_delegate",
                 starting_sha="a" * 40,
                 state="active",
             )
@@ -322,11 +344,21 @@ async def test_transfer_rejects_unrelated_or_terminal_repair_relationship(
     )
     async with handler.db.immediate() as conn:
         await conn.execute(
+            insert(integration_parent_episodes).values(
+                id="repair-target-episode",
+                parent_task_id="repair-target",
+                repository_id="repo",
+                generation=0,
+                pre_collection_checkpoint_sha="a" * 40,
+                created_at=time.time(),
+            )
+        )
+        await conn.execute(
             insert(integration_repair_operations).values(
                 id="repair-operation",
                 target_kind="parent",
                 parent_task_id="repair-target",
-                episode_id="episode",
+                episode_id="repair-target-episode",
                 active_stage=0,
                 state=operation_state,
                 policy_snapshot={},
@@ -343,6 +375,7 @@ async def test_transfer_rejects_unrelated_or_terminal_repair_relationship(
                 policy={},
                 intelligence_class="primary",
                 repair_task_id="repair-task",
+                writer_kind="repair_delegate",
                 starting_sha="a" * 40,
                 state="active",
             )

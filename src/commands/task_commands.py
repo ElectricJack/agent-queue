@@ -1197,6 +1197,7 @@ class TaskCommandsMixin:
         hierarchy_enabled: bool,
         reason: str,
         routing_policy: Callable[[Task], bool] | None = None,
+        current_parent_head: str | None = None,
     ) -> tuple[str, str | None, str | None, bool, str | None]:
         """Write a worker-filed task + its edges in one ``immediate()`` txn.
 
@@ -1262,6 +1263,16 @@ class TaskCommandsMixin:
                 raise _FilingScope(f"held task '{held_id}' no longer exists")
             held_parent_id = locked[held_id]
             allowed = {held_id} | set(await self.db.subtree_ids(held_id, conn=conn))
+            repair_scope = await self.db.get_repair_filing_scope(held_id, conn=conn)
+            if repair_scope is not None:
+                if not repair_scope["active"]:
+                    raise _FilingScope("repair stage is no longer active")
+                if repair_scope["target_kind"] == "parent":
+                    held_parent_id = repair_scope["parent_task_id"]
+                elif not explicit_root:
+                    raise _FilingScope(
+                        "batch repair delegates must explicitly request a root filing"
+                    )
             if discovered_from and discovered_from not in allowed:
                 raise _FilingScope(_DISCOVERED_FROM_SCOPE_ERROR)
             if not parent_explicit and not explicit_root:
@@ -1294,6 +1305,7 @@ class TaskCommandsMixin:
                         edges=integration_edges,
                         labels=labels,
                         routing_policy=routing_policy,
+                        current_parent_head=current_parent_head,
                     )
                 else:
                     created = await service.file_root_on(
@@ -1470,6 +1482,7 @@ class TaskCommandsMixin:
         # Whether the worker named a parent itself (vs. the sibling default).
         # Read again by ``_create_worker_filed_task``'s in-transaction check.
         parent_explicit = False
+        repair_filing_head: str | None = None
         if scope.get("kind") == "session" and not scope.get("elevated"):
             filing_session = await self.db.get_session(scope.get("session_id") or "")
             if filing_session is None:
@@ -1490,6 +1503,47 @@ class TaskCommandsMixin:
             held_id = filing_session.task_id
             held_task = await self.db.get_task(held_id)
             held_parent_id = held_task.parent_task_id if held_task is not None else None
+            repair_scope = await self.db.get_repair_filing_scope(held_id)
+            if repair_scope is not None:
+                if not repair_scope["active"]:
+                    return {
+                        "success": False,
+                        "error": "repair stage is no longer active",
+                    }
+                if repair_scope["target_kind"] == "parent":
+                    held_parent_id = repair_scope["parent_task_id"]
+                    from src.integration.hierarchy import resolve_workspace_checkpoint
+
+                    repo = await self.db.get_repo(repair_scope["repository_id"])
+                    if held_task is None or repo is None:
+                        return {
+                            "success": False,
+                            "error": "repair filing target is no longer configured",
+                        }
+                    try:
+                        repair_filing_head = await resolve_workspace_checkpoint(
+                            self.db,
+                            self.orchestrator.git,
+                            {
+                                "id": held_task.id,
+                                "repo_id": held_task.repo_id,
+                                "branch_name": held_task.branch_name,
+                            },
+                            repo,
+                        )
+                    except HierarchyError as exc:
+                        return {
+                            "success": False,
+                            "code": f"hierarchy.{exc.code}",
+                            "error": f"hierarchy.{exc.code}: {exc.detail}",
+                        }
+                elif not explicit_root:
+                    return {
+                        "success": False,
+                        "error": (
+                            "batch repair delegates must explicitly request a root filing"
+                        ),
+                    }
             async with self.db._engine.begin() as _conn:
                 allowed = {held_id} | set(await self.db.subtree_ids(held_id, conn=_conn))
             if args.get("discovered_from") and args["discovered_from"] not in allowed:
@@ -1812,6 +1866,35 @@ class TaskCommandsMixin:
             parent = await self.db.get_task(parent_id)
             if parent is None:
                 return {"error": f"Parent task '{parent_id}' not found"}
+        if (
+            filing_session is not None
+            and hierarchy_enabled
+            and repair_filing_head is None
+            and parent_id == held_id
+        ):
+            from src.integration.hierarchy import resolve_workspace_checkpoint
+
+            held_task = await self.db.get_task(held_id)
+            repo = await self.db.get_repo(project.integration_repository_id or "")
+            if held_task is None or repo is None:
+                return {"error": "hierarchical filing writer is no longer configured"}
+            try:
+                repair_filing_head = await resolve_workspace_checkpoint(
+                    self.db,
+                    self.orchestrator.git,
+                    {
+                        "id": held_task.id,
+                        "repo_id": held_task.repo_id,
+                        "branch_name": held_task.branch_name,
+                    },
+                    repo,
+                )
+            except HierarchyError as exc:
+                return {
+                    "success": False,
+                    "code": f"hierarchy.{exc.code}",
+                    "error": f"hierarchy.{exc.code}: {exc.detail}",
+                }
 
         # A task created *with* blocking edges starts DEFINED so the
         # promotion cascade decides when it becomes runnable — creating it
@@ -1938,6 +2021,7 @@ class TaskCommandsMixin:
                     hierarchy_enabled=hierarchy_enabled,
                     reason=spawn_reason or "",
                     routing_policy=routing_policy,
+                    current_parent_head=repair_filing_head,
                 )
                 hierarchy_created = hierarchy_enabled
             except _FilingScope as exc:

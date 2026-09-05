@@ -18,6 +18,7 @@ from src.database.tables import (
     archived_tasks,
     gates,
     integration_repair_operations,
+    integration_repair_stages,
     sessions,
     task_context,
     task_comments,
@@ -107,10 +108,11 @@ _READY_REASONS = {
 TERMINAL_BLOCKED_META_KEY = "blocked_terminal"
 
 #: Transition contexts that make an entry into BLOCKED terminal: the session
-#: close's three BLOCKED legs, merge conflicts, the execution timeout, and an
-#: operator stop. Leaving BLOCKED by any route (restart, reopen, supervisor
-#: recovery, admin skip) clears the mark; only an explicit decision brings the
-#: task back.
+#: close's three BLOCKED legs, merge conflicts, the execution timeout, an
+#: operator stop, and integration-repair decisions that require either a
+#: replacement writer or explicit human disposition. Leaving BLOCKED by any
+#: route (restart, reopen, supervisor recovery, admin skip) clears the mark;
+#: only an explicit decision brings the task back.
 TERMINAL_BLOCKED_CONTEXTS = frozenset(
     {
         "session_close_hard_failure",
@@ -119,6 +121,8 @@ TERMINAL_BLOCKED_CONTEXTS = frozenset(
         "merge_conflict",
         "timeout",
         "stop_task",
+        "integration_repair_exhausted",
+        "integration_repair_retained_handoff",
     }
 )
 
@@ -635,6 +639,19 @@ class TaskQueryMixin:
                 )
             ).first()
             if verifier_delegate is not None:
+                return None
+            repair_delegate = (
+                await conn.execute(
+                    select(integration_repair_stages.c.operation_id).where(
+                        integration_repair_stages.c.repair_task_id == task_id,
+                        integration_repair_stages.c.writer_kind == "repair_delegate",
+                        integration_repair_stages.c.state.in_(
+                            ("active", "awaiting_completion")
+                        ),
+                    )
+                )
+            ).first()
+            if repair_delegate is not None:
                 return None
             result = await self._resume_locked(conn, task_id, None)
         await self.log_blocked_flips(result.flipped)

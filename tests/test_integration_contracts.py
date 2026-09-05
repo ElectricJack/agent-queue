@@ -84,9 +84,69 @@ def test_unimplemented_integration_operations_are_not_registered():
         "delivery_promote",
         "delivery_receipts",
         "integration_reconcile_promotion",
+        "integration_repair_start",
+        "integration_repair_dispatch",
+        "integration_record_repair",
+        "integration_repair_timeout",
     }
     assert registry.names() & DESIGN_INTEGRATION_COMMANDS == implemented
     assert not (registry.names() & (DESIGN_INTEGRATION_COMMANDS - implemented))
+
+
+def test_repair_contracts_expose_exact_typed_public_protocol():
+    registry = ContractRegistry()
+    register_integration_contracts(registry)
+
+    start = registry.require("integration_repair_start").contract.execution
+    dispatch = registry.require("integration_repair_dispatch").contract.execution
+    record = registry.require("integration_record_repair").contract.execution
+    timeout = registry.require("integration_repair_timeout").contract.execution
+
+    assert {row.name for row in start.outcomes} == {
+        "started",
+        "already_started",
+        "stale",
+        "invariant_error",
+    }
+    assert {row.name for row in dispatch.outcomes} == {
+        "dispatched",
+        "already_dispatched",
+        "writer_reused",
+        "busy",
+        "configuration_blocked",
+        "stale",
+        "human_required",
+    }
+    assert {row.name for row in record.outcomes} == {
+        "continue",
+        "escalate",
+        "human_required",
+        "budget_exhausted",
+    }
+    assert {row.name for row in timeout.outcomes} == {
+        "expired",
+        "not_due",
+        "already_terminal",
+        "stale",
+    }
+    assert start.side_effect.value == "composite"
+    assert dispatch.side_effect.value == "composite"
+    assert start.idempotency.mode == dispatch.idempotency.mode == "natural"
+    assert start.retry_safe is dispatch.retry_safe is True
+    assert {clause.subject for clause in dispatch.effects} == {
+        EffectSubject.INTEGRATION_OPERATION,
+        EffectSubject.BRANCH_OWNERSHIP,
+        EffectSubject.TASK_EXECUTION,
+    }
+    assert start.args_model(
+        operation_id="op", starting_sha="a" * 40, trigger_id="trigger"
+    ).starting_sha == "a" * 40
+    with pytest.raises(Exception):
+        start.args_model(
+            operation_id="op", starting_sha="A" * 40, trigger_id="trigger"
+        )
+    with pytest.raises(Exception):
+        dispatch.args_model(operation_id="op", stage=2)
 
 
 def test_parent_completion_contracts_expose_prescribed_outcomes():

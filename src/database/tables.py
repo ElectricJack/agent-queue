@@ -2029,6 +2029,9 @@ integration_repair_operations = Table(
             "parent_task_id IS NOT NULL AND state IN ('active', 'escalated', 'human_required')"
         ),
     ),
+    UniqueConstraint(
+        "batch_id", name="uq_integration_repair_operations_batch_episode"
+    ),
     Index(
         "uq_integration_repair_operations_parent_episode",
         "parent_task_id",
@@ -2109,10 +2112,18 @@ integration_repair_stages = Table(
     Column("operation_id", Text, primary_key=True),
     Column("ordinal", Integer, primary_key=True),
     Column("policy", JSON, nullable=False),
-    Column("intelligence_class", Text, nullable=False),
+    Column("intelligence_class", Text, nullable=True),
     Column("profile_id", Text, nullable=True),
     Column("repair_task_id", Text, nullable=True),
+    Column("writer_kind", Text, nullable=True),
     Column("starting_sha", Text, nullable=False),
+    Column("trigger_id", Text, nullable=True),
+    Column("current_subject", JSON, nullable=True),
+    Column("deadline_event_id", Text, nullable=True),
+    Column("success_subject", JSON, nullable=True),
+    Column("success_evidence_id", Text, nullable=True),
+    Column("retained_workspace_id", Text, nullable=True),
+    Column("retained_handoff", JSON, nullable=True),
     Column("started_at", Float, nullable=True),
     Column("deadline_at", Float, nullable=True),
     Column("attempts", Integer, nullable=False, server_default="0"),
@@ -2122,7 +2133,20 @@ integration_repair_stages = Table(
     CheckConstraint("ordinal IN (0, 1)", name="ck_integration_repair_stages_ordinal"),
     CheckConstraint("attempts >= 0", name="ck_integration_repair_stages_attempts"),
     CheckConstraint(
-        "state IN ('pending', 'active', 'passed', 'failed', 'expired', 'cancelled')",
+        "writer_kind IS NULL OR writer_kind IN ('repair_delegate', 'existing_verifier')",
+        name="ck_integration_repair_stages_writer_kind",
+    ),
+    CheckConstraint(
+        "(repair_task_id IS NULL AND writer_kind IS NULL) OR "
+        "(repair_task_id IS NOT NULL AND writer_kind IS NOT NULL)",
+        name="ck_integration_repair_stages_writer_binding",
+    ),
+    UniqueConstraint(
+        "deadline_event_id", name="uq_integration_repair_stages_deadline_event"
+    ),
+    CheckConstraint(
+        "state IN ('pending', 'active', 'awaiting_completion', 'passed', 'failed', "
+        "'expired', 'cancelled')",
         name="ck_integration_repair_stages_state",
     ),
 )
@@ -2164,6 +2188,33 @@ integration_check_evidence = Table(
     CheckConstraint(
         "conclusion IN ('success', 'failure', 'pending', 'cancelled', 'inconclusive')",
         name="ck_integration_check_evidence_conclusion",
+    ),
+)
+
+integration_repair_stage_evidence = Table(
+    "integration_repair_stage_evidence",
+    metadata,
+    Column("operation_id", Text, primary_key=True),
+    Column("ordinal", Integer, primary_key=True),
+    Column("evidence_id", Text, primary_key=True),
+    Column("counted_attempt", Boolean, nullable=False, server_default=false()),
+    Column("result_outcome", Text, nullable=False),
+    Column("result_action", Text, nullable=False),
+    Column("recorded_at", Float, nullable=False),
+    UniqueConstraint(
+        "evidence_id", name="uq_integration_repair_stage_evidence_evidence"
+    ),
+    ForeignKeyConstraint(
+        ["operation_id", "ordinal"],
+        ["integration_repair_stages.operation_id", "integration_repair_stages.ordinal"],
+        name="fk_integration_repair_stage_evidence_stage",
+        ondelete="RESTRICT",
+    ),
+    ForeignKeyConstraint(
+        ["evidence_id"],
+        ["integration_check_evidence.id"],
+        name="fk_integration_repair_stage_evidence_evidence",
+        ondelete="RESTRICT",
     ),
 )
 

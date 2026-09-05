@@ -91,11 +91,10 @@ class IntegrationCommandsMixin:
             or task.status in {TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.BLOCKED}
         ):
             return False
-        if task.branch_name == target.branch:
-            return True
         operation = await self.db.get_active_integration_repair_for_task(task_id)
         return bool(
             operation
+            and operation.get("writer_kind") == "repair_delegate"
             and await self._integration_operation_matches_target(operation, target, project_id)
         )
 
@@ -298,6 +297,136 @@ class IntegrationCommandsMixin:
             branch_materializer=materialize,
             checkpoint_verifier=verify_checkpoint,
         )
+
+    def _integration_repair_service(self):
+        service = getattr(self.orchestrator, "repair_service", None)
+        if service is not None:
+            return service
+        from src.integration.repair import RepairService
+
+        async def route_valid(intelligence_class, profile_id):
+            profile = await self.db.get_profile(profile_id) if profile_id else None
+            if profile_id and profile is None:
+                return False
+            return self._validate_routing_class(intelligence_class, profile) is None
+
+        return RepairService(
+            self.db,
+            confirm_handoff=getattr(
+                self.orchestrator, "aconfirm_integration_owner_handoff", None
+            ),
+            confirm_stopped=getattr(
+                self.orchestrator,
+                "aconfirm_integration_owner_stopped_for_repair",
+                None,
+            ),
+            route_validator=route_valid,
+        )
+
+    async def _integration_operation_project_id(self, operation: dict) -> str | None:
+        if operation["target_kind"] == "parent":
+            task = await self.db.get_task(operation.get("parent_task_id") or "")
+            return task.project_id if task is not None else None
+        if operation["target_kind"] == "batch":
+            batch = await self.db.get_integration_batch(operation.get("batch_id") or "")
+            return str(batch["project_id"]) if batch is not None else None
+        return None
+
+    async def _repair_command_authorized(
+        self, operation_id: str, capability: str
+    ) -> tuple[dict | None, bool]:
+        operation = await self.db.get_integration_operation(operation_id)
+        if operation is None:
+            return None, False
+        project_id = await self._integration_operation_project_id(operation)
+        if project_id is None:
+            return operation, False
+        return operation, await self._integration_delivery_authorized(
+            project_id, capability
+        )
+
+    async def _cmd_integration_repair_start(self, args: dict) -> dict:
+        from pydantic import ValidationError
+
+        from src.commands.contracts.integration import IntegrationRepairStartArgs
+
+        try:
+            request = IntegrationRepairStartArgs.model_validate(args)
+        except ValidationError as exc:
+            return _failure("stale", f"invalid repair start: {exc}")
+        _operation, authorized = await self._repair_command_authorized(
+            request.operation_id, "integration_repair_start"
+        )
+        if not authorized:
+            return _failure("unauthorized", "repair start authority is outside the operation")
+        result = await self._integration_repair_service().start(
+            request.operation_id, request.starting_sha, request.trigger_id
+        )
+        return {"success": result["outcome"] in {"started", "already_started"}, **result}
+
+    async def _cmd_integration_record_repair(self, args: dict) -> dict:
+        from pydantic import ValidationError
+
+        from src.commands.contracts.integration import IntegrationRecordRepairArgs
+
+        try:
+            request = IntegrationRecordRepairArgs.model_validate(args)
+        except ValidationError as exc:
+            return _failure("budget_exhausted", f"invalid repair evidence: {exc}")
+        _operation, authorized = await self._repair_command_authorized(
+            request.operation_id, "integration_record_repair"
+        )
+        if not authorized:
+            return _failure("unauthorized", "repair evidence authority is outside the operation")
+        result = await self._integration_repair_service().record_result(
+            request.operation_id, request.evidence_id
+        )
+        return {
+            "success": result["outcome"] in {"continue", "escalate"},
+            **result,
+        }
+
+    async def _cmd_integration_repair_timeout(self, args: dict) -> dict:
+        from pydantic import ValidationError
+
+        from src.commands.contracts.integration import IntegrationRepairTimeoutArgs
+
+        try:
+            request = IntegrationRepairTimeoutArgs.model_validate(args)
+        except ValidationError as exc:
+            return _failure("stale", f"invalid repair timeout: {exc}")
+        _operation, authorized = await self._repair_command_authorized(
+            request.operation_id, "integration_repair_timeout"
+        )
+        if not authorized:
+            return _failure("unauthorized", "repair timeout authority is outside the operation")
+        result = await self._integration_repair_service().expire(
+            request.operation_id, request.stage
+        )
+        return {"success": result["outcome"] != "stale", **result}
+
+    async def _cmd_integration_repair_dispatch(self, args: dict) -> dict:
+        from pydantic import ValidationError
+
+        from src.commands.contracts.integration import IntegrationRepairDispatchArgs
+
+        try:
+            request = IntegrationRepairDispatchArgs.model_validate(args)
+        except ValidationError as exc:
+            return _failure("stale", f"invalid repair dispatch: {exc}")
+        _operation, authorized = await self._repair_command_authorized(
+            request.operation_id, "integration_repair_dispatch"
+        )
+        if not authorized:
+            return _failure("unauthorized", "repair dispatch authority is outside the operation")
+        result = await self._integration_repair_service().dispatch(
+            request.operation_id, request.stage
+        )
+        return {
+            "success": result["outcome"]
+            in {"dispatched", "already_dispatched", "writer_reused"},
+            **result,
+        }
 
     async def _cmd_integration_file_children(self, args: dict) -> dict:
         from pydantic import ValidationError

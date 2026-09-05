@@ -165,6 +165,11 @@ class PullRequestIdentity:
 #: shell metacharacters and a leading ``-`` are all rejected.
 _REFNAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]*$")
 _OID_RE = re.compile(r"^[0-9a-f]{40}$")
+
+
+def is_valid_git_oid(value: object) -> bool:
+    """Return whether *value* is one exact lowercase SHA-1 Git object ID."""
+    return isinstance(value, str) and _OID_RE.fullmatch(value) is not None
 _REPOSITORY_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 #: ``https://<host>/<owner>/<repo>/pull/<n>`` with an optional trailing slash,
 #: query or fragment — the shape ``gh pr create`` prints and ``gh pr merge``

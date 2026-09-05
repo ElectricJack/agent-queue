@@ -21,6 +21,7 @@ from src.database.tables import (
     integration_parent_verification_evidence,
     integration_parent_verifications,
     integration_repair_operations,
+    integration_repair_stages,
     playbook_artifacts,
     projects,
     task_branch_origins,
@@ -959,7 +960,7 @@ class ParentCompletion:
                 )
             ).mappings().one_or_none()
             if (
-                operation["state"] not in {"active", "escalated", "human_required"}
+                operation["state"] not in {"active", "escalated"}
                 or owner is None
                 or owner["owner_id"] != expected_owner
                 or owner["owner_role"] != "verifier"
@@ -997,11 +998,20 @@ class ParentCompletion:
                 update(integration_repair_operations)
                 .where(
                     integration_repair_operations.c.id == operation["id"],
-                    integration_repair_operations.c.state.in_(
-                        ("active", "escalated", "human_required")
-                    ),
+                    integration_repair_operations.c.state.in_(("active", "escalated")),
                 )
                 .values(state="completed", updated_at=completed_at)
+            )
+            await conn.execute(
+                update(integration_repair_stages)
+                .where(
+                    integration_repair_stages.c.operation_id == operation["id"],
+                    integration_repair_stages.c.ordinal == operation["active_stage"],
+                    integration_repair_stages.c.state.in_(
+                        ("active", "awaiting_completion")
+                    ),
+                )
+                .values(state="passed", completed_at=completed_at)
             )
         await self.db.log_blocked_flips(transition.flipped)
         await self.db._notify_settled(transition.settled)

@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
+
+from pydantic import Field, field_validator
 
 from src.commands.contracts.models import (
     CommandArgs,
@@ -23,6 +25,7 @@ from src.commands.contracts.models import (
 from src.commands.contracts.registry import CommandContext, CommandRegistration, ContractRegistry
 from src.commands.principal import principal_context
 from src.integration.models import BranchKey, Fence
+from src.git.manager import is_valid_git_oid
 
 
 DESIGN_INTEGRATION_COMMANDS = frozenset(
@@ -38,6 +41,8 @@ DESIGN_INTEGRATION_COMMANDS = frozenset(
         "integration_seal",
         "integration_build_candidate",
         "integration_ci_evidence",
+        "integration_repair_start",
+        "integration_repair_dispatch",
         "integration_record_repair",
         "integration_repair_timeout",
         "integration_transfer_owner",
@@ -172,6 +177,62 @@ class IntegrationMutateHierarchyValue(CommandValue):
     new_parent_generation: int | None = None
 
 
+class IntegrationRepairStartArgs(CommandArgs):
+    operation_id: str = Field(min_length=1)
+    starting_sha: str
+    trigger_id: str = Field(min_length=1)
+
+    @field_validator("starting_sha")
+    @classmethod
+    def exact_git_oid(cls, value: str) -> str:
+        if not is_valid_git_oid(value):
+            raise ValueError("starting_sha must be an exact lowercase Git OID")
+        return value
+
+
+class IntegrationRepairStartValue(CommandValue):
+    operation_id: str | None = None
+    stage: Literal[0, 1] | None = None
+    starting_sha: str | None = None
+    started_at: float | None = None
+    deadline_at: float | None = None
+
+
+class IntegrationRepairDispatchArgs(CommandArgs):
+    operation_id: str = Field(min_length=1)
+    stage: Literal[0, 1]
+
+
+class IntegrationRepairDispatchValue(CommandValue):
+    operation_id: str | None = None
+    stage: Literal[0, 1] | None = None
+    repair_task_id: str | None = None
+    writer_kind: Literal["repair_delegate", "existing_verifier"] | None = None
+    fence: Fence | None = None
+
+
+class IntegrationRecordRepairArgs(CommandArgs):
+    operation_id: str = Field(min_length=1)
+    evidence_id: str = Field(min_length=1)
+
+
+class IntegrationRecordRepairValue(CommandValue):
+    action: str | None = None
+    attempts: int | None = None
+    stage: Literal[0, 1] | None = None
+
+
+class IntegrationRepairTimeoutArgs(CommandArgs):
+    operation_id: str = Field(min_length=1)
+    stage: Literal[0, 1]
+
+
+class IntegrationRepairTimeoutValue(CommandValue):
+    operation_id: str | None = None
+    stage: Literal[0, 1] | None = None
+    action: str | None = None
+
+
 INTEGRATION_TRANSFER_OWNER = CommandContract(
     execution=ExecutionContract(
         name="integration_transfer_owner",
@@ -210,6 +271,114 @@ INTEGRATION_TRANSFER_OWNER = CommandContract(
         result_labels={"fence": "New ownership fence"},
         subject_labels={"branch_ownership": "the repository branch ownership"},
     ),
+)
+
+
+def _repair_contract(
+    name: str,
+    args_model: type[CommandArgs],
+    result_model: type[CommandValue],
+    outcomes: tuple[str, ...],
+    *,
+    effects,
+    sensitive_args: frozenset[str] = frozenset(),
+    sensitive_results: frozenset[str] = frozenset(),
+) -> CommandContract:
+    successes = {
+        "started",
+        "already_started",
+        "dispatched",
+        "already_dispatched",
+        "writer_reused",
+        "continue",
+        "escalate",
+        "expired",
+        "not_due",
+        "already_terminal",
+    }
+    return CommandContract(
+        execution=ExecutionContract(
+            name=name,
+            args_model=args_model,
+            result_model=result_model,
+            outcomes=tuple(
+                OutcomeSpec(
+                    name=outcome,
+                    classification=(
+                        OutcomeClass.SUCCESS
+                        if outcome in successes
+                        else OutcomeClass.FAILURE
+                    ),
+                )
+                for outcome in outcomes
+            ),
+            capability=name,
+            side_effect=SideEffectClass.COMPOSITE,
+            idempotency=IdempotencySpec(mode="natural"),
+            retry_safe=True,
+            effects=effects,
+            sensitive_args=sensitive_args,
+            sensitive_result_fields=sensitive_results,
+            receipt_projection=tuple(result_model.model_fields),
+        ),
+        presentation=CommandPresentation(
+            title=name.replace("_", " ").title(), summary=""
+        ),
+    )
+
+
+INTEGRATION_REPAIR_START = _repair_contract(
+    "integration_repair_start",
+    IntegrationRepairStartArgs,
+    IntegrationRepairStartValue,
+    ("started", "already_started", "stale", "invariant_error"),
+    effects=(
+        CreateOrReuseClause(
+            subject=EffectSubject.INTEGRATION_OPERATION, key_arg="operation_id"
+        ),
+        UpdateClause(subject=EffectSubject.INTEGRATION_OPERATION),
+    ),
+    sensitive_args=frozenset({"starting_sha"}),
+    sensitive_results=frozenset({"starting_sha"}),
+)
+
+INTEGRATION_REPAIR_DISPATCH = _repair_contract(
+    "integration_repair_dispatch",
+    IntegrationRepairDispatchArgs,
+    IntegrationRepairDispatchValue,
+    (
+        "dispatched",
+        "already_dispatched",
+        "writer_reused",
+        "busy",
+        "configuration_blocked",
+        "stale",
+        "human_required",
+    ),
+    effects=(
+        UpdateClause(subject=EffectSubject.INTEGRATION_OPERATION),
+        UpdateClause(subject=EffectSubject.BRANCH_OWNERSHIP),
+        CreateOrReuseClause(
+            subject=EffectSubject.TASK_EXECUTION, key_arg="operation_id"
+        ),
+    ),
+    sensitive_results=frozenset({"fence"}),
+)
+
+INTEGRATION_RECORD_REPAIR = _repair_contract(
+    "integration_record_repair",
+    IntegrationRecordRepairArgs,
+    IntegrationRecordRepairValue,
+    ("continue", "escalate", "human_required", "budget_exhausted"),
+    effects=(UpdateClause(subject=EffectSubject.INTEGRATION_OPERATION),),
+)
+
+INTEGRATION_REPAIR_TIMEOUT = _repair_contract(
+    "integration_repair_timeout",
+    IntegrationRepairTimeoutArgs,
+    IntegrationRepairTimeoutValue,
+    ("expired", "not_due", "already_terminal", "stale"),
+    effects=(UpdateClause(subject=EffectSubject.INTEGRATION_OPERATION),),
 )
 
 
@@ -664,6 +833,62 @@ async def _complete_parent_adapter(
     )
 
 
+async def _repair_start_adapter(
+    args: IntegrationRepairStartArgs, ctx: CommandContext | None
+):
+    return await _hierarchy_adapter(
+        "integration_repair_start",
+        args,
+        ctx,
+        IntegrationRepairStartValue,
+        {"started", "already_started", "stale", "invariant_error"},
+    )
+
+
+async def _repair_dispatch_adapter(
+    args: IntegrationRepairDispatchArgs, ctx: CommandContext | None
+):
+    return await _hierarchy_adapter(
+        "integration_repair_dispatch",
+        args,
+        ctx,
+        IntegrationRepairDispatchValue,
+        {
+            "dispatched",
+            "already_dispatched",
+            "writer_reused",
+            "busy",
+            "configuration_blocked",
+            "stale",
+            "human_required",
+        },
+    )
+
+
+async def _record_repair_adapter(
+    args: IntegrationRecordRepairArgs, ctx: CommandContext | None
+):
+    return await _hierarchy_adapter(
+        "integration_record_repair",
+        args,
+        ctx,
+        IntegrationRecordRepairValue,
+        {"continue", "escalate", "human_required", "budget_exhausted"},
+    )
+
+
+async def _repair_timeout_adapter(
+    args: IntegrationRepairTimeoutArgs, ctx: CommandContext | None
+):
+    return await _hierarchy_adapter(
+        "integration_repair_timeout",
+        args,
+        ctx,
+        IntegrationRepairTimeoutValue,
+        {"expired", "not_due", "already_terminal", "stale"},
+    )
+
+
 def register_integration_contracts(registry: ContractRegistry) -> None:
     """Register contracts whose real handlers have landed.
 
@@ -689,6 +914,10 @@ def register_integration_contracts(registry: ContractRegistry) -> None:
         (DELIVERY_PROMOTE, _promote_adapter),
         (DELIVERY_RECEIPTS, _receipts_adapter),
         (INTEGRATION_RECONCILE_PROMOTION, _reconcile_adapter),
+        (INTEGRATION_REPAIR_START, _repair_start_adapter),
+        (INTEGRATION_REPAIR_DISPATCH, _repair_dispatch_adapter),
+        (INTEGRATION_RECORD_REPAIR, _record_repair_adapter),
+        (INTEGRATION_REPAIR_TIMEOUT, _repair_timeout_adapter),
     ):
         if registry.get(contract.name) is None:
             registry.register(CommandRegistration(contract.name, contract, adapter))

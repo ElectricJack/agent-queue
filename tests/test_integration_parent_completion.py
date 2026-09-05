@@ -20,6 +20,7 @@ from src.database.tables import (
     integration_parent_episodes,
     integration_parent_verifications,
     integration_repair_operations,
+    integration_repair_stages,
     playbook_artifacts,
     task_delivery_receipts,
     task_integration_checkpoints,
@@ -688,6 +689,34 @@ async def test_parent_completion_pins_exact_verification_for_rollover(db):
     checkpoint = await db.get_integration_checkpoint("parent")
     assert checkpoint["current_verification_id"] == verified["verification_id"]
     assert checkpoint["checkpoint_sha"] == "d" * 40
+    async with db.immediate() as conn:
+        await conn.execute(
+            insert(integration_repair_stages).values(
+                operation_id=checkpointed["operation_id"],
+                ordinal=0,
+                policy=_boundary().repair.model_dump(mode="json"),
+                intelligence_class="medium",
+                profile_id="integrator",
+                starting_sha="a" * 40,
+                trigger_id="check-unit",
+                current_subject={
+                    "kind": "parent",
+                    "generation": 1,
+                    "head_sha": "d" * 40,
+                },
+                deadline_event_id=f"repair-deadline-{checkpointed['operation_id']}-0",
+                success_subject={
+                    "kind": "parent",
+                    "generation": 1,
+                    "head_sha": "d" * 40,
+                },
+                success_evidence_id="check-unit",
+                started_at=1.0,
+                deadline_at=100.0,
+                attempts=1,
+                state="awaiting_completion",
+            )
+        )
     async with db._engine.connect() as conn:
         verified_events = (
             await conn.execute(
@@ -716,6 +745,20 @@ async def test_parent_completion_pins_exact_verification_for_rollover(db):
             .where(task_integration_checkpoints.c.task_id == "parent")
             .values(branch_owner_id="parent")
         )
+        await conn.execute(
+            update(integration_repair_operations)
+            .where(integration_repair_operations.c.id == checkpointed["operation_id"])
+            .values(state="human_required")
+        )
+    assert (
+        await hierarchy.complete_parent("parent", 1, "d" * 40)
+    )["outcome"] == "invariant_error"
+    async with db.immediate() as conn:
+        await conn.execute(
+            update(integration_repair_operations)
+            .where(integration_repair_operations.c.id == checkpointed["operation_id"])
+            .values(state="escalated")
+        )
     completed = await hierarchy.complete_parent("parent", 1, "d" * 40)
     assert completed["outcome"] == "completed"
     assert (await db.get_task("parent")).status is TaskStatus.COMPLETED
@@ -724,10 +767,20 @@ async def test_parent_completion_pins_exact_verification_for_rollover(db):
         completion = (
             await conn.execute(select(integration_parent_operation_completions))
         ).mappings().one()
+        repair_stage = (
+            await conn.execute(
+                select(integration_repair_stages).where(
+                    integration_repair_stages.c.operation_id
+                    == checkpointed["operation_id"]
+                )
+            )
+        ).mappings().one()
     assert completion["operation_id"] == checkpointed["operation_id"]
     assert completion["verification_id"] == verified["verification_id"]
     assert completion["parent_task_id"] == "parent"
     assert completion["episode_id"] == checkpointed["episode_id"]
+    assert repair_stage["state"] == "passed"
+    assert repair_stage["completed_at"] is not None
     completed_checkpoint = await db.get_integration_checkpoint("parent")
     assert completed_checkpoint["last_completed_operation_id"] == checkpointed["operation_id"]
     assert completed_checkpoint["last_completed_verification_id"] == verified["verification_id"]

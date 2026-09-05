@@ -443,8 +443,14 @@ Before handing ownership onward, stop and reconcile the old writer; inability to
 for human intervention rather than granting a second writer access.
 
 For root batches, activate the primary stage when candidate construction starts, before the first
-CI launch, so an initial run that never completes is bounded too. A green initial candidate simply
-finishes that stage without dispatching a repair agent.
+CI launch, so an initial run that never completes is bounded too. A green initial candidate marks
+that exact candidate/evidence `awaiting_completion` without dispatching a repair agent; terminal
+`passed` is written only by exact promotion. While the same current green candidate awaits
+deterministic promotion or reconciliation, its timeout does not launch a debugger. If authoritative
+main movement binds a new candidate, clear readiness but retain the original ordinal, start,
+deadline, and attempts; an already-overdue stage then escalates immediately. Parent green likewise
+remains nonterminal until guarded completion and stays deadline-bounded throughout final
+verification. Stale evidence or timeout events cannot revive a completed or superseded subject.
 
 CI evidence identifies the candidate revision, workflow/run identity, run attempt, required check
 set, and stage. A conclusive aggregate result is recorded once per run attempt; one green check
@@ -455,7 +461,7 @@ excluded from code-repair attempt counts. Deadlines still bound repeated infrast
 
 When either primary limit is exhausted, the playbook performs exactly one debug escalation:
 
-1. Stop the primary task and release its workspace.
+1. Stop the primary task and transfer its workspace safely.
 2. Create a debug task on the same branch and exact head.
 3. Route it to a configurable higher intelligence class or profile, such as the project's Fable
    mapping, without hardcoding a provider or model.
@@ -466,6 +472,16 @@ When either primary limit is exhausted, the playbook performs exactly one debug 
 The persistence model supports an ordered repair ladder, while the shipped playbook declares
 exactly two stages: primary and one higher-intelligence debug escalation. This keeps escalation
 policy declarative without changing the approved one-escalation behavior.
+
+Ordinary clean handoffs keep the general stop, exact pushed-tip proof, detach, and release rule.
+The one narrow exception is a current primary-writer-to-current-debugger handoff when work is
+unfinished: after an uncached stopped-session proof, one fenced database transaction advances
+ownership and rebinds the same still-locked workspace to the fresh debug task. It persists old/new
+task, session, workspace, fence, and exact HEAD provenance. The checkout, index, untracked files,
+unmerged state, and unpushed commits are not pushed, reset, cleaned, stashed, detached, or exposed
+to the free pool. Scheduler preparation must select that exact workspace and must not overwrite
+its contents. Failed proof or CAS remains busy and never admits a second writer. This exception is
+specific to the two repair stages and does not weaken worker, collector, or verifier handoffs.
 
 ### 9.3 Human escalation
 
@@ -543,6 +559,8 @@ outcomes:
 | `integration_seal` | Acquire project lease and atomically snapshot every eligible root | `sealed`, `empty`, `busy` |
 | `integration_build_candidate` | Create/reconcile integration ref and apply ordered manifest | `built`, `already_built`, `conflict`, `source_moved`, `base_moved` |
 | `integration_ci_evidence` | Poll checks for an exact SHA, attach a conclusive result, and emit completion | `green`, `red`, `pending`, `inconclusive`, `unavailable` |
+| `integration_repair_start` | Activate an already-reserved operation's primary clock from exact persisted trigger/subject identity | `started`, `already_started`, `stale`, `invariant_error` |
+| `integration_repair_dispatch` | Reuse the exact live verifier or durably bind, hand off, and wake one stage delegate | `dispatched`, `already_dispatched`, `writer_reused`, `busy`, `configuration_blocked`, `stale`, `human_required` |
 | `integration_record_repair` | Advance the configured repair stage and its durable budgets | `continue`, `escalate`, `human_required`, `budget_exhausted` |
 | `integration_repair_timeout` | Conditionally expire a root or parent repair stage at its persisted deadline | `expired`, `not_due`, `already_terminal`, `stale` |
 | `integration_transfer_owner` | Fence branch ownership and reconcile checkout handoff | `transferred`, `busy`, `stale_owner`, `human_required` |
@@ -672,8 +690,9 @@ remote accidentally.
 Lease expiry or cancellation of the owning playbook run permits reconciliation, not release or
 blind acquisition. Batch state outlives any run. A new activation first compares recorded and
 actual refs and either resumes the same integration or escalates an invariant violation. Before a
-debug task starts, the primary task must release its workspace; the debug task receives explicit
-slot affinity to that branch or starts only after the prior checkout is detached.
+debug task starts, the primary task must either complete the ordinary proven-clean detach/release
+or complete the repair-only retained-workspace CAS described in §9.2. The debug task receives the
+persisted exact workspace affinity; no other checkout may be substituted.
 
 ### 11.7 Promotion intents and event delivery
 
@@ -893,4 +912,3 @@ The eight follow-up findings are resolved with these implementation requirements
 | Immutable manifest contains later results | Separate immutable sources from numbered candidate revisions and final receipts | §7.5, §11.3 |
 | Hierarchy changes leave stale verification | Guard all mutations, invalidate affected generations, and retain immutable child origins | §6.8, §11.1 |
 | Per-window dedup creates sweep backlog | One outstanding project request, atomically consumed and delivered through the outbox | §7.1, §11.5 |
-

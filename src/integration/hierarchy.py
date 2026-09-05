@@ -31,6 +31,7 @@ from src.integration.outbox import enqueue_integration_event
 from src.integration.ownership import BranchOwnership
 from src.integration.parent_completion import ParentCompletion
 from src.models import RepoConfig, Task, TaskStatus
+from src.git.manager import is_valid_git_oid
 from src.task_names import child_task_id
 from src.task_names import fresh_root_id
 
@@ -82,14 +83,14 @@ async def materialize_exact_branch(git, checkout: str, branch: str, base_sha: st
     return base_sha
 
 
-async def verify_workspace_checkpoint(db, git, task: dict, repo: RepoConfig, head_sha: str) -> str:
-    """Prove a parent's actual checkout HEAD is clean and exactly pushed."""
+async def resolve_workspace_checkpoint(db, git, task: dict, repo: RepoConfig) -> str:
+    """Return an owned writer workspace's clean, exactly-pushed current HEAD."""
     workspace = await db.get_workspace_for_task(task["id"])
     if (
         workspace is None
         or workspace.locked_by_task_id != task["id"]
         or task["repo_id"] != repo.id
-        or task["branch_name"] != f"aq/{task['id']}"
+        or not task["branch_name"]
     ):
         raise HierarchyError("dirty", "task has no exact owned integration workspace")
     checkout = workspace.workspace_path
@@ -100,13 +101,21 @@ async def verify_workspace_checkpoint(db, git, task: dict, repo: RepoConfig, hea
     if status:
         raise HierarchyError("dirty", "workspace has uncommitted changes")
     actual_head = (await git._arun(["rev-parse", "HEAD"], cwd=checkout)).lower()
-    if actual_head != head_sha:
-        raise HierarchyError("dirty", "caller head does not match workspace HEAD")
+    if not is_valid_git_oid(actual_head):
+        raise HierarchyError("dirty", "workspace HEAD is not an exact Git OID")
     from src.git.manager import RemoteRefState
 
     remote = await git.als_remote_ref(checkout, task["branch_name"])
     if remote.state is not RemoteRefState.PRESENT or remote.oid != actual_head:
         raise HierarchyError("dirty", "workspace HEAD is not exactly pushed")
+    return actual_head
+
+
+async def verify_workspace_checkpoint(db, git, task: dict, repo: RepoConfig, head_sha: str) -> str:
+    """Prove a parent's actual checkout HEAD is clean and exactly pushed."""
+    actual_head = await resolve_workspace_checkpoint(db, git, task, repo)
+    if actual_head != head_sha:
+        raise HierarchyError("dirty", "caller head does not match workspace HEAD")
     return actual_head
 
 
@@ -299,6 +308,7 @@ class HierarchyIntegration:
         labels: list[str] | None = None,
         expected_generation: int | None = None,
         routing_policy=None,
+        current_parent_head: str | None = None,
     ) -> dict:
         """Insert a validated command-layer task in the caller's transaction."""
         parent = await self._task_row(conn, parent_id)
@@ -306,6 +316,8 @@ class HierarchyIntegration:
         await self.db.lock_hierarchy_project(conn, project["id"])
         await self._ensure_origin_chain(conn, parent_id, repo)
         checkpoint = await self._locked_checkpoint(conn, parent_id)
+        if current_parent_head is not None and not is_valid_git_oid(current_parent_head):
+            raise HierarchyError("dirty", "filing parent HEAD is not an exact Git OID")
         current_generation = int(checkpoint["generation"])
         if expected_generation is not None and current_generation != expected_generation:
             raise HierarchyError(
@@ -341,7 +353,7 @@ class HierarchyIntegration:
             repository_id=repo.id,
             parent_task_id=parent_id,
             parent_ref=checkpoint["branch"],
-            base_sha=checkpoint["checkpoint_sha"],
+            base_sha=current_parent_head or checkpoint["checkpoint_sha"],
             generation=generation,
         )
         await self._insert_checkpoint(
