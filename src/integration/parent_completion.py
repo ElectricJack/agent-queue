@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import time
 import uuid
+import re
 from collections.abc import Callable
 from typing import Any
 
@@ -33,6 +34,9 @@ from src.database.tables import (
 from src.integration.models import HierarchicalIntegrationPolicy
 from src.integration.outbox import enqueue_integration_event
 from src.playbooks.artifact_ref import ArtifactRef
+
+
+_OID = re.compile(r"^[0-9a-f]{40}$")
 
 
 class ParentCompletion:
@@ -524,7 +528,7 @@ class ParentCompletion:
         )
         head_sha = episode["pre_collection_checkpoint_sha"]
         for row in code_chain:
-            if row["before_sha"] != head_sha or row["after_sha"] != row["squash_sha"]:
+            if row["before_sha"] != head_sha or not self._trusted_code_receipt(row):
                 blockers.append({"task_id": row["source_task_id"], "reason": "receipt_chain"})
                 break
             head_sha = row["after_sha"]
@@ -544,6 +548,69 @@ class ParentCompletion:
             "blockers": blockers,
             "required_checks": policy.parent.required_checks.model_dump(mode="json"),
         }
+
+    @staticmethod
+    def _trusted_code_receipt(receipt: dict[str, Any]) -> bool:
+        """Accept clean squash edges or the exact conflict-resolution proof shape."""
+        if receipt["squash_sha"] is not None:
+            return bool(
+                receipt["after_sha"] == receipt["squash_sha"]
+                and receipt["resolution_evidence"] is None
+            )
+        evidence = receipt["resolution_evidence"]
+        if not isinstance(evidence, dict) or evidence.get("kind") != "conflict_resolution":
+            return False
+        review_snapshot = receipt["review_evidence"]
+        review = review_snapshot.get("review") if isinstance(review_snapshot, dict) else None
+        authoring = evidence.get("authoring")
+        fence = authoring.get("fence") if isinstance(authoring, dict) else None
+        proof = evidence.get("remote_proof")
+        commits = evidence.get("repair_commit_shas")
+        if (
+            not isinstance(review, dict)
+            or not isinstance(authoring, dict)
+            or not isinstance(fence, dict)
+            or not isinstance(proof, dict)
+            or not isinstance(commits, list)
+            or not commits
+            or len(set(commits)) != len(commits)
+            or any(not isinstance(oid, str) or not _OID.fullmatch(oid) for oid in commits)
+        ):
+            return False
+        required_strings = (
+            authoring.get("repair_task_id"),
+            authoring.get("repair_session_id"),
+            authoring.get("repair_session_instance_token"),
+            authoring.get("repair_workspace_id"),
+        )
+        return bool(
+            evidence.get("original_source_base") == review.get("source_base")
+            and evidence.get("original_source_head") == receipt["reviewed_head_sha"]
+            and evidence.get("original_source_tree") == receipt["reviewed_tree_sha"]
+            and evidence.get("original_expected_target") == receipt["before_sha"]
+            and evidence.get("resolved_head_sha") == receipt["after_sha"]
+            and isinstance(evidence.get("resolved_tree_sha"), str)
+            and _OID.fullmatch(evidence["resolved_tree_sha"])
+            and commits[-1] == receipt["after_sha"]
+            and authoring.get("operation_id") == receipt["parent_operation_id"]
+            and isinstance(authoring.get("stage_ordinal"), int)
+            and not isinstance(authoring.get("stage_ordinal"), bool)
+            and authoring["stage_ordinal"] >= 0
+            and all(isinstance(value, str) and value for value in required_strings)
+            and fence.get("repository_id") == receipt["repository_id"]
+            and fence.get("branch") == receipt["target_branch"]
+            and fence.get("owner_id") == authoring.get("repair_task_id")
+            and isinstance(fence.get("token"), int)
+            and not isinstance(fence.get("token"), bool)
+            and fence["token"] >= 0
+            and proof
+            == {
+                "kind": "exact_resolution_tip",
+                "remote_sha": receipt["after_sha"],
+                "resolved_tree_sha": evidence["resolved_tree_sha"],
+                "repair_commit_shas": commits,
+            }
+        )
 
     async def record_disposition(
         self,

@@ -39,6 +39,32 @@ async def test_collector_cannot_acquire_a_branch_while_parent_is_active(db):
     await ownership.assert_current(parent)
 
 
+async def test_conn_owned_mutation_exclusion_matches_public_guard(db):
+    """The ordered-transaction seam preserves the established public checks."""
+    ownership = BranchOwnership(db)
+    target = BranchKey(repository_id="repo", branch="parent")
+    fence = await ownership.acquire(target, "collector-op", "collector")
+
+    async with db.immediate() as conn:
+        async with ownership.mutation_exclusion_on(
+            conn, fence, state="reserved", expected_role="collector"
+        ) as row:
+            assert row["owner_id"] == "collector-op"
+            assert row["fence_token"] == fence.token
+
+    async with ownership.mutation_exclusion(
+        fence, state="reserved", expected_role="collector"
+    ) as conn:
+        assert conn is not None
+
+    with pytest.raises(BranchBusy, match="role must be repair"):
+        async with db.immediate() as conn:
+            async with ownership.mutation_exclusion_on(
+                conn, fence, state="reserved", expected_role="repair"
+            ):
+                pytest.fail("wrong-role fence entered mutation exclusion")
+
+
 async def test_expired_attached_owner_still_blocks_takeover(db):
     """Expiry is not evidence that the attached session stopped writing."""
     target = BranchKey(repository_id="repo", branch="parent")

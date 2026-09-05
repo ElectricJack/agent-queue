@@ -48,6 +48,8 @@ DESIGN_INTEGRATION_COMMANDS = frozenset(
         "integration_transfer_owner",
         "integration_mutate_hierarchy",
         "integration_reconcile_promotion",
+        "integration_resolve_conflict",
+        "integration_push_conflict_resolution",
         "integration_promote_main",
         "integration_release",
     }
@@ -92,6 +94,20 @@ class DeliveryReceiptsValue(CommandValue):
 
 class IntegrationReconcilePromotionArgs(CommandArgs):
     intent_id: str
+
+
+class IntegrationResolveConflictArgs(CommandArgs):
+    intent_id: str
+    operation_id: str
+    resolved_head_sha: str
+    resolved_tree_sha: str
+    repair_commit_shas: tuple[str, ...] = Field(min_length=1)
+    fence: Fence
+
+
+class IntegrationPushConflictResolutionArgs(CommandArgs):
+    intent_id: str
+    fence: Fence
 
 
 class IntegrationFileChildrenArgs(CommandArgs):
@@ -489,6 +505,65 @@ INTEGRATION_RECONCILE_PROMOTION = CommandContract(
 )
 
 
+INTEGRATION_RESOLVE_CONFLICT = CommandContract(
+    execution=ExecutionContract(
+        name="integration_resolve_conflict",
+        args_model=IntegrationResolveConflictArgs,
+        result_model=PromotionCommandValue,
+        outcomes=(
+            OutcomeSpec(name="reserved", classification=OutcomeClass.SUCCESS),
+            OutcomeSpec(name="already_reserved", classification=OutcomeClass.SUCCESS),
+            OutcomeSpec(name="stale", classification=OutcomeClass.FAILURE),
+            OutcomeSpec(name="invariant_error", classification=OutcomeClass.FAILURE),
+        ),
+        capability="integration_resolve_conflict",
+        side_effect=SideEffectClass.CREATE,
+        idempotency=IdempotencySpec(mode="keyed", key_field="intent_id"),
+        retry_safe=True,
+        effects=(UpdateClause(subject=EffectSubject.INTEGRATION_OPERATION),),
+        sensitive_args=frozenset(
+            {"resolved_head_sha", "resolved_tree_sha", "repair_commit_shas"}
+        ),
+        sensitive_result_fields=frozenset({"prepared_sha"}),
+        receipt_projection=("intent_id", "receipt_id"),
+    ),
+    presentation=CommandPresentation(
+        title="Reserve conflict resolution",
+        summary="Freeze an active repair session's exact conflict resolution before push.",
+    ),
+)
+
+
+INTEGRATION_PUSH_CONFLICT_RESOLUTION = CommandContract(
+    execution=ExecutionContract(
+        name="integration_push_conflict_resolution",
+        args_model=IntegrationPushConflictResolutionArgs,
+        result_model=PromotionCommandValue,
+        outcomes=(
+            OutcomeSpec(name="pushed", classification=OutcomeClass.SUCCESS),
+            OutcomeSpec(name="already_applied", classification=OutcomeClass.SUCCESS),
+            OutcomeSpec(name="target_moved", classification=OutcomeClass.FAILURE),
+            OutcomeSpec(name="stale", classification=OutcomeClass.FAILURE),
+        ),
+        capability="integration_push_conflict_resolution",
+        side_effect=SideEffectClass.COMPOSITE,
+        idempotency=IdempotencySpec(mode="keyed", key_field="intent_id"),
+        retry_safe=True,
+        effects=(
+            UpdateClause(subject=EffectSubject.BRANCH_OWNERSHIP),
+            UpdateClause(subject=EffectSubject.INTEGRATION_OPERATION),
+        ),
+        sensitive_args=frozenset({"fence"}),
+        sensitive_result_fields=frozenset({"prepared_sha"}),
+        receipt_projection=("intent_id", "receipt_id"),
+    ),
+    presentation=CommandPresentation(
+        title="Push conflict resolution",
+        summary="Push a frozen conflict resolution under the current repair writer fence.",
+    ),
+)
+
+
 INTEGRATION_FILE_CHILDREN = CommandContract(
     execution=ExecutionContract(
         name="integration_file_children",
@@ -747,6 +822,37 @@ async def _reconcile_adapter(
     )
 
 
+async def _resolve_conflict_adapter(
+    args: IntegrationResolveConflictArgs, ctx: CommandContext | None
+) -> CommandResult:
+    return await _invoke_adapter(
+        "integration_resolve_conflict",
+        args,
+        ctx,
+        PromotionCommandValue,
+        {"reserved", "already_reserved", "unauthorized", "stale", "invariant_error"},
+    )
+
+
+async def _push_conflict_resolution_adapter(
+    args: IntegrationPushConflictResolutionArgs, ctx: CommandContext | None
+) -> CommandResult:
+    return await _invoke_adapter(
+        "integration_push_conflict_resolution",
+        args,
+        ctx,
+        PromotionCommandValue,
+        {
+            "pushed",
+            "already_applied",
+            "target_moved",
+            "stale",
+            "unauthorized",
+            "runtime_error",
+        },
+    )
+
+
 async def _hierarchy_adapter(
     command: str,
     args: CommandArgs,
@@ -930,6 +1036,8 @@ def register_integration_contracts(registry: ContractRegistry) -> None:
         (DELIVERY_PROMOTE, _promote_adapter),
         (DELIVERY_RECEIPTS, _receipts_adapter),
         (INTEGRATION_RECONCILE_PROMOTION, _reconcile_adapter),
+        (INTEGRATION_RESOLVE_CONFLICT, _resolve_conflict_adapter),
+        (INTEGRATION_PUSH_CONFLICT_RESOLUTION, _push_conflict_resolution_adapter),
         (INTEGRATION_REPAIR_START, _repair_start_adapter),
         (INTEGRATION_REPAIR_DISPATCH, _repair_dispatch_adapter),
         (INTEGRATION_RECORD_REPAIR, _record_repair_adapter),

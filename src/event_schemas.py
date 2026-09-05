@@ -1095,6 +1095,7 @@ _INTEGRATION_SCHEMAS: dict[str, EventSchema] = {
         "integration.repair_deadline_due",
         "integration.human_blocked",
         "integration.promoted",
+        "integration.resolution_push_observed",
         "integration.cleanup_pending",
         "integration.branch_materialization_pending",
     )
@@ -1108,6 +1109,16 @@ _INTEGRATION_SCHEMAS["integration.branch_materialization_pending"]["optional"] =
     "parent_ref",
     "base_sha",
 ]
+
+_INTEGRATION_SCHEMAS["integration.resolution_push_observed"]["required"].append(
+    "promotion_intent_id"
+)
+_INTEGRATION_SCHEMAS["integration.resolution_push_observed"]["types"][
+    "promotion_intent_id"
+] = str
+_INTEGRATION_SCHEMAS["integration.resolution_push_observed"]["fields"][
+    "promotion_intent_id"
+] = {"type": "string", "description": "immutable promotion intent"}
 
 
 # ---------------------------------------------------------------------------

@@ -546,6 +546,28 @@ async def test_terminal_children_require_complete_contiguous_receipt_chain(db):
     assert [row["source_task_id"] for row in ready["receipts"]] == children
 
 
+async def test_arbitrary_resolution_json_cannot_satisfy_code_receipt_chain(db):
+    hierarchy, _checkpointed, children = await _parent_tree(db, children=1)
+    await _code_receipt(db, children[0], "a" * 40, "d" * 40)
+    async with db.immediate() as conn:
+        await conn.execute(
+            update(task_delivery_receipts)
+            .where(task_delivery_receipts.c.id == f"receipt-{children[0]}")
+            .values(
+                squash_sha=None,
+                resolution_evidence={"kind": "conflict_resolution", "trusted": True},
+            )
+        )
+
+    readiness = await hierarchy.readiness("parent")
+
+    assert readiness["outcome"] == "waiting"
+    assert readiness["head_sha"] == "a" * 40
+    assert readiness["blockers"] == [
+        {"task_id": children[0], "reason": "receipt_chain"}
+    ]
+
+
 async def test_unbound_historic_receipts_do_not_satisfy_current_parent_episode(db):
     hierarchy, _checkpointed, children = await _parent_tree(db, children=1)
     await _code_receipt(db, children[0], "a" * 40, "d" * 40)

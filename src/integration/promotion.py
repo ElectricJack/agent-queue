@@ -13,9 +13,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from src.commands.principal import TRUSTED_LOCAL, current_principal
+from src.commands.principal import PrincipalKind, TRUSTED_LOCAL, current_principal
 from src.git.manager import GitError, GitManager, RemoteRefState
-from src.integration.models import Fence, PromotionInput, PromotionValue
+from src.integration.models import ConflictResolutionInput, Fence, PromotionInput, PromotionValue
 from src.integration.ownership import BranchOwnership
 from src.models import RepoConfig, RepoSourceType
 
@@ -59,6 +59,10 @@ class PromotionInvariantError(PromotionError):
 
 
 class PromotionRuntimeError(PromotionError):
+    pass
+
+
+class PromotionAuthorizationError(PromotionError):
     pass
 
 
@@ -307,12 +311,201 @@ class PromotionService:
         await self.db.mark_integration_promotion_pushed(intent_id, remote_evidence)
         return await self._finalize(intent, intent["prepared_sha"])
 
+    async def reserve_resolution(
+        self, request: ConflictResolutionInput
+    ) -> tuple[PromotionValue, bool]:
+        """Freeze a repair writer's exact resolution before any remote mutation."""
+        for label, oid in (
+            ("resolved head", request.resolved_head_sha),
+            ("resolved tree", request.resolved_tree_sha),
+            *(("repair commit", oid) for oid in request.repair_commit_shas),
+        ):
+            if not _OID_RE.fullmatch(oid):
+                raise PromotionInvariantError(f"invalid {label} OID")
+        if len(set(request.repair_commit_shas)) != len(request.repair_commit_shas):
+            raise PromotionInvariantError("repair commit range contains duplicates")
+        if request.repair_commit_shas[-1] != request.resolved_head_sha:
+            raise PromotionInvariantError("repair commit range must end at resolved head")
+        principal = current_principal()
+        if principal is None or principal.kind is not PrincipalKind.SESSION:
+            raise PromotionAuthorizationError("conflict resolution requires a repair session")
+        if (
+            principal.task_id is None
+            or principal.session_id is None
+            or principal.project_id is None
+        ):
+            raise PromotionAuthorizationError("repair session identity is incomplete")
+
+        intent = await self._intent(request.intent_id)
+        if intent["operation_key"] != request.operation_id:
+            raise PromotionInvariantError("resolution operation does not match original intent")
+        if (
+            request.fence.target.repository_id != intent["repository_id"]
+            or request.fence.target.branch != intent["target_branch"]
+        ):
+            raise PromotionInvariantError("resolution fence targets another branch")
+        repository = await self._resolve_repository(intent["repository_id"])
+        self._assert_resolution_repository(intent, repository)
+
+        async with self.db.immediate() as conn:
+            scope = await self.db.get_repair_filing_scope(
+                principal.task_id, session_id=principal.session_id, conn=conn
+            )
+            if (
+                scope is None
+                or not scope["active"]
+                or scope["operation_id"] != request.operation_id
+                or scope["target_kind"] != "parent"
+                or scope["parent_task_id"] != intent["target_task_id"]
+                or scope["project_id"] != intent["project_id"]
+                or scope["repository_id"] != intent["repository_id"]
+                or scope["writer_kind"] != "repair_delegate"
+                or scope["session_id"] != principal.session_id
+                or scope["workspace_id"] is None
+                or not scope["instance_token"]
+                or scope["fence_token"] != request.fence.token
+                or request.fence.owner_id != principal.task_id
+                or scope["deadline_at"] is None
+                or self.clock() >= float(scope["deadline_at"])
+            ):
+                raise PromotionTargetMoved("repair resolution authority is stale")
+            async with self.ownership.mutation_exclusion_on(
+                conn, request.fence, state="attached", expected_role="repair"
+            ):
+                reserved = await self.db.reserve_integration_conflict_resolution(
+                    conn,
+                    request.intent_id,
+                    {
+                        "resolved_head_sha": request.resolved_head_sha,
+                        "resolved_tree_sha": request.resolved_tree_sha,
+                        "repair_commit_shas": list(request.repair_commit_shas),
+                        "operation_id": request.operation_id,
+                        "stage_ordinal": scope["stage"],
+                        "repair_task_id": principal.task_id,
+                        "repair_session_id": principal.session_id,
+                        "repair_session_instance_token": scope["instance_token"],
+                        "repair_workspace_id": scope["workspace_id"],
+                        "fence_owner_id": request.fence.owner_id,
+                        "fence_token": request.fence.token,
+                    },
+                )
+        return self._value(reserved), bool(reserved.get("_resolution_replayed"))
+
+    async def push_resolution(
+        self, intent_id: str, fence: Fence
+    ) -> tuple[PromotionValue, bool]:
+        """Push only a previously frozen resolution under the current repair writer."""
+        principal = current_principal()
+        if principal is None or principal.kind is not PrincipalKind.SESSION:
+            raise PromotionAuthorizationError("resolution push requires a repair session")
+        if (
+            principal.task_id is None
+            or principal.session_id is None
+            or principal.project_id is None
+        ):
+            raise PromotionAuthorizationError("repair session identity is incomplete")
+        intent = await self._intent(intent_id)
+        if intent["state"] == "committed":
+            return self._value(intent), True
+        if intent["state"] != "resolution_reserved":
+            raise PromotionInvariantError("promotion has no reserved conflict resolution")
+        if (
+            fence.target.repository_id != intent["repository_id"]
+            or fence.target.branch != intent["target_branch"]
+        ):
+            raise PromotionTargetMoved("resolution push fence targets another branch")
+        repository = await self._resolve_repository(intent["repository_id"])
+        self._assert_resolution_repository(intent, repository)
+
+        await self._crash("before_resolution_authority_recheck")
+        async with self.db.immediate() as conn:
+            scope = await self.db.get_repair_filing_scope(
+                principal.task_id, session_id=principal.session_id, conn=conn
+            )
+            if (
+                scope is None
+                or not scope["active"]
+                or scope["operation_id"] != intent["resolution_operation_id"]
+                or scope["target_kind"] != "parent"
+                or scope["parent_task_id"] != intent["target_task_id"]
+                or scope["project_id"] != intent["project_id"]
+                or scope["repository_id"] != intent["repository_id"]
+                or scope["writer_kind"] != "repair_delegate"
+                or scope["session_id"] != principal.session_id
+                or scope["workspace_id"] is None
+                or scope["workspace_path"] is None
+                or not scope["instance_token"]
+                or (
+                    principal.session_id == intent["resolution_session_id"]
+                    and scope["instance_token"]
+                    != intent["resolution_session_instance_token"]
+                )
+                or scope["fence_token"] != fence.token
+                or fence.owner_id != principal.task_id
+                or scope["deadline_at"] is None
+                or self.clock() >= float(scope["deadline_at"])
+            ):
+                raise PromotionTargetMoved("repair resolution push authority is stale")
+            async with self.ownership.mutation_exclusion_on(
+                conn, fence, state="attached", expected_role="repair"
+            ):
+                workspace = Path(scope["workspace_path"])
+                async with self.git.arepository_transaction(str(workspace)):
+                    await self._assert_exact_resolution(workspace, intent)
+                    remote = await self.git.als_remote_ref(
+                        str(workspace), intent["target_branch"]
+                    )
+                    if remote.state is RemoteRefState.ERROR:
+                        raise PromotionRuntimeError(
+                            remote.error or "target remote state is unknown"
+                        )
+                    if remote.state is RemoteRefState.ABSENT:
+                        raise PromotionTargetMoved("target branch is absent")
+                    already_applied = remote.oid == intent["resolution_head_sha"]
+                    if not already_applied:
+                        if remote.oid != intent["expected_target"]:
+                            raise PromotionTargetMoved(
+                                "target branch moved from the resolution old tip"
+                            )
+                        await self._crash("before_resolution_push")
+                        try:
+                            await self.git.apush_expected_delivery(
+                                str(workspace),
+                                intent["expected_target"],
+                                intent["resolution_head_sha"],
+                                intent["target_branch"],
+                                intent["expected_target"],
+                                lock_held=True,
+                            )
+                        except GitError as exc:
+                            raise PromotionRuntimeError(str(exc)) from exc
+                        await self._crash("after_resolution_push")
+                await self.db.record_integration_resolution_push_on(
+                    conn,
+                    intent_id,
+                    {
+                        "kind": "exact_resolution_push_observed",
+                        "remote_sha": intent["resolution_head_sha"],
+                        "operation_id": scope["operation_id"],
+                        "stage_ordinal": scope["stage"],
+                        "repair_task_id": principal.task_id,
+                        "repair_session_id": principal.session_id,
+                        "repair_session_instance_token": scope["instance_token"],
+                        "repair_workspace_id": scope["workspace_id"],
+                        "fence_owner_id": fence.owner_id,
+                        "fence_token": fence.token,
+                    },
+                )
+        return self._value(intent), already_applied
+
     async def reconcile(self, intent_id: str) -> PromotionValue:
         intent = await self._intent(intent_id)
         if intent["state"] == "committed":
             return self._value(intent)
         if intent["state"] == "conflict":
             raise PromotionConflict(self._value(intent), intent.get("conflict_diagnostics") or {})
+        if intent["state"] == "resolution_reserved":
+            return await self._reconcile_resolution(intent)
         if not intent["prepared_sha"]:
             raise PromotionInvariantError("promotion intent has no prepared commit")
         repository = await self._resolve_repository(intent["repository_id"])
@@ -330,6 +523,98 @@ class PromotionService:
             if not await self._prepared_reachable(repository.retained_git_dir, intent, remote.oid):
                 raise PromotionInvariantError("target diverged from the prepared promotion")
         return await self._finalize(intent, remote.oid)
+
+    async def _reconcile_resolution(self, intent: dict[str, Any]) -> PromotionValue:
+        repository = await self._resolve_repository(intent["repository_id"])
+        self._assert_frozen_repository(intent, repository)
+        async with self.git.arepository_transaction(str(repository.retained_git_dir)):
+            remote = await self.git.als_remote_ref(
+                str(repository.retained_git_dir), intent["target_branch"]
+            )
+            if remote.state is RemoteRefState.ERROR:
+                raise PromotionRuntimeError(remote.error or "target remote state is unknown")
+            if remote.state is RemoteRefState.ABSENT:
+                raise PromotionInvariantError("target branch disappeared during reconciliation")
+            if remote.oid == intent["expected_target"]:
+                raise PromotionNotApplied("reserved resolution push has not been applied")
+            if remote.oid != intent["resolution_head_sha"]:
+                raise PromotionInvariantError("target diverged from the reserved resolution")
+            recovery_ref = f"refs/aq/integration-intents/{intent['id']}"
+            fetch = await self.git.arun_git_result(
+                [
+                    "fetch",
+                    "--no-tags",
+                    "origin",
+                    f"+refs/heads/{intent['target_branch']}:{recovery_ref}",
+                ],
+                cwd=str(repository.retained_git_dir),
+                env={"LC_ALL": "C"},
+                lock_held=True,
+            )
+            if fetch.returncode != 0:
+                raise PromotionRuntimeError((fetch.stderr or "target fetch failed").strip())
+            fetched = await self.git.arun_git_result(
+                ["rev-parse", "--verify", recovery_ref],
+                cwd=str(repository.retained_git_dir),
+                env={"LC_ALL": "C"},
+                lock_held=True,
+            )
+            if fetched.returncode != 0 or fetched.stdout.strip() != remote.oid:
+                raise PromotionRuntimeError("target moved while resolution was fetched")
+            await self._assert_exact_resolution(repository.retained_git_dir, intent)
+        remote_evidence = {
+            "kind": "exact_resolution_tip",
+            "remote_sha": intent["resolution_head_sha"],
+            "resolved_tree_sha": intent["resolution_tree_sha"],
+            "repair_commit_shas": intent["resolution_commit_shas"],
+        }
+        await self.db.finalize_integration_promotion(intent["id"], remote_evidence)
+        await self._crash("before_outbox_ack")
+        return self._value(await self._intent(intent["id"]))
+
+    async def _assert_exact_resolution(self, store: Path, intent: dict[str, Any]) -> None:
+        await self._assert_object_type(store, intent["expected_target"], "commit")
+        await self._assert_object_type(store, intent["resolution_head_sha"], "commit")
+        if not await self._is_ancestor(
+            store, intent["expected_target"], intent["resolution_head_sha"]
+        ):
+            raise PromotionInvariantError("resolution head is not descended from expected target")
+        tree = await self._tree_oid(store, intent["resolution_head_sha"])
+        if tree != intent["resolution_tree_sha"]:
+            raise PromotionInvariantError("resolution tree does not match reservation")
+        commits = await self._resolution_commit_range(
+            store, intent["expected_target"], intent["resolution_head_sha"]
+        )
+        if not commits or commits != intent["resolution_commit_shas"]:
+            raise PromotionInvariantError("resolution commit range does not match reservation")
+        merges = await self.git.arun_git_result(
+            [
+                "rev-list",
+                "--min-parents=2",
+                f"{intent['expected_target']}..{intent['resolution_head_sha']}",
+            ],
+            cwd=str(store),
+            env={"LC_ALL": "C"},
+            lock_held=True,
+        )
+        if merges.returncode != 0:
+            raise PromotionRuntimeError((merges.stderr or "merge scan failed").strip())
+        if merges.stdout.strip():
+            raise PromotionInvariantError("resolution commit range contains a merge commit")
+
+    async def _resolution_commit_range(
+        self, store: Path, expected_target: str, resolved_head: str
+    ) -> list[str]:
+        result = await self.git.arun_git_result(
+            ["rev-list", "--reverse", f"{expected_target}..{resolved_head}"],
+            cwd=str(store),
+            env={"LC_ALL": "C"},
+            lock_held=True,
+        )
+        commits = [line.strip() for line in result.stdout.splitlines() if line.strip()]
+        if result.returncode != 0 or any(not _OID_RE.fullmatch(oid) for oid in commits):
+            raise PromotionRuntimeError((result.stderr or "commit range failed").strip())
+        return commits
 
     async def _validated_route(self, request: PromotionInput) -> dict[str, Any]:
         for label, oid in (
@@ -618,6 +903,7 @@ class PromotionService:
         expected = {
             "domain_key": domain_key,
             "receipt_id": receipt_id,
+            "operation_key": request.operation_key,
             "project_id": route["project_id"],
             "source_task_id": request.source_task_id,
             "target_task_id": route["target_task_id"],
@@ -765,6 +1051,14 @@ class PromotionService:
             raise PromotionInvariantError("retained promotion repository is unavailable")
 
     @staticmethod
+    def _assert_resolution_repository(intent: dict, repository: ResolvedRepository) -> None:
+        if (
+            intent["project_id"] != repository.repo.project_id
+            or intent["origin_url"] != repository.origin_url
+        ):
+            raise PromotionInvariantError("promotion repository identity changed")
+
+    @staticmethod
     def _value(intent: dict) -> PromotionValue:
         return PromotionValue(
             intent_id=intent["id"],
@@ -781,6 +1075,7 @@ class PromotionService:
 
 
 __all__ = [
+    "PromotionAuthorizationError",
     "PromotionConflict",
     "PromotionError",
     "PromotionInvariantError",

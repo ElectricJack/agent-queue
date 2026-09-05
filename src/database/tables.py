@@ -1760,6 +1760,18 @@ integration_promotion_intents = Table(
     Column("provenance", JSON, nullable=True),
     Column("commit_metadata", JSON, nullable=True),
     Column("conflict_diagnostics", JSON, nullable=True),
+    Column("resolution_head_sha", Text, nullable=True),
+    Column("resolution_tree_sha", Text, nullable=True),
+    Column("resolution_commit_shas", JSON, nullable=True),
+    Column("resolution_operation_id", Text, nullable=True),
+    Column("resolution_stage_ordinal", Integer, nullable=True),
+    Column("resolution_task_id", Text, nullable=True),
+    Column("resolution_session_id", Text, nullable=True),
+    Column("resolution_session_instance_token", Text, nullable=True),
+    Column("resolution_workspace_id", Text, nullable=True),
+    Column("resolution_fence_owner_id", Text, nullable=True),
+    Column("resolution_fence_token", Integer, nullable=True),
+    Column("resolution_push_evidence", JSON, nullable=True),
     Column("remote_evidence", JSON, nullable=True),
     Column("committed_at", Float, nullable=True),
     Column("created_at", Float, nullable=False),
@@ -1775,8 +1787,32 @@ integration_promotion_intents = Table(
     ),
     CheckConstraint("fence_token >= 0", name="ck_integration_promotion_intents_fence"),
     CheckConstraint(
-        "state IN ('reserved', 'prepared', 'pushed', 'reconciled', 'committed', 'conflict')",
+        "state IN ('reserved', 'prepared', 'pushed', 'reconciled', 'committed', 'conflict', "
+        "'resolution_reserved')",
         name="ck_integration_promotion_intents_state",
+    ),
+    CheckConstraint(
+        "(resolution_head_sha IS NULL AND resolution_tree_sha IS NULL AND "
+        "resolution_commit_shas IS NULL AND resolution_operation_id IS NULL AND "
+        "resolution_stage_ordinal IS NULL AND resolution_task_id IS NULL AND "
+        "resolution_session_id IS NULL AND resolution_session_instance_token IS NULL AND "
+        "resolution_workspace_id IS NULL AND resolution_fence_owner_id IS NULL AND "
+        "resolution_fence_token IS NULL AND resolution_push_evidence IS NULL) OR "
+        "(resolution_head_sha IS NOT NULL AND resolution_tree_sha IS NOT NULL AND "
+        "resolution_commit_shas IS NOT NULL AND resolution_operation_id IS NOT NULL AND "
+        "resolution_stage_ordinal IS NOT NULL AND resolution_task_id IS NOT NULL AND "
+        "resolution_session_id IS NOT NULL AND resolution_session_instance_token IS NOT NULL AND "
+        "resolution_workspace_id IS NOT NULL AND resolution_fence_owner_id IS NOT NULL AND "
+        "resolution_fence_token IS NOT NULL AND state IN ('resolution_reserved', 'committed'))",
+        name="ck_integration_promotion_intents_resolution_binding",
+    ),
+    CheckConstraint(
+        "resolution_stage_ordinal IS NULL OR resolution_stage_ordinal >= 0",
+        name="ck_integration_promotion_intents_resolution_stage",
+    ),
+    CheckConstraint(
+        "resolution_fence_token IS NULL OR resolution_fence_token >= 0",
+        name="ck_integration_promotion_intents_resolution_fence",
     ),
     CheckConstraint(
         "(state <> 'committed' OR (committed_at IS NOT NULL AND remote_evidence IS NOT NULL)) "

@@ -32,6 +32,7 @@ DESIGN_EVENTS = {
     "integration.repair_deadline_due",
     "integration.human_blocked",
     "integration.promoted",
+    "integration.resolution_push_observed",
     "integration.cleanup_pending",
 }
 
@@ -41,9 +42,12 @@ def test_all_design_events_require_project_and_operation_identity():
     for event_type in DESIGN_EVENTS:
         schema = EVENT_SCHEMAS[event_type]
         assert {"project_id", "operation_id"} <= set(schema["required"])
+        payload = {"project_id": "p", "operation_id": "op"}
+        if event_type == "integration.resolution_push_observed":
+            payload["promotion_intent_id"] = "intent"
         assert not validate_event(
             event_type,
-            {"project_id": "p", "operation_id": "op"},
+            payload,
         )
 
 
@@ -84,6 +88,8 @@ def test_unimplemented_integration_operations_are_not_registered():
         "delivery_promote",
         "delivery_receipts",
         "integration_reconcile_promotion",
+        "integration_resolve_conflict",
+        "integration_push_conflict_resolution",
         "integration_repair_start",
         "integration_repair_dispatch",
         "integration_record_repair",
@@ -207,6 +213,25 @@ def test_promotion_contracts_declare_retry_and_domain_identity():
     assert reconcile.idempotency.mode == "keyed"
     assert reconcile.idempotency.key_field == "intent_id"
     assert reconcile.retry_safe is True
+    resolve = registry.require("integration_resolve_conflict").contract.execution
+    assert resolve.idempotency.key_field == "intent_id"
+    assert resolve.retry_safe is True
+    assert {outcome.name for outcome in resolve.outcomes} == {
+        "reserved",
+        "already_reserved",
+        "stale",
+        "invariant_error",
+    }
+    push = registry.require("integration_push_conflict_resolution").contract.execution
+    assert push.idempotency.key_field == "intent_id"
+    assert push.retry_safe is True
+    assert {outcome.name for outcome in push.outcomes} == {
+        "pushed",
+        "already_applied",
+        "target_moved",
+        "stale",
+    }
+    assert set(push.args_model.model_fields) == {"intent_id", "fence"}
 
 
 @pytest.mark.asyncio

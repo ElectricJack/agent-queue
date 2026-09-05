@@ -171,15 +171,28 @@ class BranchOwnership:
         unbounded work inside this context.
         """
         async with self._db.immediate() as conn:
-            row = await self._locked_row(conn, fence.target)
-            self._require_current(row, fence)
-            if expected_role is not None and row["owner_role"] != expected_role:
-                raise BranchBusy(f"branch ownership role must be {expected_role}")
-            if row["handoff_state"] != state:
-                raise BranchBusy(
-                    f"branch ownership must be {state} for this mutation"
-                )
-            yield conn
+            async with self.mutation_exclusion_on(
+                conn, fence, state=state, expected_role=expected_role
+            ):
+                yield conn
+
+    @asynccontextmanager
+    async def mutation_exclusion_on(
+        self,
+        conn,
+        fence: Fence,
+        *,
+        state: str = "reserved",
+        expected_role: str | None = None,
+    ):
+        """Recheck and hold ownership inside a caller's canonically ordered transaction."""
+        row = await self._locked_row(conn, fence.target)
+        self._require_current(row, fence)
+        if expected_role is not None and row["owner_role"] != expected_role:
+            raise BranchBusy(f"branch ownership role must be {expected_role}")
+        if row["handoff_state"] != state:
+            raise BranchBusy(f"branch ownership must be {state} for this mutation")
+        yield row
 
     async def attach(
         self,

@@ -41,6 +41,17 @@ class PromotionValue(BaseModel):
     prepared_sha: str | None = None
 
 
+class ConflictResolutionInput(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    intent_id: str
+    operation_id: str
+    resolved_head_sha: str
+    resolved_tree_sha: str
+    repair_commit_shas: tuple[str, ...] = Field(min_length=1)
+    fence: Fence
+
+
 class RequiredCheckSet(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 

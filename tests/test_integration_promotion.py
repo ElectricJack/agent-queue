@@ -10,24 +10,33 @@ import sys
 from pathlib import Path
 
 import pytest
-from sqlalchemy import func, insert, select
+from sqlalchemy import func, insert, select, update
 from unittest.mock import AsyncMock
 from sqlalchemy.exc import DBAPIError, IntegrityError
 
 from src.database import Database
 from src.database.tables import (
+    integration_branch_owners,
+    integration_check_evidence,
+    integration_episode_receipt_acceptances,
     integration_outbox,
     integration_parent_episodes,
+    integration_parent_operation_completions,
     integration_promotion_intents,
     integration_repair_operations,
+    integration_repair_stages,
+    playbook_artifacts,
+    sessions,
     task_branch_origins,
     task_delivery_receipts,
     task_integration_checkpoints,
+    tasks,
+    workspaces,
 )
 from src.git.manager import GitError, GitManager
-from src.integration.models import BranchKey, PromotionInput
+from src.integration.models import BranchKey, Fence, PromotionInput
 from src.integration.ownership import BranchOwnership
-from src.models import Project, RepoConfig, RepoSourceType, Task
+from src.models import Project, RepoConfig, RepoSourceType, SessionRecord, Task, TaskStatus
 
 
 @pytest.fixture
@@ -222,6 +231,70 @@ async def test_intent_reservation_reuses_domain_and_blocks_other_target_work(db)
         )
 
 
+async def test_intent_reservation_freezes_operation_key_on_reuse(db):
+    values = _intent_values()
+    await db.reserve_integration_promotion_intent(values)
+
+    with pytest.raises(ValueError, match="operation_key"):
+        await db.reserve_integration_promotion_intent(
+            values | {"operation_key": "different-operation"}
+        )
+
+
+async def test_conflict_resolution_reservation_is_immutable_and_reopens_target(db):
+    values = _intent_values() | {
+        "id": "conflicted-intent",
+        "operation_key": "collector-op",
+        "fence_owner_id": "collector-op",
+    }
+    await db.reserve_integration_promotion_intent(values)
+    await db.mark_integration_promotion_conflict("conflicted-intent", {"paths": ["shared.txt"]})
+    resolution = {
+        "resolved_head_sha": "e" * 40,
+        "resolved_tree_sha": "f" * 40,
+        "repair_commit_shas": ["1" * 40, "e" * 40],
+        "operation_id": "collector-op",
+        "stage_ordinal": 0,
+        "repair_task_id": "repair-task",
+        "repair_session_id": "repair-session",
+        "repair_session_instance_token": "instance",
+        "repair_workspace_id": "repair-workspace",
+        "fence_owner_id": "repair-task",
+        "fence_token": 2,
+    }
+
+    async with db.immediate() as conn:
+        first = await db.reserve_integration_conflict_resolution(
+            conn, "conflicted-intent", resolution
+        )
+    async with db.immediate() as conn:
+        replay = await db.reserve_integration_conflict_resolution(
+            conn, "conflicted-intent", resolution
+        )
+
+    assert first["state"] == replay["state"] == "resolution_reserved"
+    assert replay["receipt_id"] == values["receipt_id"]
+    assert replay["resolution_head_sha"] == "e" * 40
+    assert replay["resolution_commit_shas"] == ["1" * 40, "e" * 40]
+    async with db.immediate() as conn:
+        with pytest.raises(ValueError, match="resolution identity changed"):
+            await db.reserve_integration_conflict_resolution(
+                conn,
+                "conflicted-intent",
+                resolution | {"resolved_tree_sha": "2" * 40},
+            )
+    with pytest.raises(ValueError, match="unresolved promotion"):
+        await db.reserve_integration_promotion_intent(
+            values
+            | {
+                "id": "competing-intent",
+                "domain_key": "competing-domain",
+                "receipt_id": "competing-receipt",
+                "source_task_id": "competing-child",
+            }
+        )
+
+
 async def test_concurrent_different_domains_reserve_only_one_target_intent(db):
     first = _intent_values()
     second = first | {
@@ -319,7 +392,7 @@ async def promotion_case(db, tmp_path):
         "collector",
     )
     request = PromotionInput(
-        operation_key="activation",
+        operation_key="collector-op",
         source_task_id="child",
         source_head=head,
         source_base=base,
@@ -336,6 +409,308 @@ async def promotion_case(db, tmp_path):
         "request": request,
         "data_dir": tmp_path / "data",
     }
+
+
+def _hierarchy_policy() -> dict:
+    artifact = {
+        "playbook_id": "hierarchical-delivery",
+        "artifact_sha256": "sha256:" + "a" * 64,
+        "schema_generation": 2,
+        "contract_fingerprint": "sha256:" + "b" * 64,
+        "source_digest": "sha256:" + "c" * 64,
+        "compiler_build": "test",
+        "compiled_at": "2026-09-05T00:00:00Z",
+        "version": 1,
+    }
+    boundary = {
+        "required_checks": {"version": "checks-v1", "names": ["unit"], "producer_id": "ci"},
+        "repair": {
+            "primary_seconds": 30,
+            "primary_attempts": 2,
+            "debug_seconds": 60,
+            "debug_attempts": 1,
+            "debug_intelligence_class": "debug-high",
+        },
+        "route": {
+            "playbook_id": "hierarchical-delivery",
+            "scope": "project",
+            "scope_identifier": "project",
+            "artifact": artifact,
+        },
+    }
+    return {
+        "version": 1,
+        "parent": boundary,
+        "root": boundary,
+        "branchless_parent": "skip",
+        "on_failed_child": "block",
+    }
+
+
+@pytest.fixture
+async def conflict_resolution_case(db, promotion_case):
+    from src.integration.promotion import PromotionConflict, PromotionService
+
+    case = promotion_case
+    work = case["work"]
+    (work / "shared.txt").write_text("child version\n")
+    _git(["add", "shared.txt"], work)
+    _git(["commit", "-m", "child conflict"], work)
+    source = _git(["rev-parse", "HEAD"], work)
+    source_tree = _git(["rev-parse", "HEAD^{tree}"], work)
+    _git(["push", "origin", "aq/child"], work)
+
+    _git(["switch", "-c", "aq/parent", case["base"]], work)
+    (work / "shared.txt").write_text("parent version\n")
+    _git(["commit", "-am", "parent conflict"], work)
+    target = _git(["rev-parse", "HEAD"], work)
+    _git(["push", "origin", "aq/parent"], work)
+    await db.append_integration_review_evidence(
+        {
+            "id": "resolution-review",
+            "source_task_id": "child",
+            "repository_id": "repo",
+            "source_base": case["base"],
+            "reviewed_head_sha": source,
+            "reviewed_tree_sha": source_tree,
+            "reviewer_task_id": "review-task",
+            "reviewer_session_attempt_id": None,
+            "review_kind": "leaf",
+            "generation": 0,
+            "verdict": "approved",
+            "evidence": {"checks": ["focused"]},
+            "created_at": 3.0,
+        }
+    )
+    async with db.immediate() as conn:
+        await conn.execute(
+            update(integration_repair_operations)
+            .where(integration_repair_operations.c.id == "collector-op")
+            .values(state="cancelled")
+        )
+        await conn.execute(
+            insert(integration_parent_episodes).values(
+                id="resolution-episode",
+                parent_task_id="parent",
+                repository_id="repo",
+                generation=0,
+                pre_collection_checkpoint_sha=target,
+                created_at=3.0,
+            )
+        )
+        await conn.execute(
+            insert(integration_repair_operations).values(
+                id="resolution-op",
+                target_kind="parent",
+                parent_task_id="parent",
+                episode_id="resolution-episode",
+                active_stage=0,
+                state="active",
+                policy_snapshot=_hierarchy_policy(),
+                artifact_snapshot={},
+                required_check_version="checks-v1",
+                created_at=3.0,
+                updated_at=3.0,
+            )
+        )
+        await conn.execute(
+            update(task_integration_checkpoints)
+            .where(task_integration_checkpoints.c.task_id == "parent")
+            .values(
+                checkpoint_sha=target,
+                episode_id="resolution-episode",
+                state="awaiting_children",
+            )
+        )
+        await conn.execute(
+            update(integration_branch_owners)
+            .where(
+                integration_branch_owners.c.repository_id == "repo",
+                integration_branch_owners.c.ref == "aq/parent",
+            )
+            .values(owner_id="resolution-op", fence_token=2)
+        )
+    collector_fence = BranchKey(repository_id="repo", branch="aq/parent")
+    request = case["request"].model_copy(
+        update={
+            "operation_key": "resolution-op",
+            "source_head": source,
+            "expected_target": target,
+            "fence": Fence(target=collector_fence, owner_id="resolution-op", token=2),
+        }
+    )
+    service = PromotionService(db, data_dir=case["data_dir"], git_manager=GitManager())
+    with pytest.raises(PromotionConflict) as caught:
+        await service.prepare(request)
+
+    (work / "shared.txt").write_text("resolved version\n")
+    (work / "child.txt").write_text("one\ntwo\n")
+    _git(["add", "shared.txt", "child.txt"], work)
+    _git(["commit", "-m", "resolve child conflict"], work)
+    (work / "repair.txt").write_text("verified repair\n")
+    _git(["add", "repair.txt"], work)
+    _git(["commit", "-m", "finish repair"], work)
+    resolved_head = _git(["rev-parse", "HEAD"], work)
+    resolved_tree = _git(["rev-parse", "HEAD^{tree}"], work)
+    repair_commits = tuple(
+        _git(["rev-list", "--reverse", f"{target}..{resolved_head}"], work).splitlines()
+    )
+
+    await db.update_project(
+        "project",
+        hierarchical_integration_mode="hierarchy",
+        integration_repository_id="repo",
+        hierarchical_integration_policy=_hierarchy_policy(),
+    )
+    async with db.immediate() as conn:
+        artifact = _hierarchy_policy()["parent"]["route"]["artifact"]
+        await conn.execute(
+            insert(playbook_artifacts).values(
+                **artifact,
+                scope="project",
+                scope_identifier="project",
+                profile_fingerprint="",
+                path="/tmp/hierarchical-delivery-artifact",
+                size_bytes=1,
+                validation="{}",
+                created_at=3.0,
+            )
+        )
+        await conn.execute(
+            update(tasks).where(tasks.c.id == "parent").values(status="PAUSED")
+        )
+        await conn.execute(
+            update(tasks).where(tasks.c.id == "child").values(status="COMPLETED")
+        )
+    await db.create_task(
+        Task(
+            id="repair-task",
+            project_id="project",
+            title="Resolve conflict",
+            description="",
+            status=TaskStatus.IN_PROGRESS,
+            repo_id="repo",
+            branch_name="aq/parent",
+        )
+    )
+    async with db.immediate() as conn:
+        await conn.execute(
+            insert(task_integration_checkpoints).values(
+                task_id="child",
+                repository_id="repo",
+                branch="aq/child",
+                checkpoint_sha=source,
+                generation=0,
+                state="working",
+                version=0,
+                updated_at=3.0,
+            )
+        )
+        await conn.execute(
+            insert(integration_repair_stages).values(
+                operation_id="resolution-op",
+                ordinal=0,
+                policy={},
+                repair_task_id="repair-task",
+                writer_kind="repair_delegate",
+                starting_sha=target,
+                deadline_at=4_000_000_000.0,
+                attempts=1,
+                state="active",
+            )
+        )
+        await conn.execute(
+            insert(workspaces).values(
+                id="resolution-workspace",
+                project_id="project",
+                workspace_path=str(work),
+                source_type="link",
+                locked_by_task_id="repair-task",
+                enabled=True,
+                created_at=3.0,
+            )
+        )
+        await conn.execute(
+            update(integration_branch_owners)
+            .where(
+                integration_branch_owners.c.repository_id == "repo",
+                integration_branch_owners.c.ref == "aq/parent",
+            )
+            .values(
+                owner_id="repair-task",
+                owner_role="repair",
+                fence_token=3,
+                handoff_state="attached",
+                session_id="resolution-session",
+                workspace_id="resolution-workspace",
+            )
+        )
+    await db.create_session(
+        SessionRecord(
+            id="resolution-session",
+            task_id="repair-task",
+            project_id="project",
+            profile_id="repairer",
+            harness="fake",
+            provider="fake",
+            name="s-resolution",
+            lifecycle="task",
+            state="running",
+            work_dir=str(work),
+            epoch="epoch",
+            instance_token="resolution-instance",
+            started_at=3.0,
+        )
+    )
+    return case | {
+        "intent_id": caught.value.value.intent_id,
+        "receipt_id": caught.value.value.receipt_id,
+        "target": target,
+        "source": source,
+        "source_tree": source_tree,
+        "resolved_head": resolved_head,
+        "resolved_tree": resolved_tree,
+        "repair_commits": repair_commits,
+        "resolution_fence": {
+            "target": {"repository_id": "repo", "branch": "aq/parent"},
+            "owner_id": "repair-task",
+            "token": 3,
+        },
+    }
+
+
+def _resolution_principal(*, task_id: str = "repair-task", session_id: str = "resolution-session"):
+    from src.commands.principal import ExecutionPrincipal, PrincipalKind
+    from src.profiles.capabilities import CapabilityPolicy
+
+    return ExecutionPrincipal(
+        kind=PrincipalKind.SESSION,
+        policy=CapabilityPolicy.from_namespaces(
+            aq_commands=[
+                "integration_resolve_conflict",
+                "integration_push_conflict_resolution",
+            ]
+        ),
+        session_id=session_id,
+        task_id=task_id,
+        project_id="project",
+        profile_id="repairer",
+    )
+
+
+def _resolution_request(case: dict, **updates):
+    from src.integration.models import ConflictResolutionInput
+
+    values = {
+        "intent_id": case["intent_id"],
+        "operation_id": "resolution-op",
+        "resolved_head_sha": case["resolved_head"],
+        "resolved_tree_sha": case["resolved_tree"],
+        "repair_commit_shas": case["repair_commits"],
+        "fence": case["resolution_fence"],
+    }
+    values.update(updates)
+    return ConflictResolutionInput(**values)
 
 
 async def test_clean_promotion_is_retained_attributed_pushed_and_reconciled(db, promotion_case):
@@ -383,6 +758,617 @@ async def test_clean_promotion_is_retained_attributed_pushed_and_reconciled(db, 
         ).mappings().one()
         assert delivery["payload"]["operation_id"] == case["fence"].owner_id
         assert delivery["payload"]["promotion_intent_id"] == prepared.intent_id
+
+
+async def test_conflict_resolution_push_reconcile_writes_original_receipt_and_events(
+    db, conflict_resolution_case, command_handler_factory
+):
+    from src.commands.principal import ExecutionPrincipal, PrincipalKind, principal_context
+    from src.integration.promotion import PromotionService
+    from src.profiles.capabilities import CapabilityPolicy
+
+    case = conflict_resolution_case
+    handler = await command_handler_factory()
+    await handler.orchestrator.db.close()
+    handler.orchestrator.db = db
+    handler.orchestrator.promotion_service = PromotionService(
+        db, data_dir=case["data_dir"], git_manager=GitManager()
+    )
+    principal = ExecutionPrincipal(
+        kind=PrincipalKind.SESSION,
+        policy=CapabilityPolicy.from_namespaces(
+            aq_commands=[
+                "integration_resolve_conflict",
+                "integration_push_conflict_resolution",
+            ]
+        ),
+        session_id="resolution-session",
+        task_id="repair-task",
+        project_id="project",
+        profile_id="repairer",
+    )
+    reserve_args = {
+        "intent_id": case["intent_id"],
+        "operation_id": "resolution-op",
+        "resolved_head_sha": case["resolved_head"],
+        "resolved_tree_sha": case["resolved_tree"],
+        "repair_commit_shas": list(case["repair_commits"]),
+        "fence": case["resolution_fence"],
+    }
+    with principal_context(principal):
+        reserved = await handler.execute("integration_resolve_conflict", reserve_args)
+        pushed = await handler.execute(
+            "integration_push_conflict_resolution",
+            {"intent_id": case["intent_id"], "fence": case["resolution_fence"]},
+        )
+    reconciled = await handler.execute(
+        "integration_reconcile_promotion", {"intent_id": case["intent_id"]}
+    )
+
+    assert reserved["outcome"] == "reserved"
+    assert pushed["outcome"] == "pushed"
+    assert reconciled["outcome"] == "applied"
+    assert reconciled["receipt_id"] == case["receipt_id"]
+    assert (
+        _git(["ls-remote", "origin", "refs/heads/aq/parent"], case["work"]).split()[0]
+        == case["resolved_head"]
+    )
+    async with db._engine.connect() as conn:
+        receipt = (
+            await conn.execute(
+                select(task_delivery_receipts).where(
+                    task_delivery_receipts.c.id == case["receipt_id"]
+                )
+            )
+        ).mappings().one()
+        events = {
+            row["event_type"]: row
+            for row in (await conn.execute(select(integration_outbox))).mappings().all()
+        }
+    assert receipt["domain_key"] == (
+        await db.get_integration_promotion_intent(case["intent_id"])
+    )["domain_key"]
+    assert receipt["source_task_id"] == "child"
+    assert receipt["target_task_id"] == "parent"
+    assert receipt["reviewed_head_sha"] == case["source"]
+    assert receipt["reviewed_tree_sha"] == case["source_tree"]
+    assert receipt["before_sha"] == case["target"]
+    assert receipt["after_sha"] == case["resolved_head"]
+    assert receipt["squash_sha"] is None
+    assert receipt["parent_operation_id"] == "resolution-op"
+    assert receipt["parent_episode_id"] == "resolution-episode"
+    assert receipt["resolution_evidence"]["kind"] == "conflict_resolution"
+    assert receipt["resolution_evidence"]["repair_commit_shas"] == list(
+        case["repair_commits"]
+    )
+    assert receipt["resolution_evidence"]["remote_proof"] == {
+        "kind": "exact_resolution_tip",
+        "remote_sha": case["resolved_head"],
+        "resolved_tree_sha": case["resolved_tree"],
+        "repair_commit_shas": list(case["repair_commits"]),
+    }
+    assert events["integration.resolution_push_observed"]["payload"] == {
+        "event_id": f"resolution-pushed-{case['intent_id']}",
+        "project_id": "project",
+        "operation_id": "resolution-op",
+        "promotion_intent_id": case["intent_id"],
+    }
+    assert "delivery.applied" in events
+    assert "integration.cleanup_pending" in events
+
+
+@pytest.mark.parametrize("invalid_proof", ["wrong_tree", "unlisted_commit"])
+async def test_resolution_push_rejects_changed_reserved_git_proof(
+    db, conflict_resolution_case, invalid_proof
+):
+    from src.commands.principal import principal_context
+    from src.integration.promotion import PromotionInvariantError, PromotionService
+
+    case = conflict_resolution_case
+    updates = (
+        {"resolved_tree_sha": "f" * 40}
+        if invalid_proof == "wrong_tree"
+        else {"repair_commit_shas": (case["resolved_head"],)}
+    )
+    request = _resolution_request(case, **updates)
+    service = PromotionService(db, data_dir=case["data_dir"], git_manager=GitManager())
+
+    with principal_context(_resolution_principal()):
+        await service.reserve_resolution(request)
+        with pytest.raises(PromotionInvariantError, match="resolution (tree|commit range)"):
+            await service.push_resolution(case["intent_id"], request.fence)
+
+    assert (
+        _git(["ls-remote", "origin", "refs/heads/aq/parent"], case["work"]).split()[0]
+        == case["target"]
+    )
+
+
+async def test_resolution_push_rejects_merge_commit_range(db, conflict_resolution_case):
+    from src.commands.principal import principal_context
+    from src.integration.promotion import PromotionInvariantError, PromotionService
+
+    case = conflict_resolution_case
+    work = case["work"]
+    _git(["switch", "-c", "resolution-side", case["target"]], work)
+    (work / "side.txt").write_text("side\n")
+    _git(["add", "side.txt"], work)
+    _git(["commit", "-m", "side repair"], work)
+    _git(["switch", "aq/parent"], work)
+    _git(["merge", "--no-ff", "resolution-side", "-m", "merge repair"], work)
+    merged_head = _git(["rev-parse", "HEAD"], work)
+    merged_tree = _git(["rev-parse", "HEAD^{tree}"], work)
+    merged_commits = tuple(
+        _git(["rev-list", "--reverse", f"{case['target']}..{merged_head}"], work).splitlines()
+    )
+    request = _resolution_request(
+        case,
+        resolved_head_sha=merged_head,
+        resolved_tree_sha=merged_tree,
+        repair_commit_shas=merged_commits,
+    )
+    service = PromotionService(db, data_dir=case["data_dir"], git_manager=GitManager())
+
+    with principal_context(_resolution_principal()):
+        await service.reserve_resolution(request)
+        with pytest.raises(PromotionInvariantError, match="merge commit"):
+            await service.push_resolution(case["intent_id"], request.fence)
+
+    assert (
+        _git(["ls-remote", "origin", "refs/heads/aq/parent"], work).split()[0]
+        == case["target"]
+    )
+
+
+async def test_resolution_push_rejects_moved_target(db, conflict_resolution_case):
+    from src.commands.principal import principal_context
+    from src.integration.promotion import PromotionService, PromotionTargetMoved
+
+    case = conflict_resolution_case
+    service = PromotionService(db, data_dir=case["data_dir"], git_manager=GitManager())
+    request = _resolution_request(case)
+    with principal_context(_resolution_principal()):
+        await service.reserve_resolution(request)
+
+    _git(["switch", "-c", "resolution-competitor", case["target"]], case["work"])
+    (case["work"] / "competitor.txt").write_text("moved\n")
+    _git(["add", "competitor.txt"], case["work"])
+    _git(["commit", "-m", "move target"], case["work"])
+    moved = _git(["rev-parse", "HEAD"], case["work"])
+    _git(["push", "origin", "HEAD:refs/heads/aq/parent"], case["work"])
+
+    with principal_context(_resolution_principal()):
+        with pytest.raises(PromotionTargetMoved, match="target branch moved"):
+            await service.push_resolution(case["intent_id"], request.fence)
+    assert _git(["ls-remote", "origin", "refs/heads/aq/parent"], case["work"]).split()[0] == moved
+    async with db._engine.connect() as conn:
+        assert await conn.scalar(select(func.count()).select_from(task_delivery_receipts)) == 0
+
+
+@pytest.mark.parametrize("phase", ["before_resolution_push", "after_resolution_push"])
+async def test_resolution_push_crash_replays_exact_reserved_identity(
+    db, conflict_resolution_case, phase
+):
+    from src.commands.principal import principal_context
+    from src.integration.promotion import PromotionService
+
+    case = conflict_resolution_case
+    request = _resolution_request(case)
+    service = PromotionService(db, data_dir=case["data_dir"], git_manager=GitManager())
+    with principal_context(_resolution_principal()):
+        await service.reserve_resolution(request)
+        crashing = PromotionService(
+            db,
+            data_dir=case["data_dir"],
+            git_manager=GitManager(),
+            crash_hook=CrashOnce(phase),
+        )
+        with pytest.raises(InjectedCrash, match=phase):
+            await crashing.push_resolution(case["intent_id"], request.fence)
+
+        recovered, already_applied = await service.push_resolution(
+            case["intent_id"], request.fence
+        )
+    again = await service.reconcile(case["intent_id"])
+
+    assert recovered.intent_id == again.intent_id == case["intent_id"]
+    assert already_applied is (phase == "after_resolution_push")
+    async with db._engine.connect() as conn:
+        assert await conn.scalar(select(func.count()).select_from(task_delivery_receipts)) == 1
+        assert (
+            await conn.scalar(
+                select(func.count())
+                .select_from(integration_outbox)
+                .where(integration_outbox.c.event_type == "integration.resolution_push_observed")
+            )
+            == 1
+        )
+
+
+@pytest.mark.parametrize("authority_change", ["stage_expired", "session_replaced"])
+async def test_resolution_push_rechecks_authority_inside_mutation_exclusion(
+    db, conflict_resolution_case, authority_change
+):
+    from src.commands.principal import principal_context
+    from src.integration.promotion import PromotionService, PromotionTargetMoved
+
+    case = conflict_resolution_case
+    request = _resolution_request(case)
+    initial = PromotionService(db, data_dir=case["data_dir"], git_manager=GitManager())
+    with principal_context(_resolution_principal()):
+        await initial.reserve_resolution(request)
+
+    async def change_between_validation_and_write(phase: str) -> None:
+        if phase == "before_resolution_authority_recheck":
+            async with db.immediate() as conn:
+                if authority_change == "stage_expired":
+                    await conn.execute(
+                        update(integration_repair_stages)
+                        .where(
+                            integration_repair_stages.c.operation_id == "resolution-op",
+                            integration_repair_stages.c.ordinal == 0,
+                        )
+                        .values(deadline_at=0.0)
+                    )
+                else:
+                    await conn.execute(
+                        update(sessions)
+                        .where(sessions.c.id == "resolution-session")
+                        .values(instance_token="replacement-instance")
+                    )
+
+    racing = PromotionService(
+        db,
+        data_dir=case["data_dir"],
+        git_manager=GitManager(),
+        crash_hook=change_between_validation_and_write,
+    )
+    with principal_context(_resolution_principal()):
+        with pytest.raises(PromotionTargetMoved, match="authority is stale"):
+            await racing.push_resolution(case["intent_id"], request.fence)
+    assert (
+        _git(["ls-remote", "origin", "refs/heads/aq/parent"], case["work"]).split()[0]
+        == case["target"]
+    )
+
+
+async def test_debug_successor_pushes_primary_reserved_oids_after_proved_handoff(
+    db, conflict_resolution_case
+):
+    from src.commands.principal import principal_context
+    from src.integration.promotion import PromotionService, PromotionTargetMoved
+
+    case = conflict_resolution_case
+    request = _resolution_request(case)
+    ownership = BranchOwnership(db, confirm_handoff=lambda _row: True)
+    service = PromotionService(
+        db,
+        data_dir=case["data_dir"],
+        git_manager=GitManager(),
+        ownership=ownership,
+    )
+    with principal_context(_resolution_principal()):
+        await service.reserve_resolution(request)
+
+    await db.create_task(
+        Task(
+            id="debug-repair-task",
+            project_id="project",
+            title="Debug conflict resolution",
+            description="",
+            status=TaskStatus.IN_PROGRESS,
+            repo_id="repo",
+            branch_name="aq/parent",
+        )
+    )
+    debug_fence = await ownership.transfer(
+        Fence.model_validate(case["resolution_fence"]), "debug-repair-task", "repair"
+    )
+    await db.create_session(
+        SessionRecord(
+            id="debug-resolution-session",
+            task_id="debug-repair-task",
+            project_id="project",
+            profile_id="debug-repairer",
+            harness="fake",
+            provider="fake",
+            name="s-debug-resolution",
+            lifecycle="task",
+            state="running",
+            work_dir=str(case["work"]),
+            epoch="debug-epoch",
+            instance_token="debug-resolution-instance",
+            started_at=4.0,
+        )
+    )
+    async with db.immediate() as conn:
+        await conn.execute(
+            update(integration_repair_stages)
+            .where(
+                integration_repair_stages.c.operation_id == "resolution-op",
+                integration_repair_stages.c.ordinal == 0,
+            )
+            .values(state="expired", completed_at=4.0)
+        )
+        await conn.execute(
+            insert(integration_repair_stages).values(
+                operation_id="resolution-op",
+                ordinal=1,
+                policy={},
+                repair_task_id="debug-repair-task",
+                writer_kind="repair_delegate",
+                starting_sha=case["target"],
+                deadline_at=4_000_000_000.0,
+                attempts=1,
+                state="active",
+            )
+        )
+        await conn.execute(
+            update(integration_repair_operations)
+            .where(integration_repair_operations.c.id == "resolution-op")
+            .values(active_stage=1, state="escalated", updated_at=4.0)
+        )
+        await conn.execute(
+            update(workspaces)
+            .where(workspaces.c.id == "resolution-workspace")
+            .values(locked_by_task_id="debug-repair-task")
+        )
+    await ownership.attach(
+        debug_fence,
+        "debug-resolution-session",
+        "resolution-workspace",
+        expected_role="repair",
+    )
+
+    with principal_context(_resolution_principal()):
+        with pytest.raises(PromotionTargetMoved, match="authority is stale"):
+            await service.push_resolution(case["intent_id"], request.fence)
+
+    debug_principal = _resolution_principal(
+        task_id="debug-repair-task", session_id="debug-resolution-session"
+    )
+    with principal_context(debug_principal):
+        pushed, already_applied = await service.push_resolution(
+            case["intent_id"], debug_fence
+        )
+    reconciled = await service.reconcile(case["intent_id"])
+
+    assert pushed.intent_id == reconciled.intent_id == case["intent_id"]
+    assert already_applied is False
+    intent = await db.get_integration_promotion_intent(case["intent_id"])
+    assert intent["resolution_task_id"] == "repair-task"
+    assert intent["resolution_session_id"] == "resolution-session"
+    assert intent["resolution_session_instance_token"] == "resolution-instance"
+    assert intent["resolution_fence_token"] == 3
+    assert intent["resolution_push_evidence"]["repair_task_id"] == "debug-repair-task"
+    assert intent["resolution_push_evidence"]["repair_session_id"] == (
+        "debug-resolution-session"
+    )
+    assert intent["resolution_push_evidence"]["repair_session_instance_token"] == (
+        "debug-resolution-instance"
+    )
+    assert intent["resolution_push_evidence"]["fence_token"] == debug_fence.token
+
+
+async def test_expired_repair_stage_cannot_reserve_resolution(db, conflict_resolution_case):
+    from src.commands.principal import principal_context
+    from src.integration.promotion import PromotionService, PromotionTargetMoved
+
+    case = conflict_resolution_case
+    service = PromotionService(
+        db,
+        data_dir=case["data_dir"],
+        git_manager=GitManager(),
+        clock=lambda: 5_000_000_000.0,
+    )
+    with principal_context(_resolution_principal()):
+        with pytest.raises(PromotionTargetMoved, match="authority is stale"):
+            await service.reserve_resolution(_resolution_request(case))
+
+    intent = await db.get_integration_promotion_intent(case["intent_id"])
+    assert intent["state"] == "conflict"
+    assert intent["resolution_head_sha"] is None
+
+
+async def test_concurrent_exact_resolution_reservation_names_one_replay(
+    db, conflict_resolution_case
+):
+    from src.commands.principal import principal_context
+    from src.integration.promotion import PromotionService
+
+    case = conflict_resolution_case
+    service = PromotionService(db, data_dir=case["data_dir"], git_manager=GitManager())
+    request = _resolution_request(case)
+    with principal_context(_resolution_principal()):
+        first, second = await asyncio.gather(
+            service.reserve_resolution(request),
+            service.reserve_resolution(request),
+        )
+
+    assert first[0] == second[0]
+    assert sorted((first[1], second[1])) == [False, True]
+
+
+async def test_committed_resolution_replay_survives_writer_and_source_cleanup(
+    db, conflict_resolution_case
+):
+    from src.commands.principal import principal_context
+    from src.integration.promotion import PromotionService
+
+    case = conflict_resolution_case
+    request = _resolution_request(case)
+    service = PromotionService(db, data_dir=case["data_dir"], git_manager=GitManager())
+    with principal_context(_resolution_principal()):
+        await service.reserve_resolution(request)
+        await service.push_resolution(case["intent_id"], request.fence)
+    committed = await service.reconcile(case["intent_id"])
+
+    await db.update_session("resolution-session", state="stopped")
+    async with db.immediate() as conn:
+        await conn.execute(
+            update(integration_branch_owners)
+            .where(
+                integration_branch_owners.c.repository_id == "repo",
+                integration_branch_owners.c.ref == "aq/parent",
+            )
+            .values(
+                handoff_state="released",
+                session_id=None,
+                workspace_id=None,
+                confirmed_workspace_id="resolution-workspace",
+            )
+        )
+        await conn.execute(
+            update(workspaces)
+            .where(workspaces.c.id == "resolution-workspace")
+            .values(enabled=False, locked_by_task_id=None)
+        )
+    shutil.rmtree(case["work"])
+
+    replay = await service.reconcile(case["intent_id"])
+    assert replay == committed
+    async with db._engine.connect() as conn:
+        assert await conn.scalar(select(func.count()).select_from(task_delivery_receipts)) == 1
+
+
+async def test_resolution_receipt_drives_parent_readiness_verification_and_completion(
+    db, conflict_resolution_case
+):
+    from src.commands.principal import ExecutionPrincipal, PrincipalKind, principal_context
+    from src.integration.models import ConflictResolutionInput
+    from src.integration.parent_completion import ParentCompletion
+    from src.integration.promotion import PromotionService
+    from src.profiles.capabilities import CapabilityPolicy
+
+    case = conflict_resolution_case
+    service = PromotionService(db, data_dir=case["data_dir"], git_manager=GitManager())
+    principal = ExecutionPrincipal(
+        kind=PrincipalKind.SESSION,
+        policy=CapabilityPolicy.from_namespaces(
+            aq_commands=[
+                "integration_resolve_conflict",
+                "integration_push_conflict_resolution",
+            ]
+        ),
+        session_id="resolution-session",
+        task_id="repair-task",
+        project_id="project",
+        profile_id="repairer",
+    )
+    reservation = ConflictResolutionInput(
+        intent_id=case["intent_id"],
+        operation_id="resolution-op",
+        resolved_head_sha=case["resolved_head"],
+        resolved_tree_sha=case["resolved_tree"],
+        repair_commit_shas=case["repair_commits"],
+        fence=case["resolution_fence"],
+    )
+    with principal_context(principal):
+        await service.reserve_resolution(reservation)
+        await service.push_resolution(case["intent_id"], reservation.fence)
+    await service.reconcile(case["intent_id"])
+
+    completion = ParentCompletion(db)
+    readiness = await completion.readiness("parent")
+    assert readiness["outcome"] == "ready"
+    assert readiness["head_sha"] == case["resolved_head"]
+    assert [receipt["id"] for receipt in readiness["receipts"]] == [case["receipt_id"]]
+
+    async with db.immediate() as conn:
+        await conn.execute(
+            insert(integration_check_evidence).values(
+                id="resolution-aggregate-check",
+                operation_id="resolution-op",
+                parent_task_id="parent",
+                parent_generation=0,
+                parent_head_sha=case["resolved_head"],
+                producer_id="ci",
+                workflow_id="workflow",
+                run_id="resolution-run",
+                attempt=1,
+                required_check_version="checks-v1",
+                checks={"unit": "success"},
+                conclusion="success",
+                classification="conclusive",
+                observed_at=4.0,
+            )
+        )
+    verified = await completion.verify_parent(
+        "parent", 0, case["resolved_head"], ["resolution-aggregate-check"]
+    )
+    assert verified["outcome"] == "verified"
+
+    async with db.immediate() as conn:
+        await conn.execute(
+            update(integration_branch_owners)
+            .where(
+                integration_branch_owners.c.repository_id == "repo",
+                integration_branch_owners.c.ref == "aq/parent",
+            )
+            .values(
+                owner_id="parent",
+                owner_role="verifier",
+                fence_token=4,
+                handoff_state="reserved",
+                session_id=None,
+                workspace_id=None,
+            )
+        )
+        await conn.execute(
+            update(task_integration_checkpoints)
+            .where(task_integration_checkpoints.c.task_id == "parent")
+            .values(branch_owner_id="parent")
+        )
+        await conn.execute(
+            update(tasks).where(tasks.c.id == "parent").values(status="IN_PROGRESS")
+        )
+    completed = await completion.complete_parent("parent", 0, case["resolved_head"])
+
+    assert completed["outcome"] == "completed"
+    assert (await db.get_task("parent")).status is TaskStatus.COMPLETED
+    async with db._engine.connect() as conn:
+        pinned = (
+            await conn.execute(select(integration_parent_operation_completions))
+        ).mappings().one()
+    assert pinned["operation_id"] == "resolution-op"
+    assert pinned["verification_id"] == verified["verification_id"]
+    assert pinned["parent_task_id"] == "parent"
+    assert pinned["episode_id"] == "resolution-episode"
+
+    await db.transition_task("parent", TaskStatus.READY, assigned_agent_id=None)
+    from src.integration.hierarchy import HierarchyIntegration
+
+    rollover = HierarchyIntegration(
+        db,
+        checkpoint_verifier=lambda _task, _repo, head: head,
+        ancestry_verifier=lambda _repo, ancestor, descendant: (
+            ancestor == case["resolved_head"] and descendant == case["resolved_head"]
+        ),
+    )
+    next_episode = await rollover.checkpoint_parent("parent", case["resolved_head"], 1)
+    carried_readiness = await rollover.readiness("parent")
+    assert carried_readiness["outcome"] == "ready"
+    assert [row["id"] for row in carried_readiness["receipts"]] == [case["receipt_id"]]
+    async with db._engine.connect() as conn:
+        carried = (
+            await conn.execute(
+                select(integration_episode_receipt_acceptances).where(
+                    integration_episode_receipt_acceptances.c.receipt_id == case["receipt_id"]
+                )
+            )
+        ).mappings().one()
+        original = (
+            await conn.execute(
+                select(task_delivery_receipts).where(
+                    task_delivery_receipts.c.id == case["receipt_id"]
+                )
+            )
+        ).mappings().one()
+    assert carried["operation_id"] == next_episode["operation_id"]
+    assert carried["previous_operation_id"] == "resolution-op"
+    assert carried["previous_episode_id"] == "resolution-episode"
+    assert original["parent_operation_id"] == "resolution-op"
+    assert original["parent_episode_id"] == "resolution-episode"
 
 
 async def test_clean_promotion_preserves_independent_parent_changes(db, promotion_case):
@@ -654,7 +1640,7 @@ async def test_concurrent_same_domain_reuses_deterministic_preparation(db, promo
     service = PromotionService(db, data_dir=case["data_dir"], git_manager=GitManager())
     first, second = await asyncio.gather(
         service.prepare(case["request"]),
-        service.prepare(case["request"].model_copy(update={"operation_key": "replay"})),
+        service.prepare(case["request"]),
     )
     assert first == second
 
@@ -839,6 +1825,183 @@ async def test_actual_push_holds_collector_fence_against_transfer(db, promotion_
 
     assert promoted.prepared_sha
     assert successor.owner_id == "next-owner"
+
+
+async def _seed_conflict_resolution_writer(handler) -> tuple[dict, object]:
+    from src.commands.principal import ExecutionPrincipal, PrincipalKind
+    from src.profiles.capabilities import CapabilityPolicy
+
+    await _seed_handler_delivery(handler)
+    intent_values = {
+        "id": "conflicted-intent",
+        "domain_key": "conflicted-domain",
+        "operation_key": "collector-op",
+        "project_id": "p",
+        "receipt_id": "conflicted-receipt",
+        "source_task_id": "child",
+        "target_task_id": "parent",
+        "source_head": "b" * 40,
+        "source_base": "a" * 40,
+        "repository_id": "repo",
+        "origin_url": "/configured/origin.git",
+        "target_branch": "aq/parent",
+        "expected_target": "c" * 40,
+        "fence_owner_id": "collector-op",
+        "fence_token": 1,
+        "review_evidence": _review(evidence_id="approved", generation=0),
+        "authors": [],
+        "provenance": {"principal": "service:collector", "source_branch": "aq/child"},
+        "commit_metadata": {"message": "clean promotion"},
+        "created_at": 1.0,
+    }
+    await handler.db.reserve_integration_promotion_intent(intent_values)
+    await handler.db.mark_integration_promotion_conflict(
+        "conflicted-intent", {"paths": ["shared.txt"]}
+    )
+    await handler.db.create_task(
+        Task(
+            id="repair-task",
+            project_id="p",
+            title="Repair",
+            description="",
+            status=TaskStatus.IN_PROGRESS,
+            repo_id="repo",
+            branch_name="aq/parent",
+        )
+    )
+    async with handler.db.immediate() as conn:
+        await conn.execute(
+            insert(integration_repair_stages).values(
+                operation_id="collector-op",
+                ordinal=0,
+                policy={},
+                repair_task_id="repair-task",
+                writer_kind="repair_delegate",
+                starting_sha="c" * 40,
+                deadline_at=4_000_000_000.0,
+                attempts=1,
+                state="active",
+            )
+        )
+        await conn.execute(
+            insert(workspaces).values(
+                id="repair-workspace",
+                project_id="p",
+                workspace_path="/tmp/repair-resolution",
+                source_type="link",
+                locked_by_task_id="repair-task",
+                enabled=True,
+                created_at=2.0,
+            )
+        )
+        await conn.execute(
+            update(integration_branch_owners)
+            .where(
+                integration_branch_owners.c.repository_id == "repo",
+                integration_branch_owners.c.ref == "aq/parent",
+            )
+            .values(
+                owner_id="repair-task",
+                owner_role="repair",
+                fence_token=2,
+                handoff_state="attached",
+                session_id="repair-session",
+                workspace_id="repair-workspace",
+            )
+        )
+    await handler.db.create_session(
+        SessionRecord(
+            id="repair-session",
+            task_id="repair-task",
+            project_id="p",
+            profile_id="repairer",
+            harness="fake",
+            provider="fake",
+            name="s-repair",
+            lifecycle="task",
+            state="running",
+            work_dir="/tmp/repair-resolution",
+            epoch="epoch",
+            instance_token="instance",
+            started_at=2.0,
+        )
+    )
+    args = {
+        "intent_id": "conflicted-intent",
+        "operation_id": "collector-op",
+        "resolved_head_sha": "e" * 40,
+        "resolved_tree_sha": "f" * 40,
+        "repair_commit_shas": ["1" * 40, "e" * 40],
+        "fence": {
+            "target": {"repository_id": "repo", "branch": "aq/parent"},
+            "owner_id": "repair-task",
+            "token": 2,
+        },
+    }
+    principal = ExecutionPrincipal(
+        kind=PrincipalKind.SESSION,
+        policy=CapabilityPolicy.from_namespaces(
+            aq_commands=[
+                "integration_resolve_conflict",
+                "integration_push_conflict_resolution",
+            ]
+        ),
+        session_id="repair-session",
+        task_id="repair-task",
+        project_id="p",
+        profile_id="repairer",
+    )
+    return args, principal
+
+
+async def test_resolve_conflict_command_is_session_only_and_replays_exact_identity(
+    command_handler_factory,
+):
+    from src.commands.principal import principal_context
+    from src.integration.promotion import PromotionService
+
+    handler = await command_handler_factory()
+    args, principal = await _seed_conflict_resolution_writer(handler)
+    handler.orchestrator.promotion_service = PromotionService(
+        handler.db, data_dir=handler.config.data_dir
+    )
+
+    local = await handler.execute("integration_resolve_conflict", args)
+    with principal_context(principal):
+        reserved = await handler.execute("integration_resolve_conflict", args)
+        replay = await handler.execute("integration_resolve_conflict", args)
+        changed = await handler.execute(
+            "integration_resolve_conflict",
+            args | {"resolved_tree_sha": "2" * 40},
+        )
+        stale_push = await handler.execute(
+            "integration_push_conflict_resolution",
+            {
+                "intent_id": args["intent_id"],
+                "fence": args["fence"] | {"token": 1},
+            },
+        )
+    unauthorized_push = await handler.execute(
+        "integration_push_conflict_resolution",
+        {"intent_id": args["intent_id"], "fence": args["fence"]},
+    )
+
+    assert local["outcome"] == "unauthorized"
+    assert reserved["outcome"] == "reserved"
+    assert replay["outcome"] == "already_reserved"
+    assert changed["outcome"] == "invariant_error"
+    assert stale_push["outcome"] == "stale"
+    assert unauthorized_push["outcome"] == "unauthorized"
+    assert reserved["intent_id"] == replay["intent_id"] == "conflicted-intent"
+    assert reserved["receipt_id"] == replay["receipt_id"] == "conflicted-receipt"
+    intent = await handler.db.get_integration_promotion_intent("conflicted-intent")
+    assert intent["resolution_operation_id"] == "collector-op"
+    assert intent["resolution_stage_ordinal"] == 0
+    assert intent["resolution_task_id"] == "repair-task"
+    assert intent["resolution_session_id"] == "repair-session"
+    assert intent["resolution_session_instance_token"] == "instance"
+    assert intent["resolution_workspace_id"] == "repair-workspace"
+    assert intent["resolution_fence_token"] == 2
 
 
 async def _seed_handler_delivery(handler) -> dict:

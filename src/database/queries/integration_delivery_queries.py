@@ -42,6 +42,7 @@ _FROZEN_INTENT_FIELDS = (
 )
 _REQUEST_IDENTITY_FIELDS = (
     "domain_key",
+    "operation_key",
     "project_id",
     "source_task_id",
     "target_task_id",
@@ -53,6 +54,19 @@ _REQUEST_IDENTITY_FIELDS = (
     "expected_target",
     "review_evidence",
     "authors",
+)
+_RESOLUTION_IDENTITY_FIELDS = (
+    "resolution_head_sha",
+    "resolution_tree_sha",
+    "resolution_commit_shas",
+    "resolution_operation_id",
+    "resolution_stage_ordinal",
+    "resolution_task_id",
+    "resolution_session_id",
+    "resolution_session_instance_token",
+    "resolution_workspace_id",
+    "resolution_fence_owner_id",
+    "resolution_fence_token",
 )
 
 
@@ -230,6 +244,93 @@ class IntegrationDeliveryQueriesMixin:
             )
         return dict(row) if row is not None else None
 
+    async def reserve_integration_conflict_resolution(
+        self, conn, intent_id: str, values: dict[str, Any]
+    ) -> dict:
+        """Freeze one conflicted intent's agent-authored resolution identity."""
+        required = {
+            "resolved_head_sha",
+            "resolved_tree_sha",
+            "repair_commit_shas",
+            "operation_id",
+            "stage_ordinal",
+            "repair_task_id",
+            "repair_session_id",
+            "repair_session_instance_token",
+            "repair_workspace_id",
+            "fence_owner_id",
+            "fence_token",
+        }
+        missing = required - values.keys()
+        if missing:
+            raise ValueError("conflict resolution missing: " + ", ".join(sorted(missing)))
+        frozen = {
+            "resolution_head_sha": values["resolved_head_sha"],
+            "resolution_tree_sha": values["resolved_tree_sha"],
+            "resolution_commit_shas": list(values["repair_commit_shas"]),
+            "resolution_operation_id": values["operation_id"],
+            "resolution_stage_ordinal": values["stage_ordinal"],
+            "resolution_task_id": values["repair_task_id"],
+            "resolution_session_id": values["repair_session_id"],
+            "resolution_session_instance_token": values[
+                "repair_session_instance_token"
+            ],
+            "resolution_workspace_id": values["repair_workspace_id"],
+            "resolution_fence_owner_id": values["fence_owner_id"],
+            "resolution_fence_token": values["fence_token"],
+        }
+        intent = await self._locked_intent(conn, intent_id)
+        if intent["state"] in {"resolution_reserved", "committed"}:
+            changed = [
+                field
+                for field in _RESOLUTION_IDENTITY_FIELDS
+                if intent.get(field) != frozen[field]
+            ]
+            if changed:
+                raise ValueError("resolution identity changed: " + ", ".join(changed))
+            return intent | {"_resolution_replayed": True}
+        if intent["state"] != "conflict":
+            raise ValueError("only a conflicted promotion can reserve a resolution")
+        result = await conn.execute(
+            update(integration_promotion_intents)
+            .where(integration_promotion_intents.c.id == intent_id)
+            .where(integration_promotion_intents.c.state == "conflict")
+            .values(**frozen, state="resolution_reserved", updated_at=time.time())
+        )
+        if result.rowcount != 1:
+            raise ValueError("promotion conflict changed during resolution reservation")
+        return intent | frozen | {"state": "resolution_reserved"}
+
+    async def record_integration_resolution_push_on(
+        self, conn, intent_id: str, evidence: dict[str, Any]
+    ) -> dict:
+        """Persist one stable post-push observation and its lifecycle fact."""
+        intent = await self._locked_intent(conn, intent_id)
+        if intent["state"] not in {"resolution_reserved", "committed"}:
+            raise ValueError("promotion has no reserved conflict resolution")
+        if intent["resolution_push_evidence"] is None:
+            await conn.execute(
+                update(integration_promotion_intents)
+                .where(integration_promotion_intents.c.id == intent_id)
+                .where(integration_promotion_intents.c.resolution_push_evidence.is_(None))
+                .values(resolution_push_evidence=evidence, updated_at=time.time())
+            )
+            intent = intent | {"resolution_push_evidence": evidence}
+        await enqueue_integration_event(
+            conn,
+            event_id=f"resolution-pushed-{intent_id}",
+            dedup_key=f"integration.resolution_push_observed:{intent_id}",
+            project_id=intent["project_id"],
+            event_type="integration.resolution_push_observed",
+            payload={
+                "project_id": intent["project_id"],
+                "operation_id": intent["resolution_operation_id"],
+                "promotion_intent_id": intent_id,
+            },
+            available_at=time.time(),
+        )
+        return intent
+
     async def mark_integration_promotion_prepared(
         self, intent_id: str, *, prepared_sha: str, recovery_ref: str
     ) -> dict:
@@ -298,8 +399,11 @@ class IntegrationDeliveryQueriesMixin:
         """Insert receipt plus delivery/cleanup events in one transaction."""
         async with self.immediate() as conn:
             intent = await self._locked_intent(conn, intent_id)
-            if intent["prepared_sha"] is None:
+            resolution = intent["resolution_head_sha"] is not None
+            if not resolution and intent["prepared_sha"] is None:
                 raise ValueError("unprepared promotion cannot be finalized")
+            if resolution and intent["state"] not in {"resolution_reserved", "committed"}:
+                raise ValueError("unreserved conflict resolution cannot be finalized")
             existing = (
                 (
                     await conn.execute(
@@ -348,7 +452,12 @@ class IntegrationDeliveryQueriesMixin:
                         )
                     )
                 ).scalar_one_or_none()
-                if parent_operation_id != intent["fence_owner_id"]:
+                expected_operation_id = (
+                    intent["resolution_operation_id"]
+                    if resolution
+                    else intent["fence_owner_id"]
+                )
+                if parent_operation_id != expected_operation_id:
                     raise ValueError(
                         "promotion collector is not the current parent operation"
                     )
@@ -361,6 +470,36 @@ class IntegrationDeliveryQueriesMixin:
                 "provenance": intent["provenance"],
                 "commit": intent["commit_metadata"],
             }
+            resolution_evidence = None
+            if resolution:
+                resolution_evidence = {
+                    "kind": "conflict_resolution",
+                    "original_source_base": intent["source_base"],
+                    "original_source_head": intent["source_head"],
+                    "original_source_tree": intent["review_evidence"]["reviewed_tree_sha"],
+                    "original_expected_target": intent["expected_target"],
+                    "resolved_head_sha": intent["resolution_head_sha"],
+                    "resolved_tree_sha": intent["resolution_tree_sha"],
+                    "repair_commit_shas": intent["resolution_commit_shas"],
+                    "authoring": {
+                        "operation_id": intent["resolution_operation_id"],
+                        "stage_ordinal": intent["resolution_stage_ordinal"],
+                        "repair_task_id": intent["resolution_task_id"],
+                        "repair_session_id": intent["resolution_session_id"],
+                        "repair_session_instance_token": intent[
+                            "resolution_session_instance_token"
+                        ],
+                        "repair_workspace_id": intent["resolution_workspace_id"],
+                        "fence": {
+                            "repository_id": intent["repository_id"],
+                            "branch": intent["target_branch"],
+                            "owner_id": intent["resolution_fence_owner_id"],
+                            "token": intent["resolution_fence_token"],
+                        },
+                    },
+                    "push_authority": intent["resolution_push_evidence"],
+                    "remote_proof": remote_evidence,
+                }
             receipt = {
                 "id": intent["receipt_id"],
                 "domain_key": intent["domain_key"],
@@ -371,9 +510,12 @@ class IntegrationDeliveryQueriesMixin:
                 "reviewed_head_sha": intent["source_head"],
                 "reviewed_tree_sha": intent["review_evidence"]["reviewed_tree_sha"],
                 "before_sha": intent["expected_target"],
-                "squash_sha": intent["prepared_sha"],
-                "after_sha": intent["prepared_sha"],
+                "squash_sha": None if resolution else intent["prepared_sha"],
+                "after_sha": (
+                    intent["resolution_head_sha"] if resolution else intent["prepared_sha"]
+                ),
                 "review_evidence": review_snapshot,
+                "resolution_evidence": resolution_evidence,
                 "parent_operation_id": parent_operation_id,
                 "parent_episode_id": parent_episode if parent_operation_id else None,
                 "disposition": "code",
@@ -403,7 +545,11 @@ class IntegrationDeliveryQueriesMixin:
 
             payload = {
                 "project_id": intent["project_id"],
-                "operation_id": intent["fence_owner_id"],
+                "operation_id": (
+                    intent["resolution_operation_id"]
+                    if resolution
+                    else intent["fence_owner_id"]
+                ),
                 "promotion_intent_id": intent["id"],
             }
             await enqueue_integration_event(

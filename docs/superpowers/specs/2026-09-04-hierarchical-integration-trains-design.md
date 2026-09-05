@@ -565,6 +565,8 @@ outcomes:
 | `integration_repair_timeout` | Conditionally expire a root or parent repair stage at its persisted deadline | `expired`, `not_due`, `already_terminal`, `stale` |
 | `integration_transfer_owner` | Fence branch ownership and reconcile checkout handoff | `transferred`, `busy`, `stale_owner`, `human_required` |
 | `integration_mutate_hierarchy` | Apply hierarchy/disposition changes and invalidate affected generations | `updated`, `sealed`, `delivery_target_fixed`, `reopen_required`, `invalid` |
+| `integration_resolve_conflict` | Immutably reserve exact resolved head/tree/range plus original repair-session provenance before a remote write | `reserved`, `already_reserved`, `unauthorized`, `stale`, `invariant_error` |
+| `integration_push_conflict_resolution` | Under the current live repair session and fenced mutation exclusion, push only the immutable reserved resolution OIDs | `pushed`, `already_applied`, `target_moved`, `stale`, `unauthorized`, `runtime_error` |
 | `integration_reconcile_promotion` | Reconcile a durable intent against remote ancestry and finalize its receipt | `applied`, `not_applied`, `invariant_error` |
 | `integration_promote_main` | Expected-base fast-forward with exact-SHA green attestation | `promoted`, `already_promoted`, `base_moved`, `ci_missing`, `non_fast_forward` |
 | `integration_release` | Reconcile cleanup, release lease, and emit a deduplicated due event when needed | `released`, `cleanup_pending`, `not_owner`, `invariant_error` |
@@ -574,6 +576,15 @@ key is `(source_task_id, reviewed_head_sha, target_repository, target_branch)`, 
 key from the sealed batch id and repository. The playbook run and node activation are recorded only
 as provenance. The expected-old-SHA push lease remains the mutation guard; receipt uniqueness is
 the durable audit and replay guard.
+
+Conflict repair keeps reservation and mutation as separate commands. The reservation freezes the
+original authoring operation, stage, task, session, session-instance, workspace, fence, resolved
+head/tree, and exact ordered non-merge commit range. A proved successor repair stage may push those
+same OIDs under its independently validated current session/workspace/fence authority, while the
+original provenance remains unchanged and the current push authority is recorded separately.
+Successful or already-observed pushes enqueue the durable
+`integration.resolution_push_observed` lifecycle fact keyed by operation and intent; only trusted
+service/playbook reconciliation proves the remote tip and atomically finalizes the original receipt.
 
 The CI evidence contract is also the sole authority for attempt accounting. An attempt is consumed
 only when it records a conclusive result for the exact candidate SHA. Launch requests, cancelled

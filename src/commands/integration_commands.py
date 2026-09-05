@@ -689,6 +689,66 @@ class IntegrationCommandsMixin:
             return _failure("runtime_error", str(exc))
         return self._promotion_result("applied", value)
 
+    async def _cmd_integration_resolve_conflict(self, args: dict) -> dict:
+        from pydantic import ValidationError
+
+        from src.commands.contracts.integration import IntegrationResolveConflictArgs
+        from src.integration.models import ConflictResolutionInput
+        from src.integration.ownership import BranchBusy, StaleFence
+        from src.integration.promotion import (
+            PromotionAuthorizationError,
+            PromotionInvariantError,
+            PromotionTargetMoved,
+        )
+
+        try:
+            parsed = IntegrationResolveConflictArgs.model_validate(args)
+        except ValidationError as exc:
+            return _failure("invariant_error", f"invalid conflict resolution: {exc}")
+        try:
+            value, replay = await self._integration_promotion_service().reserve_resolution(
+                ConflictResolutionInput.model_validate(parsed.model_dump(mode="json"))
+            )
+        except PromotionAuthorizationError as exc:
+            return _failure("unauthorized", str(exc))
+        except (PromotionTargetMoved, StaleFence, BranchBusy) as exc:
+            return _failure("stale", str(exc))
+        except (PromotionInvariantError, ValueError) as exc:
+            return _failure("invariant_error", str(exc))
+        return self._promotion_result("already_reserved" if replay else "reserved", value)
+
+    async def _cmd_integration_push_conflict_resolution(self, args: dict) -> dict:
+        from pydantic import ValidationError
+
+        from src.commands.contracts.integration import IntegrationPushConflictResolutionArgs
+        from src.integration.ownership import BranchBusy, StaleFence
+        from src.integration.promotion import (
+            PromotionAuthorizationError,
+            PromotionInvariantError,
+            PromotionRuntimeError,
+            PromotionSourceMoved,
+            PromotionTargetMoved,
+        )
+
+        try:
+            parsed = IntegrationPushConflictResolutionArgs.model_validate(args)
+        except ValidationError as exc:
+            return _failure("runtime_error", f"invalid resolution push: {exc}")
+        try:
+            value, replay = await self._integration_promotion_service().push_resolution(
+                parsed.intent_id, parsed.fence
+            )
+        except PromotionAuthorizationError as exc:
+            return _failure("unauthorized", str(exc))
+        except (StaleFence, BranchBusy) as exc:
+            return _failure("stale", str(exc))
+        except PromotionTargetMoved as exc:
+            outcome = "stale" if "authority is stale" in str(exc) else "target_moved"
+            return _failure(outcome, str(exc))
+        except (PromotionInvariantError, PromotionSourceMoved, PromotionRuntimeError) as exc:
+            return _failure("runtime_error", str(exc))
+        return self._promotion_result("already_applied" if replay else "pushed", value)
+
     async def _cmd_delivery_receipts(self, args: dict) -> dict:
         from pydantic import ValidationError
 

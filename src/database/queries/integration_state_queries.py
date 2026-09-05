@@ -97,6 +97,7 @@ class IntegrationStateQueriesMixin:
                     integration_repair_stages.c.state.label("stage_state"),
                     integration_repair_stages.c.writer_kind.label("writer_kind"),
                     integration_repair_stages.c.current_subject.label("current_subject"),
+                    integration_repair_stages.c.deadline_at.label("stage_deadline_at"),
                 )
                 .select_from(
                     integration_repair_operations.join(
@@ -219,6 +220,7 @@ class IntegrationStateQueriesMixin:
                 "stage": int(row["stage_ordinal"]),
                 "writer_kind": row["writer_kind"],
                 "current_subject": row["current_subject"],
+                "deadline_at": row["stage_deadline_at"],
                 "session_id": owner["session_id"] if owner is not None else None,
                 "instance_token": (
                     attached_session["instance_token"]
@@ -226,6 +228,9 @@ class IntegrationStateQueriesMixin:
                     else None
                 ),
                 "workspace_id": owner["workspace_id"] if owner is not None else None,
+                "workspace_path": (
+                    workspace["workspace_path"] if workspace is not None else None
+                ),
                 "fence_token": (
                     int(owner["fence_token"]) if owner is not None else None
                 ),
