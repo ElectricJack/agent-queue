@@ -4,14 +4,95 @@ from __future__ import annotations
 
 import array
 import asyncio
+import hashlib
 import os
 import socket
+import stat
 import struct
+from dataclasses import dataclass
 from pathlib import Path
 
 from src.git.askpass_fd import MAX_REQUEST_BYTES, request_payload
 
 _CREDENTIAL_SIZE = struct.calcsize("3i")
+
+
+@dataclass(frozen=True)
+class PinnedFile:
+    path: str
+    device: int
+    inode: int
+    owner: int
+    digest: str | None = None
+
+
+@dataclass(frozen=True)
+class GitCredentialTopology:
+    git: PinnedFile
+    remote_helper: PinnedFile
+    remote_helper_argv0: str
+    interpreter: PinnedFile
+    askpass: PinnedFile
+
+
+def _pin_regular_file(
+    path: Path, *, owner: int, include_digest: bool = False
+) -> PinnedFile:
+    resolved = path.resolve(strict=True)
+    details = resolved.stat()
+    if (
+        not stat.S_ISREG(details.st_mode)
+        or details.st_uid != owner
+        or details.st_mode & 0o022
+    ):
+        raise OSError("unsafe credential executable")
+    digest = hashlib.sha256(resolved.read_bytes()).hexdigest() if include_digest else None
+    return PinnedFile(
+        path=str(resolved),
+        device=details.st_dev,
+        inode=details.st_ino,
+        owner=owner,
+        digest=digest,
+    )
+
+
+def _validate_root_directory_tree(path: Path) -> None:
+    resolved = path.resolve(strict=True)
+    candidates = [resolved]
+    candidates.extend(resolved.parents)
+    for candidate in candidates:
+        details = candidate.stat()
+        if (
+            not stat.S_ISDIR(details.st_mode)
+            or details.st_uid != 0
+            or details.st_mode & 0o022
+        ):
+            raise OSError("unsafe Git executable path")
+
+
+def pin_git_credential_topology(
+    *, exec_path: Path, askpass_path: Path
+) -> GitCredentialTopology:
+    if not exec_path.is_absolute():
+        raise OSError("unsafe Git executable path")
+    _validate_root_directory_tree(exec_path)
+    git = _pin_regular_file(Path("/usr/bin/git"), owner=0)
+    interpreter = _pin_regular_file(Path("/usr/bin/python3"), owner=0)
+    remote_argv0 = exec_path / "git-remote-https"
+    link_details = remote_argv0.lstat()
+    if link_details.st_uid != 0:
+        raise OSError("unsafe Git remote helper")
+    remote_helper = _pin_regular_file(remote_argv0, owner=0)
+    askpass = _pin_regular_file(
+        askpass_path, owner=os.geteuid(), include_digest=True
+    )
+    return GitCredentialTopology(
+        git=git,
+        remote_helper=remote_helper,
+        remote_helper_argv0=str(remote_argv0),
+        interpreter=interpreter,
+        askpass=askpass,
+    )
 
 
 def supported() -> bool:
@@ -25,9 +106,14 @@ def make_request_channel() -> tuple[socket.socket, socket.socket]:
     if not supported():
         raise OSError("credential broker is unsupported")
     broker, request = socket.socketpair(socket.AF_UNIX, socket.SOCK_DGRAM)
-    broker.setsockopt(socket.SOL_SOCKET, socket.SO_PASSCRED, 1)
-    broker.setblocking(False)
-    return broker, request
+    try:
+        broker.setsockopt(socket.SOL_SOCKET, socket.SO_PASSCRED, 1)
+        broker.setblocking(False)
+        return broker, request
+    except BaseException:
+        broker.close()
+        request.close()
+        raise
 
 
 def zeroize(buffer: bytearray) -> None:
@@ -43,37 +129,82 @@ def _parent_pid(pid: int) -> int | None:
         return None
 
 
-def _is_packaged_helper(
-    pid: int,
-    uid: int,
-    *,
-    git_pid: int,
-    helper_path: str,
-    expected_prompt: str,
-) -> bool:
-    if pid <= 0 or uid != os.geteuid():
-        return False
+def _matches_pin(path: Path, pinned: PinnedFile, *, include_digest: bool = False) -> bool:
     try:
-        if os.getpgid(pid) != git_pid:
-            return False
-        arguments = Path(f"/proc/{pid}/cmdline").read_bytes().split(b"\x00")
-        while arguments and not arguments[-1]:
-            arguments.pop()
-        if not Path(f"/proc/{pid}/exe").samefile("/usr/bin/python3"):
-            return False
-    except (FileNotFoundError, OSError, ProcessLookupError):
+        current = _pin_regular_file(
+            path, owner=pinned.owner, include_digest=include_digest
+        )
+    except OSError:
         return False
-    if arguments[1:] != [os.fsencode(helper_path), expected_prompt.encode()]:
-        return False
+    return (
+        current.path == pinned.path
+        and current.device == pinned.device
+        and current.inode == pinned.inode
+        and current.digest == pinned.digest
+    )
+
+
+def _strip_cmdline(path: Path) -> list[bytes]:
+    arguments = path.read_bytes().split(b"\x00")
+    while arguments and not arguments[-1]:
+        arguments.pop()
+    return arguments
+
+
+def _has_ancestor(pid: int, ancestor: int) -> bool:
     current = pid
     for _ in range(64):
-        if current == git_pid:
+        if current == ancestor:
             return True
         parent = _parent_pid(current)
         if parent is None or parent <= 1 or parent == current:
             return False
         current = parent
     return False
+
+
+def _is_packaged_helper(
+    pid: int,
+    uid: int,
+    *,
+    git_pid: int,
+    topology: GitCredentialTopology,
+    repository: str,
+    expected_prompt: str,
+) -> bool:
+    if pid <= 0 or uid != os.geteuid():
+        return False
+    try:
+        if not _matches_pin(Path(f"/proc/{git_pid}/exe"), topology.git):
+            return False
+        if os.getpgid(pid) != git_pid:
+            return False
+        arguments = _strip_cmdline(Path(f"/proc/{pid}/cmdline"))
+        if not _matches_pin(Path(f"/proc/{pid}/exe"), topology.interpreter):
+            return False
+        if not _matches_pin(
+            Path(topology.askpass.path), topology.askpass, include_digest=True
+        ):
+            return False
+        parent = _parent_pid(pid)
+        if parent is None or parent == git_pid or os.getpgid(parent) != git_pid:
+            return False
+        if not _matches_pin(
+            Path(f"/proc/{parent}/exe"), topology.remote_helper
+        ):
+            return False
+        parent_arguments = _strip_cmdline(Path(f"/proc/{parent}/cmdline"))
+    except (FileNotFoundError, OSError, ProcessLookupError):
+        return False
+    if arguments[1:] != [os.fsencode(topology.askpass.path), expected_prompt.encode()]:
+        return False
+    if parent_arguments != [
+        os.fsencode(topology.remote_helper_argv0),
+        repository.encode(),
+        repository.encode(),
+    ]:
+        return False
+    return _has_ancestor(parent, git_pid)
 
 
 async def _wait_readable(channel: socket.socket, timeout: float) -> None:
@@ -117,17 +248,17 @@ async def serve_one_credential(
     token: bytearray,
     *,
     git_pid: int,
-    helper_path: str,
+    topology: GitCredentialTopology,
     authority: str,
     repository: str,
     prompt: str,
     timeout: float,
 ) -> bool:
     """Release ``token`` once to a validated helper-private reply descriptor."""
-    expected = request_payload(authority, repository, prompt)
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + timeout
     try:
+        expected = request_payload(authority, repository, prompt)
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout
         while True:
             remaining = deadline - loop.time()
             if remaining <= 0:
@@ -153,7 +284,8 @@ async def serve_one_credential(
                 pid,
                 uid,
                 git_pid=git_pid,
-                helper_path=helper_path,
+                topology=topology,
+                repository=repository,
                 expected_prompt=prompt,
             ):
                 os.close(reply_fd)

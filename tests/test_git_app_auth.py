@@ -3,13 +3,14 @@ from __future__ import annotations
 import asyncio
 import os
 import signal
+import ssl
 import subprocess
 from pathlib import Path
 
 import pytest
 
-from src.git.askpass_fd import answer_prompt
-from src.git.askpass_broker import make_request_channel
+from src.git.askpass_fd import MAX_REQUEST_BYTES, answer_prompt
+from src.git.askpass_broker import make_request_channel, serve_one_credential
 from src.git.github_app import GitHubRepositoryBinding
 from src.git.manager import GitError, GitManager
 
@@ -220,6 +221,110 @@ def _assert_no_broker_tasks() -> None:
     ]
 
 
+def _recording_zeroize(monkeypatch):
+    import src.git.manager as manager_module
+
+    observed = []
+    real_zeroize = manager_module.zeroize
+
+    def record(buffer):
+        real_zeroize(buffer)
+        observed.append(bytes(buffer))
+
+    monkeypatch.setattr(manager_module, "zeroize", record)
+    return observed
+
+
+@pytest.mark.asyncio
+async def test_source_import_failure_zeroizes_dummy_credential(tmp_path, monkeypatch):
+    checkout = tmp_path / "not-a-repository"
+    checkout.mkdir()
+    observed = _recording_zeroize(monkeypatch)
+    open_fds_before = _open_fd_count()
+
+    with pytest.raises(GitError, match="push preparation failed"):
+        await GitManager()._apush_oid_with_app_auth_to_url(
+            str(checkout),
+            destination_url=(tmp_path / "target.git").as_uri(),
+            token="dummy-import-failure-token",
+            tip_oid="a" * 40,
+            branch="main",
+            expected_old_oid="b" * 40,
+        )
+
+    assert observed == [b""]
+    assert _open_fd_count() == open_fds_before
+    _assert_no_broker_tasks()
+
+
+@pytest.mark.asyncio
+async def test_cancellation_during_source_import_zeroizes_dummy_credential(
+    tmp_path, monkeypatch
+):
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    entered = asyncio.Event()
+    observed = _recording_zeroize(monkeypatch)
+    manager = GitManager()
+
+    async def block_import(_args, *, home):
+        assert home.is_dir()
+        entered.set()
+        await asyncio.Future()
+
+    monkeypatch.setattr(manager, "_run_isolated_import_git", block_import)
+    open_fds_before = _open_fd_count()
+    task = asyncio.create_task(
+        manager._apush_oid_with_app_auth_to_url(
+            str(checkout),
+            destination_url=(tmp_path / "target.git").as_uri(),
+            token="dummy-cancelled-import-token",
+            tip_oid="a" * 40,
+            branch="main",
+            expected_old_oid="b" * 40,
+        )
+    )
+    await asyncio.wait_for(entered.wait(), timeout=1)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(task, timeout=1)
+
+    assert observed == [b""]
+    assert _open_fd_count() == open_fds_before
+    _assert_no_broker_tasks()
+
+
+@pytest.mark.asyncio
+async def test_oversized_broker_request_setup_closes_and_zeroizes():
+    open_fds_before = _open_fd_count()
+    topology = await GitManager()._app_git_credential_topology(home=Path("/tmp"))
+    broker, request = make_request_channel()
+    token = bytearray(b"dummy-oversized-request-token")
+    try:
+        with pytest.raises(ValueError, match="askpass request is invalid"):
+            await asyncio.wait_for(
+                serve_one_credential(
+                    broker,
+                    token,
+                    git_pid=os.getpid(),
+                    topology=topology,
+                    authority="x" * (MAX_REQUEST_BYTES + 1),
+                    repository="https://github.com/acme/widgets.git",
+                    prompt="Password for 'https://x-access-token@github.com': ",
+                    timeout=0.1,
+                ),
+                timeout=0.5,
+            )
+        assert token == bytearray()
+        assert broker.fileno() == -1
+        _assert_no_broker_tasks()
+    finally:
+        broker.close()
+        request.close()
+
+    assert _open_fd_count() == open_fds_before
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("cancel", [False, True], ids=["timeout", "cancellation"])
 async def test_app_push_timeout_or_cancellation_kills_entire_process_group(
@@ -354,7 +459,7 @@ async def test_unsupported_credential_broker_fails_closed(
 
 
 @pytest.mark.asyncio
-async def test_descendant_cannot_drain_or_retain_askpass_credential_channel(
+async def test_exact_helper_launched_by_fake_git_descendant_cannot_take_credential(
     tmp_path, monkeypatch
 ):
     """Break: an arbitrary Git descendant drains a pre-populated token FD."""
@@ -432,7 +537,7 @@ async def test_descendant_cannot_drain_or_retain_askpass_credential_channel(
         assert result == tip
         assert captured.read_bytes() == b""
         assert username_output.read_text() == "x-access-token"
-        assert helper_output.read_text() == secret
+        assert helper_output.read_bytes() == b""
         assert second_output.read_bytes() == b""
         assert secret not in environment_capture.read_text()
         assert daemon_secret not in environment_capture.read_text()
@@ -451,6 +556,117 @@ async def test_descendant_cannot_drain_or_retain_askpass_credential_channel(
                 os.killpg(leader, signal.SIGKILL)
             except ProcessLookupError:
                 pass
+
+
+@pytest.mark.asyncio
+async def test_supported_git_https_remote_helper_is_credential_origin(tmp_path):
+    requests = 0
+
+    async def respond(reader, writer):
+        nonlocal requests
+        requests += 1
+        await reader.readuntil(b"\r\n\r\n")
+        status = b"401 Unauthorized" if requests <= 2 else b"403 Forbidden"
+        authenticate = (
+            b'WWW-Authenticate: Basic realm="agent-queue"\r\n'
+            if requests <= 2
+            else b""
+        )
+        writer.write(
+            b"HTTP/1.1 "
+            + status
+            + b"\r\n"
+            + authenticate
+            + b"Content-Length: 0\r\nConnection: close\r\n\r\n"
+        )
+        await writer.drain()
+        writer.close()
+        await writer.wait_closed()
+
+    certificate = tmp_path / "localhost.crt"
+    private_key = tmp_path / "localhost.key"
+    subprocess.run(
+        [
+            "openssl",
+            "req",
+            "-x509",
+            "-newkey",
+            "rsa:2048",
+            "-nodes",
+            "-days",
+            "1",
+            "-subj",
+            "/CN=127.0.0.1",
+            "-keyout",
+            str(private_key),
+            "-out",
+            str(certificate),
+        ],
+        check=True,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    tls = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    tls.load_cert_chain(certificate, private_key)
+    server = await asyncio.start_server(respond, "127.0.0.1", 0, ssl=tls)
+    port = server.sockets[0].getsockname()[1]
+    repository = f"https://x-access-token@127.0.0.1:{port}/acme/widgets.git"
+    authority = f"https://x-access-token@127.0.0.1:{port}"
+    prompt = f"Password for '{authority}': "
+    helper = Path(answer_prompt.__code__.co_filename).resolve()
+    broker, request = make_request_channel()
+    token = bytearray(b"dummy-local-token")
+    manager = GitManager()
+    topology = await manager._app_git_credential_topology(home=tmp_path)
+    environment = manager._app_git_environment(tmp_path)
+    environment.update(
+        {
+            "GIT_ASKPASS": str(helper),
+            "GIT_ASKPASS_REQUIRE": "force",
+            "AQ_GIT_APP_REQUEST_FD": str(request.fileno()),
+            "AQ_GIT_APP_USERNAME": "x-access-token",
+            "AQ_GIT_APP_AUTHORITY": authority,
+            "AQ_GIT_APP_REPOSITORY": repository,
+        }
+    )
+    process = await asyncio.create_subprocess_exec(
+        "/usr/bin/git",
+        "-c",
+        "http.sslVerify=false",
+        "ls-remote",
+        repository,
+        cwd=tmp_path,
+        stdin=asyncio.subprocess.DEVNULL,
+        stdout=asyncio.subprocess.DEVNULL,
+        stderr=asyncio.subprocess.PIPE,
+        env=environment,
+        pass_fds=(request.fileno(),),
+        start_new_session=True,
+    )
+    request.close()
+    try:
+        served = await asyncio.wait_for(
+            serve_one_credential(
+                broker,
+                token,
+                git_pid=process.pid,
+                topology=topology,
+                authority=authority,
+                repository=repository,
+                prompt=prompt,
+                timeout=2,
+            ),
+            timeout=3,
+        )
+    finally:
+        await GitManager._kill_app_git_group(process)
+        server.close()
+        await server.wait_closed()
+
+    stderr = await process.stderr.read()
+    assert served is True, (requests, stderr)
+    assert token == bytearray()
+    assert requests >= 1
 
 
 @pytest.mark.asyncio

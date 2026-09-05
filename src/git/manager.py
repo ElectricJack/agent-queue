@@ -71,7 +71,7 @@ import re
 import signal
 import subprocess
 import tempfile
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, contextmanager
 from collections.abc import Callable
 from dataclasses import dataclass
 from enum import StrEnum
@@ -79,13 +79,27 @@ from pathlib import Path
 from typing import TYPE_CHECKING, AsyncIterator
 
 from src.git.askpass_fd import answer_prompt
-from src.git.askpass_broker import make_request_channel, serve_one_credential, zeroize
+from src.git.askpass_broker import (
+    GitCredentialTopology,
+    make_request_channel,
+    pin_git_credential_topology,
+    serve_one_credential,
+    zeroize,
+)
 from src.git.github_app import GitHubRepositoryBinding
 
 if TYPE_CHECKING:
     from src.event_bus import EventBus
 
 logger = logging.getLogger(__name__)
+
+
+@contextmanager
+def _zeroized_credential(buffer: bytearray):
+    try:
+        yield buffer
+    finally:
+        zeroize(buffer)
 
 
 class GitError(Exception):
@@ -2935,6 +2949,8 @@ class GitManager:
             return await asyncio.shield(task)
         except asyncio.CancelledError:
             return False
+        except Exception:
+            return False
 
     async def _run_isolated_import_git(
         self,
@@ -2965,6 +2981,20 @@ class GitManager:
         if process.returncode != 0:
             raise GitError("authenticated Git push preparation failed")
         return stdout.strip()
+
+    async def _app_git_credential_topology(
+        self, *, home: Path
+    ) -> GitCredentialTopology:
+        """Pin the supported root-owned Git transport and packaged askpass."""
+        try:
+            raw_exec_path = await self._run_isolated_import_git(["--exec-path"], home=home)
+            exec_path = Path(raw_exec_path.decode("ascii"))
+            return pin_git_credential_topology(
+                exec_path=exec_path,
+                askpass_path=Path(answer_prompt.__code__.co_filename),
+            )
+        except (OSError, UnicodeDecodeError, ValueError) as exc:
+            raise GitError("authenticated Git credential topology is unavailable") from exc
 
     async def _apush_oid_with_app_auth_to_url(
         self,
@@ -2997,8 +3027,10 @@ class GitManager:
 
         checkout = Path(checkout_path).resolve(strict=True)
         token_buffer = bytearray(token.encode("utf-8"))
-        token = ""
-        with tempfile.TemporaryDirectory(prefix="aq-app-push-") as temporary:
+        with _zeroized_credential(token_buffer), tempfile.TemporaryDirectory(
+            prefix="aq-app-push-"
+        ) as temporary:
+            token = ""
             root = Path(temporary)
             root.chmod(0o700)
             home = root / "home"
@@ -3028,6 +3060,8 @@ class GitManager:
             )
             if imported.decode("ascii", errors="replace") != tip_oid:
                 raise GitError("authenticated Git push preparation failed")
+
+            topology = await self._app_git_credential_topology(home=home)
 
             authority = "https://x-access-token@github.com"
             prompt = f"Password for '{authority}': "
@@ -3099,7 +3133,7 @@ class GitManager:
                         broker_channel,
                         token_buffer,
                         git_pid=process.pid,
-                        helper_path=str(Path(answer_prompt.__code__.co_filename).resolve()),
+                        topology=topology,
                         authority=authority,
                         repository=destination_url,
                         prompt=prompt,
@@ -3127,8 +3161,6 @@ class GitManager:
                     request_channel.close()
                 if broker_channel is not None:
                     broker_channel.close()
-                if broker_task is None and token_buffer:
-                    zeroize(token_buffer)
             if process.returncode != 0:
                 raise GitError("authenticated Git push failed")
             if destination_url.startswith("https://") and not broker_served:
