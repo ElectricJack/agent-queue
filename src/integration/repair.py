@@ -24,6 +24,7 @@ from src.database.tables import (
     projects,
     sessions,
     task_integration_checkpoints,
+    task_delivery_receipts,
     tasks,
     workspaces,
 )
@@ -34,6 +35,10 @@ from src.integration.ownership import BranchBusy, BranchOwnership, StaleFence
 from src.integration.outbox import enqueue_integration_event
 from src.models import Task, TaskStatus
 from src.playbooks.artifact_ref import ArtifactRef
+
+
+class _RepairInvariant(ValueError):
+    """Persisted repair identity is internally inconsistent."""
 
 
 class RepairService:
@@ -186,9 +191,15 @@ class RepairService:
             if operation["state"] != "active" or int(operation["active_stage"]) != 0:
                 return {"outcome": "stale", "operation_id": operation_id}
 
-            context = await self._start_context_on(
-                conn, dict(operation), starting_sha=starting_sha, trigger_id=trigger_id
-            )
+            try:
+                context = await self._start_context_on(
+                    conn,
+                    dict(operation),
+                    starting_sha=starting_sha,
+                    trigger_id=trigger_id,
+                )
+            except _RepairInvariant:
+                return {"outcome": "invariant_error", "operation_id": operation_id}
             if context is None:
                 return {"outcome": "stale", "operation_id": operation_id}
             policy, boundary, subject = context
@@ -208,17 +219,16 @@ class RepairService:
                 "started_at": activated_at,
                 "deadline_at": deadline_at,
                 "attempts": 0,
-                "dossier": {
-                    "operation_id": operation_id,
-                    "target_kind": operation["target_kind"],
-                    "starting_sha": starting_sha,
-                    "trigger_id": trigger_id,
-                    "required_checks": boundary.required_checks.model_dump(mode="json"),
-                    "artifact": policy.parent.route.artifact.model_dump(mode="json")
-                    if operation["target_kind"] == "parent"
-                    else policy.root.route.artifact.model_dump(mode="json"),
-                    "repair_commits": [],
-                },
+                "dossier": await self._initial_dossier_on(
+                    conn,
+                    operation=dict(operation),
+                    subject=subject,
+                    starting_sha=starting_sha,
+                    trigger_id=trigger_id,
+                    boundary=boundary,
+                    started_at=activated_at,
+                    deadline_at=deadline_at,
+                ),
                 "state": "active",
             }
             await conn.execute(insert(integration_repair_stages).values(**row))
@@ -311,6 +321,9 @@ class RepairService:
                     else "inconclusive"
                 )
             attempts = int(stage["attempts"]) + int(counted)
+            dossier = self._dossier_with_evidence(
+                stage["dossier"], evidence, attempts=attempts
+            )
             outcome = "continue"
             result_extra: dict[str, Any] = {}
             limit = (
@@ -331,6 +344,7 @@ class RepairService:
                         state="awaiting_completion",
                         success_subject=stage["current_subject"],
                         success_evidence_id=evidence_id,
+                        dossier=dossier,
                     )
                 )
             elif counted and evidence["conclusion"] == "failure" and attempts >= limit:
@@ -340,7 +354,7 @@ class RepairService:
                     await self._activate_debug_on(
                         conn,
                         operation=dict(operation),
-                        primary=dict(stage),
+                        primary=dict(stage) | {"dossier": dossier},
                         attempts=attempts,
                         now=recorded_at,
                     )
@@ -351,7 +365,7 @@ class RepairService:
                     post_transition = await self._human_block_on(
                         conn,
                         operation=dict(operation),
-                        stage=dict(stage),
+                        stage=dict(stage) | {"dossier": dossier},
                         attempts=attempts,
                         now=recorded_at,
                         terminal_state="failed",
@@ -363,7 +377,16 @@ class RepairService:
                         integration_repair_stages.c.operation_id == operation_id,
                         integration_repair_stages.c.ordinal == stage["ordinal"],
                     )
-                    .values(attempts=attempts)
+                    .values(attempts=attempts, dossier=dossier)
+                )
+            else:
+                await conn.execute(
+                    update(integration_repair_stages)
+                    .where(
+                        integration_repair_stages.c.operation_id == operation_id,
+                        integration_repair_stages.c.ordinal == stage["ordinal"],
+                    )
+                    .values(dossier=dossier)
                 )
             await conn.execute(
                 insert(integration_repair_stage_evidence).values(
@@ -560,6 +583,47 @@ class RepairService:
                     select(tasks).where(tasks.c.id == repair_task_id).with_for_update()
                 )
             ).mappings().one_or_none()
+            attached_session = None
+            attached_workspace = None
+            if owner is not None and owner["handoff_state"] == "attached":
+                attached_session = (
+                    await conn.execute(
+                        select(sessions)
+                        .where(sessions.c.id == owner["session_id"])
+                        .with_for_update()
+                    )
+                ).mappings().one_or_none()
+                attached_workspace = (
+                    await conn.execute(
+                        select(workspaces)
+                        .where(workspaces.c.id == owner["workspace_id"])
+                        .with_for_update()
+                    )
+                ).mappings().one_or_none()
+            reserved = bool(
+                owner is not None
+                and owner["handoff_state"] == "reserved"
+                and task is not None
+                and task["status"]
+                in {TaskStatus.PAUSED.value, TaskStatus.READY.value}
+            )
+            attached = bool(
+                owner is not None
+                and owner["handoff_state"] == "attached"
+                and task is not None
+                and task["status"]
+                in {TaskStatus.ASSIGNED.value, TaskStatus.IN_PROGRESS.value}
+                and attached_session is not None
+                and attached_session["task_id"] == repair_task_id
+                and attached_session["project_id"] == project_id
+                and attached_session["state"] in {"starting", "running", "draining"}
+                and attached_workspace is not None
+                and attached_workspace["locked_by_task_id"] == repair_task_id
+                and attached_workspace["project_id"] == project_id
+                and attached_workspace["enabled"]
+                and attached_session["work_dir"]
+                == attached_workspace["workspace_path"]
+            )
             if (
                 context is None
                 or context[1]["repair_task_id"] != repair_task_id
@@ -568,12 +632,7 @@ class RepairService:
                 or owner["owner_id"] != repair_task_id
                 or owner["owner_role"] != "repair"
                 or int(owner["fence_token"]) != fence.token
-                or owner["handoff_state"] != "reserved"
-                or task is None
-                or task["status"] not in {
-                    TaskStatus.PAUSED.value,
-                    TaskStatus.READY.value,
-                }
+                or not (reserved or attached)
             ):
                 return self._dispatch_value(
                     "human_required",
@@ -583,7 +642,7 @@ class RepairService:
                     writer_kind="repair_delegate",
                 )
             ready = []
-            if task["status"] == TaskStatus.PAUSED.value:
+            if reserved and task["status"] == TaskStatus.PAUSED.value:
                 transition = await self.db._apply_transition(
                     conn,
                     repair_task_id,
@@ -601,6 +660,88 @@ class RepairService:
             writer_kind="repair_delegate",
             fence=fence,
         )
+
+    async def complete_delegate(
+        self,
+        repair_task_id: str,
+        *,
+        operation_id: str,
+        stage: int,
+        session_id: str,
+        instance_token: str,
+        workspace_id: str,
+        fence_token: int,
+        head_sha: str,
+        now: float | None = None,
+    ) -> dict[str, Any]:
+        """Atomically close one exact attached repair writer and enqueue its fact."""
+        completed_at = self.clock() if now is None else now
+        transition = None
+        async with self.db.immediate() as conn:
+            scope = await self.db.get_repair_filing_scope(
+                repair_task_id, session_id=session_id, conn=conn
+            )
+            expected = {
+                "operation_id": operation_id,
+                "stage": stage,
+                "writer_kind": "repair_delegate",
+                "session_id": session_id,
+                "instance_token": instance_token,
+                "workspace_id": workspace_id,
+                "fence_token": fence_token,
+            }
+            actual = (
+                {
+                    key: scope[key]
+                    for key in (
+                        "operation_id",
+                        "stage",
+                        "writer_kind",
+                        "session_id",
+                        "instance_token",
+                        "workspace_id",
+                        "fence_token",
+                    )
+                }
+                if scope is not None and scope["active"]
+                else None
+            )
+            if actual != expected:
+                return {"outcome": "stale"}
+            if scope["target_kind"] == "parent":
+                await self.bind_current_parent_subject_on(
+                    conn, operation_id, head_sha=head_sha, now=completed_at
+                )
+            transition = await self.db._apply_transition(
+                conn,
+                repair_task_id,
+                TaskStatus.COMPLETED,
+                context="integration_repair_delegate_closed",
+                assigned_agent_id=None,
+            )
+            project_id = str(scope["project_id"])
+            event_id = f"repair-delegate-closed-{operation_id}-{stage}-{repair_task_id}"
+            await enqueue_integration_event(
+                conn,
+                event_id=event_id,
+                dedup_key=f"repair-delegate-closed:{operation_id}:{stage}:{repair_task_id}",
+                project_id=project_id,
+                event_type="integration.repair_delegate_closed",
+                payload={
+                    "operation_id": operation_id,
+                    "stage": stage,
+                    "task_id": repair_task_id,
+                    "session_id": session_id,
+                    "instance_token": instance_token,
+                    "workspace_id": workspace_id,
+                    "fence_token": fence_token,
+                },
+                available_at=completed_at,
+            )
+        await self.db.log_blocked_flips(transition.flipped)
+        await self.db._notify_settled(transition.settled)
+        await self.db._notify_ready(transition.ready)
+        return {"outcome": "completed", "event_id": event_id}
 
     async def expire(
         self, operation_id: str, stage: int, *, now: float | None = None
@@ -757,24 +898,110 @@ class RepairService:
         if stage is None or stage["state"] not in {"active", "awaiting_completion"}:
             raise ValueError("batch repair stage is not current")
         subject = self._batch_subject(revision)
-        await conn.execute(
-            update(integration_repair_stages)
-            .where(
-                integration_repair_stages.c.operation_id == operation_id,
-                integration_repair_stages.c.ordinal == stage["ordinal"],
+        if stage["current_subject"] != subject:
+            await conn.execute(
+                update(integration_repair_stages)
+                .where(
+                    integration_repair_stages.c.operation_id == operation_id,
+                    integration_repair_stages.c.ordinal == stage["ordinal"],
+                )
+                .values(
+                    current_subject=subject,
+                    state="active",
+                    success_subject=None,
+                    success_evidence_id=None,
+                )
             )
-            .values(
-                current_subject=subject,
-                state="active",
-                success_subject=None,
-                success_evidence_id=None,
-            )
-        )
         return {
             "operation_id": operation_id,
             "stage": int(stage["ordinal"]),
             "subject": subject,
             "deadline_due": observed_at >= float(stage["deadline_at"]),
+        }
+
+    async def bind_current_parent_subject_on(
+        self,
+        conn,
+        operation_id: str,
+        *,
+        head_sha: str,
+        now: float | None = None,
+    ) -> dict[str, Any]:
+        """Bind a transaction-proved parent HEAD without resetting stage budget."""
+        if not is_valid_git_oid(head_sha):
+            raise ValueError("parent repair subject HEAD is not an exact Git OID")
+        observed_at = self.clock() if now is None else now
+        operation = (
+            await conn.execute(
+                select(integration_repair_operations)
+                .where(integration_repair_operations.c.id == operation_id)
+                .with_for_update()
+            )
+        ).mappings().one_or_none()
+        if (
+            operation is None
+            or operation["target_kind"] != "parent"
+            or operation["state"] not in {"active", "escalated"}
+        ):
+            raise ValueError("parent repair operation is not active")
+        checkpoint = (
+            await conn.execute(
+                select(task_integration_checkpoints)
+                .where(
+                    task_integration_checkpoints.c.task_id
+                    == operation["parent_task_id"]
+                )
+                .with_for_update()
+            )
+        ).mappings().one_or_none()
+        if checkpoint is None or checkpoint["episode_id"] != operation["episode_id"]:
+            raise ValueError("parent repair checkpoint identity conflicts")
+        stage = (
+            await conn.execute(
+                select(integration_repair_stages)
+                .where(
+                    integration_repair_stages.c.operation_id == operation_id,
+                    integration_repair_stages.c.ordinal == operation["active_stage"],
+                )
+                .with_for_update()
+            )
+        ).mappings().one_or_none()
+        if stage is None or stage["state"] not in {"active", "awaiting_completion"}:
+            raise ValueError("parent repair stage is not current")
+        subject = {
+            "kind": "parent",
+            "generation": int(checkpoint["generation"]),
+            "head_sha": head_sha,
+        }
+        changed = stage["current_subject"] != subject
+        if changed:
+            previous_sha = self._subject_sha(stage["current_subject"])
+            dossier = self._dossier_with_repair_tip(
+                stage["dossier"], previous_sha, head_sha
+            )
+            manifest = dict(dossier.get("manifest", {}))
+            manifest["generation"] = int(checkpoint["generation"])
+            dossier["manifest"] = manifest
+            await conn.execute(
+                update(integration_repair_stages)
+                .where(
+                    integration_repair_stages.c.operation_id == operation_id,
+                    integration_repair_stages.c.ordinal == stage["ordinal"],
+                )
+                .values(
+                    current_subject=subject,
+                    state="active",
+                    success_subject=None,
+                    success_evidence_id=None,
+                    dossier=dossier,
+                )
+            )
+        return {
+            "operation_id": operation_id,
+            "stage": int(stage["ordinal"]),
+            "subject": subject,
+            "deadline_due": observed_at >= float(stage["deadline_at"]),
+            "changed": changed,
         }
 
     async def _root_success_is_current_on(self, conn, operation, stage) -> bool:
@@ -987,10 +1214,18 @@ class RepairService:
         return bool(
             primary is not None
             and primary["repair_task_id"] == owner["owner_id"]
-            and primary["writer_kind"]
-            in {"repair_delegate", "existing_verifier"}
+            and self._writer_role_matches(
+                primary["writer_kind"], owner["owner_role"]
+            )
             and owner["handoff_state"] == "attached"
         )
+
+    @staticmethod
+    def _writer_role_matches(writer_kind: str | None, owner_role: str | None) -> bool:
+        return (writer_kind, owner_role) in {
+            ("repair_delegate", "repair"),
+            ("existing_verifier", "verifier"),
+        }
 
     async def _retained_debug_handoff(
         self, operation, debug_stage, target, owner, debug_task_id: str
@@ -1006,10 +1241,12 @@ class RepairService:
         workspace_id = str(proof.get("workspace_id") or "")
         session_id = str(proof.get("session_id") or "")
         head_sha = str(proof.get("head_sha") or "")
+        instance_token = str(proof.get("instance_token") or "")
         if (
             workspace_id != owner.get("workspace_id")
             or session_id != owner.get("session_id")
             or not is_valid_git_oid(head_sha)
+            or not instance_token
         ):
             return None
         old_task_id = owner["owner_id"]
@@ -1061,8 +1298,11 @@ class RepairService:
                 or context[1]["repair_task_id"] != debug_task_id
                 or primary is None
                 or primary["repair_task_id"] != old_task_id
-                or primary["writer_kind"]
-                not in {"repair_delegate", "existing_verifier"}
+                or not self._writer_role_matches(
+                    primary["writer_kind"], current_owner["owner_role"]
+                    if current_owner is not None
+                    else None,
+                )
                 or current_owner is None
                 or current_owner["owner_id"] != old_task_id
                 or current_owner["owner_role"]
@@ -1074,6 +1314,8 @@ class RepairService:
                 or session is None
                 or session["task_id"] != old_task_id
                 or session["state"] != "stopped"
+                or session["desired_state"] != "stopped"
+                or session["instance_token"] != instance_token
                 or workspace is None
                 or workspace["locked_by_task_id"] != old_task_id
                 or workspace["project_id"] != context[3]
@@ -1121,7 +1363,25 @@ class RepairService:
                 "old_fence_token": old_token,
                 "new_fence_token": new_token,
                 "head_sha": head_sha,
+                "instance_token": instance_token,
             }
+            if operation["target_kind"] == "parent":
+                await self.bind_current_parent_subject_on(
+                    conn, operation["id"], head_sha=head_sha
+                )
+            current_debug = (
+                await conn.execute(
+                    select(integration_repair_stages).where(
+                        integration_repair_stages.c.operation_id == operation["id"],
+                        integration_repair_stages.c.ordinal == 1,
+                    )
+                )
+            ).mappings().one()
+            debug_dossier = self._dossier_with_repair_tip(
+                current_debug["dossier"],
+                self._subject_sha(current_debug["current_subject"]),
+                head_sha,
+            )
             stage_changed = await conn.execute(
                 update(integration_repair_stages)
                 .where(
@@ -1131,14 +1391,23 @@ class RepairService:
                     integration_repair_stages.c.retained_workspace_id.is_(None),
                 )
                 .values(
+                    starting_sha=head_sha,
                     retained_workspace_id=workspace_id,
                     retained_handoff=provenance,
+                    dossier=debug_dossier,
                 )
             )
             await conn.execute(
                 update(tasks)
                 .where(tasks.c.id == debug_task_id)
-                .values(preferred_workspace_id=workspace_id)
+                .values(
+                    preferred_workspace_id=workspace_id,
+                    description=self._delegate_description(
+                        operation,
+                        dict(current_debug)
+                        | {"starting_sha": head_sha, "dossier": debug_dossier},
+                    ),
+                )
             )
             if old_task["assigned_agent_id"]:
                 await conn.execute(
@@ -1180,7 +1449,13 @@ class RepairService:
             and task["branch_name"] == target.branch
             and task["created_by_kind"] == "integration_repair"
             and task["created_by_id"] == operation["id"]
-            and task["status"] in {TaskStatus.PAUSED.value, TaskStatus.READY.value}
+            and task["status"]
+            in {
+                TaskStatus.PAUSED.value,
+                TaskStatus.READY.value,
+                TaskStatus.ASSIGNED.value,
+                TaskStatus.IN_PROGRESS.value,
+            }
         )
 
     @staticmethod
@@ -1234,6 +1509,144 @@ class RepairService:
             "candidate_sha": candidate_sha,
         }
 
+    async def _initial_dossier_on(
+        self,
+        conn,
+        *,
+        operation: dict[str, Any],
+        subject: dict[str, Any],
+        starting_sha: str,
+        trigger_id: str,
+        boundary,
+        started_at: float,
+        deadline_at: float,
+    ) -> dict[str, Any]:
+        if operation["target_kind"] == "parent":
+            manifest = {
+                "kind": "parent_episode",
+                "parent_task_id": operation["parent_task_id"],
+                "episode_id": operation["episode_id"],
+                "generation": int(subject["generation"]),
+            }
+            receipt_rows = (
+                await conn.execute(
+                    select(task_delivery_receipts).where(
+                        task_delivery_receipts.c.parent_operation_id == operation["id"],
+                        task_delivery_receipts.c.parent_episode_id
+                        == operation["episode_id"],
+                    )
+                )
+            ).mappings().all()
+        else:
+            batch = (
+                await conn.execute(
+                    select(integration_batches).where(
+                        integration_batches.c.id == operation["batch_id"]
+                    )
+                )
+            ).mappings().one()
+            manifest = {
+                "kind": "batch",
+                "batch_id": operation["batch_id"],
+                "source_manifest_digest": batch["source_manifest_digest"],
+                "revision": int(subject["revision"]),
+            }
+            receipt_rows = (
+                await conn.execute(
+                    select(task_delivery_receipts).where(
+                        task_delivery_receipts.c.batch_id == operation["batch_id"]
+                    )
+                )
+            ).mappings().all()
+        receipts = [
+            {
+                "id": row["id"],
+                "source_task_id": row["source_task_id"],
+                "disposition": row["disposition"],
+                "after_sha": row["after_sha"],
+            }
+            for row in sorted(receipt_rows, key=lambda item: item["id"])
+        ]
+        limit = boundary.repair.primary_attempts
+        return {
+            "operation_id": operation["id"],
+            "target_kind": operation["target_kind"],
+            "starting_sha": starting_sha,
+            "trigger_id": trigger_id,
+            "manifest": manifest,
+            "branch_sha": starting_sha,
+            "required_checks": boundary.required_checks.model_dump(mode="json"),
+            "artifact": boundary.route.artifact.model_dump(mode="json"),
+            "receipts": receipts,
+            "repair_commits": [],
+            "failed_checks": [],
+            "logs": [],
+            "hypotheses": [],
+            "commands_attempted": [],
+            "budget": {
+                "ordinal": 0,
+                "started_at": started_at,
+                "deadline_at": deadline_at,
+                "attempt_limit": limit,
+                "attempts": 0,
+            },
+        }
+
+    @staticmethod
+    def _dossier_with_evidence(
+        dossier: dict[str, Any] | None,
+        evidence,
+        *,
+        attempts: int,
+    ) -> dict[str, Any]:
+        updated = dict(dossier or {})
+        failed_checks = list(updated.get("failed_checks", []))
+        if evidence["conclusion"] == "failure":
+            failed_checks.append(
+                {"evidence_id": evidence["id"], "checks": evidence["checks"]}
+            )
+        updated["failed_checks"] = failed_checks
+        updated["logs"] = list(updated.get("logs", [])) + [
+            {
+                "evidence_id": evidence["id"],
+                "producer_id": evidence["producer_id"],
+                "workflow_id": evidence["workflow_id"],
+                "run_id": evidence["run_id"],
+                "attempt": int(evidence["attempt"]),
+            }
+        ]
+        updated["hypotheses"] = list(updated.get("hypotheses", [])) + [
+            {
+                "evidence_id": evidence["id"],
+                "classification": evidence["classification"],
+                "conclusion": evidence["conclusion"],
+            }
+        ]
+        updated["commands_attempted"] = list(updated.get("commands_attempted", [])) + [
+            {
+                "workflow_id": evidence["workflow_id"],
+                "run_id": evidence["run_id"],
+                "attempt": int(evidence["attempt"]),
+                "required_check_version": evidence["required_check_version"],
+            }
+        ]
+        budget = dict(updated.get("budget", {}))
+        budget["attempts"] = attempts
+        updated["budget"] = budget
+        return updated
+
+    @staticmethod
+    def _dossier_with_repair_tip(
+        dossier: dict[str, Any] | None, previous_sha: str, head_sha: str
+    ) -> dict[str, Any]:
+        updated = dict(dossier or {})
+        commits = list(updated.get("repair_commits", []))
+        if head_sha != previous_sha and head_sha not in commits:
+            commits.append(head_sha)
+        updated["repair_commits"] = commits
+        updated["branch_sha"] = head_sha
+        return updated
+
     async def _activate_debug_on(
         self,
         conn,
@@ -1253,8 +1666,31 @@ class RepairService:
                 integration_repair_stages.c.ordinal == 0,
                 integration_repair_stages.c.state.in_(("active", "awaiting_completion")),
             )
-            .values(state=terminal_state, attempts=attempts, completed_at=now)
+            .values(
+                state=terminal_state,
+                attempts=attempts,
+                dossier=primary["dossier"],
+                completed_at=now,
+            )
         )
+        primary_dossier = dict(primary["dossier"] or {})
+        primary_budget = dict(primary_dossier.get("budget", {}))
+        debug_dossier = dict(primary_dossier)
+        debug_dossier["starting_sha"] = self._subject_sha(primary["current_subject"])
+        debug_dossier["branch_sha"] = self._subject_sha(primary["current_subject"])
+        debug_dossier["budget"] = {
+            "ordinal": 1,
+            "started_at": now,
+            "deadline_at": now + boundary.repair.debug_seconds,
+            "attempt_limit": boundary.repair.debug_attempts,
+            "attempts": 0,
+        }
+        debug_dossier["previous_stage"] = {
+            "ordinal": 0,
+            "attempts": attempts,
+            "budget": primary_budget,
+            "dossier": primary_dossier,
+        }
         debug = {
             "operation_id": operation["id"],
             "ordinal": 1,
@@ -1272,19 +1708,7 @@ class RepairService:
             "started_at": now,
             "deadline_at": now + boundary.repair.debug_seconds,
             "attempts": 0,
-            "dossier": {
-                "operation_id": operation["id"],
-                "target_kind": operation["target_kind"],
-                "starting_sha": self._subject_sha(primary["current_subject"]),
-                "required_checks": boundary.required_checks.model_dump(mode="json"),
-                "artifact": boundary.route.artifact.model_dump(mode="json"),
-                "repair_commits": list((primary["dossier"] or {}).get("repair_commits", [])),
-                "previous_stage": {
-                    "ordinal": 0,
-                    "attempts": attempts,
-                    "dossier": primary["dossier"],
-                },
-            },
+            "dossier": debug_dossier,
             "state": "active",
         }
         await conn.execute(insert(integration_repair_stages).values(**debug))
@@ -1329,6 +1753,7 @@ class RepairService:
             .values(
                 state=terminal_state,
                 attempts=attempts,
+                dossier=stage["dossier"],
                 completed_at=now,
             )
         )
@@ -1407,37 +1832,59 @@ class RepairService:
             policy = HierarchicalIntegrationPolicy.model_validate(
                 operation["policy_snapshot"]
             )
-        except Exception:
-            return None
+        except Exception as exc:
+            raise _RepairInvariant("repair policy snapshot is corrupt") from exc
+        if operation["target_kind"] not in {"parent", "batch"}:
+            raise _RepairInvariant("repair target kind is corrupt")
+        boundary = policy.parent if operation["target_kind"] == "parent" else policy.root
+        if (
+            operation["artifact_snapshot"]
+            != boundary.route.artifact.model_dump(mode="json")
+            or operation["required_check_version"] != boundary.required_checks.version
+            or operation["route_playbook_id"] != boundary.route.playbook_id
+            or operation["route_scope"] != boundary.route.scope
+            or operation["route_scope_identifier"] != boundary.route.scope_identifier
+            or operation["route_activation_id"] != boundary.route.activation_id
+        ):
+            raise _RepairInvariant("repair frozen route identity is corrupt")
         if operation["target_kind"] == "batch":
-            batch, revision = await self._current_batch_subject_rows_on(conn, operation)
+            try:
+                batch, revision = await self._current_batch_subject_rows_on(conn, operation)
+            except ValueError as exc:
+                raise _RepairInvariant(str(exc)) from exc
             project = (
                 await conn.execute(
                     select(projects).where(projects.c.id == batch["project_id"])
                 )
             ).mappings().one_or_none()
             subject = self._batch_subject(revision)
+            if project is None or project["integration_repository_id"] != batch["repository_id"]:
+                raise _RepairInvariant("batch repair project identity is corrupt")
             if (
-                project is None
-                or project["hierarchical_integration_mode"] not in {"hierarchy", "train"}
-                or project["integration_repository_id"] != batch["repository_id"]
+                batch["policy_snapshot"] != operation["policy_snapshot"]
+                or batch["artifact_snapshot"] != operation["artifact_snapshot"]
+                or batch["repository_id"] is None
+            ):
+                raise _RepairInvariant("batch repair identity is corrupt")
+            if (
+                project["hierarchical_integration_mode"] not in {"hierarchy", "train"}
                 or trigger_id != batch["id"]
                 or subject["candidate_sha"] != starting_sha
             ):
                 return None
-            return policy, policy.root, subject
-        if operation["target_kind"] != "parent":
-            return None
+            return policy, boundary, subject
         parent = (
             await conn.execute(
                 select(tasks).where(tasks.c.id == operation["parent_task_id"])
             )
         ).mappings().one_or_none()
         if parent is None:
-            return None
+            raise _RepairInvariant("parent repair target is missing")
         project = (
             await conn.execute(select(projects).where(projects.c.id == parent["project_id"]))
         ).mappings().one_or_none()
+        if project is None or project["integration_repository_id"] != parent["repo_id"]:
+            raise _RepairInvariant("parent repair project identity is corrupt")
         checkpoint = (
             await conn.execute(
                 select(task_integration_checkpoints).where(
@@ -1445,6 +1892,8 @@ class RepairService:
                 )
             )
         ).mappings().one_or_none()
+        if checkpoint is None or checkpoint["episode_id"] != operation["episode_id"]:
+            raise _RepairInvariant("parent repair checkpoint identity is corrupt")
         evidence = (
             await conn.execute(
                 select(integration_check_evidence).where(
@@ -1479,10 +1928,7 @@ class RepairService:
             and conflict["expected_target"] == starting_sha
         )
         if (
-            project is None
-            or project["hierarchical_integration_mode"] not in {"hierarchy", "train"}
-            or checkpoint is None
-            or checkpoint["episode_id"] != operation["episode_id"]
+            project["hierarchical_integration_mode"] not in {"hierarchy", "train"}
             or not (evidence_matches or conflict_matches)
         ):
             return None
@@ -1491,7 +1937,7 @@ class RepairService:
             "generation": int(checkpoint["generation"]),
             "head_sha": starting_sha,
         }
-        return policy, policy.parent, subject
+        return policy, boundary, subject
 
     @staticmethod
     def _evidence_matches(operation, stage, evidence) -> bool:

@@ -217,7 +217,16 @@ class IntegrationRecordRepairArgs(CommandArgs):
 
 
 class IntegrationRecordRepairValue(CommandValue):
-    action: str | None = None
+    action: Literal[
+        "repair",
+        "infrastructure_retry",
+        "inconclusive",
+        "completion_ready",
+        "dispatch_debug",
+        "block_for_human",
+        "duplicate",
+        "stale",
+    ] | None = None
     attempts: int | None = None
     stage: Literal[0, 1] | None = None
 
@@ -230,7 +239,14 @@ class IntegrationRepairTimeoutArgs(CommandArgs):
 class IntegrationRepairTimeoutValue(CommandValue):
     operation_id: str | None = None
     stage: Literal[0, 1] | None = None
-    action: str | None = None
+    action: Literal[
+        "ignore",
+        "dispatch_debug",
+        "block_for_human",
+        "none",
+        "wait",
+        "awaiting_promotion",
+    ] | None = None
 
 
 INTEGRATION_TRANSFER_OWNER = CommandContract(

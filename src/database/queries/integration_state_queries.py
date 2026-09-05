@@ -9,6 +9,7 @@ from src.database.tables import (
     integration_branch_owners,
     integration_repair_operations,
     integration_repair_stages,
+    sessions,
     task_integration_checkpoints,
     tasks,
     workspaces,
@@ -84,7 +85,7 @@ class IntegrationStateQueriesMixin:
         return dict(rows[0]) if len(rows) == 1 else None
 
     async def get_repair_filing_scope(
-        self, repair_task_id: str, *, conn=None
+        self, repair_task_id: str, *, session_id: str | None = None, conn=None
     ) -> dict | None:
         """Resolve a delegate's server-owned logical filing scope, including expiry."""
 
@@ -105,7 +106,9 @@ class IntegrationStateQueriesMixin:
                 )
                 .where(
                     integration_repair_stages.c.repair_task_id == repair_task_id,
-                    integration_repair_stages.c.writer_kind == "repair_delegate",
+                    integration_repair_stages.c.writer_kind.in_(
+                        ("repair_delegate", "existing_verifier")
+                    ),
                 )
                 .with_for_update()
             )
@@ -164,29 +167,47 @@ class IntegrationStateQueriesMixin:
                     .with_for_update()
                 )
             ).mappings().one_or_none()
-            workspace = (
+            workspace = None
+            if owner is not None and owner["workspace_id"]:
+                workspace = (
+                    await connection.execute(
+                        select(workspaces)
+                        .where(workspaces.c.id == owner["workspace_id"])
+                        .with_for_update()
+                    )
+                ).mappings().one_or_none()
+            attached_session = (
                 await connection.execute(
-                    select(workspaces)
-                    .where(workspaces.c.locked_by_task_id == repair_task_id)
+                    select(sessions)
+                    .where(sessions.c.id == session_id)
                     .with_for_update()
                 )
-            ).mappings().first()
+            ).mappings().one_or_none() if session_id else None
             active = bool(
                 int(row["active_stage"]) == int(row["stage_ordinal"])
                 and row["state"] in {"active", "escalated"}
                 and row["stage_state"] in {"active", "awaiting_completion"}
+                and delegate["status"] in {"ASSIGNED", "IN_PROGRESS"}
                 and owner is not None
                 and owner["owner_id"] == repair_task_id
-                and owner["owner_role"] == "repair"
-                and owner["handoff_state"] in {"reserved", "attached"}
-                and (
-                    row["target_kind"] == "batch"
-                    or (
-                        workspace is not None
-                        and workspace["project_id"] == target_project_id
-                        and workspace["enabled"]
-                    )
-                )
+                and (row["writer_kind"], owner["owner_role"])
+                in {
+                    ("repair_delegate", "repair"),
+                    ("existing_verifier", "verifier"),
+                }
+                and owner["handoff_state"] == "attached"
+                and owner["session_id"] == session_id
+                and owner["workspace_id"]
+                and attached_session is not None
+                and attached_session["task_id"] == repair_task_id
+                and attached_session["project_id"] == target_project_id
+                and attached_session["state"] in {"starting", "running", "draining"}
+                and workspace is not None
+                and workspace["id"] == owner["workspace_id"]
+                and workspace["locked_by_task_id"] == repair_task_id
+                and workspace["project_id"] == target_project_id
+                and workspace["enabled"]
+                and attached_session["work_dir"] == workspace["workspace_path"]
             )
             return {
                 "operation_id": row["id"],
@@ -194,6 +215,18 @@ class IntegrationStateQueriesMixin:
                 "project_id": target_project_id,
                 "repository_id": repository_id,
                 "parent_task_id": parent_task_id,
+                "stage": int(row["stage_ordinal"]),
+                "writer_kind": row["writer_kind"],
+                "session_id": owner["session_id"] if owner is not None else None,
+                "instance_token": (
+                    attached_session["instance_token"]
+                    if attached_session is not None
+                    else None
+                ),
+                "workspace_id": owner["workspace_id"] if owner is not None else None,
+                "fence_token": (
+                    int(owner["fence_token"]) if owner is not None else None
+                ),
                 "active": active,
             }
 

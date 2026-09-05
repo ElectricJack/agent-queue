@@ -944,6 +944,7 @@ class SessionCommandsMixin:
                 expect_claim_epoch=expect_claim_epoch,
                 pool=is_pool,
                 session_live=session_live,
+                session_id=session.id if session is not None else None,
                 review_evidence_snapshot=review_evidence_snapshot,
             )
             retry_in_session = bool(result.get("verification_retry"))

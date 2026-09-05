@@ -1198,6 +1198,7 @@ class TaskCommandsMixin:
         reason: str,
         routing_policy: Callable[[Task], bool] | None = None,
         current_parent_head: str | None = None,
+        repair_filing_binding: dict | None = None,
     ) -> tuple[str, str | None, str | None, bool, str | None]:
         """Write a worker-filed task + its edges in one ``immediate()`` txn.
 
@@ -1263,9 +1264,27 @@ class TaskCommandsMixin:
                 raise _FilingScope(f"held task '{held_id}' no longer exists")
             held_parent_id = locked[held_id]
             allowed = {held_id} | set(await self.db.subtree_ids(held_id, conn=conn))
-            repair_scope = await self.db.get_repair_filing_scope(held_id, conn=conn)
+            repair_scope = await self.db.get_repair_filing_scope(
+                held_id,
+                session_id=(repair_filing_binding or {}).get("session_id"),
+                conn=conn,
+            )
             if repair_scope is not None:
                 if not repair_scope["active"]:
+                    raise _FilingScope("repair stage is no longer active")
+                current_binding = {
+                    key: repair_scope[key]
+                    for key in (
+                        "operation_id",
+                        "stage",
+                        "writer_kind",
+                        "session_id",
+                        "instance_token",
+                        "workspace_id",
+                        "fence_token",
+                    )
+                }
+                if current_binding != repair_filing_binding:
                     raise _FilingScope("repair stage is no longer active")
                 if repair_scope["target_kind"] == "parent":
                     held_parent_id = repair_scope["parent_task_id"]
@@ -1307,6 +1326,14 @@ class TaskCommandsMixin:
                         routing_policy=routing_policy,
                         current_parent_head=current_parent_head,
                     )
+                    if repair_scope is not None:
+                        from src.integration.repair import RepairService
+
+                        await RepairService(self.db).bind_current_parent_subject_on(
+                            conn,
+                            repair_scope["operation_id"],
+                            head_sha=current_parent_head,
+                        )
                 else:
                     created = await service.file_root_on(
                         conn,
@@ -1483,6 +1510,7 @@ class TaskCommandsMixin:
         # Read again by ``_create_worker_filed_task``'s in-transaction check.
         parent_explicit = False
         repair_filing_head: str | None = None
+        repair_filing_binding: dict | None = None
         if scope.get("kind") == "session" and not scope.get("elevated"):
             filing_session = await self.db.get_session(scope.get("session_id") or "")
             if filing_session is None:
@@ -1503,13 +1531,27 @@ class TaskCommandsMixin:
             held_id = filing_session.task_id
             held_task = await self.db.get_task(held_id)
             held_parent_id = held_task.parent_task_id if held_task is not None else None
-            repair_scope = await self.db.get_repair_filing_scope(held_id)
+            repair_scope = await self.db.get_repair_filing_scope(
+                held_id, session_id=filing_session.id
+            )
             if repair_scope is not None:
                 if not repair_scope["active"]:
                     return {
                         "success": False,
                         "error": "repair stage is no longer active",
                     }
+                repair_filing_binding = {
+                    key: repair_scope[key]
+                    for key in (
+                        "operation_id",
+                        "stage",
+                        "writer_kind",
+                        "session_id",
+                        "instance_token",
+                        "workspace_id",
+                        "fence_token",
+                    )
+                }
                 if repair_scope["target_kind"] == "parent":
                     held_parent_id = repair_scope["parent_task_id"]
                     from src.integration.hierarchy import resolve_workspace_checkpoint
@@ -2022,6 +2064,7 @@ class TaskCommandsMixin:
                     reason=spawn_reason or "",
                     routing_policy=routing_policy,
                     current_parent_head=repair_filing_head,
+                    repair_filing_binding=repair_filing_binding,
                 )
                 hierarchy_created = hierarchy_enabled
             except _FilingScope as exc:

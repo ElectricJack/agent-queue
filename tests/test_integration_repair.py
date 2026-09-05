@@ -26,6 +26,7 @@ from src.database.tables import (
     playbook_artifacts,
     task_integration_checkpoints,
     task_branch_origins,
+    task_delivery_receipts,
     tasks,
     workspaces,
 )
@@ -42,7 +43,9 @@ from src.integration.models import (
 from src.integration.ownership import BranchOwnership
 from src.git.manager import GitManager, RemoteRefResult, RemoteRefState
 from src.models import (
+    Agent,
     AgentProfile,
+    AgentState,
     Project,
     RepoConfig,
     RepoSourceType,
@@ -50,6 +53,7 @@ from src.models import (
     Task,
     TaskStatus,
 )
+from src.scheduler import AssignAction
 from src.profiles.capabilities import CapabilityPolicy
 
 
@@ -311,6 +315,43 @@ async def test_start_accepts_only_exact_persisted_conflict_trigger(db):
     assert started["outcome"] == "started"
 
 
+@pytest.mark.parametrize("corruption", ["policy", "checkpoint", "batch_revision"])
+async def test_start_reports_corrupt_persisted_identity_as_invariant(db, corruption):
+    """Corrupt frozen relationships have a deterministic public outcome."""
+    from src.integration.repair import RepairService
+
+    if corruption == "batch_revision":
+        operation_id = await _seed_root_operation(db)
+        async with db.immediate() as conn:
+            await conn.execute(
+                integration_candidate_revisions.delete().where(
+                    integration_candidate_revisions.c.batch_id == "batch"
+                )
+            )
+        trigger_id = "batch"
+    else:
+        await _seed_parent_operation(db)
+        operation_id = "operation"
+        trigger_id = "failed-check"
+        async with db.immediate() as conn:
+            if corruption == "policy":
+                await conn.execute(
+                    update(integration_repair_operations)
+                    .where(integration_repair_operations.c.id == operation_id)
+                    .values(policy_snapshot={})
+                )
+            else:
+                await conn.execute(
+                    task_integration_checkpoints.delete().where(
+                        task_integration_checkpoints.c.task_id == "parent"
+                    )
+                )
+    result = await RepairService(db).start(
+        operation_id, STARTING_SHA, trigger_id, now=100.0
+    )
+    assert result == {"outcome": "invariant_error", "operation_id": operation_id}
+
+
 async def test_record_result_counts_each_conclusive_run_attempt_once(db):
     """Duplicate and infrastructure evidence must not consume repair attempts."""
     from src.integration.repair import RepairService
@@ -359,6 +400,22 @@ async def test_primary_attempt_exhaustion_activates_one_debug_stage(db):
     await _add_parent_evidence(
         db, "failed-check-2", run_id="run-2", conclusion="failure"
     )
+    async with db.immediate() as conn:
+        await conn.execute(
+            insert(task_delivery_receipts).values(
+                id="receipt-1",
+                domain_key="parent-receipt-1",
+                source_task_id=None,
+                target_task_id="parent",
+                repository_id="repo",
+                target_branch="aq/parent",
+                disposition="noop",
+                resolution_evidence={"reason": "no source diff"},
+                parent_operation_id="operation",
+                parent_episode_id="episode",
+                created_at=4.0,
+            )
+        )
     service = RepairService(db)
     await service.start("operation", STARTING_SHA, "failed-check", now=100.0)
     await service.record_result("operation", "failed-check", now=105.0)
@@ -402,7 +459,44 @@ async def test_primary_attempt_exhaustion_activates_one_debug_stage(db):
     assert rows[1]["intelligence_class"] == "debug-high"
     assert rows[1]["profile_id"] == "debugger"
     assert rows[1]["repair_task_id"] is None
-    assert rows[1]["dossier"]["previous_stage"]["attempts"] == 2
+    dossier = rows[1]["dossier"]
+    assert dossier["previous_stage"]["attempts"] == 2
+    assert dossier["manifest"] == {
+        "kind": "parent_episode",
+        "parent_task_id": "parent",
+        "episode_id": "episode",
+        "generation": 3,
+    }
+    assert dossier["branch_sha"] == STARTING_SHA
+    assert dossier["receipts"] == [
+        {
+            "id": "receipt-1",
+            "source_task_id": None,
+            "disposition": "noop",
+            "after_sha": None,
+        }
+    ]
+    assert [item["evidence_id"] for item in dossier["failed_checks"]] == [
+        "failed-check",
+        "failed-check-2",
+    ]
+    assert [item["run_id"] for item in dossier["logs"]] == ["run-1", "run-2"]
+    assert dossier["hypotheses"][-1]["classification"] == "conclusive"
+    assert dossier["commands_attempted"][-1]["workflow_id"] == "workflow"
+    assert dossier["previous_stage"]["dossier"]["budget"] == {
+        "ordinal": 0,
+        "started_at": 100.0,
+        "deadline_at": 130.0,
+        "attempt_limit": 2,
+        "attempts": 2,
+    }
+    assert dossier["budget"] == {
+        "ordinal": 1,
+        "started_at": 110.0,
+        "deadline_at": 170.0,
+        "attempt_limit": 1,
+        "attempts": 0,
+    }
 
 
 async def test_debug_exhaustion_blocks_only_parent_subtree_and_emits_stable_events(db):
@@ -744,6 +838,26 @@ async def test_root_green_waits_for_promotion_but_new_revision_reuses_budget(db)
         "operation_id": operation_id,
         "stage": 0,
     }
+    async with db.immediate() as conn:
+        exact_replay = await service.bind_current_batch_subject_on(
+            conn, operation_id, now=131.0
+        )
+    assert exact_replay["subject"] == {
+        "kind": "batch",
+        "revision": 0,
+        "candidate_sha": STARTING_SHA,
+    }
+    async with db._engine.connect() as conn:
+        replayed_stage = (
+            await conn.execute(
+                select(integration_repair_stages).where(
+                    integration_repair_stages.c.operation_id == operation_id,
+                    integration_repair_stages.c.ordinal == 0,
+                )
+            )
+        ).mappings().one()
+    assert replayed_stage["state"] == "awaiting_completion"
+    assert replayed_stage["success_evidence_id"] == "root-green"
 
     next_sha = "b" * 40
     async with db.immediate() as conn:
@@ -796,6 +910,75 @@ async def test_root_green_waits_for_promotion_but_new_revision_reuses_budget(db)
     assert stage["success_evidence_id"] is None
     assert stage["state"] == "active"
     assert (await service.expire(operation_id, 0, now=140.0))["outcome"] == "expired"
+
+
+async def test_parent_subject_binding_preserves_budget_and_replay_readiness(db):
+    """Only a genuinely newer authoritative parent subject invalidates green."""
+    from src.integration.repair import RepairService
+
+    await _seed_parent_operation(db)
+    service = RepairService(db)
+    started = await service.start("operation", STARTING_SHA, "failed-check", now=100.0)
+    green = await service.record_result("operation", "failed-check", now=105.0)
+    assert green["attempts"] == 1
+
+    async with db.immediate() as conn:
+        replay = await service.bind_current_parent_subject_on(
+            conn, "operation", head_sha=STARTING_SHA, now=110.0
+        )
+    assert replay["changed"] is False
+
+    next_head = "e" * 40
+    async with db.immediate() as conn:
+        await conn.execute(
+            update(task_integration_checkpoints)
+            .where(task_integration_checkpoints.c.task_id == "parent")
+            .values(generation=4, updated_at=111.0)
+        )
+        rebound = await service.bind_current_parent_subject_on(
+            conn, "operation", head_sha=next_head, now=111.0
+        )
+        await conn.execute(
+            insert(integration_check_evidence).values(
+                id="rebound-failure",
+                operation_id="operation",
+                parent_task_id="parent",
+                parent_generation=4,
+                parent_head_sha=next_head,
+                producer_id="forge",
+                workflow_id="workflow",
+                run_id="rebound-run",
+                attempt=1,
+                required_check_version="checks-v1",
+                checks={"unit": "failure"},
+                conclusion="failure",
+                classification="conclusive",
+                observed_at=112.0,
+            )
+        )
+    assert rebound == {
+        "operation_id": "operation",
+        "stage": 0,
+        "subject": {"kind": "parent", "generation": 4, "head_sha": next_head},
+        "deadline_due": False,
+        "changed": True,
+    }
+
+    exhausted = await service.record_result("operation", "rebound-failure", now=112.0)
+    assert exhausted["outcome"] == "escalate"
+    async with db._engine.connect() as conn:
+        stages = (
+            await conn.execute(
+                select(integration_repair_stages)
+                .where(integration_repair_stages.c.operation_id == "operation")
+                .order_by(integration_repair_stages.c.ordinal)
+            )
+        ).mappings().all()
+    assert stages[0]["started_at"] == started["started_at"]
+    assert stages[0]["deadline_at"] == started["deadline_at"]
+    assert stages[0]["attempts"] == 2
+    assert stages[1]["starting_sha"] == next_head
+    assert stages[1]["current_subject"] == rebound["subject"]
 
 
 async def test_repair_start_command_denies_sessions_and_scopes_playbooks(
@@ -941,6 +1124,52 @@ async def test_dispatch_persists_paused_delegate_before_handoff_then_wakes_it(db
     assert task.status is TaskStatus.READY
     assert task.parent_task_id is None
     assert task.branch_name == "aq/parent"
+    async with db.immediate() as conn:
+        await conn.execute(
+            update(tasks)
+            .where(tasks.c.id == repair_task_id)
+            .values(status="IN_PROGRESS")
+        )
+        await conn.execute(
+            insert(workspaces).values(
+                id="launched-repair-workspace",
+                project_id="p",
+                workspace_path="/tmp/launched-repair",
+                source_type="link",
+                locked_by_task_id=repair_task_id,
+                enabled=True,
+                created_at=3.0,
+            )
+        )
+    await db.create_session(
+        SessionRecord(
+            id="launched-repair-session",
+            task_id=repair_task_id,
+            project_id="p",
+            profile_id="repairer",
+            harness="fake",
+            provider="fake",
+            name="s-launched-repair",
+            lifecycle="task",
+            state="running",
+            work_dir="/tmp/launched-repair",
+            epoch="epoch",
+            instance_token="launched-token",
+            started_at=3.0,
+        )
+    )
+    async with db.immediate() as conn:
+        await conn.execute(
+            update(integration_branch_owners)
+            .where(integration_branch_owners.c.id == "owner")
+            .values(
+                handoff_state="attached",
+                session_id="launched-repair-session",
+                workspace_id="launched-repair-workspace",
+            )
+        )
+    launched_replay = await service.dispatch("operation", 0)
+    assert launched_replay == dispatched | {"outcome": "already_dispatched"}
     async with db._engine.connect() as conn:
         origins = (
             await conn.execute(
@@ -952,14 +1181,16 @@ async def test_dispatch_persists_paused_delegate_before_handoff_then_wakes_it(db
     assert origins == []
 
 
-async def test_primary_dispatch_reuses_only_exact_live_attached_verifier(db):
+async def test_primary_dispatch_reuses_only_exact_live_attached_verifier(
+    command_handler_factory,
+):
     """Verifier reuse keeps verifier ownership and works without a primary route."""
     from src.integration.repair import RepairService
 
+    handler = await command_handler_factory()
+    db = handler.db
+    await _configure_db(db)
     await _seed_parent_operation(db)
-    await _add_parent_evidence(
-        db, "verifier-failed-2", run_id="verifier-run-2", conclusion="failure"
-    )
     await db.create_task(
         Task(
             id="verifier",
@@ -1030,6 +1261,7 @@ async def test_primary_dispatch_reuses_only_exact_live_attached_verifier(db):
             "session_id": owner["session_id"],
             "workspace_id": owner["workspace_id"],
             "head_sha": "f" * 40,
+            "instance_token": "token",
         }
 
     service = RepairService(
@@ -1059,6 +1291,50 @@ async def test_primary_dispatch_reuses_only_exact_live_attached_verifier(db):
     assert owner["owner_role"] == "verifier"
 
     await service.record_result("operation", "failed-check", now=101.0)
+    next_head = "e" * 40
+    handler.orchestrator.git.aget_current_branch = AsyncMock(return_value="aq/parent")
+    handler.orchestrator.git._arun = AsyncMock(
+        side_effect=lambda args, *, cwd: "" if args[0] == "status" else next_head
+    )
+    handler.orchestrator.git.als_remote_ref = AsyncMock(
+        return_value=RemoteRefResult(RemoteRefState.PRESENT, oid=next_head)
+    )
+    handler._current_scope = {
+        "kind": "session",
+        "session_id": "verifier-session",
+        "task_id": "verifier",
+        "project_id": "p",
+        "elevated": False,
+    }
+    filed = await handler._cmd_create_task(
+        {"title": "Verifier finding", "description": "fix", "reason": "found in repair"}
+    )
+    assert filed["success"] is True
+    child = await db.get_task(filed["task_id"])
+    assert child.parent_task_id == "parent"
+    owner = await BranchOwnership(db).get_owner(
+        BranchKey(repository_id="repo", branch="aq/parent")
+    )
+    assert (owner["owner_id"], owner["owner_role"]) == ("verifier", "verifier")
+    async with db.immediate() as conn:
+        await conn.execute(
+            insert(integration_check_evidence).values(
+                id="verifier-failed-2",
+                operation_id="operation",
+                parent_task_id="parent",
+                parent_generation=4,
+                parent_head_sha=next_head,
+                producer_id="forge",
+                workflow_id="workflow",
+                run_id="verifier-run-2",
+                attempt=1,
+                required_check_version="checks-v1",
+                checks={"unit": "failure"},
+                conclusion="failure",
+                classification="conclusive",
+                observed_at=102.0,
+            )
+        )
     await service.record_result("operation", "verifier-failed-2", now=102.0)
     debug = await service.dispatch("operation", 1)
     assert debug["outcome"] == "dispatched"
@@ -1150,6 +1426,7 @@ async def test_debug_dispatch_retains_unfinished_primary_workspace_atomically(
             "session_id": owner["session_id"],
             "workspace_id": owner["workspace_id"],
             "head_sha": retained_head,
+            "instance_token": "token",
         }
 
     service = RepairService(
@@ -1246,6 +1523,8 @@ async def test_debug_dispatch_retains_unfinished_primary_workspace_atomically(
             )
         ).mappings().one()
     assert stage["retained_workspace_id"] == "retained"
+    assert stage["starting_sha"] == retained_head
+    assert stage["dossier"]["branch_sha"] == retained_head
     assert stage["retained_handoff"] == {
         "old_task_id": primary_task_id,
         "new_task_id": debug_task.id,
@@ -1254,6 +1533,7 @@ async def test_debug_dispatch_retains_unfinished_primary_workspace_atomically(
         "old_fence_token": 2,
         "new_fence_token": 3,
         "head_sha": retained_head,
+        "instance_token": "token",
     }
     from src.orchestrator.workspace import WorkspaceMixin
 
@@ -1289,8 +1569,464 @@ async def test_debug_dispatch_retains_unfinished_primary_workspace_atomically(
     assert after == before
 
 
+async def _prepare_retained_debug_boundary(db, workspace_path: str, head_sha: str):
+    """Create an attached primary exactly at the debug handoff boundary."""
+    from src.integration.repair import RepairService
+
+    await _seed_parent_operation(db)
+    await _add_parent_evidence(
+        db, "failed-check-2", run_id="run-2", conclusion="failure"
+    )
+    async with db.immediate() as conn:
+        await conn.execute(
+            insert(integration_branch_owners).values(
+                id="boundary-owner",
+                repository_id="repo",
+                ref="aq/parent",
+                owner_id="operation",
+                owner_role="collector",
+                fence_token=1,
+                handoff_state="reserved",
+                created_at=1.0,
+                updated_at=1.0,
+            )
+        )
+    primary_service = RepairService(
+        db, route_validator=lambda _intelligence_class, _profile_id: True
+    )
+    await primary_service.start("operation", STARTING_SHA, "failed-check", now=100.0)
+    primary = await primary_service.dispatch("operation", 0)
+    primary_task_id = primary["repair_task_id"]
+    await db.create_session(
+        SessionRecord(
+            id="boundary-primary-session",
+            task_id=primary_task_id,
+            project_id="p",
+            profile_id="repairer",
+            harness="fake",
+            provider="fake",
+            name="s-boundary-primary",
+            lifecycle="task",
+            state="running",
+            work_dir=workspace_path,
+            epoch="epoch",
+            instance_token="boundary-token",
+            started_at=2.0,
+        )
+    )
+    async with db.immediate() as conn:
+        await conn.execute(
+            insert(workspaces).values(
+                id="boundary-workspace",
+                project_id="p",
+                kind_id="project-repo",
+                workspace_path=workspace_path,
+                source_type="link",
+                locked_by_task_id=primary_task_id,
+                enabled=True,
+                created_at=2.0,
+            )
+        )
+        await conn.execute(
+            update(tasks)
+            .where(tasks.c.id == primary_task_id)
+            .values(status="IN_PROGRESS")
+        )
+        await conn.execute(
+            update(integration_branch_owners)
+            .where(integration_branch_owners.c.id == "boundary-owner")
+            .values(
+                handoff_state="attached",
+                session_id="boundary-primary-session",
+                workspace_id="boundary-workspace",
+            )
+        )
+    await primary_service.record_result("operation", "failed-check", now=101.0)
+    await primary_service.record_result("operation", "failed-check-2", now=102.0)
+    proof = {
+        "session_id": "boundary-primary-session",
+        "workspace_id": "boundary-workspace",
+        "head_sha": head_sha,
+        "instance_token": "boundary-token",
+    }
+
+    async def stopped(_owner):
+        await db.update_session(
+            "boundary-primary-session", state="stopped", desired_state="stopped"
+        )
+        return proof
+
+    return primary_task_id, stopped
+
+
+@pytest.mark.parametrize("crash_point", ["before_cas", "after_cas", "after_ready"])
+async def test_retained_dispatch_recovers_at_each_durable_boundary(
+    db, tmp_path, monkeypatch, crash_point
+):
+    """A response-loss crash at each handoff boundary resumes one debug writer."""
+    from src.integration.repair import RepairService
+
+    primary_task_id, stopped = await _prepare_retained_debug_boundary(
+        db, str(tmp_path), STARTING_SHA
+    )
+    original_stopped = stopped
+    if crash_point == "before_cas":
+        failed = False
+
+        async def stopped_once(owner):
+            nonlocal failed
+            if not failed:
+                failed = True
+                await db.update_session(
+                    "boundary-primary-session",
+                    state="stopped",
+                    desired_state="stopped",
+                )
+                raise RuntimeError("injected before retained CAS")
+            return await original_stopped(owner)
+
+        stopped = stopped_once
+    service = RepairService(
+        db,
+        route_validator=lambda _intelligence_class, _profile_id: True,
+        confirm_stopped=stopped,
+    )
+    if crash_point == "after_cas":
+        original_handoff = service._retained_debug_handoff
+        failed = False
+
+        async def crash_after_cas(*args, **kwargs):
+            nonlocal failed
+            fence = await original_handoff(*args, **kwargs)
+            if not failed:
+                failed = True
+                raise RuntimeError("injected after retained CAS")
+            return fence
+
+        monkeypatch.setattr(service, "_retained_debug_handoff", crash_after_cas)
+    if crash_point == "after_ready":
+        original_notify = db._notify_ready
+        failed = False
+
+        async def crash_after_ready(task_ids):
+            nonlocal failed
+            if not failed:
+                failed = True
+                raise RuntimeError("injected after READY commit")
+            return await original_notify(task_ids)
+
+        monkeypatch.setattr(db, "_notify_ready", crash_after_ready)
+
+    with pytest.raises(RuntimeError, match="injected"):
+        await service.dispatch("operation", 1)
+    recovered = await service.dispatch("operation", 1)
+    debug_task_id = recovered["repair_task_id"]
+    assert recovered["outcome"] in {"dispatched", "already_dispatched"}
+    assert (await db.get_task(debug_task_id)).status is TaskStatus.READY
+    assert (await db.get_workspace("boundary-workspace")).locked_by_task_id == debug_task_id
+    owner = await BranchOwnership(db).get_owner(
+        BranchKey(repository_id="repo", branch="aq/parent")
+    )
+    assert (owner["owner_id"], owner["owner_role"], owner["handoff_state"]) == (
+        debug_task_id,
+        "repair",
+        "reserved",
+    )
+    assert (await db.get_task(primary_task_id)).status is TaskStatus.BLOCKED
+
+
+async def test_scheduler_launches_retained_debug_in_exact_workspace(
+    session_orch, tmp_path
+):
+    """The real scheduler preparation and launch attach the retained checkout."""
+    from src.git.manager import GitManager
+    from src.intelligence_classes import IntelligenceClass
+    from src.integration.repair import RepairService
+    from tests.session_dispatch_helpers import fake_provider
+
+    db = session_orch.db
+    await _configure_db(db)
+    await db.update_profile(
+        "debugger", harness="claude", default_class="debug-high"
+    )
+    session_orch.session_spec_builder._intelligence_classes["debug-high"] = (
+        IntelligenceClass(
+            "debug-high",
+            "Debug high",
+            "",
+            {"anthropic": {"model": "claude-sonnet-5"}},
+        )
+    )
+    await db.create_agent(
+        Agent(
+            id="debug-agent",
+            name="Debug Agent",
+            profile_id="debugger",
+            state=AgentState.IDLE,
+        )
+    )
+    checkout = tmp_path / "scheduler-retained"
+    checkout.mkdir()
+
+    def git(*args: str) -> str:
+        result = subprocess.run(
+            ["git", "-C", str(checkout), *args],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        return result.stdout.strip()
+
+    git("init", "-b", "aq/parent")
+    git("config", "user.name", "Repair Test")
+    git("config", "user.email", "repair@example.test")
+    (checkout / "tracked.txt").write_text("base\n")
+    git("add", "tracked.txt")
+    git("commit", "-m", "base")
+    retained_head = git("rev-parse", "HEAD")
+    (checkout / "tracked.txt").write_text("unfinished\n")
+    (checkout / "untracked.txt").write_text("untracked\n")
+    before = (
+        git("rev-parse", "HEAD"),
+        git("ls-files", "--stage"),
+        (checkout / "tracked.txt").read_bytes(),
+        (checkout / "untracked.txt").read_bytes(),
+    )
+    _primary_task_id, stopped = await _prepare_retained_debug_boundary(
+        db, str(checkout), retained_head
+    )
+    debug = await RepairService(
+        db,
+        route_validator=lambda _intelligence_class, _profile_id: True,
+        confirm_stopped=stopped,
+    ).dispatch("operation", 1)
+    debug_task_id = debug["repair_task_id"]
+    async with db.immediate() as conn:
+        await conn.execute(
+            insert(task_branch_origins).values(
+                id="parent-origin",
+                task_id="parent",
+                repository_id="repo",
+                base_sha=STARTING_SHA,
+                creation_generation=0,
+                reserved=True,
+                materialized=True,
+                created_at=1.0,
+                materialized_at=1.0,
+            )
+        )
+    session_orch.git = GitManager()
+    await session_orch._execute_task(
+        AssignAction("debug-agent", debug_task_id, "p")
+    )
+
+    session = await db.get_session_for_task(debug_task_id)
+    owner = await BranchOwnership(db).get_owner(
+        BranchKey(repository_id="repo", branch="aq/parent")
+    )
+    assert session is not None and session.state == "running"
+    assert session.work_dir == str(checkout)
+    assert owner["handoff_state"] == "attached"
+    assert owner["session_id"] == session.id
+    assert owner["workspace_id"] == "boundary-workspace"
+    assert len(fake_provider(session_orch).starts) == 1
+    launched_replay = await RepairService(db).dispatch("operation", 1)
+    assert launched_replay == debug | {"outcome": "already_dispatched"}
+    after = (
+        git("rev-parse", "HEAD"),
+        git("ls-files", "--stage"),
+        (checkout / "tracked.txt").read_bytes(),
+        (checkout / "untracked.txt").read_bytes(),
+    )
+    assert after == before
+
+
+@pytest.mark.parametrize(
+    ("writer_kind", "owner_role"),
+    [
+        ("existing_verifier", "repair"),
+        ("repair_delegate", "verifier"),
+    ],
+)
+async def test_retained_handoff_rejects_mismatched_writer_kind_and_owner_role(
+    db, writer_kind, owner_role
+):
+    """The durable writer subtype and current branch role must be one exact pair."""
+    from src.integration.repair import RepairService
+
+    await _seed_parent_operation(db)
+    await _add_parent_evidence(
+        db, "failed-check-2", run_id="run-2", conclusion="failure"
+    )
+    async with db.immediate() as conn:
+        await conn.execute(
+            insert(integration_branch_owners).values(
+                id="owner",
+                repository_id="repo",
+                ref="aq/parent",
+                owner_id="operation",
+                owner_role="collector",
+                fence_token=1,
+                handoff_state="reserved",
+                created_at=1.0,
+                updated_at=1.0,
+            )
+        )
+    service = RepairService(
+        db,
+        route_validator=lambda _intelligence_class, _profile_id: True,
+        confirm_stopped=lambda owner: {
+            "session_id": owner["session_id"],
+            "workspace_id": owner["workspace_id"],
+            "head_sha": "f" * 40,
+            "instance_token": "primary-token",
+        },
+    )
+    await service.start("operation", STARTING_SHA, "failed-check", now=100.0)
+    primary = await service.dispatch("operation", 0)
+    await db.create_session(
+        SessionRecord(
+            id="primary-session",
+            task_id=primary["repair_task_id"],
+            project_id="p",
+            profile_id="repairer",
+            harness="fake",
+            provider="fake",
+            name="s-primary",
+            lifecycle="task",
+            state="stopped",
+            desired_state="stopped",
+            work_dir="/tmp/retained-role",
+            epoch="epoch",
+            instance_token="primary-token",
+            started_at=2.0,
+        )
+    )
+    async with db.immediate() as conn:
+        await conn.execute(
+            insert(workspaces).values(
+                id="retained-role",
+                project_id="p",
+                workspace_path="/tmp/retained-role",
+                source_type="link",
+                locked_by_task_id=primary["repair_task_id"],
+                enabled=True,
+                created_at=2.0,
+            )
+        )
+        await conn.execute(
+            update(integration_repair_stages)
+            .where(
+                integration_repair_stages.c.operation_id == "operation",
+                integration_repair_stages.c.ordinal == 0,
+            )
+            .values(writer_kind=writer_kind)
+        )
+        await conn.execute(
+            update(integration_branch_owners)
+            .where(integration_branch_owners.c.id == "owner")
+            .values(
+                owner_role=owner_role,
+                handoff_state="attached",
+                session_id="primary-session",
+                workspace_id="retained-role",
+            )
+        )
+    await service.record_result("operation", "failed-check", now=101.0)
+    await service.record_result("operation", "failed-check-2", now=102.0)
+
+    refused = await service.dispatch("operation", 1)
+
+    assert refused["outcome"] == "human_required"
+    owner = await BranchOwnership(db).get_owner(
+        BranchKey(repository_id="repo", branch="aq/parent")
+    )
+    assert (owner["owner_id"], owner["owner_role"], owner["fence_token"]) == (
+        primary["repair_task_id"],
+        owner_role,
+        2,
+    )
+
+
+async def test_retained_stop_proof_rejects_replaced_session_instance(db):
+    """A confirmed old process cannot mark a replacement instance stopped."""
+    from src.orchestrator.workspace import WorkspaceMixin
+
+    await _seed_parent_operation(db)
+    async with db.immediate() as conn:
+        await conn.execute(
+            update(tasks).where(tasks.c.id == "parent").values(status="IN_PROGRESS")
+        )
+        await conn.execute(
+            insert(workspaces).values(
+                id="stop-workspace",
+                project_id="p",
+                workspace_path="/tmp/stop-workspace",
+                source_type="link",
+                locked_by_task_id="parent",
+                enabled=True,
+                created_at=2.0,
+            )
+        )
+    await db.create_session(
+        SessionRecord(
+            id="stop-session",
+            task_id="parent",
+            project_id="p",
+            profile_id="repairer",
+            harness="fake",
+            provider="fake",
+            name="s-stop",
+            lifecycle="task",
+            state="running",
+            work_dir="/tmp/stop-workspace",
+            epoch="epoch",
+            instance_token="old-token",
+            started_at=2.0,
+        )
+    )
+
+    async def replace_instance(_handle):
+        await db.update_session("stop-session", instance_token="replacement-token")
+        return True
+
+    provider = SimpleNamespace(
+        stop=AsyncMock(),
+        confirm_stopped=AsyncMock(side_effect=replace_instance),
+    )
+    runtime = SimpleNamespace(
+        db=db,
+        config=SimpleNamespace(),
+        session_providers=SimpleNamespace(create=lambda *_args: provider),
+        git=SimpleNamespace(
+            aget_current_branch=AsyncMock(return_value="aq/parent"),
+            _arun=AsyncMock(return_value="f" * 40),
+        ),
+    )
+
+    proof = await WorkspaceMixin.aconfirm_integration_owner_stopped_for_repair(
+        runtime,
+        {
+            "repository_id": "repo",
+            "ref": "aq/parent",
+            "owner_id": "parent",
+            "owner_role": "verifier",
+            "fence_token": 7,
+            "handoff_state": "attached",
+            "session_id": "stop-session",
+            "workspace_id": "stop-workspace",
+        },
+    )
+
+    assert proof is None
+    session = await db.get_session("stop-session")
+    assert session.instance_token == "replacement-token"
+    assert session.state == "running"
+
+
 async def test_running_repair_delegate_files_real_child_from_clean_pushed_head(
     command_handler_factory,
+    monkeypatch,
 ):
     """Repair filing uses the writer's current pushed head and keeps its budget."""
     from src.integration.repair import RepairService
@@ -1372,6 +2108,76 @@ async def test_running_repair_delegate_files_real_child_from_clean_pushed_head(
         "project_id": "p",
         "elevated": False,
     }
+
+    reserved = await handler._cmd_create_task(
+        {"title": "Too early", "description": "fix", "reason": "not attached"}
+    )
+    assert reserved["success"] is False
+    assert reserved["error"] == "repair stage is no longer active"
+
+    await handler.db.create_session(
+        SessionRecord(
+            id="wrong-repair-session",
+            task_id=repair_task_id,
+            project_id="p",
+            profile_id="repairer",
+            harness="fake",
+            provider="fake",
+            name="s-wrong-repair",
+            lifecycle="task",
+            state="running",
+            work_dir="/tmp/repair",
+            epoch="epoch",
+            instance_token="wrong-token",
+            started_at=3.0,
+        )
+    )
+    async with handler.db.immediate() as conn:
+        await conn.execute(
+            update(integration_branch_owners)
+            .where(
+                integration_branch_owners.c.repository_id == "repo",
+                integration_branch_owners.c.ref == "aq/parent",
+            )
+            .values(
+                handoff_state="attached",
+                session_id="repair-session",
+                workspace_id="repair-workspace",
+            )
+        )
+    handler._current_scope["session_id"] = "wrong-repair-session"
+    wrong_session = await handler._cmd_create_task(
+        {"title": "Wrong session", "description": "fix", "reason": "not owner"}
+    )
+    assert wrong_session["success"] is False
+    assert wrong_session["error"] == "repair stage is no longer active"
+    handler._current_scope["session_id"] = "repair-session"
+
+    original_lock = handler.db.lock_filing_scope
+    raced = False
+
+    async def advance_fence(conn, task_ids):
+        nonlocal raced
+        result = await original_lock(conn, task_ids)
+        if not raced:
+            raced = True
+            await conn.execute(
+                update(integration_branch_owners)
+                .where(
+                    integration_branch_owners.c.repository_id == "repo",
+                    integration_branch_owners.c.ref == "aq/parent",
+                )
+                .values(fence_token=integration_branch_owners.c.fence_token + 1)
+            )
+        return result
+
+    monkeypatch.setattr(handler.db, "lock_filing_scope", advance_fence)
+    stale_fence = await handler._cmd_create_task(
+        {"title": "Fence moved", "description": "fix", "reason": "raced handoff"}
+    )
+    assert stale_fence["success"] is False
+    assert stale_fence["error"] == "repair stage is no longer active"
+    monkeypatch.setattr(handler.db, "lock_filing_scope", original_lock)
 
     filed = await handler._cmd_create_task(
         {"title": "Follow-up", "description": "fix", "reason": "repair found it"}
@@ -1604,6 +2410,19 @@ async def test_real_task_close_bypasses_legacy_pipeline_and_rejects_stale_stage(
             started_at=2.0,
         )
     )
+    async with handler.db.immediate() as conn:
+        await conn.execute(
+            update(integration_branch_owners)
+            .where(
+                integration_branch_owners.c.repository_id == "repo",
+                integration_branch_owners.c.ref == "aq/parent",
+            )
+            .values(
+                handoff_state="attached",
+                session_id="close-session",
+                workspace_id="close-workspace",
+            )
+        )
     handler.orchestrator.git.aget_current_branch = AsyncMock(return_value="aq/parent")
     handler.orchestrator.git._arun = AsyncMock(
         side_effect=lambda args, **_kwargs: "" if args[0] == "status" else clean_head
@@ -1667,6 +2486,33 @@ async def test_real_task_close_bypasses_legacy_pipeline_and_rejects_stale_stage(
             .where(integration_repair_operations.c.id == "operation")
             .values(state="active")
         )
+    original_remote = handler.orchestrator.git.als_remote_ref
+
+    async def move_fence(*args, **kwargs):
+        async with handler.db.immediate() as conn:
+            await conn.execute(
+                update(integration_branch_owners)
+                .where(
+                    integration_branch_owners.c.repository_id == "repo",
+                    integration_branch_owners.c.ref == "aq/parent",
+                )
+                .values(fence_token=integration_branch_owners.c.fence_token + 1)
+            )
+        return RemoteRefResult(RemoteRefState.PRESENT, oid=clean_head)
+
+    handler.orchestrator.git.als_remote_ref = AsyncMock(side_effect=move_fence)
+    raced = await handler._cmd_task_close(
+        {
+            "task_id": repair_task_id,
+            "session_id": "close-session",
+            "outcome": "pass",
+            "summary": "repair work complete",
+        }
+    )
+    assert raced["success"] is False
+    assert raced["result"] == "verification_failed"
+    assert (await handler.db.get_task(repair_task_id)).status is TaskStatus.IN_PROGRESS
+    handler.orchestrator.git.als_remote_ref = original_remote
     closed = await handler._cmd_task_close(
         {
             "task_id": repair_task_id,
@@ -1678,10 +2524,17 @@ async def test_real_task_close_bypasses_legacy_pipeline_and_rejects_stale_stage(
     assert closed["success"] is True
     assert (await handler.db.get_task(repair_task_id)).status is TaskStatus.COMPLETED
     handler.orchestrator._run_completion_pipeline.assert_not_awaited()
-    audit = await handler.db.get_recent_events(limit=20, task_id=repair_task_id)
-    assert "integration.repair_delegate_closed" in {
-        event["event_type"] for event in audit
-    }
+    async with handler.db._engine.connect() as conn:
+        close_events = (
+            await conn.execute(
+                select(integration_outbox).where(
+                    integration_outbox.c.event_type
+                    == "integration.repair_delegate_closed"
+                )
+            )
+        ).mappings().all()
+    assert len(close_events) == 1
+    assert close_events[0]["payload"]["task_id"] == repair_task_id
     emitted = [call.args[0] for call in handler.orchestrator.bus.emit.await_args_list]
     assert "task.completed" not in emitted
     assert "task.closed" in emitted
@@ -1729,6 +2582,17 @@ async def test_batch_repair_delegate_can_file_only_explicit_project_root(
             .where(tasks.c.id == repair_task_id)
             .values(status="IN_PROGRESS")
         )
+        await conn.execute(
+            insert(workspaces).values(
+                id="batch-repair-workspace",
+                project_id="p",
+                workspace_path="/tmp/batch-repair",
+                source_type="link",
+                locked_by_task_id=repair_task_id,
+                enabled=True,
+                created_at=2.0,
+            )
+        )
     await handler.db.create_session(
         SessionRecord(
             id="batch-repair-session",
@@ -1746,6 +2610,16 @@ async def test_batch_repair_delegate_can_file_only_explicit_project_root(
             started_at=2.0,
         )
     )
+    async with handler.db.immediate() as conn:
+        await conn.execute(
+            update(integration_branch_owners)
+            .where(integration_branch_owners.c.id == "batch-owner")
+            .values(
+                handoff_state="attached",
+                session_id="batch-repair-session",
+                workspace_id="batch-repair-workspace",
+            )
+        )
     handler._current_scope = {
         "kind": "session",
         "session_id": "batch-repair-session",

@@ -1116,6 +1116,7 @@ class ExecutionMixin:
         expect_claim_epoch: int | None = None,
         pool: bool = False,
         session_live: bool = False,
+        session_id: str | None = None,
         review_evidence_snapshot: dict | None = None,
     ) -> dict:
         """Run the completion pipeline for a session-closed task.
@@ -1175,8 +1176,13 @@ class ExecutionMixin:
             close_session_live=session_live,
             work_outcome=work_outcome,
         )
-        repair_scope = await self.db.get_repair_filing_scope(task.id)
-        repair_delegate = repair_scope is not None
+        repair_scope = await self.db.get_repair_filing_scope(
+            task.id, session_id=session_id
+        )
+        repair_delegate = bool(
+            repair_scope is not None
+            and repair_scope.get("writer_kind") == "repair_delegate"
+        )
         if repair_delegate and not repair_scope["active"]:
             return {
                 "status": task.status.value,
@@ -1242,6 +1248,7 @@ class ExecutionMixin:
         managed_parent_suspended = False
         managed_parent_completed = False
         repair_writer_closed = False
+        repair_writer_head = None
         if outcome == "pass":
             try:
                 children = await self.db.get_children(task.id, limit=1)
@@ -1260,11 +1267,16 @@ class ExecutionMixin:
                     from src.integration.hierarchy import resolve_workspace_checkpoint
 
                     repair_repo = await self.db.get_repo(task.repo_id or "")
-                    if repair_repo is None:
+                    if (
+                        repair_repo is None
+                        or ws is None
+                        or ws.id != repair_scope["workspace_id"]
+                    ):
                         raise HierarchyError(
-                            "invariant_error", "repair repository is not configured"
+                            "invariant_error",
+                            "repair repository/workspace attachment is not configured",
                         )
-                    await resolve_workspace_checkpoint(
+                    repair_writer_head = await resolve_workspace_checkpoint(
                         self.db,
                         self.git,
                         {
@@ -1463,6 +1475,29 @@ class ExecutionMixin:
                 # _reopen_with_verification_feedback performed the state
                 # transition and recorded its context inside this lock.
                 pass
+            elif repair_writer_closed:
+                from src.integration.repair import RepairService
+
+                closed = await RepairService(self.db).complete_delegate(
+                    task.id,
+                    operation_id=repair_scope["operation_id"],
+                    stage=int(repair_scope["stage"]),
+                    session_id=repair_scope["session_id"],
+                    instance_token=repair_scope["instance_token"],
+                    workspace_id=repair_scope["workspace_id"],
+                    fence_token=int(repair_scope["fence_token"]),
+                    head_sha=repair_writer_head,
+                )
+                if closed["outcome"] != "completed":
+                    return {
+                        "status": (await self.db.get_task(task.id)).status.value,
+                        "pr_url": None,
+                        "pipeline_ok": False,
+                        "retry_count": None,
+                        "verification_retry": True,
+                        "issues": ["Repair stage ownership changed during close."],
+                        "feedback": "Repair stage ownership changed during close.",
+                    }
             elif review_evidence_snapshot is not None and new_status == TaskStatus.COMPLETED:
                 from src.integration.review_evidence import ReviewEvidenceProducer
 
@@ -1508,14 +1543,6 @@ class ExecutionMixin:
             refreshed = await self.db.get_task(task.id)
             if refreshed:
                 new_status = refreshed.status
-
-        if repair_writer_closed and new_status is TaskStatus.COMPLETED:
-            await self.db.log_event(
-                "integration.repair_delegate_closed",
-                project_id=task.project_id,
-                task_id=task.id,
-                payload=str(repair_scope["operation_id"]),
-            )
 
         # ``task.failed`` is the trigger for the reflection playbook
         # (``vault/templates/reflection-playbook.md`` -> deep tier) and for

@@ -361,6 +361,34 @@ class SessionQueryMixin:
         async with self.immediate() as owned_conn:
             return await self._update_session_on(owned_conn, session_id, fields)
 
+    async def update_session_instance(
+        self,
+        session_id: str,
+        instance_token: str,
+        *,
+        require_desired_state: str | None = None,
+        **fields,
+    ) -> int:
+        """Update only the exact durable process instance named by its kill fence."""
+        async with self.immediate() as conn:
+            row = (
+                await conn.execute(
+                    select(sessions)
+                    .where(sessions.c.id == session_id)
+                    .with_for_update()
+                )
+            ).mappings().one_or_none()
+            if (
+                row is None
+                or row["instance_token"] != instance_token
+                or (
+                    require_desired_state is not None
+                    and row["desired_state"] != require_desired_state
+                )
+            ):
+                return 0
+            return await self._update_session_on(conn, session_id, fields)
+
     async def _update_session_on(self, conn, session_id: str, fields: dict) -> int:
         row = (await conn.execute(select(sessions).where(
             sessions.c.id == session_id,

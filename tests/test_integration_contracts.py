@@ -147,6 +147,30 @@ def test_repair_contracts_expose_exact_typed_public_protocol():
         )
     with pytest.raises(Exception):
         dispatch.args_model(operation_id="op", stage=2)
+    for action in {
+        "repair",
+        "infrastructure_retry",
+        "inconclusive",
+        "completion_ready",
+        "dispatch_debug",
+        "block_for_human",
+        "duplicate",
+        "stale",
+    }:
+        assert record.result_model(action=action).action == action
+    for action in {
+        "ignore",
+        "dispatch_debug",
+        "block_for_human",
+        "none",
+        "wait",
+        "awaiting_promotion",
+    }:
+        assert timeout.result_model(action=action).action == action
+    with pytest.raises(Exception):
+        record.result_model(action="caller_selected_action")
+    with pytest.raises(Exception):
+        timeout.result_model(action="caller_selected_action")
 
 
 def test_parent_completion_contracts_expose_prescribed_outcomes():

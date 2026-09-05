@@ -1249,6 +1249,12 @@ class WorkspaceMixin:
             != os.path.realpath(workspace.workspace_path)
         ):
             return None
+        if not await self.db.update_session_instance(
+            session.id,
+            session.instance_token,
+            desired_state="stopped",
+        ):
+            return None
         try:
             provider = self.session_providers.create(session.provider, self.config)
             handle = SessionHandle(
@@ -1274,16 +1280,19 @@ class WorkspaceMixin:
             return None
         if current_branch != owner.get("ref") or not is_valid_git_oid(head_sha):
             return None
-        await self.db.update_session(
+        if not await self.db.update_session_instance(
             session.id,
+            session.instance_token,
+            require_desired_state="stopped",
             state="stopped",
-            desired_state="stopped",
             end_reason="integration_repair_retained_handoff",
-        )
+        ):
+            return None
         return {
             "session_id": session.id,
             "workspace_id": workspace.id,
             "head_sha": head_sha,
+            "instance_token": session.instance_token,
         }
 
     async def arelease_integration_writer_for_retry(self, task, *, reason: str) -> bool | None:
