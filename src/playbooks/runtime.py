@@ -37,6 +37,30 @@ class _IntegrationDestination:
     definition: Any
 
 
+@dataclass(frozen=True, slots=True)
+class _FrozenOperationRoute:
+    playbook_id: str | None
+    scope: str | None
+    scope_identifier: str | None
+    artifact_sha256: str | None
+
+    @classmethod
+    def from_row(cls, row: dict[str, Any]) -> _FrozenOperationRoute:
+        return cls(
+            playbook_id=row.get("playbook_id"),
+            scope=row.get("scope"),
+            scope_identifier=row.get("scope_identifier"),
+            artifact_sha256=row.get("artifact_sha256"),
+        )
+
+    def matches(self, destination: _IntegrationDestination) -> bool:
+        return (
+            destination.playbook_id,
+            destination.scope,
+            destination.scope_identifier,
+        ) == (self.playbook_id, self.scope, self.scope_identifier)
+
+
 class V2PlaybookRuntime:
     """Dispatch ready immutable activations and expose their timer triggers."""
 
@@ -136,26 +160,16 @@ class V2PlaybookRuntime:
         event["_event_type"] = event_type
         if state.manifest is None:
             hydrated = await self._engine._hydrate_event(event)
-            project_id = hydrated.get("project_id")
-            agent_type = hydrated.get("agent_type")
-            destinations: list[_IntegrationDestination] = []
-            for destination in self._integration_destinations:
-                if (
-                    destination.scope == "project"
-                    and destination.scope_identifier != project_id
-                ):
-                    continue
-                if destination.scope == "agent_type" and (
-                    project_id is None or destination.scope_identifier != agent_type
-                ):
-                    continue
-                if destination.scope not in {"system", "project", "agent_type"}:
-                    continue
-                if any(
-                    self._engine._rule_selected(rule, event_type, hydrated)
-                    for rule in destination.definition.rules
-                ):
-                    destinations.append(destination)
+            route_row = None
+            operation_id = hydrated.get("operation_id")
+            if isinstance(operation_id, str) and operation_id:
+                route_row = await self._db.get_integration_operation_artifact_route(
+                    operation_id
+                )
+            route = _FrozenOperationRoute.from_row(route_row) if route_row else None
+            destinations = self._select_integration_destinations(
+                event_type, hydrated, route
+            )
             if not destinations:
                 return False
             manifest = [
@@ -210,6 +224,68 @@ class V2PlaybookRuntime:
         self._ensure_integration_reconciler()
         self._integration_wakeup.set()
         return state.cursor == len(state.manifest)
+
+    def _select_integration_destinations(
+        self,
+        event_type: str,
+        hydrated: dict[str, Any],
+        route: _FrozenOperationRoute | None,
+    ) -> list[_IntegrationDestination]:
+        """Select current consumers while pinning the operation's owner.
+
+        Current activation readiness and scope remain the authorization
+        envelope.  Only the matching stable owner address substitutes the
+        operation-lifetime artifact; unrelated consumers retain their current
+        artifacts.  A frozen owner must be admitted before the event can be
+        acknowledged.
+        """
+
+        project_id = hydrated.get("project_id")
+        agent_type = hydrated.get("agent_type")
+        selected: list[_IntegrationDestination] = []
+        owner_admitted = route is None
+        for destination in self._integration_destinations:
+            if (
+                destination.scope == "project"
+                and destination.scope_identifier != project_id
+            ):
+                continue
+            if destination.scope == "agent_type" and (
+                project_id is None or destination.scope_identifier != agent_type
+            ):
+                continue
+            if destination.scope not in {"system", "project", "agent_type"}:
+                continue
+
+            candidate = destination
+            is_owner = route is not None and route.matches(destination)
+            if is_owner:
+                if not route.artifact_sha256:
+                    continue
+                try:
+                    frozen_definition = self._store.load(route.artifact_sha256)
+                except Exception:
+                    logger.exception(
+                        "Could not load frozen integration artifact %s",
+                        route.artifact_sha256,
+                    )
+                    continue
+                candidate = _IntegrationDestination(
+                    activation_id=destination.activation_id,
+                    playbook_id=destination.playbook_id,
+                    scope=destination.scope,
+                    scope_identifier=destination.scope_identifier,
+                    artifact_sha256=route.artifact_sha256,
+                    definition=frozen_definition,
+                )
+            if any(
+                self._engine._rule_selected(rule, event_type, hydrated)
+                for rule in candidate.definition.rules
+            ):
+                selected.append(candidate)
+                if is_owner:
+                    owner_admitted = True
+        return selected if owner_admitted else []
 
     def _ensure_integration_reconciler(self) -> None:
         if self._integration_shutting_down:

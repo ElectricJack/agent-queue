@@ -6,15 +6,18 @@ import asyncio
 from types import SimpleNamespace
 
 import pytest
-from sqlalchemy import select, text
+from sqlalchemy import delete, select, text
 from sqlalchemy.exc import IntegrityError
 
 from src.config import PlaybooksConfig
 from src.database import Database
 from src.database.tables import (
+    integration_operation_artifact_pins,
     integration_outbox,
     integration_outbox_artifact_pins,
+    integration_repair_operations,
     playbook_activations,
+    playbook_artifacts,
     playbook_pending_events,
     playbook_v2_runs,
 )
@@ -178,6 +181,44 @@ async def _artifact_pin_rows(db):
         return (
             await conn.execute(select(integration_outbox_artifact_pins))
         ).mappings().all()
+
+
+async def _pin_operation_route(
+    db,
+    *,
+    operation_id: str,
+    playbook_id: str,
+    artifact_sha256: str,
+    activation_id: str,
+    scope: str = "project",
+    scope_identifier: str = "p",
+) -> None:
+    async with db.immediate() as conn:
+        await conn.execute(
+            integration_repair_operations.insert().values(
+                id=operation_id,
+                target_kind="batch",
+                batch_id=operation_id,
+                episode_id=operation_id,
+                active_stage=0,
+                state="active",
+                policy_snapshot={},
+                artifact_snapshot={},
+                required_check_version="test",
+                route_playbook_id=playbook_id,
+                route_scope=scope,
+                route_scope_identifier=scope_identifier,
+                route_activation_id=activation_id,
+                created_at=NOW,
+                updated_at=NOW,
+            )
+        )
+        await conn.execute(
+            integration_operation_artifact_pins.insert().values(
+                operation_id=operation_id,
+                artifact_sha256=artifact_sha256,
+            )
+        )
 
 
 async def _accepted_activation_count(db, event_id: str) -> int:
@@ -591,6 +632,121 @@ async def test_reactivation_does_not_replace_an_accepted_artifact(db, tmp_path):
     async with db._engine.connect() as conn:
         runs = (await conn.execute(select(playbook_v2_runs))).mappings().all()
     assert [row["artifact_sha256"] for row in runs] == [old_sha]
+
+
+async def test_new_operation_event_uses_frozen_owner_and_current_sibling_artifacts(
+    db, tmp_path
+):
+    compiled = tmp_path / "compiled"
+    owner_activation, owner_old_sha = await _activate(
+        db, compiled, "hierarchical-delivery", "integration.sealed", source_digit="1"
+    )
+    _sibling_activation, sibling_sha = await _activate(
+        db, compiled, "integration-observer", "integration.sealed", source_digit="3"
+    )
+    await _pin_operation_route(
+        db,
+        operation_id="operation-1",
+        playbook_id="hierarchical-delivery",
+        artifact_sha256=owner_old_sha,
+        activation_id=owner_activation,
+    )
+    _same_owner_activation, owner_new_sha = await _activate(
+        db, compiled, "hierarchical-delivery", "integration.sealed", source_digit="2"
+    )
+    assert owner_new_sha != owner_old_sha
+    await _enqueue(db)
+    runtime = _runtime(db, compiled)
+    await runtime.refresh()
+    runtime._schedule_integration_pending = lambda _rows: None
+
+    assert await runtime.accept_integration_event(
+        "integration.sealed",
+        {"project_id": "p", "operation_id": "operation-1"},
+        "event-1",
+    )
+    await runtime.shutdown()
+
+    pending = {row["playbook_id"]: row for row in await _pending_rows(db)}
+    assert pending["hierarchical-delivery"]["artifact_sha256"] == owner_old_sha
+    assert pending["integration-observer"]["artifact_sha256"] == sibling_sha
+    assert owner_new_sha not in {row["artifact_sha256"] for row in pending.values()}
+
+
+async def test_disabled_frozen_owner_keeps_new_event_pending_despite_sibling(
+    db, tmp_path
+):
+    compiled = tmp_path / "compiled"
+    owner_activation, owner_sha = await _activate(
+        db, compiled, "hierarchical-delivery", "integration.sealed", source_digit="1"
+    )
+    await _activate(
+        db, compiled, "integration-observer", "integration.sealed", source_digit="3"
+    )
+    await _pin_operation_route(
+        db,
+        operation_id="operation-1",
+        playbook_id="hierarchical-delivery",
+        artifact_sha256=owner_sha,
+        activation_id=owner_activation,
+    )
+    await db.set_playbook_activation(
+        playbook_id="hierarchical-delivery",
+        scope="project",
+        scope_identifier="p",
+        artifact_sha256=owner_sha,
+        enabled=False,
+        activated_by="test",
+        health="disabled",
+        reasons="[]",
+    )
+    await _enqueue(db)
+    runtime = _runtime(db, compiled)
+    await runtime.refresh()
+
+    assert not await runtime.accept_integration_event(
+        "integration.sealed",
+        {"project_id": "p", "operation_id": "operation-1"},
+        "event-1",
+    )
+    assert (await load_acceptance_state(db, "event-1")).manifest is None
+    assert await _pending_rows(db) == []
+    await runtime.shutdown()
+
+
+async def test_operation_pin_is_a_reference_for_gc_file_rechecks(db, tmp_path):
+    compiled = tmp_path / "compiled"
+    activation_id, old_sha = await _activate(
+        db, compiled, "hierarchical-delivery", "integration.sealed", source_digit="1"
+    )
+    await _pin_operation_route(
+        db,
+        operation_id="operation-1",
+        playbook_id="hierarchical-delivery",
+        artifact_sha256=old_sha,
+        activation_id=activation_id,
+    )
+    await _activate(
+        db, compiled, "hierarchical-delivery", "integration.sealed", source_digit="2"
+    )
+
+    collected = await db.collect_playbook_artifacts(
+        NOW + 1_000_000, min_versions=0, limit=100
+    )
+    assert old_sha not in {sha for sha, _path in collected}
+    # The file collector re-checks references after the artifact row has been
+    # deleted.  Simulate a SQLite deployment without FK enforcement so the
+    # normalized operation pin must protect the hash on its own.
+    async with db._engine.connect() as conn:
+        await conn.execute(text("PRAGMA foreign_keys = OFF"))
+        await conn.execute(
+            delete(playbook_artifacts).where(
+                playbook_artifacts.c.artifact_sha256 == old_sha
+            )
+        )
+        await conn.commit()
+
+    assert await db.filter_referenced_artifact_shas([old_sha]) == {old_sha}
 
 
 async def test_restart_reconciler_drains_more_than_one_bounded_page(db, tmp_path):

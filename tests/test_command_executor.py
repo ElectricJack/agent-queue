@@ -261,6 +261,15 @@ class TestLiveInvocationContext:
                 assert task_id == "source-task"
                 return SimpleNamespace(branch_name="aq/source-task")
 
+            async def get_integration_operation_artifact_route(self, operation_id):
+                assert operation_id == "operation-1"
+                ref = artifact_ref_for(minimal_artifact())
+                return {
+                    "playbook_id": ref.playbook_id,
+                    "artifact_sha256": ref.artifact_sha256,
+                    "artifact_snapshot": ref.as_dict(),
+                }
+
         service = PromotionService(ProvenanceDB(), data_dir=".")
         observed = {}
 
@@ -270,7 +279,8 @@ class TestLiveInvocationContext:
                     {
                         "source_task_id": "source-task",
                         "reviewer_session_attempt_id": None,
-                    }
+                    },
+                    operation_id="operation-1",
                 )
             )
             return CommandResult(
@@ -307,6 +317,53 @@ class TestLiveInvocationContext:
         assert observed["playbook_step_id"] == "promotion-step"
         assert observed["playbook_attempt"] == 7
         assert observed["playbook_run_id"] != principal.parent_run_id
+
+    @pytest.mark.asyncio
+    async def test_promotion_rejects_invocation_artifact_outside_frozen_operation(self):
+        from types import SimpleNamespace
+
+        from src.integration.promotion import PromotionService
+
+        class ProvenanceDB:
+            async def get_task(self, task_id):
+                return SimpleNamespace(branch_name="aq/source-task")
+
+            async def get_integration_operation_artifact_route(self, operation_id):
+                ref = artifact_ref_for(minimal_artifact()).as_dict()
+                ref["artifact_sha256"] = "sha256:" + "f" * 64
+                return {
+                    "playbook_id": ref["playbook_id"],
+                    "artifact_sha256": ref["artifact_sha256"],
+                    "artifact_snapshot": ref,
+                }
+
+        service = PromotionService(ProvenanceDB(), data_dir=".")
+
+        async def invoke(args, principal):
+            await service._provenance(
+                {
+                    "source_task_id": "source-task",
+                    "reviewer_session_attempt_id": None,
+                },
+                operation_id="operation-1",
+            )
+            return CommandResult(
+                outcome="created",
+                value=EnsureTaskResult(task_id="t", created=True),
+                summary="",
+            )
+
+        registry = ContractRegistry()
+        registry.register(
+            CommandRegistration(
+                name="ensure_task", contract=ENSURE_TASK, invoke=invoke
+            )
+        )
+
+        result = await run(command_step(), context(registry))
+
+        assert result.outcome == "runtime_error"
+        assert result.diagnostics == ("PromotionInvariantError",)
 
 
 class TestConsumeOrder:

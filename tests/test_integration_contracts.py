@@ -34,6 +34,8 @@ DESIGN_EVENTS = {
     "integration.promoted",
     "integration.resolution_push_observed",
     "integration.cleanup_pending",
+    "task.integration_configuration_blocked",
+    "integration.repair_delegate_closed",
 }
 
 
@@ -43,12 +45,91 @@ def test_all_design_events_require_project_and_operation_identity():
         schema = EVENT_SCHEMAS[event_type]
         assert {"project_id", "operation_id"} <= set(schema["required"])
         payload = {"project_id": "p", "operation_id": "op"}
+        if event_type.startswith("task."):
+            payload |= {"task_id": "task", "title": "Task"}
         if event_type == "integration.resolution_push_observed":
             payload["promotion_intent_id"] = "intent"
         assert not validate_event(
             event_type,
             payload,
         )
+
+
+def test_hierarchy_event_payloads_expose_exact_typed_command_inputs():
+    expected = {
+        "task.child_added": {
+            "parent_id": str,
+            "children": list,
+            "expected_generation": int,
+        },
+        "task.parent_checkpointed": {
+            "task_id": str,
+            "head_sha": str,
+            "generation": int,
+        },
+        "delivery.ready": {
+            "operation_key": str,
+            "source_task_id": str,
+            "source_head": str,
+            "source_base": str,
+            "expected_target": str,
+            "fence": dict,
+        },
+        "delivery.applied": {"promotion_intent_id": str},
+        "task.integration_ready": {
+            "task_id": str,
+            "episode_id": str,
+            "generation": int,
+            "head_sha": str,
+            "verifier_task_id": (str, type(None)),
+        },
+        "task.integration_verified": {
+            "task_id": str,
+            "generation": int,
+            "head_sha": str,
+            "verification_id": str,
+        },
+        "integration.repair_exhausted": {"stage": int},
+        "integration.repair_deadline_due": {"stage": int},
+        "integration.resolution_push_observed": {"promotion_intent_id": str},
+        "integration.cleanup_pending": {"promotion_intent_id": str},
+        "task.integration_configuration_blocked": {
+            "task_id": str,
+            "reason": str,
+        },
+        "integration.repair_delegate_closed": {
+            "stage": int,
+            "task_id": str,
+            "session_id": str,
+            "instance_token": str,
+            "workspace_id": str,
+            "fence_token": int,
+        },
+    }
+    for event_type, payload_fields in expected.items():
+        schema = EVENT_SCHEMAS[event_type]
+        base_fields = {
+            "project_id",
+            "operation_id",
+        }
+        if event_type.startswith("task."):
+            base_fields |= {"task_id", "title"}
+        assert set(schema["required"] + schema["optional"]) == {
+            *base_fields,
+            *payload_fields,
+        }
+        expected_types = {
+            "project_id": str,
+            "operation_id": str,
+            **payload_fields,
+        }
+        if event_type.startswith("task."):
+            expected_types |= {"task_id": str, "title": str}
+        assert schema["types"] == expected_types
+        assert set(schema["fields"]) == {
+            *base_fields,
+            *payload_fields,
+        }
 
 
 def test_integration_effect_subjects_use_existing_renderable_clauses():

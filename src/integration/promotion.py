@@ -162,7 +162,9 @@ class PromotionService:
                 "committer": {"name": _INTEGRATION_NAME, "email": _INTEGRATION_EMAIL},
                 "timestamp": int(created_at),
             }
-            provenance = await self._provenance(context["review_evidence"])
+            provenance = await self._provenance(
+                context["review_evidence"], operation_id=request.operation_key
+            )
             try:
                 intent = await self.db.reserve_integration_promotion_intent(
                     {
@@ -863,9 +865,27 @@ class PromotionService:
             body += "\n\n" + trailers
         return body
 
-    async def _provenance(self, review: dict[str, Any]) -> dict[str, Any]:
+    async def _provenance(
+        self, review: dict[str, Any], *, operation_id: str
+    ) -> dict[str, Any]:
         principal = current_principal() or TRUSTED_LOCAL
         invocation = current_invocation()
+        operation_route = await self.db.get_integration_operation_artifact_route(
+            operation_id
+        )
+        if invocation is not None and operation_route is not None:
+            artifact_snapshot = operation_route.get("artifact_snapshot")
+            if (
+                not isinstance(artifact_snapshot, dict)
+                or invocation.artifact_ref.as_dict() != artifact_snapshot
+                or operation_route.get("playbook_id")
+                != invocation.artifact_ref.playbook_id
+                or operation_route.get("artifact_sha256")
+                != invocation.artifact_ref.artifact_sha256
+            ):
+                raise PromotionInvariantError(
+                    "playbook invocation artifact does not match the frozen operation route"
+                )
         reviewer_attempt = None
         if review.get("reviewer_session_attempt_id"):
             reviewer_attempt = await self.db.get_task_session_attempt(

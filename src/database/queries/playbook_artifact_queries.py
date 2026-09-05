@@ -452,6 +452,8 @@ class PlaybookArtifactQueryMixin:
                 playbook_artifacts.c.artifact_sha256,
                 playbook_activations.c.active_artifact_sha256,
                 playbook_v2_runs.c.artifact_sha256,
+                integration_outbox_artifact_pins.c.artifact_sha256,
+                integration_operation_artifact_pins.c.artifact_sha256,
             ):
                 found = await conn.execute(select(column).where(column.in_(batch)))
                 referenced.update(sha for sha in found.scalars().all() if sha)

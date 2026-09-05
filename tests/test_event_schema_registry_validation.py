@@ -96,8 +96,11 @@ _CANONICAL_PAYLOADS: dict[str, dict] = {
             "integration.repair_deadline_due",
             "integration.human_blocked",
             "integration.promoted",
+            "integration.resolution_push_observed",
             "integration.cleanup_pending",
             "integration.branch_materialization_pending",
+            "task.integration_configuration_blocked",
+            "integration.repair_delegate_closed",
         )
     },
     # Fleet metrics
@@ -587,6 +590,14 @@ _CANONICAL_PAYLOADS: dict[str, dict] = {
         "ok": True,
     },
 }
+
+for _event_type, _payload in _CANONICAL_PAYLOADS.items():
+    if _event_type.startswith("task.") and "operation_id" in _payload:
+        _payload.setdefault("task_id", "task-1")
+        _payload.setdefault("title", "Task")
+_CANONICAL_PAYLOADS["integration.resolution_push_observed"][
+    "promotion_intent_id"
+] = "intent-1"
 
 # Timer schemas are dynamically generated; add common intervals
 for _interval in ("1m", "5m", "15m", "30m", "1h", "4h", "12h", "24h"):

@@ -1098,27 +1098,152 @@ _INTEGRATION_SCHEMAS: dict[str, EventSchema] = {
         "integration.resolution_push_observed",
         "integration.cleanup_pending",
         "integration.branch_materialization_pending",
+        "task.integration_configuration_blocked",
+        "integration.repair_delegate_closed",
     )
 }
 
-_INTEGRATION_SCHEMAS["integration.branch_materialization_pending"]["optional"] = [
-    "origin_id",
-    "task_id",
-    "repository_id",
-    "branch",
-    "parent_ref",
-    "base_sha",
-]
+_FENCE_EVENT_FIELD: EventFieldSpec = {
+    "type": "object",
+    "description": "repository-qualified ownership fence",
+    "fields": {
+        "target": {
+            "type": "object",
+            "description": "fenced repository branch",
+            "fields": {
+                "repository_id": {"type": "string", "description": "repository"},
+                "branch": {"type": "string", "description": "branch"},
+            },
+        },
+        "owner_id": {"type": "string", "description": "fence owner"},
+        "token": {"type": "integer", "description": "fence token"},
+    },
+}
 
-_INTEGRATION_SCHEMAS["integration.resolution_push_observed"]["required"].append(
-    "promotion_intent_id"
-)
-_INTEGRATION_SCHEMAS["integration.resolution_push_observed"]["types"][
-    "promotion_intent_id"
-] = str
-_INTEGRATION_SCHEMAS["integration.resolution_push_observed"]["fields"][
-    "promotion_intent_id"
-] = {"type": "string", "description": "immutable promotion intent"}
+# Additional fields are optional at the registry boundary unless named below:
+# several lifecycle facts predate these typed projections and legitimately
+# carry only operation identity.  The field inventory still gives reviewed V2
+# artifacts strict types for every command input they read.
+_INTEGRATION_PAYLOAD_FIELDS: dict[
+    str, dict[str, tuple[type | tuple[type, ...], EventFieldSpec]]
+] = {
+    "task.child_added": {
+        "parent_id": (str, {"type": "string", "description": "immediate parent task"}),
+        "children": (
+            list,
+            {
+                "type": "array",
+                "description": "child filing requests",
+                "item": {"type": "object", "description": "child filing request"},
+            },
+        ),
+        "expected_generation": (
+            int,
+            {"type": "integer", "description": "expected parent generation"},
+        ),
+    },
+    "task.parent_checkpointed": {
+        "task_id": (str, {"type": "string", "description": "parent task"}),
+        "head_sha": (str, {"type": "string", "description": "checkpoint head"}),
+        "generation": (int, {"type": "integer", "description": "parent generation"}),
+    },
+    "delivery.ready": {
+        "operation_key": (str, {"type": "string", "description": "delivery operation"}),
+        "source_task_id": (str, {"type": "string", "description": "source child task"}),
+        "source_head": (str, {"type": "string", "description": "reviewed source head"}),
+        "source_base": (str, {"type": "string", "description": "reviewed source base"}),
+        "expected_target": (str, {"type": "string", "description": "expected parent head"}),
+        "fence": (dict, _FENCE_EVENT_FIELD),
+    },
+    "delivery.applied": {
+        "promotion_intent_id": (
+            str,
+            {"type": "string", "description": "immutable promotion intent"},
+        ),
+    },
+    "task.integration_ready": {
+        "task_id": (str, {"type": "string", "description": "parent task"}),
+        "episode_id": (str, {"type": "string", "description": "collection episode"}),
+        "generation": (int, {"type": "integer", "description": "parent generation"}),
+        "head_sha": (str, {"type": "string", "description": "collected parent head"}),
+        "verifier_task_id": (
+            (str, type(None)),
+            {"type": "string", "description": "aggregate verifier task"},
+        ),
+    },
+    "task.integration_verified": {
+        "task_id": (str, {"type": "string", "description": "parent task"}),
+        "generation": (int, {"type": "integer", "description": "verified generation"}),
+        "head_sha": (str, {"type": "string", "description": "verified parent head"}),
+        "verification_id": (
+            str,
+            {"type": "string", "description": "aggregate verification"},
+        ),
+    },
+    "integration.repair_exhausted": {
+        "stage": (int, {"type": "integer", "description": "exhausted repair stage"}),
+    },
+    "integration.repair_deadline_due": {
+        "stage": (int, {"type": "integer", "description": "due repair stage"}),
+    },
+    "integration.resolution_push_observed": {
+        "promotion_intent_id": (
+            str,
+            {"type": "string", "description": "immutable promotion intent"},
+        ),
+    },
+    "integration.cleanup_pending": {
+        "promotion_intent_id": (
+            str,
+            {"type": "string", "description": "immutable promotion intent"},
+        ),
+    },
+    "task.integration_configuration_blocked": {
+        "task_id": (str, {"type": "string", "description": "parent task"}),
+        "reason": (str, {"type": "string", "description": "configuration failure"}),
+    },
+    "integration.repair_delegate_closed": {
+        "stage": (int, {"type": "integer", "description": "repair stage"}),
+        "task_id": (str, {"type": "string", "description": "repair delegate task"}),
+        "session_id": (str, {"type": "string", "description": "repair session"}),
+        "instance_token": (str, {"type": "string", "description": "repair session instance"}),
+        "workspace_id": (str, {"type": "string", "description": "retained workspace"}),
+        "fence_token": (int, {"type": "integer", "description": "ownership fence token"}),
+    },
+    "integration.branch_materialization_pending": {
+        "origin_id": (str, {"type": "string", "description": "branch origin"}),
+        "task_id": (str, {"type": "string", "description": "task"}),
+        "repository_id": (str, {"type": "string", "description": "repository"}),
+        "branch": (str, {"type": "string", "description": "reserved task branch"}),
+        "parent_ref": (str, {"type": "string", "description": "immediate parent ref"}),
+        "base_sha": (str, {"type": "string", "description": "branch base"}),
+    },
+}
+
+_INTEGRATION_REQUIRED_PAYLOAD_FIELDS = {
+    "integration.resolution_push_observed": {"promotion_intent_id"},
+}
+for _event_type, _payload_fields in _INTEGRATION_PAYLOAD_FIELDS.items():
+    _schema = _INTEGRATION_SCHEMAS[_event_type]
+    if _event_type.startswith("task."):
+        for _name, _description in (
+            ("task_id", "task"),
+            ("title", "title"),
+        ):
+            if _name not in _schema["required"]:
+                _schema["required"].append(_name)
+            _schema["types"][_name] = str
+            _schema["fields"][_name] = {
+                "type": "string",
+                "description": _description,
+            }
+    _required = _INTEGRATION_REQUIRED_PAYLOAD_FIELDS.get(_event_type, set())
+    for _name, (_python_type, _field_spec) in _payload_fields.items():
+        _destination = "required" if _name in _required else "optional"
+        if _name not in _schema["required"] and _name not in _schema["optional"]:
+            _schema[_destination].append(_name)
+        _schema["types"][_name] = _python_type
+        _schema["fields"][_name] = _field_spec
 
 
 # ---------------------------------------------------------------------------

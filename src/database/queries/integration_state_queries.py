@@ -7,6 +7,7 @@ from sqlalchemy import and_, select
 from src.database.tables import (
     integration_batches,
     integration_branch_owners,
+    integration_operation_artifact_pins,
     integration_repair_operations,
     integration_repair_stages,
     sessions,
@@ -40,6 +41,46 @@ class IntegrationStateQueriesMixin:
         async with self._engine.connect() as conn:
             row = (await conn.execute(statement)).mappings().one_or_none()
         return dict(row) if row is not None else None
+
+    async def get_integration_operation_artifact_route(
+        self, operation_id: str
+    ) -> dict | None:
+        """Return an operation's immutable owner route, if it has one.
+
+        The activation id is retained for audit only.  Admission joins the
+        stable playbook/scope address to the currently enabled activation and
+        uses the normalized operation pin as the artifact identity.
+        """
+
+        statement = (
+            select(
+                integration_repair_operations.c.route_playbook_id.label(
+                    "playbook_id"
+                ),
+                integration_repair_operations.c.route_scope.label("scope"),
+                integration_repair_operations.c.route_scope_identifier.label(
+                    "scope_identifier"
+                ),
+                integration_repair_operations.c.route_activation_id.label(
+                    "activation_id"
+                ),
+                integration_repair_operations.c.artifact_snapshot,
+                integration_operation_artifact_pins.c.artifact_sha256,
+            )
+            .select_from(
+                integration_repair_operations.outerjoin(
+                    integration_operation_artifact_pins,
+                    integration_operation_artifact_pins.c.operation_id
+                    == integration_repair_operations.c.id,
+                )
+            )
+            .where(integration_repair_operations.c.id == operation_id)
+        )
+        async with self._engine.connect() as conn:
+            row = (await conn.execute(statement)).mappings().one_or_none()
+        if row is None or not any(row.values()):
+            return None
+        return dict(row)
 
     async def get_active_integration_repair_for_task(
         self, repair_task_id: str
