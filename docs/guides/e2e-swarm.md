@@ -77,8 +77,10 @@ PASS S6 doctor (12.2s)
      11 swarm checks clean; hot-reload flip warned (...) and restored (...)
 PASS S7 PostgreSQL claim race (26.4s)
      outcomes ['no_ready_work', 'claimed'] — one winner, loser said no_ready_work
+PASS S8 project onboarding (1.2s)
+     real CLI linked an unchanged repository and initialized main + README; each project has one enabled project-repo workspace and standard vault storage
 
-7/7 scenarios passed
+8/8 scenarios passed
 ```
 
 The runner exits non-zero if any scenario fails.
@@ -94,10 +96,10 @@ class and model constraints.
 | File | What it does |
 |---|---|
 | `scripts/e2e-common.sh` | shared paths, ports and DSNs; every value overridable from the environment |
-| `scripts/e2e-env.sh` | builds the world: dirs, bare git repos + workspace clones, vault fixtures, `bin/aq`, `config.yaml`, the database. `--reset` drops all of it first; `--register` registers the projects against a running daemon |
+| `scripts/e2e-env.sh` | builds the world: dirs, bare git repos + workspace clones, an operator-owned onboarding root, vault fixtures, `bin/aq`, `config.yaml`, and the database. `--reset` drops all of it first; `--register` registers the projects against a running daemon |
 | `scripts/e2e-daemon.sh` | `start` / `stop` / `status` / `logs` for the isolated daemon |
 | `scripts/e2e-smoke.sh` | the Tier 1 runner (thin wrapper) |
-| `scripts/e2e/smoke.py` | the seven scenarios |
+| `scripts/e2e/smoke.py` | the eight scenarios |
 | `scripts/e2e/aq.py` | runs *this worktree's* `aq` — see below |
 | `scripts/e2e/register.py` | creates the `e2e` / `other` projects + their workspaces (needs the daemon) |
 | `scripts/e2e/dbsetup.py` | creates/drops `agent_queue_e2e` via asyncpg (no `psql` needed) |
@@ -219,6 +221,15 @@ gets `no_ready_work` or `claim_conflict`. *Regression it catches: the
 `FOR UPDATE SKIP LOCKED` work query losing its exclusivity — the failure that
 unit tests on SQLite cannot see.*
 
+**S8 — project onboarding.** The real `aq project onboard` CLI links a seeded
+repository beneath the configured disposable root and initializes a second
+repository with the default `main` branch and README commit. CLI reads then
+verify that each operation created exactly one project and one enabled primary
+`project-repo` workspace; filesystem checks verify the linked repository stayed
+byte-for-byte clean and both standard vault trees exist. *Regression it catches:
+the public CLI, configured-root authorization, saga registration, Git setup, and
+vault setup working separately but failing when composed through a real daemon.*
+
 ### Reading a failure
 
 Every scenario prints its own reason on the line under `FAIL`; the waits name
@@ -301,8 +312,8 @@ aq session list --lifecycle pool
 tmux -L aq-e2e attach                # ctrl-b d to detach without killing it
 ```
 
-S1, S2 and S4 are the three worth watching live; S3/S5/S6/S7 are protocol
-assertions that Tier 1 already covers deterministically.
+S1, S2 and S4 are the three worth watching live; S3/S5/S6/S7/S8 are protocol
+and operator-surface assertions that Tier 1 already covers deterministically.
 
 What to watch for, in order:
 

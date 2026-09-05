@@ -160,7 +160,7 @@ No `updated_at` on projects. The `discord_control_channel_id` column exists for 
 | `url` | TEXT | NOT NULL | Git remote URL or empty string |
 | `default_branch` | TEXT | NOT NULL DEFAULT 'main' | Branch used for cloning |
 | `checkout_base_path` | TEXT | NOT NULL | Base directory for worktrees |
-| `source_type` | TEXT | NOT NULL DEFAULT 'clone' | Added by migration; one of: clone, link, init |
+| `source_type` | TEXT | NOT NULL DEFAULT 'clone' | Added by migration; one of: clone, link, init, worktree |
 | `source_path` | TEXT | NOT NULL DEFAULT '' | Added by migration; local filesystem path for `link`/`init` sources |
 
 ### Table: `tasks`
@@ -491,14 +491,23 @@ No CRUD methods are defined on `Database` for this table in the current implemen
 | `id` | TEXT | PRIMARY KEY | UUID string |
 | `project_id` | TEXT | NOT NULL REFERENCES projects(id) | Parent project |
 | `workspace_path` | TEXT | NOT NULL | Absolute filesystem path |
-| `source_type` | TEXT | NOT NULL DEFAULT 'clone' | One of: clone, link, init |
-| `name` | TEXT | NOT NULL DEFAULT '' | Human-readable workspace name |
+| `source_type` | TEXT | NOT NULL DEFAULT 'clone' | One of: clone, link, init, worktree |
+| `name` | TEXT | nullable | Human-readable workspace name |
+| `kind_id` | TEXT | nullable | Soft reference resolved project-first, then against the `__system__` workspace kind |
 | `locked_by_agent_id` | TEXT | nullable | Agent currently using this workspace |
 | `locked_by_task_id` | TEXT | nullable | Task the workspace is locked for |
 | `locked_at` | REAL | nullable | Unix timestamp of lock acquisition |
+| `lock_mode` | TEXT | nullable | Lock mode used by the current holder; NULL when unlocked |
+| `enabled` | BOOLEAN | NOT NULL DEFAULT true | Disabled workspaces are excluded from acquisition |
+| `slot_index` | INTEGER | nullable | Stable worktree slot ordinal; NULL for clones, links, and base rows |
+| `base_workspace_id` | TEXT | nullable | Soft self-reference to the slot's base workspace |
 | `created_at` | REAL | NOT NULL | Set on insert |
 
-UNIQUE constraint on `(project_id, workspace_path)`. Has extensive CRUD methods: `create_workspace`, `get_workspace`, `list_workspaces`, `delete_workspace`, `acquire_workspace`, `release_workspace`, `release_workspaces_for_agent`, `release_workspaces_for_task`, `get_workspace_for_task`, `get_project_workspace_path`, `count_available_workspaces`.
+UNIQUE constraint on `(project_id, workspace_path)`. A partial unique index on
+`(base_workspace_id, slot_index)` when both are non-NULL gives every base a
+single row per worktree slot. Has extensive CRUD methods: `create_workspace`,
+`get_workspace`, `list_workspaces`, `delete_workspace`, acquisition/release
+operations, slot management, and project-path/count queries.
 
 ### Table: `agent_profiles`
 
@@ -631,13 +640,13 @@ sentinel for system-wide kinds.
 | `project_id` | TEXT | PRIMARY KEY | Composite PK part 1; system scope sentinel for global kinds |
 | `id` | TEXT | PRIMARY KEY | Composite PK part 2; kind id, e.g. `project-repo`, `vault` |
 | `description` | TEXT | NOT NULL DEFAULT '' | Prose from the markdown body |
-| `writable` | INTEGER | NOT NULL DEFAULT true | Boolean (0/1) |
-| `lockable` | INTEGER | NOT NULL DEFAULT true | Boolean (0/1); unlockable kinds need no lease |
-| `is_git_repo` | INTEGER | NOT NULL DEFAULT true | Boolean (0/1) |
+| `writable` | BOOLEAN | NOT NULL DEFAULT true | Whether agents may write to instances |
+| `lockable` | BOOLEAN | NOT NULL DEFAULT true | Non-lockable kinds need no lease |
+| `is_git_repo` | BOOLEAN | NOT NULL DEFAULT true | Enables Git provisioning behavior |
 | `repo_url` | TEXT | nullable | Clone source when the kind is a repo |
 | `default_lock_mode` | TEXT | nullable | Lock granularity when lockable |
-| `auto_attach` | INTEGER | NOT NULL DEFAULT false | Boolean (0/1); attached without being declared |
-| `mode` | TEXT | NOT NULL DEFAULT 'worktree' | Acquisition mode, e.g. worktree, clone, readonly |
+| `auto_attach` | BOOLEAN | NOT NULL DEFAULT false | Attached without being declared |
+| `mode` | TEXT | NOT NULL DEFAULT 'worktree' | Git provisioning strategy: worktree, exclusive-clone, or directory-isolated |
 | `worktree_setup` | TEXT | NOT NULL DEFAULT '[]' | JSON array of setup commands — **operator-authored, trusted** |
 | `created_at` | REAL | NOT NULL | Set on insert |
 | `updated_at` | REAL | NOT NULL | Set on insert and every update |
