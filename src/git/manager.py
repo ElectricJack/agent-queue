@@ -69,10 +69,12 @@ import logging
 import os
 import re
 import subprocess
+from contextlib import asynccontextmanager
 from collections.abc import Callable
 from dataclasses import dataclass
+from enum import StrEnum
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, AsyncIterator
 
 if TYPE_CHECKING:
     from src.event_bus import EventBus
@@ -82,6 +84,21 @@ logger = logging.getLogger(__name__)
 
 class GitError(Exception):
     pass
+
+
+class RemoteRefState(StrEnum):
+    """Fail-closed result states for an exact remote reference read."""
+
+    PRESENT = "present"
+    ABSENT = "absent"
+    ERROR = "error"
+
+
+@dataclass(frozen=True)
+class RemoteRefResult:
+    state: RemoteRefState
+    oid: str | None = None
+    error: str | None = None
 
 
 @dataclass(frozen=True)
@@ -307,6 +324,19 @@ class GitManager:
     # ``fetch`` and therefore also needs serialization.
     _SERIALIZED_SUBCOMMANDS: frozenset[str] = frozenset({"fetch", "gc", "pull"})
 
+    _SCOPED_ENV_KEYS: frozenset[str] = frozenset(
+        {
+            "GIT_AUTHOR_NAME",
+            "GIT_AUTHOR_EMAIL",
+            "GIT_AUTHOR_DATE",
+            "GIT_COMMITTER_NAME",
+            "GIT_COMMITTER_EMAIL",
+            "GIT_COMMITTER_DATE",
+            "LC_ALL",
+        }
+    )
+    _MAX_STDIN_BYTES = 1024 * 1024
+
     def __init__(self) -> None:
         # Optional lock provider for serializing shared git operations
         # across branch-isolated worktrees.  When set, ``_arun`` acquires
@@ -316,6 +346,7 @@ class GitManager:
         # so two merges of PRs in the same repository never fetch into the
         # same bare cache at once.
         self._pr_diff_cache_locks: dict[str, asyncio.Lock] = {}
+        self._repository_operation_locks: dict[str, asyncio.Lock] = {}
 
     def set_lock_provider(
         self,
@@ -417,6 +448,100 @@ class GitManager:
         if proc.returncode != 0:
             raise GitError(f"git {' '.join(args)} failed: {stderr_str}")
         return stdout_str
+
+    async def arun_git_result(
+        self,
+        args: list[str],
+        *,
+        cwd: str,
+        stdin: str | None = None,
+        env: dict[str, str] | None = None,
+        timeout: int | None = None,
+        lock_held: bool = False,
+    ) -> subprocess.CompletedProcess:
+        """Run Git while preserving expected nonzero status and diagnostics.
+
+        Promotion construction needs status 1 from ``merge-tree`` to remain a
+        domain conflict, and ``commit-tree`` needs deterministic identity and
+        message input.  Per-call environment additions are deliberately
+        limited to Git identity/date variables and ``LC_ALL``.
+        """
+        if not args:
+            raise GitError("git command is empty")
+        if stdin is not None and len(stdin.encode("utf-8")) > self._MAX_STDIN_BYTES:
+            raise GitError("git command stdin exceeds the bounded input limit")
+        overrides = dict(env or {})
+        unexpected = set(overrides) - self._SCOPED_ENV_KEYS
+        if unexpected:
+            raise GitError("unsupported per-call git environment: " + ", ".join(sorted(unexpected)))
+
+        lock: asyncio.Lock | None = None
+        if not lock_held and self._lock_provider and args[0] in self._SERIALIZED_SUBCOMMANDS:
+            lock = self._lock_provider(cwd)
+        if lock is not None:
+            async with lock:
+                return await self._arun_git_result_unlocked(
+                    args, cwd=cwd, stdin=stdin, env=overrides, timeout=timeout
+                )
+        return await self._arun_git_result_unlocked(
+            args, cwd=cwd, stdin=stdin, env=overrides, timeout=timeout
+        )
+
+    async def _arun_git_result_unlocked(
+        self,
+        args: list[str],
+        *,
+        cwd: str,
+        stdin: str | None,
+        env: dict[str, str],
+        timeout: int | None,
+    ) -> subprocess.CompletedProcess:
+        effective_timeout = timeout or self._GIT_TIMEOUT
+        command = ["git", *args]
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *command,
+                cwd=cwd,
+                stdin=asyncio.subprocess.PIPE if stdin is not None else None,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                env={**self._SUBPROCESS_ENV, **env},
+            )
+            try:
+                stdout, stderr = await asyncio.wait_for(
+                    proc.communicate(None if stdin is None else stdin.encode("utf-8")),
+                    timeout=effective_timeout,
+                )
+            except asyncio.TimeoutError:
+                try:
+                    proc.kill()
+                except ProcessLookupError:
+                    pass
+                await proc.wait()
+                raise GitError(
+                    f"git {' '.join(args)} timed out after {effective_timeout}s "
+                    "(possible credential prompt)"
+                )
+        except FileNotFoundError as exc:
+            if not Path(cwd).is_dir():
+                raise GitError(f"git working directory does not exist: {cwd}") from exc
+            raise GitError("git executable not found") from exc
+        return subprocess.CompletedProcess(
+            args=command,
+            returncode=proc.returncode,
+            stdout=stdout.decode(errors="replace"),
+            stderr=stderr.decode(errors="replace"),
+        )
+
+    @asynccontextmanager
+    async def arepository_transaction(self, cwd: str) -> AsyncIterator[None]:
+        """Serialize a compound object/ref operation for one Git store."""
+        lock = self._lock_provider(cwd) if self._lock_provider else None
+        if lock is None:
+            key = str(Path(cwd).resolve())
+            lock = self._repository_operation_locks.setdefault(key, asyncio.Lock())
+        async with lock:
+            yield
 
     async def _arun_subprocess(
         self,
@@ -1146,9 +1271,7 @@ class GitManager:
             for path in cached_output.split("\0")
             if path
             and (
-                path == ".aq-worktree.json"
-                or path.startswith(".aq/")
-                or path.startswith(".codex/")
+                path == ".aq-worktree.json" or path.startswith(".aq/") or path.startswith(".codex/")
             )
         ]
 
@@ -2030,9 +2153,7 @@ class GitManager:
                 current["head"] = value
             elif key == "branch":
                 current["branch"] = (
-                    value[len("refs/heads/") :]
-                    if value.startswith("refs/heads/")
-                    else value
+                    value[len("refs/heads/") :] if value.startswith("refs/heads/") else value
                 )
             else:
                 # Valueless flags (detached, bare) and valued ones
@@ -2123,8 +2244,10 @@ class GitManager:
             # older ``--git-path`` still locates separate-git-dir layouts;
             # make its relative result absolute against the checkout.
             git_path = await self._arun(["rev-parse", "--git-path", path], cwd=checkout_path)
-            return git_path if os.path.isabs(git_path) else os.path.abspath(
-                os.path.join(checkout_path, git_path)
+            return (
+                git_path
+                if os.path.isabs(git_path)
+                else os.path.abspath(os.path.join(checkout_path, git_path))
             )
 
     async def ainit_repo(self, path: str) -> None:
@@ -2187,9 +2310,7 @@ class GitManager:
         # Read-only: revision expressions (HEAD~1, HEAD^, main@{1}) allowed.
         _validate_rev(base_branch, field="base branch")
         try:
-            output = await self._arun(
-                ["diff", "--name-only", base_branch, "--"], cwd=checkout_path
-            )
+            output = await self._arun(["diff", "--name-only", base_branch, "--"], cwd=checkout_path)
             return output.split("\n") if output else []
         except GitError:
             return []
@@ -2490,19 +2611,34 @@ class GitManager:
         exactly the wrong evidence for that.  ``None`` means "no such
         branch on the remote", or the remote could not be reached.
         """
-        _validate_ref(branch)
-        try:
-            out = await self._arun(
-                ["ls-remote", "--heads", "origin", f"refs/heads/{branch}"],
-                cwd=checkout_path,
+        result = await self.als_remote_ref(checkout_path, branch)
+        return result.oid if result.state is RemoteRefState.PRESENT else None
+
+    async def als_remote_ref(self, checkout_path: str, branch: str) -> RemoteRefResult:
+        """Read one exact remote head without conflating absence and I/O failure."""
+        branch = _validate_ref(branch)
+        result = await self.arun_git_result(
+            ["ls-remote", "--heads", "origin", f"refs/heads/{branch}"],
+            cwd=checkout_path,
+            env={"LC_ALL": "C"},
+        )
+        if result.returncode != 0:
+            return RemoteRefResult(
+                RemoteRefState.ERROR,
+                error=(result.stderr or result.stdout or "git ls-remote failed").strip(),
             )
-        except GitError:
-            return None
-        for line in out.splitlines():
-            sha, _, ref = line.partition("\t")
-            if ref.strip() == f"refs/heads/{branch}" and len(sha.strip()) == 40:
-                return sha.strip()
-        return None
+        expected_ref = f"refs/heads/{branch}"
+        matches: list[str] = []
+        for line in result.stdout.splitlines():
+            sha, separator, ref = line.partition("\t")
+            candidate = sha.strip().lower()
+            if separator and ref.strip() == expected_ref and _OID_RE.fullmatch(candidate):
+                matches.append(candidate)
+        if not matches:
+            return RemoteRefResult(RemoteRefState.ABSENT)
+        if len(matches) != 1:
+            return RemoteRefResult(RemoteRefState.ERROR, error="remote returned duplicate refs")
+        return RemoteRefResult(RemoteRefState.PRESENT, oid=matches[0])
 
     async def apush_head_to(
         self,
@@ -2660,6 +2796,8 @@ class GitManager:
         tip_oid: str,
         branch: str,
         expected_old_oid: str,
+        *,
+        lock_held: bool = False,
     ) -> str:
         """Push one validated candidate with an exact remote old-tip lease.
 
@@ -2682,18 +2820,14 @@ class GitManager:
         # on a tracking ref for authority.  This makes the expected old tip's
         # commit available for the ancestry proof even in a fresh checkout;
         # the explicit lease below remains the remote-movement guard.
-        await self._arun(
-            ["fetch", "--no-tags", "origin", f"refs/heads/{branch}"],
-            cwd=checkout_path,
-        )
+        runner = self._arun_unlocked if lock_held else self._arun
+        await runner(["fetch", "--no-tags", "origin", f"refs/heads/{branch}"], cwd=checkout_path)
         for oid in (base_oid, tip_oid, expected_old_oid):
             await self._arun(["cat-file", "-e", f"{oid}^{{commit}}"], cwd=checkout_path)
         if await self.ais_ancestor(checkout_path, base_oid, tip_oid, strict=True) is not True:
             raise GitError("delivery tip is not a descendant of its expected base")
         if (
-            await self.ais_ancestor(
-                checkout_path, expected_old_oid, tip_oid, strict=True
-            )
+            await self.ais_ancestor(checkout_path, expected_old_oid, tip_oid, strict=True)
             is not True
         ):
             raise GitError("delivery tip is not a descendant of its expected target")
@@ -2701,7 +2835,7 @@ class GitManager:
         if paths:
             raise GitError("reserved delivery paths: " + ", ".join(paths))
 
-        await self._arun(
+        await runner(
             [
                 "push",
                 "origin",
@@ -2738,9 +2872,7 @@ class GitManager:
             args += ["--head", _validate_ref(head, field="head branch")]
         args += ["--json", "number,url,title,baseRefName,headRefName,state"]
         try:
-            result = await self._arun_subprocess(
-                args, cwd=checkout_path, timeout=self._GIT_TIMEOUT
-            )
+            result = await self._arun_subprocess(args, cwd=checkout_path, timeout=self._GIT_TIMEOUT)
         except Exception:
             return None
         if result.returncode != 0:
@@ -2777,7 +2909,7 @@ class GitManager:
             name = line.strip()
             if not name.startswith(prefix):
                 continue
-            short = name[len(prefix):]
+            short = name[len(prefix) :]
             if short and short != "HEAD":
                 names.append(short)
         return names
@@ -2932,9 +3064,7 @@ class GitManager:
         except GitError as exc:
             raise GitError(f"could not inspect PR delivery diff: {exc}") from exc
 
-    async def avalidate_pr_for_merge(
-        self, checkout_path: str, pr_url: str
-    ) -> PullRequestIdentity:
+    async def avalidate_pr_for_merge(self, checkout_path: str, pr_url: str) -> PullRequestIdentity:
         """Fail closed unless a PR identity and its reserved-path diff are stable.
 
         The identity — repository, number, branch names, OIDs and GitHub's
@@ -3082,9 +3212,7 @@ class GitManager:
         """
         base_ref = _validate_rev(base_ref, field="delivery base")
         tip_ref = _validate_rev(tip_ref, field="delivery tip")
-        merge_base = await self._arun(
-            ["merge-base", base_ref, tip_ref], cwd=checkout_path
-        )
+        merge_base = await self._arun(["merge-base", base_ref, tip_ref], cwd=checkout_path)
         changed = await self._arun(
             ["diff", "--no-renames", "--name-only", "-z", merge_base, tip_ref, "--"],
             cwd=checkout_path,
@@ -3118,9 +3246,7 @@ class GitManager:
         )
         return sorted(self._daemon_bookkeeping_paths(listed))
 
-    async def aget_current_branch(
-        self, checkout_path: str, *, strict: bool = False
-    ) -> str | None:
+    async def aget_current_branch(self, checkout_path: str, *, strict: bool = False) -> str | None:
         """Return the checked-out branch, or ``None`` on failure in strict mode."""
         try:
             return await self._arun(["rev-parse", "--abbrev-ref", "HEAD"], cwd=checkout_path)
@@ -3375,8 +3501,7 @@ class GitManager:
                 and pr.get("url")
             ):
                 logger.info(
-                    "Accepting open PR %s from branch '%s' for '%s' "
-                    "(same head commit %s)",
+                    "Accepting open PR %s from branch '%s' for '%s' (same head commit %s)",
                     pr.get("url"),
                     pr.get("headRefName"),
                     branch_name,

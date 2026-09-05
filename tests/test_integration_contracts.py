@@ -73,10 +73,35 @@ def test_builtin_registration_invokes_integration_registration(monkeypatch):
 def test_unimplemented_integration_operations_are_not_registered():
     registry = ContractRegistry()
     register_integration_contracts(registry)
-    assert registry.names() & DESIGN_INTEGRATION_COMMANDS == {"integration_transfer_owner"}
-    assert not (
-        registry.names() & (DESIGN_INTEGRATION_COMMANDS - {"integration_transfer_owner"})
-    )
+    implemented = {
+        "integration_transfer_owner",
+        "delivery_promote",
+        "delivery_receipts",
+        "integration_reconcile_promotion",
+    }
+    assert registry.names() & DESIGN_INTEGRATION_COMMANDS == implemented
+    assert not (registry.names() & (DESIGN_INTEGRATION_COMMANDS - implemented))
+
+
+def test_promotion_contracts_declare_retry_and_domain_identity():
+    registry = ContractRegistry()
+    register_integration_contracts(registry)
+
+    promote = registry.require("delivery_promote").contract.execution
+    assert promote.idempotency.mode == "keyed"
+    assert promote.idempotency.key_field == "operation_key"
+    assert promote.retry_safe is True
+    assert {outcome.name for outcome in promote.outcomes} == {
+        "promoted",
+        "already_promoted",
+        "conflict",
+        "source_moved",
+        "target_moved",
+    }
+    reconcile = registry.require("integration_reconcile_promotion").contract.execution
+    assert reconcile.idempotency.mode == "keyed"
+    assert reconcile.idempotency.key_field == "intent_id"
+    assert reconcile.retry_safe is True
 
 
 @pytest.mark.asyncio

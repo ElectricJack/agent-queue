@@ -12,7 +12,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, call
 
 import pytest
-from src.git.manager import GitManager, GitError
+from src.git.manager import GitManager, GitError, RemoteRefState
 from src.models import PhaseResult
 from src.orchestrator.git_ops import GitOpsMixin
 
@@ -111,6 +111,36 @@ class TestArun:
                 await mgr._arun(["status"], cwd=clone, timeout=1)
 
 
+@pytest.mark.asyncio
+async def test_arun_git_result_preserves_status_stdin_and_scoped_environment(clone, mgr):
+    result = await mgr.arun_git_result(
+        ["hash-object", "--stdin"],
+        cwd=clone,
+        stdin="promotion body\n",
+        env={"LC_ALL": "C"},
+    )
+
+    assert result.returncode == 0
+    assert len(result.stdout.strip()) == 40
+    assert result.stderr == ""
+
+
+@pytest.mark.asyncio
+async def test_remote_ref_result_distinguishes_absent_from_io_failure(clone, mgr, monkeypatch):
+    absent = await mgr.als_remote_ref(clone, "missing")
+    assert absent.state is RemoteRefState.ABSENT
+    assert absent.oid is None
+
+    async def failed(*_args, **_kwargs):
+        return subprocess.CompletedProcess([], 128, "", "network unavailable")
+
+    monkeypatch.setattr(mgr, "arun_git_result", failed)
+    unavailable = await mgr.als_remote_ref(clone, "main")
+    assert unavailable.state is RemoteRefState.ERROR
+    assert unavailable.oid is None
+    assert "network unavailable" in (unavailable.error or "")
+
+
 # ------------------------------------------------------------------
 # _arun_subprocess tests
 # ------------------------------------------------------------------
@@ -165,10 +195,7 @@ class TestAsyncFindOpenPr:
             AsyncMock(
                 return_value=SimpleNamespace(
                     returncode=0,
-                    stdout=(
-                        "https://github.com/o/r/pull/41\n"
-                        "https://github.com/o/r/pull/42\n"
-                    ),
+                    stdout=("https://github.com/o/r/pull/41\nhttps://github.com/o/r/pull/42\n"),
                 )
             ),
         )
@@ -230,9 +257,7 @@ class TestAsyncFindOpenPr:
         monkeypatch.setattr(
             mgr,
             "_arun_subprocess",
-            AsyncMock(
-                return_value=SimpleNamespace(returncode=128, stdout="", stderr="broken")
-            ),
+            AsyncMock(return_value=SimpleNamespace(returncode=128, stdout="", stderr="broken")),
         )
         assert await mgr.abranch_exists(clone, "missing") is None
 
@@ -247,9 +272,7 @@ class TestAsyncFindOpenPr:
         monkeypatch.setattr(
             mgr,
             "_arun_subprocess",
-            AsyncMock(
-                return_value=SimpleNamespace(returncode=128, stdout="", stderr="broken")
-            ),
+            AsyncMock(return_value=SimpleNamespace(returncode=128, stdout="", stderr="broken")),
         )
         assert await mgr.ahas_remote("/repo", strict=True) is None
         assert await mgr.ais_ancestor("/repo", "topic", "main", strict=True) is None
@@ -503,7 +526,9 @@ async def test_expected_delivery_push_moves_only_the_validated_tip(clone, mgr):
 
 
 @pytest.mark.asyncio
-async def test_expected_delivery_push_preserves_a_remote_move_after_validation(clone, bare_repo, mgr, tmp_path):
+async def test_expected_delivery_push_preserves_a_remote_move_after_validation(
+    clone, bare_repo, mgr, tmp_path
+):
     """Dropping the explicit old-OID lease would overwrite a competing push."""
     base = _git(["rev-parse", "main"], cwd=clone)
     _git(["switch", "-c", "delivery/candidate"], cwd=clone)
@@ -755,9 +780,7 @@ class TestBranchSourceIsNotShadowedByASameNamedTag:
             task=SimpleNamespace(branch_name="task/shadowed"),
         )
 
-        resolution = await ops._resolve_task_delivery(
-            ctx, current_branch="main", has_remote=True
-        )
+        resolution = await ops._resolve_task_delivery(ctx, current_branch="main", has_remote=True)
 
         assert resolution.error is None
         assert resolution.no_work is False
@@ -770,9 +793,7 @@ class TestBranchSourceIsNotShadowedByASameNamedTag:
         assert await mgr.arev_parse(clone, resolution.delivery_ref) == branch_tip
 
     @pytest.mark.asyncio
-    async def test_skip_verification_inspects_reserved_paths_on_exact_current_ref(
-        self, clone, mgr
-    ):
+    async def test_skip_verification_inspects_reserved_paths_on_exact_current_ref(self, clone, mgr):
         """A safe same-named tag cannot hide reserved paths on the branch."""
         main_tip = _git(["rev-parse", "refs/heads/main"], cwd=clone)
         _git(["switch", "-c", "task/shadowed"], cwd=clone)
@@ -1394,14 +1415,10 @@ class TestDiffAndMergeBase:
         main_head = _git(["rev-parse", "main"], cwd=clone)
         assert mb == main_head
 
-        name_status = await mgr.aget_diff(
-            clone, "main", to_ref="feature", name_status=True
-        )
+        name_status = await mgr.aget_diff(clone, "main", to_ref="feature", name_status=True)
         assert "a.txt" in name_status and "b.txt" in name_status
 
-        numstat = await mgr.aget_diff(
-            clone, "main", to_ref="feature", numstat=True
-        )
+        numstat = await mgr.aget_diff(clone, "main", to_ref="feature", numstat=True)
         # numstat lines look like "1\t0\ta.txt"
         assert "a.txt" in numstat and "b.txt" in numstat
 
@@ -1447,7 +1464,9 @@ async def test_async_staged_patch_preserves_trailing_newline_and_binary_flag(
 
 
 @pytest.mark.asyncio
-async def test_async_abort_operations_removes_linked_worktree_lock(tmp_path, clone, mgr, monkeypatch):
+async def test_async_abort_operations_removes_linked_worktree_lock(
+    tmp_path, clone, mgr, monkeypatch
+):
     """For a linked worktree the stale ``index.lock`` lives under the base
     repo's ``.git/worktrees/<name>/`` — the resolved location must be
     cleaned, not a fictitious ``<worktree>/.git/index.lock``."""
@@ -1632,9 +1651,7 @@ class TestAfindOpenPr:
         return calls
 
     @pytest.mark.asyncio
-    async def test_head_name_match_wins_without_a_second_query(
-        self, clone, mgr, monkeypatch
-    ):
+    async def test_head_name_match_wins_without_a_second_query(self, clone, mgr, monkeypatch):
         calls = self._fake_gh(mgr, monkeypatch, by_name="https://gh/org/repo/pull/1\n")
         url = await mgr.afind_open_pr(clone, "main")
         assert url == "https://gh/org/repo/pull/1"
@@ -1684,17 +1701,18 @@ class TestAfindOpenPr:
             ],
         )
 
-        assert await mgr.afind_open_pr(
-            clone,
-            "aq/t-shadowed",
-            head_ref="refs/heads/aq/t-shadowed",
-            include_workspace_head=False,
-        ) == "https://gh/org/repo/pull/47"
+        assert (
+            await mgr.afind_open_pr(
+                clone,
+                "aq/t-shadowed",
+                head_ref="refs/heads/aq/t-shadowed",
+                include_workspace_head=False,
+            )
+            == "https://gh/org/repo/pull/47"
+        )
 
     @pytest.mark.asyncio
-    async def test_open_prs_at_other_commits_are_not_accepted(
-        self, clone, mgr, monkeypatch
-    ):
+    async def test_open_prs_at_other_commits_are_not_accepted(self, clone, mgr, monkeypatch):
         _git(["checkout", "-b", "aq/t-1"], cwd=clone)
         _commit_file(clone, "work.txt", "done", "work")
         _git(["checkout", "main"], cwd=clone)
@@ -1736,9 +1754,7 @@ class TestAfindOpenPr:
             ],
         )
 
-        assert (
-            await mgr.afind_open_pr(clone, "aq/t-1", include_workspace_head=False) is None
-        )
+        assert await mgr.afind_open_pr(clone, "aq/t-1", include_workspace_head=False) is None
 
     @pytest.mark.asyncio
     async def test_head_commit_counts_when_the_task_branch_never_moved(

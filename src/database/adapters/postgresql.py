@@ -35,6 +35,7 @@ from src.database.queries.event_queries import EventQueryMixin
 from src.database.queries.gate_queries import GateQueriesMixin
 from src.database.queries.hierarchy_queries import HierarchyQueryMixin
 from src.database.queries.integration_state_queries import IntegrationStateQueriesMixin
+from src.database.queries.integration_delivery_queries import IntegrationDeliveryQueriesMixin
 from src.database.queries.layout_queries import LayoutQueryMixin
 from src.database.queries.merge_slot_queries import MergeSlotQueriesMixin
 from src.database.queries.message_queries import MessageQueriesMixin
@@ -64,6 +65,7 @@ logger = logging.getLogger(__name__)
 
 
 class PostgreSQLDatabaseAdapter(
+    IntegrationDeliveryQueriesMixin,
     IntegrationStateQueriesMixin,
     HierarchyQueryMixin,
     LayoutQueryMixin,
@@ -156,12 +158,11 @@ class PostgreSQLDatabaseAdapter(
 
         from sqlalchemy import text
 
-        if self._dsn != os.environ.get("POSTGRES_TEST_DSN") and os.environ.get(
-            "AQ_ALLOW_DB_RESET"
-        ) != "1":
-            raise RuntimeError(
-                "reset_for_tests refused: not the configured POSTGRES_TEST_DSN"
-            )
+        if (
+            self._dsn != os.environ.get("POSTGRES_TEST_DSN")
+            and os.environ.get("AQ_ALLOW_DB_RESET") != "1"
+        ):
+            raise RuntimeError("reset_for_tests refused: not the configured POSTGRES_TEST_DSN")
         if self._engine is None:
             return
         async with self._engine.begin() as conn:

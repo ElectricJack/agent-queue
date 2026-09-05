@@ -337,7 +337,9 @@ task_comments = Table(
     Column("author_kind", Text, nullable=False),
     Column("author_id", Text, nullable=False),
     Column("created_at", Float, nullable=False),
-    CheckConstraint("author_kind IN ('user','agent','supervisor')", name="ck_task_comment_author_kind"),
+    CheckConstraint(
+        "author_kind IN ('user','agent','supervisor')", name="ck_task_comment_author_kind"
+    ),
     CheckConstraint("length(body) BETWEEN 1 AND 16000", name="ck_task_comment_body_length"),
     Index("idx_task_comments_task_created", "task_id", "created_at", "id"),
     Index("idx_task_comments_project_created", "task_id", "project_id", "created_at", "id"),
@@ -1103,7 +1105,9 @@ playbook_activations = Table(
         name="ck_playbook_activations_health",
     ),
     UniqueConstraint(
-        "playbook_id", "scope", "scope_identifier",
+        "playbook_id",
+        "scope",
+        "scope_identifier",
         name="uq_playbook_activations_scope",
     ),
     Index("idx_playbook_activations_health", "health"),
@@ -1147,12 +1151,12 @@ playbook_v2_runs = Table(
         "'failed', 'timed_out', 'cancelled')",
         name="ck_playbook_v2_runs_lifecycle",
     ),
-    CheckConstraint(
-        "mode IN ('live', 'dry_run', 'shadow')", name="ck_playbook_v2_runs_mode"
-    ),
+    CheckConstraint("mode IN ('live', 'dry_run', 'shadow')", name="ck_playbook_v2_runs_mode"),
     Index(
         "uq_playbook_v2_runs_dispatch_rule",
-        "playbook_id", "dispatch_id", "rule_id",
+        "playbook_id",
+        "dispatch_id",
+        "rule_id",
         unique=True,
         sqlite_where=text("dispatch_id IS NOT NULL"),
         postgresql_where=text("dispatch_id IS NOT NULL"),
@@ -1167,7 +1171,8 @@ playbook_step_receipts = Table(
     metadata,
     Column("receipt_id", Text, primary_key=True),
     Column(
-        "run_id", Text,
+        "run_id",
+        Text,
         ForeignKey("playbook_v2_runs.run_id", ondelete="CASCADE"),
         nullable=False,
     ),
@@ -1222,14 +1227,23 @@ playbook_step_receipts = Table(
         name="ck_playbook_step_receipts_decision_ref",
     ),
     UniqueConstraint(
-        "run_id", "step_id", "iteration", "attempt", "turn_index", "receipt_kind",
+        "run_id",
+        "step_id",
+        "iteration",
+        "attempt",
+        "turn_index",
+        "receipt_kind",
         name="uq_playbook_step_receipts_boundary",
     ),
     Index("idx_playbook_step_receipts_run", "run_id", "started_at"),
     Index("idx_playbook_step_receipts_key", "idempotency_key"),
     Index(
         "idx_playbook_step_receipts_turn",
-        "run_id", "step_id", "iteration", "attempt", "turn_index",
+        "run_id",
+        "step_id",
+        "iteration",
+        "attempt",
+        "turn_index",
     ),
 )
 
@@ -1238,7 +1252,8 @@ playbook_waits = Table(
     metadata,
     Column("wait_id", Text, primary_key=True),
     Column(
-        "run_id", Text,
+        "run_id",
+        Text,
         ForeignKey("playbook_v2_runs.run_id", ondelete="CASCADE"),
         nullable=False,
     ),
@@ -1264,7 +1279,9 @@ playbook_waits = Table(
     ),
     Index(
         "uq_playbook_waits_active_step",
-        "run_id", "step_id", "iteration",
+        "run_id",
+        "step_id",
+        "iteration",
         unique=True,
         sqlite_where=text("state = 'active'"),
         postgresql_where=text("state = 'active'"),
@@ -1331,7 +1348,8 @@ playbook_pending_events = Table(
     ),
     Index(
         "uq_playbook_pending_events_dedup",
-        "playbook_id", "dedup_key",
+        "playbook_id",
+        "dedup_key",
         unique=True,
         sqlite_where=text("resolved_at IS NULL AND dedup_key <> ''"),
         postgresql_where=text("resolved_at IS NULL AND dedup_key <> ''"),
@@ -1401,7 +1419,8 @@ workflows = Table(
 # Durable completed-turn questions. Provenance is retained as text instead of
 # cascading foreign keys so stopped/deleted session history stays auditable.
 agent_questions = Table(
-    "agent_questions", metadata,
+    "agent_questions",
+    metadata,
     Column("id", Text, primary_key=True),
     Column("session_id", Text, nullable=False),
     Column("session_name", Text, nullable=False),
@@ -1428,8 +1447,18 @@ agent_questions = Table(
     Column("delivery_lease_until", Float),
     Column("delivered_at", Float),
     Column("reason", Text),
-    UniqueConstraint("session_id", "instance_token", "task_id", "claim_epoch", "turn_id", name="uq_agent_question_turn"),
-    CheckConstraint("state IN ('supervisor','human','answered','delivered','resolved','stale')", name="ck_agent_question_state"),
+    UniqueConstraint(
+        "session_id",
+        "instance_token",
+        "task_id",
+        "claim_epoch",
+        "turn_id",
+        name="uq_agent_question_turn",
+    ),
+    CheckConstraint(
+        "state IN ('supervisor','human','answered','delivered','resolved','stale')",
+        name="ck_agent_question_state",
+    ),
     Index("idx_agent_questions_pending", "state", "created_at"),
     Index("idx_agent_questions_session", "session_id", "instance_token"),
 )
@@ -1445,7 +1474,8 @@ agent_questions = Table(
 # soft text, like ``task_session_attempts``: the events outlive the session
 # row's deletion and stay readable as history.
 subagent_events = Table(
-    "subagent_events", metadata,
+    "subagent_events",
+    metadata,
     Column("id", Text, primary_key=True),
     Column("session_id", Text, nullable=False),
     Column("harness", Text, nullable=False),
@@ -1480,7 +1510,8 @@ subagent_events = Table(
 # defect report: the newest assistant entry whose usage was charged, so a
 # reader that resumes exactly on a record boundary cannot re-charge it.
 transcript_checkpoints = Table(
-    "transcript_checkpoints", metadata,
+    "transcript_checkpoints",
+    metadata,
     Column("transcript_path", Text, primary_key=True),
     Column("byte_offset", Integer, nullable=False, default=0),
     Column("last_entry_uuid", Text, nullable=True),
@@ -1517,7 +1548,8 @@ metrics_samples = Table(
 )
 
 message_discord_receipts = Table(
-    "message_discord_receipts", metadata,
+    "message_discord_receipts",
+    metadata,
     Column("message_id", Text, primary_key=True),
     Column("discord_channel_id", Text),
     Column("discord_message_id", Text),
@@ -1616,16 +1648,50 @@ integration_branch_owners = Table(
     ),
 )
 
+integration_review_evidence = Table(
+    "integration_review_evidence",
+    metadata,
+    Column("id", Text, primary_key=True),
+    Column("source_task_id", Text, nullable=False),
+    Column("repository_id", Text, nullable=False),
+    Column("source_base", Text, nullable=False),
+    Column("reviewed_head_sha", Text, nullable=False),
+    Column("reviewed_tree_sha", Text, nullable=False),
+    Column("reviewer_task_id", Text, nullable=False),
+    Column("reviewer_session_attempt_id", Text, nullable=True),
+    Column("review_kind", Text, nullable=False),
+    Column("generation", Integer, nullable=False),
+    Column("verdict", Text, nullable=False),
+    Column("evidence", JSON, nullable=False),
+    Column("created_at", Float, nullable=False),
+    CheckConstraint(
+        "verdict IN ('approved', 'rejected')",
+        name="ck_integration_review_evidence_verdict",
+    ),
+    CheckConstraint("generation >= 0", name="ck_integration_review_evidence_generation"),
+    Index(
+        "idx_integration_review_evidence_current",
+        "source_task_id",
+        "repository_id",
+        "generation",
+        "created_at",
+    ),
+)
+
 integration_promotion_intents = Table(
     "integration_promotion_intents",
     metadata,
     Column("id", Text, primary_key=True),
     Column("domain_key", Text, nullable=False),
+    Column("operation_key", Text, nullable=True),
+    Column("project_id", Text, nullable=True),
     Column("receipt_id", Text, nullable=False),
     Column("source_task_id", Text, nullable=True),
+    Column("target_task_id", Text, nullable=True),
     Column("source_head", Text, nullable=False),
     Column("source_base", Text, nullable=False),
     Column("repository_id", Text, nullable=False),
+    Column("origin_url", Text, nullable=True),
     Column("target_branch", Text, nullable=False),
     Column("expected_target", Text, nullable=False),
     Column("prepared_sha", Text, nullable=True),
@@ -1633,11 +1699,24 @@ integration_promotion_intents = Table(
     Column("fence_owner_id", Text, nullable=False),
     Column("fence_token", Integer, nullable=False),
     Column("state", Text, nullable=False),
+    Column("review_evidence", JSON, nullable=True),
+    Column("authors", JSON, nullable=True),
+    Column("provenance", JSON, nullable=True),
+    Column("commit_metadata", JSON, nullable=True),
+    Column("conflict_diagnostics", JSON, nullable=True),
     Column("remote_evidence", JSON, nullable=True),
     Column("committed_at", Float, nullable=True),
     Column("created_at", Float, nullable=False),
     Column("updated_at", Float, nullable=False),
     UniqueConstraint("domain_key", name="uq_integration_promotion_intents_domain_key"),
+    Index(
+        "uq_integration_promotion_intents_unresolved_target",
+        "repository_id",
+        "target_branch",
+        unique=True,
+        sqlite_where=text("state NOT IN ('committed', 'conflict')"),
+        postgresql_where=text("state NOT IN ('committed', 'conflict')"),
+    ),
     CheckConstraint("fence_token >= 0", name="ck_integration_promotion_intents_fence"),
     CheckConstraint(
         "state IN ('reserved', 'prepared', 'pushed', 'reconciled', 'committed', 'conflict')",
@@ -1798,9 +1877,7 @@ integration_candidate_member_results = Table(
     Column("conflict_evidence", JSON, nullable=True),
     Column("created_at", Float, nullable=False),
     Column("updated_at", Float, nullable=False),
-    CheckConstraint(
-        "revision >= 0", name="ck_integration_candidate_member_results_revision"
-    ),
+    CheckConstraint("revision >= 0", name="ck_integration_candidate_member_results_revision"),
     CheckConstraint(
         "member_ordinal >= 0", name="ck_integration_candidate_member_results_member_ordinal"
     ),
@@ -1853,8 +1930,12 @@ integration_repair_operations = Table(
         "uq_integration_repair_operations_active_batch",
         "batch_id",
         unique=True,
-        sqlite_where=text("batch_id IS NOT NULL AND state IN ('active', 'escalated', 'human_required')"),
-        postgresql_where=text("batch_id IS NOT NULL AND state IN ('active', 'escalated', 'human_required')"),
+        sqlite_where=text(
+            "batch_id IS NOT NULL AND state IN ('active', 'escalated', 'human_required')"
+        ),
+        postgresql_where=text(
+            "batch_id IS NOT NULL AND state IN ('active', 'escalated', 'human_required')"
+        ),
     ),
     Index(
         "uq_integration_repair_operations_active_parent",
@@ -1913,7 +1994,10 @@ integration_check_evidence = Table(
     Column("classification", Text, nullable=False),
     Column("observed_at", Float, nullable=False),
     UniqueConstraint(
-        "producer_id", "run_id", "attempt", "required_check_version",
+        "producer_id",
+        "run_id",
+        "attempt",
+        "required_check_version",
         name="uq_integration_check_evidence_producer_run_attempt_checks",
     ),
     CheckConstraint("attempt >= 0", name="ck_integration_check_evidence_attempt"),
@@ -1986,9 +2070,7 @@ integration_outbox = Table(
     Column("created_at", Float, nullable=False),
     UniqueConstraint("dedup_key", name="uq_integration_outbox_dedup_key"),
     CheckConstraint("attempts >= 0", name="ck_integration_outbox_attempts"),
-    CheckConstraint(
-        "acceptance_cursor >= 0", name="ck_integration_outbox_acceptance_cursor"
-    ),
+    CheckConstraint("acceptance_cursor >= 0", name="ck_integration_outbox_acceptance_cursor"),
     Index(
         "idx_integration_outbox_pending_available",
         "available_at",

@@ -51,17 +51,31 @@ class DatabaseBackend(Protocol):
     """
 
     async def update_task_description(
-        self, task_id: str, description: str, *, expected_description: str | None = None,
+        self,
+        task_id: str,
+        description: str,
+        *,
+        expected_description: str | None = None,
         fence: dict | None = None,
     ) -> None: ...
 
     async def add_task_comment(
-        self, task_id: str, body: str, *, author_kind: str, author_id: str,
+        self,
+        task_id: str,
+        body: str,
+        *,
+        author_kind: str,
+        author_id: str,
         fence: dict | None = None,
     ) -> dict: ...
 
     async def list_task_comments(
-        self, task_id: str, *, limit: int = 50, offset: int = 0, project_id: str | None = None,
+        self,
+        task_id: str,
+        *,
+        limit: int = 50,
+        offset: int = 0,
+        project_id: str | None = None,
     ) -> dict: ...
 
     # --- Lifecycle ---
@@ -144,9 +158,7 @@ class DatabaseBackend(Protocol):
     async def list_task_assignment_routes(
         self, task_ids, *, conn=None
     ) -> list[TaskAssignmentRoute]: ...
-    async def upsert_task_assignment_routes(
-        self, routes, *, conn
-    ) -> None: ...
+    async def upsert_task_assignment_routes(self, routes, *, conn) -> None: ...
     async def get_task_created_at(self, task_id: str) -> float | None: ...
     async def add_task_context(
         self,
@@ -353,14 +365,30 @@ class DatabaseBackend(Protocol):
 
     async def get_task_session_attempt(self, attempt_id: str) -> dict | None: ...
     async def list_task_session_attempts(
-        self, task_id: str, *, project_id: str | None = None, since: float | None = None,
+        self,
+        task_id: str,
+        *,
+        project_id: str | None = None,
+        since: float | None = None,
     ) -> list[dict]: ...
     async def finish_task_session_attempt(
-        self, session_id, *, task_id=None, ended_at=None, end_reason=None,
-        outcome=None, state="stopped", conn=None,
+        self,
+        session_id,
+        *,
+        task_id=None,
+        ended_at=None,
+        end_reason=None,
+        outcome=None,
+        state="stopped",
+        conn=None,
     ) -> int: ...
     async def record_task_session_outcome(
-        self, task_id, outcome, *, session_id=None, conn=None,
+        self,
+        task_id,
+        outcome,
+        *,
+        session_id=None,
+        conn=None,
     ) -> None: ...
 
     # --- Sessions (session-runtime spec §2.3) ---
@@ -442,9 +470,35 @@ class DatabaseBackend(Protocol):
     async def get_integration_checkpoint(self, task_id: str) -> dict | None: ...
     async def get_integration_batch(self, batch_id: str) -> dict | None: ...
     async def get_integration_operation(self, operation_id: str) -> dict | None: ...
-    async def get_active_integration_repair_for_task(
-        self, repair_task_id: str
+    async def get_active_integration_repair_for_task(self, repair_task_id: str) -> dict | None: ...
+    async def append_integration_review_evidence(self, evidence: dict) -> dict: ...
+    async def get_applicable_integration_review_evidence(
+        self,
+        *,
+        source_task_id: str,
+        repository_id: str,
+        source_base: str,
+        reviewed_head_sha: str,
+        current_generation: int,
     ) -> dict | None: ...
+    async def get_task_branch_origin_for_promotion(
+        self, task_id: str, repository_id: str
+    ) -> dict | None: ...
+    async def reserve_integration_promotion_intent(self, values: dict) -> dict: ...
+    async def get_integration_promotion_intent(self, intent_id: str) -> dict | None: ...
+    async def mark_integration_promotion_prepared(
+        self, intent_id: str, *, prepared_sha: str, recovery_ref: str
+    ) -> dict: ...
+    async def mark_integration_promotion_conflict(
+        self, intent_id: str, diagnostics: dict
+    ) -> dict: ...
+    async def mark_integration_promotion_pushed(self, intent_id: str, evidence: dict) -> None: ...
+    async def finalize_integration_promotion(
+        self, intent_id: str, remote_evidence: dict
+    ) -> dict: ...
+    async def list_integration_delivery_receipts(
+        self, *, source_task_id: str, repository_id: str, target_branch: str
+    ) -> list[dict]: ...
 
     # --- Task Results ---
 
@@ -657,18 +711,35 @@ class DatabaseBackend(Protocol):
     # --- Completed-turn agent questions ---
     async def create_agent_question(self, **values) -> bool: ...
     async def get_agent_question(self, question_id: str) -> dict | None: ...
-    async def list_agent_questions(self, project_id=None, session_id=None, pending_only=True) -> list[dict]: ...
+    async def list_agent_questions(
+        self, project_id=None, session_id=None, pending_only=True
+    ) -> list[dict]: ...
     async def transition_agent_question(self, question_id, expected_states, **values) -> bool: ...
     async def mark_agent_question_notified(self, question_id, channel_id, message_id) -> None: ...
     async def claim_agent_question_notification(self, question_id, now) -> bool: ...
     async def queue_task_recovery_notifications(self) -> int: ...
-    async def decide_task_recovery(self, task_id, incident_id, decision, reason, *, author_kind, author_id, project_id=None, stopped_session=None) -> dict: ...
+    async def decide_task_recovery(
+        self,
+        task_id,
+        incident_id,
+        decision,
+        reason,
+        *,
+        author_kind,
+        author_id,
+        project_id=None,
+        stopped_session=None,
+    ) -> dict: ...
 
     async def queue_agent_question_supervisor(self, question_id, body, recipient, now) -> None: ...
     async def claim_agent_question_delivery(self, question_id, token, now) -> bool: ...
-    async def finish_agent_question_delivery(self, question_id, token, *, delivered, now) -> bool: ...
+    async def finish_agent_question_delivery(
+        self, question_id, token, *, delivered, now
+    ) -> bool: ...
     async def get_message_discord_receipt(self, message_id) -> dict | None: ...
-    async def mark_message_discord_notified(self, message_id, channel_id, discord_message_id) -> None: ...
+    async def mark_message_discord_notified(
+        self, message_id, channel_id, discord_message_id
+    ) -> None: ...
     async def ensure_message_discord_notification(self, message_id) -> None: ...
     async def list_pending_message_discord_notifications(self, limit=100) -> list[str]: ...
     def agent_question_delivery_guard(self, question_id, token): ...

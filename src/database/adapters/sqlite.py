@@ -35,6 +35,7 @@ from src.database.queries.event_queries import EventQueryMixin
 from src.database.queries.gate_queries import GateQueriesMixin
 from src.database.queries.hierarchy_queries import HierarchyQueryMixin
 from src.database.queries.integration_state_queries import IntegrationStateQueriesMixin
+from src.database.queries.integration_delivery_queries import IntegrationDeliveryQueriesMixin
 from src.database.queries.layout_queries import LayoutQueryMixin
 from src.database.queries.merge_slot_queries import MergeSlotQueriesMixin
 from src.database.queries.message_queries import MessageQueriesMixin
@@ -64,6 +65,7 @@ logger = logging.getLogger(__name__)
 
 
 class SQLiteDatabaseAdapter(
+    IntegrationDeliveryQueriesMixin,
     IntegrationStateQueriesMixin,
     HierarchyQueryMixin,
     LayoutQueryMixin,
@@ -153,9 +155,10 @@ class SQLiteDatabaseAdapter(
         import os
         import tempfile
 
-        if not str(self._path).startswith(tempfile.gettempdir()) and os.environ.get(
-            "AQ_ALLOW_DB_RESET"
-        ) != "1":
+        if (
+            not str(self._path).startswith(tempfile.gettempdir())
+            and os.environ.get("AQ_ALLOW_DB_RESET") != "1"
+        ):
             raise RuntimeError(
                 f"reset_for_tests refused: {self._path!r} is not under "
                 f"{tempfile.gettempdir()!r} (set AQ_ALLOW_DB_RESET=1 to override)"
@@ -174,7 +177,9 @@ class SQLiteDatabaseAdapter(
         async with autocommit.connect() as conn:
             await conn.execute(text("PRAGMA foreign_keys=OFF"))
             rows = await conn.execute(
-                text("SELECT name FROM sqlite_master WHERE type='table' AND name != 'alembic_version'")
+                text(
+                    "SELECT name FROM sqlite_master WHERE type='table' AND name != 'alembic_version'"
+                )
             )
             tables = [r[0] for r in rows.fetchall() if not r[0].startswith("sqlite_")]
             for table in tables:
