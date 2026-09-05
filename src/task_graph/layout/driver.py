@@ -474,12 +474,35 @@ class _IncrementalBatch:
         """Absolute content origin of a container row."""
         return (row.abs_x + PADDING, row.abs_y + PADDING + HEADER_H)
 
+    async def _aggregates_only(self, tid: str, reason: str) -> bool:
+        """Can this mark be folded without re-laying any container?
+
+        Only in the ``all`` variant, where every task is present whatever
+        its status (``_visible``), and only for a status mark on a leaf that
+        already has a stored row: its box is unchanged, so the only stale
+        state is the ancestors' completed/active/running counters.  A
+        container's own status can flip a stub in ``active``, and a task
+        without a row still needs placing, so both fall through to the
+        ordinary path.  Measured: the ordinary path re-flows the whole
+        parent — 1.4 s for a 5,000-child root.
+        """
+        if self.variant != "all" or not reason.startswith("status."):
+            return False
+        task = self.snapshot[tid]
+        if task.is_container:
+            return False
+        return await self._db_row(tid) is not None
+
     # ── dirty → containers ──────────────────────────────────────────────
     async def _seed_queue(self) -> None:
         dirty: set[str | None] = set()
         for tid, reason in self.marks:
             self.dirty_tasks.add(tid)
             if tid in self.snapshot:
+                if await self._aggregates_only(tid, reason):
+                    # Geometry cannot change: ``_refresh_aggregates`` walks
+                    # ``dirty_tasks``' ancestors and rewrites the counters.
+                    continue
                 dirty.add(self.parent_of[tid])
                 if self.snapshot[tid].is_container:
                     # its own children may have become (in)visible

@@ -1,4 +1,7 @@
+from unittest.mock import patch
+
 import pytest
+from sqlalchemy import event
 
 from src.database import Database
 from src.models import Project, Task, TaskStatus
@@ -548,3 +551,45 @@ async def test_generous_tidy_job_budget_does_not_warn(db, caplog):
         await LayoutDriver(db, tidy_job_seconds=600).full_layout("p1", "all")
     assert not [r for r in caplog.records if "tidy job budget" in r.getMessage()]
     assert set(await db.load_layout_rows("p1", "all", ["e", *kids])) == {"e", *kids}
+
+
+async def test_status_flip_in_all_variant_updates_aggregates_without_relaying(db):
+    kids = await seed_epic(db, n=4)
+    drv = LayoutDriver(db)
+    await drv.full_layout("p1", "all")
+    # Drain the "task.created"/"parent.changed" marks seed_epic's creation
+    # left behind: full_layout never consumes the dirty table, and those
+    # marks (not status.* reasons) would otherwise ride along in the same
+    # batch as the status flip below and dirty "e" through the ordinary
+    # path, defeating the point of the assertion at the end of this test.
+    await drv.process_dirty("p1", min_age_seconds=0)
+    before = await db.load_layout_rows("p1", "all", ["e", *kids])
+
+    await db.transition_task(kids[1], TaskStatus.COMPLETED, force=True)  # marks "status.finished"
+
+    statements: list[str] = []
+
+    def _hook(conn, cursor, statement, parameters, context, executemany):
+        statements.append(statement)
+
+    event.listen(db._engine.sync_engine, "before_cursor_execute", _hook)
+    try:
+        with patch("src.task_graph.layout.driver.VARIANTS", ("all",)):
+            versions = await drv.process_dirty("p1", min_age_seconds=0)
+    finally:
+        event.remove(db._engine.sync_engine, "before_cursor_execute", _hook)
+
+    assert versions["all"] == 3  # full_layout (1), the drain above (2), this fold (3)
+    after = await db.load_layout_rows("p1", "all", ["e", *kids])
+    for k in kids:  # nobody moved
+        assert (after[k].abs_x, after[k].abs_y, after[k].w, after[k].h) == (
+            before[k].abs_x, before[k].abs_y, before[k].w, before[k].h)
+    assert after["e"].agg_completed == 1 and after["e"].agg_active == 3
+    # The engine pass reads a container's children with load_children_layout_rows,
+    # whose SELECT (layout_queries.py:387-404) ends its WHERE clause with this
+    # exact fragment; a pure status flip must not trigger it for the `all`
+    # variant. (A plain "container_id = " substring also matches the routine
+    # upsert's "SET container_id = excluded.container_id", which fires on
+    # every publish including the aggregates-only path, so it can't be used
+    # to distinguish a container relay from an ordinary row write.)
+    assert not any("task_layouts.container_id = ?" in s for s in statements), statements
