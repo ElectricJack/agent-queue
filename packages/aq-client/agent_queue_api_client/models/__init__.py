@@ -40,6 +40,10 @@ from .ask_human_request import AskHumanRequest
 from .ask_human_response_422 import AskHumanResponse422
 from .assignment_route_detail import AssignmentRouteDetail
 from .body_upload_attachment_api_tasks_task_id_attachments_post import BodyUploadAttachmentApiTasksTaskIdAttachmentsPost
+from .browse_entry import BrowseEntry
+from .browse_project_root_request import BrowseProjectRootRequest
+from .browse_project_root_response import BrowseProjectRootResponse
+from .browse_project_root_response_422 import BrowseProjectRootResponse422
 from .cancel_playbook_run_request import CancelPlaybookRunRequest
 from .cancel_playbook_run_response import CancelPlaybookRunResponse
 from .cancel_playbook_run_response_422 import CancelPlaybookRunResponse422
@@ -282,6 +286,8 @@ from .get_git_status_request import GetGitStatusRequest
 from .get_git_status_response import GetGitStatusResponse
 from .get_git_status_response_422 import GetGitStatusResponse422
 from .get_git_status_response_repos_item import GetGitStatusResponseReposItem
+from .get_github_auth_status_request import GetGithubAuthStatusRequest
+from .get_github_auth_status_response_422 import GetGithubAuthStatusResponse422
 from .get_mcp_server_request import GetMcpServerRequest
 from .get_mcp_server_response import GetMcpServerResponse
 from .get_mcp_server_response_422 import GetMcpServerResponse422
@@ -301,6 +307,10 @@ from .get_project_channels_response_422 import GetProjectChannelsResponse422
 from .get_project_for_channel_request import GetProjectForChannelRequest
 from .get_project_for_channel_response import GetProjectForChannelResponse
 from .get_project_for_channel_response_422 import GetProjectForChannelResponse422
+from .get_project_onboarding_request import GetProjectOnboardingRequest
+from .get_project_onboarding_response import GetProjectOnboardingResponse
+from .get_project_onboarding_response_422 import GetProjectOnboardingResponse422
+from .get_project_onboarding_response_status import GetProjectOnboardingResponseStatus
 from .get_project_request import GetProjectRequest
 from .get_project_response import GetProjectResponse
 from .get_project_response_422 import GetProjectResponse422
@@ -377,6 +387,11 @@ from .git_push_response_422 import GitPushResponse422
 from .git_remote_url_request import GitRemoteUrlRequest
 from .git_remote_url_response import GitRemoteUrlResponse
 from .git_remote_url_response_422 import GitRemoteUrlResponse422
+from .github_auth_status_response import GithubAuthStatusResponse
+from .github_owner import GithubOwner
+from .github_owner_kind import GithubOwnerKind
+from .github_repository import GithubRepository
+from .github_repository_visibility import GithubRepositoryVisibility
 from .glob_files_request import GlobFilesRequest
 from .glob_files_response import GlobFilesResponse
 from .glob_files_response_422 import GlobFilesResponse422
@@ -457,6 +472,9 @@ from .list_directory_response_422 import ListDirectoryResponse422
 from .list_event_triggers_request import ListEventTriggersRequest
 from .list_event_triggers_response import ListEventTriggersResponse
 from .list_event_triggers_response_422 import ListEventTriggersResponse422
+from .list_github_owners_request import ListGithubOwnersRequest
+from .list_github_owners_response import ListGithubOwnersResponse
+from .list_github_owners_response_422 import ListGithubOwnersResponse422
 from .list_intelligence_classes_request import ListIntelligenceClassesRequest
 from .list_intelligence_classes_response import ListIntelligenceClassesResponse
 from .list_intelligence_classes_response_422 import ListIntelligenceClassesResponse422
@@ -482,6 +500,9 @@ from .list_playbooks_response_422 import ListPlaybooksResponse422
 from .list_profiles_request import ListProfilesRequest
 from .list_profiles_response import ListProfilesResponse
 from .list_profiles_response_422 import ListProfilesResponse422
+from .list_project_roots_request import ListProjectRootsRequest
+from .list_project_roots_response import ListProjectRootsResponse
+from .list_project_roots_response_422 import ListProjectRootsResponse422
 from .list_projects_request import ListProjectsRequest
 from .list_projects_response import ListProjectsResponse
 from .list_projects_response_422 import ListProjectsResponse422
@@ -547,6 +568,14 @@ from .node_overlay_dto import NodeOverlayDTO
 from .node_overlay_dto_state import NodeOverlayDTOState
 from .node_response import NodeResponse
 from .note_summary import NoteSummary
+from .onboard_project_request import OnboardProjectRequest
+from .onboard_project_request_github_repository_type_0 import OnboardProjectRequestGithubRepositoryType0
+from .onboard_project_response import OnboardProjectResponse
+from .onboard_project_response_422 import OnboardProjectResponse422
+from .onboard_project_response_source_type import OnboardProjectResponseSourceType
+from .onboarding_error_info import OnboardingErrorInfo
+from .onboarding_error_info_details import OnboardingErrorInfoDetails
+from .onboarding_error_info_field_errors_item import OnboardingErrorInfoFieldErrorsItem
 from .operator_decision_dto import OperatorDecisionDTO
 from .operator_decision_dto_options_item import OperatorDecisionDTOOptionsItem
 from .orchestrator_control_request import OrchestratorControlRequest
@@ -719,6 +748,7 @@ from .project_graph_response import ProjectGraphResponse
 from .project_ready_request import ProjectReadyRequest
 from .project_ready_response import ProjectReadyResponse
 from .project_ready_response_422 import ProjectReadyResponse422
+from .project_root_info import ProjectRootInfo
 from .project_summary import ProjectSummary
 from .promote_note_request import PromoteNoteRequest
 from .promote_note_response import PromoteNoteResponse
@@ -821,6 +851,9 @@ from .scan_stub_staleness_response_422 import ScanStubStalenessResponse422
 from .search_files_request import SearchFilesRequest
 from .search_files_response import SearchFilesResponse
 from .search_files_response_422 import SearchFilesResponse422
+from .search_github_repositories_request import SearchGithubRepositoriesRequest
+from .search_github_repositories_response import SearchGithubRepositoriesResponse
+from .search_github_repositories_response_422 import SearchGithubRepositoriesResponse422
 from .select_files_for_inspection_request import SelectFilesForInspectionRequest
 from .select_files_for_inspection_request_weights_type_0 import SelectFilesForInspectionRequestWeightsType0
 from .select_files_for_inspection_response import SelectFilesForInspectionResponse
@@ -1098,6 +1131,10 @@ __all__ = (
     "AskHumanResponse422",
     "AssignmentRouteDetail",
     "BodyUploadAttachmentApiTasksTaskIdAttachmentsPost",
+    "BrowseEntry",
+    "BrowseProjectRootRequest",
+    "BrowseProjectRootResponse",
+    "BrowseProjectRootResponse422",
     "CancellationFactsDTO",
     "CancelPlaybookRunRequest",
     "CancelPlaybookRunResponse",
@@ -1336,6 +1373,8 @@ __all__ = (
     "GetDownstreamTasksRequest",
     "GetDownstreamTasksResponse",
     "GetDownstreamTasksResponse422",
+    "GetGithubAuthStatusRequest",
+    "GetGithubAuthStatusResponse422",
     "GetGitStatusRequest",
     "GetGitStatusResponse",
     "GetGitStatusResponse422",
@@ -1359,6 +1398,10 @@ __all__ = (
     "GetProjectForChannelRequest",
     "GetProjectForChannelResponse",
     "GetProjectForChannelResponse422",
+    "GetProjectOnboardingRequest",
+    "GetProjectOnboardingResponse",
+    "GetProjectOnboardingResponse422",
+    "GetProjectOnboardingResponseStatus",
     "GetProjectRequest",
     "GetProjectResponse",
     "GetProjectResponse422",
@@ -1416,6 +1459,11 @@ __all__ = (
     "GitDiffRequest",
     "GitDiffResponse",
     "GitDiffResponse422",
+    "GithubAuthStatusResponse",
+    "GithubOwner",
+    "GithubOwnerKind",
+    "GithubRepository",
+    "GithubRepositoryVisibility",
     "GitLogRequest",
     "GitLogResponse",
     "GitLogResponse422",
@@ -1509,6 +1557,9 @@ __all__ = (
     "ListEventTriggersRequest",
     "ListEventTriggersResponse",
     "ListEventTriggersResponse422",
+    "ListGithubOwnersRequest",
+    "ListGithubOwnersResponse",
+    "ListGithubOwnersResponse422",
     "ListIntelligenceClassesRequest",
     "ListIntelligenceClassesResponse",
     "ListIntelligenceClassesResponse422",
@@ -1534,6 +1585,9 @@ __all__ = (
     "ListProfilesRequest",
     "ListProfilesResponse",
     "ListProfilesResponse422",
+    "ListProjectRootsRequest",
+    "ListProjectRootsResponse",
+    "ListProjectRootsResponse422",
     "ListProjectsRequest",
     "ListProjectsResponse",
     "ListProjectsResponse422",
@@ -1599,6 +1653,14 @@ __all__ = (
     "NodeOverlayDTOState",
     "NodeResponse",
     "NoteSummary",
+    "OnboardingErrorInfo",
+    "OnboardingErrorInfoDetails",
+    "OnboardingErrorInfoFieldErrorsItem",
+    "OnboardProjectRequest",
+    "OnboardProjectRequestGithubRepositoryType0",
+    "OnboardProjectResponse",
+    "OnboardProjectResponse422",
+    "OnboardProjectResponseSourceType",
     "OperatorDecisionDTO",
     "OperatorDecisionDTOOptionsItem",
     "OrchestratorControlRequest",
@@ -1769,6 +1831,7 @@ __all__ = (
     "ProjectReadyRequest",
     "ProjectReadyResponse",
     "ProjectReadyResponse422",
+    "ProjectRootInfo",
     "ProjectSummary",
     "PromoteNoteRequest",
     "PromoteNoteResponse",
@@ -1871,6 +1934,9 @@ __all__ = (
     "SearchFilesRequest",
     "SearchFilesResponse",
     "SearchFilesResponse422",
+    "SearchGithubRepositoriesRequest",
+    "SearchGithubRepositoriesResponse",
+    "SearchGithubRepositoriesResponse422",
     "SelectFilesForInspectionRequest",
     "SelectFilesForInspectionRequestWeightsType0",
     "SelectFilesForInspectionResponse",

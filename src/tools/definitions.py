@@ -38,6 +38,14 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "workspace_reap": "project",
     "set_project_channel": "project",
     "set_control_interface": "project",
+    # project onboarding from the dashboard (design 2026-09-03 §5)
+    "list_project_roots": "project",
+    "browse_project_root": "project",
+    "get_github_auth_status": "project",
+    "list_github_owners": "project",
+    "search_github_repositories": "project",
+    "onboard_project": "project",
+    "get_project_onboarding": "project",
     # global agents and reusable profiles
     "list_agents": "agent",
     "get_agent": "agent",
@@ -1468,6 +1476,181 @@ _ALL_TOOL_DEFINITIONS = [
                     "description": "Filter by project ID (optional)",
                 },
             },
+        },
+    },
+    # -- project onboarding from the dashboard (design 2026-09-03 §5) --------
+    # The contract is src/commands/contracts/project_onboarding.py; these
+    # schemas are the flat wire shape the generated API/TS clients see.  The
+    # command handler re-validates strictly (unknown fields and invalid
+    # mode combinations are rejected there), so keep the two in step.
+    {
+        "name": "list_project_roots",
+        "description": (
+            "List the configured project roots (config `project_roots`) an operator may "
+            "browse and onboard projects beneath, with readable/writable flags."
+        ),
+        "input_schema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "browse_project_root",
+        "description": (
+            "List the child directories of a root-relative path beneath a configured project "
+            "root. Returns names, root-relative paths, directory/Git-repository flags and "
+            "whether each entry may be linked. Never returns file contents."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "root_id": {"type": "string", "description": "Configured project root id"},
+                "relative_path": {
+                    "type": "string",
+                    "description": "Root-relative directory to list (default: the root itself)",
+                    "default": "",
+                },
+            },
+            "required": ["root_id"],
+        },
+    },
+    {
+        "name": "get_github_auth_status",
+        "description": (
+            "Report whether the daemon host's `gh` CLI is installed and authenticated. "
+            "Never returns credentials."
+        ),
+        "input_schema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "list_github_owners",
+        "description": (
+            "List the GitHub owners (the authenticated user and their organisations) a new "
+            "repository may be created under via the daemon host's `gh` session."
+        ),
+        "input_schema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "search_github_repositories",
+        "description": (
+            "Search GitHub repositories visible to the daemon host's `gh` session. Returns "
+            "identity, visibility, clone URLs and default branch, paged by cursor."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "Search text (1-200 characters)"},
+                "limit": {
+                    "type": "integer",
+                    "description": "Page size (1-50, default 20)",
+                    "default": 20,
+                },
+                "cursor": {
+                    "type": "string",
+                    "description": "Opaque page cursor from a previous result",
+                },
+            },
+            "required": ["query"],
+        },
+    },
+    {
+        "name": "onboard_project",
+        "description": (
+            "Onboard a project from the dashboard: link an existing local repository, "
+            "initialise a new one (optionally creating a GitHub remote and README commit), "
+            "or clone a GitHub repository, always beneath a configured project root. Creates "
+            "the project, its primary project-repo workspace and vault structure in one "
+            "server-owned saga. `request_id` is a durable idempotency key. Mode-specific "
+            "fields are only valid for their `source_mode`."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "request_id": {
+                    "type": "string",
+                    "description": "Idempotency key; replaying it returns the prior result",
+                },
+                "source_mode": {
+                    "type": "string",
+                    "enum": ["link", "init", "github_clone"],
+                    "description": "link an existing repo, init a new one, or clone from GitHub",
+                },
+                "root_id": {"type": "string", "description": "Configured project root id"},
+                "relative_path": {
+                    "type": "string",
+                    "description": (
+                        "Root-relative destination: the existing repository (link) or the "
+                        "directory to create (init, github_clone)"
+                    ),
+                },
+                "project_name": {"type": "string", "description": "Display name"},
+                "project_id": {"type": "string", "description": "URL-safe project id (slug)"},
+                "default_branch": {
+                    "type": "string",
+                    "description": (
+                        "Default branch; detected for link/github_clone and `main` for init "
+                        "when omitted"
+                    ),
+                },
+                "create_readme": {
+                    "type": "boolean",
+                    "description": "init only: create README.md and an initial commit (default true)",
+                },
+                "create_github": {
+                    "type": "boolean",
+                    "description": "init only: also create a GitHub repository (default false)",
+                },
+                "github_owner": {
+                    "type": "string",
+                    "description": "init with create_github: owner to create the repository under",
+                },
+                "github_repo": {
+                    "type": "string",
+                    "description": (
+                        "init with create_github: repository name (default: destination "
+                        "directory name)"
+                    ),
+                },
+                "github_visibility": {
+                    "type": "string",
+                    "enum": ["private", "public"],
+                    "description": "init with create_github: visibility (default private)",
+                },
+                "github_repository": {
+                    "type": "object",
+                    "description": (
+                        "github_clone only: {owner, name} selected through "
+                        "search_github_repositories (exactly one of github_repository / "
+                        "github_url)"
+                    ),
+                },
+                "github_url": {
+                    "type": "string",
+                    "description": (
+                        "github_clone only: pasted GitHub HTTPS/SSH URL or owner/name "
+                        "shorthand (exactly one of github_repository / github_url)"
+                    ),
+                },
+            },
+            "required": [
+                "request_id",
+                "source_mode",
+                "root_id",
+                "relative_path",
+                "project_name",
+                "project_id",
+            ],
+        },
+    },
+    {
+        "name": "get_project_onboarding",
+        "description": (
+            "Read the durable status of an onboarding request by request_id: its status, "
+            "current phase, safe result or structured error."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "request_id": {"type": "string", "description": "The onboard_project request_id"},
+            },
+            "required": ["request_id"],
         },
     },
     {
