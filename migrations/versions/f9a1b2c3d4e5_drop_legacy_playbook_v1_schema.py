@@ -91,15 +91,32 @@ def upgrade() -> None:
     for table, column, ondelete in _RETARGETS:
         _retarget_run_fk(table, column, _V1_RUN_TABLE, "playbook_v2_runs", ondelete)
 
-    with op.batch_alter_table("playbook_activations") as batch:
-        batch.drop_constraint("ck_playbook_activations_review_evidence", type_="check")
-        batch.drop_column("reviewed_at")
-        batch.drop_column("reviewed_by")
-        batch.drop_column("reviewed_artifact_sha256")
+    # Every drop below is guarded: a database that was built on a branch
+    # which never carried the review-evidence columns or the V1 tables (the
+    # operator's, on 2026-09-05) must upgrade through here as a no-op rather
+    # than fail on an object that does not exist.
+    inspector = sa.inspect(bind)
+    activation_columns = {column["name"] for column in inspector.get_columns("playbook_activations")}
+    activation_checks = {
+        constraint.get("name") for constraint in inspector.get_check_constraints("playbook_activations")
+    }
+    review_columns = [
+        name
+        for name in ("reviewed_at", "reviewed_by", "reviewed_artifact_sha256")
+        if name in activation_columns
+    ]
+    has_review_check = "ck_playbook_activations_review_evidence" in activation_checks
+    if review_columns or has_review_check:
+        with op.batch_alter_table("playbook_activations") as batch:
+            if has_review_check:
+                batch.drop_constraint("ck_playbook_activations_review_evidence", type_="check")
+            for name in review_columns:
+                batch.drop_column(name)
 
-    op.drop_table("playbook_migration_acks")
-    op.drop_table("playbook_cutover_events")
-    op.drop_table(_V1_RUN_TABLE)
+    existing_tables = set(inspector.get_table_names())
+    for table in ("playbook_migration_acks", "playbook_cutover_events", _V1_RUN_TABLE):
+        if table in existing_tables:
+            op.drop_table(table)
 
 
 def downgrade() -> None:
