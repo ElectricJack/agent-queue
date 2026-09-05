@@ -248,9 +248,9 @@ class MonitoringMixin:
         # Session failures and timeouts require explicit attention even when
         # their old graph dependencies are satisfied. Otherwise this cascade
         # immediately undoes the reconciler's BLOCKED/quarantine decision.
-        # One statement instead of one per BLOCKED task.  ``needs_attention``
-        # is written as a non-empty code string, so "key present" and "value
-        # truthy" coincide.
+        # One statement instead of one per BLOCKED task.  Every in-tree
+        # writer stores a non-empty code, and task_edit normalises an empty
+        # string to a delete, so "key present" is exactly "needs attention".
         attention = await self.db.task_ids_with_meta(
             [task.id for task in blocked], "needs_attention"
         )

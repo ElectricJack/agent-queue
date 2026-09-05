@@ -18,6 +18,7 @@ import logging
 import pytest
 from sqlalchemy import event
 
+from src.commands.handler import CommandHandler
 from src.config import AppConfig
 from src.models import DepType, Project, Task, TaskStatus
 from src.orchestrator import Orchestrator
@@ -527,6 +528,24 @@ async def test_attention_blocked_task_does_not_auto_recover(orch, authoritative,
     await orch.db.delete_task_meta("needs-operator", "needs_attention")
     await orch._check_defined_tasks()
     assert await status_of(orch, "needs-operator") == TaskStatus.READY
+
+
+async def test_edit_task_empty_needs_attention_clears_the_hold(orch):
+    """``edit_task`` with ``needs_attention=""`` must delete the meta key, not
+    store an empty code — monitoring's BLOCKED filter is presence-based, so a
+    stored empty string would hold the task BLOCKED forever (regression for
+    the truthiness-vs-presence review finding).
+    """
+    handler = CommandHandler(orch, orch.config)
+    tid = await mktask(orch, "b", status=TaskStatus.BLOCKED)
+
+    result = await handler.execute("edit_task", {"task_id": tid, "needs_attention": "stuck"})
+    assert "error" not in result
+    assert await orch.db.get_task_meta(tid, "needs_attention") == "stuck"
+
+    result = await handler.execute("edit_task", {"task_id": tid, "needs_attention": ""})
+    assert "error" not in result
+    assert await orch.db.get_task_meta(tid, "needs_attention") is None
 
 
 class TestLegacyScanIsBatched:

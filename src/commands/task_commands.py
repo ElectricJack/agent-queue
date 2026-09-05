@@ -2765,11 +2765,20 @@ class TaskCommandsMixin:
         if status_changed:
             await self.db.transition_task(args["task_id"], new_status, context="edit_task")
 
-        if args.get("clear_needs_attention") or (
-            status_changed and args.get("needs_attention") is None
+        needs_attention_cleared = (
+            args.get("needs_attention") is not None and args["needs_attention"].strip() == ""
+        )
+        if (
+            args.get("clear_needs_attention")
+            or needs_attention_cleared
+            or (status_changed and args.get("needs_attention") is None)
         ):
             # An explicit operator status change is a recovery decision, so
-            # it dismisses the stale operational signal too.
+            # it dismisses the stale operational signal too. An empty (or
+            # whitespace-only) needs_attention value is likewise treated as
+            # a clear, not a stored empty code, so presence-based reads
+            # (monitoring.py's task_ids_with_meta filter) don't mistake it
+            # for an unresolved signal.
             await self.db.delete_task_meta(args["task_id"], "needs_attention")
         elif args.get("needs_attention") is not None:
             await self.db.set_task_meta(
