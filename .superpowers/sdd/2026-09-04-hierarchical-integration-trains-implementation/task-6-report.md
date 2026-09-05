@@ -341,3 +341,106 @@ All checks passed!
 
 `git diff --check` produced no output. The complete fix-round runtime implementation was
 committed as `62cad36e fix(integration): bind parent collection receipts`.
+
+Warning detail retained from the final-code focused output:
+
+- `DeprecationWarning: pkg_resources is deprecated as an API` at
+  `src/_compat.py:111`.
+- `DeprecationWarning: Deprecated call to pkg_resources.declare_namespace('zope')`
+  at the system `pkg_resources/__init__.py:2871`.
+- `DeprecationWarning: 'audioop' is deprecated and slated for removal in Python 3.13`
+  at the installed `discord/player.py:29` (present only in the three-test command that
+  loaded the command-handler/Discord dependency).
+
+The first two warnings account for the two warnings in the single parent-completion
+test; all three account for the three warnings in the command-spanning focused run.
+They are established repository/dependency baseline warnings repeatedly present in the
+earlier Task 6 focused and affected-area outputs, not warnings introduced by this diff.
+
+Process clarification: the first post-gate command selected three node IDs across two
+files with bare `pytest`. This was the second multi-file bare-`pytest` violation in this
+task. It passed, but it did not comply with the repository's test-slot rule; all future
+multi-file invocations must use `aq test`, including commands containing only a few
+explicit node IDs. The passing test was not rerun solely to rewrite this history.
+
+## Fix round 2: exact completion-verification provenance
+
+Base: `19dd9450` (runtime base `62cad36e`; the pending report-only warning
+clarification above is included in this round's scoped commit).
+
+The remaining finding was fixed with the append-only
+`integration_parent_operation_completions` relation. Its operation primary key binds
+one completed parent operation to the exact verification ID, parent task, and episode
+used by guarded completion; a composite RESTRICT foreign key targets the corresponding
+immutable verification identity. Guarded completion inserts this proof in the same
+transaction as the task/op completion transition and sets the checkpoint's foreign-keyed
+last-completion operation/verification pointer. Reopen intentionally clears only the
+live episode/current-verification projection, retaining that pointer and completion
+proof. Rollover discovery,
+acceptance creation, and carried-receipt readiness now require this exact proof instead
+of choosing an arbitrary verification row for a completed operation.
+
+The regression stores two verified generations/heads in one operation: an older
+generation-0 `cccc...` head and the current generation-1 `dddd...` head. Its ancestry
+verifier accepts only `dddd...`. Before the fix, the arbitrary join selected the old
+head; after the fix, completion pins and rollover uses only the current verified
+aggregate. The completed-parent review rejection regression additionally proves that
+reopen removes the checkpoint pointer but preserves the immutable completion proof.
+
+### RED/GREEN evidence
+
+- RED:
+  `pytest -q tests/test_integration_parent_completion.py::test_parent_completion_pins_exact_verification_for_rollover`
+  — failed at rollover with
+  `HierarchyError: stale_head: new parent checkpoint does not contain verified aggregate`;
+  **1 failed, 2 warnings in 3.19s**.
+- GREEN, original symptom:
+  `pytest -q tests/test_integration_parent_completion.py::test_parent_completion_pins_exact_verification_for_rollover`
+  — final schema/runtime rerun: **1 passed, 2 warnings in 3.29s**.
+- GREEN, persisted proof across review reopen:
+  `pytest -q tests/test_integration_review_evidence.py::test_parent_review_rejection_rolls_completed_episode_for_next_collection`
+  — final schema/runtime rerun: **1 passed, 3 warnings in 1.30s**.
+- Final combined focused gate (using the required slot-aware runner):
+  `aq test tests/test_integration_parent_completion.py tests/test_integration_review_evidence.py::test_parent_review_rejection_rolls_completed_episode_for_next_collection`
+  — final run: **20 passed, 11 warnings in 6.21s**.
+
+The warnings are the established dependency deprecations already identified above:
+`pkg_resources` API deprecation, `pkg_resources.declare_namespace('zope')`, and (in
+the review-evidence process) Python's deprecated `audioop` module. No warning was
+introduced by this fix.
+
+### Updated migration evidence
+
+The unpublished `e4c6a8b20d31` revision now creates/drops the normalized completion
+relation, its exact composite verification relationship, and its append-only guards.
+Both dialect cycles were rerun after the schema edit:
+
+- `pytest -q tests/test_migration_parent_collection.py::test_sqlite_parent_collection_upgrade_downgrade_upgrade -m migration`
+  — final schema run: **1 passed, 2 warnings in 1.07s**.
+- `POSTGRES_TEST_DSN='postgresql+asyncpg://integration_test:integration_test@127.0.0.1:16833/postgres' pytest -q tests/test_migration_parent_collection.py::test_postgres_parent_collection_upgrade_downgrade_upgrade -m migration`
+  — final schema run: **1 passed, 2 warnings in 2.68s**.
+
+The PostgreSQL helper created and dropped its uniquely named disposable database; no
+operator or protected database was used.
+
+### Fix-round 2 self-review
+
+- Completion provenance is no longer derived from timestamps or row ordering: the
+  checkpoint retains a foreign-keyed exact operation/verification pointer, and that
+  stored completion row identifies the same parent and episode.
+- The proof is written atomically with guarded completion and remains immutable and
+  addressable after parent reopen.
+- Direct and carried receipts still require their existing operation/episode bindings;
+  carry acceptance and consumption now additionally require the exact prior completion
+  proof.
+- No Task 7 behavior, aggregate forge observation, root-train work, or unrelated module
+  refactor was added. No known Task 6 product concern or architectural conflict remains.
+
+Final changed-file lint:
+
+```text
+ruff check migrations/versions/e4c6a8b20d31_parent_collection_and_review_evidence.py src/database/tables.py src/integration/hierarchy.py src/integration/parent_completion.py tests/test_integration_parent_completion.py tests/test_integration_review_evidence.py tests/test_migration_parent_collection.py
+All checks passed!
+```
+
+Final `git diff --check` exited 0 with no output.

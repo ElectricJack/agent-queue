@@ -10,12 +10,13 @@ from collections.abc import Awaitable, Callable
 from dataclasses import fields
 from typing import Any
 
-from sqlalchemy import insert, select, update
+from sqlalchemy import and_, insert, select, update
 
 from src.database.queries.hierarchy_queries import HierarchyError
 from src.database.tables import (
     integration_batch_members,
     integration_batches,
+    integration_parent_operation_completions,
     integration_parent_verifications,
     integration_repair_operations,
     sessions,
@@ -466,34 +467,58 @@ class HierarchyIntegration:
         async with self.db._engine.connect() as read_conn:
             task = await self._task_row(read_conn, task_id)
             _project, repo = await self._enabled_route(read_conn, task)
-            active_episode = (
+            checkpoint_completion = (
                 await read_conn.execute(
-                    select(task_integration_checkpoints.c.episode_id).where(
-                        task_integration_checkpoints.c.task_id == task_id
-                    )
+                    select(
+                        task_integration_checkpoints.c.episode_id,
+                        task_integration_checkpoints.c.last_completed_operation_id,
+                        task_integration_checkpoints.c.last_completed_verification_id,
+                    ).where(task_integration_checkpoints.c.task_id == task_id)
                 )
-            ).scalar_one_or_none()
+            ).mappings().one_or_none()
             prior = None
-            if active_episode is None:
+            if (
+                checkpoint_completion is not None
+                and checkpoint_completion["episode_id"] is None
+                and checkpoint_completion["last_completed_operation_id"] is not None
+                and checkpoint_completion["last_completed_verification_id"] is not None
+            ):
                 prior = (
                     await read_conn.execute(
                         select(
                             integration_repair_operations.c.id.label("operation_id"),
                             integration_repair_operations.c.episode_id,
-                            integration_parent_verifications.c.id.label("verification_id"),
+                            integration_parent_operation_completions.c.verification_id,
                             integration_parent_verifications.c.head_sha,
                         )
                         .join(
-                            integration_parent_verifications,
-                            integration_parent_verifications.c.operation_id
+                            integration_parent_operation_completions,
+                            integration_parent_operation_completions.c.operation_id
                             == integration_repair_operations.c.id,
+                        )
+                        .join(
+                            integration_parent_verifications,
+                            and_(
+                                integration_parent_verifications.c.operation_id
+                                == integration_parent_operation_completions.c.operation_id,
+                                integration_parent_verifications.c.id
+                                == integration_parent_operation_completions.c.verification_id,
+                                integration_parent_verifications.c.parent_task_id
+                                == integration_parent_operation_completions.c.parent_task_id,
+                                integration_parent_verifications.c.episode_id
+                                == integration_parent_operation_completions.c.episode_id,
+                            ),
                         )
                         .where(
                             integration_repair_operations.c.parent_task_id == task_id,
                             integration_repair_operations.c.state == "completed",
+                            integration_parent_operation_completions.c.operation_id
+                            == checkpoint_completion["last_completed_operation_id"],
+                            integration_parent_operation_completions.c.verification_id
+                            == checkpoint_completion["last_completed_verification_id"],
+                            integration_parent_operation_completions.c.parent_task_id
+                            == task_id,
                         )
-                        .order_by(integration_repair_operations.c.updated_at.desc())
-                        .limit(1)
                     )
                 ).mappings().one_or_none()
         verified = self.checkpoint_verifier(task, repo, head_sha)

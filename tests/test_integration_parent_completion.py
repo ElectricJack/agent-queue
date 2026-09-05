@@ -15,6 +15,7 @@ from src.database.tables import (
     integration_batches,
     integration_operation_artifact_pins,
     integration_outbox,
+    integration_parent_operation_completions,
     integration_parent_verification_evidence,
     integration_parent_episodes,
     integration_parent_verifications,
@@ -646,10 +647,22 @@ async def test_disposition_revision_supersedes_only_changed_child(db):
     assert selected[children[1]]["id"] == f"receipt-{children[1]}"
 
 
-async def test_parent_verify_consumes_exact_stored_evidence_and_guarded_completion(db):
+async def test_parent_completion_pins_exact_verification_for_rollover(db):
     hierarchy, checkpointed, children = await _parent_tree(db, children=1)
     await _code_receipt(db, children[0], "a" * 40, "d" * 40)
     async with db.immediate() as conn:
+        await conn.execute(
+            insert(integration_parent_verifications).values(
+                id="older-verification",
+                operation_id=checkpointed["operation_id"],
+                parent_task_id="parent",
+                episode_id=checkpointed["episode_id"],
+                generation=0,
+                head_sha="c" * 40,
+                required_check_version="parent-v1",
+                created_at=1.5,
+            )
+        )
         await conn.execute(
             insert(integration_check_evidence).values(
                 id="check-unit",
@@ -707,11 +720,24 @@ async def test_parent_verify_consumes_exact_stored_evidence_and_guarded_completi
     assert completed["outcome"] == "completed"
     assert (await db.get_task("parent")).status is TaskStatus.COMPLETED
     assert (await db.get_integration_operation(checkpointed["operation_id"]))["state"] == "completed"
+    async with db._engine.connect() as conn:
+        completion = (
+            await conn.execute(select(integration_parent_operation_completions))
+        ).mappings().one()
+    assert completion["operation_id"] == checkpointed["operation_id"]
+    assert completion["verification_id"] == verified["verification_id"]
+    assert completion["parent_task_id"] == "parent"
+    assert completion["episode_id"] == checkpointed["episode_id"]
+    completed_checkpoint = await db.get_integration_checkpoint("parent")
+    assert completed_checkpoint["last_completed_operation_id"] == checkpointed["operation_id"]
+    assert completed_checkpoint["last_completed_verification_id"] == verified["verification_id"]
 
     await db.transition_task("parent", TaskStatus.READY, assigned_agent_id=None)
     rolled = await db.get_integration_checkpoint("parent")
     assert rolled["episode_id"] is None
     assert rolled["current_verification_id"] is None
+    assert rolled["last_completed_operation_id"] == checkpointed["operation_id"]
+    assert rolled["last_completed_verification_id"] == verified["verification_id"]
     assert rolled["generation"] == 2
 
     rollover = HierarchyIntegration(

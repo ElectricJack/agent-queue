@@ -22,6 +22,7 @@ _APPEND_ONLY_TABLES = (
     "integration_check_evidence",
     "integration_parent_episodes",
     "integration_parent_verifications",
+    "integration_parent_operation_completions",
     "integration_parent_verification_evidence",
     "integration_episode_receipt_acceptances",
 )
@@ -68,6 +69,14 @@ def upgrade() -> None:
     op.add_column("task_integration_checkpoints", sa.Column("episode_id", sa.Text()))
     op.add_column(
         "task_integration_checkpoints", sa.Column("current_verification_id", sa.Text())
+    )
+    op.add_column(
+        "task_integration_checkpoints",
+        sa.Column("last_completed_operation_id", sa.Text()),
+    )
+    op.add_column(
+        "task_integration_checkpoints",
+        sa.Column("last_completed_verification_id", sa.Text()),
     )
     op.add_column(
         "task_delivery_receipts", sa.Column("disposition_revision", sa.Integer())
@@ -170,6 +179,13 @@ def upgrade() -> None:
         sa.UniqueConstraint(
             "parent_task_id", "id", name="uq_integration_parent_verifications_parent_id"
         ),
+        sa.UniqueConstraint(
+            "operation_id",
+            "id",
+            "parent_task_id",
+            "episode_id",
+            name="uq_integration_parent_verifications_completion_identity",
+        ),
         sa.ForeignKeyConstraint(
             ["operation_id"], ["integration_repair_operations.id"],
             name="fk_integration_parent_verifications_operation", ondelete="RESTRICT"
@@ -182,6 +198,40 @@ def upgrade() -> None:
             ["parent_task_id", "episode_id"],
             ["integration_parent_episodes.parent_task_id", "integration_parent_episodes.id"],
             name="fk_integration_parent_verifications_episode", ondelete="RESTRICT"
+        ),
+    )
+    op.create_table(
+        "integration_parent_operation_completions",
+        sa.Column("operation_id", sa.Text(), primary_key=True),
+        sa.Column("verification_id", sa.Text(), nullable=False),
+        sa.Column("parent_task_id", sa.Text(), nullable=False),
+        sa.Column("episode_id", sa.Text(), nullable=False),
+        sa.Column("completed_at", sa.Float(), nullable=False),
+        sa.UniqueConstraint(
+            "verification_id", name="uq_parent_operation_completions_verification"
+        ),
+        sa.UniqueConstraint(
+            "operation_id",
+            "verification_id",
+            "parent_task_id",
+            name="uq_parent_operation_completions_checkpoint_identity",
+        ),
+        sa.ForeignKeyConstraint(
+            ["operation_id"],
+            ["integration_repair_operations.id"],
+            name="fk_parent_operation_completions_operation",
+            ondelete="RESTRICT",
+        ),
+        sa.ForeignKeyConstraint(
+            ["operation_id", "verification_id", "parent_task_id", "episode_id"],
+            [
+                "integration_parent_verifications.operation_id",
+                "integration_parent_verifications.id",
+                "integration_parent_verifications.parent_task_id",
+                "integration_parent_verifications.episode_id",
+            ],
+            name="fk_parent_operation_completions_verification",
+            ondelete="RESTRICT",
         ),
     )
     op.create_table(
@@ -278,10 +328,28 @@ def upgrade() -> None:
             ["parent_task_id", "id"], ondelete="RESTRICT"
         )
     with op.batch_alter_table("task_integration_checkpoints") as batch_op:
+        batch_op.create_check_constraint(
+            "ck_task_integration_checkpoints_completion_binding",
+            "(last_completed_operation_id IS NULL AND "
+            "last_completed_verification_id IS NULL) OR "
+            "(last_completed_operation_id IS NOT NULL AND "
+            "last_completed_verification_id IS NOT NULL)",
+        )
         batch_op.create_foreign_key(
             "fk_task_integration_checkpoints_episode",
             "integration_parent_episodes", ["task_id", "episode_id"],
             ["parent_task_id", "id"], ondelete="RESTRICT"
+        )
+        batch_op.create_foreign_key(
+            "fk_task_integration_checkpoints_completion",
+            "integration_parent_operation_completions",
+            [
+                "last_completed_operation_id",
+                "last_completed_verification_id",
+                "task_id",
+            ],
+            ["operation_id", "verification_id", "parent_task_id"],
+            ondelete="RESTRICT",
         )
         batch_op.create_foreign_key(
             "fk_task_integration_checkpoints_verification",
@@ -295,10 +363,16 @@ def downgrade() -> None:
     _drop_append_only_guards()
     with op.batch_alter_table("task_integration_checkpoints") as batch_op:
         batch_op.drop_constraint(
+            "fk_task_integration_checkpoints_completion", type_="foreignkey"
+        )
+        batch_op.drop_constraint(
             "fk_task_integration_checkpoints_verification", type_="foreignkey"
         )
         batch_op.drop_constraint(
             "fk_task_integration_checkpoints_episode", type_="foreignkey"
+        )
+        batch_op.drop_constraint(
+            "ck_task_integration_checkpoints_completion_binding", type_="check"
         )
     with op.batch_alter_table("task_delivery_receipts") as batch_op:
         batch_op.drop_constraint(
@@ -315,6 +389,7 @@ def downgrade() -> None:
     )
     op.drop_table("integration_operation_artifact_pins")
     op.drop_table("integration_parent_verification_evidence")
+    op.drop_table("integration_parent_operation_completions")
     op.drop_table("integration_parent_verifications")
     op.drop_table("integration_child_dispositions")
     with op.batch_alter_table("integration_repair_operations") as batch_op:
@@ -341,5 +416,7 @@ def downgrade() -> None:
     op.drop_column("task_delivery_receipts", "parent_operation_id")
     op.drop_column("task_delivery_receipts", "disposition_revision")
     op.drop_column("task_integration_checkpoints", "current_verification_id")
+    op.drop_column("task_integration_checkpoints", "last_completed_verification_id")
+    op.drop_column("task_integration_checkpoints", "last_completed_operation_id")
     op.drop_column("task_integration_checkpoints", "episode_id")
     op.drop_column("projects", "hierarchical_integration_policy")

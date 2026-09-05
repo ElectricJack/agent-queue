@@ -17,6 +17,7 @@ from src.database.tables import (
     integration_branch_owners,
     integration_child_dispositions,
     integration_parent_episodes,
+    integration_parent_operation_completions,
     integration_parent_verification_evidence,
     integration_parent_verifications,
     integration_repair_operations,
@@ -157,6 +158,20 @@ class ParentCompletion:
                     )
                 )
             ).one_or_none()
+            previous_completion = (
+                await conn.execute(
+                    select(integration_parent_operation_completions.c.operation_id).where(
+                        integration_parent_operation_completions.c.operation_id
+                        == carry_forward["operation_id"],
+                        integration_parent_operation_completions.c.verification_id
+                        == carry_forward["verification_id"],
+                        integration_parent_operation_completions.c.parent_task_id
+                        == parent["id"],
+                        integration_parent_operation_completions.c.episode_id
+                        == carry_forward["episode_id"],
+                    )
+                )
+            ).one_or_none()
             previous_episode = (
                 await conn.execute(
                     select(integration_parent_episodes.c.id).where(
@@ -170,6 +185,7 @@ class ParentCompletion:
             if (
                 previous is None
                 or previous_operation is None
+                or previous_completion is None
                 or previous_episode is None
             ):
                 raise HierarchyError(
@@ -409,6 +425,10 @@ class ParentCompletion:
                             integration_repair_operations,
                             integration_repair_operations.c.id
                             == integration_episode_receipt_acceptances.c.previous_operation_id,
+                        ).join(
+                            integration_parent_operation_completions,
+                            integration_parent_operation_completions.c.operation_id
+                            == integration_episode_receipt_acceptances.c.previous_operation_id,
                         )
                     )
                     .where(
@@ -425,6 +445,12 @@ class ParentCompletion:
                         integration_parent_verifications.c.parent_task_id == parent["id"],
                         integration_parent_verifications.c.head_sha
                         == integration_episode_receipt_acceptances.c.ancestry_from_sha,
+                        integration_parent_operation_completions.c.verification_id
+                        == integration_episode_receipt_acceptances.c.previous_verification_id,
+                        integration_parent_operation_completions.c.parent_task_id
+                        == parent["id"],
+                        integration_parent_operation_completions.c.episode_id
+                        == integration_episode_receipt_acceptances.c.previous_episode_id,
                         integration_repair_operations.c.parent_task_id == parent["id"],
                         integration_repair_operations.c.episode_id
                         == integration_episode_receipt_acceptances.c.previous_episode_id,
@@ -949,6 +975,24 @@ class ParentCompletion:
                 force=True,
                 _integration_completion_token=_INTEGRATION_COMPLETION_TOKEN,
             )
+            completed_at = self.clock()
+            await conn.execute(
+                insert(integration_parent_operation_completions).values(
+                    operation_id=operation["id"],
+                    verification_id=checkpoint["current_verification_id"],
+                    parent_task_id=task_id,
+                    episode_id=checkpoint["episode_id"],
+                    completed_at=completed_at,
+                )
+            )
+            await conn.execute(
+                update(task_integration_checkpoints)
+                .where(task_integration_checkpoints.c.task_id == task_id)
+                .values(
+                    last_completed_operation_id=operation["id"],
+                    last_completed_verification_id=checkpoint["current_verification_id"],
+                )
+            )
             await conn.execute(
                 update(integration_repair_operations)
                 .where(
@@ -957,7 +1001,7 @@ class ParentCompletion:
                         ("active", "escalated", "human_required")
                     ),
                 )
-                .values(state="completed", updated_at=self.clock())
+                .values(state="completed", updated_at=completed_at)
             )
         await self.db.log_blocked_flips(transition.flipped)
         await self.db._notify_settled(transition.settled)

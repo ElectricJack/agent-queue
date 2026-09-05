@@ -13,6 +13,7 @@ from sqlalchemy import delete, insert, select, update
 from src.database import Database
 from src.database.tables import (
     integration_parent_episodes,
+    integration_parent_operation_completions,
     integration_parent_verifications,
     integration_repair_operations,
     integration_review_evidence,
@@ -491,6 +492,15 @@ async def test_parent_review_rejection_rolls_completed_episode_for_next_collecti
             )
         )
         await conn.execute(
+            insert(integration_parent_operation_completions).values(
+                operation_id="completed-operation",
+                verification_id="completed-verification",
+                parent_task_id="parent",
+                episode_id="completed-episode",
+                completed_at=2.0,
+            )
+        )
+        await conn.execute(
             insert(task_integration_checkpoints).values(
                 task_id="parent",
                 repository_id="repo",
@@ -501,6 +511,8 @@ async def test_parent_review_rejection_rolls_completed_episode_for_next_collecti
                 generation=0,
                 episode_id="completed-episode",
                 current_verification_id="completed-verification",
+                last_completed_operation_id="completed-operation",
+                last_completed_verification_id="completed-verification",
                 state="verifying",
                 version=1,
                 updated_at=2.0,
@@ -546,6 +558,13 @@ async def test_parent_review_rejection_rolls_completed_episode_for_next_collecti
     assert checkpoint["generation"] == 1
     assert checkpoint["episode_id"] is None
     assert checkpoint["current_verification_id"] is None
+    assert checkpoint["last_completed_operation_id"] == "completed-operation"
+    assert checkpoint["last_completed_verification_id"] == "completed-verification"
+    async with db._engine.connect() as conn:
+        completion = (
+            await conn.execute(select(integration_parent_operation_completions))
+        ).mappings().one()
+    assert completion["verification_id"] == "completed-verification"
 
 
 async def test_disabled_project_review_keeps_legacy_close_without_git_observation(review_case):

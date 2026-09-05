@@ -30,6 +30,7 @@ def _assert_parent_schema(connection) -> None:
         "integration_parent_episodes",
         "integration_child_dispositions",
         "integration_parent_verifications",
+        "integration_parent_operation_completions",
         "integration_parent_verification_evidence",
         "integration_operation_artifact_pins",
         "integration_episode_receipt_acceptances",
@@ -38,7 +39,12 @@ def _assert_parent_schema(connection) -> None:
         column["name"]: column
         for column in schema.get_columns("task_integration_checkpoints")
     }
-    assert {"episode_id", "current_verification_id"} <= checkpoint_columns.keys()
+    assert {
+        "episode_id",
+        "current_verification_id",
+        "last_completed_operation_id",
+        "last_completed_verification_id",
+    } <= checkpoint_columns.keys()
     assert checkpoint_columns["episode_id"]["nullable"]
     assert "disposition_revision" in {
         column["name"] for column in schema.get_columns("task_delivery_receipts")
@@ -54,12 +60,14 @@ def _assert_parent_schema(connection) -> None:
             "integration_repair_operations",
             "integration_parent_episodes",
             "integration_parent_verifications",
+            "integration_parent_operation_completions",
         )
         for key in schema.get_foreign_keys(table)
     }
     assert {
         "fk_task_integration_checkpoints_episode",
         "fk_task_integration_checkpoints_verification",
+        "fk_task_integration_checkpoints_completion",
         "fk_task_delivery_receipts_parent_operation",
         "fk_task_delivery_receipts_parent_episode",
         "fk_integration_repair_operations_parent_episode",
@@ -69,6 +77,8 @@ def _assert_parent_schema(connection) -> None:
         "fk_integration_parent_verifications_operation",
         "fk_integration_parent_verifications_parent_task",
         "fk_integration_parent_verifications_episode",
+        "fk_parent_operation_completions_operation",
+        "fk_parent_operation_completions_verification",
     } <= foreign_keys
     assert {
         "verifier_task_id",

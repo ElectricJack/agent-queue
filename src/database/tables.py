@@ -1595,6 +1595,8 @@ task_integration_checkpoints = Table(
     Column("branch_owner_id", Text, nullable=True),
     Column("episode_id", Text, nullable=True),
     Column("current_verification_id", Text, nullable=True),
+    Column("last_completed_operation_id", Text, nullable=True),
+    Column("last_completed_verification_id", Text, nullable=True),
     Column("updated_at", Float, nullable=False),
     CheckConstraint("generation >= 0", name="ck_task_integration_checkpoints_generation"),
     CheckConstraint("version >= 0", name="ck_task_integration_checkpoints_version"),
@@ -1605,6 +1607,13 @@ task_integration_checkpoints = Table(
     CheckConstraint(
         "state IN ('working', 'awaiting_children', 'integration_ready', 'verifying')",
         name="ck_task_integration_checkpoints_state",
+    ),
+    CheckConstraint(
+        "(last_completed_operation_id IS NULL AND "
+        "last_completed_verification_id IS NULL) OR "
+        "(last_completed_operation_id IS NOT NULL AND "
+        "last_completed_verification_id IS NOT NULL)",
+        name="ck_task_integration_checkpoints_completion_binding",
     ),
     ForeignKeyConstraint(
         ["task_id", "episode_id"],
@@ -1619,6 +1628,20 @@ task_integration_checkpoints = Table(
             "integration_parent_verifications.id",
         ],
         name="fk_task_integration_checkpoints_verification",
+        ondelete="RESTRICT",
+    ),
+    ForeignKeyConstraint(
+        [
+            "last_completed_operation_id",
+            "last_completed_verification_id",
+            "task_id",
+        ],
+        [
+            "integration_parent_operation_completions.operation_id",
+            "integration_parent_operation_completions.verification_id",
+            "integration_parent_operation_completions.parent_task_id",
+        ],
+        name="fk_task_integration_checkpoints_completion",
         ondelete="RESTRICT",
     ),
 )
@@ -2164,6 +2187,13 @@ integration_parent_verifications = Table(
     UniqueConstraint(
         "parent_task_id", "id", name="uq_integration_parent_verifications_parent_id"
     ),
+    UniqueConstraint(
+        "operation_id",
+        "id",
+        "parent_task_id",
+        "episode_id",
+        name="uq_integration_parent_verifications_completion_identity",
+    ),
     CheckConstraint("generation >= 0", name="ck_integration_parent_verifications_generation"),
     ForeignKeyConstraint(
         ["operation_id"],
@@ -2181,6 +2211,42 @@ integration_parent_verifications = Table(
         ["parent_task_id", "episode_id"],
         ["integration_parent_episodes.parent_task_id", "integration_parent_episodes.id"],
         name="fk_integration_parent_verifications_episode",
+        ondelete="RESTRICT",
+    ),
+)
+
+integration_parent_operation_completions = Table(
+    "integration_parent_operation_completions",
+    metadata,
+    Column("operation_id", Text, primary_key=True),
+    Column("verification_id", Text, nullable=False),
+    Column("parent_task_id", Text, nullable=False),
+    Column("episode_id", Text, nullable=False),
+    Column("completed_at", Float, nullable=False),
+    UniqueConstraint(
+        "verification_id", name="uq_parent_operation_completions_verification"
+    ),
+    UniqueConstraint(
+        "operation_id",
+        "verification_id",
+        "parent_task_id",
+        name="uq_parent_operation_completions_checkpoint_identity",
+    ),
+    ForeignKeyConstraint(
+        ["operation_id"],
+        ["integration_repair_operations.id"],
+        name="fk_parent_operation_completions_operation",
+        ondelete="RESTRICT",
+    ),
+    ForeignKeyConstraint(
+        ["operation_id", "verification_id", "parent_task_id", "episode_id"],
+        [
+            "integration_parent_verifications.operation_id",
+            "integration_parent_verifications.id",
+            "integration_parent_verifications.parent_task_id",
+            "integration_parent_verifications.episode_id",
+        ],
+        name="fk_parent_operation_completions_verification",
         ondelete="RESTRICT",
     ),
 )
