@@ -419,10 +419,13 @@ class TrainService:
                 dedup_key=f"integration-sealed:{batch_id}",
                 project_id=project_id,
                 event_type="integration.sealed",
-                payload={"project_id": project_id, "operation_id": operation["id"]},
+                payload={
+                    "project_id": project_id,
+                    "batch_id": batch_id,
+                    "operation_id": operation["id"],
+                },
                 available_at=now,
             )
-            await self._consume_request(conn, project_id, request_id, now)
             await conn.execute(
                 update(integration_batches)
                 .where(
@@ -547,8 +550,12 @@ class TrainService:
 
     @staticmethod
     def _integration_branch(project_id: str, request_id: str) -> str:
-        digest = hashlib.sha256(f"{project_id}\0{request_id}".encode()).hexdigest()
-        return f"refs/heads/aq/integration/{project_id}/{digest[:20]}"
+        project_digest = hashlib.sha256(project_id.encode()).hexdigest()[:32]
+        request_digest = hashlib.sha256(request_id.encode()).hexdigest()[:32]
+        return (
+            "refs/heads/aq/integration/"
+            f"p-{project_digest}/r-{request_digest}"
+        )
 
     @staticmethod
     def _manifest_digest(members: list[dict[str, Any]]) -> str:

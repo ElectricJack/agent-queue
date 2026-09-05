@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import re
+import subprocess
 from unittest.mock import AsyncMock
 
 import pytest
@@ -812,9 +814,79 @@ async def test_one_root_seal_freezes_review_and_real_unstarted_operation(db):
     assert len(sealed_events) == 1
     assert sealed_events[0]["payload"] == {
         "project_id": "p",
+        "batch_id": first["batch_id"],
         "operation_id": first["operation_id"],
         "event_id": f"integration-sealed:{first['batch_id']}",
     }
+
+
+async def test_nonempty_seal_retains_first_request_for_manual_and_periodic_coalescing(db):
+    from src.integration.scheduler import IntegrationScheduler, TrainService
+
+    await _enable_train(db)
+    await _seed_leaf(db, "root", "b" * 40)
+    scheduler = IntegrationScheduler(db)
+    await scheduler.configure(
+        project_id="p", now=1.0, enabled=True, interval_seconds=5
+    )
+    first = await scheduler.mark_due("p", 10.0, "manual")
+    sealed = await TrainService(db).seal("p", first["request_id"], 20.0)
+
+    manual = await scheduler.mark_due("p", 30.0, "manual")
+    periodic = await scheduler.mark_due("p", 40.0, "periodic")
+
+    assert sealed["outcome"] == "sealed"
+    for replay in (manual, periodic):
+        assert replay["outcome"] == "coalesced"
+        assert replay["request_id"] == first["request_id"]
+        assert replay["trigger"] == "manual"
+        assert replay["requested_at"] == 10.0
+        assert replay["request_sequence"] == 1
+    async with db._engine.connect() as conn:
+        schedule = (
+            await conn.execute(
+                select(project_integration_schedules).where(
+                    project_integration_schedules.c.project_id == "p"
+                )
+            )
+        ).mappings().one()
+        sweep_events = (
+            await conn.execute(
+                select(integration_outbox).where(
+                    integration_outbox.c.event_type == "integration.sweep_due"
+                )
+            )
+        ).mappings().all()
+    assert schedule["outstanding_request_id"] == first["request_id"]
+    assert schedule["outstanding_trigger"] == "manual"
+    assert schedule["outstanding_requested_at"] == 10.0
+    assert schedule["request_sequence"] == 1
+    assert len(sweep_events) == 1
+
+
+def test_integration_branch_is_ref_safe_for_adversarial_project_and_request_ids():
+    from src.git.manager import _validate_ref
+    from src.integration.scheduler import TrainService
+
+    inputs = (
+        ("../project:^~ with space.lock", "request@{bad}..\\value"),
+        (".leading", "trailing."),
+    )
+    refs = [TrainService._integration_branch(project, request) for project, request in inputs]
+
+    assert refs[0] != refs[1]
+    for ref in refs:
+        assert re.fullmatch(
+            r"refs/heads/aq/integration/p-[0-9a-f]{32}/r-[0-9a-f]{32}", ref
+        )
+        assert _validate_ref(ref) == ref
+        checked = subprocess.run(
+            ["git", "check-ref-format", ref],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        assert checked.returncode == 0, checked.stderr
 
 
 async def test_live_batch_is_busy_without_frontier_read_and_expired_batch_resumes(
@@ -1121,6 +1193,115 @@ async def test_descendant_reopen_before_seal_changes_fresh_snapshot(concurrent_d
 
     assert result["outcome"] == "empty"
     assert (await concurrent_db.get_task("child")).status is TaskStatus.READY
+
+
+async def test_public_review_append_requires_existing_source_task_project(db):
+    missing = _review_row("missing", "b" * 40, evidence_id="review-missing")
+
+    with pytest.raises(ValueError, match="source task project does not exist"):
+        await db.append_integration_review_evidence(missing)
+
+
+async def test_postgres_sealer_first_freezes_approval_before_later_rejection(
+    concurrent_db, monkeypatch
+):
+    if concurrent_db._engine.dialect.name != "postgresql":
+        pytest.skip("PostgreSQL advisory-lock ordering only")
+    from src.integration.scheduler import TrainService
+
+    await _enable_train(concurrent_db)
+    approval = await _seed_leaf(concurrent_db, "root", "b" * 40)
+    request = await _request(concurrent_db)
+    review_read = asyncio.Event()
+    finish_seal = asyncio.Event()
+    original_reviews = concurrent_db.latest_exact_reviews_on
+
+    async def pause_after_review_read(*args, **kwargs):
+        reviews = await original_reviews(*args, **kwargs)
+        review_read.set()
+        await finish_seal.wait()
+        return reviews
+
+    monkeypatch.setattr(
+        concurrent_db, "latest_exact_reviews_on", pause_after_review_read
+    )
+    seal_task = asyncio.create_task(
+        TrainService(concurrent_db).seal("p", request["request_id"], 20.0)
+    )
+    await asyncio.wait_for(review_read.wait(), timeout=3)
+    rejection = _review_row(
+        "root",
+        "b" * 40,
+        evidence_id="review-root-later-rejection",
+        verdict="rejected",
+        evidence={"decision": "rejected"},
+        created_at=2.0,
+    )
+    append_task = asyncio.create_task(
+        concurrent_db.append_integration_review_evidence(rejection)
+    )
+    await asyncio.sleep(0.05)
+    assert not append_task.done()
+    finish_seal.set()
+
+    sealed = await asyncio.wait_for(seal_task, timeout=5)
+    await asyncio.wait_for(append_task, timeout=5)
+    async with concurrent_db._engine.connect() as conn:
+        member = (
+            await conn.execute(
+                select(integration_batch_members).where(
+                    integration_batch_members.c.batch_id == sealed["batch_id"]
+                )
+            )
+        ).mappings().one()
+    assert sealed["outcome"] == "sealed"
+    assert member["review_evidence_id"] == approval["id"]
+
+
+async def test_postgres_rejection_writer_first_makes_seal_exclude_root(
+    concurrent_db, monkeypatch
+):
+    if concurrent_db._engine.dialect.name != "postgresql":
+        pytest.skip("PostgreSQL advisory-lock ordering only")
+    from src.integration.scheduler import TrainService
+
+    await _enable_train(concurrent_db)
+    await _seed_leaf(concurrent_db, "root", "b" * 40)
+    request = await _request(concurrent_db)
+    writer_has_lock = asyncio.Event()
+    finish_writer = asyncio.Event()
+    original_lock = concurrent_db.lock_hierarchy_project
+
+    async def pause_review_writer(conn, project_id):
+        await original_lock(conn, project_id)
+        if asyncio.current_task().get_name() == "task8b-review-writer":
+            writer_has_lock.set()
+            await finish_writer.wait()
+
+    monkeypatch.setattr(concurrent_db, "lock_hierarchy_project", pause_review_writer)
+    rejection = _review_row(
+        "root",
+        "b" * 40,
+        evidence_id="review-root-first-rejection",
+        verdict="rejected",
+        evidence={"decision": "rejected"},
+        created_at=2.0,
+    )
+    append_task = asyncio.create_task(
+        concurrent_db.append_integration_review_evidence(rejection),
+        name="task8b-review-writer",
+    )
+    await asyncio.wait_for(writer_has_lock.wait(), timeout=3)
+    seal_task = asyncio.create_task(
+        TrainService(concurrent_db).seal("p", request["request_id"], 20.0)
+    )
+    await asyncio.sleep(0.05)
+    assert not seal_task.done()
+    finish_writer.set()
+
+    await asyncio.wait_for(append_task, timeout=5)
+    sealed = await asyncio.wait_for(seal_task, timeout=5)
+    assert sealed["outcome"] == "empty"
 
 
 async def test_immediate_transition_preserves_ordinary_status_and_post_commit_callback(db):

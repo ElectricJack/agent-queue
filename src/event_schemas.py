@@ -1128,6 +1128,20 @@ _INTEGRATION_SCHEMAS: dict[str, EventSchema] = {
     )
 }
 
+# New sealed events identify both the lifecycle batch and its distinct repair
+# operation. Keep batch_id optional at validation so durable pre-Task-8b events
+# remain readable during replay/upgrades.
+_INTEGRATION_SCHEMAS["integration.sealed"] = {
+    "required": ["project_id", "operation_id"],
+    "optional": ["batch_id"],
+    "types": {"project_id": str, "operation_id": str, "batch_id": str},
+    "fields": {
+        "project_id": {"type": "string", "description": "project"},
+        "operation_id": {"type": "string", "description": "integration operation"},
+        "batch_id": {"type": "string", "description": "integration batch"},
+    },
+}
+
 _FENCE_EVENT_FIELD: EventFieldSpec = {
     "type": "object",
     "description": "repository-qualified ownership fence",

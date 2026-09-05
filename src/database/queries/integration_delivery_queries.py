@@ -17,6 +17,7 @@ from src.database.tables import (
     task_branch_origins,
     task_delivery_receipts,
     task_integration_checkpoints,
+    tasks,
 )
 from src.integration.outbox import enqueue_integration_event
 
@@ -92,6 +93,26 @@ class IntegrationDeliveryQueriesMixin:
         if missing:
             raise ValueError("review evidence missing: " + ", ".join(sorted(missing)))
         async with self.immediate() as conn:
+            source_task_id = evidence["source_task_id"]
+            project_id = (
+                await conn.execute(
+                    select(tasks.c.project_id)
+                    .select_from(tasks.join(projects, projects.c.id == tasks.c.project_id))
+                    .where(tasks.c.id == source_task_id)
+                )
+            ).scalar_one_or_none()
+            if project_id is None:
+                raise ValueError("review evidence source task project does not exist")
+            await self.lock_hierarchy_project(conn, project_id)
+            current_project_id = (
+                await conn.execute(
+                    select(tasks.c.project_id)
+                    .select_from(tasks.join(projects, projects.c.id == tasks.c.project_id))
+                    .where(tasks.c.id == source_task_id)
+                )
+            ).scalar_one_or_none()
+            if current_project_id != project_id:
+                raise ValueError("review evidence source task project does not exist")
             await conn.execute(insert(integration_review_evidence).values(**evidence))
         return dict(evidence)
 
