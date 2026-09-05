@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import re
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -733,9 +734,31 @@ async def test_set_parent_cycle_check_does_not_load_the_whole_edge_table(db):
     finally:
         event.remove(db._engine.sync_engine, "before_cursor_execute", _hook)
 
+    id_predicate = re.compile(r"\b(task_id|depends_on_task_id)\s*(=|IN\b)")
     unfiltered = [
-        s for s in statements
-        if "task_dependencies" in s and "WHERE" in s
-        and "task_id" not in s.split("WHERE", 1)[1] and "depends_on_task_id" not in s.split("WHERE", 1)[1]
+        s
+        for s in statements
+        if "task_dependencies" in s
+        and "WHERE" in s
+        and not id_predicate.search(s.split("WHERE", 1)[1])
     ]
     assert unfiltered == [], unfiltered  # every edge read is anchored on an id
+
+
+async def test_set_parent_cycle_check_follows_long_blocking_chains(db):
+    """REACHABILITY_MAX_DEPTH must exceed any real blocking chain (fix for
+    the reviewed depth-guard finding: ``MAX_STRUCTURAL_DEPTH * 64`` (192)
+    truncated a legitimate 300-long ``blocks`` chain and let a cyclic
+    reparent through).
+    """
+    await db.create_task(Task(id="p", project_id=PROJECT_ID, title="p", description=""))
+    for i in range(300):
+        await db.create_task(Task(id=f"c{i}", project_id=PROJECT_ID, title="", description=""))
+        if i:
+            await db.add_dependency(f"c{i}", f"c{i-1}", DepType.BLOCKS.value)
+    # c0 blocks-on p, so p is reachable from every c{i} over the blocking chain.
+    await db.add_dependency("c0", "p", DepType.BLOCKS.value)
+
+    async with db._engine.begin() as conn:
+        with pytest.raises(HierarchyError, match="cycle"):
+            await db.set_parent("p", "c299", conn=conn)

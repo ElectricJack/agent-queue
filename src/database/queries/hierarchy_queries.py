@@ -38,6 +38,11 @@ CONTAINER_KEY = "container"
 CONTAINER_VALUE = "true"  # json.dumps(True); matches set_task_meta's encoding
 #: Two-key PostgreSQL advisory-lock namespace "AQHI" (AQ hierarchy).
 HIERARCHY_LOCK_NAMESPACE = 0x41514849
+#: Bounds the recursive walk on an already-cyclic graph; far above any real
+#: blocking chain. Blocking edges (waits-for / blocks / conditional-blocks)
+#: have no structural depth bound, unlike parent-child nesting, so this must
+#: not be derived from MAX_STRUCTURAL_DEPTH.
+REACHABILITY_MAX_DEPTH = 10_000
 
 
 def container_flag_exists():
@@ -554,10 +559,12 @@ class HierarchyQueryMixin:
             .where(
                 task_dependencies.c.task_id == base.c.id,
                 task_dependencies.c.dep_type.in_(blocking),
-                base.c.depth < MAX_STRUCTURAL_DEPTH * 64,  # loop guard on a drifted graph
+                base.c.depth < REACHABILITY_MAX_DEPTH,
             )
         )
-        reach = base.union(step)  # UNION (not ALL) so a pre-existing cycle terminates
+        # UNION collapses equal-depth re-convergence; the depth guard below
+        # is what bounds an already-cyclic graph.
+        reach = base.union(step)
         row = (
             await conn.execute(select(reach.c.id).where(reach.c.id == target).limit(1))
         ).fetchone()
