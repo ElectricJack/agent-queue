@@ -280,7 +280,7 @@ def test_success_payload_carries_the_design_fields():
 
 
 # ---------------------------------------------------------------------------
-# CommandHandler wiring — callable, structured not_implemented
+# CommandHandler wiring — root browsing is live; later services remain stubs
 # ---------------------------------------------------------------------------
 
 VALID_ARGS = {
@@ -294,13 +294,32 @@ VALID_ARGS = {
 }
 
 
-@pytest.mark.parametrize("command", sorted(SEVEN))
-async def test_each_command_dispatches_and_answers_not_implemented(command_handler_factory, command):
+@pytest.mark.parametrize(
+    ("command", "expected_error"),
+    [
+        ("get_github_auth_status", "not_implemented"),
+        ("get_project_onboarding", "not_implemented"),
+        ("list_github_owners", "not_implemented"),
+        ("onboard_project", "not_implemented"),
+        ("search_github_repositories", "not_implemented"),
+    ],
+)
+async def test_unimplemented_commands_remain_structured(command_handler_factory, command, expected_error):
     handler = await command_handler_factory()
     result = await handler.execute(command, dict(VALID_ARGS[command]))
     assert result["success"] is False
-    assert result["error_code"] == "not_implemented"
+    assert result["error_code"] == expected_error
     assert command in result["error"]
+
+
+async def test_root_commands_have_live_browse_semantics(command_handler_factory):
+    handler = await command_handler_factory()
+    roots = await handler.execute("list_project_roots", {})
+    assert roots == {"success": True, "roots": []}
+
+    browse = await handler.execute("browse_project_root", {"root_id": "development"})
+    assert browse["success"] is False
+    assert browse["error_code"] == "root_unavailable"
 
 
 async def test_invalid_arguments_are_rejected_before_the_stub_answers(command_handler_factory):

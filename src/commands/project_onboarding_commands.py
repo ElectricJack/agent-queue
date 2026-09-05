@@ -18,6 +18,7 @@ surface and direct callers get the same answer.
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 from typing import Any
 
 from src.api.scope import PROJECT_ONBOARDING_SCOPE_ERROR
@@ -29,10 +30,16 @@ from src.commands.contracts.project_onboarding import (
     LIST_PROJECT_ROOTS,
     ONBOARD_PROJECT,
     SEARCH_GITHUB_REPOSITORIES,
+    BrowseEntry,
+    BrowseProjectRootResult,
+    ListProjectRootsResult,
     ProjectOnboardingError,
     ProjectOnboardingErrorCode,
+    ProjectRootInfo,
     parse_request,
 )
+from src.config import resolve_project_root
+from src.projects.paths import ProjectPathError, list_directory
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +50,26 @@ def _not_implemented(command: str) -> ProjectOnboardingError:
         f"{command} is not implemented yet: the onboarding contract has landed, "
         "the service has not",
     )
+
+
+def _display_root_path(path: str) -> str:
+    """Render a configured root for an operator without making it an input.
+
+    Root paths have already been normalised while loading configuration.  A
+    home-relative display is shorter and avoids exposing the daemon's exact
+    home prefix unnecessarily; paths outside the home directory stay absolute.
+    """
+    root_path = Path(path).expanduser()
+    try:
+        relative = root_path.relative_to(Path.home())
+    except ValueError:
+        return str(root_path)
+    return "~" if not relative.parts else f"~/{relative.as_posix()}"
+
+
+def _browse_path_error(error: ProjectPathError) -> ProjectOnboardingError:
+    """Translate the path module's four stable browse failures verbatim."""
+    return ProjectOnboardingError(ProjectOnboardingErrorCode(error.code.value), error.message)
 
 
 class ProjectOnboardingCommandsMixin:
@@ -112,11 +139,50 @@ class ProjectOnboardingCommandsMixin:
     # result model (or a ``dict`` already in command-result shape).  Later
     # packages replace these; the ``_cmd_*`` wrappers above do not change.
 
-    async def _execute_list_project_roots(self, request) -> Any:
-        raise _not_implemented(LIST_PROJECT_ROOTS)
+    async def _execute_list_project_roots(self, request) -> ListProjectRootsResult:
+        """Return the currently configured roots and live filesystem capabilities."""
+        return ListProjectRootsResult(
+            roots=[
+                ProjectRootInfo(
+                    id=root.id,
+                    label=root.label,
+                    path=_display_root_path(root.path),
+                    readable=root.readable,
+                    writable=root.writable,
+                )
+                for root in self.config.project_roots
+            ]
+        )
 
-    async def _execute_browse_project_root(self, request) -> Any:
-        raise _not_implemented(BROWSE_PROJECT_ROOT)
+    async def _execute_browse_project_root(self, request) -> BrowseProjectRootResult:
+        """Safely list one configured root-relative directory (§5.1)."""
+        root = resolve_project_root(self.config, request.root_id)
+        # A removed root and an unavailable root deliberately share the same
+        # failure: callers must not treat a former root id as a filesystem
+        # capability or learn whether its path still exists.
+        if root is None or not root.readable:
+            raise ProjectOnboardingError(
+                ProjectOnboardingErrorCode.ROOT_UNAVAILABLE, "project root is unavailable"
+            )
+        try:
+            listing = list_directory(Path(root.path), request.relative_path)
+        except ProjectPathError as error:
+            raise _browse_path_error(error) from None
+        return BrowseProjectRootResult(
+            root_id=root.id,
+            relative_path=listing.relative,
+            entries=[
+                BrowseEntry(
+                    name=entry.name,
+                    relative_path=entry.relative_path,
+                    is_directory=entry.is_dir,
+                    is_git_repository=entry.is_git_repo,
+                    selectable=entry.selectable,
+                )
+                for entry in listing.entries
+            ],
+            truncated=listing.truncated,
+        )
 
     async def _execute_get_github_auth_status(self, request) -> Any:
         raise _not_implemented(GET_GITHUB_AUTH_STATUS)
