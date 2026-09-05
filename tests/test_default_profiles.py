@@ -237,7 +237,7 @@ def test_spec_ingest_profile_shape():
 
 def test_playbook_compiler_profile_shape():
     """playbook-compiler is a workspace-free mechanical profile whitelisting
-    the playbook_validate/playbook_install loop."""
+    the V2 propose/validate loop."""
     from pathlib import Path
 
     src = Path("src/profiles/defaults/playbook-compiler/profile.md").read_text()
@@ -247,8 +247,9 @@ def test_playbook_compiler_profile_shape():
     assert parsed.config.get("harness") == "claude"
     assert parsed.config.get("needs_workspace") is False
     tools = (parsed.capabilities or {}).get("aq_commands", [])
-    assert "playbook_validate" in tools
-    assert "playbook_install" in tools
+    assert "playbook_v2_validate" in tools
+    assert "playbook_v2_propose" in tools
+    assert "playbook_activate" not in tools
 
 
 # ---------------------------------------------------------------------------

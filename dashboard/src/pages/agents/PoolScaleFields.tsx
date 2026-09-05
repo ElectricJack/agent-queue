@@ -29,10 +29,10 @@ export function validateBounds(draft: BoundsDraft): string | null {
 }
 
 /** Turn a validated draft into a ``pool_scale`` body; null clears the max. */
-export function scaleRequest(draft: BoundsDraft, pool: PoolStatusRow) {
+export function scaleRequest(draft: BoundsDraft, profileId: string) {
   const max = draft.max.trim();
   return {
-    profile_id: pool.profile_id,
+    profile_id: profileId,
     min: Number(draft.min.trim()),
     max: max === "" ? null : Number(max),
   };
@@ -86,7 +86,7 @@ export default function PoolScaleFields({ pool }: { pool: PoolStatusRow }) {
       {saved && <p role="status" className="text-xs text-emerald-400">Pool bounds saved.</p>}
       <div className="flex items-center gap-2">
         <button type="button" disabled={!dirty || !!invalid || scale.isPending}
-          onClick={() => scale.mutate(scaleRequest(form, pool), {
+          onClick={() => scale.mutate(scaleRequest(form, pool.profile_id), {
             onSuccess: () => { setDraft(null); setSaved(true); },
           })}
           className="rounded bg-indigo-600 px-3 py-2 text-sm font-medium text-white hover:bg-indigo-500 disabled:opacity-40">

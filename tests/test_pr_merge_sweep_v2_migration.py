@@ -5,7 +5,6 @@ from __future__ import annotations
 import hashlib
 import json
 from pathlib import Path
-from types import SimpleNamespace
 
 from src.playbooks.authoring import PlaybookSource
 from src.playbooks.definition import (
@@ -13,8 +12,6 @@ from src.playbooks.definition import (
     load_definition_json,
     source_digest,
 )
-from src.playbooks.validation import VaultProfileLookup
-from src.profiles.parser import parse_profile, parsed_profile_to_agent_profile
 
 FIXTURE = Path("tests/fixtures/playbooks/v2/pr-merge-sweep")
 
@@ -88,15 +85,14 @@ def test_artifact_defines_the_merge_sweep_commands_and_arguments() -> None:
 
 
 def test_profile_snapshot_is_the_profile_fingerprint_bound_into_the_artifact() -> None:
-    parsed = parse_profile((FIXTURE / "pr-merger-profile.md").read_text(encoding="utf-8"))
-    assert parsed.is_valid, parsed.errors
-    fields = parsed_profile_to_agent_profile(parsed)
-    profiles = VaultProfileLookup({fields["id"]: SimpleNamespace(**fields)})
-    definition = load_definition_json((FIXTURE / "artifact.json").read_text(encoding="utf-8"))
+    """The artifact is bound to the *shipped* ``pr-merger`` profile's fingerprint."""
+    from src.playbooks.profiles import shipped_profile_lookup
 
-    assert definition.compiled_against.profiles == {
-        "pr-merger": profiles.policy("pr-merger").fingerprint()
-    }
+    definition = load_definition_json((FIXTURE / "artifact.json").read_text(encoding="utf-8"))
+    policy = shipped_profile_lookup().policy("pr-merger")
+    assert policy is not None
+
+    assert definition.compiled_against.profiles == {"pr-merger": policy.fingerprint()}
 
 
 def test_artifact_is_canonical_and_bound_to_the_source() -> None:

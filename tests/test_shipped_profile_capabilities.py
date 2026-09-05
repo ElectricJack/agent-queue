@@ -1,6 +1,6 @@
 """Package 0 T-10 — every shipped profile declares explicit capabilities.
 
-The ten profiles under ``src/profiles/defaults/`` are what a fresh install
+The eleven profiles under ``src/profiles/defaults/`` are what a fresh install
 runs, so they are the fleet Package 6 must not have to migrate later. Each
 one now carries a ``## Capabilities`` block derived from its old ``## Tools``
 list plus the AQ commands its ``## Role`` prose actually calls — the
@@ -48,6 +48,7 @@ EXPECTED_UNREACHABLE: dict[str, set[str]] = {
     "final-reviewer": {"pr_merge", "reopen_with_feedback"},
     "planner": set(),
     "playbook-compiler": set(),
+    "pr-merger": {"pr_merge"},
     "reviewer": {"reopen_with_feedback"},
     "spec-ingest": {"get_downstream_tasks", "task_batch_propose"},
     "supervisor": set(),
@@ -67,7 +68,7 @@ def _parsed(profile_id: str):
 def test_every_shipped_profile_is_covered():
     """The pin lists exactly the shipped profiles — no drift either way."""
     assert set(PROFILE_IDS) == set(EXPECTED_UNREACHABLE)
-    assert len(PROFILE_IDS) == 10
+    assert len(PROFILE_IDS) == 11
 
 
 @pytest.mark.parametrize("profile_id", PROFILE_IDS)
@@ -135,7 +136,7 @@ class TestShippedProfile:
 #: Shipped profiles that deliberately cannot create tasks directly. Prime must
 #: therefore *not* render its Emergent work section for them — see
 #: ``src/prime/sections.py:profile_allows_create_task``.
-NO_CREATE_TASK: set[str] = {"spec-ingest"}
+NO_CREATE_TASK: set[str] = {"spec-ingest", "pr-merger"}
 
 
 @pytest.mark.parametrize("profile_id", PROFILE_IDS)

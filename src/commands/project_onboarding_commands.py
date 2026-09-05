@@ -33,6 +33,7 @@ from src.commands.contracts.project_onboarding import (
     ProjectOnboardingErrorCode,
     parse_request,
 )
+from src.projects.github import GhClient, GitHubError, scrub_secrets
 
 logger = logging.getLogger(__name__)
 
@@ -118,14 +119,89 @@ class ProjectOnboardingCommandsMixin:
     async def _execute_browse_project_root(self, request) -> Any:
         raise _not_implemented(BROWSE_PROJECT_ROOT)
 
+    def _github_client(self) -> GhClient:
+        """Build the daemon-host ``gh`` client.
+
+        This small seam keeps the command tests on the same fake executable as
+        the client tests, without putting a test-only option on the command
+        surface.
+        """
+        return GhClient()
+
+    @staticmethod
+    def _github_error_result(error: GitHubError) -> dict[str, Any]:
+        """Return one safe command error for a failed GitHub discovery call."""
+        # ``GitHubError`` scrubs at construction, but preserve that invariant
+        # at this boundary too: command results are an external surface.
+        message = scrub_secrets(error.message)
+        if error.code.value in {
+            ProjectOnboardingErrorCode.GITHUB_CLI_MISSING.value,
+            ProjectOnboardingErrorCode.GITHUB_AUTH_REQUIRED.value,
+        }:
+            return ProjectOnboardingError(error.code.value, message).to_dict()
+        return {"success": False, "error": message, "error_code": error.code.value}
+
     async def _execute_get_github_auth_status(self, request) -> Any:
-        raise _not_implemented(GET_GITHUB_AUTH_STATUS)
+        try:
+            status = await self._github_client().auth_status()
+        except GitHubError as error:
+            return self._github_error_result(error)
+
+        if not status.installed:
+            return ProjectOnboardingError(
+                ProjectOnboardingErrorCode.GITHUB_CLI_MISSING,
+                "the GitHub CLI (gh) is not installed on the daemon host; "
+                "install it and run 'gh auth login'",
+            ).to_dict()
+        if not status.authenticated:
+            return ProjectOnboardingError(
+                ProjectOnboardingErrorCode.GITHUB_AUTH_REQUIRED,
+                "the daemon host's GitHub CLI is not logged in; run 'gh auth login' there",
+            ).to_dict()
+        return {
+            "success": True,
+            "installed": True,
+            "authenticated": True,
+            "host": status.hostname,
+            "login": status.login,
+        }
 
     async def _execute_list_github_owners(self, request) -> Any:
-        raise _not_implemented(LIST_GITHUB_OWNERS)
+        try:
+            owners = await self._github_client().list_owners()
+        except GitHubError as error:
+            return self._github_error_result(error)
+        return {
+            "success": True,
+            "owners": [
+                {"login": owner.login, "kind": owner.kind}
+                for owner in owners
+            ]
+        }
 
     async def _execute_search_github_repositories(self, request) -> Any:
-        raise _not_implemented(SEARCH_GITHUB_REPOSITORIES)
+        try:
+            page = await self._github_client().search_repositories(
+                request.query, cursor=request.cursor, limit=request.limit
+            )
+        except GitHubError as error:
+            return self._github_error_result(error)
+        return {
+            "success": True,
+            "repositories": [
+                {
+                    "owner": repository.owner,
+                    "name": repository.name,
+                    "full_name": repository.full_name,
+                    "visibility": repository.visibility,
+                    "clone_url_https": repository.clone_https,
+                    "clone_url_ssh": repository.clone_ssh,
+                    "default_branch": repository.default_branch,
+                }
+                for repository in page.repositories
+            ],
+            "next_cursor": page.next_cursor,
+        }
 
     async def _execute_onboard_project(self, request) -> Any:
         raise _not_implemented(ONBOARD_PROJECT)

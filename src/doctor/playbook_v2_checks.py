@@ -39,7 +39,6 @@ from src.doctor.models import CheckResult, DoctorCheck, DoctorContext, Severity
 OWNER = "playbook-v2"
 CHECK_ID = "playbooks.artifact_integrity"
 STALE_CHECK_ID = "playbooks.activation_stale"
-RELEASE_CHECK_ID = "playbooks.stale_artifacts"
 REPLAY_POLICY_CHECK_ID = "playbooks.pending_event_replay_policy"
 
 
@@ -207,88 +206,6 @@ async def _check_activation_stale(ctx: DoctorContext) -> CheckResult:
     )
 
 
-async def _check_stale_artifacts(ctx: DoctorContext) -> CheckResult:
-    """Package 6 §5.5 — the release check, on a live daemon.
-
-    ``playbooks.activation_stale`` asks the *activation health* surface whether
-    the rows a daemon is serving are stale.  This asks the complementary
-    question the same way CI does: do the **checked-in reviewed artifacts**
-    still match the command contracts this build serves?  A contributor who
-    changes a command's execution shape without rebuilding the fixtures sees it
-    here as well as in `tests/test_playbook_contract_release_check.py`.
-
-    Read-only and offline; it never compiles or activates anything.
-    """
-    from src.commands.contracts import CONTRACTS
-    from src.playbooks.migration import release_check
-
-    handler = getattr(ctx, "handler", None)
-    activations = []
-    evidence_errors: list[dict[str, str]] = []
-    if handler is not None and hasattr(handler, "_release_check_activations"):
-        try:
-            activations = await handler._release_check_activations(
-                evidence_errors=evidence_errors
-            )
-        except Exception as exc:  # pragma: no cover - defensive
-            # Swallowing this to `[]` made the check report a clean fleet from a
-            # daemon whose activations it had never read (`prime-zenith-66`).
-            activations = []
-            evidence_errors.append(
-                {"source": "activations", "error": f"{type(exc).__name__}: {exc}"}
-            )
-
-    report = release_check(
-        contract_registry=CONTRACTS,
-        activations=activations,
-        evidence_errors=evidence_errors,
-    )
-    checked = report["checked"]
-    if report["success"]:
-        return CheckResult(
-            id=RELEASE_CHECK_ID,
-            severity=Severity.OK,
-            detail=(
-                f"{len(checked)} reviewed artifact(s) match the contracts they were "
-                "compiled against"
-            ),
-            data={"checked": checked},
-        )
-    data = {
-        "checked": checked,
-        "stale": report["stale"],
-        "unverified": report.get("unverified", []),
-        "evidence_errors": report.get("evidence_errors", []),
-        "blocking_reasons": report.get("blocking_reasons", []),
-    }
-    if not report["stale"]:
-        # Nothing drifted; the check simply could not see everything it must
-        # compare, and "unknown" is not "clean".
-        unreadable = ", ".join(
-            sorted(
-                {row["source"] for row in data["evidence_errors"]}
-                | {row["playbook_id"] or "an unnamed activation" for row in data["unverified"]}
-            )
-        )
-        return CheckResult(
-            id=RELEASE_CHECK_ID,
-            severity=Severity.WARN,
-            detail=(
-                f"the release check could not read all of its evidence ({unreadable}); "
-                "it cannot certify activations it never compared"
-            ),
-            data=data,
-        )
-    named = sorted({f"{row['playbook_id']}:{row['dependency']}" for row in report["stale"]})
-    return CheckResult(
-        id=RELEASE_CHECK_ID,
-        severity=Severity.WARN,
-        detail=(
-            f"{len(report['stale'])} reviewed artifact dependenc(ies) moved since review "
-            f"({', '.join(named)}); rebuild the artifact, re-review it, and update the fixture"
-        ),
-        data=data,
-    )
 
 
 async def _check_pending_event_replay_policy(ctx: DoctorContext) -> CheckResult:
@@ -364,7 +281,6 @@ def playbook_v2_checks() -> list[DoctorCheck]:
     return [
         DoctorCheck(id=CHECK_ID, run=_check_artifact_integrity, fix=None, owner=OWNER),
         DoctorCheck(id=STALE_CHECK_ID, run=_check_activation_stale, fix=None, owner=OWNER),
-        DoctorCheck(id=RELEASE_CHECK_ID, run=_check_stale_artifacts, fix=None, owner=OWNER),
         DoctorCheck(
             id=REPLAY_POLICY_CHECK_ID,
             run=_check_pending_event_replay_policy,

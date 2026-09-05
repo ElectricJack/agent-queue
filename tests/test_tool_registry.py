@@ -877,25 +877,18 @@ _PLAYBOOK_COMMANDS = [
     "inspect_playbook_run",
     "resume_playbook",
     "cancel_playbook_run",
-    "recover_workflow",
-    # Authoring: write the source, validate it, compile it, install the
-    # artifact.  ``playbook_validate`` / ``playbook_install`` are how an
-    # agent checks and ships its own compile output.
-    "create_playbook",
+    # Authoring: read and save the Markdown source (a save compiles and
+    # activates a V2 artifact); pause/resume the activation.
     "get_playbook_source",
     "update_playbook_source",
-    "delete_playbook",
-    "compile_playbook",
-    "playbook_validate",
-    "playbook_install",
+    "set_playbook_enabled",
     # Inspection and control
     "list_playbooks",
     "show_playbook_graph",
     "playbook_graph_view",
+    "playbook_graph_layout_save",
     "playbook_health",
-    "set_playbook_enabled",
-    # Playbook V2 semantic graph (src/commands/playbook_v2_commands.py) --
-    # gated behind playbooks.v2_api / playbooks.v2_activation_writes.
+    # Playbook V2 semantic graph (src/commands/playbook_v2_commands.py).
     "playbook_v2_graph",
     "playbook_activation_health",
     "playbook_activate",
@@ -910,26 +903,6 @@ _PLAYBOOK_COMMANDS = [
     "playbook_v2_propose",
     "playbook_v2_import",
     "playbook_v2_shadow_compile",
-    # Playbook V1->V2 migration readiness (Package 6).
-    "playbook_migration_inventory",
-    "playbook_migration_acknowledge",
-    "playbook_migration_unacknowledge",
-    "playbook_cutover_report",
-    # The release gate: reviewed artifacts versus the live contract surface.
-    "playbook_release_check",
-    # Playbook V1 drain and runtime cutover (Package 7).  Operator-only,
-    # and deliberately absent from PAUSED_PLAYBOOK_COMMANDS: a fleet that
-    # paused the subsystem with runs still going is the one that needs to
-    # drain them.
-    "playbook_v1_drain_status",
-    "playbook_v1_admission_close",
-    "playbook_v1_admission_open",
-    "playbook_v1_run_cancel",
-    "playbook_cutover_gate_status",
-    "playbook_cutover_switch",
-    "playbook_cutover_window_status",
-    "playbook_cutover_window_rehearsal",
-    "playbook_cutover_window_close",
 ]
 
 
