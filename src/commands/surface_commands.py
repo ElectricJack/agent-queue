@@ -120,6 +120,33 @@ class SurfaceCommandsMixin:
         info["parent"] = parent
         info["children"] = await self.db.get_children_summary(task_id)
         info["claimed_by"] = await self._claimed_by(task_id)
+        task = await self.db.get_task(task_id)
+        project = await self.db.get_project(task.project_id) if task else None
+        checkpoint = await self.db.get_integration_checkpoint(task_id) if task else None
+        info["integration_delivery"] = None
+        if (
+            project is not None
+            and project.hierarchical_integration_mode in {"hierarchy", "train"}
+            and checkpoint is not None
+        ):
+            if checkpoint.get("episode_id") is None:
+                info["integration_delivery"] = {
+                    "outcome": "working",
+                    "task_id": task_id,
+                    "generation": int(checkpoint["generation"]),
+                    "checkpoint_sha": checkpoint.get("checkpoint_sha"),
+                    "episode_id": None,
+                    "operation_id": None,
+                    "head_sha": checkpoint.get("checkpoint_sha"),
+                    "receipts": [],
+                    "blockers": [],
+                }
+            else:
+                from src.integration.parent_completion import ParentCompletion
+
+                info["integration_delivery"] = await ParentCompletion(self.db).readiness(
+                    task_id
+                )
         return info
 
     async def _claimed_by(self, task_id: str) -> dict | None:

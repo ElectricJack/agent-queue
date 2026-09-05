@@ -96,6 +96,25 @@ class ReviewEvidenceProducer:
             head = checkpoint["checkpoint_sha"]
             verification_id = None
 
+        async with self.db._engine.connect() as conn:
+            prior_evidence_id = (
+                await conn.execute(
+                    select(integration_review_evidence.c.id)
+                    .where(
+                        integration_review_evidence.c.source_task_id == subject.id,
+                        integration_review_evidence.c.repository_id == repository_id,
+                        integration_review_evidence.c.source_base == origin["base_sha"],
+                        integration_review_evidence.c.reviewed_head_sha == head,
+                        integration_review_evidence.c.generation == generation,
+                    )
+                    .order_by(
+                        integration_review_evidence.c.created_at.desc(),
+                        integration_review_evidence.c.id.desc(),
+                    )
+                    .limit(1)
+                )
+            ).scalar_one_or_none()
+
         resolved = await self.promotion._resolve_repository(repository_id)
         if resolved.repo.project_id != subject.project_id:
             raise HierarchyError("invalid", "review repository project changed")
@@ -139,12 +158,12 @@ class ReviewEvidenceProducer:
                 "summary": summary,
                 "feedback": feedback,
                 "verification_id": verification_id,
+                "prior_evidence_id": prior_evidence_id,
             },
             "created_at": self.clock(),
         }
 
     async def complete_review_on(self, conn, review_task_id: str, evidence: dict, **transition):
-        await self._revalidate_on(conn, review_task_id, evidence)
         rejected = (
             await conn.execute(
                 select(integration_review_evidence.c.id).where(
@@ -155,7 +174,11 @@ class ReviewEvidenceProducer:
                 )
             )
         ).first()
-        if not rejected:
+        if rejected:
+            if evidence["reviewer_task_id"] != review_task_id:
+                raise HierarchyError("unauthorized", "review evidence task identity changed")
+        else:
+            await self._revalidate_on(conn, review_task_id, evidence)
             await self._append_on(conn, evidence)
         return await self.db._apply_transition(
             conn, review_task_id, TaskStatus.COMPLETED, **transition
@@ -221,6 +244,30 @@ class ReviewEvidenceProducer:
                 )
             )
         ).mappings().one_or_none()
+        source = (
+            await conn.execute(
+                select(tasks.c.status).where(tasks.c.id == evidence["source_task_id"])
+            )
+        ).mappings().one_or_none()
+        latest_evidence_id = (
+            await conn.execute(
+                select(integration_review_evidence.c.id)
+                .where(
+                    integration_review_evidence.c.source_task_id
+                    == evidence["source_task_id"],
+                    integration_review_evidence.c.repository_id == evidence["repository_id"],
+                    integration_review_evidence.c.source_base == evidence["source_base"],
+                    integration_review_evidence.c.reviewed_head_sha
+                    == evidence["reviewed_head_sha"],
+                    integration_review_evidence.c.generation == evidence["generation"],
+                )
+                .order_by(
+                    integration_review_evidence.c.created_at.desc(),
+                    integration_review_evidence.c.id.desc(),
+                )
+                .limit(1)
+            )
+        ).scalar_one_or_none()
         edges = (
             await conn.execute(
                 select(task_dependencies.c.depends_on_task_id, task_dependencies.c.dep_type).where(
@@ -277,6 +324,9 @@ class ReviewEvidenceProducer:
             or latest_attempt["state"] not in {"starting", "running"}
             or origin is None
             or checkpoint is None
+            or source is None
+            or source["status"] != TaskStatus.COMPLETED.value
+            or latest_evidence_id != evidence["evidence"].get("prior_evidence_id")
             or not linked
             or not parent_generation_current
             or expected_head != evidence["reviewed_head_sha"]

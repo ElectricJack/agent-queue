@@ -1266,11 +1266,18 @@ class ExecutionMixin:
                                 self.db, self.git, task_row, repo_row, head
                             )
 
+                        async def verify_ancestry(_repo_row, ancestor, descendant):
+                            return await self.git.ais_ancestor(
+                                workspace_path, ancestor, descendant, strict=True
+                            )
+
                         head = (
                             await self.git._arun(["rev-parse", "HEAD"], cwd=workspace_path)
                         ).strip().lower()
                         hierarchy = HierarchyIntegration(
-                            self.db, checkpoint_verifier=verify_checkpoint
+                            self.db,
+                            checkpoint_verifier=verify_checkpoint,
+                            ancestry_verifier=verify_ancestry,
                         )
                         if managed_parent and checkpoint["episode_id"] is not None:
                             # This is the later verifier leg, not the original
@@ -1305,20 +1312,12 @@ class ExecutionMixin:
                                     ]
                                     ctx.verification_feedback = ctx.verification_issues[0]
                         elif managed_parent:
-                            await hierarchy.checkpoint_parent(
-                                task.id, head, int(checkpoint["generation"])
+                            await hierarchy.checkpoint_and_suspend_parent(
+                                task.id,
+                                head,
+                                int(checkpoint["generation"]),
+                                expect_claim_epoch=expect_claim_epoch,
                             )
-                            async with self.db.immediate() as conn:
-                                transition = await self.db._apply_transition(
-                                    conn,
-                                    task.id,
-                                    TaskStatus.PAUSED,
-                                    context="integration_parent_suspended",
-                                    assigned_agent_id=None,
-                                    expect_claim_epoch=expect_claim_epoch,
-                                    _manual_pause_control=True,
-                                )
-                            await self.db.log_blocked_flips(transition.flipped)
                             managed_parent_suspended = True
                             pr_url = None
                         else:

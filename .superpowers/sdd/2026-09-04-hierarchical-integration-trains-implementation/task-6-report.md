@@ -210,3 +210,109 @@ operator URL, protected database, or persistent interim stamped database was use
 The superpowers TDD and verification skills drove the RED-first seam tests and the final
 evidence-before-completion checks; the written-plan skill kept implementation ordered by
 the five prescribed milestones without expanding into Task 7, Task 9, or root trains.
+
+## Fix round 1/5 — review findings at `fe55b81e`
+
+All eight Important findings in `task-6-review.md` were addressed without changing Task 7:
+
+1. Legacy settlement now suppresses auto-completion only for `hierarchy|train` projects
+   with a non-null active episode. Disabled/observe projects keep legacy settlement even
+   when a checkpoint row exists.
+2. A guarded rejection/reopen of a successfully completed parent now advances generation,
+   clears only the live episode/current verification projection, and preserves immutable
+   episode/operation/verification audit. The next suspension reserves a new operation.
+   Already-delivered unchanged children are retained only by immutable
+   `integration_episode_receipt_acceptances` rows backed by the previous completed
+   operation/verification and trusted Git ancestry. Carried code receipts are not replayed
+   in the new squash chain. Unbound and unrelated historical receipts fail closed.
+3. Producer checkpoint, episode reservation, and PAUSED transition now commit in one
+   hierarchy-locked transaction. A stale claim rolls the whole transaction back, leaving
+   neither a checkpoint episode nor an operation.
+4. New code and disposition receipts persist `parent_operation_id` and
+   `parent_episode_id`; the consumer requires the current binding or a validated immutable
+   carry-forward link. Promotion finalization refuses a hierarchical parent with no active
+   episode or a collector fence that is not the active parent operation.
+5. Review snapshots record the latest exact-tuple evidence cursor. Commit revalidates that
+   cursor plus the source's still-COMPLETED state under the project lock, so a competing
+   rejection/reopen makes an older approval stale. A reviewer attempt that already wrote
+   its own rejection may still close without minting an approval.
+6. The unpublished `e4c6a8b20d31` revision now adds named RESTRICT foreign keys for
+   checkpoint episode/current verification, parent episode task/repository, operation
+   episode/verifier delegate, parent verification identities, receipt bindings, and
+   carry-forward provenance. Metadata and migration definitions match.
+7. `task_show` now exposes `integration_delivery`; a reopened parent with no active episode
+   reports its current working generation/head, while an active episode exposes the full
+   receipt readiness projection.
+8. The real command-level regression now performs an actual clean pushed leaf
+   `task_close`, an actual reviewer `task_close` evidence hook, and the real
+   `delivery_promote` command. It verifies immutable leaf origin, updated completion head,
+   command authorization/collector validation, and receipt operation/episode binding.
+
+### Fix-round RED/GREEN evidence
+
+- RED: `pytest -q tests/test_hierarchy_settlement.py::TestSettlement::test_disabled_checkpoint_without_episode_retains_legacy_settlement`
+  — failed because the parent remained `IN_PROGRESS`; GREEN — **1 passed**.
+- RED: `pytest -q tests/test_integration_review_evidence.py::test_approval_snapshot_is_stale_after_another_reviewer_rejects`
+  — failed with `DID NOT RAISE`; GREEN — **1 passed** after tuple-cursor/source-state
+  revalidation.
+- RED: `pytest -q tests/test_integration_parent_completion.py::test_unbound_historic_receipts_do_not_satisfy_current_parent_episode`
+  — returned `ready` instead of `waiting`; GREEN — **1 passed** after binding enforcement.
+- RED during rollover: the extended guarded-completion regression returned `waiting`
+  because a carried receipt was incorrectly replayed against the fresh pre-collection
+  head; GREEN — **1 passed** after separating carried satisfaction from the new code chain.
+- Atomic suspension/FK regressions:
+  `pytest -q tests/test_integration_parent_completion.py::test_first_parent_checkpoint_reserves_one_frozen_episode_operation`
+  and `::test_parent_identity_foreign_keys_reject_mismatched_episode_links` — **passed**;
+  the stale-claim arm proves reservation/checkpoint rollback.
+- Real command chain:
+  `pytest -q tests/test_integration_review_evidence.py::test_leaf_close_review_hook_and_delivery_promote_command_end_to_end`
+  — **1 passed**. Intermediate failures were test-fixture corrections (Workspace field and
+  current session-attempt identity), not product-success substitutions.
+- Completed-parent review rollover:
+  `pytest -q tests/test_integration_review_evidence.py::test_parent_review_rejection_rolls_completed_episode_for_next_collection`
+  — **1 passed**, including an unrelated historic rejection.
+- Historical receipt rejection:
+  `pytest -q tests/test_integration_parent_completion.py::test_receipt_bound_to_unrelated_historic_episode_is_rejected`
+  — **1 passed**.
+- Surface projection:
+  `pytest -q tests/test_surface_commands.py::TestTaskShow::test_exposes_resumed_parent_delivery_projection`
+  — **1 passed**.
+- Promotion compatibility:
+  `aq test tests/test_integration_promotion.py -x` — **28 passed**.
+- Parent suspension/verifier lifecycle:
+  the two focused `TestEndToEndOnFakeProvider` parent tests — **2 passed**.
+- Fix-round final affected-area gate:
+  `aq test tests/test_integration_parent_completion.py tests/test_integration_review_evidence.py tests/test_integration_promotion.py tests/test_hierarchy_settlement.py tests/test_session_commands.py tests/test_integration_hierarchy.py tests/test_surface_commands.py`
+  — **214 passed**. The subsequent narrow self-review changes (missing-active-episode
+  producer refusal plus stronger carry provenance filtering) were verified by **4 focused
+  passing tests**; schema did not change after the dialect cycles below.
+
+### Updated migration evidence
+
+- SQLite:
+  `pytest -q tests/test_migration_parent_collection.py::test_sqlite_parent_collection_upgrade_downgrade_upgrade -m migration`
+  — **1 passed**.
+- PostgreSQL:
+  `POSTGRES_TEST_DSN=postgresql+asyncpg://integration_test:integration_test@127.0.0.1:16833/postgres pytest -q tests/test_migration_parent_collection.py::test_postgres_parent_collection_upgrade_downgrade_upgrade -m migration`
+  — **1 passed**.
+
+Both arms exercised `e4c6a8b20d31 -> c7a1e5d92f40 -> e4c6a8b20d31`, inspected the new
+acceptance table, receipt columns, and named logical-identity foreign keys, and retained
+append-only episode evidence. PostgreSQL used only the helper-created disposable
+`postgres_master_task6_parent_collection` database, which the passing test dropped in
+`finally`. No operator/protected database was read, stamped, or mutated.
+
+### Fix-round self-review
+
+- Aggregate forge observation remains deliberately absent (Task 9); readiness still
+  fails closed without stored trusted evidence.
+- Carry-forward is possible only from the latest successfully completed operation with
+  an exact immutable verification and a positive server Git ancestry result. Consumption
+  rechecks parent/repository/branch, child origin/head, current disposition revision, and
+  the complete prior provenance tuple.
+- Generic managed-parent COMPLETED guards, delivered-child immutability, sealed ancestor
+  guards, and operator manual holds remain in force. Parent producer suspension touches
+  only its owned source branch and does not invoke the legacy main/direct integration path.
+- The reviewer-requested broad `ParentCompletion` decomposition remains deferred as
+  directed for final review; this fix pass made only invariant-focused edits.
+- No known Task 6 product failure or architectural conflict remains.

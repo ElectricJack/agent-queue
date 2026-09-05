@@ -32,6 +32,7 @@ def _assert_parent_schema(connection) -> None:
         "integration_parent_verifications",
         "integration_parent_verification_evidence",
         "integration_operation_artifact_pins",
+        "integration_episode_receipt_acceptances",
     } <= set(schema.get_table_names())
     checkpoint_columns = {
         column["name"]: column
@@ -42,6 +43,33 @@ def _assert_parent_schema(connection) -> None:
     assert "disposition_revision" in {
         column["name"] for column in schema.get_columns("task_delivery_receipts")
     }
+    assert {"parent_operation_id", "parent_episode_id"} <= {
+        column["name"] for column in schema.get_columns("task_delivery_receipts")
+    }
+    foreign_keys = {
+        key["name"]
+        for table in (
+            "task_integration_checkpoints",
+            "task_delivery_receipts",
+            "integration_repair_operations",
+            "integration_parent_episodes",
+            "integration_parent_verifications",
+        )
+        for key in schema.get_foreign_keys(table)
+    }
+    assert {
+        "fk_task_integration_checkpoints_episode",
+        "fk_task_integration_checkpoints_verification",
+        "fk_task_delivery_receipts_parent_operation",
+        "fk_task_delivery_receipts_parent_episode",
+        "fk_integration_repair_operations_parent_episode",
+        "fk_integration_repair_operations_verifier_task",
+        "fk_integration_parent_episodes_parent_task",
+        "fk_integration_parent_episodes_repository",
+        "fk_integration_parent_verifications_operation",
+        "fk_integration_parent_verifications_parent_task",
+        "fk_integration_parent_verifications_episode",
+    } <= foreign_keys
     assert {
         "verifier_task_id",
         "route_playbook_id",
@@ -77,6 +105,21 @@ async def test_sqlite_parent_collection_upgrade_downgrade_upgrade(tmp_path):
             _migrate(conn, REVISION)
         with engine.connect() as conn:
             _assert_parent_schema(conn)
+            conn.execute(
+                text("INSERT INTO projects (id,name,created_at) VALUES ('p','p',1)")
+            )
+            conn.execute(
+                text(
+                    "INSERT INTO repos (id,project_id,url,checkout_base_path) "
+                    "VALUES ('repo','p','','/tmp')"
+                )
+            )
+            conn.execute(
+                text(
+                    "INSERT INTO tasks (id,project_id,title,description,created_at,updated_at) "
+                    "VALUES ('parent','p','parent','parent',1,1)"
+                )
+            )
             conn.execute(
                 text(
                     "INSERT INTO integration_parent_episodes "
@@ -133,6 +176,17 @@ async def test_postgres_parent_collection_upgrade_downgrade_upgrade():
         raw_dsn = dsn.replace("postgresql+asyncpg://", "postgresql://")
         evidence_conn = await asyncpg.connect(raw_dsn)
         try:
+            await evidence_conn.execute(
+                "INSERT INTO projects (id,name,created_at) VALUES ($1,$2,1)", "p", "p"
+            )
+            await evidence_conn.execute(
+                "INSERT INTO repos (id,project_id,url,checkout_base_path) "
+                "VALUES ($1,$2,$3,$4)", "repo", "p", "", "/tmp"
+            )
+            await evidence_conn.execute(
+                "INSERT INTO tasks (id,project_id,title,description,created_at,updated_at) "
+                "VALUES ($1,$2,$3,$4,1,1)", "parent", "p", "parent", "parent"
+            )
             await evidence_conn.execute(
                 "INSERT INTO integration_parent_episodes "
                 "(id,parent_task_id,repository_id,generation,"

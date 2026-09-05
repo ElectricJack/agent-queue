@@ -1570,9 +1570,10 @@ message_discord_receipts = Table(
 # ---------------------------------------------------------------------------
 # Hierarchical delivery and integration trains.
 #
-# These records deliberately retain task identifiers as text rather than task
-# foreign keys.  A delivery receipt is audit evidence: deleting or archiving a
-# task must not delete the proof that its reviewed change reached a branch.
+# Delivery receipt source identifiers remain soft audit identity: archiving a
+# source must not erase proof that reviewed work reached a branch.  Live parent
+# episode/operation/verification relationships below use named RESTRICT foreign
+# keys so their control-plane identity cannot dangle.
 # JSON is confined to frozen evidence and policy/artifact snapshots; mutable
 # progress remains normalized scalar state.
 # ---------------------------------------------------------------------------
@@ -1604,6 +1605,21 @@ task_integration_checkpoints = Table(
     CheckConstraint(
         "state IN ('working', 'awaiting_children', 'integration_ready', 'verifying')",
         name="ck_task_integration_checkpoints_state",
+    ),
+    ForeignKeyConstraint(
+        ["task_id", "episode_id"],
+        ["integration_parent_episodes.parent_task_id", "integration_parent_episodes.id"],
+        name="fk_task_integration_checkpoints_episode",
+        ondelete="RESTRICT",
+    ),
+    ForeignKeyConstraint(
+        ["task_id", "current_verification_id"],
+        [
+            "integration_parent_verifications.parent_task_id",
+            "integration_parent_verifications.id",
+        ],
+        name="fk_task_integration_checkpoints_verification",
+        ondelete="RESTRICT",
     ),
 )
 
@@ -1770,6 +1786,8 @@ task_delivery_receipts = Table(
     Column("candidate_revision", Integer, nullable=True),
     Column("disposition", Text, nullable=False),
     Column("disposition_revision", Integer, nullable=True),
+    Column("parent_operation_id", Text, nullable=True),
+    Column("parent_episode_id", Text, nullable=True),
     Column("created_at", Float, nullable=False),
     UniqueConstraint("domain_key", name="uq_task_delivery_receipts_domain_key"),
     CheckConstraint(
@@ -1787,6 +1805,23 @@ task_delivery_receipts = Table(
     CheckConstraint(
         "candidate_revision IS NULL OR candidate_revision >= 0",
         name="ck_task_delivery_receipts_candidate_revision",
+    ),
+    CheckConstraint(
+        "(parent_operation_id IS NULL AND parent_episode_id IS NULL) OR "
+        "(parent_operation_id IS NOT NULL AND parent_episode_id IS NOT NULL)",
+        name="ck_task_delivery_receipts_parent_binding",
+    ),
+    ForeignKeyConstraint(
+        ["parent_operation_id"],
+        ["integration_repair_operations.id"],
+        name="fk_task_delivery_receipts_parent_operation",
+        ondelete="RESTRICT",
+    ),
+    ForeignKeyConstraint(
+        ["target_task_id", "parent_episode_id"],
+        ["integration_parent_episodes.parent_task_id", "integration_parent_episodes.id"],
+        name="fk_task_delivery_receipts_parent_episode",
+        ondelete="RESTRICT",
     ),
     Index("idx_task_delivery_receipts_source", "source_task_id", "repository_id"),
 )
@@ -1977,6 +2012,18 @@ integration_repair_operations = Table(
         "episode_id",
         unique=True,
     ),
+    ForeignKeyConstraint(
+        ["parent_task_id", "episode_id"],
+        ["integration_parent_episodes.parent_task_id", "integration_parent_episodes.id"],
+        name="fk_integration_repair_operations_parent_episode",
+        ondelete="RESTRICT",
+    ),
+    ForeignKeyConstraint(
+        ["verifier_task_id"],
+        ["tasks.id"],
+        name="fk_integration_repair_operations_verifier_task",
+        ondelete="RESTRICT",
+    ),
 )
 
 integration_parent_episodes = Table(
@@ -1990,6 +2037,18 @@ integration_parent_episodes = Table(
     Column("created_at", Float, nullable=False),
     UniqueConstraint("parent_task_id", "id", name="uq_integration_parent_episodes_parent_id"),
     CheckConstraint("generation >= 0", name="ck_integration_parent_episodes_generation"),
+    ForeignKeyConstraint(
+        ["parent_task_id"],
+        ["tasks.id"],
+        name="fk_integration_parent_episodes_parent_task",
+        ondelete="RESTRICT",
+    ),
+    ForeignKeyConstraint(
+        ["repository_id"],
+        ["repos.id"],
+        name="fk_integration_parent_episodes_repository",
+        ondelete="RESTRICT",
+    ),
 )
 
 integration_child_dispositions = Table(
@@ -1999,11 +2058,25 @@ integration_child_dispositions = Table(
     Column("child_task_id", Text, primary_key=True),
     Column("revision", Integer, nullable=False, server_default="0"),
     Column("disposition", Text, nullable=True),
+    Column("parent_operation_id", Text, nullable=False),
+    Column("parent_episode_id", Text, nullable=False),
     Column("updated_at", Float, nullable=False),
     CheckConstraint("revision >= 0", name="ck_integration_child_dispositions_revision"),
     CheckConstraint(
         "disposition IS NULL OR disposition IN ('noop', 'ineligible', 'skipped')",
         name="ck_integration_child_dispositions_value",
+    ),
+    ForeignKeyConstraint(
+        ["parent_operation_id"],
+        ["integration_repair_operations.id"],
+        name="fk_integration_child_dispositions_parent_operation",
+        ondelete="RESTRICT",
+    ),
+    ForeignKeyConstraint(
+        ["parent_task_id", "parent_episode_id"],
+        ["integration_parent_episodes.parent_task_id", "integration_parent_episodes.id"],
+        name="fk_integration_child_dispositions_parent_episode",
+        ondelete="RESTRICT",
     ),
 )
 
@@ -2088,7 +2161,78 @@ integration_parent_verifications = Table(
         "head_sha",
         name="uq_integration_parent_verifications_tuple",
     ),
+    UniqueConstraint(
+        "parent_task_id", "id", name="uq_integration_parent_verifications_parent_id"
+    ),
     CheckConstraint("generation >= 0", name="ck_integration_parent_verifications_generation"),
+    ForeignKeyConstraint(
+        ["operation_id"],
+        ["integration_repair_operations.id"],
+        name="fk_integration_parent_verifications_operation",
+        ondelete="RESTRICT",
+    ),
+    ForeignKeyConstraint(
+        ["parent_task_id"],
+        ["tasks.id"],
+        name="fk_integration_parent_verifications_parent_task",
+        ondelete="RESTRICT",
+    ),
+    ForeignKeyConstraint(
+        ["parent_task_id", "episode_id"],
+        ["integration_parent_episodes.parent_task_id", "integration_parent_episodes.id"],
+        name="fk_integration_parent_verifications_episode",
+        ondelete="RESTRICT",
+    ),
+)
+
+integration_episode_receipt_acceptances = Table(
+    "integration_episode_receipt_acceptances",
+    metadata,
+    Column("episode_id", Text, primary_key=True),
+    Column("receipt_id", Text, primary_key=True),
+    Column("operation_id", Text, nullable=False),
+    Column("previous_episode_id", Text, nullable=False),
+    Column("previous_operation_id", Text, nullable=False),
+    Column("previous_verification_id", Text, nullable=False),
+    Column("ancestry_from_sha", Text, nullable=False),
+    Column("ancestry_to_sha", Text, nullable=False),
+    Column("created_at", Float, nullable=False),
+    ForeignKeyConstraint(
+        ["receipt_id"],
+        ["task_delivery_receipts.id"],
+        name="fk_episode_receipt_acceptance_receipt",
+        ondelete="RESTRICT",
+    ),
+    ForeignKeyConstraint(
+        ["episode_id"],
+        ["integration_parent_episodes.id"],
+        name="fk_episode_receipt_acceptance_episode",
+        ondelete="RESTRICT",
+    ),
+    ForeignKeyConstraint(
+        ["previous_episode_id"],
+        ["integration_parent_episodes.id"],
+        name="fk_episode_receipt_acceptance_prev_episode",
+        ondelete="RESTRICT",
+    ),
+    ForeignKeyConstraint(
+        ["operation_id"],
+        ["integration_repair_operations.id"],
+        name="fk_episode_receipt_acceptance_operation",
+        ondelete="RESTRICT",
+    ),
+    ForeignKeyConstraint(
+        ["previous_operation_id"],
+        ["integration_repair_operations.id"],
+        name="fk_episode_receipt_acceptance_prev_operation",
+        ondelete="RESTRICT",
+    ),
+    ForeignKeyConstraint(
+        ["previous_verification_id"],
+        ["integration_parent_verifications.id"],
+        name="fk_episode_receipt_acceptance_prev_verification",
+        ondelete="RESTRICT",
+    ),
 )
 
 integration_parent_verification_evidence = Table(

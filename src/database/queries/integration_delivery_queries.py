@@ -312,6 +312,49 @@ class IntegrationDeliveryQueriesMixin:
                 .one_or_none()
             )
             committed_at = intent["committed_at"] or time.time()
+            hierarchy_mode = (
+                await conn.execute(
+                    select(projects.c.hierarchical_integration_mode).where(
+                        projects.c.id == intent["project_id"]
+                    )
+                )
+            ).scalar_one_or_none()
+            parent_episode = None
+            parent_operation_id = None
+            if intent["target_task_id"]:
+                parent_episode = (
+                    await conn.execute(
+                        select(task_integration_checkpoints.c.episode_id).where(
+                            task_integration_checkpoints.c.task_id == intent["target_task_id"]
+                        )
+                    )
+                ).scalar_one_or_none()
+            if (
+                existing is None
+                and intent["target_task_id"]
+                and hierarchy_mode in {"hierarchy", "train"}
+            ):
+                if parent_episode is None:
+                    raise ValueError("hierarchical parent has no current collection episode")
+                parent_operation_id = (
+                    await conn.execute(
+                        select(integration_repair_operations.c.id).where(
+                            integration_repair_operations.c.parent_task_id
+                            == intent["target_task_id"],
+                            integration_repair_operations.c.episode_id == parent_episode,
+                            integration_repair_operations.c.state.in_(
+                                ("active", "escalated", "human_required")
+                            ),
+                        )
+                    )
+                ).scalar_one_or_none()
+                if parent_operation_id != intent["fence_owner_id"]:
+                    raise ValueError(
+                        "promotion collector is not the current parent operation"
+                    )
+            elif existing is not None:
+                parent_episode = existing["parent_episode_id"]
+                parent_operation_id = existing["parent_operation_id"]
             review_snapshot = {
                 "review": intent["review_evidence"],
                 "authors": intent["authors"],
@@ -331,6 +374,8 @@ class IntegrationDeliveryQueriesMixin:
                 "squash_sha": intent["prepared_sha"],
                 "after_sha": intent["prepared_sha"],
                 "review_evidence": review_snapshot,
+                "parent_operation_id": parent_operation_id,
+                "parent_episode_id": parent_episode if parent_operation_id else None,
                 "disposition": "code",
                 "created_at": committed_at,
             }
@@ -339,22 +384,6 @@ class IntegrationDeliveryQueriesMixin:
             elif {key: existing[key] for key in receipt} != receipt:
                 raise ValueError("delivery receipt identity changed")
 
-            hierarchy_mode = (
-                await conn.execute(
-                    select(projects.c.hierarchical_integration_mode).where(
-                        projects.c.id == intent["project_id"]
-                    )
-                )
-            ).scalar_one_or_none()
-            parent_episode = None
-            if intent["target_task_id"]:
-                parent_episode = (
-                    await conn.execute(
-                        select(task_integration_checkpoints.c.episode_id).where(
-                            task_integration_checkpoints.c.task_id == intent["target_task_id"]
-                        )
-                    )
-                ).scalar_one_or_none()
             if (
                 intent["target_task_id"]
                 and parent_episode is not None

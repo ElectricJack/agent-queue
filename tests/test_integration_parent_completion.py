@@ -9,12 +9,14 @@ from sqlalchemy.exc import IntegrityError
 from src.database import Database
 from src.database.tables import (
     integration_check_evidence,
+    integration_episode_receipt_acceptances,
     integration_branch_owners,
     integration_batch_members,
     integration_batches,
     integration_operation_artifact_pins,
     integration_outbox,
     integration_parent_verification_evidence,
+    integration_parent_episodes,
     integration_parent_verifications,
     integration_repair_operations,
     playbook_artifacts,
@@ -35,6 +37,7 @@ from src.database.queries.hierarchy_queries import HierarchyError
 from src.integration.models import BranchKey, Fence
 from src.integration.ownership import BranchOwnership
 from src.models import AgentProfile, Project, RepoConfig, RepoSourceType, Task, TaskStatus
+from src.database.queries.task_queries import StaleClaim
 
 
 @pytest.fixture
@@ -79,6 +82,34 @@ async def _enable_project(db) -> dict:
     return policy
 
 
+async def _seed_parent_identity(db, *, generation: int = 0) -> None:
+    await db.create_repo(
+        RepoConfig(id="repo", project_id="p", source_type=RepoSourceType.LINK)
+    )
+    await db.create_task(
+        Task(
+            id="parent",
+            project_id="p",
+            repo_id="repo",
+            branch_name="aq/parent",
+            title="parent",
+            description="parent",
+            status=TaskStatus.IN_PROGRESS,
+        )
+    )
+    async with db.immediate() as conn:
+        await conn.execute(
+            insert(integration_parent_episodes).values(
+                id="episode",
+                parent_task_id="parent",
+                repository_id="repo",
+                generation=generation,
+                pre_collection_checkpoint_sha="a" * 40,
+                created_at=1.0,
+            )
+        )
+
+
 async def _parent_tree(db, *, children: int = 2):
     await _enable_project(db)
     await db.create_task(
@@ -116,6 +147,21 @@ async def _parent_tree(db, *, children: int = 2):
 
 async def _code_receipt(db, child_id: str, before_sha: str, after_sha: str) -> None:
     async with db.immediate() as conn:
+        checkpoint = (
+            await conn.execute(
+                select(task_integration_checkpoints).where(
+                    task_integration_checkpoints.c.task_id == "parent"
+                )
+            )
+        ).mappings().one()
+        operation = (
+            await conn.execute(
+                select(integration_repair_operations).where(
+                    integration_repair_operations.c.parent_task_id == "parent",
+                    integration_repair_operations.c.episode_id == checkpoint["episode_id"],
+                )
+            )
+        ).mappings().one()
         await conn.execute(
             insert(task_delivery_receipts).values(
                 id=f"receipt-{child_id}",
@@ -130,6 +176,8 @@ async def _code_receipt(db, child_id: str, before_sha: str, after_sha: str) -> N
                 squash_sha=after_sha,
                 after_sha=after_sha,
                 review_evidence={"id": f"review-{child_id}"},
+                parent_operation_id=operation["id"],
+                parent_episode_id=checkpoint["episode_id"],
                 disposition="code",
                 created_at=float(int(child_id.rsplit(".", 1)[1])),
             )
@@ -214,6 +262,7 @@ async def test_project_policy_round_trips_as_nullable_json(db):
 
 
 async def test_parent_episode_operation_identity_survives_completion(db):
+    await _seed_parent_identity(db)
     values = {
         "target_kind": "parent",
         "parent_task_id": "parent",
@@ -243,7 +292,44 @@ async def test_parent_episode_operation_identity_survives_completion(db):
                 )
 
 
+async def test_parent_identity_foreign_keys_reject_mismatched_episode_links(db):
+    await _seed_parent_identity(db)
+    async with db.immediate() as conn:
+        with pytest.raises(IntegrityError):
+            async with conn.begin_nested():
+                await conn.execute(
+                    insert(integration_repair_operations).values(
+                        id="wrong-operation",
+                        target_kind="parent",
+                        parent_task_id="parent",
+                        episode_id="missing-episode",
+                        active_stage=0,
+                        state="active",
+                        policy_snapshot={},
+                        artifact_snapshot={},
+                        required_check_version="test",
+                        created_at=1.0,
+                        updated_at=1.0,
+                    )
+                )
+        with pytest.raises(IntegrityError):
+            async with conn.begin_nested():
+                await conn.execute(
+                    insert(task_integration_checkpoints).values(
+                        task_id="parent",
+                        repository_id="repo",
+                        branch="aq/parent",
+                        generation=0,
+                        episode_id="missing-episode",
+                        state="working",
+                        version=0,
+                        updated_at=1.0,
+                    )
+                )
+
+
 async def test_check_evidence_and_verification_links_are_append_only(db):
+    await _seed_parent_identity(db, generation=1)
     async with db.immediate() as conn:
         await conn.execute(
             insert(task_integration_checkpoints).values(
@@ -329,6 +415,7 @@ async def test_check_evidence_and_verification_links_are_append_only(db):
 
 
 async def test_parent_operation_artifact_pin_prevents_collection(db):
+    await _seed_parent_identity(db)
     artifact = _artifact()
     async with db.immediate() as conn:
         await conn.execute(
@@ -409,6 +496,13 @@ async def test_first_parent_checkpoint_reserves_one_frozen_episode_operation(db)
         db, checkpoint_verifier=lambda _task, _repo, head: head
     )
 
+    with pytest.raises(StaleClaim):
+        await hierarchy.checkpoint_and_suspend_parent(
+            "parent", "b" * 40, 2, expect_claim_epoch=99
+        )
+    assert (await db.get_integration_checkpoint("parent"))["episode_id"] is None
+    assert await db.get_active_parent_integration_operation("parent") is None
+
     result = await hierarchy.checkpoint_parent("parent", "b" * 40, 2)
     checkpoint = await db.get_integration_checkpoint("parent")
     operation = await db.get_integration_operation(result["operation_id"])
@@ -448,6 +542,77 @@ async def test_terminal_children_require_complete_contiguous_receipt_chain(db):
     assert ready["outcome"] == "ready"
     assert ready["head_sha"] == "e" * 40
     assert [row["source_task_id"] for row in ready["receipts"]] == children
+
+
+async def test_unbound_historic_receipts_do_not_satisfy_current_parent_episode(db):
+    hierarchy, _checkpointed, children = await _parent_tree(db, children=1)
+    await _code_receipt(db, children[0], "a" * 40, "d" * 40)
+    async with db.immediate() as conn:
+        await conn.execute(
+            update(task_delivery_receipts)
+            .where(task_delivery_receipts.c.source_task_id == children[0])
+            .values(parent_operation_id=None, parent_episode_id=None)
+        )
+
+    readiness = await hierarchy.readiness("parent")
+    assert readiness["outcome"] == "waiting"
+    assert readiness["blockers"] == [
+        {"task_id": children[0], "reason": "receipt_missing"}
+    ]
+
+
+async def test_receipt_bound_to_unrelated_historic_episode_is_rejected(db):
+    hierarchy, _checkpointed, children = await _parent_tree(db, children=1)
+    async with db.immediate() as conn:
+        await conn.execute(
+            insert(integration_parent_episodes).values(
+                id="unrelated-episode",
+                parent_task_id="parent",
+                repository_id="repo",
+                generation=0,
+                pre_collection_checkpoint_sha="a" * 40,
+                created_at=0.0,
+            )
+        )
+        await conn.execute(
+            insert(integration_repair_operations).values(
+                id="unrelated-operation",
+                target_kind="parent",
+                parent_task_id="parent",
+                episode_id="unrelated-episode",
+                active_stage=0,
+                state="completed",
+                policy_snapshot={},
+                artifact_snapshot={},
+                required_check_version="test",
+                created_at=0.0,
+                updated_at=0.0,
+            )
+        )
+        await conn.execute(
+            insert(task_delivery_receipts).values(
+                id="historic-receipt",
+                domain_key="historic-delivery",
+                source_task_id=children[0],
+                target_task_id="parent",
+                repository_id="repo",
+                target_branch="aq/parent",
+                reviewed_head_sha="b" * 40,
+                reviewed_tree_sha="c" * 40,
+                before_sha="a" * 40,
+                squash_sha="d" * 40,
+                after_sha="d" * 40,
+                review_evidence={"id": "historic-review"},
+                parent_operation_id="unrelated-operation",
+                parent_episode_id="unrelated-episode",
+                disposition="code",
+                created_at=0.0,
+            )
+        )
+
+    readiness = await hierarchy.readiness("parent")
+    assert readiness["outcome"] == "waiting"
+    assert readiness["receipts"] == []
 
 
 async def test_disposition_revision_supersedes_only_changed_child(db):
@@ -542,6 +707,32 @@ async def test_parent_verify_consumes_exact_stored_evidence_and_guarded_completi
     assert completed["outcome"] == "completed"
     assert (await db.get_task("parent")).status is TaskStatus.COMPLETED
     assert (await db.get_integration_operation(checkpointed["operation_id"]))["state"] == "completed"
+
+    await db.transition_task("parent", TaskStatus.READY, assigned_agent_id=None)
+    rolled = await db.get_integration_checkpoint("parent")
+    assert rolled["episode_id"] is None
+    assert rolled["current_verification_id"] is None
+    assert rolled["generation"] == 2
+
+    rollover = HierarchyIntegration(
+        db,
+        checkpoint_verifier=lambda _task, _repo, head: head,
+        ancestry_verifier=lambda _repo, ancestor, descendant: (
+            ancestor == "d" * 40 and descendant == "d" * 40
+        ),
+    )
+    next_episode = await rollover.checkpoint_parent("parent", "d" * 40, 2)
+    readiness = await rollover.readiness("parent")
+    assert next_episode["episode_id"] != checkpointed["episode_id"]
+    assert readiness["outcome"] == "ready"
+    assert [row["source_task_id"] for row in readiness["receipts"]] == children
+    async with db._engine.connect() as conn:
+        carried = (
+            await conn.execute(select(integration_episode_receipt_acceptances))
+        ).mappings().one()
+    assert carried["receipt_id"] == f"receipt-{children[0]}"
+    assert carried["previous_verification_id"] == verified["verification_id"]
+    assert carried["operation_id"] == next_episode["operation_id"]
 
 
 async def test_child_added_after_verification_makes_completion_stale(db):

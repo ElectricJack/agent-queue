@@ -12,6 +12,7 @@ from sqlalchemy import insert, select, update
 from src.database.queries.hierarchy_queries import HierarchyError
 from src.database.tables import (
     integration_operation_artifact_pins,
+    integration_episode_receipt_acceptances,
     integration_check_evidence,
     integration_branch_owners,
     integration_child_dispositions,
@@ -47,6 +48,7 @@ class ParentCompletion:
         project: dict[str, Any],
         checkpoint: dict[str, Any],
         pre_collection_sha: str,
+        carry_forward: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         existing_episode = checkpoint.get("episode_id")
         if existing_episode:
@@ -127,6 +129,80 @@ class ParentCompletion:
                 artifact_sha256=route.artifact.artifact_sha256,
             )
         )
+        if carry_forward is not None:
+            previous = (
+                await conn.execute(
+                    select(integration_parent_verifications).where(
+                        integration_parent_verifications.c.id
+                        == carry_forward["verification_id"],
+                        integration_parent_verifications.c.operation_id
+                        == carry_forward["operation_id"],
+                        integration_parent_verifications.c.parent_task_id == parent["id"],
+                        integration_parent_verifications.c.episode_id
+                        == carry_forward["episode_id"],
+                        integration_parent_verifications.c.head_sha
+                        == carry_forward["head_sha"],
+                    )
+                )
+            ).mappings().one_or_none()
+            previous_operation = (
+                await conn.execute(
+                    select(integration_repair_operations.c.id).where(
+                        integration_repair_operations.c.id
+                        == carry_forward["operation_id"],
+                        integration_repair_operations.c.parent_task_id == parent["id"],
+                        integration_repair_operations.c.episode_id
+                        == carry_forward["episode_id"],
+                        integration_repair_operations.c.state == "completed",
+                    )
+                )
+            ).one_or_none()
+            previous_episode = (
+                await conn.execute(
+                    select(integration_parent_episodes.c.id).where(
+                        integration_parent_episodes.c.id == carry_forward["episode_id"],
+                        integration_parent_episodes.c.parent_task_id == parent["id"],
+                        integration_parent_episodes.c.repository_id
+                        == checkpoint["repository_id"],
+                    )
+                )
+            ).one_or_none()
+            if (
+                previous is None
+                or previous_operation is None
+                or previous_episode is None
+            ):
+                raise HierarchyError(
+                    "stale_head", "previous verified aggregate changed before rollover"
+                )
+            receipt_ids = (
+                await conn.execute(
+                    select(task_delivery_receipts.c.id).where(
+                        task_delivery_receipts.c.target_task_id == parent["id"],
+                        task_delivery_receipts.c.repository_id
+                        == checkpoint["repository_id"],
+                        task_delivery_receipts.c.target_branch == checkpoint["branch"],
+                        task_delivery_receipts.c.parent_operation_id
+                        == carry_forward["operation_id"],
+                        task_delivery_receipts.c.parent_episode_id
+                        == carry_forward["episode_id"],
+                    )
+                )
+            ).scalars().all()
+            for receipt_id in receipt_ids:
+                await conn.execute(
+                    insert(integration_episode_receipt_acceptances).values(
+                        episode_id=episode_id,
+                        receipt_id=receipt_id,
+                        operation_id=operation_id,
+                        previous_episode_id=carry_forward["episode_id"],
+                        previous_operation_id=carry_forward["operation_id"],
+                        previous_verification_id=carry_forward["verification_id"],
+                        ancestry_from_sha=carry_forward["head_sha"],
+                        ancestry_to_sha=pre_collection_sha,
+                        created_at=now,
+                    )
+                )
         return operation
 
     async def readiness(self, task_id: str) -> dict[str, Any]:
@@ -320,8 +396,51 @@ class ParentCompletion:
         selected: list[dict[str, Any]] = []
         terminal = {"COMPLETED", "FAILED"}
         by_child: dict[str, list[dict[str, Any]]] = {}
+        carried_receipt_ids = set(
+            (
+                await conn.execute(
+                    select(integration_episode_receipt_acceptances.c.receipt_id)
+                    .select_from(
+                        integration_episode_receipt_acceptances.join(
+                            integration_parent_verifications,
+                            integration_parent_verifications.c.id
+                            == integration_episode_receipt_acceptances.c.previous_verification_id,
+                        ).join(
+                            integration_repair_operations,
+                            integration_repair_operations.c.id
+                            == integration_episode_receipt_acceptances.c.previous_operation_id,
+                        )
+                    )
+                    .where(
+                        integration_episode_receipt_acceptances.c.episode_id
+                        == checkpoint["episode_id"],
+                        integration_episode_receipt_acceptances.c.operation_id
+                        == operation["id"],
+                        integration_episode_receipt_acceptances.c.ancestry_to_sha
+                        == episode["pre_collection_checkpoint_sha"],
+                        integration_parent_verifications.c.operation_id
+                        == integration_episode_receipt_acceptances.c.previous_operation_id,
+                        integration_parent_verifications.c.episode_id
+                        == integration_episode_receipt_acceptances.c.previous_episode_id,
+                        integration_parent_verifications.c.parent_task_id == parent["id"],
+                        integration_parent_verifications.c.head_sha
+                        == integration_episode_receipt_acceptances.c.ancestry_from_sha,
+                        integration_repair_operations.c.parent_task_id == parent["id"],
+                        integration_repair_operations.c.episode_id
+                        == integration_episode_receipt_acceptances.c.previous_episode_id,
+                        integration_repair_operations.c.state == "completed",
+                    )
+                )
+            ).scalars().all()
+        )
         for receipt in receipts:
-            if receipt["source_task_id"]:
+            directly_bound = (
+                receipt["parent_operation_id"] == operation["id"]
+                and receipt["parent_episode_id"] == checkpoint["episode_id"]
+            )
+            if receipt["source_task_id"] and (
+                directly_bound or receipt["id"] in carried_receipt_ids
+            ):
                 by_child.setdefault(receipt["source_task_id"], []).append(receipt)
         for child in child_rows:
             child_id = child["id"]
@@ -367,7 +486,13 @@ class ParentCompletion:
             )
 
         code_chain = sorted(
-            (row for row in selected if row["disposition"] == "code"),
+            (
+                row
+                for row in selected
+                if row["disposition"] == "code"
+                and row["parent_operation_id"] == operation["id"]
+                and row["parent_episode_id"] == checkpoint["episode_id"]
+            ),
             key=lambda row: (row["created_at"], row["id"]),
         )
         head_sha = episode["pre_collection_checkpoint_sha"]
@@ -413,7 +538,7 @@ class ParentCompletion:
             ).mappings().one_or_none()
             if child is None or not child["parent_task_id"]:
                 raise HierarchyError("invalid", "disposition child has no parent")
-            parent, project, checkpoint, _operation = await self._locked_context_on(
+            parent, project, checkpoint, operation = await self._locked_context_on(
                 conn, child["parent_task_id"]
             )
             child = (
@@ -474,10 +599,16 @@ class ParentCompletion:
                         child_task_id=child_task_id,
                         revision=revision,
                         disposition=disposition,
+                        parent_operation_id=operation["id"],
+                        parent_episode_id=checkpoint["episode_id"],
                         updated_at=self.clock(),
                     )
                 )
-            elif current["disposition"] != disposition:
+            elif (
+                current["disposition"] != disposition
+                or current["parent_operation_id"] != operation["id"]
+                or current["parent_episode_id"] != checkpoint["episode_id"]
+            ):
                 await conn.execute(
                     update(integration_child_dispositions)
                     .where(
@@ -487,10 +618,15 @@ class ParentCompletion:
                     .values(
                         revision=revision,
                         disposition=disposition,
+                        parent_operation_id=operation["id"],
+                        parent_episode_id=checkpoint["episode_id"],
                         updated_at=self.clock(),
                     )
                 )
-            domain_key = f"disposition:{parent['id']}:{child_task_id}:{revision}"
+            domain_key = (
+                f"disposition:{parent['id']}:{child_task_id}:"
+                f"{operation['id']}:{revision}"
+            )
             existing = (
                 await conn.execute(
                     select(task_delivery_receipts).where(
@@ -532,6 +668,8 @@ class ParentCompletion:
                 },
                 "disposition": disposition,
                 "disposition_revision": revision,
+                "parent_operation_id": operation["id"],
+                "parent_episode_id": checkpoint["episode_id"],
                 "created_at": self.clock(),
             }
             await conn.execute(insert(task_delivery_receipts).values(**receipt))

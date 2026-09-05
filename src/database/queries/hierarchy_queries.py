@@ -13,7 +13,7 @@ import json
 import time
 from collections.abc import Callable
 
-from sqlalchemy import and_, case, delete, exists, func, insert, literal, select, update
+from sqlalchemy import and_, case, delete, exists, func, insert, literal, or_, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
@@ -23,6 +23,7 @@ from src.database.tables import (
     integration_batch_members,
     integration_batches,
     integration_branch_owners,
+    integration_repair_operations,
     sessions,
     projects,
     task_branch_origins,
@@ -390,11 +391,48 @@ class HierarchyQueryMixin:
         ).first()
         if sealed:
             raise HierarchyError("sealed", f"{mutation} would change a sealed subtree")
+        rollover_operation = None
+        if mutation == "reopen":
+            checkpoint_episode = (
+                await conn.execute(
+                    select(task_integration_checkpoints.c.episode_id).where(
+                        task_integration_checkpoints.c.task_id == task_id
+                    )
+                )
+            ).scalar_one_or_none()
+            if checkpoint_episode is not None:
+                rollover_operation = (
+                    await conn.execute(
+                        select(integration_repair_operations.c.id).where(
+                            integration_repair_operations.c.parent_task_id == task_id,
+                            integration_repair_operations.c.episode_id == checkpoint_episode,
+                            integration_repair_operations.c.state == "completed",
+                        )
+                    )
+                ).scalar_one_or_none()
+        receipt_source = tasks.alias("integration_receipt_source")
+        delivered_stmt = (
+            select(task_delivery_receipts.c.source_task_id)
+            .select_from(
+                task_delivery_receipts.join(
+                    receipt_source,
+                    receipt_source.c.id == task_delivery_receipts.c.source_task_id,
+                )
+            )
+            .where(task_delivery_receipts.c.source_task_id.in_(ids))
+        )
+        if rollover_operation is not None:
+            delivered_stmt = delivered_stmt.where(
+                or_(
+                    task_delivery_receipts.c.target_task_id.is_(None),
+                    task_delivery_receipts.c.target_task_id != task_id,
+                    task_delivery_receipts.c.source_task_id == task_id,
+                    receipt_source.c.parent_task_id != task_id,
+                )
+            )
         delivered = (
             await conn.execute(
-                select(task_delivery_receipts.c.source_task_id)
-                .where(task_delivery_receipts.c.source_task_id.in_(ids))
-                .limit(1)
+                delivered_stmt.limit(1)
             )
         ).first()
         if delivered:
@@ -446,6 +484,21 @@ class HierarchyQueryMixin:
                         updated_at=now,
                     )
                 )
+        if rollover_operation is not None:
+            await conn.execute(
+                update(task_integration_checkpoints)
+                .where(task_integration_checkpoints.c.task_id == task_id)
+                .values(
+                    generation=task_integration_checkpoints.c.generation + 1,
+                    episode_id=None,
+                    verified_sha=None,
+                    verified_generation=None,
+                    current_verification_id=None,
+                    state="working",
+                    version=task_integration_checkpoints.c.version + 1,
+                    updated_at=time.time(),
+                )
+            )
         elif mutation in {"reopen", "disposition"} and task_row.parent_task_id:
             # Reopening or changing the terminal disposition makes the
             # parent's previously observed child aggregate stale even when
@@ -830,9 +883,16 @@ class HierarchyQueryMixin:
         for parent_id in sorted(pending):
             has_episode = (
                 await conn.execute(
-                    select(task_integration_checkpoints.c.task_id).where(
+                    select(task_integration_checkpoints.c.task_id)
+                    .select_from(
+                        task_integration_checkpoints.join(
+                            tasks, tasks.c.id == task_integration_checkpoints.c.task_id
+                        ).join(projects, projects.c.id == tasks.c.project_id)
+                    )
+                    .where(
                         task_integration_checkpoints.c.task_id == parent_id,
                         task_integration_checkpoints.c.episode_id.is_not(None),
+                        projects.c.hierarchical_integration_mode.in_(("hierarchy", "train")),
                     )
                 )
             ).first()
@@ -840,7 +900,9 @@ class HierarchyQueryMixin:
                 await ParentCompletion(self).mark_ready_on(conn, parent_id)
 
         child = tasks.alias("child")
-        stmt = select(tasks.c.id).where(
+        stmt = select(tasks.c.id).select_from(
+            tasks.join(projects, projects.c.id == tasks.c.project_id)
+        ).where(
             and_(
                 tasks.c.id.in_(sorted(pending)),
                 tasks.c.status == TaskStatus.IN_PROGRESS.value,
@@ -869,10 +931,14 @@ class HierarchyQueryMixin:
                         )
                     )
                 ),
-                ~exists(
-                    select(literal(1)).where(
-                        task_integration_checkpoints.c.task_id == tasks.c.id
-                    )
+                or_(
+                    ~projects.c.hierarchical_integration_mode.in_(("hierarchy", "train")),
+                    ~exists(
+                        select(literal(1)).where(
+                            task_integration_checkpoints.c.task_id == tasks.c.id,
+                            task_integration_checkpoints.c.episode_id.is_not(None),
+                        )
+                    ),
                 ),
             )
         )
@@ -909,7 +975,9 @@ class HierarchyQueryMixin:
     async def settle_candidates(self) -> list[str]:
         """Every container the §7 predicate would settle right now (backstop)."""
         child = tasks.alias("child")
-        stmt = select(tasks.c.id).where(
+        stmt = select(tasks.c.id).select_from(
+            tasks.join(projects, projects.c.id == tasks.c.project_id)
+        ).where(
             and_(
                 tasks.c.status == TaskStatus.IN_PROGRESS.value,
                 exists(
@@ -937,10 +1005,14 @@ class HierarchyQueryMixin:
                         )
                     )
                 ),
-                ~exists(
-                    select(literal(1)).where(
-                        task_integration_checkpoints.c.task_id == tasks.c.id
-                    )
+                or_(
+                    ~projects.c.hierarchical_integration_mode.in_(("hierarchy", "train")),
+                    ~exists(
+                        select(literal(1)).where(
+                            task_integration_checkpoints.c.task_id == tasks.c.id,
+                            task_integration_checkpoints.c.episode_id.is_not(None),
+                        )
+                    ),
                 ),
             )
         )

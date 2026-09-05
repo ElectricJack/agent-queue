@@ -91,7 +91,7 @@ class TestSettlement:
         await db.transition_task(kids[1], TaskStatus.FAILED)
         assert (await db.get_task("p")).status == TaskStatus.IN_PROGRESS
 
-    async def test_integration_checkpointed_parent_never_legacy_settles(self, db):
+    async def test_disabled_checkpoint_without_episode_retains_legacy_settlement(self, db):
         kids = await family(db, n=1)
         async with db.immediate() as conn:
             await conn.execute(
@@ -109,8 +109,7 @@ class TestSettlement:
 
         await db.transition_task(kids[0], TaskStatus.COMPLETED)
 
-        assert (await db.get_task("p")).status == TaskStatus.IN_PROGRESS
-        assert "p" not in await db.settle_candidates()
+        assert (await db.get_task("p")).status == TaskStatus.COMPLETED
 
     async def test_settles_up_to_three_levels(self, db):
         await mktask(db, "g", status=TaskStatus.IN_PROGRESS)

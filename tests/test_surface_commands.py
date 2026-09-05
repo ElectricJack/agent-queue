@@ -166,6 +166,47 @@ class TestTaskShow:
         assert result["labels"] == []
         assert result["context"] == []
 
+    async def test_exposes_resumed_parent_delivery_projection(
+        self, handler, db, task, monkeypatch
+    ):
+        from unittest.mock import AsyncMock
+        from sqlalchemy import update
+        from src.database.tables import projects
+
+        async with db.immediate() as conn:
+            await conn.execute(
+                update(projects)
+                .where(projects.c.id == task.project_id)
+                .values(hierarchical_integration_mode="hierarchy")
+            )
+        monkeypatch.setattr(
+            db,
+            "get_integration_checkpoint",
+            AsyncMock(
+                return_value={
+                    "task_id": task.id,
+                    "generation": 3,
+                    "checkpoint_sha": "a" * 40,
+                    "episode_id": None,
+                    "state": "working",
+                }
+            ),
+        )
+
+        result = await handler.execute("task_show", {"task_id": task.id})
+
+        assert result["integration_delivery"] == {
+            "outcome": "working",
+            "task_id": task.id,
+            "generation": 3,
+            "checkpoint_sha": "a" * 40,
+            "episode_id": None,
+            "operation_id": None,
+            "head_sha": "a" * 40,
+            "receipts": [],
+            "blockers": [],
+        }
+
     async def test_includes_latest_completion_story(self, handler, db, task):
         """A re-close must expose the newest durable completion account."""
         from src.models import TaskCompletion

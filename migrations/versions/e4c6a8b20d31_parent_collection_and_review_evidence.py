@@ -23,6 +23,7 @@ _APPEND_ONLY_TABLES = (
     "integration_parent_episodes",
     "integration_parent_verifications",
     "integration_parent_verification_evidence",
+    "integration_episode_receipt_acceptances",
 )
 
 
@@ -71,6 +72,8 @@ def upgrade() -> None:
     op.add_column(
         "task_delivery_receipts", sa.Column("disposition_revision", sa.Integer())
     )
+    op.add_column("task_delivery_receipts", sa.Column("parent_operation_id", sa.Text()))
+    op.add_column("task_delivery_receipts", sa.Column("parent_episode_id", sa.Text()))
     for name in (
         "verifier_task_id",
         "route_playbook_id",
@@ -100,13 +103,33 @@ def upgrade() -> None:
         sa.UniqueConstraint(
             "parent_task_id", "id", name="uq_integration_parent_episodes_parent_id"
         ),
+        sa.ForeignKeyConstraint(
+            ["parent_task_id"], ["tasks.id"],
+            name="fk_integration_parent_episodes_parent_task", ondelete="RESTRICT"
+        ),
+        sa.ForeignKeyConstraint(
+            ["repository_id"], ["repos.id"],
+            name="fk_integration_parent_episodes_repository", ondelete="RESTRICT"
+        ),
     )
+    with op.batch_alter_table("integration_repair_operations") as batch_op:
+        batch_op.create_foreign_key(
+            "fk_integration_repair_operations_parent_episode",
+            "integration_parent_episodes", ["parent_task_id", "episode_id"],
+            ["parent_task_id", "id"], ondelete="RESTRICT"
+        )
+        batch_op.create_foreign_key(
+            "fk_integration_repair_operations_verifier_task",
+            "tasks", ["verifier_task_id"], ["id"], ondelete="RESTRICT"
+        )
     op.create_table(
         "integration_child_dispositions",
         sa.Column("parent_task_id", sa.Text(), primary_key=True),
         sa.Column("child_task_id", sa.Text(), primary_key=True),
         sa.Column("revision", sa.Integer(), nullable=False, server_default="0"),
         sa.Column("disposition", sa.Text()),
+        sa.Column("parent_operation_id", sa.Text(), nullable=False),
+        sa.Column("parent_episode_id", sa.Text(), nullable=False),
         sa.Column("updated_at", sa.Float(), nullable=False),
         sa.CheckConstraint(
             "revision >= 0", name="ck_integration_child_dispositions_revision"
@@ -114,6 +137,15 @@ def upgrade() -> None:
         sa.CheckConstraint(
             "disposition IS NULL OR disposition IN ('noop', 'ineligible', 'skipped')",
             name="ck_integration_child_dispositions_value",
+        ),
+        sa.ForeignKeyConstraint(
+            ["parent_operation_id"], ["integration_repair_operations.id"],
+            name="fk_integration_child_dispositions_parent_operation", ondelete="RESTRICT"
+        ),
+        sa.ForeignKeyConstraint(
+            ["parent_task_id", "parent_episode_id"],
+            ["integration_parent_episodes.parent_task_id", "integration_parent_episodes.id"],
+            name="fk_integration_child_dispositions_parent_episode", ondelete="RESTRICT"
         ),
     )
     op.create_table(
@@ -134,6 +166,22 @@ def upgrade() -> None:
             "generation",
             "head_sha",
             name="uq_integration_parent_verifications_tuple",
+        ),
+        sa.UniqueConstraint(
+            "parent_task_id", "id", name="uq_integration_parent_verifications_parent_id"
+        ),
+        sa.ForeignKeyConstraint(
+            ["operation_id"], ["integration_repair_operations.id"],
+            name="fk_integration_parent_verifications_operation", ondelete="RESTRICT"
+        ),
+        sa.ForeignKeyConstraint(
+            ["parent_task_id"], ["tasks.id"],
+            name="fk_integration_parent_verifications_parent_task", ondelete="RESTRICT"
+        ),
+        sa.ForeignKeyConstraint(
+            ["parent_task_id", "episode_id"],
+            ["integration_parent_episodes.parent_task_id", "integration_parent_episodes.id"],
+            name="fk_integration_parent_verifications_episode", ondelete="RESTRICT"
         ),
     )
     op.create_table(
@@ -174,11 +222,93 @@ def upgrade() -> None:
         "integration_operation_artifact_pins",
         ["artifact_sha256"],
     )
+    op.create_table(
+        "integration_episode_receipt_acceptances",
+        sa.Column("episode_id", sa.Text(), primary_key=True),
+        sa.Column("receipt_id", sa.Text(), primary_key=True),
+        sa.Column("operation_id", sa.Text(), nullable=False),
+        sa.Column("previous_episode_id", sa.Text(), nullable=False),
+        sa.Column("previous_operation_id", sa.Text(), nullable=False),
+        sa.Column("previous_verification_id", sa.Text(), nullable=False),
+        sa.Column("ancestry_from_sha", sa.Text(), nullable=False),
+        sa.Column("ancestry_to_sha", sa.Text(), nullable=False),
+        sa.Column("created_at", sa.Float(), nullable=False),
+        sa.ForeignKeyConstraint(
+            ["receipt_id"], ["task_delivery_receipts.id"],
+            name="fk_episode_receipt_acceptance_receipt", ondelete="RESTRICT"
+        ),
+        sa.ForeignKeyConstraint(
+            ["episode_id"], ["integration_parent_episodes.id"],
+            name="fk_episode_receipt_acceptance_episode", ondelete="RESTRICT"
+        ),
+        sa.ForeignKeyConstraint(
+            ["previous_episode_id"], ["integration_parent_episodes.id"],
+            name="fk_episode_receipt_acceptance_prev_episode",
+            ondelete="RESTRICT",
+        ),
+        sa.ForeignKeyConstraint(
+            ["operation_id"], ["integration_repair_operations.id"],
+            name="fk_episode_receipt_acceptance_operation", ondelete="RESTRICT"
+        ),
+        sa.ForeignKeyConstraint(
+            ["previous_operation_id"], ["integration_repair_operations.id"],
+            name="fk_episode_receipt_acceptance_prev_operation",
+            ondelete="RESTRICT",
+        ),
+        sa.ForeignKeyConstraint(
+            ["previous_verification_id"], ["integration_parent_verifications.id"],
+            name="fk_episode_receipt_acceptance_prev_verification",
+            ondelete="RESTRICT",
+        ),
+    )
+    with op.batch_alter_table("task_delivery_receipts") as batch_op:
+        batch_op.create_check_constraint(
+            "ck_task_delivery_receipts_parent_binding",
+            "(parent_operation_id IS NULL AND parent_episode_id IS NULL) OR "
+            "(parent_operation_id IS NOT NULL AND parent_episode_id IS NOT NULL)",
+        )
+        batch_op.create_foreign_key(
+            "fk_task_delivery_receipts_parent_operation",
+            "integration_repair_operations", ["parent_operation_id"], ["id"],
+            ondelete="RESTRICT"
+        )
+        batch_op.create_foreign_key(
+            "fk_task_delivery_receipts_parent_episode",
+            "integration_parent_episodes", ["target_task_id", "parent_episode_id"],
+            ["parent_task_id", "id"], ondelete="RESTRICT"
+        )
+    with op.batch_alter_table("task_integration_checkpoints") as batch_op:
+        batch_op.create_foreign_key(
+            "fk_task_integration_checkpoints_episode",
+            "integration_parent_episodes", ["task_id", "episode_id"],
+            ["parent_task_id", "id"], ondelete="RESTRICT"
+        )
+        batch_op.create_foreign_key(
+            "fk_task_integration_checkpoints_verification",
+            "integration_parent_verifications", ["task_id", "current_verification_id"],
+            ["parent_task_id", "id"], ondelete="RESTRICT"
+        )
     _create_append_only_guards()
 
 
 def downgrade() -> None:
     _drop_append_only_guards()
+    with op.batch_alter_table("task_integration_checkpoints") as batch_op:
+        batch_op.drop_constraint(
+            "fk_task_integration_checkpoints_verification", type_="foreignkey"
+        )
+        batch_op.drop_constraint(
+            "fk_task_integration_checkpoints_episode", type_="foreignkey"
+        )
+    with op.batch_alter_table("task_delivery_receipts") as batch_op:
+        batch_op.drop_constraint(
+            "fk_task_delivery_receipts_parent_episode", type_="foreignkey"
+        )
+        batch_op.drop_constraint(
+            "fk_task_delivery_receipts_parent_operation", type_="foreignkey"
+        )
+        batch_op.drop_constraint("ck_task_delivery_receipts_parent_binding", type_="check")
+    op.drop_table("integration_episode_receipt_acceptances")
     op.drop_index(
         "idx_integration_operation_artifact_pins_sha",
         table_name="integration_operation_artifact_pins",
@@ -187,6 +317,13 @@ def downgrade() -> None:
     op.drop_table("integration_parent_verification_evidence")
     op.drop_table("integration_parent_verifications")
     op.drop_table("integration_child_dispositions")
+    with op.batch_alter_table("integration_repair_operations") as batch_op:
+        batch_op.drop_constraint(
+            "fk_integration_repair_operations_verifier_task", type_="foreignkey"
+        )
+        batch_op.drop_constraint(
+            "fk_integration_repair_operations_parent_episode", type_="foreignkey"
+        )
     op.drop_table("integration_parent_episodes")
     op.drop_index(
         "uq_integration_repair_operations_parent_episode",
@@ -200,6 +337,8 @@ def downgrade() -> None:
         "verifier_task_id",
     ):
         op.drop_column("integration_repair_operations", name)
+    op.drop_column("task_delivery_receipts", "parent_episode_id")
+    op.drop_column("task_delivery_receipts", "parent_operation_id")
     op.drop_column("task_delivery_receipts", "disposition_revision")
     op.drop_column("task_integration_checkpoints", "current_verification_id")
     op.drop_column("task_integration_checkpoints", "episode_id")

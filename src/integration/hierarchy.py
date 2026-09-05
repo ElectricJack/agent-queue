@@ -16,6 +16,8 @@ from src.database.queries.hierarchy_queries import HierarchyError
 from src.database.tables import (
     integration_batch_members,
     integration_batches,
+    integration_parent_verifications,
+    integration_repair_operations,
     sessions,
     task_branch_origins,
     task_delivery_receipts,
@@ -46,6 +48,7 @@ _ACTIVE_BATCH_STATES = (
 DefaultHeadResolver = Callable[[RepoConfig, str], Awaitable[str] | str]
 BranchMaterializer = Callable[[RepoConfig, str, str], Awaitable[str] | str]
 CheckpointVerifier = Callable[[dict, RepoConfig, str], Awaitable[str] | str]
+AncestryVerifier = Callable[[RepoConfig, str, str], Awaitable[bool] | bool]
 
 
 async def materialize_exact_branch(git, checkout: str, branch: str, base_sha: str) -> str:
@@ -124,6 +127,7 @@ class HierarchyIntegration:
         default_head_resolver: DefaultHeadResolver | None = None,
         branch_materializer: BranchMaterializer | None = None,
         checkpoint_verifier: CheckpointVerifier | None = None,
+        ancestry_verifier: AncestryVerifier | None = None,
         ownership: BranchOwnership | None = None,
         clock: Callable[[], float] = time.time,
     ) -> None:
@@ -131,6 +135,7 @@ class HierarchyIntegration:
         self.default_head_resolver = default_head_resolver
         self.branch_materializer = branch_materializer
         self.checkpoint_verifier = checkpoint_verifier
+        self.ancestry_verifier = ancestry_verifier
         self.ownership = ownership or BranchOwnership(db)
         self.parent_completion = ParentCompletion(db, clock=clock)
         self.clock = clock
@@ -445,7 +450,15 @@ class HierarchyIntegration:
         await self._ensure_origin_chain(conn, task.id, repo)
         return {"task_id": task.id, "generation": 0, "gate_id": gate_id}
 
-    async def checkpoint_parent(self, task_id: str, head_sha: str, generation: int) -> dict:
+    async def checkpoint_parent(
+        self,
+        task_id: str,
+        head_sha: str,
+        generation: int,
+        *,
+        _suspend: bool = False,
+        expect_claim_epoch: int | None = None,
+    ) -> dict:
         if not _OID.fullmatch(head_sha):
             raise HierarchyError("dirty", "head_sha must be a lowercase 40-character Git OID")
         if self.checkpoint_verifier is None:
@@ -453,17 +466,68 @@ class HierarchyIntegration:
         async with self.db._engine.connect() as read_conn:
             task = await self._task_row(read_conn, task_id)
             _project, repo = await self._enabled_route(read_conn, task)
+            active_episode = (
+                await read_conn.execute(
+                    select(task_integration_checkpoints.c.episode_id).where(
+                        task_integration_checkpoints.c.task_id == task_id
+                    )
+                )
+            ).scalar_one_or_none()
+            prior = None
+            if active_episode is None:
+                prior = (
+                    await read_conn.execute(
+                        select(
+                            integration_repair_operations.c.id.label("operation_id"),
+                            integration_repair_operations.c.episode_id,
+                            integration_parent_verifications.c.id.label("verification_id"),
+                            integration_parent_verifications.c.head_sha,
+                        )
+                        .join(
+                            integration_parent_verifications,
+                            integration_parent_verifications.c.operation_id
+                            == integration_repair_operations.c.id,
+                        )
+                        .where(
+                            integration_repair_operations.c.parent_task_id == task_id,
+                            integration_repair_operations.c.state == "completed",
+                        )
+                        .order_by(integration_repair_operations.c.updated_at.desc())
+                        .limit(1)
+                    )
+                ).mappings().one_or_none()
         verified = self.checkpoint_verifier(task, repo, head_sha)
         if inspect.isawaitable(verified):
             verified = await verified
         if verified != head_sha:
             raise HierarchyError("dirty", "checkpoint verifier returned another head")
+        carry_forward = None
+        if prior is not None:
+            if self.ancestry_verifier is None:
+                raise HierarchyError(
+                    "stale_head", "receipt carry-forward ancestry verifier is unavailable"
+                )
+            ancestor = self.ancestry_verifier(repo, prior["head_sha"], head_sha)
+            if inspect.isawaitable(ancestor):
+                ancestor = await ancestor
+            if ancestor is not True:
+                raise HierarchyError(
+                    "stale_head", "new parent checkpoint does not contain verified aggregate"
+                )
+            carry_forward = dict(prior)
         async with self.db.immediate() as conn:
             task = await self._task_row(conn, task_id)
             project, repo = await self._enabled_route(conn, task)
             await self.db.lock_hierarchy_project(conn, project["id"])
             await self._ensure_origin_chain(conn, task_id, repo)
             checkpoint = await self._locked_checkpoint(conn, task_id)
+            if (
+                checkpoint["repository_id"] != repo.id
+                or checkpoint["branch"] != task["branch_name"]
+            ):
+                raise HierarchyError(
+                    "delivery_target_fixed", "parent checkpoint branch identity changed"
+                )
             if int(checkpoint["generation"]) != generation:
                 raise HierarchyError(
                     "stale", f"expected generation {generation}, found {checkpoint['generation']}"
@@ -474,6 +538,7 @@ class HierarchyIntegration:
                 project=project,
                 checkpoint=checkpoint,
                 pre_collection_sha=head_sha,
+                carry_forward=carry_forward,
             )
             await conn.execute(
                 update(task_integration_checkpoints)
@@ -489,6 +554,19 @@ class HierarchyIntegration:
                     updated_at=self.clock(),
                 )
             )
+            transition = None
+            if _suspend:
+                transition = await self.db._apply_transition(
+                    conn,
+                    task_id,
+                    TaskStatus.PAUSED,
+                    context="integration_parent_suspended",
+                    assigned_agent_id=None,
+                    expect_claim_epoch=expect_claim_epoch,
+                    _manual_pause_control=True,
+                )
+        if transition is not None:
+            await self.db.log_blocked_flips(transition.flipped)
         return {
             "outcome": "checkpointed",
             "task_id": task_id,
@@ -497,6 +575,23 @@ class HierarchyIntegration:
             "episode_id": operation["episode_id"],
             "operation_id": operation["id"],
         }
+
+    async def checkpoint_and_suspend_parent(
+        self,
+        task_id: str,
+        head_sha: str,
+        generation: int,
+        *,
+        expect_claim_epoch: int,
+    ) -> dict:
+        """Atomically reserve the collection episode and pause its producer."""
+        return await self.checkpoint_parent(
+            task_id,
+            head_sha,
+            generation,
+            _suspend=True,
+            expect_claim_epoch=expect_claim_epoch,
+        )
 
     async def materialize_origin(self, origin_id: str) -> dict:
         """Create a pending canonical ref only when absent or already exact.
