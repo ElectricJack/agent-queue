@@ -17,7 +17,7 @@ def test_global_admin_scope_allows_any_command() -> None:
         project_id=None,
         elevated=True,
     )
-    for cmd in ("create_project", "task_close", "playbook_install", "delete_task"):
+    for cmd in ("create_project", "task_close", "playbook_v2_validate", "delete_task"):
         assert check_command_scope(cmd, {}, scope) is None
 
 

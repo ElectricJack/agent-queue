@@ -25,6 +25,9 @@ class ProfileSummary:
         allowed_tools (list[str] | Unset):
         mcp_servers (list[str] | Unset):
         has_system_prompt (bool | Unset):  Default: False.
+        lifecycle (str | Unset):  Default: 'task'.
+        min_active (int | None | Unset):
+        max_active (int | None | Unset):
     """
 
     id: str
@@ -37,6 +40,9 @@ class ProfileSummary:
     allowed_tools: list[str] | Unset = UNSET
     mcp_servers: list[str] | Unset = UNSET
     has_system_prompt: bool | Unset = False
+    lifecycle: str | Unset = "task"
+    min_active: int | None | Unset = UNSET
+    max_active: int | None | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -68,6 +74,20 @@ class ProfileSummary:
 
         has_system_prompt = self.has_system_prompt
 
+        lifecycle = self.lifecycle
+
+        min_active: int | None | Unset
+        if isinstance(self.min_active, Unset):
+            min_active = UNSET
+        else:
+            min_active = self.min_active
+
+        max_active: int | None | Unset
+        if isinstance(self.max_active, Unset):
+            max_active = UNSET
+        else:
+            max_active = self.max_active
+
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update(
@@ -92,6 +112,12 @@ class ProfileSummary:
             field_dict["mcp_servers"] = mcp_servers
         if has_system_prompt is not UNSET:
             field_dict["has_system_prompt"] = has_system_prompt
+        if lifecycle is not UNSET:
+            field_dict["lifecycle"] = lifecycle
+        if min_active is not UNSET:
+            field_dict["min_active"] = min_active
+        if max_active is not UNSET:
+            field_dict["max_active"] = max_active
 
         return field_dict
 
@@ -125,6 +151,26 @@ class ProfileSummary:
 
         has_system_prompt = d.pop("has_system_prompt", UNSET)
 
+        lifecycle = d.pop("lifecycle", UNSET)
+
+        def _parse_min_active(data: object) -> int | None | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(int | None | Unset, data)
+
+        min_active = _parse_min_active(d.pop("min_active", UNSET))
+
+        def _parse_max_active(data: object) -> int | None | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(int | None | Unset, data)
+
+        max_active = _parse_max_active(d.pop("max_active", UNSET))
+
         profile_summary = cls(
             id=id,
             name=name,
@@ -136,6 +182,9 @@ class ProfileSummary:
             allowed_tools=allowed_tools,
             mcp_servers=mcp_servers,
             has_system_prompt=has_system_prompt,
+            lifecycle=lifecycle,
+            min_active=min_active,
+            max_active=max_active,
         )
 
         profile_summary.additional_properties = d

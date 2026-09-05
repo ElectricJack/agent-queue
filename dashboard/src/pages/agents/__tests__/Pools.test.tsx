@@ -210,9 +210,9 @@ describe("pool bounds validation", () => {
   });
 
   it("sends an explicit null max so the API removes the profile limit", () => {
-    expect(scaleRequest({ min: "2", max: "" }, pool({ max_active: null })))
+    expect(scaleRequest({ min: "2", max: "" }, pool({ max_active: null }).profile_id))
       .toEqual({ profile_id: "worker-standard", min: 2, max: null });
-    expect(scaleRequest({ min: "2", max: "6" }, pool()))
+    expect(scaleRequest({ min: "2", max: "6" }, pool().profile_id))
       .toEqual({ profile_id: "worker-standard", min: 2, max: 6 });
   });
 });
@@ -360,5 +360,151 @@ describe("pool settings", () => {
     expect(within(section).getByText("agent-queue")).toBeInTheDocument();
     expect(within(section).getByText("other-repo")).toBeInTheDocument();
     expect(within(section).getAllByLabelText("Maximum active workers")[1]).toHaveValue(null);
+  });
+});
+
+describe("creating an agent or a pool", () => {
+  beforeEach(() => {
+    api.listProjects.mockResolvedValue({ data: { projects: [
+      { id: "agent-queue", name: "Agent Queue", status: "active" },
+      { id: "retired", name: "Retired", status: "archived" },
+    ] } });
+    api.listProfiles.mockResolvedValue({ data: { profiles: [
+      { id: "implementer", name: "Implementer", lifecycle: "task" },
+      { id: "worker-standard", name: "Worker standard", lifecycle: "pool", min_active: 1, max_active: 4 },
+    ] } });
+  });
+
+  /** Open the fork, then one of its two forms. */
+  async function openCreate(choice?: "Create agent" | "Create agent pool") {
+    renderAgents("/agents");
+    const rail = within(await screen.findByRole("region", { name: "Agent flock" }, SLOW));
+    fireEvent.click(rail.getByRole("button", { name: "Create agent or pool" }));
+    const fork = within(screen.getByRole("region", { name: "Create agent or pool" }));
+    if (!choice) return fork;
+    fireEvent.click(fork.getByRole("button", { name: choice }));
+    return within(await screen.findByRole("form", { name: choice }, SLOW));
+  }
+
+  it("asks which of the two objects to create before showing either form", async () => {
+    const fork = await openCreate();
+    expect(fork.getByRole("button", { name: "Create agent" })).toBeInTheDocument();
+    expect(fork.getByRole("button", { name: "Create agent pool" })).toBeInTheDocument();
+    expect(screen.queryByRole("form")).not.toBeInTheDocument();
+    // Scope and lifecycle are what tell the two apart, so both are on the fork.
+    expect(fork.getByText(/One durable worker · global/)).toBeInTheDocument();
+    expect(fork.getByText(/Elastic capacity · per project/)).toBeInTheDocument();
+  });
+
+  it("keeps a pool profile unselectable on the create-agent form and says why", async () => {
+    const form = await openCreate("Create agent");
+    const option = await form.findByRole("option", { name: "Worker standard — pool profile" }, SLOW);
+    expect(option).toBeDisabled();
+    expect(form.getByRole("option", { name: "Implementer" })).toBeEnabled();
+  });
+
+  it("refuses to create a durable agent on a pool profile and offers the pool form", async () => {
+    const form = await openCreate("Create agent");
+    await form.findByRole("option", { name: "Implementer" }, SLOW);
+    fireEvent.change(form.getByLabelText("Name"), { target: { value: "Designer" } });
+    // A profile's lifecycle can flip under an open form; the option is disabled
+    // in the picker, so this is the path that has to fail visibly.
+    fireEvent.change(form.getByLabelText("Profile"), { target: { value: "worker-standard" } });
+    fireEvent.click(form.getByRole("button", { name: "Create agent" }));
+
+    expect(await form.findByText(/is a pool profile/)).toBeInTheDocument();
+    expect(form.getByRole("button", { name: "Create agent" })).toBeDisabled();
+    expect(api.createAgent).not.toHaveBeenCalled();
+
+    fireEvent.click(form.getByRole("button", { name: "Create an agent pool" }));
+    expect(await screen.findByRole("form", { name: "Create agent pool" }, SLOW)).toBeInTheDocument();
+  });
+
+  it("offers only pool-eligible profiles and active projects on the pool form", async () => {
+    api.poolStatus.mockResolvedValue({ data: { success: true, pools: [] } });
+    const form = await openCreate("Create agent pool");
+    expect(await form.findByRole("option", { name: "Worker standard" }, SLOW)).toBeInTheDocument();
+    expect(form.queryByRole("option", { name: "Implementer" })).not.toBeInTheDocument();
+    expect(form.getByRole("option", { name: "Agent Queue" })).toBeInTheDocument();
+    expect(form.queryByRole("option", { name: "Retired" })).not.toBeInTheDocument();
+  });
+
+  it("configures the pool through pool_scale and opens its view", async () => {
+    const form = await openCreate("Create agent pool");
+    await form.findByRole("option", { name: "Worker standard" }, SLOW);
+    fireEvent.change(form.getByLabelText("Project"), { target: { value: "agent-queue" } });
+    fireEvent.change(form.getByLabelText("Pool profile"), { target: { value: "worker-standard" } });
+    // An existing pool is a reconfiguration, not a second pool — say so.
+    expect(await form.findByText(/already runs a pool in agent-queue/)).toBeInTheDocument();
+    fireEvent.change(form.getByLabelText("Minimum active workers"), { target: { value: "2" } });
+    fireEvent.change(form.getByLabelText("Maximum active workers"), { target: { value: "6" } });
+    fireEvent.click(form.getByRole("button", { name: "Create agent pool" }));
+
+    await waitFor(() => expect(api.poolScale).toHaveBeenCalledTimes(1), SLOW);
+    expect(api.poolScale.mock.calls[0]![0].body).toEqual({
+      profile_id: "worker-standard", min: 2, max: 6,
+    });
+    expect(await screen.findByRole("region", { name: "worker-standard pool agent window" }, SLOW)).toBeInTheDocument();
+    expect(screen.queryByRole("form", { name: "Create agent pool" })).not.toBeInTheDocument();
+    expect(api.createAgent).not.toHaveBeenCalled();
+  });
+
+  it("sends an unbounded max as an explicit null", async () => {
+    api.poolStatus.mockResolvedValue({ data: { success: true, pools: [] } });
+    const form = await openCreate("Create agent pool");
+    await form.findByRole("option", { name: "Worker standard" }, SLOW);
+    fireEvent.change(form.getByLabelText("Project"), { target: { value: "agent-queue" } });
+    fireEvent.change(form.getByLabelText("Pool profile"), { target: { value: "worker-standard" } });
+    fireEvent.click(form.getByRole("button", { name: "Create agent pool" }));
+
+    await waitFor(() => expect(api.poolScale).toHaveBeenCalledTimes(1), SLOW);
+    expect(api.poolScale.mock.calls[0]![0].body).toEqual({
+      profile_id: "worker-standard", min: 1, max: null,
+    });
+  });
+
+  it("blocks bounds pool_scale would reject before submitting them", async () => {
+    const form = await openCreate("Create agent pool");
+    await form.findByRole("option", { name: "Worker standard" }, SLOW);
+    fireEvent.change(form.getByLabelText("Project"), { target: { value: "agent-queue" } });
+    fireEvent.change(form.getByLabelText("Pool profile"), { target: { value: "worker-standard" } });
+    fireEvent.change(form.getByLabelText("Minimum active workers"), { target: { value: "9" } });
+
+    expect(await form.findByText("Max must be greater than or equal to min.")).toBeInTheDocument();
+    expect(form.getByRole("button", { name: "Create agent pool" })).toBeDisabled();
+    expect(api.poolScale).not.toHaveBeenCalled();
+  });
+
+  it("shows an in-band pool_scale refusal without opening a pool view", async () => {
+    api.poolScale.mockResolvedValue({ data: { success: false, error: "no pool profile 'worker-standard'" } });
+    const form = await openCreate("Create agent pool");
+    await form.findByRole("option", { name: "Worker standard" }, SLOW);
+    fireEvent.change(form.getByLabelText("Project"), { target: { value: "agent-queue" } });
+    fireEvent.change(form.getByLabelText("Pool profile"), { target: { value: "worker-standard" } });
+    fireEvent.click(form.getByRole("button", { name: "Create agent pool" }));
+
+    expect(await form.findByText(/no pool profile/, undefined, SLOW)).toBeInTheDocument();
+    expect(screen.getByRole("form", { name: "Create agent pool" })).toBeInTheDocument();
+    expect(screen.queryByRole("region", { name: "worker-standard pool agent window" })).not.toBeInTheDocument();
+  });
+
+  it("explains an empty profile list rather than offering an unusable form", async () => {
+    api.poolStatus.mockResolvedValue({ data: { success: true, pools: [] } });
+    api.listProfiles.mockResolvedValue({ data: { profiles: [{ id: "implementer", name: "Implementer", lifecycle: "task" }] } });
+    const form = await openCreate("Create agent pool");
+    expect(await form.findByText(/No profile runs as a pool yet/, undefined, SLOW)).toBeInTheDocument();
+    expect(form.getByRole("button", { name: "Create agent pool" })).toBeDisabled();
+  });
+
+  it.each([
+    ["Create agent", "Create agent"],
+    ["Create agent pool", "Create agent pool"],
+  ] as const)("cancels %s back to no open form", async (choice, formName) => {
+    const form = await openCreate(choice);
+    fireEvent.click(form.getByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(screen.queryByRole("form", { name: formName })).not.toBeInTheDocument());
+    expect(screen.queryByRole("region", { name: "Create agent or pool" })).not.toBeInTheDocument();
+    expect(api.poolScale).not.toHaveBeenCalled();
+    expect(api.createAgent).not.toHaveBeenCalled();
   });
 });

@@ -4,10 +4,8 @@ import {
   addWorkspace,
   archiveTask,
   createMcpServer,
-  createPlaybook,
   createTask,
   deleteMcpServer,
-  deletePlaybook,
   deleteProfile,
   deleteProject,
   deleteTask,
@@ -946,27 +944,7 @@ export function useEventTriggers() {
   });
 }
 
-export function useCreatePlaybook() {
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: async (input: { playbook_id: string; scope: string; markdown: string }) =>
-      (await createPlaybook({ body: input, throwOnError: true })).data,
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["playbooks"] });
-    },
-  });
-}
 
-export function useDeletePlaybook() {
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: async (input: { playbook_id: string }) =>
-      (await deletePlaybook({ body: input, throwOnError: true })).data,
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["playbooks"] });
-    },
-  });
-}
 
 /**
  * Toggle a playbook *definition's* `enabled` flag — pauses/resumes whether

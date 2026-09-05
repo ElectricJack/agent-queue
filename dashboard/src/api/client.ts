@@ -19,13 +19,19 @@ client.setConfig({ baseUrl: import.meta.env.VITE_API_URL || "" });
 client.interceptors.response.use(async (response) => {
   if (!response.ok) {
     let detail: string;
+    let payload: unknown;
     try {
-      const body = await response.clone().json();
-      detail = typeof body?.error === "string" ? body.error : JSON.stringify(body);
+      const body: unknown = await response.clone().json();
+      payload = body;
+      detail = typeof body === "object" && body !== null && "error" in body && typeof body.error === "string"
+        ? body.error
+        : JSON.stringify(body);
     } catch {
       detail = await response.clone().text();
     }
-    throw new Error(`API ${response.status}: ${detail}`);
+    const error = new Error(`API ${response.status}: ${detail}`) as Error & { payload?: unknown };
+    error.payload = payload;
+    throw error;
   }
   return response;
 });

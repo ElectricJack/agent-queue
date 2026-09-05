@@ -1,14 +1,18 @@
 import { Link, NavLink, useLocation } from "react-router-dom";
-import { useState } from "react";
+import { useRef, useState } from "react";
 import {
   Squares2X2Icon,
   ChartBarIcon,
   Cog6ToothIcon,
   FolderIcon,
   ChevronDownIcon,
+  PlusIcon,
 } from "@heroicons/react/24/outline";
 import AgentFlock from "./AgentFlock";
 import { useProjects } from "../api/hooks";
+import ProjectOnboardingWizard from "../pages/project/onboarding";
+import { useProjectRoots } from "../pages/project/onboarding/useProjectRoots";
+import { useProjectCreatedNavigation } from "../pages/project/onboarding/useProjectCreatedNavigation";
 import { useListNav } from "./hotkeys/useListNav";
 import { workspaceNavigation, workspaceHref } from "./projectNavigation";
 
@@ -26,6 +30,11 @@ export default function LeftRail() {
   const { projectId, tab, isWorkspace, search } = workspaceNavigation(location);
   const navRef = useListNav<HTMLElement>({ axis: "vertical" });
   const [projectsOpen, setProjectsOpen] = useState(true);
+  const [wizardOpen, setWizardOpen] = useState(false);
+  const addProjectRef = useRef<HTMLButtonElement>(null);
+  const roots = useProjectRoots();
+  // Design §4.6: refresh the rail, expand Projects, select and open the new project.
+  const onProjectCreated = useProjectCreatedNavigation(() => setProjectsOpen(true));
   return (
     <aside className="col-start-1 row-start-2 flex h-full w-64 shrink-0 lg:w-72 flex-col overflow-hidden border-r border-gray-800 bg-gray-900">
       <nav ref={navRef} className="dashboard-scrollbar flex-1 space-y-6 overflow-y-auto p-3">
@@ -36,17 +45,30 @@ export default function LeftRail() {
             <span>Command Center</span>
           </Link>
           <section aria-label="Projects" className="pt-1">
-            <button
-              type="button"
-              data-listnav="1"
-              aria-expanded={projectsOpen}
-              aria-controls="project-links"
-              onClick={() => setProjectsOpen((open) => !open)}
-              className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-xs font-medium uppercase tracking-wide text-gray-500 hover:bg-gray-800 hover:text-gray-300"
-            >
-              <ChevronDownIcon className={`h-4 w-4 transition-transform ${projectsOpen ? "" : "-rotate-90"}`} />
-              <span>Projects</span>
-            </button>
+            <div className="flex items-center gap-1">
+              <button
+                type="button"
+                data-listnav="1"
+                aria-expanded={projectsOpen}
+                aria-controls="project-links"
+                onClick={() => setProjectsOpen((open) => !open)}
+                className="flex min-w-0 flex-1 items-center gap-2 rounded-lg px-3 py-2 text-xs font-medium uppercase tracking-wide text-gray-500 hover:bg-gray-800 hover:text-gray-300"
+              >
+                <ChevronDownIcon className={`h-4 w-4 transition-transform ${projectsOpen ? "" : "-rotate-90"}`} />
+                <span>Projects</span>
+              </button>
+              {/* Design §4.1: a separate control so opening the wizard never toggles the disclosure. */}
+              <button
+                ref={addProjectRef}
+                type="button"
+                aria-label="Add project"
+                title="Add project"
+                onClick={() => setWizardOpen(true)}
+                className="shrink-0 rounded-md p-1.5 text-gray-500 hover:bg-gray-800 hover:text-gray-200 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-indigo-400"
+              >
+                <PlusIcon className="h-4 w-4" />
+              </button>
+            </div>
             {projectsOpen && (
               <div id="project-links" className="space-y-0.5">
                 {(projects ?? []).length === 0 && <p className="px-3 py-2 text-xs text-gray-600">No projects yet</p>}
@@ -76,6 +98,14 @@ export default function LeftRail() {
         </div>
         <AgentFlock />
       </nav>
+      <ProjectOnboardingWizard
+        open={wizardOpen}
+        onClose={() => setWizardOpen(false)}
+        returnFocusRef={addProjectRef}
+        roots={roots}
+        projectIds={(projects ?? []).map((project) => project.id)}
+        onSuccess={onProjectCreated}
+      />
     </aside>
   );
 }

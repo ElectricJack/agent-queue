@@ -39,6 +39,7 @@ PLAYBOOK_IDS = (
     "hierarchical-delivery",
     "memory-consolidation",
         "pr-merge-sweep",
+    "ci-main-sentinel",
 )
 
 

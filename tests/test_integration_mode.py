@@ -705,6 +705,48 @@ class TestPhaseIntegrateByMode:
             for call in orch.git.apush_validated_delivery.await_args_list
         )
 
+    async def test_integrate_merges_default_into_the_branch_and_pushes_plainly(
+        self, orch, monkeypatch
+    ):
+        """Merge-before-merge (design §4.2): no rebase, no force push.
+
+        A branch that resolved drift with merge commits — what a worker's
+        ``git merge origin/main`` produces — cannot be rebased but merges
+        cleanly; and since nothing is rewritten the push must not force.
+        """
+        task = _pr_task("t-int-merge")
+        await orch.db.create_task(task)
+        result = await self._run_integrate(orch, task, monkeypatch)
+        assert result == PhaseResult.CONTINUE
+        calls = [call.args[0] for call in orch.git._arun.await_args_list if call.args]
+        assert ["merge", "--no-edit", "refs/remotes/origin/main"] in calls
+        assert not any(call[:1] == ["rebase"] for call in calls)
+        assert orch.git.apush_validated_delivery.await_args.kwargs["force_with_lease"] is False
+
+    async def test_integrate_conflict_aborts_the_merge_and_blocks(self, orch, monkeypatch):
+        task = _pr_task("t-int-conflict")
+        await orch.db.create_task(task)
+
+        async def _arun(args, cwd=None, **_kwargs):
+            if args[:2] == ["merge", "--no-edit"]:
+                raise GitError("CONFLICT (content): Merge conflict in a.py")
+            if args[:2] == ["diff", "--name-only"]:
+                return "a.py\n"
+            return "0"
+
+        orch.git._arun = AsyncMock(side_effect=_arun)
+        result = await self._run_integrate(orch, task, monkeypatch)
+        assert result == PhaseResult.STOP
+        calls = [call.args[0] for call in orch.git._arun.await_args_list if call.args]
+        assert ["merge", "--abort"] in calls
+        assert not any(call[:1] == ["rebase"] for call in calls)
+        orch.git.apush_validated_delivery.assert_not_awaited()
+        refreshed = await orch.db.get_task(task.id)
+        assert refreshed.status == TaskStatus.BLOCKED
+        reason = await orch.db.get_task_meta(task.id, "rejection_reason")
+        assert "merge of refs/remotes/origin/main failed" in reason
+        assert await orch.db.get_task_meta(task.id, "conflict_files") == ["a.py"]
+
     async def test_reserved_delivery_never_acquires_merge_slot(self, orch, monkeypatch):
         from src.orchestrator import git_ops
 

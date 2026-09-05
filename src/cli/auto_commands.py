@@ -85,6 +85,7 @@ HANDCRAFTED_COVERAGE = {
     "edit_project",
     "set_default_branch",
     "set_project_channel",
+    "onboard_project",
     # plugins.py (all plugin commands are hand-crafted with direct-DB access)
     "plugin_list",
     "plugin_info",

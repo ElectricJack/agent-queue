@@ -13,11 +13,7 @@ from src.config import PlaybooksConfig
 def _handler(row):
     handler = PlaybookV2CommandsMixin()
     handler.config = SimpleNamespace(
-        playbooks=PlaybooksConfig(
-            v2_api=True,
-            v2_storage_enabled=True,
-            v2_activation_writes=True,
-        )
+        playbooks=PlaybooksConfig(enabled=True)
     )
     handler.db = SimpleNamespace(
         get_pending_events=AsyncMock(return_value=[row]),

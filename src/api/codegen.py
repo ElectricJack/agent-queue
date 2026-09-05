@@ -205,6 +205,22 @@ def _make_route_handler(cmd_name: str, input_model: type[BaseModel]):
                     {"error": result["error"], "error_code": "capability_denied"},
                     status_code=403,
                 )
+            # Onboarding has a documented recovery contract: its dashboard
+            # attaches stable error codes, phases, surviving resources and
+            # field errors to the form.  The generic route used to discard
+            # that data and made the generated client incapable of rendering
+            # a useful retry state.  JSONResponse deliberately bypasses the
+            # success response model for this non-2xx payload.
+            if cmd_name in {
+                "list_project_roots",
+                "browse_project_root",
+                "get_github_auth_status",
+                "list_github_owners",
+                "search_github_repositories",
+                "onboard_project",
+                "get_project_onboarding",
+            }:
+                return JSONResponse(result, status_code=422)
             return JSONResponse(
                 {"error": result["error"]},
                 status_code=422,

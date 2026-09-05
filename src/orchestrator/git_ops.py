@@ -696,7 +696,7 @@ class GitOpsMixin:
 
         # Phase 2: Integration (worktree-mode only).  For exclusive-clone
         # tasks the verify phase already handled the merge; for worktree
-        # slots this is where rebase + push + merge happens under the
+        # slots this is where merge + push + merge happens under the
         # per-project merge slot lease.  Worktree-execution spec §6.5.
         # Worktree integration owns its own strict no-work proof. Intent
         # metadata never skips this phase by itself.
@@ -817,7 +817,7 @@ class GitOpsMixin:
         # Worktree-mode tasks integrate via _phase_integrate under the merge
         # slot, not via _phase_verify's auto-merge remediations.  The agent
         # is expected to leave the slot on its task branch with everything
-        # committed; the integration phase rebases + pushes + merges.
+        # committed; the integration phase merges default in, pushes, merges.
         # Worktree-execution spec §6.5.
         is_worktree_task = await self._task_is_worktree_mode(ctx)
 
@@ -1688,11 +1688,16 @@ class GitOpsMixin:
 
         1. Acquire the merge slot (blocking-with-timeout via lease).
            Emit ``merge.started``.
-        2. In the slot: ``git fetch origin``, ``git rebase origin/<default>``.
+        2. In the slot: ``git fetch origin``, ``git merge origin/<default>``
+           (merge-before-merge: a branch that resolved drift with merge
+           commits, as workers and the pr-merger profile do, stays
+           integrable; a rebase cannot replay merge commits and blocked
+           mergeable branches with ``merge_conflict``).
            Conflict → abort, record ``rejection_reason`` + conflicting
            files, transition the task to BLOCKED, emit ``merge.conflict``,
            release the slot, return STOP.
-        3. Push the rebased branch (never ``--force`` to *default*).
+        3. Push the merged branch — a plain push, since nothing was
+           rewritten; never ``--force`` to *default*.
         4. In the base: merge the task branch into default and push
            (skipped in ``pull_request`` mode — the agent opens a PR
            on the pushed branch).
@@ -1792,10 +1797,10 @@ class GitOpsMixin:
             },
         )
         try:
-            # Renew the lease before the potentially-slow rebase.
+            # Renew the lease before the potentially-slow merge.
             await renew_merge_slot(self.db, task.project_id, task.id, ttl)
 
-            # ── Step 2: fetch + rebase in the slot ────────────────────
+            # ── Step 2: fetch + merge default into the slot branch ────
             if has_remote:
                 try:
                     await self.git._arun(["fetch", "origin"], cwd=workspace)
@@ -1803,14 +1808,21 @@ class GitOpsMixin:
                     logger.error("Task %s: fetch origin failed: %s", task.id, e)
                     return PhaseResult.STOP
 
-            rebase_target = (
+            merge_target = (
                 f"refs/remotes/origin/{default_branch}"
                 if has_remote
                 else f"refs/heads/{default_branch}"
             )
             try:
                 await self.git._arun(["switch", branch], cwd=workspace)
-                await self.git._arun(["rebase", rebase_target], cwd=workspace)
+                # Merge, not rebase (design §4.2).  A task branch that
+                # already contains the target fast-forwards to itself; one
+                # behind it gains a merge commit; only a real textual
+                # conflict fails.  A rebase failed on every branch carrying
+                # a merge commit, which is exactly what a worker's
+                # ``git merge origin/main`` produces, so mergeable PRs were
+                # blocked as ``merge_conflict`` at close.
+                await self.git._arun(["merge", "--no-edit", merge_target], cwd=workspace)
             except GitError as e:
                 # Conflict handling — design §4.3.
                 files: list[str] = []
@@ -1822,13 +1834,13 @@ class GitOpsMixin:
                     files = [line for line in out.splitlines() if line.strip()]
                 except GitError:
                     pass
-                # Clean rebase state — abort so the slot is usable again.
+                # Clean merge state — abort so the slot is usable again.
                 try:
-                    await self.git._arun(["rebase", "--abort"], cwd=workspace)
+                    await self.git._arun(["merge", "--abort"], cwd=workspace)
                 except GitError:
                     pass
 
-                reason = f"merge_conflict: rebase onto {rebase_target} failed: {e}"
+                reason = f"merge_conflict: merge of {merge_target} failed: {e}"
                 try:
                     await self.db.set_task_meta(task.id, "rejection_reason", reason)
                     await self.db.set_task_meta(task.id, "conflict_files", files)
@@ -1869,12 +1881,14 @@ class GitOpsMixin:
                 )
                 return PhaseResult.STOP
 
-            # ── Step 3: push the rebased task branch ──────────────────
-            # Task branches are owned by one agent so --force-with-lease
-            # is safe for the branch itself.  We NEVER push to default
-            # from here; that's the base-side merge below.
+            # ── Step 3: push the merged task branch ───────────────────
+            # The merge above adds history rather than rewriting it, so
+            # this is a plain fast-forward push: a remote branch that has
+            # moved under us (another worker, an operator) is refused
+            # rather than overwritten.  We NEVER push to default from
+            # here; that's the base-side merge below.
             if has_remote:
-                # Lease-guarded push (finding #1): the rebase above may
+                # Lease-guarded push (finding #1): the merge above may
                 # have run longer than ``merge_slot_ttl_seconds``; if
                 # ``break_expired_merge_slots`` handed the slot to
                 # another task in the meantime, we must NOT push — two
@@ -1895,7 +1909,7 @@ class GitOpsMixin:
                         f"refs/remotes/origin/{default_branch}",
                         "HEAD",
                         branch,
-                        force_with_lease=True,
+                        force_with_lease=False,
                         event_bus=self.bus,
                         project_id=task.project_id,
                     )
@@ -1949,11 +1963,11 @@ class GitOpsMixin:
                     base_path, branch, default_branch
                 )
                 if not merged:
-                    # Should be rare after a successful rebase, but treat
+                    # Should be rare after a successful merge, but treat
                     # like a conflict rather than force-anything.
                     reason = (
                         f"merge_conflict: base merge of {branch} into "
-                        f"{default_branch} failed after rebase"
+                        f"{default_branch} failed after merging it in"
                     )
                     try:
                         await self.db.set_task_meta(

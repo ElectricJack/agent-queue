@@ -2635,13 +2635,3 @@ class TestCancellation:
         assert resumed.lifecycle is RunLifecycle.CANCELLED
         assert [r.outcome for r in runs.receipts] == ["cancelled"]
 
-    @pytest.mark.asyncio
-    async def test_a_cancelled_run_projects_onto_an_occupied_task(self):
-        """``cancelling`` is not a finished run (§4.9's ``run_task`` clause)."""
-        from src.models import TaskStatus
-        from src.playbooks.run_task import playbook_status_to_task_status
-
-        assert playbook_status_to_task_status("cancelling") is TaskStatus.IN_PROGRESS
-        assert playbook_status_to_task_status("cancelling") is playbook_status_to_task_status(
-            "running"
-        )

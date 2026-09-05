@@ -188,12 +188,12 @@ Integration must be serialized per project so only one task lands on the default
 
 **Decision: DB row.** A `merge_slots` table with one row per project: `holder_task_id`, `acquired_at`, `expires_at`. Acquire is a dialect-appropriate atomic conditional `UPDATE` (holder is NULL or lease expired); the pipeline renews the lease while working; release nulls the holder. A cascade housekeeping step breaks expired leases and emits an event, so a daemon crash mid-merge stalls integration for at most one lease TTL (default 600 s).
 
-### 4.2 Merge flow (rebase-before-merge, serialized)
+### 4.2 Merge flow (merge-before-merge, serialized)
 
 The completion pipeline stays algorithmic. After verification, integration runs under the merge slot and the base git mutex:
 
 1. Acquire merge slot → emit `merge.started`.
-2. In the **slot worktree** (the branch's home — a branch checked out in one worktree cannot be checked out in another): `git fetch origin`, rebase `aq/<task>` onto `origin/<default>` (the existing rebase-before-merge behavior), push with `--force-with-lease`.
+2. In the **slot worktree** (the branch's home — a branch checked out in one worktree cannot be checked out in another): `git fetch origin`, `git merge --no-edit origin/<default>` into `aq/<task>`, then a plain push. This was a rebase plus `--force-with-lease` until 2026-09-05: a rebase cannot replay merge commits, and a worker that resolves drift with `git merge origin/main` (what the `pr-merger` profile instructs) produces exactly such a branch, so branches GitHub reported mergeable were blocked at close with `merge_conflict`. Merging keeps every mergeable branch integrable, and because nothing is rewritten the push needs no force: a remote branch that moved under the slot is refused rather than overwritten. Squash-merging at PR time collapses the merge commits, so the default branch's history is unchanged.
 3. Per the task's effective integration mode (task override → project policy → `integration.default_mode`): in `pull_request` mode, open a PR via `gh` (record `pr_url` on the task; the task completes unmerged and the review pipeline's `pr-merged` gate sweep takes over), **or** in `direct` mode, local merge: in the **base** — `checkout <default>`, `reset --hard origin/<default>`, merge the branch, push.
 4. Success → emit `merge.succeeded`, record `merged_at`; release the slot.
 
@@ -201,7 +201,7 @@ The completion pipeline stays algorithmic. After verification, integration runs 
 
 Rebase or merge conflict → abort cleanly, release the merge slot, and:
 
-- Set `rejection_reason` (e.g. `"merge_conflict: rebase onto origin/main failed"`) and the conflicting file list in the task's work-state metadata (schema owned by the work-graph spec).
+- Set `rejection_reason` (e.g. `"merge_conflict: merge of refs/remotes/origin/main failed"`) and the conflicting file list in the task's work-state metadata (schema owned by the work-graph spec).
 - Transition the task to `needs_attention` (until the work-graph state lands, the projection is `BLOCKED` with the same metadata).
 - Emit `merge.conflict` with `{task_id, branch, target, files}`.
 - Optionally (per project policy `spawn_conflict_continuation`) auto-create a continuation task that resumes the **same branch** (§3.2 step 4, continuation path) with the rejection reason in its context — the rejection-aware-resume pattern.

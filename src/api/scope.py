@@ -65,6 +65,25 @@ AGENT_COMMAND_SET: frozenset[str] = frozenset(
 #: ``project_id`` and ``session_id`` stay pinned.
 _TASK_ID_UNPINNED: frozenset[str] = frozenset({"reparent_task"})
 
+#: The seven project-onboarding commands (design 2026-09-03 §5), gated to
+#: the loopback CLI and the global admin (§7).  Listed literally because this
+#: module is a leaf (``src.profiles.capabilities`` imports it) and cannot
+#: reach ``src.commands.contracts.project_onboarding.ONBOARDING_COMMANDS``
+#: without a cycle; ``tests/test_project_onboarding_contract.py`` pins the
+#: two sets equal.
+PROJECT_ONBOARDING_COMMANDS: frozenset[str] = frozenset(
+    {
+        "list_project_roots",
+        "browse_project_root",
+        "get_github_auth_status",
+        "list_github_owners",
+        "search_github_repositories",
+        "onboard_project",
+        "get_project_onboarding",
+    }
+)
+PROJECT_ONBOARDING_SCOPE_ERROR = "out of scope: project onboarding requires global admin"
+
 
 def check_command_scope(command: str, args: dict, scope: RequestScope) -> str | None:
     """Enforce (and, for session scopes, inject) the request's scope.
@@ -91,6 +110,15 @@ def check_command_scope(command: str, args: dict, scope: RequestScope) -> str | 
         scope.elevated and scope.project_id is None
     ):
         return "out of scope: global agent settings require global admin"
+    # Project onboarding (design 2026-09-03 §7): browsing configured roots,
+    # GitHub discovery and the ``onboard_project`` saga are filesystem
+    # authorisation on the daemon host.  They create a project rather than
+    # act within one, so a per-project supervisor is refused too — only the
+    # loopback CLI (returned above) and the global admin may run them.
+    if command in PROJECT_ONBOARDING_COMMANDS and not (
+        scope.elevated and scope.project_id is None
+    ):
+        return PROJECT_ONBOARDING_SCOPE_ERROR
     # Projectless messages are system records, not an omitted project filter.
     # Null project scope alone must never grant access to the global supervisor.
     system_message = args.get("system_only") or (
@@ -262,8 +290,6 @@ _TRIAGE_COMMANDS = frozenset({
 
 _PLAYBOOK_COMPILER_COMMANDS = frozenset(
     {
-        "playbook_validate",
-        "playbook_install",
         "playbook_v2_validate",
         "playbook_v2_propose",
     }

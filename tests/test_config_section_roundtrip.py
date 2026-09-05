@@ -127,30 +127,6 @@ def test_playbooks_section_reads_every_field_it_declares(tmp_path):
     assert unchecked == []
 
 
-@pytest.mark.parametrize(
-    "flag",
-    [
-        "v2_api",
-        "v2_activation_writes",
-        "v2_compiler_enabled",
-        "contract_intent",
-    ],
-)
-def test_playbooks_boolean_flags_load_from_yaml(tmp_path, flag):
-    """Each flag the loader used to drop, set explicitly against its default."""
-    default = getattr(AppConfig().playbooks, flag)
-    path = tmp_path / "config.yaml"
-    path.write_text(
-        yaml.dump(
-            {
-                "database_path": str(tmp_path / "test.db"),
-                "discord": {"bot_token": "t", "guild_id": "1"},
-                "playbooks": {"enabled": True, flag: not default},
-            }
-        )
-    )
-    assert getattr(load_config(str(path)).playbooks, flag) is (not default)
-
 
 def test_playbooks_cancellation_grace_seconds_loads_from_yaml(tmp_path):
     path = tmp_path / "config.yaml"

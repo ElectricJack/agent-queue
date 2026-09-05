@@ -18,6 +18,15 @@ if TYPE_CHECKING:
 _EXCLUDED_TOOLS = frozenset({"load_tools", "reply_to_user"})
 
 
+#: Event families the timer service emits with ``project_id: null``; they are
+#: system-scoped by nature and a project-scoped playbook may trigger on them.
+GLOBAL_EVENT_PREFIXES = ("timer.", "cron.")
+
+
+def is_global_event(event_type: str) -> bool:
+    return str(event_type or "").startswith(GLOBAL_EVENT_PREFIXES)
+
+
 class DatabaseActivationSource:
     """Project Package 3 activation rows into the engine's tiny read contract."""
 
@@ -25,13 +34,21 @@ class DatabaseActivationSource:
         self._db = db
 
     async def ready_activations(
-        self, _event_type: str, event: Any | None = None
+        self, event_type: str, event: Any | None = None
     ) -> list[Any]:
         rows = await self._db.list_playbook_activations(enabled_only=True)
         refs: list[Any] = []
         event = event or {}
         project_id = event.get("project_id")
         agent_type = event.get("agent_type")
+        # Timer and cron events carry ``project_id: null`` because they are
+        # inherently system-scoped (``src/timer_service.py``): a project-scoped
+        # playbook may trigger on them, firing once globally.  Requiring the
+        # project id to match here meant no project playbook ever received a
+        # timer tick, which silently parked ``pr-merge-sweep`` and
+        # ``ci-main-sentinel`` forever.  Every other event without a project id
+        # still reaches system playbooks only.
+        global_event = project_id is None and is_global_event(event_type)
         for row in rows:
             health = getattr(row.get("health"), "value", row.get("health"))
             artifact_sha256 = row.get("active_artifact_sha256")
@@ -39,7 +56,7 @@ class DatabaseActivationSource:
                 continue
             scope = row.get("scope")
             identifier = row.get("scope_identifier") or ""
-            if scope == "project" and identifier != project_id:
+            if scope == "project" and identifier != project_id and not global_event:
                 continue
             if scope == "agent_type" and (
                 project_id is None or identifier != agent_type

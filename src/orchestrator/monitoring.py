@@ -887,6 +887,26 @@ class MonitoringMixin:
         except Exception as e:
             logger.warning("Playbook V2 retention sweep failed: %s", e)
 
+    async def _sweep_operational_event_retention(self) -> None:
+        """Collect expired terminal onboarding requests once per hour.
+
+        These records are durable idempotency state, not playbook state, so
+        their retention must run even when the playbook subsystem is disabled.
+        """
+        now = time.time()
+        if now - self._last_operational_event_retention_sweep < 3600:
+            return
+        self._last_operational_event_retention_sweep = now
+        try:
+            days = int(self.config.events.onboarding_request_retention_days)
+            removed = await self.db.purge_finished_onboarding_requests(
+                now - days * 86_400.0
+            )
+            if removed:
+                logger.info("Onboarding request retention: removed %d terminal request(s)", removed)
+        except Exception as e:
+            logger.warning("Onboarding request retention sweep failed: %s", e)
+
     async def _find_stuck_downstream(self, blocked_task_id: str) -> list[Task]:
         """BFS walk of the dependency graph to find orphaned DEFINED tasks.
 

@@ -1799,6 +1799,29 @@ class TaskQueryMixin:
             return None
         return self._row_to_task(row)
 
+    async def list_tasks_by_dedup_prefix(self, project_id: str, prefix: str) -> "list[Task]":
+        """Every task (any status) whose dedup key starts with ``prefix``, oldest first.
+
+        The ci-main-sentinel keys one repair attempt per
+        ``ci-baseline:<signature>:<n>`` and counts attempts from here;
+        terminal and blocked rows are included on purpose because they are
+        exactly the attempts that count.
+        """
+        pattern = prefix.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
+        stmt = (
+            select(tasks)
+            .where(
+                and_(
+                    tasks.c.project_id == project_id,
+                    tasks.c.dedup_key.like(pattern, escape="\\"),
+                )
+            )
+            .order_by(tasks.c.created_at.asc())
+        )
+        async with self._engine.begin() as conn:
+            rows = (await conn.execute(stmt)).mappings().fetchall()
+        return [self._row_to_task(row) for row in rows]
+
     @staticmethod
     def _row_to_task(row) -> Task:
         """Convert a database row to a Task model."""

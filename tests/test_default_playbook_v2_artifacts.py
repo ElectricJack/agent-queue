@@ -54,6 +54,7 @@ SHIPPED_SOURCES: dict[str, str] = {
     "hierarchical-delivery": "src/prompts/default_playbooks/hierarchical-delivery.md",
     "memory-consolidation": "src/prompts/default_playbooks/memory-consolidation.md",
     "pr-merge-sweep": "src/prompts/project_playbooks/agent-queue/pr-merge-sweep.md",
+    "ci-main-sentinel": "src/prompts/project_playbooks/agent-queue/ci-main-sentinel.md",
 }
 
 PLAYBOOK_IDS = tuple(SHIPPED_SOURCES)

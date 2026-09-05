@@ -4,7 +4,6 @@ import {
   ArrowLeftIcon,
   CheckCircleIcon,
   ExclamationTriangleIcon,
-  TrashIcon,
 } from "@heroicons/react/24/outline";
 import {
   usePlaybooks,
@@ -14,7 +13,6 @@ import {
   type PlaybookUpdateResult,
 } from "../api/hooks";
 import StatusBadge from "../components/StatusBadge";
-import DeletePlaybookModal from "../components/DeletePlaybookModal";
 import PlaybookSemanticReview from "./playbook-graph-v2/PlaybookSemanticReview";
 
 type TabId = "source" | "graph" | "runs";
@@ -31,7 +29,6 @@ export default function PlaybookDetail() {
   const id = playbookId;
   const from = (location.state as { from?: string } | null)?.from ?? "/settings/playbooks";
   const [tab, setTab] = useState<TabId>("source");
-  const [deleteOpen, setDeleteOpen] = useState(false);
 
   const { data: playbooks } = usePlaybooks();
   const meta = useMemo(() => playbooks?.find((p) => p.id === id), [playbooks, id]);
@@ -66,21 +63,8 @@ export default function PlaybookDetail() {
             )}
           </div>
         </div>
-        <button
-          onClick={() => setDeleteOpen(true)}
-          className="inline-flex items-center gap-1.5 rounded-md bg-gray-800 px-3 py-1.5 text-sm text-gray-300 hover:bg-red-500/20 hover:text-red-300"
-        >
-          <TrashIcon className="h-4 w-4" />
-          Delete
-        </button>
       </div>
 
-      <DeletePlaybookModal
-        open={deleteOpen}
-        onClose={() => setDeleteOpen(false)}
-        playbookId={id}
-        returnTo={from}
-      />
 
       <div className="flex items-center gap-1 border-b border-gray-800">
         {TABS.map((t) => (

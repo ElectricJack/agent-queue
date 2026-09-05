@@ -295,6 +295,9 @@ class Orchestrator(
             retention_days=config.llm_logging.retention_days,
         )
         self._last_log_cleanup: float = 0.0
+        # Terminal onboarding records share the hourly operational retention
+        # cadence, but remain independent of Playbook V2 being enabled.
+        self._last_operational_event_retention_sweep: float = 0.0
         # Playbook V2 retention sweep, interval-limited by configuration.
         self._last_playbook_retention_sweep: float = 0.0
         self._last_worktree_reaper: float = 0.0
@@ -2331,6 +2334,10 @@ class Orchestrator(
                     self.llm_logger.flush_analytics()
                 except Exception as e:
                     logger.error("LLM log cleanup error: %s", e)
+
+            # Terminal onboarding requests are durable idempotency state; a
+            # failed cleanup must not interrupt scheduling.
+            await self._sweep_operational_event_retention()
 
             # 10. Auto-archive stale terminal tasks (~once per hour).
             await self._auto_archive_tasks()

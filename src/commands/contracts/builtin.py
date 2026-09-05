@@ -313,6 +313,30 @@ class TaskRouteValue(CommandValue):
     resolved_gate_ids: list[str]
 
 
+class CiBaselineStatusArgs(CommandArgs):
+    project_id: str
+    ref: str | None = None
+    max_attempts: int | None = None
+
+
+class CiBaselineStatusValue(CommandValue):
+    state: str
+    ref: str
+    head_sha: str | None = None
+    failing_checks: list[str] = []
+    failing_tests: list[str] = []
+    run_url: str | None = None
+    signature: str | None = None
+    attempt: int = 0
+    escalated: bool = False
+    dedup_key: str | None = None
+    title: str | None = None
+    description: str | None = None
+    escalation_key: str | None = None
+    escalation_title: str | None = None
+    escalation_question: str | None = None
+
+
 class StopTaskArgs(CommandArgs):
     task_id: str
 
@@ -371,6 +395,11 @@ def _outcome_of(name: str, raw: dict[str, Any]) -> str:
             # missing task still does (``rejected``).
             return "not_running"
         return "rejected"
+    if name == "ci_baseline_status":
+        state = str(raw.get("state") or "unknown")
+        if state == "red" and raw.get("escalated"):
+            return "red_escalated"
+        return state if state in {"green", "red", "pending", "unknown"} else "unknown"
     if name == "ensure_task":
         return "created" if raw.get("created") else "reused"
     if name == "gate_create":
@@ -686,6 +715,36 @@ PRESENTATIONS: dict[str, CommandPresentation] = {
         result_labels={"stopped": "Stopped task"},
         subject_labels={"task_execution": "the task's execution"},
     ),
+    "ci_baseline_status": CommandPresentation(
+        title="Read the default branch's CI verdict",
+        summary=(
+            "Judge the head commit's check runs, name the failing checks and tests, "
+            "and derive the repair task keyed by their failure signature."
+        ),
+        arg_labels={
+            "project_id": "Project",
+            "ref": "Branch or commit",
+            "max_attempts": "Repair attempts before escalating",
+        },
+        outcome_labels={
+            "green": "Green",
+            "red": "Red",
+            "red_escalated": "Red, repairs exhausted",
+            "pending": "Pending",
+            "unknown": "Unknown",
+            "rejected": "Rejected",
+        },
+        result_labels={
+            "state": "CI state",
+            "head_sha": "Head commit",
+            "failing_checks": "Failing checks",
+            "failing_tests": "Failing tests",
+            "signature": "Failure signature",
+            "dedup_key": "Repair task key",
+            "attempt": "Repair attempt",
+        },
+        subject_labels={},
+    ),
     "task_route": CommandPresentation(
         title="Route a task to a profile",
         summary="Assign the agent profile that will run the task, and clear its routing gate.",
@@ -886,6 +945,23 @@ def register_builtin_contracts(registry: ContractRegistry) -> None:
                 UpdateClause(subject=EffectSubject.TASK_ROUTING),
                 ResolveClause(subject=EffectSubject.ROUTING_GATE, target_arg="task_id"),
             ),
+            IdempotencySpec(mode="natural"),
+            True,
+        ),
+        (
+            "ci_baseline_status",
+            CiBaselineStatusArgs,
+            CiBaselineStatusValue,
+            (
+                OutcomeSpec(name="green", classification=OutcomeClass.SUCCESS),
+                OutcomeSpec(name="red", classification=OutcomeClass.SUCCESS),
+                OutcomeSpec(name="red_escalated", classification=OutcomeClass.SUCCESS),
+                OutcomeSpec(name="pending", classification=OutcomeClass.SUCCESS),
+                OutcomeSpec(name="unknown", classification=OutcomeClass.SUCCESS),
+                OutcomeSpec(name="rejected", classification=OutcomeClass.FAILURE),
+            ),
+            SideEffectClass.READ,
+            (),
             IdempotencySpec(mode="natural"),
             True,
         ),

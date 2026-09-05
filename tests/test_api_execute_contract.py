@@ -34,6 +34,14 @@ CONFLICT = {
     "current_revision": 7,
 }
 
+ONBOARDING_ERROR = {
+    "success": False,
+    "error": "Destination already exists",
+    "error_code": "destination_conflict",
+    "phase": "preflight",
+    "field_errors": [{"field": "relativePath", "message": "Choose another directory"}],
+}
+
 
 @pytest.fixture
 async def surfaces(command_handler_factory, monkeypatch):
@@ -49,8 +57,13 @@ async def surfaces(command_handler_factory, monkeypatch):
         records.append(("edit_intelligence_class", dict(args)))
         return dict(CONFLICT)
 
+    async def _cmd_onboard_project(args):
+        records.append(("onboard_project", dict(args)))
+        return dict(ONBOARDING_ERROR)
+
     ch._cmd_create_task_graph = _cmd_create_task_graph
     ch._cmd_edit_intelligence_class = _cmd_edit_intelligence_class
+    ch._cmd_onboard_project = _cmd_onboard_project
 
     monkeypatch.setattr(deps, "_command_handler", ch)
     monkeypatch.setattr(deps, "_orchestrator", ch.orchestrator)
@@ -73,6 +86,22 @@ async def surfaces(command_handler_factory, monkeypatch):
                 "properties": {
                     "class_id": {"type": "string"},
                     "revision": {"type": "integer"},
+                },
+            },
+        ),
+        (
+            "onboard_project",
+            "/api/project/onboard",
+            {
+                "type": "object",
+                "required": ["request_id", "source_mode", "root_id", "relative_path", "project_name", "project_id"],
+                "properties": {
+                    "request_id": {"type": "string"},
+                    "source_mode": {"type": "string"},
+                    "root_id": {"type": "string"},
+                    "relative_path": {"type": "string"},
+                    "project_name": {"type": "string"},
+                    "project_id": {"type": "string"},
                 },
             },
         ),
@@ -118,6 +147,22 @@ def test_generic_and_typed_routes_preserve_error_details_and_status_contracts(su
         "current_revision": 7,
     }
 
+    # Onboarding is the exception to the generic typed-route error envelope:
+    # its wizard needs code/phase/field details to preserve values and retry.
+    r = client.post(
+        "/api/project/onboard",
+        json={
+            "request_id": "request-1",
+            "source_mode": "init",
+            "root_id": "dev",
+            "relative_path": "widgets",
+            "project_name": "Widgets",
+            "project_id": "widgets",
+        },
+    )
+    assert r.status_code == 422, r.text
+    assert r.json() == ONBOARDING_ERROR
+
     # Generic surface: same conflict stays a 200 ok:false envelope with the
     # full payload under details — no field loss for CLI consumers.
     r = client.post(
@@ -135,6 +180,7 @@ def test_generic_and_typed_routes_preserve_error_details_and_status_contracts(su
         "create_task_graph",
         "create_task_graph",
         "edit_intelligence_class",
+        "onboard_project",
         "edit_intelligence_class",
     ]
 

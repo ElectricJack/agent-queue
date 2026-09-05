@@ -88,6 +88,33 @@ class DatabaseBackend(Protocol):
         """Gracefully shut down the database connection."""
         ...
 
+    # --- Project onboarding idempotency ---
+
+    async def create_onboarding_request(
+        self,
+        request_id: str,
+        input_fingerprint: str,
+        *,
+        phase: str = "pending",
+        now: float | None = None,
+    ) -> tuple[bool, str]: ...
+    async def get_onboarding_request(self, request_id: str) -> dict | None: ...
+    async def update_onboarding_phase(
+        self, request_id: str, phase: str, *, now: float | None = None
+    ) -> bool: ...
+    async def append_onboarding_resource(
+        self, request_id: str, resource: dict, *, now: float | None = None
+    ) -> bool: ...
+    async def finish_onboarding_request(
+        self, request_id: str, status: str, *, result: dict | None = None,
+        error: dict | None = None, now: float | None = None,
+    ) -> bool: ...
+    async def purge_finished_onboarding_requests(
+        self, cutoff: float, *, limit: int = 1000
+    ) -> int: ...
+    async def register_onboarded_project(self, project: Project, workspace: Workspace) -> None: ...
+    async def rollback_onboarded_project(self, project_id: str, workspace_id: str) -> None: ...
+
     # --- Projects ---
 
     async def create_project(self, project: Project) -> None: ...

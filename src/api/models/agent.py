@@ -105,6 +105,13 @@ class ProfileSummary(BaseModel):
     allowed_tools: list[str] = []
     mcp_servers: list[str] = []
     has_system_prompt: bool = False
+    #: ``task`` (one session per assigned task), ``named`` (a durable singleton
+    #: worker) or ``pool`` (elastic capacity the daemon sizes between
+    #: ``min_active``/``max_active``).  Only ``pool`` makes a profile eligible
+    #: to back a worker pool; the sizing bounds are set on ``pool`` profiles.
+    lifecycle: str = "task"
+    min_active: int | None = None
+    max_active: int | None = None
 
 
 class SubagentRollup(BaseModel):

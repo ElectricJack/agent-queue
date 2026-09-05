@@ -3454,6 +3454,77 @@ class GitManager:
             return None
         return rollup
 
+    # -- branch CI reads (ci-main-sentinel) ---------------------------------
+
+    _FAILED_TEST_LINE = re.compile(r"(?:^|\s)(?:FAILED|ERROR) (tests/[^\s]+)")
+
+    @staticmethod
+    def github_repo_slug(repo_url: str) -> str | None:
+        """``owner/repo`` from a GitHub clone URL, or ``None`` if it is not one."""
+        text = (repo_url or "").strip()
+        match = re.match(
+            r"^(?:https?://github\.com/|git@github\.com:|ssh://git@github\.com/)"
+            r"([^/\s]+)/([^/\s]+?)(?:\.git)?/?$",
+            text,
+        )
+        if match is None:
+            return None
+        return f"{match.group(1)}/{match.group(2)}"
+
+    async def _agh_api_json(self, path: str, cwd: str | None):
+        try:
+            result = await self._arun_subprocess(
+                ["gh", "api", path], cwd=cwd, timeout=self._GIT_TIMEOUT
+            )
+        except Exception:
+            return None
+        if result.returncode != 0:
+            return None
+        try:
+            return json.loads(result.stdout or "null")
+        except (ValueError, TypeError):
+            return None
+
+    async def acommit_head_sha(self, slug: str, ref: str, *, cwd: str | None = None) -> str | None:
+        """The commit sha ``ref`` resolves to on GitHub, or ``None`` if unreadable."""
+        data = await self._agh_api_json(f"repos/{slug}/commits/{ref}", cwd)
+        sha = data.get("sha") if isinstance(data, dict) else None
+        return str(sha) if sha else None
+
+    async def acommit_check_runs(self, slug: str, sha: str, *, cwd: str | None = None) -> list[dict] | None:
+        """The check runs GitHub reports for one commit, or ``None`` if unreadable.
+
+        Entries carry ``name``, ``status``, ``conclusion``, ``html_url`` and
+        the job ``id`` — the same fields :func:`src.git.ci_gate.normalize_entry`
+        reads from a PR rollup, so one classifier judges both.  ``None`` is
+        "could not read" (no ``gh``, no auth, no network) and must never be
+        taken as green; an empty list means nothing has reported.
+        """
+        data = await self._agh_api_json(f"repos/{slug}/commits/{sha}/check-runs?per_page=100", cwd)
+        if not isinstance(data, dict):
+            return None
+        runs = data.get("check_runs")
+        return runs if isinstance(runs, list) else None
+
+    async def ajob_failed_tests(self, slug: str, job_id: int | str, *, cwd: str | None = None) -> list[str] | None:
+        """The pytest node ids a failed Actions job reported, or ``None`` if unreadable."""
+        try:
+            result = await self._arun_subprocess(
+                ["gh", "api", f"repos/{slug}/actions/jobs/{job_id}/logs"],
+                cwd=cwd,
+                timeout=max(self._GIT_TIMEOUT, 120),
+            )
+        except Exception:
+            return None
+        if result.returncode != 0:
+            return None
+        found: set[str] = set()
+        for line in (result.stdout or "").splitlines():
+            match = self._FAILED_TEST_LINE.search(line)
+            if match:
+                found.add(match.group(1).rstrip(","))
+        return sorted(found)
+
     async def arev_parse(self, checkout_path: str, ref: str) -> str | None:
         """Return the SHA for ``ref`` in ``checkout_path``, or None.
 
