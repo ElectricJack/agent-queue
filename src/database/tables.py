@@ -21,7 +21,6 @@ from sqlalchemy import (
     ForeignKeyConstraint,
     Index,
     Integer,
-    JSON,
     MetaData,
     Table,
     Text,
@@ -1965,9 +1964,7 @@ integration_batches = Table(
         "'empty')",
         name="ck_integration_batches_lifecycle",
     ),
-    UniqueConstraint(
-        "project_id", "request_id", name="uq_integration_batches_project_request"
-    ),
+    UniqueConstraint("project_id", "request_id", name="uq_integration_batches_project_request"),
     Index(
         "uq_integration_batches_active_project",
         "project_id",
@@ -2069,6 +2066,126 @@ integration_candidate_member_results = Table(
     ),
 )
 
+integration_candidate_publications = Table(
+    "integration_candidate_publications",
+    metadata,
+    Column("batch_id", Text, primary_key=True),
+    Column("revision", Integer, primary_key=True),
+    Column("state", Text, nullable=False),
+    Column("repository_id", Text, nullable=False),
+    Column("repository_numeric_id", Integer, nullable=False),
+    Column("repository_full_name", Text, nullable=False),
+    Column("base_ref", Text, nullable=False),
+    Column("head_ref", Text, nullable=False),
+    Column("head_sha", Text, nullable=False),
+    Column("expected_old_sha", Text, nullable=False),
+    Column("idempotency_key", Text, nullable=False, unique=True),
+    Column("pr_number", Integer, nullable=True),
+    Column("pr_url", Text, nullable=True),
+    Column("created_at", Float, nullable=False),
+    Column("updated_at", Float, nullable=False),
+    CheckConstraint("revision >= 0", name="ck_integration_candidate_publications_revision"),
+    CheckConstraint(
+        "repository_numeric_id > 0",
+        name="ck_integration_candidate_publications_repository_numeric",
+    ),
+    CheckConstraint(
+        "state IN ('reserved', 'ref_published', 'pr_reserved', 'pr_published')",
+        name="ck_integration_candidate_publications_state",
+    ),
+    CheckConstraint(
+        "(state = 'pr_published' AND pr_number IS NOT NULL AND pr_number > 0 "
+        "AND pr_url IS NOT NULL) OR "
+        "(state <> 'pr_published' AND pr_number IS NULL AND pr_url IS NULL)",
+        name="ck_integration_candidate_publications_pr_identity",
+    ),
+    ForeignKeyConstraint(
+        ["batch_id", "revision"],
+        ["integration_candidate_revisions.batch_id", "integration_candidate_revisions.revision"],
+        name="fk_integration_candidate_publications_revision",
+        ondelete="RESTRICT",
+    ),
+)
+
+integration_candidate_resolutions = Table(
+    "integration_candidate_resolutions",
+    metadata,
+    Column("id", Text, primary_key=True),
+    Column("batch_id", Text, nullable=False),
+    Column("revision", Integer, nullable=False),
+    Column("member_ordinal", Integer, nullable=False),
+    Column("operation_id", Text, nullable=False),
+    Column("stage_ordinal", Integer, nullable=False),
+    Column("repair_task_id", Text, nullable=False),
+    Column("repair_session_id", Text, nullable=False),
+    Column("repair_session_instance_token", Text, nullable=False),
+    Column("repair_workspace_id", Text, nullable=False),
+    Column("repository_id", Text, nullable=False),
+    Column("branch", Text, nullable=False),
+    Column("fence_owner_id", Text, nullable=False),
+    Column("fence_token", Integer, nullable=False),
+    Column("partial_head_sha", Text, nullable=False),
+    Column("source_base_sha", Text, nullable=False),
+    Column("source_head_sha", Text, nullable=False),
+    Column("resolved_head_sha", Text, nullable=False),
+    Column("resolved_tree_sha", Text, nullable=False),
+    Column("repair_commit_shas", JSON, nullable=False),
+    Column("push_evidence", JSON, nullable=True),
+    Column("state", Text, nullable=False),
+    Column("created_at", Float, nullable=False),
+    Column("updated_at", Float, nullable=False),
+    UniqueConstraint(
+        "batch_id",
+        "revision",
+        "member_ordinal",
+        name="uq_integration_candidate_resolutions_member",
+    ),
+    CheckConstraint("revision >= 0", name="ck_integration_candidate_resolutions_revision"),
+    CheckConstraint(
+        "member_ordinal >= 0", name="ck_integration_candidate_resolutions_member_ordinal"
+    ),
+    CheckConstraint("stage_ordinal IN (0, 1)", name="ck_integration_candidate_resolutions_stage"),
+    CheckConstraint("fence_token >= 0", name="ck_integration_candidate_resolutions_fence"),
+    CheckConstraint(
+        "state IN ('reserved', 'pushed', 'accepted')",
+        name="ck_integration_candidate_resolutions_state",
+    ),
+    CheckConstraint(
+        "(state = 'reserved' AND push_evidence IS NULL) OR "
+        "(state IN ('pushed', 'accepted') AND push_evidence IS NOT NULL)",
+        name="ck_integration_candidate_resolutions_push",
+    ),
+    ForeignKeyConstraint(
+        ["batch_id", "revision", "member_ordinal"],
+        [
+            "integration_candidate_member_results.batch_id",
+            "integration_candidate_member_results.revision",
+            "integration_candidate_member_results.member_ordinal",
+        ],
+        name="fk_integration_candidate_resolutions_member",
+        ondelete="RESTRICT",
+    ),
+    ForeignKeyConstraint(
+        ["operation_id", "stage_ordinal"],
+        ["integration_repair_stages.operation_id", "integration_repair_stages.ordinal"],
+        name="fk_integration_candidate_resolutions_stage",
+        ondelete="RESTRICT",
+    ),
+    ForeignKeyConstraint(
+        ["repair_task_id"], ["tasks.id"], name="fk_integration_candidate_resolutions_task"
+    ),
+    ForeignKeyConstraint(
+        ["repair_session_id"],
+        ["sessions.id"],
+        name="fk_integration_candidate_resolutions_session",
+    ),
+    ForeignKeyConstraint(
+        ["repair_workspace_id"],
+        ["workspaces.id"],
+        name="fk_integration_candidate_resolutions_workspace",
+    ),
+)
+
 integration_repair_operations = Table(
     "integration_repair_operations",
     metadata,
@@ -2121,9 +2238,7 @@ integration_repair_operations = Table(
             "parent_task_id IS NOT NULL AND state IN ('active', 'escalated', 'human_required')"
         ),
     ),
-    UniqueConstraint(
-        "batch_id", name="uq_integration_repair_operations_batch_episode"
-    ),
+    UniqueConstraint("batch_id", name="uq_integration_repair_operations_batch_episode"),
     Index(
         "uq_integration_repair_operations_parent_episode",
         "parent_task_id",
@@ -2233,9 +2348,7 @@ integration_repair_stages = Table(
         "(repair_task_id IS NOT NULL AND writer_kind IS NOT NULL)",
         name="ck_integration_repair_stages_writer_binding",
     ),
-    UniqueConstraint(
-        "deadline_event_id", name="uq_integration_repair_stages_deadline_event"
-    ),
+    UniqueConstraint("deadline_event_id", name="uq_integration_repair_stages_deadline_event"),
     CheckConstraint(
         "state IN ('pending', 'active', 'awaiting_completion', 'passed', 'failed', "
         "'expired', 'cancelled')",
@@ -2293,9 +2406,7 @@ integration_repair_stage_evidence = Table(
     Column("result_outcome", Text, nullable=False),
     Column("result_action", Text, nullable=False),
     Column("recorded_at", Float, nullable=False),
-    UniqueConstraint(
-        "evidence_id", name="uq_integration_repair_stage_evidence_evidence"
-    ),
+    UniqueConstraint("evidence_id", name="uq_integration_repair_stage_evidence_evidence"),
     ForeignKeyConstraint(
         ["operation_id", "ordinal"],
         ["integration_repair_stages.operation_id", "integration_repair_stages.ordinal"],
@@ -2327,9 +2438,7 @@ integration_parent_verifications = Table(
         "head_sha",
         name="uq_integration_parent_verifications_tuple",
     ),
-    UniqueConstraint(
-        "parent_task_id", "id", name="uq_integration_parent_verifications_parent_id"
-    ),
+    UniqueConstraint("parent_task_id", "id", name="uq_integration_parent_verifications_parent_id"),
     UniqueConstraint(
         "operation_id",
         "id",
@@ -2366,9 +2475,7 @@ integration_parent_operation_completions = Table(
     Column("parent_task_id", Text, nullable=False),
     Column("episode_id", Text, nullable=False),
     Column("completed_at", Float, nullable=False),
-    UniqueConstraint(
-        "verification_id", name="uq_parent_operation_completions_verification"
-    ),
+    UniqueConstraint("verification_id", name="uq_parent_operation_completions_verification"),
     UniqueConstraint(
         "operation_id",
         "verification_id",
@@ -2459,9 +2566,7 @@ integration_parent_verification_evidence = Table(
         ForeignKey("integration_check_evidence.id", ondelete="RESTRICT"),
         primary_key=True,
     ),
-    UniqueConstraint(
-        "evidence_id", name="uq_integration_parent_verification_evidence_evidence"
-    ),
+    UniqueConstraint("evidence_id", name="uq_integration_parent_verification_evidence_evidence"),
 )
 
 integration_operation_artifact_pins = Table(

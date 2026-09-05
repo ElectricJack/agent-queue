@@ -52,6 +52,32 @@ def _git_push_case(tmp_path: Path) -> tuple[Path, Path, Path, str, str]:
 
 
 @pytest.mark.asyncio
+async def test_app_exact_fetch_imports_only_requested_oid_to_daemon_namespace(tmp_path):
+    checkout, source, _trap, _base, tip = _git_push_case(tmp_path)
+    _git(["push", str(source), f"{tip}:refs/heads/topic"], checkout)
+    destination = tmp_path / "retained.git"
+    subprocess.run(
+        ["git", "init", "--bare", "--initial-branch=main", str(destination)],
+        check=True,
+        capture_output=True,
+    )
+
+    result = await GitManager()._afetch_exact_oid_with_app_auth_to_url(
+        str(destination),
+        destination_url=source.as_uri(),
+        token="local-test-token",
+        oid=tip,
+        destination_ref="refs/aq/exact/test-tip",
+    )
+
+    assert result == tip
+    assert _git(["rev-parse", "refs/aq/exact/test-tip"], destination) == tip
+    assert _git(["for-each-ref", "--format=%(refname)"], destination).splitlines() == [
+        "refs/aq/exact/test-tip"
+    ]
+
+
+@pytest.mark.asyncio
 async def test_privileged_push_ignores_worker_hooks_config_rewrites_helpers_and_daemon_env(
     tmp_path, monkeypatch
 ):
@@ -78,7 +104,7 @@ async def test_privileged_push_ignores_worker_hooks_config_rewrites_helpers_and_
     hook = hooks / "pre-push"
     hook.write_text(
         "#!/bin/sh\n"
-        f"echo \"$DAEMON_SECRET\" > {hook_capture}\n"
+        f'echo "$DAEMON_SECRET" > {hook_capture}\n'
         'test -z "$AQ_GIT_APP_TOKEN_FD" || cat "/proc/$$/fd/$AQ_GIT_APP_TOKEN_FD" '
         f">> {hook_capture}\n"
     )
@@ -86,8 +112,8 @@ async def test_privileged_push_ignores_worker_hooks_config_rewrites_helpers_and_
     global_config = tmp_path / "malicious-global"
     global_config.write_text(
         f'[url "{trap.as_uri()}"]\n\tinsteadOf = {target.as_uri()}\n'
-        f'[credential]\n\thelper = !echo invoked > {helper_capture}\n'
-        '[http]\n\tproxy = http://127.0.0.1:1\n'
+        f"[credential]\n\thelper = !echo invoked > {helper_capture}\n"
+        "[http]\n\tproxy = http://127.0.0.1:1\n"
     )
     _git(["config", "url.file:///unrelated.invalid/.insteadOf", target.as_uri()], checkout)
     monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(global_config))
@@ -106,9 +132,12 @@ async def test_privileged_push_ignores_worker_hooks_config_rewrites_helpers_and_
 
     assert result == tip
     assert _git(["rev-parse", "refs/heads/main"], target) == tip
-    assert subprocess.run(
-        ["git", "show-ref", "--verify", "refs/heads/main"], cwd=trap, capture_output=True
-    ).returncode != 0
+    assert (
+        subprocess.run(
+            ["git", "show-ref", "--verify", "refs/heads/main"], cwd=trap, capture_output=True
+        ).returncode
+        != 0
+    )
     assert not hook_capture.exists()
     assert not helper_capture.exists()
 
@@ -171,20 +200,26 @@ def test_askpass_username_and_invalid_prompts_do_not_send_broker_requests():
     broker.setblocking(False)
     try:
         authority = "https://x-access-token@github.com"
-        assert answer_prompt(
-            "Username for 'https://github.com': ",
-            request.fileno(),
-            "x-access-token",
-            authority,
-            "https://github.com/acme/widgets.git",
-        ) == "x-access-token"
-        assert answer_prompt(
-            "Password for 'https://attacker.example': ",
-            request.fileno(),
-            "x-access-token",
-            authority,
-            "https://github.com/acme/widgets.git",
-        ) == ""
+        assert (
+            answer_prompt(
+                "Username for 'https://github.com': ",
+                request.fileno(),
+                "x-access-token",
+                authority,
+                "https://github.com/acme/widgets.git",
+            )
+            == "x-access-token"
+        )
+        assert (
+            answer_prompt(
+                "Password for 'https://attacker.example': ",
+                request.fileno(),
+                "x-access-token",
+                authority,
+                "https://github.com/acme/widgets.git",
+            )
+            == ""
+        )
         with pytest.raises(BlockingIOError):
             broker.recv(1)
     finally:
@@ -258,9 +293,7 @@ async def test_source_import_failure_zeroizes_dummy_credential(tmp_path, monkeyp
 
 
 @pytest.mark.asyncio
-async def test_cancellation_during_source_import_zeroizes_dummy_credential(
-    tmp_path, monkeypatch
-):
+async def test_cancellation_during_source_import_zeroizes_dummy_credential(tmp_path, monkeypatch):
     checkout = tmp_path / "checkout"
     checkout.mkdir()
     entered = asyncio.Event()
@@ -327,9 +360,7 @@ async def test_oversized_broker_request_setup_closes_and_zeroizes():
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("cancel", [False, True], ids=["timeout", "cancellation"])
-async def test_app_push_timeout_or_cancellation_kills_entire_process_group(
-    tmp_path, cancel
-):
+async def test_app_push_timeout_or_cancellation_kills_entire_process_group(tmp_path, cancel):
     checkout, target, _, base, tip = _git_push_case(tmp_path)
     pid_file = tmp_path / "privileged-pids"
     hanging_git = tmp_path / "hanging-git"
@@ -337,8 +368,8 @@ async def test_app_push_timeout_or_cancellation_kills_entire_process_group(
         "#!/bin/sh\n"
         "sleep 300 &\n"
         "child=$!\n"
-        f"printf '%s %s' \"$$\" \"$child\" > {pid_file}\n"
-        "wait \"$child\"\n"
+        f'printf \'%s %s\' "$$" "$child" > {pid_file}\n'
+        'wait "$child"\n'
     )
     hanging_git.chmod(0o700)
     manager = GitManager()
@@ -434,9 +465,7 @@ async def test_broker_timeout_closes_request_channel_without_waiting_for_eof(tmp
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("capability", ["SO_PASSCRED", "SCM_RIGHTS"])
-async def test_unsupported_credential_broker_fails_closed(
-    tmp_path, monkeypatch, capability
-):
+async def test_unsupported_credential_broker_fails_closed(tmp_path, monkeypatch, capability):
     import src.git.askpass_broker as broker_module
 
     checkout, target, _, base, tip = _git_push_case(tmp_path)
@@ -501,7 +530,7 @@ async def test_exact_helper_launched_by_fake_git_descendant_cannot_take_credenti
         "#!/bin/sh\n"
         "python3 -c 'import time; time.sleep(300)' &\n"
         "retainer=$!\n"
-        f"printf '%s %s' \"$$\" \"$retainer\" > {pids}\n"
+        f'printf \'%s %s\' "$$" "$retainer" > {pids}\n'
         f"tr '\\0' '\\n' < /proc/$$/cmdline > {argument_capture}\n"
         f"env > {environment_capture}\n"
         f'python3 {probe} {helper_path} "Password for '
@@ -567,11 +596,7 @@ async def test_supported_git_https_remote_helper_is_credential_origin(tmp_path):
         requests += 1
         await reader.readuntil(b"\r\n\r\n")
         status = b"401 Unauthorized" if requests <= 2 else b"403 Forbidden"
-        authenticate = (
-            b'WWW-Authenticate: Basic realm="agent-queue"\r\n'
-            if requests <= 2
-            else b""
-        )
+        authenticate = b'WWW-Authenticate: Basic realm="agent-queue"\r\n' if requests <= 2 else b""
         writer.write(
             b"HTTP/1.1 "
             + status

@@ -45,6 +45,33 @@ class ScriptedTransport:
         return self.responses.pop(0)
 
 
+@pytest.mark.asyncio
+async def test_exact_head_ref_is_numeric_repository_bound_and_escaped():
+    private, _public = _private_key()
+    oid = "a" * 40
+    transport = ScriptedTransport(
+        [
+            HttpResponse(
+                200, {}, ('{"ref":"refs/heads/feature/x","object":{"sha":"%s"}}' % oid).encode()
+            )
+        ]
+    )
+    client = GitHubAppClient(
+        GitHubAppConfig("Iv1.client", 101, 202, "/daemon/key.pem"),
+        GitHubRepositoryBinding(303, "acme/widgets"),
+        key_provider=StaticKeyProvider(private),
+        transport=transport,
+        clock=lambda: 1_800_000_000.0,
+    )
+    client._token = "installation-secret"
+    client._token_expires_at = 1_800_001_000.0
+
+    assert await client.exact_head_ref("feature/x") == oid
+    assert transport.requests[0][1] == (
+        "https://api.github.com/repositories/303/git/ref/heads/feature%2Fx"
+    )
+
+
 def _private_key() -> tuple[bytes, bytes]:
     key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
     private = key.private_bytes(
@@ -126,10 +153,12 @@ async def test_authenticated_request_retries_one_401_with_a_fresh_token():
     )
     transport = ScriptedTransport(
         [
-            HttpResponse(200, {}, b'{"id":101}'), token_response("first"),
+            HttpResponse(200, {}, b'{"id":101}'),
+            token_response("first"),
             HttpResponse(200, {}, b'{"id":303,"full_name":"acme/widgets"}'),
-            HttpResponse(401, {}, b'never expose this body'),
-            HttpResponse(200, {}, b'{"id":101}'), token_response("second"),
+            HttpResponse(401, {}, b"never expose this body"),
+            HttpResponse(200, {}, b'{"id":101}'),
+            token_response("second"),
             HttpResponse(200, {}, b'{"id":303,"full_name":"acme/widgets"}'),
             HttpResponse(200, {}, b'{"ok":true}'),
         ]
@@ -137,7 +166,8 @@ async def test_authenticated_request_retries_one_401_with_a_fresh_token():
     client = GitHubAppClient(
         GitHubAppConfig("Iv1.client", 101, 202, "/daemon/key.pem"),
         GitHubRepositoryBinding(303, "acme/widgets"),
-        key_provider=StaticKeyProvider(private), transport=transport,
+        key_provider=StaticKeyProvider(private),
+        transport=transport,
         clock=lambda: 1_800_000_000.0,
     )
 
@@ -151,16 +181,21 @@ async def test_repository_identity_mismatch_fails_closed_without_response_body()
     transport = ScriptedTransport(
         [
             HttpResponse(200, {}, b'{"id":101}'),
-            HttpResponse(201, {}, b'{"token":"sensitive","expires_at":"2030-01-01T00:00:00Z",'
+            HttpResponse(
+                201,
+                {},
+                b'{"token":"sensitive","expires_at":"2030-01-01T00:00:00Z",'
                 b'"repositories":[{"id":303}],"permissions":{"checks":"write",'
-                b'"actions":"read","contents":"write","administration":"read"}}'),
+                b'"actions":"read","contents":"write","administration":"read"}}',
+            ),
             HttpResponse(200, {}, b'{"id":303,"full_name":"attacker/redirected"}'),
         ]
     )
     client = GitHubAppClient(
         GitHubAppConfig("Iv1.client", 101, 202, "/daemon/key.pem"),
         GitHubRepositoryBinding(303, "acme/widgets"),
-        key_provider=StaticKeyProvider(private), transport=transport,
+        key_provider=StaticKeyProvider(private),
+        transport=transport,
         clock=lambda: 1_800_000_000.0,
     )
 

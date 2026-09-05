@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from email.utils import parsedate_to_datetime
 from typing import Any, Protocol
-from urllib.parse import urljoin, urlparse
+from urllib.parse import quote, urljoin, urlparse
 
 import aiohttp
 import jwt
@@ -109,7 +109,9 @@ class AiohttpTransport:
         timeout = aiohttp.ClientTimeout(total=30)
         try:
             async with aiohttp.ClientSession(timeout=timeout) as session:
-                async with session.request(method, url, headers=headers, json=json_body) as response:
+                async with session.request(
+                    method, url, headers=headers, json=json_body
+                ) as response:
                     body = await response.content.read(max_bytes + 1)
                     if len(body) > max_bytes:
                         raise GitHubAppError("transient", "GitHub response exceeded size limit")
@@ -168,6 +170,27 @@ class GitHubAppClient:
         except Exception as exc:
             raise GitHubAppError("credentials", "private key could not sign App JWT") from exc
 
+    async def exact_head_ref(self, branch: str) -> str | None:
+        """Read one repository-bound head through the installation identity."""
+        if not isinstance(branch, str) or not branch or branch.startswith("refs/"):
+            raise ValueError("branch must be a short head name")
+        path = (
+            f"/repositories/{self.repository.repository_id}/git/ref/heads/{quote(branch, safe='')}"
+        )
+        try:
+            payload = await self.request_json("GET", path)
+        except GitHubAppError as exc:
+            if exc.category == "not_found_or_hidden":
+                return None
+            raise
+        obj = payload.get("object")
+        oid = obj.get("sha") if isinstance(obj, dict) else None
+        if payload.get("ref") != f"refs/heads/{branch}" or not isinstance(oid, str):
+            raise GitHubAppError("conflict_or_invalid", "GitHub ref identity was malformed")
+        if re.fullmatch(r"[0-9a-f]{40}", oid) is None:
+            raise GitHubAppError("conflict_or_invalid", "GitHub ref OID was malformed")
+        return oid
+
     async def installation_token(self, *, force_refresh: bool = False) -> str:
         async with self._token_lock:
             if (
@@ -190,7 +213,10 @@ class GitHubAppClient:
             "POST",
             f"/app/installations/{self.config.installation_id}/access_tokens",
             credential=app_jwt,
-            json_body={"repository_ids": [self.repository.repository_id], "permissions": _PERMISSIONS},
+            json_body={
+                "repository_ids": [self.repository.repository_id],
+                "permissions": _PERMISSIONS,
+            },
             expected_statuses={201},
         )
         token = token_body.get("token")
@@ -203,9 +229,11 @@ class GitHubAppClient:
         ] != [self.repository.repository_id]:
             raise GitHubAppError("permission", "installation repository selection did not match")
         permissions = token_body.get("permissions")
-        if not isinstance(permissions, dict) or any(
-            permissions.get(name) != level for name, level in _PERMISSIONS.items()
-        ) or set(permissions) - (set(_PERMISSIONS) | {"metadata"}):
+        if (
+            not isinstance(permissions, dict)
+            or any(permissions.get(name) != level for name, level in _PERMISSIONS.items())
+            or set(permissions) - (set(_PERMISSIONS) | {"metadata"})
+        ):
             raise GitHubAppError("permission", "installation permissions did not match")
         expiry = _parse_timestamp(token_body.get("expires_at"))
         repository = await self._raw_json(
@@ -231,7 +259,10 @@ class GitHubAppClient:
         token = await self.installation_token()
         try:
             return await self._raw_json(
-                method, path, credential=token, json_body=json_body,
+                method,
+                path,
+                credential=token,
+                json_body=json_body,
                 expected_statuses=expected_statuses,
             )
         except GitHubAppError as exc:
@@ -239,7 +270,10 @@ class GitHubAppClient:
                 raise
         token = await self.installation_token(force_refresh=True)
         return await self._raw_json(
-            method, path, credential=token, json_body=json_body,
+            method,
+            path,
+            credential=token,
+            json_body=json_body,
             expected_statuses=expected_statuses,
         )
 
@@ -270,9 +304,7 @@ class GitHubAppClient:
     ) -> HttpResponse:
         token = await self.installation_token()
         try:
-            return await self._request_response(
-                method, url, credential=token, json_body=json_body
-            )
+            return await self._request_response(method, url, credential=token, json_body=json_body)
         except GitHubAppError as exc:
             if exc.category != "credentials":
                 raise
