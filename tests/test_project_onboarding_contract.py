@@ -294,8 +294,12 @@ VALID_ARGS = {
 }
 
 
-@pytest.mark.parametrize("command", sorted(SEVEN))
-async def test_each_command_dispatches_and_answers_not_implemented(command_handler_factory, command):
+@pytest.mark.parametrize(
+    "command", sorted(SEVEN - {"onboard_project", "get_project_onboarding"})
+)
+async def test_unimplemented_discovery_commands_dispatch_to_structured_stub(
+    command_handler_factory, command
+):
     handler = await command_handler_factory()
     result = await handler.execute(command, dict(VALID_ARGS[command]))
     assert result["success"] is False

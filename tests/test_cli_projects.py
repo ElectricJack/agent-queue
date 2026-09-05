@@ -104,3 +104,74 @@ def test_project_details_and_set_forward_correct_args_and_render_client_errors(r
     assert envelope["error"]["code"] == "command_error"
     assert "No project found" in envelope["error"]["message"]
     assert envelope["data"] is None
+
+
+@pytest.mark.parametrize(
+    ("extra_argv", "extra_args"),
+    [
+        ([], {}),
+        (
+            ["--source-mode", "init", "--no-create-readme", "--create-github", "--github-owner", "acme"],
+            {
+                "source_mode": "init",
+                "create_readme": False,
+                "create_github": True,
+                "github_owner": "acme",
+                "github_visibility": "private",
+            },
+        ),
+    ],
+)
+def test_project_onboard_forwards_request_fields_and_prints_result(
+    runner, extra_argv, extra_args
+):
+    from src.cli.app import cli
+
+    response = {
+        "success": True,
+        "request_id": "request-123",
+        "project_id": "example",
+        "workspace_id": "example-primary",
+        "source_type": extra_args.get("source_mode", "link"),
+        "root_id": "dev",
+        "relative_path": "example",
+        "canonical_path": "/srv/dev/example",
+        "default_branch": "main",
+        "remote_url": None,
+        "actions": ["project_created"],
+    }
+    client = _client({"onboard_project": response})
+    argv = [
+        "project",
+        "onboard",
+        "--request-id",
+        "request-123",
+        "--root-id",
+        "dev",
+        "--relative-path",
+        "example",
+        "--project-name",
+        "Example",
+        "--project-id",
+        "example",
+        *extra_argv,
+    ]
+
+    with patch("src.cli.projects._get_client", return_value=client):
+        result = runner.invoke(cli, argv)
+
+    assert result.exit_code == 0, result.output
+    expected = {
+        "request_id": "request-123",
+        "source_mode": "link",
+        "root_id": "dev",
+        "relative_path": "example",
+        "project_name": "Example",
+        "project_id": "example",
+        "default_branch": None,
+        **extra_args,
+    }
+    assert client.execute.await_args_list == [(("onboard_project", expected),)]
+    assert "example" in result.output
+    assert "example-primary" in result.output
+    assert "/srv/dev/example" in result.output
