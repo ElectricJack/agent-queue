@@ -568,6 +568,33 @@ async def test_divergent_target_blocks_push_and_reconcile(db, promotion_case):
         await service.reconcile(prepared.intent_id)
 
 
+async def test_stale_initial_target_leaves_no_intent_and_correct_retry_succeeds(
+    db, promotion_case
+):
+    from src.integration.promotion import PromotionService, PromotionTargetMoved
+
+    case = promotion_case
+    work = case["work"]
+    _git(["switch", "-c", "new-parent-tip", case["base"]], work)
+    (work / "parent.txt").write_text("new parent tip\n")
+    _git(["add", "parent.txt"], work)
+    _git(["commit", "-m", "advance parent"], work)
+    target = _git(["rev-parse", "HEAD"], work)
+    _git(["push", "origin", "HEAD:refs/heads/aq/parent"], work)
+    service = PromotionService(db, data_dir=case["data_dir"], git_manager=GitManager())
+
+    with pytest.raises(PromotionTargetMoved, match="expected tip"):
+        await service.prepare(case["request"])
+
+    async with db._engine.connect() as conn:
+        assert await conn.scalar(select(func.count()).select_from(integration_promotion_intents)) == 0
+
+    correct = case["request"].model_copy(update={"expected_target": target})
+    prepared = await service.prepare(correct)
+    promoted = await service.push(prepared.intent_id, correct.fence)
+    assert promoted.receipt_id == prepared.receipt_id
+
+
 async def test_concurrent_same_domain_reuses_deterministic_preparation(db, promotion_case):
     from src.integration.promotion import PromotionService
 
@@ -694,6 +721,36 @@ async def test_delivery_promote_replays_ambiguous_accepted_push_without_intent_i
     async with db._engine.connect() as conn:
         assert await conn.scalar(select(func.count()).select_from(task_delivery_receipts)) == 1
         assert await conn.scalar(select(func.count()).select_from(integration_outbox)) == 2
+
+
+async def test_completed_delivery_replay_ignores_old_fence_and_deleted_source_branch(
+    db, promotion_case, command_handler_factory
+):
+    from src.integration.promotion import PromotionService
+
+    case = promotion_case
+    handler = await command_handler_factory()
+    await handler.orchestrator.db.close()
+    handler.orchestrator.db = db
+    handler.orchestrator.promotion_service = PromotionService(
+        db, data_dir=case["data_dir"], git_manager=GitManager()
+    )
+    args = case["request"].model_dump(mode="json")
+    promoted = await handler.execute("delivery_promote", args)
+    await BranchOwnership(db).transfer(case["fence"], "next-owner", "collector")
+    _git(["push", "origin", ":refs/heads/aq/child"], case["work"])
+    refs_before = _git(["ls-remote", "origin"], case["work"])
+    handler.orchestrator.promotion_service = PromotionService(
+        db, data_dir=case["data_dir"], git_manager=object()
+    )
+
+    replay = await handler.execute("delivery_promote", args)
+
+    assert promoted["outcome"] == "promoted"
+    assert replay["outcome"] == "already_promoted"
+    assert replay["intent_id"] == promoted["intent_id"]
+    assert replay["receipt_id"] == promoted["receipt_id"]
+    assert _git(["ls-remote", "origin"], case["work"]) == refs_before
 
 
 async def _seed_handler_delivery(handler) -> dict:

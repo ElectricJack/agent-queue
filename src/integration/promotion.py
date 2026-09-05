@@ -96,7 +96,20 @@ class PromotionService:
         self.clock = clock
 
     async def prepare(self, request: PromotionInput) -> PromotionValue:
-        context = await self._validated_context(request)
+        route = await self._validated_route(request)
+        domain_key = self._domain_key(request)
+        intent_id = f"intent-{uuid.uuid5(_IDENTITY_NAMESPACE, domain_key)}"
+        receipt_id = f"receipt-{uuid.uuid5(_IDENTITY_NAMESPACE, 'receipt:' + domain_key)}"
+        existing = await self.db.get_integration_promotion_intent(intent_id)
+        if existing is not None:
+            self._assert_existing_request(existing, request, route, domain_key, receipt_id)
+            value = self._value(existing)
+            if existing["state"] == "committed" or existing["prepared_sha"] is not None:
+                return value
+            if existing["state"] == "conflict":
+                raise PromotionConflict(value, existing.get("conflict_diagnostics") or {})
+
+        context = await self._validated_context(request, route)
         await self.ownership.assert_current(request.fence)
         repository = await self._resolve_repository(request.fence.target.repository_id)
         if repository.repo.project_id != context["project_id"]:
@@ -114,13 +127,15 @@ class PromotionService:
             reviewed_tree = await self._tree_oid(repository.retained_git_dir, request.source_head)
             if reviewed_tree != context["review_evidence"]["reviewed_tree_sha"]:
                 raise PromotionSourceMoved("reviewed source tree does not match trusted evidence")
+            await self._assert_remote_target(
+                repository.retained_git_dir,
+                request.fence.target.branch,
+                request.expected_target,
+            )
             authors = await self._authors(
                 repository.retained_git_dir, request.source_base, request.source_head
             )
 
-            domain_key = self._domain_key(request)
-            intent_id = f"intent-{uuid.uuid5(_IDENTITY_NAMESPACE, domain_key)}"
-            receipt_id = f"receipt-{uuid.uuid5(_IDENTITY_NAMESPACE, 'receipt:' + domain_key)}"
             created_at = float(int(self.clock()))
             primary = (
                 authors[0]
@@ -172,11 +187,6 @@ class PromotionService:
                 return value
             if intent["state"] == "conflict":
                 raise PromotionConflict(value, intent.get("conflict_diagnostics") or {})
-            await self._assert_remote_target(
-                repository.retained_git_dir,
-                request.fence.target.branch,
-                request.expected_target,
-            )
 
             result = await self.git.arun_git_result(
                 [
@@ -247,7 +257,6 @@ class PromotionService:
             or fence.target.branch != intent["target_branch"]
         ):
             raise PromotionTargetMoved("push fence targets another branch")
-        await self.ownership.assert_current(fence)
         repository = await self._resolve_repository(intent["repository_id"])
         self._assert_frozen_repository(intent, repository)
 
@@ -269,6 +278,7 @@ class PromotionService:
                     return await self._finalize(intent, remote.oid)
                 raise PromotionTargetMoved("target branch moved from the prepared old tip")
 
+            await self.ownership.assert_current(fence)
             await self._crash("before_push")
             try:
                 await self.git.apush_expected_delivery(
@@ -314,7 +324,7 @@ class PromotionService:
                 raise PromotionInvariantError("target diverged from the prepared promotion")
         return await self._finalize(intent, remote.oid)
 
-    async def _validated_context(self, request: PromotionInput) -> dict[str, Any]:
+    async def _validated_route(self, request: PromotionInput) -> dict[str, Any]:
         for label, oid in (
             ("source head", request.source_head),
             ("source base", request.source_base),
@@ -343,6 +353,20 @@ class PromotionService:
             or target.branch == repo.default_branch
         ):
             raise PromotionSourceMoved("target repository is not the task's parent repository")
+        return {
+            "project_id": task.project_id,
+            "target_task_id": parent.id,
+            "source_branch": task.branch_name,
+            "task": task,
+            "parent": parent,
+            "repository": repo,
+        }
+
+    async def _validated_context(
+        self, request: PromotionInput, route: dict[str, Any]
+    ) -> dict[str, Any]:
+        task = route["task"]
+        parent = route["parent"]
         origin = await self.db.get_task_branch_origin_for_promotion(task.id, task.repo_id)
         if (
             origin is None
@@ -365,12 +389,7 @@ class PromotionService:
         )
         if review is None:
             raise PromotionSourceMoved("trusted review evidence is absent or superseded")
-        return {
-            "project_id": task.project_id,
-            "target_task_id": parent.id,
-            "source_branch": task.branch_name,
-            "review_evidence": review,
-        }
+        return dict(route) | {"review_evidence": review}
 
     async def _get_repo(self, repository_id: str) -> RepoConfig | None:
         result = (
@@ -580,6 +599,32 @@ class PromotionService:
             separators=(",", ":"),
         )
         return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+    @staticmethod
+    def _assert_existing_request(
+        intent: dict,
+        request: PromotionInput,
+        route: dict[str, Any],
+        domain_key: str,
+        receipt_id: str,
+    ) -> None:
+        expected = {
+            "domain_key": domain_key,
+            "receipt_id": receipt_id,
+            "project_id": route["project_id"],
+            "source_task_id": request.source_task_id,
+            "target_task_id": route["target_task_id"],
+            "source_head": request.source_head,
+            "source_base": request.source_base,
+            "repository_id": request.fence.target.repository_id,
+            "target_branch": request.fence.target.branch,
+            "expected_target": request.expected_target,
+        }
+        changed = [field for field, value in expected.items() if intent.get(field) != value]
+        if changed:
+            raise PromotionInvariantError(
+                "promotion intent identity changed: " + ", ".join(changed)
+            )
 
     @staticmethod
     def _clean_tree_oid(stdout: str) -> str:
