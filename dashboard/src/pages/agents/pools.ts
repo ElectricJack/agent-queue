@@ -58,32 +58,65 @@ export function splitBusyPoolEntries(entries: PoolEntry[]): BusyPoolEntries {
   return { busy, hiddenCount: entries.length - busy.length };
 }
 
+/** What the rail actually shows for a split — the debounce compares this, not array identity. */
+function busySignature(split: BusyPoolEntries): string {
+  return split.busy.map((entry) => entry.key + "=" + entry.pool.running_busy).join("|") + "#" + split.hiddenCount;
+}
+
 /**
  * Hold a pool's rail visibility briefly when supply changes so a claim or
  * completion does not make the flock jump between adjacent live updates.
+ *
+ * The hold is keyed on *what would be shown*, never on the identity of the
+ * ``entries`` array: ``usePoolFlock`` hands the rail a fresh array on every
+ * render, and every agent/session/task/message event re-renders the rail, so
+ * a timer that re-armed per render never fired while the fleet was busy and a
+ * pool that had just claimed work stayed hidden for as long as it worked.
+ * Now a render whose target matches the pending one leaves the timer alone,
+ * a render that reverts to the visible state cancels it, and only a genuinely
+ * new target restarts the hold.
  */
 export function useDebouncedBusyPoolEntries(entries: PoolEntry[], delay = 1_000): BusyPoolEntries {
   const next = useMemo(() => splitBusyPoolEntries(entries), [entries]);
   const [visible, setVisible] = useState(next);
   const initialized = useRef(false);
   const hasReceivedEntries = useRef(entries.length > 0);
+  const visibleSignature = useRef(busySignature(next));
+  const pending = useRef<{ signature: string; timer: number } | null>(null);
 
   useEffect(() => {
+    const target = busySignature(next);
+    const commit = () => {
+      pending.current = null;
+      visibleSignature.current = target;
+      setVisible(next);
+    };
     if (!initialized.current) {
       initialized.current = true;
-      setVisible(next);
+      commit();
       return;
     }
     // The first status response should populate the rail immediately. Later
     // changes are debounced to avoid a claim/completion flicker.
     if (!hasReceivedEntries.current && entries.length > 0) {
       hasReceivedEntries.current = true;
-      setVisible(next);
+      commit();
       return;
     }
-    const timer = window.setTimeout(() => setVisible(next), delay);
-    return () => window.clearTimeout(timer);
+    if (target === visibleSignature.current) {
+      // Back to (or still at) what is shown: nothing to hold for.
+      if (pending.current) {
+        window.clearTimeout(pending.current.timer);
+        pending.current = null;
+      }
+      return;
+    }
+    if (pending.current?.signature === target) return; // same target: let the hold run
+    if (pending.current) window.clearTimeout(pending.current.timer);
+    pending.current = { signature: target, timer: window.setTimeout(commit, delay) };
   }, [entries, delay, next]);
+
+  useEffect(() => () => { if (pending.current) window.clearTimeout(pending.current.timer); }, []);
 
   return visible;
 }
@@ -148,10 +181,10 @@ export function usePoolFlock() {
   const pools = usePoolStatus();
   const sessions = usePoolSessions();
   const profiles = useProfiles();
-  return {
-    entries: poolEntries(pools.data ?? [], sessions.data ?? []),
-    poolIds: poolProfileIds(pools.data ?? [], profiles.data ?? []),
-    isLoading: pools.isLoading,
-    error: pools.error,
-  };
+  // React Query keeps ``data`` referentially stable across equal refetches, so
+  // memoising here means an unrelated re-render of the rail does not hand its
+  // consumers a new array to react to.
+  const entries = useMemo(() => poolEntries(pools.data ?? [], sessions.data ?? []), [pools.data, sessions.data]);
+  const poolIds = useMemo(() => poolProfileIds(pools.data ?? [], profiles.data ?? []), [pools.data, profiles.data]);
+  return { entries, poolIds, isLoading: pools.isLoading, error: pools.error };
 }
