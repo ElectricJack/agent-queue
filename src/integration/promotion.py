@@ -23,6 +23,7 @@ from src.git.manager import GitError, GitManager, RemoteRefState
 from src.integration.models import ConflictResolutionInput, Fence, PromotionInput, PromotionValue
 from src.integration.ownership import BranchOwnership
 from src.models import RepoConfig, RepoSourceType
+from src.playbooks.invocation import current_invocation
 
 
 _OID_RE = re.compile(r"^[0-9a-f]{40}$")
@@ -864,6 +865,7 @@ class PromotionService:
 
     async def _provenance(self, review: dict[str, Any]) -> dict[str, Any]:
         principal = current_principal() or TRUSTED_LOCAL
+        invocation = current_invocation()
         reviewer_attempt = None
         if review.get("reviewer_session_attempt_id"):
             reviewer_attempt = await self.db.get_task_session_attempt(
@@ -879,9 +881,9 @@ class PromotionService:
             "project_id": principal.project_id,
             "profile_id": principal.profile_id,
             "service_name": principal.service_name,
-            "playbook_run_id": None,
-            "playbook_step_id": None,
-            "playbook_attempt": None,
+            "playbook_run_id": invocation.run_id if invocation else None,
+            "playbook_step_id": invocation.step_id if invocation else None,
+            "playbook_attempt": invocation.attempt if invocation else None,
             "reviewer_session_attempt": reviewer_attempt,
             "source_branch": (await self.db.get_task(review["source_task_id"])).branch_name,
         }

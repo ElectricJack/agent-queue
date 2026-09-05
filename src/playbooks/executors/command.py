@@ -30,6 +30,7 @@ from src.playbooks.executors.base import (
     StepControl,
     project_step_receipt,
 )
+from src.playbooks.invocation import _invocation_context
 from src.playbooks.receipts import idempotency_key
 from src.playbooks.run_state import DEFAULT_MAX_RESULT_BYTES, canonical_json
 
@@ -282,11 +283,12 @@ class LiveCommandExecutor:
 
         timeout = registration.contract.execution.timeout_seconds
         try:
-            if timeout:
-                async with asyncio.timeout(timeout):
+            with _invocation_context(ctx):
+                if timeout:
+                    async with asyncio.timeout(timeout):
+                        result = await registration.invoke(args, ctx.principal)
+                else:
                     result = await registration.invoke(args, ctx.principal)
-            else:
-                result = await registration.invoke(args, ctx.principal)
         except TimeoutError:
             return _fail("timed_out", operation=operation, diagnostics=("step",), key=key)
         except asyncio.CancelledError:

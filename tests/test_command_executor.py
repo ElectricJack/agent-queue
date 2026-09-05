@@ -10,12 +10,15 @@ success and one returning ``{"error": None}`` read as a failure.
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 import pytest
 
 from src.commands.contracts.models import CommandResult
-from src.commands.principal import TRUSTED_LOCAL
+from src.commands.contracts.registry import CommandRegistration, ContractRegistry
+from src.commands.principal import ExecutionPrincipal, PrincipalKind, TRUSTED_LOCAL
+from src.profiles.capabilities import DENY_ALL
 from src.playbooks.definition import CommandStep
 from src.playbooks.executors import executor_for
 from src.playbooks.executors.base import (
@@ -25,6 +28,7 @@ from src.playbooks.executors.base import (
     StepControl,
 )
 from src.playbooks.expressions import ResolutionScope
+from src.playbooks.invocation import current_invocation
 from tests.fixtures.contracts.engine_contracts import (
     ENSURE_TASK,
     GATE_CREATE,
@@ -64,16 +68,19 @@ def context(
     attempt: int = 1,
     iteration_index: int | None = None,
     authored_idempotency_key: str | None = None,
+    run_id: str = "run-1",
+    dispatch_id: str = "d-1",
+    principal: ExecutionPrincipal = TRUSTED_LOCAL,
 ) -> StepContext:
     artifact = minimal_artifact()
     return StepContext(
-        run_id="run-1",
-        dispatch_id="d-1",
+        run_id=run_id,
+        dispatch_id=dispatch_id,
         artifact_ref=artifact_ref_for(artifact),
         artifact=artifact,
         rule_id="r",
         step_id=step_id,
-        principal=TRUSTED_LOCAL,
+        principal=principal,
         scope=ResolutionScope(),
         services=EngineServices(contracts=registry, clock=lambda: 100.0),
         mode=mode,
@@ -86,6 +93,220 @@ def context(
 
 async def run(step: CommandStep, ctx: StepContext, mode: ExecutionMode = ExecutionMode.LIVE):
     return await executor_for(step.type, mode).execute(step, ctx)
+
+
+class TestLiveInvocationContext:
+    @pytest.mark.asyncio
+    async def test_adapter_observes_current_step_not_delegation_ancestry(self):
+        observed = []
+
+        async def invoke(args, principal):
+            observed.append(current_invocation())
+            return CommandResult(
+                outcome="created",
+                value=EnsureTaskResult(task_id="t", created=True),
+                summary="",
+            )
+
+        registry = ContractRegistry()
+        registry.register(
+            CommandRegistration(
+                name="ensure_task", contract=ENSURE_TASK, invoke=invoke
+            )
+        )
+        principal = ExecutionPrincipal(
+            kind=PrincipalKind.PLAYBOOK,
+            policy=DENY_ALL,
+            parent_run_id="delegating-run",
+            parent_step_id="delegating-step",
+        )
+        ctx = context(
+            registry,
+            run_id="current-run",
+            dispatch_id="current-dispatch",
+            step_id="current-step",
+            attempt=4,
+            principal=principal,
+        )
+
+        assert current_invocation() is None
+        result = await run(command_step(), ctx)
+
+        assert result.outcome == "created"
+        invocation = observed[0]
+        assert (
+            invocation.run_id,
+            invocation.dispatch_id,
+            invocation.rule_id,
+            invocation.step_id,
+            invocation.attempt,
+        ) == ("current-run", "current-dispatch", "r", "current-step", 4)
+        assert invocation.artifact_ref == ctx.artifact_ref
+        assert invocation.run_id != principal.parent_run_id
+        assert current_invocation() is None
+
+    @pytest.mark.asyncio
+    async def test_nested_live_dispatch_restores_outer_invocation(self):
+        observed = []
+        registry = ContractRegistry()
+
+        async def invoke_inner(args, principal):
+            observed.append(("inner", current_invocation()))
+            return CommandResult(
+                outcome="listed", value=ListTasksResult(count=0), summary=""
+            )
+
+        async def invoke_outer(args, principal):
+            observed.append(("outer-before", current_invocation()))
+            inner_step = command_step(
+                command="list_tasks",
+                save_result_as="tasks",
+                transitions={"listed": "done"},
+            )
+            inner = await run(
+                inner_step,
+                context(
+                    registry,
+                    inputs={"project_id": "p"},
+                    run_id="inner-run",
+                    dispatch_id="inner-dispatch",
+                    step_id="inner-step",
+                ),
+            )
+            assert inner.outcome == "listed"
+            observed.append(("outer-after", current_invocation()))
+            return CommandResult(
+                outcome="created",
+                value=EnsureTaskResult(task_id="t", created=True),
+                summary="",
+            )
+
+        registry.register(
+            CommandRegistration(
+                name="ensure_task", contract=ENSURE_TASK, invoke=invoke_outer
+            )
+        )
+        registry.register(
+            CommandRegistration(
+                name="list_tasks",
+                contract=LIST_TASKS,
+                invoke=invoke_inner,
+                preview=invoke_inner,
+            )
+        )
+
+        result = await run(
+            command_step(),
+            context(
+                registry,
+                run_id="outer-run",
+                dispatch_id="outer-dispatch",
+                step_id="outer-step",
+            ),
+        )
+
+        assert result.outcome == "created"
+        assert [(label, value.run_id) for label, value in observed] == [
+            ("outer-before", "outer-run"),
+            ("inner", "inner-run"),
+            ("outer-after", "outer-run"),
+        ]
+        assert current_invocation() is None
+
+    @pytest.mark.asyncio
+    async def test_adapter_exception_restores_empty_invocation(self):
+        async def invoke(args, principal):
+            assert current_invocation().run_id == "exception-run"
+            raise RuntimeError("boom")
+
+        registry = ContractRegistry()
+        registry.register(
+            CommandRegistration(
+                name="ensure_task", contract=ENSURE_TASK, invoke=invoke
+            )
+        )
+
+        result = await run(
+            command_step(), context(registry, run_id="exception-run")
+        )
+
+        assert result.outcome == "runtime_error"
+        assert current_invocation() is None
+
+    @pytest.mark.asyncio
+    async def test_adapter_cancellation_restores_empty_invocation(self):
+        async def invoke(args, principal):
+            assert current_invocation().run_id == "cancelled-run"
+            raise asyncio.CancelledError
+
+        registry = ContractRegistry()
+        registry.register(
+            CommandRegistration(
+                name="ensure_task", contract=ENSURE_TASK, invoke=invoke
+            )
+        )
+
+        with pytest.raises(asyncio.CancelledError):
+            await run(command_step(), context(registry, run_id="cancelled-run"))
+        assert current_invocation() is None
+
+    @pytest.mark.asyncio
+    async def test_promotion_provenance_uses_current_invocation_not_ancestry(self):
+        from types import SimpleNamespace
+
+        from src.integration.promotion import PromotionService
+
+        class ProvenanceDB:
+            async def get_task(self, task_id):
+                assert task_id == "source-task"
+                return SimpleNamespace(branch_name="aq/source-task")
+
+        service = PromotionService(ProvenanceDB(), data_dir=".")
+        observed = {}
+
+        async def invoke(args, principal):
+            observed.update(
+                await service._provenance(
+                    {
+                        "source_task_id": "source-task",
+                        "reviewer_session_attempt_id": None,
+                    }
+                )
+            )
+            return CommandResult(
+                outcome="created",
+                value=EnsureTaskResult(task_id="t", created=True),
+                summary="",
+            )
+
+        registry = ContractRegistry()
+        registry.register(
+            CommandRegistration(
+                name="ensure_task", contract=ENSURE_TASK, invoke=invoke
+            )
+        )
+        principal = ExecutionPrincipal(
+            kind=PrincipalKind.PLAYBOOK,
+            policy=DENY_ALL,
+            parent_run_id="ancestor-run",
+            parent_step_id="ancestor-step",
+        )
+
+        await run(
+            command_step(),
+            context(
+                registry,
+                run_id="promotion-run",
+                step_id="promotion-step",
+                attempt=7,
+                principal=principal,
+            ),
+        )
+
+        assert observed["playbook_run_id"] == "promotion-run"
+        assert observed["playbook_step_id"] == "promotion-step"
+        assert observed["playbook_attempt"] == 7
+        assert observed["playbook_run_id"] != principal.parent_run_id
 
 
 class TestConsumeOrder:
