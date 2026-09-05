@@ -69,12 +69,16 @@ import logging
 import os
 import re
 import subprocess
+import tempfile
 from contextlib import asynccontextmanager
 from collections.abc import Callable
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
 from typing import TYPE_CHECKING, AsyncIterator
+
+from src.git.askpass_fd import answer_prompt
+from src.git.github_app import GitHubRepositoryBinding
 
 if TYPE_CHECKING:
     from src.event_bus import EventBus
@@ -1277,6 +1281,7 @@ class GitManager:
             if path
             and (
                 path == ".aq-worktree.json" or path.startswith(".aq/") or path.startswith(".codex/")
+                or path == ".github/agent-queue-integration.json"
             )
         ]
 
@@ -2853,6 +2858,74 @@ class GitManager:
             cwd=checkout_path,
         )
         return tip_oid
+
+    async def apush_oid_with_app_auth(
+        self,
+        checkout_path: str,
+        *,
+        repository: GitHubRepositoryBinding,
+        token: str,
+        tip_oid: str,
+        branch: str,
+        expected_old_oid: str,
+    ) -> str:
+        """Push one immutable OID to a frozen GitHub.com repository using FD askpass."""
+        if not isinstance(token, str) or not token or len(token.encode()) > self._MAX_STDIN_BYTES:
+            raise GitError("invalid GitHub App credential")
+        branch = _validate_ref(branch)
+        for label, oid in (("tip", tip_oid), ("expected target", expected_old_oid)):
+            if not isinstance(oid, str) or _OID_RE.fullmatch(oid) is None:
+                raise GitError(f"invalid {label} OID")
+        remote_url = f"https://github.com/{repository.full_name}.git"
+        args = [
+            "push",
+            remote_url,
+            f"--force-with-lease=refs/heads/{branch}:{expected_old_oid}",
+            f"{tip_oid}:refs/heads/{branch}",
+        ]
+        with tempfile.TemporaryFile() as token_file:
+            token_file.write(token.encode())
+            token_file.flush()
+            token_file.seek(0)
+            token_fd = token_file.fileno()
+            child_env = {
+                key: value
+                for key, value in self._SUBPROCESS_ENV.items()
+                if key not in {"GH_TOKEN", "GITHUB_TOKEN"}
+            }
+            child_env.update(
+                {
+                    "GIT_ASKPASS": str(Path(answer_prompt.__code__.co_filename)),
+                    "GIT_ASKPASS_REQUIRE": "force",
+                    "GIT_TERMINAL_PROMPT": "0",
+                    "AQ_GIT_APP_TOKEN_FD": str(token_fd),
+                    "AQ_GIT_APP_USERNAME": "x-access-token",
+                }
+            )
+            try:
+                process = await asyncio.create_subprocess_exec(
+                    "git",
+                    *args,
+                    cwd=checkout_path,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                    env=child_env,
+                    pass_fds=(token_fd,),
+                )
+            except FileNotFoundError as exc:
+                raise GitError("authenticated Git push failed") from exc
+            try:
+                await asyncio.wait_for(process.communicate(), timeout=self._GIT_TIMEOUT)
+            except asyncio.TimeoutError as exc:
+                try:
+                    process.kill()
+                except ProcessLookupError:
+                    pass
+                await process.wait()
+                raise GitError("authenticated Git push failed") from exc
+            if process.returncode != 0:
+                raise GitError("authenticated Git push failed")
+            return tip_oid
 
     async def alist_prs(
         self,

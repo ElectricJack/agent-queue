@@ -1419,6 +1419,34 @@ class WorkGraphConfig:
         return errors
 
 
+@dataclass(frozen=True)
+class GitHubAppConfig:
+    """Non-secret daemon GitHub App identity and private-key reference."""
+
+    client_id: str
+    app_id: int
+    installation_id: int
+    private_key_path: str
+
+    def validate(self) -> list[ConfigError]:
+        errors: list[ConfigError] = []
+        for field_name in ("client_id", "private_key_path"):
+            value = getattr(self, field_name)
+            if not isinstance(value, str) or not value.strip():
+                errors.append(
+                    ConfigError("integration", f"github_app.{field_name}", "must be non-empty")
+                )
+        for field_name in ("app_id", "installation_id"):
+            value = getattr(self, field_name)
+            if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+                errors.append(
+                    ConfigError(
+                        "integration", f"github_app.{field_name}", "must be a positive integer"
+                    )
+                )
+        return errors
+
+
 @dataclass
 class IntegrationConfig:
     """System-wide default integration policy.
@@ -1458,6 +1486,7 @@ class IntegrationConfig:
     #: shipped default.  Name checks explicitly when some arm of the matrix
     #: is advisory.
     merge_required_checks: list[str] = field(default_factory=list)
+    github_app: GitHubAppConfig | None = None
 
     def validate(self) -> list[ConfigError]:
         from src.git.ci_gate import MERGE_CI_POLICIES
@@ -1490,6 +1519,8 @@ class IntegrationConfig:
                     "must be a list of non-empty check names",
                 )
             )
+        if self.github_app is not None:
+            errors.extend(self.github_app.validate())
         return errors
 
 
@@ -2949,6 +2980,15 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
     if "integration" in raw and isinstance(raw["integration"], dict):
         integ = raw["integration"]
         raw_checks = integ.get("merge_required_checks") or []
+        github_app_raw = integ.get("github_app")
+        github_app = None
+        if isinstance(github_app_raw, dict):
+            github_app = GitHubAppConfig(
+                client_id=github_app_raw.get("client_id", ""),
+                app_id=github_app_raw.get("app_id"),
+                installation_id=github_app_raw.get("installation_id"),
+                private_key_path=github_app_raw.get("private_key_path", ""),
+            )
         config.integration = IntegrationConfig(
             default_mode=str(integ.get("default_mode", "pull_request")),
             merge_ci_policy=str(integ.get("merge_ci_policy", "warn")),
@@ -2960,6 +3000,7 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
             merge_required_checks=(
                 list(raw_checks) if isinstance(raw_checks, list) else [raw_checks]
             ),
+            github_app=github_app,
         )
 
     if "swarm" in raw and isinstance(raw["swarm"], dict):

@@ -1,0 +1,15 @@
+{
+  "attestation_app_id": 0,
+  "attestation_name": "Agent Queue Integration Attestation",
+  "canonical_repository_id": "REPLACE_WITH_REPO_CONFIG_ID",
+  "ci_producer_app_id": 0,
+  "full_name": "REPLACE_OWNER/REPLACE_REPOSITORY",
+  "repository_id": 0,
+  "required_checks": {
+    "names": [
+      "REPLACE_WITH_REQUIRED_CHECK"
+    ],
+    "version": "REPLACE_WITH_CHECK_SET_VERSION"
+  },
+  "schema": "aq.integration-trust.v1"
+}

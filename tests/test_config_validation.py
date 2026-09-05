@@ -14,12 +14,54 @@ from src.config import (
     ConfigValidationError,
     DiscordConfig,
     LLMLoggingConfig,
+    GitHubAppConfig,
     McpServerConfig,
     MemoryConfig,
     PauseRetryConfig,
     SchedulingConfig,
     load_config,
 )
+
+
+class TestGitHubAppConfigValidation:
+    def test_loads_optional_daemon_reference_without_secret_material(self, tmp_path):
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text(
+            """
+messaging_platform: none
+database_path: queue.db
+integration:
+  github_app:
+    client_id: Iv1.example
+    app_id: 101
+    installation_id: 202
+    private_key_path: /run/secrets/aq-github-app.pem
+"""
+        )
+
+        config = load_config(str(config_file))
+
+        assert config.integration.github_app == GitHubAppConfig(
+            client_id="Iv1.example",
+            app_id=101,
+            installation_id=202,
+            private_key_path="/run/secrets/aq-github-app.pem",
+        )
+        assert "private_key" not in vars(config.integration.github_app)
+
+    @pytest.mark.parametrize("field,value", [("app_id", 0), ("installation_id", True)])
+    def test_rejects_non_positive_numeric_identities(self, field, value):
+        values = {
+            "client_id": "Iv1.example",
+            "app_id": 101,
+            "installation_id": 202,
+            "private_key_path": "/run/secrets/key.pem",
+        }
+        values[field] = value
+
+        errors = GitHubAppConfig(**values).validate()
+
+        assert any(error.field == f"github_app.{field}" for error in errors)
 
 
 # ── ConfigError dataclass ──────────────────────────────────────────────
