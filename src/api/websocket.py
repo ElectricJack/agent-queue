@@ -136,7 +136,7 @@ class WebSocketManager:
     def __init__(self, bus: EventBus, db: Any = None) -> None:
         self._bus = bus
         self._db = db
-        self._clients: dict[WebSocket, asyncio.Queue[dict[str, Any]]] = {}
+        self._clients: dict[WebSocket, asyncio.Queue[tuple[dict[str, Any], str]]] = {}
         # aq-surface Phase S2: per-connection RequestScope recorded during
         # handshake.  TODO(S3): use self._client_scope[ws] to filter
         # task-scoped events for session-bound clients.
@@ -159,29 +159,39 @@ class WebSocketManager:
             self._unsub = None
 
     def _on_event(self, data: dict[str, Any]) -> None:
-        """Fan out allowed live events to all connected clients."""
+        """Fan out allowed live events to all connected clients.
+
+        The frame is serialized once per event, not once per client: at a
+        busy fleet with several dashboard tabs open, per-client
+        ``json.dumps`` plus three INFO log lines per frame was a steady
+        CPU and log cost that scaled with clients × events.
+        """
         event_type = data.get("_event_type", "")
         logger.debug("WS _on_event received: %s (clients=%d)", event_type, len(self._clients))
         if not event_type.startswith(_FORWARDED_PREFIXES):
             return
-        logger.info("WS forwarding event: %s to %d clients", event_type, len(self._clients))
+        logger.debug("WS forwarding %s to %d clients", event_type, len(self._clients))
+
+        # Live frames carry seq=None unless the emitter threaded the DB id
+        # into the payload (log_event returns the id).
+        shared = data if "seq" in data else {**data, "seq": None}
+        shared_frame = json.dumps(shared)
 
         for ws, queue in list(self._clients.items()):
-            event = data
-            if event_type.startswith("metrics.") and not _metrics_event_allowed(
-                self._client_scope.get(ws)
-            ):
+            event, frame = shared, shared_frame
+            scope = self._client_scope.get(ws)
+            if event_type.startswith("metrics.") and not _metrics_event_allowed(scope):
                 continue
-            if event_type.startswith("pool.") and not _pool_event_allowed(
-                data, self._client_scope.get(ws)
-            ):
+            if event_type.startswith("pool.") and not _pool_event_allowed(data, scope):
                 continue
             if event_type in _QUESTION_EVENTS:
-                event = _question_invalidation(data, self._client_scope.get(ws))
-                if event is None:
+                filtered = _question_invalidation(data, scope)
+                if filtered is None:
                     continue
+                event = filtered if "seq" in filtered else {**filtered, "seq": None}
+                frame = json.dumps(event)
             try:
-                queue.put_nowait(event)
+                queue.put_nowait((event, frame))
             except asyncio.QueueFull:
                 # Drop oldest event to make room
                 try:
@@ -189,7 +199,7 @@ class WebSocketManager:
                 except asyncio.QueueEmpty:
                     pass
                 try:
-                    queue.put_nowait(event)
+                    queue.put_nowait((event, frame))
                 except asyncio.QueueFull:
                     pass
 
@@ -227,7 +237,7 @@ class WebSocketManager:
 
         await websocket.accept()
         self._client_scope[websocket] = scope
-        queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue(maxsize=_MAX_QUEUE_SIZE)
+        queue: asyncio.Queue[tuple[dict[str, Any], str]] = asyncio.Queue(maxsize=_MAX_QUEUE_SIZE)
         # Register *before* replaying so live events queued during the
         # replay window arrive after the paged history, preserving global
         # order without duplicates.
@@ -308,13 +318,13 @@ class WebSocketManager:
 
                 # Drop any live frames that were queued while replay ran
                 # and would duplicate what we already delivered.
-                remaining: list[dict[str, Any]] = []
+                remaining: list[tuple[dict[str, Any], str]] = []
                 while True:
                     try:
                         item = queue.get_nowait()
                     except asyncio.QueueEmpty:
                         break
-                    seq = item.get("seq")
+                    seq = item[0].get("seq")
                     if isinstance(seq, int) and seq <= last_replayed:
                         continue
                     remaining.append(item)
@@ -325,23 +335,15 @@ class WebSocketManager:
                         pass
 
             while True:
-                event = await queue.get()
-                # Live frames carry seq=None unless the emitter threaded
-                # the DB id into the payload (log_event returns the id).
-                seq = event.get("seq") if "seq" in event else None
-                # Dedup: a live frame whose seq is <= the last replayed
-                # row id would duplicate what the client already saw
-                # during replay.  Only applies when the emitter honestly
-                # threaded a persisted row id; ``seq=None`` bypasses.
+                event, frame = await queue.get()
+                seq = event.get("seq")
+                # Dedup: a live frame whose seq is <= the last replayed row id
+                # would duplicate what the client already saw during replay.
+                # Only applies when the emitter honestly threaded a persisted
+                # row id; ``seq=None`` bypasses.
                 if after_seq is not None and isinstance(seq, int) and seq <= last_replayed:
                     continue
-                if "seq" not in event:
-                    event = {**event, "seq": None}
-                logger.info(
-                    "WS sending event to client %s: %s", client_id, event.get("_event_type")
-                )
-                await websocket.send_json(event)
-                logger.info("WS sent successfully to client %s", client_id)
+                await websocket.send_text(frame)
         except WebSocketDisconnect:
             logger.info("WS client %s disconnected normally", client_id)
         except Exception as e:

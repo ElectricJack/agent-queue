@@ -58,7 +58,7 @@ async def task(db, task_id="t", project_id="p1", status=TaskStatus.READY):
 def frames(queue, kind):
     out = []
     while not queue.empty():
-        frame = queue.get_nowait()
+        frame, _wire = queue.get_nowait()
         if frame["_event_type"] == kind:
             out.append(frame)
     return out
@@ -127,7 +127,7 @@ async def test_ensure_creation_refreshes_graph_without_refiring_creation_pipelin
     args = {"project_id": "p1", "title": "Triage", "dedup_key": "triage-key"}
     first = await handler._cmd_ensure_task(args)
     assert first["created"] is True
-    sent = list(queue._queue)
+    sent = [frame for frame, _wire in queue._queue]
     assert not any(frame["_event_type"] == "task.created" for frame in sent)
     await assert_change(db, queue, "task.updated", task_id=first["task_id"])
     second = await handler._cmd_ensure_task(args)
