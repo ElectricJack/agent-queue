@@ -121,7 +121,9 @@ Returns all projects.
 
 **Parameters:** None.
 
-**Behavior:** Fetches all projects from the database and returns their core fields. If a project has a Discord channel linked, `discord_channel_id` is included.
+**Behavior:** Fetches all projects from the database and returns their core
+fields. Repository URL, Discord channel, and assignment playbook are included
+only when set. `workspace` is the resolved primary workspace path (or null).
 
 **Returns on success:**
 ```python
@@ -134,7 +136,9 @@ Returns all projects.
             "credit_weight": <float>,
             "max_concurrent_agents": <int>,
             "workspace": <str>,
+            "repo_url": <str>,              # present only if set
             "discord_channel_id": <str>,   # present only if set
+            "assignment_playbook_id": <str>, # present only if set
         },
         ...
     ]
@@ -147,8 +151,9 @@ Returns all projects.
 
 #### `create_project`
 
-Creates a project and its AQ-managed workspace directory. This remains the
-lower-level project operation. Dashboard and CLI repository onboarding use
+Creates a project record and its standard task/vault storage. This remains the
+lower-level project operation and does not register a repository workspace.
+Dashboard and CLI repository onboarding use
 `onboard_project` instead, which validates configured root-relative paths and
 creates the project, primary workspace, and vault structure as one operation.
 
@@ -158,15 +163,17 @@ creates the project, primary workspace, and vault structure as one operation.
 - `max_concurrent_agents` (optional, default `2`): Maximum agents that can work on this project simultaneously.
 - `auto_create_channels` (optional): Boolean override for whether the Discord layer should auto-create a channel. If not provided, falls back to `config.discord.per_project_channels.auto_create`.
 
-**Behavior:** Derives the project ID from the name. Creates the workspace directory at `{config.workspace_dir}/{project_id}`. Saves the project to the database.
+**Behavior:** Derives the project ID from the name, selects the requested or
+system-default profile when one resolves, saves the project, creates its
+standard task/vault storage, and invokes the optional project-created callback.
 
 **Returns on success:**
 ```python
 {
     "created": <str: project_id>,
     "name": <str>,
-    "workspace": <str: path>,
     "auto_create_channels": <bool>,
+    "default_profile_id": <str | None>,
 }
 ```
 

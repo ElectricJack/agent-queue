@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# Tier 1 of the swarm functional-test kit: seven scenarios, no LLM.
+# Tier 1 functional-test kit: eight scenarios, no LLM.
 #
 #   scripts/e2e-env.sh --reset
 #   scripts/e2e-daemon.sh start
-#   scripts/e2e-smoke.sh            # all seven
-#   scripts/e2e-smoke.sh S2 S7      # just these
+#   scripts/e2e-smoke.sh            # all eight
+#   scripts/e2e-smoke.sh S2 S8      # just these
 #
 # Starts the daemon itself if one is not already up, and stops whatever it
 # started — including on Ctrl-C and on a failing scenario.  A daemon that

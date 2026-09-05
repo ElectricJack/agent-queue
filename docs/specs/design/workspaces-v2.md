@@ -50,8 +50,10 @@ This is an **additive** evolution of the existing model. Existing single-repo pr
 | `lockable` | `Boolean` | Whether instances participate in lock acquisition. |
 | `is_git_repo` | `Boolean` | Triggers git provisioning (clone, branch prep). |
 | `repo_url` | `Text` (nullable) | Required when `is_git_repo` is true. |
-| `default_lock_mode` | `Text` (nullable) | Lowercase string: `exclusive` / `branch_isolated` / `directory_isolated` (matches `WorkspaceMode.value`). Required when `lockable`. |
+| `default_lock_mode` | `Text` (nullable) | Workspace-kind frontmatter vocabulary: `exclusive` / `branch_isolated` / `directory_isolated`. Required when lockable kinds need a default. |
 | `auto_attach` | `Boolean` | If true, every task in the project gets an instance of this kind attached without declaring it (vault uses this). |
+| `mode` | `Text` | Git provisioning strategy: `worktree`, `exclusive-clone`, or the deferred `directory-isolated`. Defaults to `worktree` on fresh installs. |
+| `worktree_setup` | `Text` | JSON-encoded ordered setup commands for freshly created worktree slots; operator-authored and trusted. |
 | `created_at`, `updated_at` | `DateTime` | |
 
 **Composite primary key:** `(project_id, id)`, both NOT NULL. The `__system__` sentinel value for `project_id` lets system-wide rows live in the same table without nullable PK columns (which fails on Postgres). Resolution at lookup time: project-scoped row wins over the system row with the same `id` (see §3.5).
@@ -140,7 +142,7 @@ frontmatter when both are present, matching the profiles convention.
 
 Three kinds ship by default in `vault/workspace-kinds/`:
 
-- **`project-repo`** — `writable=true, lockable=true, is_git_repo=true, default_lock_mode=exclusive`. Synthesized for every existing project during migration; created on project-create going forward.
+- **`project-repo`** — `writable=true, lockable=true, is_git_repo=true, default_lock_mode=exclusive, mode=worktree` on fresh installs. Existing installs were backfilled to `exclusive-clone` so an upgrade does not silently change execution layout; see the worktree-execution design for rollout semantics.
 - **`vault`** — `writable=true, lockable=false, is_git_repo=false, auto_attach=true`. Implements the project vault. Auto-attached to every task.
 - **`readonly-dir`** — `writable=false, lockable=false, is_git_repo=false`. Catch-all for read-only attachments.
 
