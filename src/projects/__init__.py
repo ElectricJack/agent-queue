@@ -1,7 +1,8 @@
 """Project onboarding support (design: ``docs/superpowers/specs/2026-09-03-project-onboarding-design.md``).
 
-Modules here are deliberately independent of ``src.config`` and the database
-so that the browse / preflight / mutation layers can import them without
-pulling in the daemon; they receive already-resolved values from their
-callers.  See :mod:`src.projects.paths` for root-relative path validation.
+The pure :mod:`src.projects.paths` module stays independent of configuration
+and persistence.  :mod:`src.projects.onboarding` is the intentional
+orchestration boundary that coordinates those dependencies for mutations.
+:mod:`src.projects.github` stays independent of configuration and persistence
+so callers can reuse its identity validation and async ``gh`` wrapper.
 """

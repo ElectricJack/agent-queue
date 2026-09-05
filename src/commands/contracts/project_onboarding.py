@@ -79,7 +79,7 @@ class ProjectOnboardingErrorCode(StrEnum):
     # request-level
     INVALID_REQUEST = "invalid_request"
     REQUEST_CONFLICT = "request_conflict"  # same request_id, different inputs
-    NOT_IMPLEMENTED = "not_implemented"  # contract-only stub answering
+    NOT_IMPLEMENTED = "not_implemented"  # deferred command
     # browsing (§5.1)
     NOT_FOUND = "not_found"
     NOT_DIRECTORY = "not_directory"
