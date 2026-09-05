@@ -58,6 +58,8 @@ describe("onboarding wizard state", () => {
       rootId: null,
       githubRepository: null,
       githubUrl: "",
+      directoryName: "",
+      directoryNameAuto: true,
     });
     const back = run([{ type: "set_source_mode", mode: "link" }], switched);
     expect(back.source).toEqual({ mode: "link", rootId: null, relativePath: null });
