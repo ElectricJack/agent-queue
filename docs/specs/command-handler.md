@@ -147,7 +147,10 @@ Returns all projects.
 
 #### `create_project`
 
-Creates a new project and its workspace directory.
+Creates a project and its AQ-managed workspace directory. This remains the
+lower-level project operation. Dashboard and CLI repository onboarding use
+`onboard_project` instead, which validates configured root-relative paths and
+creates the project, primary workspace, and vault structure as one operation.
 
 **Parameters:**
 - `name` (required): Human-readable project name. The project ID is derived by lowercasing and replacing spaces with hyphens.
@@ -783,9 +786,40 @@ Registers a new agent.
 
 ---
 
+#### `onboard_project`
+
+The dashboard and CLI path for linking an existing local repository,
+initializing a new repository, or cloning an existing GitHub repository. It
+accepts a configured `root_id` and relative child path rather than an arbitrary
+filesystem path, and orchestrates `create_project`, primary `project-repo`
+workspace registration, and vault setup. See the project-onboarding design for
+its source-mode, idempotency, authorization, and recovery contract.
+
+**Parameters:** `request_id`, `source_mode` (`link`, `init`, or
+`github_clone`), `root_id`, `relative_path`, `project_name`, `project_id`, and
+`default_branch`; `init` additionally accepts README/GitHub-creation options,
+and `github_clone` accepts exactly one selected GitHub repository or GitHub URL.
+
+**Behavior:** Replaying a request ID with identical normalized input returns its
+prior result or current progress; reuse with different input is rejected. A
+success returns project/workspace identity, source, root-relative and canonical
+location, branch, remote URL when present, and completed actions. Errors return
+a stable code and scrubbed message. `get_project_onboarding(request_id)` returns
+the durable progress or terminal result.
+
+Supporting read-only commands are `list_project_roots`,
+`browse_project_root(root_id, relative_path=None)`, `get_github_auth_status`,
+`list_github_owners`, and `search_github_repositories`. They expose only the
+root-relative or repository metadata needed for onboarding and never expose
+credentials.
+
+---
+
 #### `add_workspace`
 
-Creates a workspace for a project.
+Creates a workspace for an existing project. It is a lower-level operation;
+dashboard project creation must use `onboard_project`, not a client-side
+composition of `create_project` and `add_workspace`.
 
 **Parameters:**
 - `project_id` (required)

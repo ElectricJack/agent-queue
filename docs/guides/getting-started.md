@@ -65,11 +65,15 @@ Key configuration sections:
 - **scheduling** — Rolling window, token budgets
 - **projects** — Your project definitions with workspace paths and repo settings
 
+For dashboard or CLI project creation, first configure operator-owned source
+roots and GitHub host authentication as needed; see the
+[project onboarding guide](project-onboarding.md).
+
 ## First Steps
 
 Once the daemon is running and connected to Discord:
 
-1. **Add a project** — Tell the bot about your project in the Discord channel, or use `/new-project` for a guided wizard
+1. **Add a project** — Use the dashboard's **Add project** wizard or `aq project onboard`; it selects or creates repositories only beneath configured project roots. See the [project onboarding guide](project-onboarding.md).
 2. **Create a task** — Describe what you want done in natural language, or use `/add-task`
 3. **Watch it work** — The bot creates a thread and streams agent progress
 4. **Review the PR** — When the task completes, review the generated pull request
