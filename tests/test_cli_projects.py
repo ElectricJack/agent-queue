@@ -120,6 +120,41 @@ def test_project_details_and_set_forward_correct_args_and_render_client_errors(r
                 "github_visibility": "private",
             },
         ),
+        (
+            [
+                "--source-mode",
+                "init",
+                "--create-github",
+                "--github-owner",
+                "acme",
+                "--github-repo",
+                "widgets",
+                "--github-visibility",
+                "public",
+            ],
+            {
+                "source_mode": "init",
+                "create_readme": True,
+                "create_github": True,
+                "github_owner": "acme",
+                "github_repo": "widgets",
+                "github_visibility": "public",
+            },
+        ),
+        (
+            ["--source-mode", "github_clone", "--github-repository", "acme/widgets"],
+            {
+                "source_mode": "github_clone",
+                "github_repository": {"owner": "acme", "name": "widgets"},
+            },
+        ),
+        (
+            ["--source-mode", "github_clone", "--github-url", "git@github.com:acme/widgets.git"],
+            {
+                "source_mode": "github_clone",
+                "github_url": "git@github.com:acme/widgets.git",
+            },
+        ),
     ],
 )
 def test_project_onboard_forwards_request_fields_and_prints_result(

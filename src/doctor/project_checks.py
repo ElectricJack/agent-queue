@@ -45,4 +45,3 @@ def project_checks() -> list[DoctorCheck]:
 
 
 CHECKS = project_checks()
-

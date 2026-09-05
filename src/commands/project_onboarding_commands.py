@@ -125,7 +125,7 @@ class ProjectOnboardingCommandsMixin:
     #
     # Each takes the validated request model from
     # ``src.commands.contracts.project_onboarding`` and returns the matching
-    # result model (or a ``dict`` already in command-result shape).  Later
+    # result model (or a ``dict`` already in command-result shape).
     async def _execute_list_project_roots(self, request) -> ListProjectRootsResult:
         """Return the currently configured roots and live filesystem capabilities."""
         return ListProjectRootsResult(

@@ -75,7 +75,7 @@ def project_onboard(
     github_repository: str | None,
     github_url: str | None,
 ) -> None:
-    """Link or initialize a repository and register its AQ project."""
+    """Link, initialize, or clone a repository and register its AQ project."""
     api_url = ctx.obj.get("api_url") if ctx.obj else None
     args: dict[str, Any] = {
         "request_id": request_id or str(uuid4()),

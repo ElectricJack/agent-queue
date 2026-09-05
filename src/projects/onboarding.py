@@ -16,6 +16,7 @@ import os
 from pathlib import Path
 import re
 import shutil
+import stat
 from typing import Any, AsyncIterator
 from urllib.parse import urlsplit, urlunsplit
 
@@ -28,9 +29,17 @@ from src.commands.contracts.project_onboarding import (
 )
 from src.config import AppConfig, resolve_project_root
 from src.database.base import DatabaseBackend
-from src.git.manager import GitError, GitManager
+from src.git.manager import GitError, GitManager, _validate_ref
 from src.models import Project, RepoSourceType, Workspace
 from src.profiles.default_selection import select_default_profile_id
+from src.projects.github import (
+    GhClient,
+    GitHubError,
+    GitHubErrorCode,
+    GitHubRepo,
+    parse_github_repository,
+    scrub_secrets,
+)
 from src.projects.paths import (
     ProjectPathError,
     is_git_worktree_root,
@@ -69,8 +78,18 @@ async def _try_locks(keys: list[str]) -> AsyncIterator[None]:
             lock.release()
 
 
-def _fingerprint(request: Any) -> str:
+def _fingerprint(
+    request: Any,
+    github_clone: tuple[GitHubRepo, str] | None = None,
+) -> str:
     normalized = request.model_dump(mode="json", exclude_none=False)
+    if github_clone is not None:
+        identity, clone_url = github_clone
+        normalized["github_repository"] = {
+            "owner": identity.owner,
+            "name": identity.name,
+        }
+        normalized["github_url"] = clone_url
     encoded = json.dumps(normalized, sort_keys=True, separators=(",", ":")).encode()
     return hashlib.sha256(encoded).hexdigest()
 
@@ -101,23 +120,39 @@ class ProjectOnboardingService:
         db: DatabaseBackend,
         config: AppConfig,
         git_manager: GitManager | None = None,
+        *,
+        gh_client: GhClient | None = None,
     ) -> None:
         self.db = db
         self.config = config
         self.git = git_manager or GitManager()
+        self.gh = gh_client or GhClient()
 
     async def onboard_project(self, request: Any) -> OnboardProjectResult | GetProjectOnboardingResult:
-        """Run or replay one local onboarding request."""
-        if request.source_mode == "github_clone" or (
-            request.source_mode == "init" and request.create_github
-        ):
-            raise ProjectOnboardingError(
-                ProjectOnboardingErrorCode.NOT_IMPLEMENTED,
-                "GitHub onboarding is completed by the onboarding-service-github package",
-                phase="preflight",
-            )
+        """Run or replay one project onboarding request."""
+        if request.default_branch is not None:
+            try:
+                _validate_ref(request.default_branch, field="default branch")
+            except GitError:
+                raise ProjectOnboardingError(
+                    ProjectOnboardingErrorCode.INVALID_REQUEST,
+                    "The default branch name is not valid",
+                    phase="validate",
+                    field_errors=[
+                        {
+                            "field": "default_branch",
+                            "message": "invalid Git default branch name",
+                        }
+                    ],
+                ) from None
+        github_clone: tuple[GitHubRepo, str] | None = None
+        if request.source_mode == "github_clone":
+            try:
+                github_clone = self._github_clone_source(request)
+            except GitHubError as exc:
+                raise self._map_github_error(exc, phase="preflight") from exc
 
-        fingerprint = _fingerprint(request)
+        fingerprint = _fingerprint(request, github_clone)
         already_exists, stored_fingerprint = await self.db.create_onboarding_request(
             request.request_id, fingerprint, phase="validate"
         )
@@ -165,6 +200,8 @@ class ProjectOnboardingService:
                 actions: list[str]
                 remote_url: str | None = None
                 published = destination
+                prepared = destination
+                staging_container: Path | None = None
                 if request.source_mode == "link":
                     remote_url = _safe_remote_url(
                         await self.git.aget_remote_url(str(destination))
@@ -173,19 +210,79 @@ class ProjectOnboardingService:
                         str(destination)
                     )
                     actions = ["repository_linked"]
-                else:
+                elif request.source_mode == "init":
                     default_branch = request.default_branch or "main"
                     if self._owner_matches(destination, request.request_id):
                         actions = self._actions_for_existing_init(destination, request.create_readme)
                     else:
-                        staging, actions = await self._prepare_init(
+                        prepared, actions = await self._prepare_init(
                             request, root, destination, default_branch, record or {}
                         )
-                        await self.db.update_onboarding_phase(request.request_id, "publish")
-                        published = await self._publish_staging(request, staging, destination)
-                        await self.db.append_onboarding_resource(
+                    if request.create_github:
+                        remote_url, github_actions = await self._create_github_remote(
+                            request,
+                            prepared,
+                            destination,
+                            default_branch,
+                            record or {},
+                        )
+                        actions.extend(github_actions)
+                else:
+                    if github_clone is None:  # pragma: no cover - established above.
+                        raise RuntimeError("normalized GitHub clone source is missing")
+                    _, clone_url = github_clone
+                    if self._owner_matches(
+                        destination,
+                        request.request_id,
+                        git_metadata=True,
+                    ):
+                        prepared = destination
+                        actions = ["repository_cloned"]
+                    else:
+                        prepared, staging_container, actions = await self._prepare_clone(
+                            request,
+                            root,
+                            destination,
+                            clone_url,
+                            record or {},
+                        )
+                    remote_url = _safe_remote_url(
+                        await self.git.aget_remote_url(str(prepared))
+                    ) or clone_url
+                    default_branch = request.default_branch or await self.git.aget_default_branch(
+                        str(prepared)
+                    )
+
+                if request.source_mode != "link" and prepared != destination:
+                    await self.db.update_onboarding_phase(request.request_id, "publish")
+                    published = await self._publish_staging(request, prepared, destination)
+                if request.source_mode != "link":
+                    if self._recorded_path(record or {}, "final_directory") is None:
+                        recorded = await self.db.append_onboarding_resource(
                             request.request_id,
-                            {"kind": "final_directory", "path": str(published)},
+                            {
+                                "kind": "final_directory",
+                                "path": str(published),
+                                "owner_marker": (
+                                    "git"
+                                    if request.source_mode == "github_clone"
+                                    else "root"
+                                ),
+                            },
+                        )
+                        if not recorded:
+                            raise ProjectOnboardingError(
+                                ProjectOnboardingErrorCode.REGISTRATION_FAILED,
+                                "Could not record the published project directory",
+                                phase="publish",
+                            )
+                    if request.source_mode == "github_clone" and staging_container is None:
+                        staging_container = self._recorded_path(
+                            record or {}, "staging_directory"
+                        )
+                    if staging_container is not None:
+                        self._remove_owned_staging_container(
+                            staging_container, request.request_id
                         )
 
                 await self.db.update_onboarding_phase(request.request_id, "register")
@@ -199,11 +296,11 @@ class ProjectOnboardingService:
                     repo_default_branch=default_branch,
                     default_profile_id=default_profile_id,
                 )
-                source_type = (
-                    RepoSourceType.LINK
-                    if request.source_mode == "link"
-                    else RepoSourceType.INIT
-                )
+                source_type = {
+                    "link": RepoSourceType.LINK,
+                    "init": RepoSourceType.INIT,
+                    "github_clone": RepoSourceType.CLONE,
+                }[request.source_mode]
                 workspace = Workspace(
                     id=workspace_id,
                     project_id=request.project_id,
@@ -269,34 +366,49 @@ class ProjectOnboardingService:
                     "succeeded",
                     result=result.model_dump(mode="json"),
                 )
-                if request.source_mode == "init":
-                    self._remove_owner_marker(published)
+                if request.source_mode != "link":
+                    self._remove_owner_marker(
+                        published,
+                        git_metadata=request.source_mode == "github_clone",
+                    )
                 return result
         except ProjectOnboardingError as exc:
             if exc.code != ProjectOnboardingErrorCode.REQUEST_CONFLICT.value:
+                exc = await self._with_retained_github_recovery(request.request_id, exc)
                 await self._compensate(
                     request.request_id,
                     request.project_id,
                     workspace_id,
                     registered=registered,
+                    owned_destination=(
+                        destination if request.source_mode != "link" else None
+                    ),
+                    destination_git_metadata=request.source_mode == "github_clone",
                 )
                 await self.db.finish_onboarding_request(
                     request.request_id,
                     "failed",
                     error=exc.to_dict(),
                 )
-            raise
+            raise exc
         except Exception as exc:
             error = ProjectOnboardingError(
                 ProjectOnboardingErrorCode.REGISTRATION_FAILED,
                 "Project onboarding failed unexpectedly",
                 phase="register" if registered else "prepare",
             )
+            error = await self._with_retained_github_recovery(request.request_id, error)
             await self._compensate(
                 request.request_id,
                 request.project_id,
                 workspace_id,
                 registered=registered,
+                owned_destination=(
+                    destination
+                    if destination is not None and request.source_mode != "link"
+                    else None
+                ),
+                destination_git_metadata=request.source_mode == "github_clone",
             )
             await self.db.finish_onboarding_request(
                 request.request_id,
@@ -352,7 +464,7 @@ class ProjectOnboardingService:
                 f"Project root '{request.root_id}' is unavailable",
                 phase="preflight",
             )
-        if request.source_mode == "init" and not root.writable:
+        if request.source_mode != "link" and not root.writable:
             raise ProjectOnboardingError(
                 ProjectOnboardingErrorCode.ROOT_UNAVAILABLE,
                 f"Project root '{request.root_id}' is not writable",
@@ -401,7 +513,11 @@ class ProjectOnboardingService:
                 )
             return
 
-        if destination.exists() and not self._owner_matches(destination, request.request_id):
+        if destination.exists() and not self._owner_matches(
+            destination,
+            request.request_id,
+            git_metadata=request.source_mode == "github_clone",
+        ):
             raise ProjectOnboardingError(
                 ProjectOnboardingErrorCode.DESTINATION_CONFLICT,
                 "The destination already exists",
@@ -454,7 +570,7 @@ class ProjectOnboardingService:
                     phase="prepare",
                 )
             staging.mkdir(mode=0o700)
-            (staging / _OWNER_FILE).write_text(request.request_id, encoding="utf-8")
+            self._write_owner_marker(staging, request.request_id)
             await self.db.append_onboarding_resource(
                 request.request_id,
                 {"kind": "staging_directory", "path": str(staging)},
@@ -470,7 +586,8 @@ class ProjectOnboardingService:
                 ProjectOnboardingErrorCode.INIT_FAILED,
                 "Could not initialize the Git repository",
                 phase="prepare",
-            ) from exc
+                details={"subprocess_error": scrub_secrets(str(exc))},
+            ) from None
 
         actions = ["repository_initialized"]
         if request.create_readme:
@@ -510,9 +627,207 @@ class ProjectOnboardingService:
                         ProjectOnboardingErrorCode.COMMIT_FAILED,
                         "Could not create the initial README commit",
                         phase="prepare",
-                    ) from exc
+                        details={"subprocess_error": scrub_secrets(str(exc))},
+                    ) from None
             actions.append("readme_committed")
         return staging, actions
+
+    async def _prepare_clone(
+        self,
+        request: Any,
+        root: Any,
+        destination: Path,
+        clone_url: str,
+        record: dict[str, Any],
+    ) -> tuple[Path, Path, list[str]]:
+        """Clone into an owned hidden container and return its checkout."""
+        await self.db.update_onboarding_phase(request.request_id, "prepare")
+        staging = self._staging_path(destination, request.request_id)
+        recorded_staging = self._recorded_path(record, "staging_directory")
+        if recorded_staging is not None and recorded_staging != staging:
+            raise ProjectOnboardingError(
+                ProjectOnboardingErrorCode.DESTINATION_LOCKED,
+                "The durable request ledger names a different staging directory",
+                phase="prepare",
+            )
+        for candidate in destination.parent.glob(f".{destination.name}.aq-onboard-*"):
+            if candidate != staging:
+                raise ProjectOnboardingError(
+                    ProjectOnboardingErrorCode.DESTINATION_LOCKED,
+                    "Another request owns a staging directory for this destination",
+                    phase="prepare",
+                )
+
+        if staging.exists() and not self._owner_matches(staging, request.request_id):
+            raise ProjectOnboardingError(
+                ProjectOnboardingErrorCode.DESTINATION_LOCKED,
+                "The staging directory is not owned by this request",
+                phase="prepare",
+            )
+        if not staging.exists():
+            resolved = validate_relative_path(Path(root.path), request.relative_path)
+            if resolved.exists:
+                raise ProjectOnboardingError(
+                    ProjectOnboardingErrorCode.DESTINATION_CONFLICT,
+                    "The destination appeared during onboarding",
+                    phase="prepare",
+                )
+            staging.mkdir(mode=0o700)
+            self._write_owner_marker(staging, request.request_id)
+            await self.db.append_onboarding_resource(
+                request.request_id,
+                {"kind": "staging_directory", "path": str(staging)},
+            )
+
+        checkout = staging / "repository"
+        if checkout.exists() and not await self.git.avalidate_checkout(str(checkout)):
+            shutil.rmtree(checkout)
+        if not checkout.exists():
+            try:
+                await self.git.acreate_checkout(clone_url, str(checkout))
+                await self.git._arun(
+                    ["remote", "set-url", "origin", clone_url],
+                    cwd=str(checkout),
+                )
+            except (GitError, OSError) as exc:
+                raise ProjectOnboardingError(
+                    ProjectOnboardingErrorCode.CLONE_FAILED,
+                    "Could not clone the GitHub repository",
+                    phase="prepare",
+                    details={"subprocess_error": scrub_secrets(str(exc))},
+                ) from None
+        self._write_owner_marker(checkout, request.request_id, git_metadata=True)
+        return checkout, staging, ["repository_cloned"]
+
+    async def _create_github_remote(
+        self,
+        request: Any,
+        repository: Path,
+        destination: Path,
+        default_branch: str,
+        record: dict[str, Any],
+    ) -> tuple[str, list[str]]:
+        """Create or resume an external repository, configure origin and push if possible."""
+        await self.db.update_onboarding_phase(request.request_id, "github")
+        repository_name = request.github_repo or destination.name
+        try:
+            requested_identity = parse_github_repository(
+                f"{request.github_owner}/{repository_name}"
+            )
+        except GitHubError as exc:
+            raise self._map_github_error(exc, phase="github") from exc
+
+        retained_url = self._recorded_url(record, "github_repository")
+        intent_url = self._recorded_url(record, "github_repository_intent")
+        if intent_url and intent_url != requested_identity.html_url:
+            raise ProjectOnboardingError(
+                ProjectOnboardingErrorCode.DESTINATION_LOCKED,
+                "The durable request ledger names a different GitHub repository",
+                phase="github",
+            )
+        if retained_url:
+            try:
+                identity = parse_github_repository(retained_url)
+            except GitHubError as exc:  # pragma: no cover - ledger writes are canonical.
+                raise self._map_github_error(exc, phase="github") from exc
+        else:
+            if intent_url is None:
+                intent_recorded = await self.db.append_onboarding_resource(
+                    request.request_id,
+                    {
+                        "kind": "github_repository_intent",
+                        "url": requested_identity.html_url,
+                    },
+                )
+                if not intent_recorded:
+                    raise ProjectOnboardingError(
+                        ProjectOnboardingErrorCode.REGISTRATION_FAILED,
+                        "Could not record the pending GitHub repository creation",
+                        phase="github",
+                    )
+            try:
+                identity = await self.gh.create_repository(
+                    request.github_owner,
+                    repository_name,
+                    request.github_visibility,
+                )
+            except GitHubError as exc:
+                error = self._map_github_error(exc, phase="github")
+                if (
+                    intent_url is not None
+                    and error.code
+                    == ProjectOnboardingErrorCode.GITHUB_REPOSITORY_CONFLICT.value
+                ):
+                    error = ProjectOnboardingError(
+                        error.code,
+                        error.message,
+                        phase=error.phase,
+                        details={
+                            **error.details,
+                            **self._retained_github_details(intent_url),
+                        },
+                        field_errors=error.field_errors,
+                    )
+                raise error from exc
+            retained_url = identity.html_url
+            try:
+                created_recorded = await self.db.append_onboarding_resource(
+                    request.request_id,
+                    {"kind": "github_repository", "url": retained_url},
+                )
+            except Exception:
+                raise ProjectOnboardingError(
+                    ProjectOnboardingErrorCode.REGISTRATION_FAILED,
+                    "The GitHub repository was created but could not be recorded",
+                    phase="github",
+                    details=self._retained_github_details(retained_url),
+                ) from None
+            if not created_recorded:
+                raise ProjectOnboardingError(
+                    ProjectOnboardingErrorCode.REGISTRATION_FAILED,
+                    "The GitHub repository was created but could not be recorded",
+                    phase="github",
+                    details=self._retained_github_details(retained_url),
+                )
+
+        existing_origin = _safe_remote_url(await self.git.aget_remote_url(str(repository)))
+        if existing_origin and existing_origin != identity.clone_https:
+            raise ProjectOnboardingError(
+                ProjectOnboardingErrorCode.GITHUB_REPOSITORY_CONFLICT,
+                "The prepared repository already has a different origin remote",
+                phase="github",
+            )
+        actions = ["github_repository_created"]
+        if not existing_origin:
+            try:
+                await self.git._arun(
+                    ["remote", "add", "origin", identity.clone_https],
+                    cwd=str(repository),
+                )
+            except (GitError, OSError) as exc:
+                raise ProjectOnboardingError(
+                    ProjectOnboardingErrorCode.PUSH_FAILED,
+                    "Could not configure the GitHub origin remote",
+                    phase="github",
+                    details={"subprocess_error": scrub_secrets(str(exc))},
+                ) from None
+        actions.append("remote_configured")
+
+        if await self.git.arev_parse(str(repository), "HEAD") is not None:
+            try:
+                await self.git._arun(
+                    ["push", "-u", "origin", "--", default_branch],
+                    cwd=str(repository),
+                )
+            except (GitError, OSError) as exc:
+                raise ProjectOnboardingError(
+                    ProjectOnboardingErrorCode.PUSH_FAILED,
+                    f"Could not push branch '{default_branch}' to GitHub",
+                    phase="github",
+                    details={"subprocess_error": scrub_secrets(str(exc))},
+                ) from None
+            actions.append("branch_pushed")
+        return identity.clone_https, actions
 
     async def _publish_staging(self, request: Any, staging: Path, destination: Path) -> Path:
         resolved = validate_relative_path(
@@ -542,13 +857,14 @@ class ProjectOnboardingService:
         workspace_id: str,
         *,
         registered: bool,
+        owned_destination: Path | None = None,
+        destination_git_metadata: bool = False,
     ) -> None:
         if registered:
             await self.db.rollback_onboarded_project(project_id, workspace_id)
         record = await self.db.get_onboarding_request(request_id)
-        if record is None:
-            return
-        for resource in reversed(record.get("created_resources") or []):
+        resources = (record or {}).get("created_resources") or []
+        for resource in reversed(resources):
             if resource.get("kind") not in {
                 "staging_directory",
                 "final_directory",
@@ -562,8 +878,18 @@ class ProjectOnboardingService:
             if resource.get("kind") == "project_storage":
                 if path.exists():
                     shutil.rmtree(path)
-            elif path.exists() and self._owner_matches(path, request_id):
+            elif path.exists() and self._owner_matches(
+                path,
+                request_id,
+                git_metadata=resource.get("owner_marker") == "git",
+            ):
                 shutil.rmtree(path)
+        if owned_destination is not None and owned_destination.exists() and self._owner_matches(
+            owned_destination,
+            request_id,
+            git_metadata=destination_git_metadata,
+        ):
+            shutil.rmtree(owned_destination)
 
     def _new_storage_paths(self, project_id: str) -> list[Path]:
         candidates = [
@@ -579,18 +905,66 @@ class ProjectOnboardingService:
         return destination.parent / f".{destination.name}.aq-onboard-{safe_id[:40]}-{digest}"
 
     @staticmethod
-    def _owner_matches(path: Path, request_id: str) -> bool:
+    def _owner_marker_path(path: Path, *, git_metadata: bool) -> Path:
+        return (path / ".git" / _OWNER_FILE) if git_metadata else (path / _OWNER_FILE)
+
+    @classmethod
+    def _owner_matches(
+        cls,
+        path: Path,
+        request_id: str,
+        *,
+        git_metadata: bool = False,
+    ) -> bool:
+        marker = cls._owner_marker_path(path, git_metadata=git_metadata)
         try:
-            return (path / _OWNER_FILE).read_text(encoding="utf-8") == request_id
+            if not stat.S_ISREG(marker.lstat().st_mode):
+                return False
+            return marker.read_text(encoding="utf-8") == request_id
         except (OSError, UnicodeError):
             return False
 
-    @staticmethod
-    def _remove_owner_marker(path: Path) -> None:
+    @classmethod
+    def _write_owner_marker(
+        cls,
+        path: Path,
+        request_id: str,
+        *,
+        git_metadata: bool = False,
+    ) -> None:
+        marker = cls._owner_marker_path(path, git_metadata=git_metadata)
+        if cls._owner_matches(path, request_id, git_metadata=git_metadata):
+            return
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+        flags |= getattr(os, "O_NOFOLLOW", 0)
         try:
-            (path / _OWNER_FILE).unlink()
+            descriptor = os.open(marker, flags, 0o600)
+        except FileExistsError as exc:
+            raise ProjectOnboardingError(
+                ProjectOnboardingErrorCode.DESTINATION_LOCKED,
+                "The onboarding ownership marker is not owned by this request",
+                phase="prepare",
+            ) from exc
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            handle.write(request_id)
+
+    @classmethod
+    def _remove_owner_marker(
+        cls,
+        path: Path,
+        *,
+        git_metadata: bool = False,
+    ) -> None:
+        marker = cls._owner_marker_path(path, git_metadata=git_metadata)
+        try:
+            marker.unlink()
         except FileNotFoundError:
             pass
+
+    @classmethod
+    def _remove_owned_staging_container(cls, path: Path, request_id: str) -> None:
+        if path.exists() and cls._owner_matches(path, request_id):
+            shutil.rmtree(path)
 
     @staticmethod
     def _recorded_path(record: dict[str, Any], kind: str) -> Path | None:
@@ -598,6 +972,87 @@ class ProjectOnboardingService:
             if resource.get("kind") == kind and isinstance(resource.get("path"), str):
                 return Path(resource["path"])
         return None
+
+    @staticmethod
+    def _recorded_url(record: dict[str, Any], kind: str) -> str | None:
+        for resource in record.get("created_resources") or []:
+            if resource.get("kind") == kind and isinstance(resource.get("url"), str):
+                return resource["url"]
+        return None
+
+    @staticmethod
+    def _github_clone_source(request: Any) -> tuple[GitHubRepo, str]:
+        if request.github_repository is not None:
+            identity = parse_github_repository(
+                f"{request.github_repository.owner}/{request.github_repository.name}"
+            )
+            return identity, identity.clone_https
+        raw = request.github_url
+        identity = parse_github_repository(raw)
+        lowered = raw.strip().lower()
+        clone_url = (
+            identity.clone_ssh
+            if lowered.startswith(("git@", "ssh://"))
+            else identity.clone_https
+        )
+        return identity, clone_url
+
+    @staticmethod
+    def _map_github_error(exc: GitHubError, *, phase: str) -> ProjectOnboardingError:
+        code = {
+            GitHubErrorCode.CLI_MISSING: ProjectOnboardingErrorCode.GITHUB_CLI_MISSING,
+            GitHubErrorCode.AUTH_REQUIRED: ProjectOnboardingErrorCode.GITHUB_AUTH_REQUIRED,
+            GitHubErrorCode.REPOSITORY_INACCESSIBLE: (
+                ProjectOnboardingErrorCode.GITHUB_REPOSITORY_INACCESSIBLE
+            ),
+            GitHubErrorCode.REPOSITORY_CONFLICT: (
+                ProjectOnboardingErrorCode.GITHUB_REPOSITORY_CONFLICT
+            ),
+            GitHubErrorCode.CLI_FAILED: (
+                ProjectOnboardingErrorCode.GITHUB_REPOSITORY_INACCESSIBLE
+            ),
+            GitHubErrorCode.INVALID_INPUT: (
+                ProjectOnboardingErrorCode.GITHUB_REPOSITORY_INACCESSIBLE
+            ),
+        }[exc.code]
+        details = {"subprocess_error": scrub_secrets(exc.details)} if exc.details else None
+        return ProjectOnboardingError(
+            code,
+            scrub_secrets(exc.message),
+            phase=phase,
+            details=details,
+        )
+
+    async def _with_retained_github_recovery(
+        self,
+        request_id: str,
+        error: ProjectOnboardingError,
+    ) -> ProjectOnboardingError:
+        record = await self.db.get_onboarding_request(request_id)
+        retained_url = self._recorded_url(record or {}, "github_repository")
+        if not retained_url:
+            return error
+        details = {
+            **error.details,
+            **self._retained_github_details(retained_url),
+        }
+        return ProjectOnboardingError(
+            error.code,
+            error.message,
+            phase=error.phase,
+            details=details,
+            field_errors=error.field_errors,
+        )
+
+    @staticmethod
+    def _retained_github_details(url: str) -> dict[str, str]:
+        return {
+            "github_repository_url": url,
+            "recovery_action": (
+                "The GitHub repository was retained. Reuse it or delete it manually "
+                "before retrying with a new request id."
+            ),
+        }
 
     @staticmethod
     def _actions_for_existing_init(destination: Path, create_readme: bool) -> list[str]:
