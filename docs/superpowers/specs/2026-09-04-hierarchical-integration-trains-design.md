@@ -1,6 +1,6 @@
 # Hierarchical Delivery and Integration Trains
 
-**Status:** Approved design, pending written review
+**Status:** Revised after adversarial review, pending written approval
 **Date:** 2026-09-04
 **Scope:** Task-branch delivery, recursive child consolidation, root integration, and CI policy
 
@@ -24,8 +24,8 @@ subtree and, at the project root, a periodically sealed integration train.
 
 1. Let leaf and sibling tasks execute concurrently without racing on a shared branch.
 2. Merge child work into its immediate parent before the parent can complete.
-3. Wake the parent exactly once after its current child set is fully delivered so it can test
-   and repair the aggregate.
+3. Wake the parent once per child generation after that generation is fully delivered so it can
+   test and repair the aggregate.
 4. Repeat the same protocol recursively at every task depth.
 5. Periodically promote every eligible root PR through one integration operation per project.
 6. Run full CI on the exact candidate tree before an atomic fast-forward of `main`.
@@ -65,29 +65,29 @@ subtree and, at the project root, a periodically sealed integration train.
 : A periodic playbook activation that snapshots the eligible root frontier.
 
 **Integration batch**
-: An immutable manifest containing every root candidate eligible when a multi-candidate sweep
-  is sealed.
+: An immutable manifest containing every root candidate eligible when a non-empty sweep is sealed,
+  including a sweep containing one candidate.
 
 **Repair surface**
-: The direct root branch for a one-candidate sweep or the ephemeral integration branch for a
-  multi-candidate sweep.
+: The ephemeral integration branch created for every non-empty root sweep.
 
 ## 5. Invariants
 
 The implementation must enforce these in core commands, not rely on prompt compliance:
 
 1. A child starts from the exact recorded parent checkpoint.
-2. A reviewed source ref cannot move externally between review and promotion. The root promotion
-   command may replace that ref with its generated candidate only after proving it still points at
-   the pinned reviewed head and that the candidate represents the same reviewed tree change.
+2. A reviewed source ref cannot move between review and promotion. Candidate construction reads
+   the pinned ref but never rewrites it.
 3. Only one promotion mutates a given parent branch at a time.
 4. A parent cannot complete while any child is unresolved or lacks a required delivery receipt.
 5. Filing a child atomically increments the parent's child generation.
 6. Parent verification is valid only for the recorded branch SHA and child generation.
 7. Every eligible root candidate at sweep snapshot time belongs to that sweep.
 8. Batch membership never changes after sealing.
-9. Only one root integration lease is active per project repository.
-10. The candidate promoted to `main` descends from the recorded `main` base.
+9. Only one root integration lease is active per project; every batch names one designated target
+   repository.
+10. Every non-empty root sweep constructs its candidate on a new ephemeral integration branch
+    descending from the recorded `main` base, including a sweep containing one PR.
 11. `main` advances only from the expected base SHA to the exact full-CI-tested candidate SHA.
 12. Integration repair rolls forward on the sealed candidate; it never bisects or removes work.
 13. Retried commands cannot duplicate a promotion or change a sealed manifest.
@@ -114,6 +114,10 @@ A leaf task works on its own branch, records its verification, opens a PR, and c
 normal review flow. Review pins the source head and tree SHAs. The task becomes eligible for
 promotion to its immediate parent, or for the root integration queue if it has no parent.
 
+Under the hierarchical-delivery project flag, every code-producing child receives its own branch.
+This retires the legacy plan-subtask behavior that reuses `parent.branch_name` and serializes
+siblings on one worktree. Projects outside the flag retain the legacy behavior during rollout.
+
 ### 6.2 Filing a child
 
 When a running task files a child under itself, Agent Queue atomically:
@@ -126,6 +130,27 @@ When a running task files a child under itself, Agent Queue atomically:
 
 Children added later repeat this operation. A child may itself file grandchildren, producing the
 same lifecycle recursively.
+
+An atomic `task_batch_commit` that adds several children advances the parent generation once for
+the transaction, and every child in that transaction records the same generation. A later filing
+advances it again. The generation is an integration epoch, not a child count.
+
+#### Branchless parents
+
+An epic or plan container may never have run an agent and therefore have no branch. Its effective
+checkpoint is inherited from the nearest branch-bearing ancestor; if none exists, it is the
+project's designated integration repository and default-branch HEAD. Its children still receive
+isolated branches from that effective checkpoint, and their receipts target the branchless parent
+as the structural owner while naming the effective Git target explicitly.
+
+A branchless parent's verification behavior is playbook policy with three typed choices:
+
+- `skip` when the subtree is proven code-less;
+- `declared` to run checks declared on the parent; or
+- `verifier` to spawn a verification task on the effective branch.
+
+The shipped hierarchical-delivery playbook uses `verifier` for a branchless parent with delivered
+code and `skip` only for a proven code-less subtree.
 
 ### 6.3 Suspending the parent
 
@@ -141,6 +166,12 @@ request into a checkpoint rather than a terminal close:
 
 The task remains the owner of its branch. Child workers never write directly to that branch.
 
+Current `settle_containers` auto-completion is suppressed for a task with an integration
+checkpoint. Settlement becomes the wake evaluator: terminal children alone do not complete the
+parent; settlement emits `task.integration_ready` only after the current generation has the
+required delivery receipts and dispositions. The resumed parent or configured branchless-parent
+verifier must still record aggregate verification and pass guarded completion.
+
 ### 6.4 Direct-to-parent collection
 
 Reviewed siblings remain isolated until promotion. A per-parent collector serializes mutations
@@ -150,11 +181,22 @@ For each child, the collector:
 
 1. Pins the reviewed source head and current target head.
 2. Applies the child's accepted diff as one squash commit on the parent branch.
-3. Resolves conflicts on the parent repair surface when necessary.
+3. On a conflict, records the failed clean-apply attempt and hands the parent branch to a repair
+   task that records an explicit conflict-resolution receipt.
 4. Pushes with an exact expected-target lease.
 5. Writes a delivery receipt containing both sides of the transition.
-6. Deletes the child branch after the receipt is durable. A deletion failure records
-   `cleanup_pending` and retries independently.
+6. Applies the playbook's branch-retention policy after the receipt is durable. The shipped policy
+   deletes successfully delivered child branches immediately and retains failed work for the
+   configured forensic window. A deletion failure records `cleanup_pending` and retries
+   independently.
+
+“Accepted diff” has two explicit proof shapes. A clean promotion is the conflict-free three-way
+application of the reviewed head relative to its recorded parent checkpoint onto the expected
+target; the receipt records all three input SHAs and the generated result. It does not claim that a
+rebased tree equals the old tree SHA. If the three-way application conflicts, exact-diff language
+no longer applies: the repair task produces a resolution receipt naming those inputs, the resolved
+tree, and every repair commit. Review policy may require that resolution receipt to receive an
+additional review before the parent wakes.
 
 The collector does not rerun the full repository suite after each sibling. Review-time focused
 tests protect the child; the resumed parent verifies the aggregate.
@@ -162,7 +204,9 @@ tests protect the child; the resumed parent verifies the aggregate.
 ### 6.5 Waking and verifying the parent
 
 The parent wakes only when every child in the current generation is successfully delivered, is
-a verified no-op, or has an explicit accepted abandonment disposition. Failed children block.
+a verified no-op, or has an explicit accepted abandonment disposition. The playbook input
+`on_failed_child` supports `block` or `ask`; the shipped default is `block`, while `ask` creates a
+human disposition gate. No policy silently accepts failed work.
 
 `aq prime` gives the resumed parent a structured delivery summary:
 
@@ -192,19 +236,39 @@ commit when promoted to its parent. Therefore each parent branch temporarily sho
 per direct child, but `main` ultimately shows one commit per root subtree. Detailed descendant
 lineage remains in delivery receipts and PR/task records.
 
+### 6.7 Compression and attribution
+
+Squash compression at both child-to-parent and root-to-`main` boundaries is an approved project
+invariant, not a playbook option. Preserving every task commit would defeat the chosen bounded
+history shape. Generated squash messages must retain the source task and PR, all distinct author
+and co-author identities, Agent Queue session references, and the delivery receipt id. Repair
+commits remain separate because they describe integration work that was not part of any one
+reviewed subtree. Operational diagnosis uses receipts and PRs rather than post-hoc bisection of the
+compressed `main` history.
+
 ## 7. Root integration train
 
 ### 7.1 Scheduling
 
 The root integration playbook runs on a configurable per-project interval and may also receive a
-manual flush event. The system default is 300 seconds, with project override support.
+manual flush event. The system default is 300 seconds, with project override support. The existing
+global, boot-relative `TimerService` cannot provide this guarantee. A durable project scheduler
+stores each project's next-due time, survives restart without firing spuriously on boot, and emits
+project-scoped `integration.sweep_due` events.
 
-Before candidate discovery, it attempts to acquire the project integration lease. If a direct
-integration or batch is already active, the sweep does not start. A missed interval sets one
-coalesced `sweep_pending` flag; additional ticks do not queue more sweeps. Releasing the active
-lease immediately runs one pending sweep against a fresh eligibility snapshot.
+Before candidate discovery, it attempts to acquire the project integration lease. If an
+integration is already active, the sweep does not start. The due event uses a stable
+project-and-due-window dedup key, so missed intervals coalesce as playbook activations rather than
+state on the current batch. Releasing the active lease emits one `integration.sweep_due` event
+when a deduplicated due activation remains pending. The next run takes a fresh eligibility
+snapshot.
 
 There is no batch-size cap. A snapshot contains every eligible root PR at that instant.
+
+This is a deliberate throughput policy: the system does not build batch N+1 on candidate N's
+head, cap membership, or eject a member. One sealed roll-forward integration owns the project
+until promotion or explicit human abort. Those alternatives improve throughput under a poisoned
+batch but contradict the required single-integration and all-eligible-frontier semantics.
 
 ### 7.2 Eligibility
 
@@ -225,29 +289,10 @@ cannot snapshot the same frontier.
 
 Record a no-op sweep and release the lease.
 
-### 7.4 One candidate: direct promotion
+### 7.4 Every non-empty sweep: ephemeral integration branch
 
-A single root PR does not need a separately named integration branch. Agent Queue:
-
-1. Records the current `main` SHA as the promotion base.
-2. Reconstructs the reviewed root diff as one squash commit on that base.
-3. Updates the root PR branch to that candidate with an exact source-branch lease.
-4. Runs full CI on the candidate head.
-5. Allows roll-forward repair commits on the same branch when needed.
-6. Atomically fast-forwards `main` from the recorded base to the exact tested head.
-7. Records the root delivery receipt and closes the PR as delivered.
-8. Deletes the root branch and releases the lease.
-
-Reconstructing the root PR branch is allowed only after sealing eligibility. The command first
-proves that the ref still equals the original reviewed head, then replaces it with the generated
-candidate using an exact expected-old-SHA lease. The original reviewed head and tree remain in the
-receipt. Before repair commits are allowed, the generated candidate must contain exactly the
-reviewed root diff applied to the locked `main` base. The generated candidate then becomes the
-fenced repair surface; unrelated external movement still invalidates the operation.
-
-### 7.5 Multiple candidates: ephemeral integration branch
-
-For two or more candidates, Agent Queue:
+One and many candidates use the same construction and promotion path. For every non-empty sweep,
+Agent Queue:
 
 1. Records the current `main` SHA.
 2. Creates `integration/<batch-id>` from that exact base.
@@ -262,17 +307,27 @@ For two or more candidates, Agent Queue:
 11. Deletes local and remote integration branches plus eligible root branches.
 12. Releases the project lease.
 
+For a batch of one, steps 3–4 contain one manifest member and one squash commit. The extra
+short-lived branch avoids force-rewriting the reviewed root branch, preserves GitHub approvals and
+reopen history, and eliminates a second fencing protocol.
+
 The integration PR is not merged with GitHub-generated squash, rebase, or merge semantics. The
 exact-OID fast-forward is the merge. Because the tested head becomes an ancestor of `main`, the
 PR is expected to be recognized as merged; if the forge does not recognize it, Agent Queue closes
 it with the delivery receipt as authoritative evidence.
 
-### 7.6 Concurrent movement of `main`
+Root member PRs are not ancestors of `main` after squash compression. The forge will normally show
+them as closed rather than merged. Agent Queue comments with the integration PR, delivery receipt,
+reviewed SHA, generated squash SHA, and final `main` SHA so operators can distinguish delivered
+work from rejected work.
+
+### 7.5 Concurrent movement of `main`
 
 The per-project lease excludes Agent Queue integrations, not external human writes. If `main`
-moves before promotion, the expected-base update fails. The same sealed integration is rebuilt
-on the new base, its prior CI evidence is invalidated, and full CI must pass again. Membership
-does not change.
+moves before promotion, the expected-base update fails. The playbook input `on_main_moved` chooses
+`rebuild` or `wait`; the shipped default rebuilds the same sealed integration on the new base,
+invalidates prior CI evidence, and requires full CI again. `wait` preserves the branch and asks a
+human to reconcile the external movement. Membership never changes automatically.
 
 ## 8. CI policy
 
@@ -283,15 +338,15 @@ CI is tiered by integration boundary:
 | Task or child PR | Focused tests, lint, and task-declared checks |
 | Child promotion | Exact reviewed SHA, clean application or resolved conflict, push lease |
 | Parent wake | Parent-declared aggregate tests on the fully collected generation |
-| Root direct candidate | Full required project CI on the exact candidate head |
-| Root integration batch | Full required project CI once on the exact final batch head |
+| Root integration candidate | Full required project CI once on the exact final integration head |
 | `main` after promotion | No additional audit run for the identical tested tree |
 
-The workflow must not start a redundant full run solely because the candidate ref becomes
-`main`. Promotion records the successful check suite or workflow run IDs and verifies they belong
-to the candidate SHA. A forge check attached to a different SHA is never reusable. Once guarded
-promotion is enabled, the full-CI workflow excludes `push` events for `main`; branch protection
-rejects every unguarded direct write, so candidate CI is the sole required pre-promotion run.
+Promotion records the successful check suite or workflow run IDs and verifies they belong to the
+candidate SHA. A forge check attached to a different SHA is never reusable. The `main` push
+workflow remains as a break-glass safety net, but its first lightweight job checks for Agent Queue's
+green attestation on the tip SHA. Normal guarded promotions skip all full-CI jobs because the exact
+tree was already tested; an unattested emergency or bypass push runs full CI. Thus normal promotion
+does not create the redundant audit run prohibited by this design, while hotfixes remain observable.
 
 Infrastructure failures may be retried without a code change when a deterministic classifier
 identifies them as infrastructure failures. All other red runs enter repair.
@@ -316,6 +371,13 @@ The primary stage has configurable wall-clock and full-CI-attempt limits. Focuse
 not consume a full-CI attempt. A conclusively classified infrastructure retry does not consume a
 code-repair attempt.
 
+Repair is event-driven rather than an in-run loop. Candidate push ends the current activation. A
+core exact-SHA check poller records the first conclusive check result and emits
+`integration.ci_completed`; that event starts the next playbook activation, which either promotes,
+creates the next repair task, or advances the repair ladder. A cancelled or superseded run is
+inconclusive and consumes no attempt. Counters live in durable repair-stage rows, so playbook or
+daemon restart cannot reset a budget.
+
 ### 9.2 One higher-intelligence debug escalation
 
 When either primary limit is exhausted, the playbook performs exactly one debug escalation:
@@ -328,7 +390,9 @@ When either primary limit is exhausted, the playbook performs exactly one debug 
    failed checks, logs, hypotheses, and commands already attempted.
 5. Continue roll-forward repair under its own configurable time and CI-attempt limits.
 
-There is at most one higher-intelligence escalation per integration.
+The persistence model supports an ordered repair ladder, while the shipped playbook declares
+exactly two stages: primary and one higher-intelligence debug escalation. This keeps escalation
+policy declarative without changing the approved one-escalation behavior.
 
 ### 9.3 Human escalation
 
@@ -345,9 +409,9 @@ The **hierarchical delivery playbook** reacts to child creation, task completion
 delivery completion, disposition, and parent wake events. It creates waits, selects promotable
 children, invokes promotion, routes failures, and wakes parents.
 
-The **root integration train playbook** reacts to its schedule, manual flush, pending-sweep, CI,
-repair, and human-resume events. It chooses the zero/one/many path, creates repair tasks, applies
-budgets, escalates intelligence, waits for CI, promotes, and cleans up.
+The **root integration train playbook** reacts to its schedule, manual flush, due-sweep, CI,
+repair, and human-resume events. It chooses the zero or unified non-empty path, creates repair
+tasks, applies budgets, escalates intelligence, reacts to CI evidence, promotes, and cleans up.
 
 Playbook inputs own:
 
@@ -356,35 +420,48 @@ Playbook inputs own:
 - primary repair duration and CI-attempt limit;
 - debug repair duration and CI-attempt limit;
 - debug intelligence class/profile;
-- infrastructure retry policy; and
+- infrastructure retry policy;
+- `on_main_moved` (`rebuild` or `wait`), with shipped default `rebuild`;
+- `on_failed_child` (`block` or `ask`), with shipped default `block`;
+- successful and failed branch retention; and
 - integration branch naming and cleanup retry policy.
 
 ### 10.2 Core primitives
 
-Core Agent Queue commands provide only deterministic mechanisms:
+Core Agent Queue exposes the following typed playbook-callable contracts. Registration in the
+command-contract allowlist is part of the feature, and playbook edges route only on these named
+outcomes:
 
-- atomically file a child from a parent checkpoint and increment generation;
-- checkpoint/suspend a parent and create delivery waits;
-- query recursive delivery readiness with reasons;
-- pin a reviewed source head and tree;
-- acquire, heartbeat, and release a parent collector lease;
-- squash-promote an exact source tree with an expected target SHA;
-- record and query delivery receipts;
-- record aggregate verification for an exact generation and branch SHA;
-- guarded parent completion;
-- acquire and fence the per-project root integration lease;
-- atomically snapshot and seal all eligible root candidates;
-- create/reconcile/delete integration refs;
-- attach and validate CI evidence for an exact SHA;
-- exact-base fast-forward promotion to `main`;
-- record repair stages and budgets; and
-- reconcile interrupted operations after restart.
+| Contract | Mechanism | Named outcomes |
+|---|---|---|
+| `integration_schedule_due` | Persist and advance per-project due time, emitting one scoped deduplicated event | `due`, `not_due`, `coalesced`, `disabled` |
+| `integration_file_children` | Atomically create one or many children from a checkpoint and advance generation once | `filed`, `stale_parent`, `invalid` |
+| `integration_checkpoint_parent` | Record HEAD and generation, suspend parent, and create delivery waits | `checkpointed`, `already_waiting`, `dirty`, `stale` |
+| `integration_delivery_readiness` | Query recursive receipts and disposition blockers | `ready`, `waiting`, `failed`, `invariant_error` |
+| `integration_parent_verify` | Record aggregate verification for exact generation and HEAD | `verified`, `stale_generation`, `stale_head`, `invalid_evidence` |
+| `integration_complete_parent` | Guarded final close | `completed`, `waiting`, `stale_verification`, `invariant_error` |
+| `delivery_promote` | Acquire parent collector lease, apply pinned source to expected target, push, and receipt | `promoted`, `already_promoted`, `conflict`, `source_moved`, `target_moved` |
+| `delivery_receipts` | Query receipts by source and repository-qualified target | `found`, `not_found` |
+| `integration_seal` | Acquire project lease and atomically snapshot every eligible root | `sealed`, `empty`, `busy` |
+| `integration_build_candidate` | Create/reconcile integration ref and apply ordered manifest | `built`, `already_built`, `conflict`, `source_moved`, `base_moved` |
+| `integration_ci_evidence` | Poll checks for an exact SHA, attach a conclusive result, and emit completion | `green`, `red`, `pending`, `inconclusive`, `unavailable` |
+| `integration_record_repair` | Advance the configured repair stage and its durable budgets | `continue`, `escalate`, `human_required`, `budget_exhausted` |
+| `integration_promote_main` | Expected-base fast-forward with exact-SHA green attestation | `promoted`, `already_promoted`, `base_moved`, `ci_missing`, `non_fast_forward` |
+| `integration_release` | Reconcile cleanup, release lease, and emit a deduplicated due event when needed | `released`, `cleanup_pending`, `not_owner`, `invariant_error` |
 
-Every mutation accepts an idempotency key derived from the playbook run and node activation.
+Domain identity, not playbook activation identity, defines mutation idempotency. A child promotion
+key is `(source_task_id, reviewed_head_sha, target_repository, target_branch)`, and root operations
+key from the sealed batch id and repository. The playbook run and node activation are recorded only
+as provenance. The expected-old-SHA push lease remains the mutation guard; receipt uniqueness is
+the durable audit and replay guard.
+
+The CI evidence contract is also the sole authority for attempt accounting. An attempt is consumed
+only when it records a conclusive result for the exact candidate SHA. Launch requests, cancelled
+runs, and superseded runs are not attempts.
 
 ## 11. Durable state
 
-Correctness-critical state uses four normalized database records. Playbook node results may cache
+Correctness-critical state uses six normalized database records. Playbook node results may cache
 or project these values, but they are not the source of truth for generation, delivery, membership,
 or lease decisions.
 
@@ -397,14 +474,17 @@ or lease decisions.
 - checkpoint branch SHA;
 - verified generation and branch SHA;
 - state: working, awaiting children, integration ready, or verifying; and
-- last transition and playbook activation identifiers.
+- last transition and playbook activation identifiers; and
+- parent-collector owner and fencing token while delivery mutates the branch.
 
 ### 11.2 Delivery receipt
 
 `task_delivery_receipts`, keyed by a generated receipt id and uniquely constrained by idempotency
 key, stores:
 
-- source and target tasks, with a null target task representing project `main`;
+- source task and optional structural target task, with a null structural target representing a
+  root delivery;
+- repository-qualified target identity, including workspace kind or canonical remote and branch;
 - source PR, reviewed head SHA, and reviewed tree SHA;
 - target branch and before SHA;
 - promoted squash commit and target after SHA;
@@ -422,28 +502,62 @@ stores:
 - project, trigger, and timestamps;
 - locked `main` base SHA;
 - immutable batch-level state;
-- direct source branch or integration branch and PR;
-- primary and debug repair tasks and attempts;
+- integration branch and PR;
+- current configured repair-stage ordinal;
 - tested candidate SHA and CI evidence;
-- final `main` SHA, cleanup state, or human abort reason; and
-- coalesced pending-sweep state.
+- final `main` SHA or human abort reason; and
+- cleanup state.
 
 `integration_batch_members`, keyed by `(batch_id, ordinal)` and unique on `(batch_id, task_id)`,
 stores the immutable ordered candidate manifest: task, PR, reviewed head and tree, generated squash
 commit, and final receipt. Membership rows may be inserted only in the same transaction that seals
 the batch; sealed batches reject later inserts, updates, or deletes.
 
-### 11.4 Integration lease
+### 11.4 Repair stages
+
+`integration_repair_stages`, keyed by `(batch_id, ordinal)`, stores:
+
+- configured intelligence class and optional profile;
+- repair task id and exact starting branch SHA;
+- wall-clock and conclusive-CI-attempt budgets;
+- consumed time and attempts;
+- structured handoff dossier; and
+- terminal outcome.
+
+The shipped playbook writes two rows, primary then higher-intelligence debug. The normalized shape
+lets a project-owned playbook change classes or budgets without a schema change; the default still
+permits exactly one automated escalation before a human gate.
+
+### 11.5 Project integration schedule
+
+`project_integration_schedules`, keyed by `project_id`, stores:
+
+- effective interval and enabled state;
+- next due time and last emitted due window;
+- the stable dedup key for a coalesced due activation; and
+- the last completed sweep time.
+
+Updating the interval recomputes the next due time deterministically. Daemon boot reads this row; it
+does not invent a boot-relative tick or emit duplicate elapsed windows.
+
+### 11.6 Integration lease
 
 `project_integration_leases`, keyed by `project_id`, stores:
 
-- project and integration identity;
+- project, designated integration repository, and integration identity;
 - owner activation and fencing token;
-- heartbeat and expiry information; and
-- direct or batch mode.
+- heartbeat and expiry information.
 
-Lease expiry permits reconciliation, not blind acquisition. Recovery first compares recorded and
-actual refs and either resumes the same integration or escalates an invariant violation.
+The project key deliberately serializes root integration across all repositories attached to that
+project, matching the approved per-project policy. Batch members and receipts still name the
+designated repository explicitly, so a workspace-kind ref can never satisfy delivery to another
+remote accidentally.
+
+Lease expiry or cancellation of the owning playbook run permits reconciliation, not release or
+blind acquisition. Batch state outlives any run. A new activation first compares recorded and
+actual refs and either resumes the same integration or escalates an invariant violation. Before a
+debug task starts, the primary task must release its workspace; the debug task receives explicit
+slot affinity to that branch or starts only after the prior checkout is detached.
 
 ## 12. Events, gates, and operator controls
 
@@ -463,8 +577,11 @@ New events should describe facts rather than prescribe routing:
 - `integration.promoted`
 - `integration.cleanup_pending`
 
-Existing `task`, `timer`, `human`, `event`, and `ci-run` waits remain the playbook substrate. A
-delivery wait must resolve from a delivery receipt rather than a forge merged flag.
+The v2 engine's actual wait kinds—`event`, `human`, `task`, and `timer`—remain the playbook
+substrate. `ci-run` and `pr-merged` are legacy gate types, not v2 in-run waits. The exact-SHA core
+poller persists check evidence and emits `integration.ci_completed`; a later event-triggered
+activation continues the integration. A delivery wait resolves from a delivery receipt rather
+than a forge merged flag.
 
 Operator surfaces must provide:
 
@@ -485,19 +602,26 @@ record; it never rewrites `main`.
 | Source head changed after review | Refuse promotion and require review of the new head |
 | Parent target moved | Retry against the new target under the same child receipt attempt |
 | New child filed during parent verification | Increment generation; guarded close refuses and parent waits again |
-| Conflict applying child | Repair on the parent branch, preserving the sealed child source |
+| Conflict applying child | The clean-apply proof is unavailable; repair on the parent branch and write a conflict-resolution receipt naming the pinned source, base, resolved tree, and repair commits |
 | Aggregate test failure | Roll forward on the current repair surface |
 | Primary budget exhausted | Escalate once to configured higher intelligence |
 | Debug budget exhausted | Preserve branch and lease; create human gate |
-| `main` moved during root CI | Rebuild sealed candidate on new base and rerun full CI |
+| `main` moved during root CI | Apply `on_main_moved`: rebuild and rerun full CI, or preserve and wait for a human |
 | Daemon restart | Resume durable playbook node after reconciling exact refs |
 | Push succeeded before DB receipt | Reconcile target SHA and write the missing idempotent receipt |
-| Receipt committed before observable push | Verify ref; retry push or mark invariant violation |
+| Owning playbook run cancelled | Retain batch and lease; reconcile from batch events in a new run |
+| Primary workspace still attached at debug escalation | Detach/release it or preserve slot affinity before starting the debug task |
 | Cleanup failed after `main` promotion | Mark cleanup pending; shipping remains successful and cleanup retries |
+
+Promotion ordering is fixed: validate and prepare, push with the expected-old-SHA lease, then write
+the receipt. The reverse receipt-before-push state is unreachable by contract.
 
 ## 14. Security and authority
 
-- Worker profiles cannot promote to parent branches or `main` directly.
+- Worker profiles lack the playbook command authority to promote to parent branches or `main`.
+  Forge ACLs do not prevent every worker credential from pushing a dynamic parent ref, so foreign
+  parent movement is detected by the expected-target lease and causes promotion and parent close
+  to refuse. Prevention is guaranteed for `main` by branch protection.
 - Reviewer authority pins the accepted source SHA; integration authority may only consume pinned
   sources and write to its assigned repair surface.
 - Only the root integration command may update `main`, using an expected-old-SHA lease and a
@@ -514,9 +638,10 @@ record; it never rewrites `main`.
 3. Ship the hierarchical delivery playbook disabled by default; exercise restart and recursive
    child scenarios on a test project.
 4. Enable hierarchy delivery for one project and retire that project's legacy `pr-merged` child
-   gates after receipts are backfilled or explicitly waived.
+   gates after an explicit migration waiver. Historical merges did not pin reviewed heads, so
+   trustworthy delivery receipts cannot be backfilled.
 5. Add root integration primitives and ship the train playbook in observation mode.
-6. Enable direct single-root promotion, then multi-root batches.
+6. Enable one-member integration batches, then multi-member batches through the same path.
 7. Disable redundant full-CI runs on `main` only after exact tested-tree promotion is enforced.
 8. Close or supersede PR #397; selectively retain its CI classification and base-comparison code
    where useful to candidate attestation.
@@ -533,10 +658,10 @@ The implementation plan must include focused suites for:
 - concurrent sibling delivery to one parent and parallel delivery to different parents;
 - exact reviewed-head and expected-target rejection;
 - recursive squash history and receipt lineage;
-- zero-, one-, and many-candidate sweeps;
+- zero-, one-, and many-candidate sweeps through the same ephemeral-branch path;
 - all-eligible snapshot atomicity and immutable manifests;
 - coalesced ticks while integration is active;
-- exact-tree direct promotion and multi-root fast-forward;
+- exact-tree single-root and multi-root candidate fast-forward;
 - external movement of `main` during CI;
 - no redundant post-promotion full-CI run;
 - focused repair, full-CI attempt accounting, infrastructure retries, and both budget limits;
@@ -549,7 +674,7 @@ The implementation plan must include focused suites for:
 An end-to-end test should create a three-level task tree, dynamically add a child while its parent
 is verifying, promote every level, seal multiple roots, inject an aggregate failure, roll forward
 through the debug escalation path, and prove that `main` advances once to the exact tested SHA
-without launching a post-merge audit run.
+without running the redundant post-promotion full-CI jobs.
 
 ## 17. Acceptance criteria
 
@@ -558,15 +683,41 @@ The design is implemented when:
 1. Dynamically filed children always branch from and return to their immediate parent.
 2. A parent wakes only after its current child generation is fully delivered.
 3. Parent completion is impossible against stale generation or branch verification.
-4. Task history compresses to one commit per boundary and one root-subtree commit on `main`.
+4. Task history compresses to one commit per boundary and one root-subtree commit on `main`, plus
+   separately attributable integration repair commits.
 5. Each periodic sweep includes every eligible root PR and never overlaps another integration for
    the same project.
-6. One candidate uses the direct path; multiple candidates use a deleted-after-promotion ephemeral
-   integration branch.
+6. Every non-empty sweep uses a deleted-after-promotion ephemeral integration branch, including a
+   sweep with one candidate.
 7. Aggregate failures roll forward without bisection or membership changes.
 8. Repair escalates once to a configurable higher intelligence class before human escalation.
 9. Both repair stages enforce configurable duration and full-CI-attempt limits.
 10. `main` advances only to the exact full-CI-tested candidate via expected-base fast-forward.
-11. No redundant full-CI audit run starts after promotion.
+11. The attestation guard skips redundant full-CI jobs after promotion while still testing an
+    unattested break-glass push.
 12. Playbooks own orchestration policy and core commands own only fenced, idempotent mechanisms.
 13. Operators can explain, observe, flush, resume, clean up, and explicitly abort integrations.
+
+## 18. Adversarial review disposition
+
+The [companion adversarial review](2026-09-04-hierarchical-integration-trains-review.md) is
+incorporated as follows:
+
+- A1–A7 are adopted: branchless parents, settlement suppression, isolated child branches,
+  exact-SHA CI polling, durable project scheduling, typed callable contracts, and event-driven
+  repair re-entry are explicit requirements.
+- B1 is adopted: every non-empty sweep uses one ephemeral integration branch, including a batch
+  of one.
+- B2 is intentionally not adopted as a policy toggle. Recursive squash compression was an explicit
+  design decision; §6.7 adds attribution and explains why receipts replace main-history bisection.
+- B3 is adopted at the persistence boundary: repair stages are normalized and playbook-declared,
+  while the shipped policy retains exactly one higher-intelligence escalation before a human.
+- B4's cap, ejection, and overlapping-train recommendations are intentionally not adopted. The
+  approved policy includes every eligible root, seals membership, rolls forward, and permits one
+  integration per project.
+- B5–B6 are adopted: due work coalesces through events, and failure disposition plus branch
+  retention are playbook inputs with safe shipped defaults.
+- C1–C7 are adopted: domain idempotency, clean-apply versus resolution receipts, conclusive CI
+  accounting, accurate worker-push language, attested-main skipping, repository-qualified
+  receipts, and cancellation/workspace recovery are specified.
+- All section D consistency corrections are incorporated.
