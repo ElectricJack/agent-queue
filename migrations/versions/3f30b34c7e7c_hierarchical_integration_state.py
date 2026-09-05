@@ -25,14 +25,17 @@ def _create_immutability_guards() -> None:
             """
             CREATE FUNCTION integration_member_is_mutable() RETURNS trigger AS $$
             BEGIN
-                IF NOT EXISTS (
-                    SELECT 1 FROM integration_batches
-                    WHERE id = COALESCE(NEW.batch_id, OLD.batch_id) AND lifecycle = 'sealing'
+                IF TG_OP <> 'INSERT' AND NOT EXISTS (
+                    SELECT 1 FROM integration_batches WHERE id = OLD.batch_id AND lifecycle = 'sealing'
                 ) THEN
                     RAISE EXCEPTION 'sealed integration batch membership is immutable';
                 END IF;
-                IF TG_OP = 'DELETE' THEN
-                    RETURN OLD;
+                IF TG_OP <> 'DELETE' AND NOT EXISTS (
+                    SELECT 1 FROM integration_batches WHERE id = NEW.batch_id AND lifecycle = 'sealing'
+                ) THEN
+                    RAISE EXCEPTION 'sealed integration batch membership is immutable';
+                END IF;
+                IF TG_OP = 'DELETE' THEN RETURN OLD;
                 END IF;
                 RETURN NEW;
             END;
@@ -45,95 +48,139 @@ def _create_immutability_guards() -> None:
                 f"BEFORE {event} ON integration_batch_members FOR EACH ROW "
                 "EXECUTE FUNCTION integration_member_is_mutable()"
             )
+        for function, table, field, message in (
+            ("integration_checkpoint_is_monotone", "task_integration_checkpoints", "generation < OLD.generation OR NEW.version < OLD.version", "checkpoint generation and version cannot decrease"),
+            ("integration_batch_revision_is_monotone", "integration_batches", "current_revision < OLD.current_revision", "integration batch revision cannot decrease"),
+            ("integration_branch_fence_is_monotone", "integration_branch_owners", "fence_token < OLD.fence_token", "integration branch fence cannot decrease"),
+            ("integration_lease_fence_is_monotone", "project_integration_leases", "fence_token < OLD.fence_token", "integration lease fence cannot decrease"),
+            ("integration_schedule_sequence_is_monotone", "project_integration_schedules", "request_sequence < OLD.request_sequence", "integration schedule request sequence cannot decrease"),
+            ("integration_outbox_attempts_monotone", "integration_outbox", "attempts < OLD.attempts", "integration outbox attempts cannot decrease"),
+            ("integration_repair_attempts_monotone", "integration_repair_stages", "attempts < OLD.attempts", "integration repair attempts cannot decrease"),
+        ):
+            op.execute(
+                f"""
+                CREATE FUNCTION {function}() RETURNS trigger AS $$
+                BEGIN
+                    IF NEW.{field} THEN RAISE EXCEPTION '{message}'; END IF;
+                    RETURN NEW;
+                END;
+                $$ LANGUAGE plpgsql
+                """
+            )
+            op.execute(
+                f"CREATE TRIGGER trg_{function} BEFORE UPDATE ON {table} "
+                f"FOR EACH ROW EXECUTE FUNCTION {function}()"
+            )
         op.execute(
             """
-            CREATE FUNCTION integration_repair_attempts_monotone() RETURNS trigger AS $$
+            CREATE FUNCTION integration_prepared_identity_immutable() RETURNS trigger AS $$
             BEGIN
-                IF NEW.attempts < OLD.attempts THEN
-                    RAISE EXCEPTION 'integration repair attempts cannot decrease';
-                END IF;
+                IF OLD.prepared_sha IS NOT NULL AND (
+                    NEW.domain_key IS DISTINCT FROM OLD.domain_key OR
+                    NEW.receipt_id IS DISTINCT FROM OLD.receipt_id OR
+                    NEW.source_task_id IS DISTINCT FROM OLD.source_task_id OR
+                    NEW.source_head IS DISTINCT FROM OLD.source_head OR
+                    NEW.source_base IS DISTINCT FROM OLD.source_base OR
+                    NEW.repository_id IS DISTINCT FROM OLD.repository_id OR
+                    NEW.target_branch IS DISTINCT FROM OLD.target_branch OR
+                    NEW.expected_target IS DISTINCT FROM OLD.expected_target OR
+                    NEW.prepared_sha IS DISTINCT FROM OLD.prepared_sha
+                ) THEN RAISE EXCEPTION 'prepared integration identity is immutable'; END IF;
                 RETURN NEW;
             END;
             $$ LANGUAGE plpgsql
             """
         )
         op.execute(
-            "CREATE TRIGGER trg_integration_repair_attempts_monotone "
-            "BEFORE UPDATE ON integration_repair_stages FOR EACH ROW "
-            "EXECUTE FUNCTION integration_repair_attempts_monotone()"
+            "CREATE TRIGGER trg_integration_prepared_identity_immutable "
+            "BEFORE UPDATE ON integration_promotion_intents FOR EACH ROW "
+            "EXECUTE FUNCTION integration_prepared_identity_immutable()"
         )
+        op.execute(
+            """
+            CREATE FUNCTION task_delivery_receipt_append_only() RETURNS trigger AS $$
+            BEGIN RAISE EXCEPTION 'task delivery receipts are append-only'; END;
+            $$ LANGUAGE plpgsql
+            """
+        )
+        op.execute("CREATE TRIGGER trg_task_delivery_receipts_update BEFORE UPDATE ON task_delivery_receipts FOR EACH ROW EXECUTE FUNCTION task_delivery_receipt_append_only()")
+        op.execute("CREATE TRIGGER trg_task_delivery_receipts_delete BEFORE DELETE ON task_delivery_receipts FOR EACH ROW EXECUTE FUNCTION task_delivery_receipt_append_only()")
         op.execute(
             """
             CREATE FUNCTION task_branch_origin_materialized_immutable() RETURNS trigger AS $$
             BEGIN
-                IF OLD.materialized THEN
-                    RAISE EXCEPTION 'materialized task branch origin is immutable';
-                END IF;
+                IF OLD.materialized THEN RAISE EXCEPTION 'materialized task branch origin is immutable'; END IF;
+                IF TG_OP = 'DELETE' THEN RETURN OLD; END IF;
                 RETURN NEW;
             END;
             $$ LANGUAGE plpgsql
             """
         )
-        op.execute(
-            "CREATE TRIGGER trg_task_branch_origins_materialized_immutable "
-            "BEFORE UPDATE ON task_branch_origins FOR EACH ROW "
-            "EXECUTE FUNCTION task_branch_origin_materialized_immutable()"
-        )
+        op.execute("CREATE TRIGGER trg_task_branch_origins_materialized_update BEFORE UPDATE ON task_branch_origins FOR EACH ROW EXECUTE FUNCTION task_branch_origin_materialized_immutable()")
+        op.execute("CREATE TRIGGER trg_task_branch_origins_materialized_delete BEFORE DELETE ON task_branch_origins FOR EACH ROW EXECUTE FUNCTION task_branch_origin_materialized_immutable()")
         return
 
-    for event in ("INSERT", "UPDATE", "DELETE"):
-        reference = "NEW.batch_id" if event != "DELETE" else "OLD.batch_id"
-        op.execute(
-            f"""
-            CREATE TRIGGER trg_integration_members_{event.lower()}
-            BEFORE {event} ON integration_batch_members
-            WHEN NOT EXISTS (
-                SELECT 1 FROM integration_batches
-                WHERE id = {reference} AND lifecycle = 'sealing'
-            )
-            BEGIN
-                SELECT RAISE(ABORT, 'sealed integration batch membership is immutable');
-            END
-            """
-        )
-    op.execute(
-        """
-        CREATE TRIGGER trg_integration_repair_attempts_monotone
-        BEFORE UPDATE OF attempts ON integration_repair_stages
-        WHEN NEW.attempts < OLD.attempts
-        BEGIN
-            SELECT RAISE(ABORT, 'integration repair attempts cannot decrease');
-        END
-        """
-    )
-    op.execute(
-        """
-        CREATE TRIGGER trg_task_branch_origins_materialized_immutable
-        BEFORE UPDATE ON task_branch_origins
-        WHEN OLD.materialized = 1
-        BEGIN
-            SELECT RAISE(ABORT, 'materialized task branch origin is immutable');
-        END
-        """
-    )
+    op.execute("""CREATE TRIGGER trg_integration_members_insert BEFORE INSERT ON integration_batch_members WHEN NOT EXISTS (SELECT 1 FROM integration_batches WHERE id = NEW.batch_id AND lifecycle = 'sealing') BEGIN SELECT RAISE(ABORT, 'sealed integration batch membership is immutable'); END""")
+    op.execute("""CREATE TRIGGER trg_integration_members_update BEFORE UPDATE ON integration_batch_members WHEN NOT EXISTS (SELECT 1 FROM integration_batches WHERE id = OLD.batch_id AND lifecycle = 'sealing') OR NOT EXISTS (SELECT 1 FROM integration_batches WHERE id = NEW.batch_id AND lifecycle = 'sealing') BEGIN SELECT RAISE(ABORT, 'sealed integration batch membership is immutable'); END""")
+    op.execute("""CREATE TRIGGER trg_integration_members_delete BEFORE DELETE ON integration_batch_members WHEN NOT EXISTS (SELECT 1 FROM integration_batches WHERE id = OLD.batch_id AND lifecycle = 'sealing') BEGIN SELECT RAISE(ABORT, 'sealed integration batch membership is immutable'); END""")
+    for trigger, table, condition, message in (
+        ("trg_integration_checkpoint_monotone", "task_integration_checkpoints", "NEW.generation < OLD.generation OR NEW.version < OLD.version", "checkpoint generation and version cannot decrease"),
+        ("trg_integration_batch_revision_monotone", "integration_batches", "NEW.current_revision < OLD.current_revision", "integration batch revision cannot decrease"),
+        ("trg_integration_branch_fence_monotone", "integration_branch_owners", "NEW.fence_token < OLD.fence_token", "integration branch fence cannot decrease"),
+        ("trg_integration_lease_fence_monotone", "project_integration_leases", "NEW.fence_token < OLD.fence_token", "integration lease fence cannot decrease"),
+        ("trg_integration_schedule_sequence_monotone", "project_integration_schedules", "NEW.request_sequence < OLD.request_sequence", "integration schedule request sequence cannot decrease"),
+        ("trg_integration_outbox_attempts_monotone", "integration_outbox", "NEW.attempts < OLD.attempts", "integration outbox attempts cannot decrease"),
+        ("trg_integration_repair_attempts_monotone", "integration_repair_stages", "NEW.attempts < OLD.attempts", "integration repair attempts cannot decrease"),
+    ):
+        op.execute(f"CREATE TRIGGER {trigger} BEFORE UPDATE ON {table} WHEN {condition} BEGIN SELECT RAISE(ABORT, '{message}'); END")
+    op.execute("""CREATE TRIGGER trg_integration_prepared_identity_immutable BEFORE UPDATE ON integration_promotion_intents WHEN OLD.prepared_sha IS NOT NULL AND (NEW.domain_key IS NOT OLD.domain_key OR NEW.receipt_id IS NOT OLD.receipt_id OR NEW.source_task_id IS NOT OLD.source_task_id OR NEW.source_head IS NOT OLD.source_head OR NEW.source_base IS NOT OLD.source_base OR NEW.repository_id IS NOT OLD.repository_id OR NEW.target_branch IS NOT OLD.target_branch OR NEW.expected_target IS NOT OLD.expected_target OR NEW.prepared_sha IS NOT OLD.prepared_sha) BEGIN SELECT RAISE(ABORT, 'prepared integration identity is immutable'); END""")
+    op.execute("CREATE TRIGGER trg_task_delivery_receipts_update BEFORE UPDATE ON task_delivery_receipts BEGIN SELECT RAISE(ABORT, 'task delivery receipts are append-only'); END")
+    op.execute("CREATE TRIGGER trg_task_delivery_receipts_delete BEFORE DELETE ON task_delivery_receipts BEGIN SELECT RAISE(ABORT, 'task delivery receipts are append-only'); END")
+    op.execute("CREATE TRIGGER trg_task_branch_origins_materialized_update BEFORE UPDATE ON task_branch_origins WHEN OLD.materialized = 1 BEGIN SELECT RAISE(ABORT, 'materialized task branch origin is immutable'); END")
+    op.execute("CREATE TRIGGER trg_task_branch_origins_materialized_delete BEFORE DELETE ON task_branch_origins WHEN OLD.materialized = 1 BEGIN SELECT RAISE(ABORT, 'materialized task branch origin is immutable'); END")
 
 
 def _drop_immutability_guards() -> None:
     if op.get_bind().dialect.name == "postgresql":
         for event in ("insert", "update", "delete"):
             op.execute(f"DROP TRIGGER trg_integration_members_{event} ON integration_batch_members")
-        op.execute("DROP TRIGGER trg_integration_repair_attempts_monotone ON integration_repair_stages")
-        op.execute(
-            "DROP TRIGGER trg_task_branch_origins_materialized_immutable ON task_branch_origins"
-        )
-        op.execute("DROP FUNCTION integration_member_is_mutable()")
-        op.execute("DROP FUNCTION integration_repair_attempts_monotone()")
+        for function, table in (
+            ("integration_checkpoint_is_monotone", "task_integration_checkpoints"),
+            ("integration_batch_revision_is_monotone", "integration_batches"),
+            ("integration_branch_fence_is_monotone", "integration_branch_owners"),
+            ("integration_lease_fence_is_monotone", "project_integration_leases"),
+            ("integration_schedule_sequence_is_monotone", "project_integration_schedules"),
+            ("integration_outbox_attempts_monotone", "integration_outbox"),
+            ("integration_repair_attempts_monotone", "integration_repair_stages"),
+        ):
+            op.execute(f"DROP TRIGGER trg_{function} ON {table}")
+            op.execute(f"DROP FUNCTION {function}()")
+        op.execute("DROP TRIGGER trg_integration_prepared_identity_immutable ON integration_promotion_intents")
+        op.execute("DROP FUNCTION integration_prepared_identity_immutable()")
+        for event in ("update", "delete"):
+            op.execute(f"DROP TRIGGER trg_task_delivery_receipts_{event} ON task_delivery_receipts")
+            op.execute(f"DROP TRIGGER trg_task_branch_origins_materialized_{event} ON task_branch_origins")
+        op.execute("DROP FUNCTION task_delivery_receipt_append_only()")
         op.execute("DROP FUNCTION task_branch_origin_materialized_immutable()")
+        op.execute("DROP FUNCTION integration_member_is_mutable()")
         return
     for event in ("insert", "update", "delete"):
         op.execute(f"DROP TRIGGER trg_integration_members_{event}")
-    op.execute("DROP TRIGGER trg_integration_repair_attempts_monotone")
-    op.execute("DROP TRIGGER trg_task_branch_origins_materialized_immutable")
+    for trigger in (
+        "trg_integration_checkpoint_monotone",
+        "trg_integration_batch_revision_monotone",
+        "trg_integration_branch_fence_monotone",
+        "trg_integration_lease_fence_monotone",
+        "trg_integration_schedule_sequence_monotone",
+        "trg_integration_outbox_attempts_monotone",
+        "trg_integration_repair_attempts_monotone",
+        "trg_integration_prepared_identity_immutable",
+        "trg_task_delivery_receipts_update",
+        "trg_task_delivery_receipts_delete",
+        "trg_task_branch_origins_materialized_update",
+        "trg_task_branch_origins_materialized_delete",
+    ):
+        op.execute(f"DROP TRIGGER {trigger}")
 
 
 def upgrade() -> None:
@@ -241,6 +288,23 @@ def upgrade() -> None:
     sa.PrimaryKeyConstraint('id'),
     sa.UniqueConstraint('producer_id', 'run_id', 'attempt', 'required_check_version', name='uq_integration_check_evidence_producer_run_attempt_checks')
     )
+    op.create_table('integration_candidate_member_results',
+    sa.Column('batch_id', sa.Text(), nullable=False),
+    sa.Column('revision', sa.Integer(), nullable=False),
+    sa.Column('member_ordinal', sa.Integer(), nullable=False),
+    sa.Column('input_head_sha', sa.Text(), nullable=False),
+    sa.Column('input_tree_sha', sa.Text(), nullable=False),
+    sa.Column('generated_squash_sha', sa.Text(), nullable=True),
+    sa.Column('result', sa.Text(), nullable=False),
+    sa.Column('conflict_evidence', sa.JSON(), nullable=True),
+    sa.Column('created_at', sa.Float(), nullable=False),
+    sa.Column('updated_at', sa.Float(), nullable=False),
+    sa.CheckConstraint('revision >= 0', name='ck_integration_candidate_member_results_revision'),
+    sa.CheckConstraint('member_ordinal >= 0', name='ck_integration_candidate_member_results_member_ordinal'),
+    sa.CheckConstraint("result IN ('pending', 'applied', 'conflict', 'skipped')", name='ck_integration_candidate_member_results_result'),
+    sa.CheckConstraint("result <> 'applied' OR generated_squash_sha IS NOT NULL", name='ck_integration_candidate_member_results_applied_sha'),
+    sa.PrimaryKeyConstraint('batch_id', 'revision', 'member_ordinal')
+    )
     op.create_table('integration_outbox',
     sa.Column('id', sa.Text(), nullable=False),
     sa.Column('dedup_key', sa.Text(), nullable=False),
@@ -304,7 +368,7 @@ def upgrade() -> None:
     )
     with op.batch_alter_table('integration_repair_operations', schema=None) as batch_op:
         batch_op.create_index('uq_integration_repair_operations_active_batch', ['batch_id'], unique=True, sqlite_where=sa.text("batch_id IS NOT NULL AND state IN ('active', 'escalated', 'human_required')"), postgresql_where=sa.text("batch_id IS NOT NULL AND state IN ('active', 'escalated', 'human_required')"))
-        batch_op.create_index('uq_integration_repair_operations_active_parent', ['parent_task_id', 'episode_id'], unique=True, sqlite_where=sa.text("parent_task_id IS NOT NULL AND state IN ('active', 'escalated', 'human_required')"), postgresql_where=sa.text("parent_task_id IS NOT NULL AND state IN ('active', 'escalated', 'human_required')"))
+        batch_op.create_index('uq_integration_repair_operations_active_parent', ['parent_task_id'], unique=True, sqlite_where=sa.text("parent_task_id IS NOT NULL AND state IN ('active', 'escalated', 'human_required')"), postgresql_where=sa.text("parent_task_id IS NOT NULL AND state IN ('active', 'escalated', 'human_required')"))
 
     op.create_table('integration_repair_stages',
     sa.Column('operation_id', sa.Text(), nullable=False),
@@ -339,7 +403,7 @@ def upgrade() -> None:
     )
     op.create_table('project_integration_schedules',
     sa.Column('project_id', sa.Text(), nullable=False),
-    sa.Column('enabled', sa.Boolean(), server_default=sa.text('0'), nullable=False),
+    sa.Column('enabled', sa.Boolean(), server_default=sa.false(), nullable=False),
     sa.Column('interval_seconds', sa.Integer(), nullable=False),
     sa.Column('next_due_at', sa.Float(), nullable=False),
     sa.Column('last_observed_window', sa.Float(), nullable=True),
@@ -363,8 +427,8 @@ def upgrade() -> None:
     sa.Column('parent_ref', sa.Text(), nullable=True),
     sa.Column('base_sha', sa.Text(), nullable=False),
     sa.Column('creation_generation', sa.Integer(), nullable=False),
-    sa.Column('reserved', sa.Boolean(), server_default=sa.text('0'), nullable=False),
-    sa.Column('materialized', sa.Boolean(), server_default=sa.text('0'), nullable=False),
+    sa.Column('reserved', sa.Boolean(), server_default=sa.false(), nullable=False),
+    sa.Column('materialized', sa.Boolean(), server_default=sa.false(), nullable=False),
     sa.Column('retired_at', sa.Float(), nullable=True),
     sa.Column('created_at', sa.Float(), nullable=False),
     sa.Column('materialized_at', sa.Float(), nullable=True),
@@ -460,6 +524,7 @@ def downgrade() -> None:
 
     op.drop_table('integration_outbox')
     op.drop_table('integration_check_evidence')
+    op.drop_table('integration_candidate_member_results')
     op.drop_table('integration_candidate_revisions')
     op.drop_table('integration_branch_owners')
     with op.batch_alter_table('integration_batches', schema=None) as batch_op:

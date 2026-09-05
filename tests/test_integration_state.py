@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 from sqlalchemy import delete, inspect, insert, select, update
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import DBAPIError, IntegrityError
 
 from src.database import Database
 from src.database.tables import integration_batches, integration_promotion_intents
@@ -36,7 +36,7 @@ async def db(request, tmp_path):
 
 async def _integrity_error_in_savepoint(conn, statement) -> None:
     """Keep a PostgreSQL transaction usable after an expected violation."""
-    with pytest.raises(IntegrityError):
+    with pytest.raises((IntegrityError, DBAPIError)):
         async with conn.begin_nested():
             await conn.execute(statement)
 
@@ -146,6 +146,151 @@ async def test_sealed_batch_membership_is_immutable(db):
         )
 
 
+async def test_member_cannot_move_from_a_sealed_batch_to_a_sealing_batch(db):
+    from src.database.tables import integration_batch_members
+
+    batch = {
+        "project_id": "p", "repository_id": "repo", "source_manifest_digest": "manifest",
+        "lifecycle": "sealing", "current_revision": 0, "policy_snapshot": {},
+        "artifact_snapshot": {}, "cleanup_state": "pending", "created_at": 1.0, "updated_at": 1.0,
+    }
+    member = {
+        "batch_id": "b1", "ordinal": 0, "task_id": "t1", "repository_id": "repo",
+        "source_base_sha": "a" * 40, "reviewed_head_sha": "b" * 40,
+        "reviewed_tree_sha": "c" * 40, "review_evidence": {},
+    }
+    async with db.immediate() as conn:
+        await conn.execute(insert(integration_batches).values(id="b1", **batch))
+        await conn.execute(insert(integration_batches).values(id="b2", **batch | {"project_id": "p2"}))
+        await conn.execute(insert(integration_batch_members).values(**member))
+        await conn.execute(update(integration_batches).where(integration_batches.c.id == "b1").values(lifecycle="sealed"))
+        await _integrity_error_in_savepoint(
+            conn,
+            update(integration_batch_members)
+            .where(integration_batch_members.c.batch_id == "b1")
+            .values(batch_id="b2"),
+        )
+
+
+async def test_durable_counters_and_fences_never_decrease(db):
+    from src.database.tables import (
+        integration_branch_owners, integration_outbox, project_integration_leases,
+        project_integration_schedules, task_integration_checkpoints,
+    )
+
+    batch = {
+        "id": "b1", "project_id": "p", "repository_id": "repo", "source_manifest_digest": "manifest",
+        "lifecycle": "sealing", "current_revision": 2, "policy_snapshot": {}, "artifact_snapshot": {},
+        "cleanup_state": "pending", "created_at": 1.0, "updated_at": 1.0,
+    }
+    async with db.immediate() as conn:
+        await conn.execute(insert(integration_batches).values(**batch))
+        await conn.execute(insert(task_integration_checkpoints).values(
+            task_id="parent", repository_id="repo", branch="parent", generation=2,
+            state="working", version=3, updated_at=1.0,
+        ))
+        await conn.execute(insert(integration_branch_owners).values(
+            id="owner", repository_id="repo", ref="parent", owner_id="owner", owner_role="collector",
+            fence_token=2, handoff_state="reserved", created_at=1.0, updated_at=1.0,
+        ))
+        await conn.execute(insert(project_integration_leases).values(
+            project_id="lease", repository_id="repo", batch_id="b1", owner_id="owner",
+            fence_token=2, heartbeat_at=1.0, expires_at=2.0,
+        ))
+        await conn.execute(insert(project_integration_schedules).values(
+            project_id="p", enabled=False, interval_seconds=300, next_due_at=1.0,
+            request_sequence=2, updated_at=1.0,
+        ))
+        await conn.execute(insert(integration_outbox).values(
+            id="event", dedup_key="event", project_id="p", event_type="integration.sealed",
+            payload={}, available_at=1.0, attempts=2, created_at=1.0,
+        ))
+        for statement in (
+            update(task_integration_checkpoints).where(task_integration_checkpoints.c.task_id == "parent").values(generation=1),
+            update(task_integration_checkpoints).where(task_integration_checkpoints.c.task_id == "parent").values(version=2),
+            update(integration_batches).where(integration_batches.c.id == "b1").values(current_revision=1),
+            update(integration_branch_owners).where(integration_branch_owners.c.id == "owner").values(fence_token=1),
+            update(project_integration_leases).where(project_integration_leases.c.project_id == "lease").values(fence_token=1),
+            update(project_integration_schedules).where(project_integration_schedules.c.project_id == "p").values(request_sequence=1),
+            update(integration_outbox).where(integration_outbox.c.id == "event").values(attempts=1),
+        ):
+            await _integrity_error_in_savepoint(conn, statement)
+
+
+async def test_prepared_intent_and_receipt_audit_are_immutable(db):
+    from src.database.tables import task_delivery_receipts
+
+    intent = {
+        "id": "intent", "domain_key": "intent", "receipt_id": "receipt", "source_head": "a" * 40,
+        "source_base": "b" * 40, "repository_id": "repo", "target_branch": "parent",
+        "expected_target": "c" * 40, "prepared_sha": "d" * 40, "fence_owner_id": "owner",
+        "fence_token": 1, "state": "prepared", "created_at": 1.0, "updated_at": 1.0,
+    }
+    receipt = {
+        "id": "receipt", "domain_key": "receipt", "repository_id": "repo", "target_branch": "parent",
+        "disposition": "code", "created_at": 1.0,
+    }
+    async with db.immediate() as conn:
+        await conn.execute(insert(integration_promotion_intents).values(**intent))
+        await conn.execute(insert(task_delivery_receipts).values(**receipt))
+        await _integrity_error_in_savepoint(
+            conn, update(integration_promotion_intents).where(integration_promotion_intents.c.id == "intent").values(source_head="e" * 40)
+        )
+        await conn.execute(update(integration_promotion_intents).where(integration_promotion_intents.c.id == "intent").values(state="pushed"))
+        await _integrity_error_in_savepoint(
+            conn, update(task_delivery_receipts).where(task_delivery_receipts.c.id == "receipt").values(after_sha="e" * 40)
+        )
+        await _integrity_error_in_savepoint(
+            conn, delete(task_delivery_receipts).where(task_delivery_receipts.c.id == "receipt")
+        )
+
+
+async def test_materialized_branch_origin_cannot_be_deleted(db):
+    from src.database.tables import task_branch_origins
+
+    async with db.immediate() as conn:
+        await conn.execute(insert(task_branch_origins).values(
+            id="origin", task_id="task", repository_id="repo", base_sha="a" * 40,
+            creation_generation=0, reserved=True, materialized=True, created_at=1.0,
+        ))
+        await _integrity_error_in_savepoint(
+            conn, delete(task_branch_origins).where(task_branch_origins.c.id == "origin")
+        )
+
+
+async def test_candidate_member_results_are_ordered_and_unique_per_revision(db):
+    from src.database.tables import integration_candidate_member_results
+
+    async with db.immediate() as conn:
+        await conn.execute(insert(integration_candidate_member_results).values(
+            batch_id="b1", revision=0, member_ordinal=0, input_head_sha="a" * 40,
+            input_tree_sha="b" * 40, result="applied", generated_squash_sha="c" * 40,
+            created_at=1.0, updated_at=1.0,
+        ))
+        await _integrity_error_in_savepoint(
+            conn,
+            insert(integration_candidate_member_results).values(
+                batch_id="b1", revision=0, member_ordinal=0, input_head_sha="a" * 40,
+                input_tree_sha="b" * 40, result="applied", created_at=1.0, updated_at=1.0,
+            ),
+        )
+
+
+async def test_only_one_active_repair_operation_can_target_a_parent(db):
+    from src.database.tables import integration_repair_operations
+
+    values = {
+        "target_kind": "parent", "parent_task_id": "parent", "active_stage": 0, "state": "active",
+        "policy_snapshot": {}, "artifact_snapshot": {}, "required_check_version": "v1",
+        "created_at": 1.0, "updated_at": 1.0,
+    }
+    async with db.immediate() as conn:
+        await conn.execute(insert(integration_repair_operations).values(id="op1", episode_id="one", **values))
+        await _integrity_error_in_savepoint(
+            conn, insert(integration_repair_operations).values(id="op2", episode_id="two", **values)
+        )
+
+
 async def test_materialized_branch_origin_is_immutable(db):
     from src.database.tables import task_branch_origins
 
@@ -166,6 +311,7 @@ async def test_all_durable_records_round_trip(db):
     from src.database.tables import (
         integration_batch_members,
         integration_branch_owners,
+        integration_candidate_member_results,
         integration_candidate_revisions,
         integration_check_evidence,
         integration_outbox,
@@ -216,6 +362,11 @@ async def test_all_durable_records_round_trip(db):
             batch_id="b1", revision=0, construction_base_sha="a" * 40, next_member_ordinal=0,
             state="constructing", created_at=1.0, updated_at=1.0,
         ))
+        await conn.execute(insert(integration_candidate_member_results).values(
+            batch_id="b1", revision=0, member_ordinal=0, input_head_sha="a" * 40,
+            input_tree_sha="b" * 40, generated_squash_sha="c" * 40, result="applied",
+            created_at=1.0, updated_at=1.0,
+        ))
         await conn.execute(insert(integration_repair_operations).values(
             id="op", target_kind="batch", batch_id="b1", episode_id="episode", active_stage=0,
             state="active", policy_snapshot={}, artifact_snapshot={}, required_check_version="v1",
@@ -246,7 +397,8 @@ async def test_all_durable_records_round_trip(db):
     tables = (
         task_integration_checkpoints, task_branch_origins, integration_branch_owners,
         integration_promotion_intents, task_delivery_receipts, integration_batches,
-        integration_batch_members, integration_candidate_revisions, integration_repair_operations,
+        integration_batch_members, integration_candidate_revisions, integration_candidate_member_results,
+        integration_repair_operations,
         integration_repair_stages, integration_check_evidence, project_integration_schedules,
         project_integration_leases, integration_outbox,
     )
@@ -265,7 +417,8 @@ async def test_upgrade_from_prior_schema_creates_every_integration_table(tmp_pat
         assert {
             "task_integration_checkpoints", "task_branch_origins", "integration_branch_owners",
             "integration_promotion_intents", "task_delivery_receipts", "integration_batches",
-            "integration_batch_members", "integration_candidate_revisions", "integration_repair_operations",
+            "integration_batch_members", "integration_candidate_revisions",
+            "integration_candidate_member_results", "integration_repair_operations",
             "integration_repair_stages", "integration_check_evidence", "project_integration_schedules",
             "project_integration_leases", "integration_outbox",
         } <= names

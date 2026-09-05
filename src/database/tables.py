@@ -1758,6 +1758,35 @@ integration_candidate_revisions = Table(
     ),
 )
 
+integration_candidate_member_results = Table(
+    "integration_candidate_member_results",
+    metadata,
+    Column("batch_id", Text, primary_key=True),
+    Column("revision", Integer, primary_key=True),
+    Column("member_ordinal", Integer, primary_key=True),
+    Column("input_head_sha", Text, nullable=False),
+    Column("input_tree_sha", Text, nullable=False),
+    Column("generated_squash_sha", Text, nullable=True),
+    Column("result", Text, nullable=False),
+    Column("conflict_evidence", JSON, nullable=True),
+    Column("created_at", Float, nullable=False),
+    Column("updated_at", Float, nullable=False),
+    CheckConstraint(
+        "revision >= 0", name="ck_integration_candidate_member_results_revision"
+    ),
+    CheckConstraint(
+        "member_ordinal >= 0", name="ck_integration_candidate_member_results_member_ordinal"
+    ),
+    CheckConstraint(
+        "result IN ('pending', 'applied', 'conflict', 'skipped')",
+        name="ck_integration_candidate_member_results_result",
+    ),
+    CheckConstraint(
+        "result <> 'applied' OR generated_squash_sha IS NOT NULL",
+        name="ck_integration_candidate_member_results_applied_sha",
+    ),
+)
+
 integration_repair_operations = Table(
     "integration_repair_operations",
     metadata,
@@ -1793,7 +1822,6 @@ integration_repair_operations = Table(
     Index(
         "uq_integration_repair_operations_active_parent",
         "parent_task_id",
-        "episode_id",
         unique=True,
         sqlite_where=text(
             "parent_task_id IS NOT NULL AND state IN ('active', 'escalated', 'human_required')"

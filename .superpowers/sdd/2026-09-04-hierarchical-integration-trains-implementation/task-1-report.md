@@ -81,10 +81,40 @@ playbook migration work into the integration-state revision.
   own fenced writes and conditional-version updates. This task only exposes
   the required reads and accepts explicit caller-owned connections for those
   future mutation functions.
-- PostgreSQL test arms are included in the focused fixture but were skipped
-  because `POSTGRES_TEST_DSN` is not configured in this worker. The migration
-  contains a PostgreSQL-specific trigger/function path that was reviewed but
-  not executed here.
+- The initial pass had no PostgreSQL DSN; Fix round 1 subsequently executed
+  the same focused fixture against the supplied disposable PostgreSQL DSN.
+
+## Fix round 1
+
+Review found a PostgreSQL DDL failure and incomplete durable guards. The
+scratch PostgreSQL run reproduced the exact root cause: Alembic rendered
+`BOOLEAN DEFAULT 0` for `project_integration_schedules.enabled` (and the two
+branch-origin boolean defaults), which PostgreSQL rejects. The migration now
+uses `sa.false()` for all three defaults.
+
+This round also:
+
+- validates both the old and new batch on member updates, preventing a member
+  moving from a sealed batch into a still-sealing one;
+- adds narrow SQLite/PostgreSQL guards against generation/version, revision,
+  fence, schedule-sequence, and outbox-attempt regression; freezes prepared
+  promotion identity while allowing ordinary state/evidence updates; makes
+  receipts append-only; and prevents deletion of materialized origins;
+- adds `integration_candidate_member_results`, keyed by
+  `(batch_id, revision, member_ordinal)`, retaining exact ordered input SHAs,
+  generated squash SHA, result, and conflict evidence;
+- makes active parent repair uniqueness project the parent alone rather than
+  `(parent, episode)`.
+
+Focused verification with the supplied disposable PostgreSQL DSN:
+
+```text
+POSTGRES_TEST_DSN=postgresql+asyncpg://… aq test tests/test_integration_state.py -x
+28 passed
+
+aq test tests/test_migration_boolean_defaults.py -x
+1 passed
+```
 
 ## Changed files
 
