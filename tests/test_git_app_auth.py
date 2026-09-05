@@ -143,6 +143,32 @@ async def test_app_push_timeout_kills_and_reaps_git_before_closing_credential_fd
     assert process.waited is True
 
 
+@pytest.mark.asyncio
+async def test_askpass_helper_is_directly_executable_with_inherited_fd_only():
+    helper = Path(answer_prompt.__code__.co_filename)
+    with tempfile.TemporaryFile() as token_file:
+        token_file.write(b"helper-secret")
+        token_file.seek(0)
+        token_fd = token_file.fileno()
+        env = {
+            "AQ_GIT_APP_TOKEN_FD": str(token_fd),
+            "AQ_GIT_APP_USERNAME": "x-access-token",
+        }
+        process = await asyncio.create_subprocess_exec(
+            str(helper),
+            "Password for github.com",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            env=env,
+            pass_fds=(token_fd,),
+        )
+        stdout, stderr = await process.communicate()
+
+    assert process.returncode == 0
+    assert stdout == b"helper-secret"
+    assert stderr == b""
+
+
 def test_trust_manifest_path_is_reserved_from_worker_delivery():
     assert GitManager._daemon_bookkeeping_paths(
         ".github/agent-queue-integration.json\0.github/agent-queue-integration.example.json\0"
