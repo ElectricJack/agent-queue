@@ -55,23 +55,18 @@ When a gate does resolve, two things happen:
 2. Every waiter task attached to the gate re-checks its blocked state;
    if the gate was the only blocker, the task flips to `READY`.
 
-## Edit, compile and activate a playbook (V2 path)
+## Playbook compilation (compiler-as-agent path)
 
-Saving a playbook's Markdown compiles a V2 artifact and activates it in one
-step; a failed compile keeps the previous artifact active and leaves the new
-source in the vault to repair. There is no separate install step:
-
-```bash
-aq playbook get-source --playbook-id <playbook_id>          # markdown + source hash
-aq playbook update-source --playbook-id <playbook_id> \
-  --markdown "$(cat vault/system/playbooks/<name>.md)" \
-  --expected-source-hash <hash>                             # compile + activate
-aq playbook v2-validate --path <artifact.json>              # strict check of an artifact
-aq playbook set-enabled --playbook-id <playbook_id> --no-enabled   # pause new runs
-```
+Ordinary playbook markdown edits enqueue a compile task under the
+`playbook-compiler` profile. Do not validate or install the source inline:
+the compiler task validates the artifact and activates it through the reviewed
+workflow.
 
 `playbook-compiler` agents iterate with `aq playbook v2-propose` and never
 activate; activation is `aq playbook activate` against a reviewed hash.
+
+For the `pipeline` kind (deterministic parse, no LLM), edits go straight to
+the parser — no compiler task is enqueued.
 
 ## Run a playbook by hand
 
