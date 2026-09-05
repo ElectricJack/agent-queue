@@ -27,7 +27,6 @@ from src.database.tables import (
     workspaces,
 )
 from src.models import AgentState, DepType, Task, TaskStatus
-from src.state_machine import CyclicDependencyError, validate_dag_with_new_edge
 from src.task_names import MAX_STRUCTURAL_DEPTH, child_task_id
 
 # Container statuses that withhold their children (work-graph §3.1) are
@@ -320,11 +319,12 @@ class HierarchyQueryMixin:
             # check so a cyclic request reports ``cycle``, not ``depth``
             # (spec order: self_parent, not_found, cross_project,
             # container_closed, cycle, depth).
-            deps = await self._blocking_edges(conn)
-            try:
-                validate_dag_with_new_edge(deps, task_id, parent_id, DepType.PARENT_CHILD.value)
-            except CyclicDependencyError as exc:
-                raise HierarchyError("cycle", str(exc)) from exc
+            # The new edge is task_id -> parent_id.  It closes a cycle iff
+            # parent_id already reaches task_id over blocking edges.
+            if await self._reaches_over_blocking_edges(conn, parent_id, task_id):
+                raise HierarchyError(
+                    "cycle", f"{parent_id} already depends on {task_id} through blocking edges"
+                )
             depth = await self.structural_depth(parent_id, conn=conn)
             height = await self.subtree_height(task_id, conn=conn)
             if depth + height > MAX_STRUCTURAL_DEPTH:
@@ -527,20 +527,41 @@ class HierarchyQueryMixin:
         flipped |= settle_result.flipped
         return flipped, settle_result.settled
 
-    async def _blocking_edges(self, conn) -> dict[str, set[str]]:
+    async def _reaches_over_blocking_edges(self, conn, start: str, target: str) -> bool:
+        """Is *target* reachable from *start* along blocking edges?
+
+        Follows ``task_id -> depends_on_task_id`` (the "X blocks-on Y"
+        direction) over ``BLOCKING_DEP_TYPES`` only, as one recursive CTE
+        bounded by the reachable set.  Replaces loading every blocking edge
+        in the database and running ``validate_dag_with_new_edge`` in
+        Python, which cost ~6 ms of SQL plus the graph build per call and
+        grew with the whole database rather than the subtree (93 ms per
+        ``set_parent`` at 14k edges).
+        """
         from src.models import BLOCKING_DEP_TYPES
 
-        rows = (
-            await conn.execute(
-                select(task_dependencies.c.task_id, task_dependencies.c.depends_on_task_id).where(
-                    task_dependencies.c.dep_type.in_(sorted(BLOCKING_DEP_TYPES))
-                )
+        blocking = sorted(BLOCKING_DEP_TYPES)
+        base = (
+            select(task_dependencies.c.depends_on_task_id.label("id"), literal(1).label("depth"))
+            .where(
+                task_dependencies.c.task_id == start,
+                task_dependencies.c.dep_type.in_(blocking),
             )
-        ).fetchall()
-        deps: dict[str, set[str]] = {}
-        for tid, dep in rows:
-            deps.setdefault(tid, set()).add(dep)
-        return deps
+            .cte("reach", recursive=True)
+        )
+        step = (
+            select(task_dependencies.c.depends_on_task_id, (base.c.depth + 1).label("depth"))
+            .where(
+                task_dependencies.c.task_id == base.c.id,
+                task_dependencies.c.dep_type.in_(blocking),
+                base.c.depth < MAX_STRUCTURAL_DEPTH * 64,  # loop guard on a drifted graph
+            )
+        )
+        reach = base.union(step)  # UNION (not ALL) so a pre-existing cycle terminates
+        row = (
+            await conn.execute(select(reach.c.id).where(reach.c.id == target).limit(1))
+        ).fetchone()
+        return row is not None
 
     # -- settlement -------------------------------------------------------
 

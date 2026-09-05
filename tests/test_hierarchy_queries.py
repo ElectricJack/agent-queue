@@ -6,7 +6,7 @@ from __future__ import annotations
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import event, select
 
 from src.commands.handler import CommandHandler
 from src.config import AppConfig, DiscordConfig
@@ -710,3 +710,32 @@ class TestAbandonReleasesResources:
         assert tuple(ws) == (None, None, None, None)
         assert ag.current_task_id is None
         assert ag.state == AgentState.IDLE.value
+
+
+async def test_set_parent_cycle_check_does_not_load_the_whole_edge_table(db):
+    # 200 unrelated blocking edges elsewhere in the project.
+    for i in range(200):
+        await db.create_task(Task(id=f"u{i}", project_id=PROJECT_ID, title="", description=""))
+        if i:
+            await db.add_dependency(f"u{i}", f"u{i-1}")
+    for tid in ("parent", "child"):
+        await db.create_task(Task(id=tid, project_id=PROJECT_ID, title=tid, description=""))
+
+    statements: list[str] = []
+
+    def _hook(conn, cursor, statement, parameters, context, executemany):
+        statements.append(statement)
+
+    event.listen(db._engine.sync_engine, "before_cursor_execute", _hook)
+    try:
+        async with db._engine.begin() as conn:
+            await db.set_parent("child", "parent", conn=conn)
+    finally:
+        event.remove(db._engine.sync_engine, "before_cursor_execute", _hook)
+
+    unfiltered = [
+        s for s in statements
+        if "task_dependencies" in s and "WHERE" in s
+        and "task_id" not in s.split("WHERE", 1)[1] and "depends_on_task_id" not in s.split("WHERE", 1)[1]
+    ]
+    assert unfiltered == [], unfiltered  # every edge read is anchored on an id
