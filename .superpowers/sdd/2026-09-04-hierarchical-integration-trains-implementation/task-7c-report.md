@@ -108,10 +108,12 @@ RED:
 GREEN:
 
 - `pytest -q tests/test_hierarchical_delivery_playbook.py -x`
-  - `4 passed`; the real engine and real `CommandHandler` run readiness, the frozen
-    failed-child DecisionStep, and `gate_create` for both `block` and `ask` policies.
-    Two distinct failed delivery events yield one open human gate through stable
-    failed-parent `await_id`; block leaves the parent PAUSED and the run failed.
+  - `4 passed`; this was the original-submission result. The real engine and real
+    `CommandHandler` ran readiness, the frozen failed-child DecisionStep, and
+    `gate_create` for both policies. Two distinct failed delivery events yielded one
+    open human gate through stable failed-parent `await_id`; at that point `block`
+    still left the parent PAUSED but incorrectly ended the run as failed. Fix round 1
+    below supersedes that lifecycle assertion with `blocked`.
 - `pytest -q tests/test_event_schema_registry_validation.py -x`
   - `416 passed`.
 - `pytest -q tests/test_playbook_v2_import.py -x`
@@ -223,3 +225,135 @@ database change, protected environment change, or Task 6 cleanup was introduced.
 
 No known implementation blocker or correctness concern. Deferred dependency warnings
 and Task 6 module-size triage remain outside this task's scope.
+
+## Review fix round 1: first-class blocked run lifecycle
+
+Controller review identified one Important semantic gap: all three authored
+failed-child `block` branches ended a run as `failed`, even though Task 7 requires a
+distinct terminal Playbook V2 `blocked` outcome. Runtime commit `a4640176`
+(`fix(playbooks): add blocked run lifecycle`) fixes only that finding and its coherent
+public/persistence surfaces.
+
+### Implementation
+
+- Added `blocked` to the closed `TerminalOutcome` type and mapped a blocked
+  `TerminalStep` to `RunLifecycle.BLOCKED` in the real engine. The engine's shared
+  terminal set now governs completion timestamps.
+- Added `RunLifecycle.BLOCKED` to terminal and legal running transitions. It has no
+  outgoing transitions, so persisted blocked runs cannot be resumed or cancelled.
+  Repository terminal-status queries already derive from the shared terminal set.
+- Widened the SQLAlchemy lifecycle constraint and added Alembic revision
+  `c7d8e9f0a1b2` on head `8b4d2f7c1a90`. Downgrade raises
+  `cannot downgrade while blocked playbook runs exist`; it does not rewrite or delete
+  blocked history.
+- Added blocked to the public V2 lifecycle typing and status/tool descriptions, then
+  regenerated OpenAPI and both clients. The checked-in schema and reviewed hierarchy
+  artifact were regenerated; all three `--blocked` steps now contain
+  `outcome: "blocked"`.
+- The actual hierarchy engine test now returns/emits blocked for `block`, while the
+  parent remains in its existing `PAUSED` state with the real failed-child readiness
+  blocker. No task status, receipt, repair state, or human-required state is fabricated.
+
+### RED evidence
+
+- `aq test tests/test_playbook_v2_definition.py tests/test_v2_engine.py tests/test_playbook_run_repository.py tests/test_playbook_v2_api_dtos.py tests/test_hierarchical_delivery_playbook.py -k 'terminal_outcome_is_a_closed_enum or blocked_terminal_returns_and_emits or terminal_outcome_maps or blocked_run_persists or public_run_lifecycle or failed_delivery_event_runs' -x`
+  - Before runtime changes: `3 failed, 2 passed` before xdist stopped on `-x`.
+    `RunLifecycle` rejected `blocked`, and the real hierarchy run returned `failed`.
+- `aq test tests/test_migration_playbook_blocked_lifecycle.py -m 'migration and not integration' -k sqlite -x`
+  - Before the constraint migration: `1 failed`; SQLite rejected a blocked run under
+    `ck_playbook_v2_runs_lifecycle`.
+
+### GREEN and final verification
+
+- The same focused runtime selection after implementation:
+  - `12 passed, 1 skipped, 11 warnings`; definition parsing, engine return/event,
+    repository persistence/reload/non-resurrection, public typing, and real hierarchy
+    block/ask behavior all passed.
+- `aq test tests/test_playbook_v2_definition.py tests/test_default_playbook_v2_artifacts.py tests/test_hierarchical_delivery_playbook.py`
+  - Final reviewed-source/schema/artifact run: `158 passed, 11 warnings in 4.17s`.
+  - Independent canonical-byte check also matched artifact hash
+    `sha256:1cc620b3bc3e02a0e2feb5ae257689299d3ee667aeb5f0a92132706bf7b40c09`
+    and source hash
+    `sha256:adfdc677da623f46f75d3f1acb3b0485430a4f0462ad2ef45d4aa42e8dee6ddc`.
+- `aq test tests/test_api_client_contract.py tests/test_playbook_v2_api_dtos.py`
+  - `29 passed, 19 warnings`; live OpenAPI, generated Python client, and public
+    lifecycle/tool enum coherence passed.
+- `aq test tests/test_migration_playbook_blocked_lifecycle.py -m 'migration and not integration' -k sqlite -x`
+  - Final SQLite upgrade/admit/refuse-live-downgrade/delete/downgrade/reject/re-upgrade:
+    `1 passed, 8 warnings in 5.16s`.
+- `POSTGRES_TEST_DSN='postgresql+asyncpg://agent_queue:agent_queue_dev@127.0.0.1:5533/aq_task7c_fix_20260905_01' aq test tests/test_migration_playbook_blocked_lifecycle.py -m 'migration and integration' -k postgres -x`
+  - Unique disposable PostgreSQL upgrade/admit/refuse-live-downgrade/version-retained/
+    delete/downgrade: `1 passed, 8 warnings in 5.57s`. The exact base, `master`,
+    `gw0`/`gw1`/`gw2`, and `gw0_pbv2blocked` databases were dropped afterward; a
+    prefix query returned no survivors.
+- Repository blocked persistence was also parametrically exercised against SQLite and
+  a separate unique disposable PostgreSQL database: `2 passed, 8 warnings`; all
+  scratch databases were removed.
+- `aq test tests/test_migration_single_head.py tests/test_migration_metadata.py`
+  - `2 passed, 8 warnings`; `python3 -m alembic heads` reports only
+    `c7d8e9f0a1b2 (head)`.
+- `aq test tests/test_playbook_v2_definition.py tests/test_v2_engine.py tests/test_v2_engine_repository.py tests/test_playbook_run_repository.py tests/test_playbook_v2_api_dtos.py tests/test_api_client_contract.py tests/test_playbook_run_overlay.py tests/test_playbook_activation.py tests/test_hierarchical_delivery_playbook.py tests/test_default_playbook_v2_artifacts.py tests/test_list_playbooks_v2.py -k 'not a_cancelled_run_projects_onto_an_occupied_task'`
+  - Final bounded affected-area gate: `413 passed, 80 skipped, 19 warnings in 16.92s`.
+    The exclusion is a verified base-existing test that imports the absent
+    `src.playbooks.run_task`; it is unrelated to blocked lifecycle behavior.
+- `ruff check src/api/models/playbook_v2.py src/database/tables.py src/playbooks/definition.py src/playbooks/engine.py src/playbooks/run_state.py src/tools/definitions.py migrations/versions/c7d8e9f0a1b2_add_blocked_playbook_run_lifecycle.py tests/test_hierarchical_delivery_playbook.py tests/test_playbook_run_repository.py tests/test_playbook_v2_api_dtos.py tests/test_playbook_v2_definition.py tests/test_v2_engine.py tests/test_migration_playbook_blocked_lifecycle.py`
+  - `All checks passed!`.
+- `ruff check --ignore UP042 packages/aq-client/agent_queue_api_client/api/playbook/cancel_playbook_run.py packages/aq-client/agent_queue_api_client/models/list_playbook_runs_request.py packages/aq-client/agent_queue_api_client/models/playbook_health_request.py packages/aq-client/agent_queue_api_client/models/playbook_run_overlay_response_lifecycle.py`
+  - `All checks passed!`; only generated-client `str, Enum` style is ignored, because
+    generated files were not hand-edited. `git diff --check` also passed.
+
+An attempted PostgreSQL command using `--aq-all-markers` collected zero tests because
+the repository marker default still deselected `integration`; it exited 5 and is not
+counted as evidence. Re-running with explicit `-m 'migration and integration'`
+produced the passing PostgreSQL result above.
+
+### API/code generation evidence
+
+- `python3 scripts/generate-playbook-schema.py` regenerated
+  `src/playbook_v2_schema.json` with blocked in the TerminalOutcome enum.
+- The prescribed Python generator initially failed because `python` was absent. The
+  successful reproducible invocation was:
+  `PATH="/tmp/aq-task7c-codegen-python:$PATH" ./scripts/regenerate-api-client.sh --offline`
+  after linking `/tmp/aq-task7c-codegen-python/python` to `/usr/bin/python3`.
+  It wrote the 277-path `openapi.json` and generated Python client, then exited 0.
+- `./scripts/regenerate-ts-client.sh --from-file` succeeded and generated
+  `packages/aq-ts-client/src`; that output is intentionally ignored by Git.
+- A final repeat of both client commands after commit left the worktree clean. The
+  Python script logs a non-fatal PEP 668 editable-install error after generation but
+  masks it and prints `Installed`; the API/client contract tests above independently
+  prove the checked-in output is current.
+
+### Narrow consumer audit and regressions
+
+The enum audit covered engine loops, cancellation, repository commit/cancel and
+terminal-status queries, overlays, API DTOs, and tool schemas. Runtime/repository
+terminal consumers use `TERMINAL_LIFECYCLES`, so they naturally include blocked;
+explicit public enums/descriptions were updated. Agent-task execution statuses are a
+different domain and were intentionally unchanged.
+
+One exploratory older migration suite exposed six base-existing downgrade failures in
+`tests/test_migration_playbook_v2.py`: revision `b91e4d7a2c10` attempts to drop an
+already-missing `trg_integration_prepared_identity_immutable` trigger. Both that test
+and migration are byte-identical to base `9cad1d2e`, and the new revision does not
+touch their table. An initial broader selection also encountered the base-existing
+missing `src.playbooks.run_task` import above and a base-existing stale
+`tests/test_playbook_commands.py` import of absent `PlaybookRun`. Per the review-fix
+scope, none was changed. Deferred dependency warnings and Task 6 module-size triage
+remain out of scope.
+
+### Files and self-review
+
+Runtime: `src/playbooks/{definition,run_state,engine}.py`,
+`src/database/tables.py`, `src/api/models/playbook_v2.py`, and
+`src/tools/definitions.py`. Persistence: new Alembic revision
+`c7d8e9f0a1b2`. Generated contracts: `src/playbook_v2_schema.json`,
+`openapi.json`, and the affected generated Python client files. Reviewed policy:
+live hierarchy source plus its complete disabled fixture bundle. Tests: definition,
+engine, repository, DTO/tool typing, hierarchy real flow, and new SQLite/PostgreSQL
+migration coverage.
+
+Self-review confirmed every authored blocked branch uses the new terminal outcome;
+blocked is persisted, reloadable, terminal, and non-resurrectable; downgrade is
+lossless-by-refusal; the parent remains PAUSED; no `TaskStatus.BLOCKED`,
+`human_required`, fake receipt, repair exhaustion, activation, operator database,
+external push, or Task 8 work was introduced.
