@@ -4,16 +4,8 @@ import type { OnboardingResult, SubmissionError } from "./state";
 
 /** Normalize whatever a `SubmitProject` rejected with into a `SubmissionError`. */
 export function toSubmissionError(err: unknown): SubmissionError {
-  if (typeof err === "object" && err !== null && typeof (err as { message?: unknown }).message === "string") {
-    const e = err as { message: string; code?: unknown; phase?: unknown; details?: unknown; fieldErrors?: unknown };
-    const fieldErrors: Record<string, string> = {};
-    if (typeof e.fieldErrors === "object" && e.fieldErrors !== null) {
-      for (const [k, v] of Object.entries(e.fieldErrors as Record<string, unknown>)) {
-        if (typeof v === "string") fieldErrors[k] = v;
-      }
-    }
-    return { message: e.message, code: typeof e.code === "string" ? e.code : undefined, phase: typeof e.phase === "string" ? e.phase : undefined, survivors: survivors(e), fieldErrors };
-  }
+  const e = errorPayload(err);
+  if (e) return { message: e.error ?? e.message ?? "Project creation failed.", code: e.error_code ?? e.code, phase: e.phase, survivors: survivors(e), fieldErrors: fieldErrors(e) };
   return { message: "Project creation failed.", fieldErrors: {} };
 }
 
@@ -40,7 +32,7 @@ export function daemonSubmit(requestId: string): SubmitProject {
   };
 }
 
-function requestBody(requestId: string, request: WizardSubmission) {
+export function requestBody(requestId: string, request: WizardSubmission) {
   const { source, identity } = request;
   if (source.mode === null) throw new Error("A source mode is required before submission");
   const common = {
@@ -65,6 +57,46 @@ function requestBody(requestId: string, request: WizardSubmission) {
   throw new Error("Unsupported source mode");
 }
 
+type ErrorPayload = {
+  message?: string;
+  error?: string;
+  code?: string;
+  error_code?: string;
+  phase?: string;
+  details?: unknown;
+  fieldErrors?: unknown;
+  field_errors?: unknown;
+  payload?: unknown;
+};
+
+function errorPayload(error: unknown): ErrorPayload | null {
+  if (typeof error !== "object" || error === null) return null;
+  const value = error as ErrorPayload;
+  if (typeof value.payload === "object" && value.payload !== null) return value.payload as ErrorPayload;
+  if (typeof value.message === "string" && value.message.startsWith("API ")) {
+    const json = value.message.slice(value.message.indexOf(":") + 1);
+    try {
+      const parsed = JSON.parse(json);
+      return typeof parsed === "object" && parsed !== null ? parsed as ErrorPayload : value;
+    } catch {
+      return value;
+    }
+  }
+  return value;
+}
+
+function fieldErrors(error: ErrorPayload): Record<string, string> {
+  const values = error.fieldErrors ?? error.field_errors;
+  if (!values || typeof values !== "object") return {};
+  if (Array.isArray(values)) {
+    return Object.fromEntries(values.flatMap((value) => {
+      if (typeof value !== "object" || value === null) return [];
+      const item = value as { field?: unknown; message?: unknown };
+      return typeof item.field === "string" && typeof item.message === "string" ? [[item.field, item.message]] : [];
+    }));
+  }
+  return Object.fromEntries(Object.entries(values).filter((entry): entry is [string, string] => typeof entry[1] === "string"));
+}
 function survivors(error: { details?: unknown }): string[] | undefined {
   if (!error.details || typeof error.details !== "object") return undefined;
   const details = error.details as Record<string, unknown>;

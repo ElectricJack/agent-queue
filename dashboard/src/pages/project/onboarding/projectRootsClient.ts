@@ -1,8 +1,5 @@
-/**
- * Read-only directory-browser boundary. The wizard integration task replaces
- * this adapter with the generated client command; keeping the UI dependent on
- * this narrow contract makes the browser independently testable.
- */
+/** Typed directory-browser boundary backed by the generated daemon client. */
+import { browseProjectRoot as browseProjectRootCommand } from "../../../api/client";
 export interface ProjectRootBrowseEntry {
   name: string;
   relativePath: string;
@@ -17,10 +14,21 @@ export interface ProjectRootBrowseResult {
 }
 
 export async function browseProjectRoot(
-  _rootId: string,
-  _relativePath: string,
+  rootId: string,
+  relativePath: string,
 ): Promise<ProjectRootBrowseResult> {
-  void _rootId;
-  void _relativePath;
-  throw new Error("Project-root browsing is not connected yet");
+  const { data } = await browseProjectRootCommand({
+    body: { root_id: rootId, relative_path: relativePath || undefined },
+    throwOnError: true,
+  });
+  return {
+    relativePath: data.relative_path ?? "",
+    entries: (data.entries ?? []).map((entry) => ({
+      name: entry.name,
+      relativePath: entry.relative_path,
+      isDirectory: entry.is_directory ?? false,
+      isGitRepository: entry.is_git_repository ?? false,
+      selectable: entry.selectable ?? false,
+    })),
+  };
 }

@@ -1,14 +1,6 @@
-/**
- * Configured project roots (design §3.2) as the wizard consumes them.
- *
- * The daemon-side `list_project_roots` command belongs to the
- * project-root-configuration work package and has not landed yet, so there is
- * no client function to call: until it does, the wizard can only truthfully
- * report that no roots are available, which renders the "No project roots
- * configured" empty state with its Settings link. Replace the body of
- * `useProjectRoots` with the real query when the endpoint exists — the
- * wizard depends only on the `ProjectRootsSource` shape.
- */
+import { QueryClient, QueryClientContext, useQuery } from "@tanstack/react-query";
+import { useContext } from "react";
+import { listProjectRoots } from "../../../api/client";
 
 export interface ProjectRootSummary {
   id: string;
@@ -24,8 +16,31 @@ export type ProjectRootsSource =
   | { status: "ready"; roots: ProjectRootSummary[] }
   | { status: "error"; message: string };
 
-const NO_ROOTS: ProjectRootsSource = { status: "ready", roots: [] };
+// Some isolated navigation/story tests render the rail without the app's
+// QueryClientProvider. Keep that read-only preview safe without changing the
+// production path, which always uses the provider's shared cache.
+const previewQueryClient = new QueryClient();
 
+/** Fetch roots through the generated client; the browser holds no filesystem capability. */
 export function useProjectRoots(): ProjectRootsSource {
-  return NO_ROOTS;
+  const providedQueryClient = useContext(QueryClientContext);
+  const query = useQuery({
+    queryKey: ["project-roots"],
+    queryFn: async () => {
+      const { data } = await listProjectRoots({ body: {}, throwOnError: true });
+      return (data.roots ?? []).map((root) => ({
+        id: root.id,
+        label: root.label,
+        displayPath: root.path,
+        readable: root.readable ?? false,
+        writable: root.writable ?? false,
+      }));
+    },
+    enabled: providedQueryClient !== undefined,
+  }, providedQueryClient ?? previewQueryClient);
+  if (query.isPending) return { status: "loading" };
+  if (query.isError) {
+    return { status: "error", message: query.error instanceof Error ? query.error.message : "Could not load project roots." };
+  }
+  return { status: "ready", roots: query.data ?? [] };
 }

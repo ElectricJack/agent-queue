@@ -2,8 +2,8 @@ import type { ComponentType } from "react";
 import { STEP_IDS, type StepId } from "./state";
 import { STEP_TITLES } from "./copy";
 import { ChooseSourceStep } from "./ChooseSourceStep";
-import { InitOptionsStep } from "./InitOptionsStep";
 import { ChooseRepositoryStep } from "./ChooseRepositoryStep";
+import { InitOptionsStep } from "./InitOptionsStep";
 import { ProjectIdentityStep } from "./ProjectIdentityStep";
 import { ReviewProjectStep } from "./ReviewProjectStep";
 
