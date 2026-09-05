@@ -35,6 +35,16 @@ logger = logging.getLogger(__name__)
 # Max queued events per client before dropping oldest
 _MAX_QUEUE_SIZE = 1000
 
+
+def _dumps(obj: dict[str, Any]) -> str:
+    """Serialize a frame the same way Starlette's ``send_json`` used to.
+
+    Compact separators and non-ASCII passthrough so switching from
+    per-client ``send_json`` to a shared ``send_text(frame)`` doesn't
+    change the bytes a client receives.
+    """
+    return json.dumps(obj, separators=(",", ":"), ensure_ascii=False)
+
 # Event-type prefixes forwarded to WebSocket clients.  The dashboard uses
 # these to invalidate live gates, sessions, tasks, and pool-management views.
 _FORWARDED_PREFIXES: tuple[str, ...] = (
@@ -170,12 +180,24 @@ class WebSocketManager:
         logger.debug("WS _on_event received: %s (clients=%d)", event_type, len(self._clients))
         if not event_type.startswith(_FORWARDED_PREFIXES):
             return
+        if not self._clients:
+            return
         logger.debug("WS forwarding %s to %d clients", event_type, len(self._clients))
 
         # Live frames carry seq=None unless the emitter threaded the DB id
         # into the payload (log_event returns the id).
         shared = data if "seq" in data else {**data, "seq": None}
-        shared_frame = json.dumps(shared)
+        is_question = event_type in _QUESTION_EVENTS
+        shared_frame = ""
+        if not is_question:
+            # Question events are always re-serialized per client below
+            # (they're scope-filtered first), so building a shared frame
+            # for them here would be wasted work.
+            try:
+                shared_frame = _dumps(shared)
+            except (TypeError, ValueError) as exc:
+                logger.warning("WS: dropping unserializable %s event: %s", event_type, exc)
+                return
 
         for ws, queue in list(self._clients.items()):
             event, frame = shared, shared_frame
@@ -184,12 +206,16 @@ class WebSocketManager:
                 continue
             if event_type.startswith("pool.") and not _pool_event_allowed(data, scope):
                 continue
-            if event_type in _QUESTION_EVENTS:
+            if is_question:
                 filtered = _question_invalidation(data, scope)
                 if filtered is None:
                     continue
                 event = filtered if "seq" in filtered else {**filtered, "seq": None}
-                frame = json.dumps(event)
+                try:
+                    frame = _dumps(event)
+                except (TypeError, ValueError) as exc:
+                    logger.warning("WS: dropping unserializable %s event: %s", event_type, exc)
+                    continue
             try:
                 queue.put_nowait((event, frame))
             except asyncio.QueueFull:

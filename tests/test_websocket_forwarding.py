@@ -78,3 +78,33 @@ async def test_live_frames_are_serialized_once_per_event_and_logged_at_debug(cap
     assert json.loads(f1)["seq"] is None and json.loads(f1)["task_id"] == "t1"
     assert e1 is e2
     assert not [r for r in caplog.records if r.levelno >= logging.INFO and "WS" in r.getMessage()]
+
+
+async def test_unserializable_live_event_is_dropped_without_raising(caplog) -> None:
+    import logging
+
+    bus = EventBus(env="dev")
+    manager = WebSocketManager(bus)
+    q1: asyncio.Queue = asyncio.Queue()
+    manager._clients["c1"] = q1
+    manager._client_scope["c1"] = RequestScope(kind="local")
+
+    # Call _on_event directly (bypassing bus.emit's schema validation, which
+    # would reject this payload before it ever reaches the WS fan-out) so we
+    # can exercise json.dumps failing on a genuinely unserializable value.
+    with caplog.at_level(logging.WARNING, logger="src.api.websocket"):
+        manager._on_event(
+            {
+                "_event_type": "task.updated",
+                "task_id": "t1",
+                "project_id": "p1",
+                "title": "x",
+                "blob": object(),
+            }
+        )
+
+    assert q1.empty()
+    assert any(
+        r.levelno == logging.WARNING and "unserializable" in r.getMessage()
+        for r in caplog.records
+    )
