@@ -253,6 +253,7 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "task_route": "task",
     # review policy — dv2 phase 2
     "pr_merge": "git",
+    "ci_baseline_status": "git",
     # worker pools — sizing and bounds (swarm-work-model §11)
     "pool_status": "pool",
     "pool_scale": "pool",
@@ -4952,6 +4953,32 @@ _ALL_TOOL_DEFINITIONS = [
         },
     },
     # dv2 phase 2 — review-policy commands
+    {
+        "name": "ci_baseline_status",
+        "description": (
+            "Read the CI verdict for a project's default branch head (or ``ref``): "
+            "green / red / pending / unknown, the failing checks and pytest node "
+            "ids, and a failure signature.  Read-only.  When red it also returns "
+            "the deduplication key, title and description of the repair task the "
+            "ci-main-sentinel playbook files, and ``escalated`` once the same "
+            "signature has already burned two repair attempts."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "project_id": {"type": "string", "description": "Project whose repository to read."},
+                "ref": {
+                    "type": "string",
+                    "description": "Branch or sha to judge. Default: the project's default branch.",
+                },
+                "max_attempts": {
+                    "type": "integer",
+                    "description": "Repair attempts per failure signature before escalating. Default 2.",
+                },
+            },
+            "required": ["project_id"],
+        },
+    },
     {
         "name": "pr_merge",
         "description": (

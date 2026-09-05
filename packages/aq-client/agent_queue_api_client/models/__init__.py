@@ -54,6 +54,9 @@ from .check_profile_response_manifest import CheckProfileResponseManifest
 from .checkout_branch_request import CheckoutBranchRequest
 from .checkout_branch_response import CheckoutBranchResponse
 from .checkout_branch_response_422 import CheckoutBranchResponse422
+from .ci_baseline_status_request import CiBaselineStatusRequest
+from .ci_baseline_status_response import CiBaselineStatusResponse
+from .ci_baseline_status_response_422 import CiBaselineStatusResponse422
 from .claim_session_summary import ClaimSessionSummary
 from .claimed_by import ClaimedBy
 from .claude_usage_request import ClaudeUsageRequest
@@ -1109,6 +1112,9 @@ __all__ = (
     "CheckProfileResponse",
     "CheckProfileResponse422",
     "CheckProfileResponseManifest",
+    "CiBaselineStatusRequest",
+    "CiBaselineStatusResponse",
+    "CiBaselineStatusResponse422",
     "ClaimedBy",
     "ClaimSessionSummary",
     "ClaudeUsageRequest",
