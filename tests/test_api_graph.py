@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
+from sqlalchemy import event
 
 from src.api.graph import build_graph_router
 from src.database import Database
@@ -91,3 +92,65 @@ async def test_playbook_run_root_exposes_run_identity(db, client_factory):
 
     assert response.status_code == 200
     assert response.json()["tasks"][0]["playbook_run_id"] == "run-123"
+
+
+async def test_list_gate_waiters_for_project_groups_waiters_by_gate(db):
+    await db.create_task(Task(id="t1", project_id="p1", title="One", description=""))
+    await db.create_task(Task(id="t2", project_id="p1", title="Two", description=""))
+    g1, _ = await db.create_gate(
+        project_id="p1", gate_type="human", title="review", waiter_task_ids=["t2", "t1"]
+    )
+    g2, _ = await db.create_gate(project_id="p1", gate_type="timer", title="wait", await_id="x")
+
+    waiters = await db.list_gate_waiters_for_project("p1")
+
+    assert waiters == {g1: ["t1", "t2"]}
+    assert g2 not in waiters
+
+
+async def test_list_graph_task_rows_is_a_narrow_projection(db):
+    await db.create_task(Task(
+        id="t1", project_id="p1", title="One", description="a very long description",
+        priority=10, dedup_key="playbook-run:run-1",
+    ))
+    await db.create_task(Task(id="t2", project_id="p1", title="Two", description="", priority=5))
+
+    rows = await db.list_graph_task_rows("p1")
+
+    assert [r["id"] for r in rows] == ["t2", "t1"]  # priority asc
+    assert set(rows[0]) == {
+        "id", "title", "status", "priority", "is_blocked", "profile_id", "intelligence_class",
+        "assigned_agent_id", "branch_name", "pr_url", "dedup_key",
+    }
+    assert rows[1]["dedup_key"] == "playbook-run:run-1"
+    assert rows[1]["is_blocked"] is False
+    assert rows[1]["status"] == "DEFINED"
+
+
+async def test_graph_endpoint_statement_count_does_not_grow_with_tasks(db, client_factory):
+    # 40 tasks in a chain, one gate over half of them.
+    ids = [f"t{i}" for i in range(40)]
+    for tid in ids:
+        await db.create_task(Task(id=tid, project_id="p1", title=tid, description=""))
+    for a, b in zip(ids[1:], ids):
+        await db.add_dependency(a, b)
+    await db.create_gate(project_id="p1", gate_type="human", title="r", waiter_task_ids=ids[:20])
+
+    counter = {"n": 0}
+
+    def _hook(conn, cursor, statement, parameters, context, executemany):
+        counter["n"] += 1
+
+    event.listen(db._engine.sync_engine, "before_cursor_execute", _hook)
+    try:
+        async with client_factory() as ac:
+            r = await ac.get("/api/projects/p1/graph")
+    finally:
+        event.remove(db._engine.sync_engine, "before_cursor_execute", _hook)
+
+    assert r.status_code == 200
+    body = r.json()
+    assert len(body["tasks"]) == 40 and len(body["edges"]) == 39
+    assert body["gates"][0]["task_ids"] == sorted(ids[:20])
+    # project + tasks + edges + gates + waiters + agents
+    assert counter["n"] <= 6, counter["n"]

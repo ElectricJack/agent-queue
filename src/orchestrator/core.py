@@ -2127,6 +2127,9 @@ class Orchestrator(
         to finish before closing it.
         """
         await self.wait_for_running_tasks(timeout=10)
+        # A layout publish is one transaction; let an in-flight step land
+        # rather than cancelling it mid-write.  Marks are durable either way.
+        await self.wait_for_layout_step()
         if self.vault_watcher:
             try:
                 await self.vault_watcher.stop()
@@ -2338,10 +2341,10 @@ class Orchestrator(
 
             # Task graph layout: consume durable dirty marks, run one job, reconcile.
             # Layout is a projection — a failure here must never abort the cycle.
-            try:
-                await self._run_layout_step()
-            except Exception as e:
-                logger.warning("Layout step failed: %s", e)
+            # Kicked, not awaited: the step re-runs the engine over dirty
+            # containers and must not stretch the cycle (perf investigation
+            # 2026-09-04 §3).  ``_run_layout_step`` never raises.
+            self.schedule_layout_step()
 
             # 11. V1 memory compaction removed (roadmap 8.6).
             # Memory lifecycle is now managed by MemoryPlugin.

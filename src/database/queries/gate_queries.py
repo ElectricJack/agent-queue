@@ -395,3 +395,23 @@ class GateQueriesMixin:
                 )
             ).fetchall()
         return {r[0] for r in rows}
+
+    async def list_gate_waiters_for_project(self, project_id: str) -> dict[str, list[str]]:
+        """``gate_id -> sorted waiter task ids`` for every gate in *project_id*.
+
+        One statement for the whole project; the graph endpoint used to ask
+        ``get_gate_waiters`` once per gate.
+        """
+        async with self._engine.begin() as conn:
+            rows = (
+                await conn.execute(
+                    select(task_gates.c.gate_id, task_gates.c.task_id)
+                    .select_from(task_gates.join(gates, gates.c.id == task_gates.c.gate_id))
+                    .where(gates.c.project_id == project_id)
+                    .order_by(task_gates.c.gate_id.asc(), task_gates.c.task_id.asc())
+                )
+            ).fetchall()
+        out: dict[str, list[str]] = {}
+        for gate_id, task_id in rows:
+            out.setdefault(gate_id, []).append(task_id)
+        return out

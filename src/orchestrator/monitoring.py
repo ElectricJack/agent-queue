@@ -15,7 +15,7 @@ from src.notifications.events import (
     ChainStuckEvent,
     StuckDefinedTaskEvent,
 )
-from src.models import DepType, Task, TaskStatus
+from src.models import BLOCKING_DEP_TYPES, DepType, Task, TaskStatus
 from src.database.queries.hierarchy_queries import CONTAINER_KEY
 from src.database.queries.task_queries import TERMINAL_BLOCKED_META_KEY
 from src.task_summary import write_task_summary
@@ -248,10 +248,13 @@ class MonitoringMixin:
         # Session failures and timeouts require explicit attention even when
         # their old graph dependencies are satisfied. Otherwise this cascade
         # immediately undoes the reconciler's BLOCKED/quarantine decision.
-        blocked = [
-            task for task in blocked
-            if not await self.db.get_task_meta(task.id, "needs_attention")
-        ]
+        # One statement instead of one per BLOCKED task.  Every in-tree
+        # writer stores a non-empty code, and task_edit normalises an empty
+        # string to a delete, so "key present" is exactly "needs attention".
+        attention = await self.db.task_ids_with_meta(
+            [task.id for task in blocked], "needs_attention"
+        )
+        blocked = [task for task in blocked if task.id not in attention]
         # A terminal close (hard failure, retry budget spent, pipeline stop,
         # timeout, operator stop) is BLOCKED by decision, not by the graph.
         # Neither decider may recover it: the projection clearing says
@@ -381,8 +384,25 @@ class MonitoringMixin:
         """
         decisions: dict[str, str] = {}
         deferred: set[str] = set()
-        for task in [*defined, *blocked]:
-            typed_edges = await self.db.get_typed_dependencies(task.id)
+        candidates = [*defined, *blocked]
+        if not candidates:
+            return decisions, deferred
+
+        # One statement for every candidate's edges, one for every status the
+        # rules below read (dependency targets and plan parents).  The loop
+        # used to issue two to four statements per task — 9 s per cycle at
+        # 4,600 DEFINED tasks.
+        edges_by_task = await self.db.get_typed_dependencies_for_tasks([t.id for t in candidates])
+        status_ids: set[str] = set()
+        for task in candidates:
+            status_ids.update(dep for dep, _ in edges_by_task[task.id])
+            if task.is_plan_subtask and task.parent_task_id:
+                status_ids.add(task.parent_task_id)
+        statuses = await self.db.get_task_statuses(sorted(status_ids))
+        completed = TaskStatus.COMPLETED.value
+
+        for task in candidates:
+            typed_edges = edges_by_task[task.id]
             is_plan_child = bool(task.is_plan_subtask and task.parent_task_id)
             if any(
                 dep_type in _LEGACY_UNKNOWN_DEP_TYPES
@@ -395,37 +415,28 @@ class MonitoringMixin:
                 deferred.add(task.id)
                 continue
 
-            # Plan subtask special handling: the parent plan transitions to
-            # IN_PROGRESS (not COMPLETED) when approved, so standard
-            # are_dependencies_met() would block forever.  We treat the
-            # IN_PROGRESS parent dep as satisfied.
-            if task.is_plan_subtask and task.parent_task_id:
-                parent = await self.db.get_task(task.parent_task_id)
-                if parent and parent.status == TaskStatus.IN_PROGRESS:
-                    # Parent plan is approved and active — treat parent dep as met.
-                    # Check only non-parent dependencies.
-                    deps = await self.db.get_dependencies(task.id)
-                    non_parent_deps = deps - {task.parent_task_id}
-                    all_met = True
-                    for dep_id in non_parent_deps:
-                        dep_task = await self.db.get_task(dep_id)
-                        if not dep_task or dep_task.status != TaskStatus.COMPLETED:
-                            all_met = False
-                            break
-                    if all_met:
-                        decisions[task.id] = "deps_met_plan_parent_active"
-                    continue
+            # Blocking edges only — the same set ``get_dependencies`` and
+            # ``are_dependencies_met`` default to.
+            blocking = {dep for dep, typ in typed_edges if typ in BLOCKING_DEP_TYPES}
 
-            deps = await self.db.get_dependencies(task.id)
-            if not deps:
+            # Plan subtask special handling: the parent plan transitions to
+            # IN_PROGRESS (not COMPLETED) when approved, so the plain
+            # all-COMPLETED rule would block forever.  Treat the IN_PROGRESS
+            # parent dep as satisfied and judge only the other deps.
+            if is_plan_child and statuses.get(task.parent_task_id) == TaskStatus.IN_PROGRESS.value:
+                non_parent = blocking - {task.parent_task_id}
+                if all(statuses.get(dep) == completed for dep in non_parent):
+                    decisions[task.id] = "deps_met_plan_parent_active"
+                continue
+
+            if not blocking:
                 if task.status == TaskStatus.DEFINED:
-                    # No dependencies — promote DEFINED to READY.
-                    # (BLOCKED tasks with no deps stay blocked — they were
-                    # blocked for other reasons like verification failure.)
+                    # No dependencies — promote DEFINED to READY.  (BLOCKED
+                    # tasks with no deps stay blocked — they were blocked for
+                    # other reasons like verification failure.)
                     decisions[task.id] = "deps_met_no_deps"
-            else:
-                if await self.db.are_dependencies_met(task.id):
-                    decisions[task.id] = "deps_met"
+            elif all(statuses.get(dep) == completed for dep in blocking):
+                decisions[task.id] = "deps_met"
         return decisions, deferred
 
     async def _projected_promotion_decisions(

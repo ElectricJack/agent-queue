@@ -1,3 +1,4 @@
+import asyncio
 from unittest.mock import AsyncMock, patch
 
 from src.models import Project, Task
@@ -143,3 +144,33 @@ async def test_layout_step_reconcile_sweep_is_interval_gated(orchestrator_factor
     o._layout_last_reconcile_check -= o.config.graph_layout.reconcile_interval_seconds + 1
     await o._run_layout_step()
     assert sweeps == 2
+
+
+async def test_schedule_layout_step_runs_in_the_background_and_does_not_overlap(orchestrator_factory):
+    o = await orchestrator_factory()
+    o.config.graph_layout.enabled = True
+    o.config.graph_layout.incremental_debounce_ms = 0
+    await o.db.create_project(Project(id="p1", name="P1"))
+    await o.db.create_task(Task(id="a", project_id="p1", title="a", description=""))
+
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def slow_step(self):
+        started.set()
+        await release.wait()
+
+    with patch.object(type(o), "_run_layout_step", new=slow_step):
+        first = o.schedule_layout_step()
+        await started.wait()
+        second = o.schedule_layout_step()
+        assert second is first  # one in flight at a time
+        release.set()
+        await o.wait_for_layout_step()
+        assert first.done()
+
+    # After the in-flight task finishes, the next call starts a real step.
+    third = o.schedule_layout_step()
+    assert third is not first
+    await o.wait_for_layout_step()
+    assert (await o.db.get_layout_meta("p1", "all"))["node_count"] == 1

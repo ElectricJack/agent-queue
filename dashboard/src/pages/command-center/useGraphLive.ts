@@ -103,7 +103,11 @@ export function useGraphLive(projectIds: string[]) {
       }
     }
 
-    const graphEvent = /^(task|agent|gate|session)\./.test(type) || (
+    // session.* frames carry no graph content: an agent docking or leaving a
+    // node arrives as agent.updated. Refetching the whole snapshot for every
+    // session lifecycle frame multiplied the most expensive request the
+    // dashboard makes (perf investigation 2026-09-04 §7).
+    const graphEvent = /^(task|agent|gate)\./.test(type) || (
       type.startsWith("notify.") && !!task
     );
     if (!graphEvent) return;

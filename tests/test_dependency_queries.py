@@ -79,3 +79,44 @@ class TestAddDependencyIdempotent:
                 ("t2", DepType.DISCOVERED_FROM.value),
             ]
         )
+
+
+async def test_list_project_edges_returns_typed_rows_for_one_project(db):
+    await db.create_project(Project(id="p2", name="P2"))
+    for tid, pid in (("a", PROJECT), ("b", PROJECT), ("c", "p2")):
+        await db.create_task(Task(id=tid, project_id=pid, title=tid, description=""))
+    await db.add_dependency("b", "a", description="needs a")
+    await db.add_dependency("c", "a")  # cross-project edge, from p2
+
+    rows = await db.list_project_edges(PROJECT)
+
+    assert rows == [
+        {"task_id": "b", "depends_on_task_id": "a", "dep_type": "blocks", "description": "needs a"},
+    ]
+    assert await db.list_project_edges("p2") == [
+        {"task_id": "c", "depends_on_task_id": "a", "dep_type": "blocks", "description": None},
+    ]
+
+
+async def test_get_typed_dependencies_for_tasks_matches_the_per_task_reads(db):
+    for tid in ("a", "b", "c", "lonely"):
+        await db.create_task(Task(id=tid, project_id=PROJECT, title=tid, description=""))
+    await db.add_dependency("c", "b")
+    await db.add_dependency("c", "a", "waits-for")
+    await db.add_dependency("b", "a")
+
+    batched = await db.get_typed_dependencies_for_tasks(["a", "b", "c", "lonely"])
+
+    for tid in ("a", "b", "c", "lonely"):
+        assert batched[tid] == await db.get_typed_dependencies(tid), tid
+    assert batched["lonely"] == []
+
+
+async def test_get_task_statuses_returns_only_existing_ids(db):
+    await db.create_task(Task(id="a", project_id=PROJECT, title="a", description=""))
+    await db.create_task(
+        Task(id="b", project_id=PROJECT, title="b", description="", status=TaskStatus.COMPLETED)
+    )
+
+    assert await db.get_task_statuses(["a", "b", "ghost"]) == {"a": "DEFINED", "b": "COMPLETED"}
+    assert await db.get_task_statuses([]) == {}

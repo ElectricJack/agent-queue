@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 
@@ -22,6 +23,34 @@ delays its layout.
 class LayoutStepMixin:
     _layout_failures: dict[str, int]
     _layout_last_reconcile_check: float | None
+    _layout_bg: asyncio.Task | None
+
+    def schedule_layout_step(self) -> asyncio.Task | None:
+        """Start ``_run_layout_step`` in the background, at most one at a time.
+
+        Layout is a projection of task state; folding a batch of dirty marks
+        re-runs the engine over the dirty containers, which measured 0.5 s
+        in a 5,600-task hierarchy and 1.4 s for one change in a 5,000-task
+        flat project.  Awaiting that inline made every status change stretch
+        the 5 s cycle, so the cycle now only *kicks* the step and moves on.
+        Marks are durable: a step that is skipped because one is already
+        running picks them up on the next cycle.
+        """
+        bg = getattr(self, "_layout_bg", None)
+        if bg is not None and not bg.done():
+            return bg
+        if bg is not None:
+            exc = bg.exception() if not bg.cancelled() else None
+            if exc is not None:
+                logger.warning("background layout step failed: %s", exc)
+        self._layout_bg = asyncio.create_task(self._run_layout_step(), name="layout-step")
+        return self._layout_bg
+
+    async def wait_for_layout_step(self) -> None:
+        """Await the in-flight background step, if any (tests, shutdown)."""
+        bg = getattr(self, "_layout_bg", None)
+        if bg is not None and not bg.done():
+            await bg
 
     async def _run_layout_step(self) -> None:
         """Run one layout cycle step; never raise into ``run_one_cycle``.

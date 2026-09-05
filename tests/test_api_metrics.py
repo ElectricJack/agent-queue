@@ -192,7 +192,7 @@ async def test_a_sampler_tick_reaches_a_local_client_and_not_a_scoped_worker():
     finally:
         manager.shutdown()
 
-    frame = manager._clients["dashboard"].get_nowait()
+    frame, _wire = manager._clients["dashboard"].get_nowait()
     assert frame["_event_type"] == METRIC_TICK_EVENT
     assert frame["agents"]["total"] == 4
     assert frame["machine"]["load1"] == 3.25

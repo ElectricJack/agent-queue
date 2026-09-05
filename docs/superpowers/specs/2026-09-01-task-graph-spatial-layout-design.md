@@ -331,6 +331,15 @@ projection** of task state:
 - **Serialization with Tidy.** Tidy is a job (5.4) that takes the same meta lock. Dirty
   marks that arrive while Tidy runs are processed after it publishes, against the new
   layout.
+- **Status marks (2026-09-04).** A `status.*` mark on a leaf with a stored row is folded
+  without re-laying its container: in `all` only the ancestors' aggregates are rewritten;
+  in `active` a `status.finished` leaf's row is deleted and its slot left empty until the
+  next ordinary pass over that container — a created, moved or reopened sibling, or a
+  tidy job (the reconcile sweep only diffs the `all` variant and never heals this gap).
+  If the finished leaf was the container's last active child, the container itself must
+  flip to a stub, so that case takes the ordinary path instead of the fold. Re-flowing on
+  every completion measured 1.4 s for a 5,000-child root and ran inside the orchestrator
+  cycle.
 
 ### 4.7 Tidy and first layout
 

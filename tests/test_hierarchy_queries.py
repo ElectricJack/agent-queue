@@ -3,16 +3,17 @@
 
 from __future__ import annotations
 
+import re
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import event, insert, select
 
 from src.commands.handler import CommandHandler
 from src.config import AppConfig, DiscordConfig
 from src.database import Database
 from src.database.queries.hierarchy_queries import HierarchyError
-from src.database.tables import task_metadata
+from src.database.tables import task_dependencies, task_metadata
 from src.models import (
     Agent,
     AgentProfile,
@@ -710,3 +711,59 @@ class TestAbandonReleasesResources:
         assert tuple(ws) == (None, None, None, None)
         assert ag.current_task_id is None
         assert ag.state == AgentState.IDLE.value
+
+
+async def test_set_parent_cycle_check_does_not_load_the_whole_edge_table(db):
+    # 200 unrelated blocking edges elsewhere in the project.
+    for i in range(200):
+        await db.create_task(Task(id=f"u{i}", project_id=PROJECT_ID, title="", description=""))
+        if i:
+            await db.add_dependency(f"u{i}", f"u{i-1}")
+    for tid in ("parent", "child"):
+        await db.create_task(Task(id=tid, project_id=PROJECT_ID, title=tid, description=""))
+
+    statements: list[str] = []
+
+    def _hook(conn, cursor, statement, parameters, context, executemany):
+        statements.append(statement)
+
+    event.listen(db._engine.sync_engine, "before_cursor_execute", _hook)
+    try:
+        async with db._engine.begin() as conn:
+            await db.set_parent("child", "parent", conn=conn)
+    finally:
+        event.remove(db._engine.sync_engine, "before_cursor_execute", _hook)
+
+    id_predicate = re.compile(r"\b(task_id|depends_on_task_id)\s*(=|IN\b)")
+    unfiltered = [
+        s
+        for s in statements
+        if "task_dependencies" in s
+        and "WHERE" in s
+        and not id_predicate.search(s.split("WHERE", 1)[1])
+    ]
+    assert unfiltered == [], unfiltered  # every edge read is anchored on an id
+
+
+async def test_set_parent_cycle_check_follows_long_blocking_chains(db):
+    """REACHABILITY_MAX_DEPTH must exceed any real blocking chain (fix for
+    the reviewed depth-guard finding: ``MAX_STRUCTURAL_DEPTH * 64`` (192)
+    truncated a legitimate 300-long ``blocks`` chain and let a cyclic
+    reparent through).
+    """
+    await db.create_task(Task(id="p", project_id=PROJECT_ID, title="p", description=""))
+    for i in range(300):
+        await db.create_task(Task(id=f"c{i}", project_id=PROJECT_ID, title="", description=""))
+    # The chain edges are inserted directly (bypassing add_dependency's own
+    # per-call DAG validation) because this test exercises set_parent's
+    # reachability walk, not add_dependency.
+    rows = [
+        {"task_id": f"c{i}", "depends_on_task_id": f"c{i - 1}", "dep_type": DepType.BLOCKS.value}
+        for i in range(1, 300)
+    ] + [{"task_id": "c0", "depends_on_task_id": "p", "dep_type": DepType.BLOCKS.value}]
+    async with db._engine.begin() as conn:
+        await conn.execute(insert(task_dependencies), rows)
+
+    async with db._engine.begin() as conn:
+        with pytest.raises(HierarchyError, match="cycle"):
+            await db.set_parent("p", "c299", conn=conn)

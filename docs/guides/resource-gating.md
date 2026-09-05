@@ -148,6 +148,14 @@ one turns CI's `Tests (default)` arm red on runner load rather than on a real
 regression — `test_pathological_artifact_is_bounded` did exactly that until it
 was split into a correctness half (always runs) and a budget half (gated).
 
+The compose PostgreSQL on `:5533` (`docker-compose.yml`, service `postgres`)
+carries non-default `shared_buffers` (512MB), `work_mem` (32MB), and
+`effective_cache_size` (2GB) — the 4 MB default `work_mem` was seen spilling
+sorts to disk under a perf investigation. A production PostgreSQL should be
+tuned at least as far. `pg_stat_statements` is also preloaded via
+`shared_preload_libraries`; it still needs `CREATE EXTENSION
+pg_stat_statements;` run once by an operator before it is queryable.
+
 `-m perf` matters as much as `AQ_PERF_STRICT`: `--aq-all-markers` only stops
 `aq test` from adding its *own* `-m`, and pyproject's `addopts` still carries
 `-m "not perf and ..."`, so without an explicit `-m` the run deselects

@@ -287,6 +287,52 @@ class TaskQueryMixin:
             result = await conn.execute(stmt)
             return [self._row_to_task(r) for r in result.mappings().fetchall()]
 
+    _GRAPH_NODE_COLUMNS = (
+        "id", "title", "status", "priority", "is_blocked", "profile_id",
+        "intelligence_class", "assigned_agent_id", "branch_name", "pr_url", "dedup_key",
+    )
+
+    async def list_graph_task_rows(self, project_id: str) -> list[dict]:
+        """The graph endpoint's node fields for every task in *project_id*.
+
+        A narrow projection: ``list_tasks`` selects every column (the
+        description and the JSON blobs ride along, ~1 KB per row) and
+        hydrates a ``Task`` per row — 75 ms against 9 ms for this select at
+        4,600 rows.  ``is_blocked`` is normalised to ``bool`` here so the
+        caller never sees the 0/1 storage form.
+        """
+        cols = [getattr(tasks.c, name) for name in self._GRAPH_NODE_COLUMNS]
+        stmt = (
+            select(*cols)
+            .where(tasks.c.project_id == project_id)
+            .order_by(tasks.c.priority.asc(), tasks.c.created_at.asc())
+        )
+        async with self._engine.begin() as conn:
+            result = await conn.execute(stmt)
+            out = []
+            for row in result.mappings().fetchall():
+                d = dict(row)
+                d["is_blocked"] = bool(d["is_blocked"])
+                out.append(d)
+            return out
+
+    async def get_task_statuses(self, task_ids: list[str]) -> dict[str, str]:
+        """``id -> status`` for the ids that exist, in ``ceil(n / 900)`` statements."""
+        ids = sorted(set(task_ids))
+        if not ids:
+            return {}
+        out: dict[str, str] = {}
+        async with self._engine.begin() as conn:
+            for i in range(0, len(ids), 900):
+                chunk = ids[i : i + 900]
+                rows = (
+                    await conn.execute(
+                        select(tasks.c.id, tasks.c.status).where(tasks.c.id.in_(chunk))
+                    )
+                ).fetchall()
+                out.update({r[0]: r[1] for r in rows})
+        return out
+
     async def list_active_tasks(
         self,
         project_id: str | None = None,

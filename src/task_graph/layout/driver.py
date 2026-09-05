@@ -474,12 +474,52 @@ class _IncrementalBatch:
         """Absolute content origin of a container row."""
         return (row.abs_x + PADDING, row.abs_y + PADDING + HEADER_H)
 
+    async def _aggregates_only(self, tid: str, reason: str) -> bool:
+        """Can this mark be folded without re-laying any container?
+
+        ``all``: every task is present whatever its status, so a status mark
+        on a leaf with a stored row changes no box — only the ancestors'
+        counters.
+
+        ``active``: a leaf that just FINISHED leaves the variant.  The
+        vanished-tasks loop in ``run()`` deletes its row (and the container
+        stays untouched) rather than re-flowing the parent (1.4 s for a
+        5,000-child root); the next ordinary pass over that container — a
+        created, moved or reopened sibling, or a tidy job — closes the gap.
+        A REOPENED leaf needs a slot, and a container's own status can turn
+        it into a stub, so both take the ordinary path.  So does a finished
+        leaf whose parent must itself flip to a stub or vanish (its own
+        LAST active child just finished): the parent needs relaying to
+        become the one-card stub in that case, not to stay a full-size
+        empty container.
+        """
+        if not reason.startswith("status."):
+            return False
+        task = self.snapshot[tid]
+        if task.is_container:
+            return False
+        row = await self._db_row(tid)
+        if row is None:
+            return False
+        if self.variant == "all":
+            return True
+        if reason != "status.finished" or tid in self.present:
+            return False
+        parent = self.parent_of.get(tid)
+        if parent is not None and (parent in self.stubs or parent not in self.present):
+            return False
+        return True
+
     # ── dirty → containers ──────────────────────────────────────────────
     async def _seed_queue(self) -> None:
         dirty: set[str | None] = set()
         for tid, reason in self.marks:
             self.dirty_tasks.add(tid)
             if tid in self.snapshot:
+                if await self._aggregates_only(tid, reason):
+                    # Geometry cannot change: ``_refresh_aggregates`` walks
+                    # ``dirty_tasks``' ancestors and rewrites the counters.
+                    continue
                 dirty.add(self.parent_of[tid])
                 if self.snapshot[tid].is_container:
                     # its own children may have become (in)visible

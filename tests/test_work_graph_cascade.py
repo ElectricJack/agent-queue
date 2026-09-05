@@ -16,7 +16,9 @@ from __future__ import annotations
 import logging
 
 import pytest
+from sqlalchemy import event
 
+from src.commands.handler import CommandHandler
 from src.config import AppConfig
 from src.models import DepType, Project, Task, TaskStatus
 from src.orchestrator import Orchestrator
@@ -526,3 +528,52 @@ async def test_attention_blocked_task_does_not_auto_recover(orch, authoritative,
     await orch.db.delete_task_meta("needs-operator", "needs_attention")
     await orch._check_defined_tasks()
     assert await status_of(orch, "needs-operator") == TaskStatus.READY
+
+
+async def test_edit_task_empty_needs_attention_clears_the_hold(orch):
+    """``edit_task`` with ``needs_attention=""`` must delete the meta key, not
+    store an empty code — monitoring's BLOCKED filter is presence-based, so a
+    stored empty string would hold the task BLOCKED forever (regression for
+    the truthiness-vs-presence review finding).
+    """
+    handler = CommandHandler(orch, orch.config)
+    tid = await mktask(orch, "b", status=TaskStatus.BLOCKED)
+
+    result = await handler.execute("edit_task", {"task_id": tid, "needs_attention": "stuck"})
+    assert "error" not in result
+    assert await orch.db.get_task_meta(tid, "needs_attention") == "stuck"
+
+    result = await handler.execute("edit_task", {"task_id": tid, "needs_attention": ""})
+    assert "error" not in result
+    assert await orch.db.get_task_meta(tid, "needs_attention") is None
+
+
+class TestLegacyScanIsBatched:
+    async def test_legacy_scan_uses_a_fixed_number_of_statements(self, orch):
+        # 30 DEFINED tasks: a chain, a plan child, a waits-for edge, some lonely.
+        ids = [await mktask(orch, f"t{i}") for i in range(30)]
+        for a, b in zip(ids[1:10], ids[:9]):
+            await orch.db.add_dependency(a, b)
+        plan = await mktask(orch, "plan", status=TaskStatus.IN_PROGRESS)
+        child = await mktask(orch, "child", is_plan_subtask=True, parent_task_id=plan)
+        await orch.db.add_dependency(child, plan)
+        await orch.db.add_dependency(ids[20], ids[21], "waits-for")
+        defined = await orch.db.list_tasks(status=TaskStatus.DEFINED)
+        blocked = await orch.db.list_tasks(status=TaskStatus.BLOCKED)
+
+        counter = {"n": 0}
+
+        def _hook(conn, cursor, statement, parameters, context, executemany):
+            counter["n"] += 1
+
+        event.listen(orch.db._engine.sync_engine, "before_cursor_execute", _hook)
+        try:
+            decisions, deferred = await orch._legacy_promotion_decisions(defined, blocked)
+        finally:
+            event.remove(orch.db._engine.sync_engine, "before_cursor_execute", _hook)
+
+        assert counter["n"] <= 3, counter["n"]
+        assert decisions[ids[0]] == "deps_met_no_deps"
+        assert ids[1] not in decisions  # blocked on t0, which is DEFINED
+        assert ids[20] in deferred
+        assert decisions[child] == "deps_met_plan_parent_active"

@@ -1,7 +1,16 @@
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import Tasks from "../Tasks";
+
+// jsdom never lays out elements, so offsetHeight/offsetWidth are always 0.
+// @tanstack/react-virtual reads those (not the `initialRect` fallback, which
+// is only used before any measurement lands) to size its viewport, so
+// without this every row falls outside the "visible" range and none render.
+beforeAll(() => {
+  Object.defineProperty(HTMLElement.prototype, "offsetHeight", { configurable: true, writable: true, value: 600 });
+  Object.defineProperty(HTMLElement.prototype, "offsetWidth", { configurable: true, writable: true, value: 800 });
+});
 
 const mocks = vi.hoisted(() => ({
   open: vi.fn(), close: vi.fn(), edit: vi.fn(), stop: vi.fn(), list: vi.fn(),
@@ -133,6 +142,21 @@ describe("unified task table", () => {
       render(<Tasks />);
       expect(screen.getByText("Historical task")).toBeInTheDocument();
     } finally { mocks.tasks = original; }
+  });
+
+  it("renders only the rows near the viewport when there are thousands of tasks", () => {
+    const original = [...mocks.tasks];
+    const many = Array.from({ length: 3000 }, (_, i) => ({
+      id: `bulk-${i}`, title: `Bulk ${i}`, project_id: "alpha", status: "READY", priority: 100,
+    }));
+    mocks.tasks.splice(0, mocks.tasks.length, ...many);
+    try {
+      render(<Tasks />);
+      expect(screen.getByText("3000 tasks")).toBeInTheDocument();
+      const rows = document.querySelectorAll("[data-task-row]");
+      expect(rows.length).toBeGreaterThan(0);
+      expect(rows.length).toBeLessThan(200);
+    } finally { mocks.tasks.splice(0, mocks.tasks.length, ...original); }
   });
 
 });

@@ -238,4 +238,15 @@ describe("shared task workspace live snapshots", () => {
       dispose();
     }
   });
+
+  it("does not refetch the graph for session lifecycle frames", async () => {
+    const { result } = setup();
+    await waitFor(() => expect(result.current.data.tasks).toHaveLength(2));
+    expect(transport.get).toHaveBeenCalledTimes(1);
+    act(() => socket().receive({ _event_type: "session.started", project_id: "p1", session_id: "s1" }));
+    act(() => socket().receive({ _event_type: "session.exited", project_id: "p1", session_id: "s1" }));
+    // Past the 500 ms coalescing window: a scheduled refresh would have fired.
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 700)); });
+    expect(transport.get).toHaveBeenCalledTimes(1);
+  });
 });
