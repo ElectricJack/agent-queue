@@ -13,7 +13,16 @@ from src.database.tables import integration_branch_owners, workspaces
 from src.git.manager import GitError
 from src.integration.models import BranchKey, Fence
 from src.integration.ownership import BranchOwnership
-from src.models import Project, RepoConfig, RepoSourceType, SessionRecord, Task, Workspace
+from src.models import (
+    Agent,
+    AgentState,
+    Project,
+    RepoConfig,
+    RepoSourceType,
+    SessionRecord,
+    Task,
+    Workspace,
+)
 
 
 pytestmark = pytest.mark.asyncio
@@ -36,6 +45,15 @@ async def _orchestrator(orchestrator_factory, tmp_path):
             description="",
         )
     )
+    await db.create_agent(
+        Agent(
+            id="agent",
+            name="Worker",
+            profile_id="worker",
+            state=AgentState.BUSY,
+            current_task_id="task",
+        )
+    )
     base = Workspace(
         id="base",
         project_id="p",
@@ -47,6 +65,7 @@ async def _orchestrator(orchestrator_factory, tmp_path):
         project_id="p",
         workspace_path=str(tmp_path / "slot"),
         source_type=RepoSourceType.WORKTREE,
+        locked_by_agent_id="agent",
         locked_by_task_id="task",
         slot_index=0,
         base_workspace_id="base",
@@ -57,6 +76,7 @@ async def _orchestrator(orchestrator_factory, tmp_path):
         SessionRecord(
             id="session",
             task_id="task",
+            agent_id="agent",
             project_id="p",
             profile_id="worker",
             harness="codex",
@@ -293,6 +313,43 @@ async def test_success_stops_confirms_detaches_then_releases(
     ]
     assert (await orchestrator.db.get_workspace("slot")).locked_by_task_id is None
     assert (await orchestrator.db.get_session("session")).state == "stopped"
+    agent = await orchestrator.db.get_agent("agent")
+    assert agent.state is AgentState.IDLE
+    assert agent.current_task_id is None
+
+
+async def test_handoff_release_does_not_clear_a_reused_agent_binding(
+    orchestrator_factory, tmp_path, monkeypatch
+):
+    """Delayed proof must not clear an agent that was rebound to another task."""
+    orchestrator = await _orchestrator(orchestrator_factory, tmp_path)
+    await orchestrator.db.create_task(
+        Task(
+            id="replacement",
+            project_id="p",
+            repo_id="repo",
+            branch_name="aq/replacement",
+            title="Replacement",
+            description="",
+        )
+    )
+    await orchestrator.db.update_agent(
+        "agent", state=AgentState.BUSY, current_task_id="replacement"
+    )
+    events: list[str] = []
+    provider = _provider(events)
+    monkeypatch.setattr(orchestrator.session_providers, "create", lambda *_args: provider)
+    current_branch, run = _clean_git(events)
+    orchestrator.git.aget_current_branch = AsyncMock(side_effect=current_branch)
+    orchestrator.git._arun_unlocked = AsyncMock(side_effect=run)
+
+    confirmed = await orchestrator.aconfirm_integration_owner_handoff(_owner())
+
+    assert confirmed is True
+    assert (await orchestrator.db.get_workspace("slot")).locked_by_task_id is None
+    agent = await orchestrator.db.get_agent("agent")
+    assert agent.state is AgentState.BUSY
+    assert agent.current_task_id == "replacement"
 
 
 async def test_released_handoff_recovers_after_crash_without_touching_a_new_holder(

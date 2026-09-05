@@ -1599,6 +1599,7 @@ class TestEndToEndOnFakeProvider:
         self, db, real_orch, provider, tmp_path
     ):
         wd = await self._setup(db, tmp_path)
+        await db.update_agent("a1", current_task_id="t1")
         ownership, fence = await self._enable_hierarchy_launch(db, tmp_path)
         await ownership.transfer(fence, "collector", "collector")
         task = await db.get_task("t1")
@@ -1612,6 +1613,19 @@ class TestEndToEndOnFakeProvider:
 
         assert provider.starts == []
         assert await db.get_session_for_task("t1") is None
+        assert (await db.get_workspace("ws1")).locked_by_task_id is None
+        old_agent = await db.get_agent("a1")
+        assert old_agent.state is AgentState.IDLE
+        assert old_agent.current_task_id is None
+        current = await ownership.get_owner(
+            BranchKey(repository_id="repo", branch="aq/t1")
+        )
+        assert current["owner_id"] == "collector"
+        assert current["owner_role"] == "collector"
+        assert current["fence_token"] == fence.token + 1
+        assert current["handoff_state"] == "reserved"
+        assert current["session_id"] is None
+        assert current["workspace_id"] is None
 
     async def test_hierarchy_transfer_cannot_pass_provider_start_exclusion(
         self, db, real_orch, provider, tmp_path, monkeypatch
@@ -1731,6 +1745,7 @@ class TestEndToEndOnFakeProvider:
         self, db, real_orch, provider, tmp_path, monkeypatch
     ):
         wd = await self._setup(db, tmp_path)
+        await db.update_agent("a1", current_task_id="t1")
         _ownership, fence = await self._enable_hierarchy_launch(db, tmp_path)
         provider.script_startup_death("s-t1")
 
@@ -1748,6 +1763,9 @@ class TestEndToEndOnFakeProvider:
         unresolved = await BranchOwnership(db).get_owner(target)
         assert unresolved["handoff_state"] == "handoff_pending"
         assert (await db.get_workspace("ws1")).locked_by_task_id == "t1"
+        unresolved_agent = await db.get_agent("a1")
+        assert unresolved_agent.state is AgentState.BUSY
+        assert unresolved_agent.current_task_id == "t1"
 
         async def confirmed_stopped(_handle):
             return True
@@ -1758,6 +1776,9 @@ class TestEndToEndOnFakeProvider:
         ).transfer(fence, "collector", "collector")
         assert recovered.owner_id == "collector"
         assert (await db.get_workspace("ws1")).locked_by_task_id is None
+        old_agent = await db.get_agent("a1")
+        assert old_agent.state is AgentState.IDLE
+        assert old_agent.current_task_id is None
 
     async def test_hierarchy_crash_after_process_launch_leaves_starting_identity(
         self, db, real_orch, provider, tmp_path, monkeypatch

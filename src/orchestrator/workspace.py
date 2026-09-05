@@ -1159,6 +1159,33 @@ class WorkspaceMixin:
             return False
         return True
 
+    async def arelease_never_attached_integration_launch(
+        self, task, *, agent_id: str, workspace_id: str
+    ) -> bool:
+        """Release exact task resources after ownership won before attachment."""
+        project = await self.db.get_project(task.project_id)
+        repository_id = getattr(project, "integration_repository_id", None)
+        if (
+            getattr(project, "hierarchical_integration_mode", "disabled")
+            not in {"hierarchy", "train"}
+            or not repository_id
+            or task.repo_id != repository_id
+            or not task.branch_name
+        ):
+            return False
+        from src.orchestrator.workspace_attachments import (
+            release_never_attached_integration_launch,
+        )
+
+        return await release_never_attached_integration_launch(
+            self.db,
+            repository_id=repository_id,
+            branch=task.branch_name,
+            task_id=task.id,
+            agent_id=agent_id,
+            workspace_id=workspace_id,
+        )
+
     async def _cleanup_worktree_workspace(self, ws: Workspace) -> None:
         """Remove a *legacy* git worktree and delete its workspace record.
 

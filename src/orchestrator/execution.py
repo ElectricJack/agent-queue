@@ -924,8 +924,19 @@ class ExecutionMixin:
                         conn=conn,
                     )
             except Exception as exc:
+                unattached_resources_released = bool(
+                    ws_row
+                    and await self.arelease_never_attached_integration_launch(
+                        task,
+                        agent_id=action.agent_id,
+                        workspace_id=ws_row.id,
+                    )
+                )
                 await self._fail_session_launch(
-                    action, task, f"integration branch attachment refused: {exc}"
+                    action,
+                    task,
+                    f"integration branch attachment refused: {exc}",
+                    integration_resources_released=unattached_resources_released,
                 )
                 return
 
@@ -1036,13 +1047,21 @@ class ExecutionMixin:
         )
 
     async def _fail_session_launch(
-        self, action: AssignAction, task, reason: str, stderr_path: str | None = None
+        self,
+        action: AssignAction,
+        task,
+        reason: str,
+        stderr_path: str | None = None,
+        *,
+        integration_resources_released: bool = False,
     ) -> None:
         """Pause the task with a backoff after a failed session launch."""
         backoff = 60
         logger.error("Task %s: session launch failed -- %s", task.id, reason)
-        integration_released = await self.arelease_integration_writer_for_retry(
-            task, reason="session_launch_failed"
+        integration_released = integration_resources_released or (
+            await self.arelease_integration_writer_for_retry(
+                task, reason="session_launch_failed"
+            )
         )
         await self.db.transition_task(
             action.task_id,
@@ -1052,9 +1071,13 @@ class ExecutionMixin:
             assigned_agent_id=None,
         )
         if integration_released is not False:
-            await self.db.update_agent(
-                action.agent_id, state=AgentState.IDLE, current_task_id=None
-            )
+            if integration_released is None:
+                # Preserve the legacy unmanaged launch cleanup contract.
+                await self.db.update_agent(
+                    action.agent_id, state=AgentState.IDLE, current_task_id=None
+                )
+            else:
+                await self.db.release_agent_for_task(action.agent_id, action.task_id)
             await self._release_workspaces_for_task(action.task_id)
         detail = f"\nStartup output: `{stderr_path}`" if stderr_path else ""
         await self._emit_text_notify(

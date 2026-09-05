@@ -214,3 +214,52 @@ before tests because that pre-existing file imports removed `src.models.Playbook
 The exact error was `ImportError: cannot import name 'PlaybookRun' from 'src.models'`.
 No unrelated playbook/model change was made; claim command and hierarchy claim coverage
 above remained green.
+
+## Review fix round 2 (base `17aa0cf0`)
+
+The two remaining Important lifecycle findings were addressed without changing the four
+closed round-1 findings or adding Task 6 behavior:
+
+1. Durable handoff release now locks and validates the exact owner, stopped session,
+   workspace, task, and session-agent identity in one transaction. It releases the old
+   BUSY/current-task agent binding in that same transaction, but only through an exact
+   agent/task/state CAS. If the agent was rebound while external stop/Git proof was in
+   flight, the owner/workspace can still be released while the replacement binding is
+   preserved.
+2. A transfer that wins before startup attachment now uses a separate never-attached
+   cleanup transaction. It requires the new owner to remain reserved with no attached
+   session/workspace, requires no live session for the losing task, and CAS-matches the
+   losing workspace and BUSY agent to that exact task. It never mutates the collector's
+   owner row or fence. Attached, handoff-pending, and otherwise unknown writers continue
+   to retain their resources.
+
+The unmanaged launch-failure path retains its legacy agent cleanup behavior. Enabled
+hierarchy cleanup uses the task-scoped CAS; the reconciler runtime did not require a
+production change because it already reuses the same durable handoff confirmer.
+
+Focused RED evidence:
+
+- `aq test tests/test_session_commands.py tests/test_integration_workspace_handoff.py tests/test_session_reconciler.py -k 'hierarchy_transfer_winning_before_launch or hierarchy_failed_start_unknown_stop or success_stops_confirms_detaches_then_releases or handoff_release_does_not_clear_a_reused_agent_binding' -x`
+  — **2 failed** before implementation: the proven handoff left the exact old agent
+  `BUSY`, and the pre-attachment transfer left `ws1` locked by the losing task.
+
+Green and compatibility verification:
+
+- The same four-regression command after implementation — **4 passed**.
+- Re-running it after tightening the durable stopped-session/project checks — **4 passed**.
+- The initial affected-area run exposed two test-contract mismatches after **104 passed**:
+  the stale-STARTING fixture omitted the real launch record's `agent_id`, and legacy
+  unmanaged routing cleanup was inadvertently using the new task-scoped CAS. The fixture
+  now carries its exact agent identity and legacy cleanup remains unchanged.
+- `aq test tests/test_session_commands.py tests/test_integration_workspace_handoff.py tests/test_session_reconciler.py -k 'stale_hierarchy_starting_release_is_fenced_and_transferable or launch_rechecks_worker_after_workspace_preparation' -x`
+  — **2 passed**.
+- Final affected-area verification:
+  `aq test tests/test_session_commands.py tests/test_integration_workspace_handoff.py tests/test_session_reconciler.py -x`
+  — **196 passed**.
+- `ruff check src/orchestrator/workspace_attachments.py src/orchestrator/workspace.py src/orchestrator/execution.py tests/test_session_commands.py tests/test_integration_workspace_handoff.py`
+  — **All checks passed**.
+- `git diff --check` — clean.
+
+The strengthened tests assert the delayed-transfer agent is reusable, a rebound agent is
+not cleared by stale proof, the pre-attachment loser has no provider/session and releases
+its exact workspace/agent, and the collector owner identity/token/state remain unchanged.

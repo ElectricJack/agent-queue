@@ -13,8 +13,9 @@ from collections.abc import Callable
 
 from sqlalchemy import select, update
 
-from src.database.tables import integration_branch_owners, workspaces
+from src.database.tables import agents, integration_branch_owners, sessions, workspaces
 from src.models import (
+    AgentState,
     ResolvedRequirement,
     SYSTEM_KIND_SCOPE,
     Task,
@@ -82,6 +83,15 @@ async def mark_integration_handoff_released(
                 .with_for_update()
             )
         ).mappings().one_or_none()
+        session_row = None
+        if owner_row is not None and owner_row["session_id"]:
+            session_row = (
+                await conn.execute(
+                    select(sessions)
+                    .where(sessions.c.id == owner_row["session_id"])
+                    .with_for_update()
+                )
+            ).mappings().one_or_none()
         workspace_row = (
             await conn.execute(
                 select(workspaces)
@@ -91,13 +101,20 @@ async def mark_integration_handoff_released(
         ).mappings().one_or_none()
         if (
             owner_row is None
+            or session_row is None
             or workspace_row is None
             or owner_row["fence_token"] != owner.get("fence_token")
             or owner_row["owner_id"] != owner.get("owner_id")
             or owner_row["handoff_state"] != "handoff_pending"
             or owner_row["session_id"] != owner.get("session_id")
             or owner_row["workspace_id"] != workspace.id
+            or session_row["task_id"] != task_id
+            or session_row["state"] != "stopped"
+            or session_row["desired_state"] != "stopped"
+            or session_row["work_dir"] != workspace_row["workspace_path"]
+            or session_row["project_id"] != workspace_row["project_id"]
             or workspace_row["locked_by_task_id"] != task_id
+            or workspace_row["locked_by_agent_id"] != session_row["agent_id"]
         ):
             return False
 
@@ -106,6 +123,7 @@ async def mark_integration_handoff_released(
             .where(
                 integration_branch_owners.c.id == owner_row["id"],
                 integration_branch_owners.c.fence_token == owner_row["fence_token"],
+                integration_branch_owners.c.owner_id == owner_row["owner_id"],
                 integration_branch_owners.c.handoff_state == "handoff_pending",
                 integration_branch_owners.c.session_id == owner_row["session_id"],
                 integration_branch_owners.c.workspace_id == workspace.id,
@@ -123,6 +141,7 @@ async def mark_integration_handoff_released(
             .where(
                 workspaces.c.id == workspace.id,
                 workspaces.c.locked_by_task_id == task_id,
+                workspaces.c.locked_by_agent_id == session_row["agent_id"],
             )
             .values(
                 locked_by_agent_id=None,
@@ -131,8 +150,117 @@ async def mark_integration_handoff_released(
                 lock_mode=None,
             )
         )
+        if session_row["agent_id"] is not None:
+            # The agent may have been legitimately rebound while external
+            # stop/Git proof was in flight.  Release only the exact old
+            # assignment; a missed CAS must not disturb its new task.
+            await conn.execute(
+                update(agents)
+                .where(
+                    agents.c.id == session_row["agent_id"],
+                    agents.c.state == AgentState.BUSY.value,
+                    agents.c.current_task_id == task_id,
+                )
+                .values(state=AgentState.IDLE.value, current_task_id=None)
+            )
         if released_owner.rowcount != 1 or released_workspace.rowcount != 1:
             raise RuntimeError("integration handoff release lost its compare-and-swap")
+    return True
+
+
+async def release_never_attached_integration_launch(
+    db,
+    *,
+    repository_id: str,
+    branch: str,
+    task_id: str,
+    agent_id: str,
+    workspace_id: str,
+) -> bool:
+    """Release a losing launch only when no integration writer was attached.
+
+    This is deliberately separate from handoff confirmation: a collector may
+    win after workspace preparation but before the starting-session/owner CAS.
+    In that case there is no process to stop.  The current owner must itself
+    prove that fact by remaining reserved with no session or workspace.
+    """
+    async with db.immediate() as conn:
+        owner_row = (
+            await conn.execute(
+                select(integration_branch_owners)
+                .where(
+                    integration_branch_owners.c.repository_id == repository_id,
+                    integration_branch_owners.c.ref == branch,
+                )
+                .with_for_update()
+            )
+        ).mappings().one_or_none()
+        workspace_row = (
+            await conn.execute(
+                select(workspaces)
+                .where(workspaces.c.id == workspace_id)
+                .with_for_update()
+            )
+        ).mappings().one_or_none()
+        agent_row = (
+            await conn.execute(
+                select(agents).where(agents.c.id == agent_id).with_for_update()
+            )
+        ).mappings().one_or_none()
+        live_session = (
+            await conn.execute(
+                select(sessions.c.id)
+                .where(
+                    sessions.c.task_id == task_id,
+                    sessions.c.state != "stopped",
+                )
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+        if (
+            owner_row is None
+            or (
+                owner_row["owner_id"] == task_id
+                and owner_row["owner_role"] == "worker"
+            )
+            or owner_row["handoff_state"] != "reserved"
+            or owner_row["session_id"] is not None
+            or owner_row["workspace_id"] is not None
+            or workspace_row is None
+            or workspace_row["locked_by_task_id"] != task_id
+            or workspace_row["locked_by_agent_id"] != agent_id
+            or agent_row is None
+            or agent_row["state"] != AgentState.BUSY.value
+            or agent_row["current_task_id"] != task_id
+            or live_session is not None
+        ):
+            return False
+
+        released_workspace = await conn.execute(
+            update(workspaces)
+            .where(
+                workspaces.c.id == workspace_id,
+                workspaces.c.locked_by_task_id == task_id,
+                workspaces.c.locked_by_agent_id == agent_id,
+            )
+            .values(
+                locked_by_agent_id=None,
+                locked_by_task_id=None,
+                locked_at=None,
+                lock_mode=None,
+            )
+        )
+        released_agent = await conn.execute(
+            update(agents)
+            .where(
+                agents.c.id == agent_id,
+                agents.c.state == AgentState.BUSY.value,
+                agents.c.current_task_id == task_id,
+            )
+            .values(state=AgentState.IDLE.value, current_task_id=None)
+        )
+        if released_workspace.rowcount != 1 or released_agent.rowcount != 1:
+            raise RuntimeError("unattached integration launch release lost its compare-and-swap")
     return True
 
 

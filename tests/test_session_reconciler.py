@@ -565,6 +565,7 @@ class TestExitHandling:
             provider,
             started_at=NOW - 100,
             state="starting",
+            agent_id="a1",
         )
         await db.update_session(row.id, work_dir=str(tmp_path))
         row = await db.get_session(row.id)
