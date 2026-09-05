@@ -542,6 +542,10 @@ class HierarchyQueryMixin:
         Python, which cost ~6 ms of SQL plus the graph build per call and
         grew with the whole database rather than the subtree (93 ms per
         ``set_parent`` at 14k edges).
+
+        Unlike the whole-graph check it replaced, this only detects a cycle
+        the new edge would close; a graph that is already cyclic from drift
+        is not rejected here.
         """
         from src.models import BLOCKING_DEP_TYPES
 

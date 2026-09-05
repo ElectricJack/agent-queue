@@ -7,13 +7,13 @@ import re
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from sqlalchemy import event, select
+from sqlalchemy import event, insert, select
 
 from src.commands.handler import CommandHandler
 from src.config import AppConfig, DiscordConfig
 from src.database import Database
 from src.database.queries.hierarchy_queries import HierarchyError
-from src.database.tables import task_metadata
+from src.database.tables import task_dependencies, task_metadata
 from src.models import (
     Agent,
     AgentProfile,
@@ -754,10 +754,15 @@ async def test_set_parent_cycle_check_follows_long_blocking_chains(db):
     await db.create_task(Task(id="p", project_id=PROJECT_ID, title="p", description=""))
     for i in range(300):
         await db.create_task(Task(id=f"c{i}", project_id=PROJECT_ID, title="", description=""))
-        if i:
-            await db.add_dependency(f"c{i}", f"c{i-1}", DepType.BLOCKS.value)
-    # c0 blocks-on p, so p is reachable from every c{i} over the blocking chain.
-    await db.add_dependency("c0", "p", DepType.BLOCKS.value)
+    # The chain edges are inserted directly (bypassing add_dependency's own
+    # per-call DAG validation) because this test exercises set_parent's
+    # reachability walk, not add_dependency.
+    rows = [
+        {"task_id": f"c{i}", "depends_on_task_id": f"c{i - 1}", "dep_type": DepType.BLOCKS.value}
+        for i in range(1, 300)
+    ] + [{"task_id": "c0", "depends_on_task_id": "p", "dep_type": DepType.BLOCKS.value}]
+    async with db._engine.begin() as conn:
+        await conn.execute(insert(task_dependencies), rows)
 
     async with db._engine.begin() as conn:
         with pytest.raises(HierarchyError, match="cycle"):
