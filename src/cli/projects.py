@@ -8,6 +8,7 @@ multiple API calls or provide friendly key aliasing.
 from __future__ import annotations
 
 from typing import Any
+from uuid import uuid4
 
 import click
 
@@ -28,6 +29,91 @@ def _getval(obj: Any, key: str, default: Any = None) -> Any:
 def project() -> None:
     """Project management commands."""
     pass
+
+
+@project.command("onboard")
+@click.option("--request-id", help="Durable idempotency key (generated when omitted).")
+@click.option(
+    "--source-mode",
+    type=click.Choice(["link", "init", "github_clone"]),
+    default="link",
+    show_default=True,
+)
+@click.option("--root-id", required=True, help="Configured project root id.")
+@click.option("--relative-path", required=True, help="Destination relative to the root.")
+@click.option("--project-name", required=True, help="Human-readable project name.")
+@click.option("--project-id", required=True, help="Normalized project slug.")
+@click.option("--default-branch", help="Detected/default branch override.")
+@click.option("--create-readme/--no-create-readme", default=True, show_default=True)
+@click.option("--create-github/--no-create-github", default=False, show_default=True)
+@click.option("--github-owner")
+@click.option("--github-repo")
+@click.option(
+    "--github-visibility",
+    type=click.Choice(["private", "public"]),
+    default="private",
+    show_default=True,
+)
+@click.option("--github-repository", help="Discovered GitHub repository as OWNER/NAME.")
+@click.option("--github-url", help="GitHub HTTPS/SSH URL or OWNER/NAME shorthand.")
+@click.pass_context
+@_handle_errors
+def project_onboard(
+    ctx: click.Context,
+    request_id: str | None,
+    source_mode: str,
+    root_id: str,
+    relative_path: str,
+    project_name: str,
+    project_id: str,
+    default_branch: str | None,
+    create_readme: bool,
+    create_github: bool,
+    github_owner: str | None,
+    github_repo: str | None,
+    github_visibility: str,
+    github_repository: str | None,
+    github_url: str | None,
+) -> None:
+    """Link or initialize a repository and register its AQ project."""
+    api_url = ctx.obj.get("api_url") if ctx.obj else None
+    args: dict[str, Any] = {
+        "request_id": request_id or str(uuid4()),
+        "source_mode": source_mode,
+        "root_id": root_id,
+        "relative_path": relative_path,
+        "project_name": project_name,
+        "project_id": project_id,
+        "default_branch": default_branch,
+    }
+    if source_mode == "init":
+        args.update(create_readme=create_readme, create_github=create_github)
+        if create_github:
+            args["github_owner"] = github_owner
+            if github_repo is not None:
+                args["github_repo"] = github_repo
+            args["github_visibility"] = github_visibility
+    elif source_mode == "github_clone":
+        if github_repository:
+            try:
+                owner, name = github_repository.split("/", 1)
+            except ValueError as exc:
+                raise click.UsageError("--github-repository must be OWNER/NAME") from exc
+            args["github_repository"] = {"owner": owner, "name": name}
+        if github_url:
+            args["github_url"] = github_url
+
+    async def _onboard():
+        async with _get_client(api_url) as client:
+            return await client.execute("onboard_project", args)
+
+    result = _run(_onboard())
+    console.print(
+        "[green]Onboarded[/] "
+        f"[bold cyan]{_getval(result, 'project_id')}[/] "
+        f"(workspace {_getval(result, 'workspace_id')})\n"
+        f"[dim]{_getval(result, 'canonical_path')}[/]"
+    )
 
 
 @project.command("details")

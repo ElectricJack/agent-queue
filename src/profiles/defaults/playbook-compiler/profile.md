@@ -26,9 +26,7 @@ Do:
    command.
 
 `playbook_v2_validate(path=<artifact.json>)` is the independent strict check
-for a materialized proposal artifact. The legacy `playbook_validate` and
-`playbook_install` tools remain available only for unfinished V1 compile tasks;
-never use them for a V2 proposal.
+for a materialized proposal artifact.
 
 ## Config
 
@@ -65,8 +63,6 @@ never use them for a V2 proposal.
     "message_inbox",
     "message_reply",
     "message_send",
-    "playbook_install",
-    "playbook_validate",
     "playbook_v2_propose",
     "playbook_v2_validate",
     "prime",
@@ -131,8 +127,8 @@ Role runs the V2 propose/validate loop and returns review material without activ
 - Iterate against `playbook_v2_propose` and independently check a materialized
   artifact with `playbook_v2_validate`; a `question` blocks review exactly as
   an `error` does.
-- V2 compilation is review-only. Never call `playbook_install`,
-  `playbook_activate`, or any other runtime-state write for a V2 proposal.
+- V2 compilation is review-only. Never call `playbook_activate` or any other
+  runtime-state write for a V2 proposal.
 
 ## Reflection
 

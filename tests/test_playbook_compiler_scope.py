@@ -14,8 +14,6 @@ from src.models import Agent, AgentProfile, AgentState, Project, SessionRecord, 
 pytestmark = pytest.mark.asyncio
 
 COMPILER_COMMANDS = [
-    "playbook_validate",
-    "playbook_install",
     "playbook_v2_validate",
     "playbook_v2_propose",
 ]
@@ -111,15 +109,15 @@ async def test_stale_or_changed_assignment_loses_compiler_capabilities(compiler,
     else:
         await compiler.update_agent("compiler", state=AgentState.IDLE, current_task_id=None)
     assert (
-        await check_request_scope("playbook_install", {}, scope(), db=compiler)
-        == "out of scope: playbook_install"
+        await check_request_scope("playbook_v2_validate", {}, scope(), db=compiler)
+        == "out of scope: playbook_v2_validate"
     )
 
 
 async def test_compiler_cannot_spoof_another_identity(compiler):
     args = {"task_id": "worker-task"}
     assert (
-        await check_request_scope("playbook_install", args, scope(), db=compiler)
+        await check_request_scope("playbook_v2_validate", args, scope(), db=compiler)
         == "out of scope: task_id mismatch"
     )
 

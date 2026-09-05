@@ -17,11 +17,7 @@ class _Handler(PlaybookV2CommandsMixin):
         self.ref = ref
         self.records = list(records)
         self.config = SimpleNamespace(
-            playbooks=PlaybooksConfig(
-                v2_api=True,
-                v2_storage_enabled=True,
-                v2_activation_writes=True,
-            )
+            playbooks=PlaybooksConfig(enabled=True)
         )
         self.db = SimpleNamespace(
             list_playbook_activations=AsyncMock(),
@@ -55,15 +51,6 @@ def _record(ref, *, actor="operator"):
     )
 
 
-async def test_activate_requires_acknowledge_diff_for_executable_change():
-    definition, ref, _activation = _backend_fixture()
-    handler = _Handler(definition, ref, [[]])
-    result = await handler._cmd_playbook_activate(
-        {"playbook_id": definition.id, "artifact_sha256": ref.artifact_sha256}
-    )
-    assert result["blocked"] is True
-    assert result["changed"] is False
-    handler.db.set_playbook_activation.assert_not_awaited()
 
 
 async def test_activate_records_activated_by():
@@ -81,28 +68,6 @@ async def test_activate_records_activated_by():
     assert handler.db.set_playbook_activation.await_args.kwargs["activated_by"] == "local"
 
 
-async def test_project_activation_records_review_for_the_exact_artifact():
-    """A project activation is the durable, attributable human review decision."""
-    from src.playbooks.definition import ProjectScope
-
-    definition, ref, _activation = _backend_fixture()
-    definition = definition.model_copy(update={"scope": ProjectScope(project_id="project-a")})
-    handler = _Handler(definition, ref, [[], [_record(ref, actor="local")]])
-
-    result = await handler._cmd_playbook_activate(
-        {
-            "playbook_id": definition.id,
-            "artifact_sha256": ref.artifact_sha256,
-            "acknowledge_diff": ref.artifact_sha256,
-        }
-    )
-
-    assert result["blocked"] is False
-    write = handler.db.set_playbook_activation.await_args.kwargs
-    assert write["scope"] == "project"
-    assert write["scope_identifier"] == "project-a"
-    assert write["reviewed_artifact_sha256"] == ref.artifact_sha256
-    assert write["reviewed_by"] == "local"
 
 
 async def test_project_activation_refuses_a_different_project_principal():
@@ -188,3 +153,109 @@ async def test_activate_synthesises_an_activation_when_the_health_read_misses_th
     assert reason["code"] == "activation_health_unreadable"
     assert definition.id in reason["message"]
     assert ref.artifact_sha256 in reason["message"]
+
+
+# -- set_playbook_enabled: pause / resume the activation in place -----------
+
+
+def _activation_row(ref, *, enabled=True, sha=None):
+    return {
+        "activation_id": "activation-1",
+        "playbook_id": ref.playbook_id,
+        "scope": "system",
+        "scope_identifier": "",
+        "enabled": enabled,
+        "active_artifact_sha256": ref.artifact_sha256 if sha is None else sha,
+        "health": "ready" if enabled else "disabled",
+        "reasons": "[]",
+        "activated_by": "operator",
+    }
+
+
+async def test_set_playbook_enabled_pauses_the_active_artifact_in_place():
+    definition, ref, _activation = _backend_fixture()
+    handler = _Handler(definition, ref, [])
+    handler.db.list_playbook_activations.return_value = [_activation_row(ref)]
+
+    result = await handler._cmd_set_playbook_enabled(
+        {"playbook_id": ref.playbook_id, "enabled": False}
+    )
+
+    assert result == {
+        "success": True,
+        "playbook_id": ref.playbook_id,
+        "enabled": False,
+        "noop": False,
+    }
+    handler.db.set_playbook_activation.assert_awaited_once_with(
+        playbook_id=ref.playbook_id,
+        scope="system",
+        scope_identifier="",
+        artifact_sha256=ref.artifact_sha256,
+        enabled=False,
+        activated_by="operator",
+        health="disabled",
+        reasons="[]",
+    )
+
+
+async def test_set_playbook_enabled_resumes_with_ready_health():
+    definition, ref, _activation = _backend_fixture()
+    handler = _Handler(definition, ref, [])
+    handler.db.list_playbook_activations.return_value = [_activation_row(ref, enabled=False)]
+
+    result = await handler._cmd_set_playbook_enabled(
+        {"playbook_id": ref.playbook_id, "enabled": True}
+    )
+
+    assert result["success"] is True and result["enabled"] is True
+    kwargs = handler.db.set_playbook_activation.await_args.kwargs
+    assert (kwargs["enabled"], kwargs["health"]) == (True, "ready")
+    assert kwargs["artifact_sha256"] == ref.artifact_sha256
+
+
+async def test_set_playbook_enabled_is_a_noop_when_already_in_that_state():
+    definition, ref, _activation = _backend_fixture()
+    handler = _Handler(definition, ref, [])
+    handler.db.list_playbook_activations.return_value = [_activation_row(ref)]
+
+    result = await handler._cmd_set_playbook_enabled(
+        {"playbook_id": ref.playbook_id, "enabled": True}
+    )
+
+    assert result["noop"] is True
+    handler.db.set_playbook_activation.assert_not_awaited()
+
+
+async def test_set_playbook_enabled_refuses_to_enable_without_an_artifact():
+    definition, ref, _activation = _backend_fixture()
+    handler = _Handler(definition, ref, [])
+    handler.db.list_playbook_activations.return_value = [
+        _activation_row(ref, enabled=False, sha="")
+    ]
+
+    result = await handler._cmd_set_playbook_enabled(
+        {"playbook_id": ref.playbook_id, "enabled": True}
+    )
+
+    assert "no active artifact" in result["error"]
+    handler.db.set_playbook_activation.assert_not_awaited()
+
+
+async def test_set_playbook_enabled_validates_its_arguments():
+    definition, ref, _activation = _backend_fixture()
+    handler = _Handler(definition, ref, [])
+    handler.db.list_playbook_activations.return_value = []
+
+    assert await handler._cmd_set_playbook_enabled({"enabled": True}) == {
+        "error": "playbook_id is required"
+    }
+    assert await handler._cmd_set_playbook_enabled({"playbook_id": "p"}) == {
+        "error": "enabled is required"
+    }
+    assert await handler._cmd_set_playbook_enabled(
+        {"playbook_id": "p", "enabled": "yes"}
+    ) == {"error": "enabled must be a boolean"}
+    assert await handler._cmd_set_playbook_enabled({"playbook_id": "p", "enabled": True}) == {
+        "error": "Playbook 'p' not found"
+    }

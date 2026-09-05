@@ -53,6 +53,7 @@ SHIPPED_SOURCES: dict[str, str] = {
     "default-assignment-routing": "src/prompts/default_playbooks/default-assignment-routing.md",
     "memory-consolidation": "src/prompts/default_playbooks/memory-consolidation.md",
     "pr-merge-sweep": "src/prompts/project_playbooks/agent-queue/pr-merge-sweep.md",
+    "ci-main-sentinel": "src/prompts/project_playbooks/agent-queue/ci-main-sentinel.md",
 }
 
 PLAYBOOK_IDS = tuple(SHIPPED_SOURCES)

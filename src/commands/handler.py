@@ -77,6 +77,7 @@ from src.commands.surface_commands import SurfaceCommandsMixin
 from src.commands.ops_commands import OpsCommandsMixin
 from src.commands.worktree_commands import WorktreeCommandsMixin
 from src.commands.git_commands import GitCommandsMixin
+from src.commands.ci_commands import CiCommandsMixin
 
 # -- dv2 phase 6 mixins ---------------------------------------------------
 from src.commands.proposal_commands import TaskProposalCommandsMixin
@@ -175,14 +176,12 @@ PLAYBOOKS_PAUSED_ERROR = "playbooks are paused (playbooks.enabled=false)"
 
 PAUSED_PLAYBOOK_COMMANDS: frozenset[str] = frozenset(
     {
-        # src/commands/playbook_commands.py (17)
+        # src/commands/playbook_commands.py (12)
         "list_playbooks",
         "list_playbook_runs",
         "inspect_playbook_run",
         "resume_playbook",
         "cancel_playbook_run",
-        "recover_workflow",
-        "compile_playbook",
         "show_playbook_graph",
         "run_playbook",
         "dry_run_playbook",
@@ -191,8 +190,6 @@ PAUSED_PLAYBOOK_COMMANDS: frozenset[str] = frozenset(
         "get_playbook_source",
         "update_playbook_source",
         "set_playbook_enabled",
-        "create_playbook",
-        "delete_playbook",
         # src/commands/workflow_commands.py (5)
         "create_workflow",
         "get_workflow",
@@ -353,6 +350,7 @@ class CommandHandler(
     WorktreeCommandsMixin,
     # -- dv2 phase 2 mixins -----------------------------------------------
     GitCommandsMixin,
+    CiCommandsMixin,
     # -- dv2 phase 6 mixins -----------------------------------------------
     TaskProposalCommandsMixin,
     SpecCommandsMixin,

@@ -3,6 +3,8 @@ import { useAgentFlock } from "../../api/agents";
 import { selectionAddress, useAgentSelection } from "./useAgentSelection";
 import AgentWindow from "./AgentWindow";
 import AddAgent from "./AddAgent";
+import AddPool from "./AddPool";
+import CreateChoice from "./CreateChoice";
 import PoolWindow from "./PoolWindow";
 import { usePoolFlock } from "./pools";
 
@@ -22,13 +24,21 @@ export default function AgentWorkspace() {
           <h1 className="text-lg font-semibold text-gray-100">Agent flock</h1>
           <p className="mt-0.5 text-xs text-gray-500">Global workers shared across projects. Shift-click agents to tile up to four views.</p>
         </div>
-        <button type="button" aria-expanded={adding} onClick={() => setAdding(!adding)}
+        <button type="button" aria-label="Create agent or pool" aria-expanded={adding !== null}
+          onClick={() => setAdding(adding ? null : "choice")}
           className="flex shrink-0 items-center gap-1.5 rounded border border-gray-700 px-3 py-2 text-xs text-gray-300 hover:bg-gray-800">
-          <PlusIcon className="h-3.5 w-3.5" />Add agent
+          <PlusIcon className="h-3.5 w-3.5" />Create
         </button>
       </header>
       )}
-      {adding && <AddAgent onCancel={() => setAdding(false)} onCreated={(id) => select(id)} />}
+      {adding === "choice" && <CreateChoice onChoose={setAdding} onCancel={() => setAdding(null)} />}
+      {adding === "agent" && (
+        <AddAgent onCancel={() => setAdding(null)} onCreated={(id) => select(id)}
+          onSwitchToPool={() => setAdding("pool")} />
+      )}
+      {adding === "pool" && (
+        <AddPool onCancel={() => setAdding(null)} onCreated={(poolKey) => select(poolKey)} />
+      )}
       {error && (
         <div role="alert" className="rounded border border-red-900 bg-red-950/30 p-3 text-sm text-red-300">
           Could not load the agent flock: {error.message}{" "}

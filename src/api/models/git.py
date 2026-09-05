@@ -180,7 +180,31 @@ class PrMergeResponse(BaseModel):
     ci: PrMergeCiVerdict | None = None
 
 
+class CiBaselineStatusResponse(BaseModel):
+    success: bool = True
+    project_id: str = ""
+    ref: str = ""
+    head_sha: str | None = None
+    state: str = "unknown"
+    failing_checks: list[str] = []
+    pending_checks: list[str] = []
+    failing_tests: list[str] = []
+    run_url: str | None = None
+    signature: str | None = None
+    attempt: int = 0
+    prior_attempts: list[str] = []
+    escalated: bool = False
+    dedup_key: str | None = None
+    title: str | None = None
+    description: str | None = None
+    escalation_key: str | None = None
+    escalation_title: str | None = None
+    escalation_question: str | None = None
+    error: str | None = None
+
+
 RESPONSE_MODELS: dict[str, type[BaseModel]] = {
+    "ci_baseline_status": CiBaselineStatusResponse,
     "checkout_branch": CheckoutBranchResponse,
     "commit_changes": CommitChangesResponse,
     "create_branch": CreateBranchResponse,

@@ -51,7 +51,6 @@ vi.mock("../../api/hooks", () => ({
   }),
   usePlaybookRuns: () => ({ data: [], isLoading: false }),
   useUpdatePlaybookSource: () => ({ mutateAsync: vi.fn(), isPending: false }),
-  useDeletePlaybook: () => ({ mutateAsync: vi.fn(), isPending: false }),
   usePlaybookV2Graph: () => ({ ...state.semanticGraph, refetch: vi.fn() }),
   usePlaybookActivationHealth: () => state.activationHealth,
   usePlaybookArtifacts: () => ({ data: { artifacts: [] } }),
@@ -60,6 +59,7 @@ vi.mock("../../api/hooks", () => ({
   useSetPlaybookActivation: () => ({ mutate: vi.fn() }),
   usePlaybookPendingEventAction: () => ({ mutate: vi.fn() }),
   usePlaybookRunOverlay: () => ({ data: undefined }),
+  useSavePlaybookGraphLayout: () => ({ mutate: vi.fn() }),
 }));
 
 function page() {

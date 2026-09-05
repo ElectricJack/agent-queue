@@ -37,7 +37,7 @@ def _handler(tmp_path: Path, *, enabled: bool = True) -> CommandHandler:
     config = MagicMock()
     config.data_dir = str(tmp_path)
     config.vault_root = str(tmp_path / "vault")
-    config.playbooks = _Playbooks(v2_compiler_enabled=enabled)
+    config.playbooks = _Playbooks(enabled=enabled)
     return CommandHandler(orchestrator, config)
 
 

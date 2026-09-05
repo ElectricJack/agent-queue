@@ -3485,6 +3485,53 @@
         }
       }
     },
+    "/api/git/ci-baseline-status": {
+      "post": {
+        "tags": [
+          "git"
+        ],
+        "summary": "Read the CI verdict for a project's default branch head (or ``ref``): green / red / pending / unknown, the failing checks and pytest node ids, and a failure signature.  Read-only.  When red it also returns the deduplication key, title and description of the repair task the ci-main-sentinel playbook files, and ``escalated`` once the same signature has already burned two repair attempts.",
+        "description": "Read the CI verdict for a project's default branch head (or ``ref``): green / red / pending / unknown, the failing checks and pytest node ids, and a failure signature.  Read-only.  When red it also returns the deduplication key, title and description of the repair task the ci-main-sentinel playbook files, and ``escalated`` once the same signature has already burned two repair attempts.",
+        "operationId": "ci_baseline_status",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CiBaselineStatusRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CiBaselineStatusResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/git/commit-changes": {
       "post": {
         "tags": [
@@ -5598,147 +5645,6 @@
         }
       }
     },
-    "/api/playbook/compile": {
-      "post": {
-        "tags": [
-          "playbook"
-        ],
-        "summary": "Manually trigger compilation of a playbook markdown file. Provide the full markdown content (including YAML frontmatter) or a file path. Returns the compiled playbook metadata on success, or detailed errors on failure.",
-        "description": "Manually trigger compilation of a playbook markdown file. Provide the full markdown content (including YAML frontmatter) or a file path. Returns the compiled playbook metadata on success, or detailed errors on failure.",
-        "operationId": "compile_playbook",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/CompilePlaybookRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/CompilePlaybookResponse"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Command error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "properties": {
-                    "error": {
-                      "type": "string"
-                    }
-                  },
-                  "type": "object"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/playbook/create": {
-      "post": {
-        "tags": [
-          "playbook"
-        ],
-        "summary": "Create a new playbook markdown file in the vault at the scope-appropriate location. Does NOT compile \u2014 authors iterate on the source and compile explicitly via update_playbook_source (or let the vault watcher pick it up). Fails if a playbook with the same id already exists anywhere in the vault.",
-        "description": "Create a new playbook markdown file in the vault at the scope-appropriate location. Does NOT compile \u2014 authors iterate on the source and compile explicitly via update_playbook_source (or let the vault watcher pick it up). Fails if a playbook with the same id already exists anywhere in the vault.",
-        "operationId": "create_playbook",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/CreatePlaybookRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/CreatePlaybookResponse"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Command error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "properties": {
-                    "error": {
-                      "type": "string"
-                    }
-                  },
-                  "type": "object"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/playbook/delete": {
-      "post": {
-        "tags": [
-          "playbook"
-        ],
-        "summary": "Archive a playbook's source file to vault/trash/playbooks/ and remove it from the active registry. Historical playbook_runs rows are preserved.",
-        "description": "Archive a playbook's source file to vault/trash/playbooks/ and remove it from the active registry. Historical playbook_runs rows are preserved.",
-        "operationId": "delete_playbook",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/DeletePlaybookRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/DeletePlaybookResponse"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Command error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "properties": {
-                    "error": {
-                      "type": "string"
-                    }
-                  },
-                  "type": "object"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
     "/api/playbook/dry-run": {
       "post": {
         "tags": [
@@ -6303,53 +6209,6 @@
         }
       }
     },
-    "/api/playbook/install": {
-      "post": {
-        "tags": [
-          "playbook"
-        ],
-        "summary": "Install a compiled playbook artifact into the live registry. Re-validates server-side before installing (a caller's own validation is not trusted), refuses a markdown source, and refuses an artifact whose ``id`` does not match the requested playbook_id. Paths outside the vault root are refused.",
-        "description": "Install a compiled playbook artifact into the live registry. Re-validates server-side before installing (a caller's own validation is not trusted), refuses a markdown source, and refuses an artifact whose ``id`` does not match the requested playbook_id. Paths outside the vault root are refused.",
-        "operationId": "playbook_install",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/PlaybookInstallRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/PlaybookInstallResponse"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Command error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "properties": {
-                    "error": {
-                      "type": "string"
-                    }
-                  },
-                  "type": "object"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
     "/api/playbook/pending-event-action": {
       "post": {
         "tags": [
@@ -6423,51 +6282,6 @@
                 "schema": {
                   "$ref": "#/components/schemas/ListPlaybookPendingEventsResponse"
                 }
-              }
-            }
-          },
-          "422": {
-            "description": "Command error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "properties": {
-                    "error": {
-                      "type": "string"
-                    }
-                  },
-                  "type": "object"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/playbook/release-check": {
-      "post": {
-        "tags": [
-          "playbook"
-        ],
-        "summary": "Check that every reviewed V2 artifact still matches the command contracts it was compiled against. Compares the checked-in reviewed fixtures and every enabled activation against the live registry, and names each command whose execution fingerprint moved. Offline and read-only: no network, no LLM, no compile. A presentation-only label change does not trip it. Fails closed: any evidence source the daemon could not read appears in evidence_errors, any enabled activation it could not compare appears in unverified, and both block \u2014 an unread activation table is never reported as a clean fleet.",
-        "description": "Check that every reviewed V2 artifact still matches the command contracts it was compiled against. Compares the checked-in reviewed fixtures and every enabled activation against the live registry, and names each command whose execution fingerprint moved. Offline and read-only: no network, no LLM, no compile. A presentation-only label change does not trip it. Fails closed: any evidence source the daemon could not read appears in evidence_errors, any enabled activation it could not compare appears in unverified, and both block \u2014 an unread activation table is never reported as a clean fleet.",
-        "operationId": "playbook_release_check",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/PlaybookReleaseCheckRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {}
               }
             }
           },
@@ -6771,100 +6585,6 @@
         }
       }
     },
-    "/api/playbook/validate": {
-      "post": {
-        "tags": [
-          "playbook"
-        ],
-        "summary": "Validate a playbook file inside the vault. A ``.md`` source is checked for YAML frontmatter only and comes back with ``requires_compile: true`` \u2014 compiling it is a separate, agent-produced step. A ``.json`` artifact is fully validated against the compiled-playbook schema. Errors are returned as structured ``{node, field, message}`` rows, not prose. Paths outside the vault root are refused.",
-        "description": "Validate a playbook file inside the vault. A ``.md`` source is checked for YAML frontmatter only and comes back with ``requires_compile: true`` \u2014 compiling it is a separate, agent-produced step. A ``.json`` artifact is fully validated against the compiled-playbook schema. Errors are returned as structured ``{node, field, message}`` rows, not prose. Paths outside the vault root are refused.",
-        "operationId": "playbook_validate",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/PlaybookValidateRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/PlaybookValidateResponse"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Command error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "properties": {
-                    "error": {
-                      "type": "string"
-                    }
-                  },
-                  "type": "object"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/playbook/recover-workflow": {
-      "post": {
-        "tags": [
-          "playbook"
-        ],
-        "summary": "Recover an orphaned coordination workflow whose playbook run has died (crashed, failed, timed out). If the playbook was paused waiting for stage completion and all tasks are done, re-emits the missed event to resume the playbook. If the playbook run failed, emits a workflow.orphaned event for manual intervention. Tasks in the workflow continue executing independently regardless of playbook state.",
-        "description": "Recover an orphaned coordination workflow whose playbook run has died (crashed, failed, timed out). If the playbook was paused waiting for stage completion and all tasks are done, re-emits the missed event to resume the playbook. If the playbook run failed, emits a workflow.orphaned event for manual intervention. Tasks in the workflow continue executing independently regardless of playbook state.",
-        "operationId": "recover_workflow",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/RecoverWorkflowRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/RecoverWorkflowResponse"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Command error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "properties": {
-                    "error": {
-                      "type": "string"
-                    }
-                  },
-                  "type": "object"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
     "/api/playbook/resume": {
       "post": {
         "tags": [
@@ -6964,8 +6684,8 @@
         "tags": [
           "playbook"
         ],
-        "summary": "Toggle a playbook's `enabled` frontmatter flag. When set to false, trigger events stop spawning new runs and run_playbook refuses unless force=true. In-flight runs are not cancelled \u2014 disabling means stop new starts, not preempt existing instances.",
-        "description": "Toggle a playbook's `enabled` frontmatter flag. When set to false, trigger events stop spawning new runs and run_playbook refuses unless force=true. In-flight runs are not cancelled \u2014 disabling means stop new starts, not preempt existing instances.",
+        "summary": "Pause or resume a playbook's activation. When set to false, trigger events stop spawning new runs of the active artifact; the artifact stays activated and enabled=true resumes it. In-flight runs are not cancelled \u2014 disabling means stop new starts, not preempt existing instances.",
+        "description": "Pause or resume a playbook's activation. When set to false, trigger events stop spawning new runs of the active artifact; the artifact stays activated and enabled=true resumes it. In-flight runs are not cancelled \u2014 disabling means stop new starts, not preempt existing instances.",
         "operationId": "set_playbook_enabled",
         "requestBody": {
           "content": {
@@ -15312,6 +15032,222 @@
         ],
         "title": "CheckoutBranchResponse"
       },
+      "CiBaselineStatusRequest": {
+        "properties": {
+          "project_id": {
+            "type": "string",
+            "title": "Project Id",
+            "description": "Project whose repository to read."
+          },
+          "ref": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ref",
+            "description": "Branch or sha to judge. Default: the project's default branch."
+          },
+          "max_attempts": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Attempts",
+            "description": "Repair attempts per failure signature before escalating. Default 2."
+          }
+        },
+        "type": "object",
+        "required": [
+          "project_id"
+        ],
+        "title": "CiBaselineStatusRequest"
+      },
+      "CiBaselineStatusResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "project_id": {
+            "type": "string",
+            "title": "Project Id",
+            "default": ""
+          },
+          "ref": {
+            "type": "string",
+            "title": "Ref",
+            "default": ""
+          },
+          "head_sha": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Head Sha"
+          },
+          "state": {
+            "type": "string",
+            "title": "State",
+            "default": "unknown"
+          },
+          "failing_checks": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Failing Checks",
+            "default": []
+          },
+          "pending_checks": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Pending Checks",
+            "default": []
+          },
+          "failing_tests": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Failing Tests",
+            "default": []
+          },
+          "run_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Run Url"
+          },
+          "signature": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Signature"
+          },
+          "attempt": {
+            "type": "integer",
+            "title": "Attempt",
+            "default": 0
+          },
+          "prior_attempts": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Prior Attempts",
+            "default": []
+          },
+          "escalated": {
+            "type": "boolean",
+            "title": "Escalated",
+            "default": false
+          },
+          "dedup_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Dedup Key"
+          },
+          "title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Title"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          },
+          "escalation_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Escalation Key"
+          },
+          "escalation_title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Escalation Title"
+          },
+          "escalation_question": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Escalation Question"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          }
+        },
+        "type": "object",
+        "title": "CiBaselineStatusResponse"
+      },
       "ClaimSessionSummary": {
         "properties": {
           "id": {
@@ -15721,140 +15657,6 @@
         },
         "type": "object",
         "title": "CompareSpecsNotesResponse"
-      },
-      "CompilePlaybookRequest": {
-        "properties": {
-          "markdown": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Markdown",
-            "description": "Full playbook markdown content including YAML frontmatter. Frontmatter must include: id, triggers (list), scope (system|project|agent-type:xxx). One of 'markdown', 'path', or 'playbook_id' is required."
-          },
-          "path": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Path",
-            "description": "Absolute path to a playbook .md file on disk. If provided, the file is read and used as the markdown."
-          },
-          "playbook_id": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Playbook Id",
-            "description": "ID of an already-compiled playbook. Resolves to its source path via the playbook manager and recompiles it. Use this to recompile by ID without remembering the vault path. One of 'markdown', 'path', or 'playbook_id' is required."
-          },
-          "force": {
-            "type": "boolean",
-            "title": "Force",
-            "description": "Force recompilation even if source is unchanged. Defaults to true for manual compilation.",
-            "default": true
-          }
-        },
-        "type": "object",
-        "title": "CompilePlaybookRequest"
-      },
-      "CompilePlaybookResponse": {
-        "properties": {
-          "compiled": {
-            "type": "boolean",
-            "title": "Compiled",
-            "default": false
-          },
-          "playbook_id": {
-            "type": "string",
-            "title": "Playbook Id",
-            "default": ""
-          },
-          "version": {
-            "type": "integer",
-            "title": "Version",
-            "default": 0
-          },
-          "source_hash": {
-            "type": "string",
-            "title": "Source Hash",
-            "default": ""
-          },
-          "skipped": {
-            "type": "boolean",
-            "title": "Skipped",
-            "default": false
-          },
-          "retries_used": {
-            "type": "integer",
-            "title": "Retries Used",
-            "default": 0
-          },
-          "node_count": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Node Count"
-          },
-          "triggers": {
-            "anyOf": [
-              {
-                "items": {
-                  "type": "string"
-                },
-                "type": "array"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Triggers"
-          },
-          "scope": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Scope"
-          },
-          "errors": {
-            "anyOf": [
-              {
-                "items": {
-                  "type": "string"
-                },
-                "type": "array"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Errors"
-          }
-        },
-        "type": "object",
-        "title": "CompilePlaybookResponse"
       },
       "CompiledPlaybookNode": {
         "properties": {
@@ -16590,60 +16392,6 @@
           "path"
         ],
         "title": "CreateMcpServerResponse"
-      },
-      "CreatePlaybookRequest": {
-        "properties": {
-          "playbook_id": {
-            "type": "string",
-            "title": "Playbook Id",
-            "description": "The new playbook identifier (used as filename without .md)."
-          },
-          "scope": {
-            "type": "string",
-            "title": "Scope",
-            "description": "Where the file lives on disk: 'system', 'project:<project_id>', or 'agent-type:<type>'. The frontmatter scope field takes the bare form ('system' / 'project' / 'agent-type:<type>') because the project id is recovered from the vault path."
-          },
-          "markdown": {
-            "type": "string",
-            "title": "Markdown",
-            "description": "Full markdown content including YAML frontmatter."
-          }
-        },
-        "type": "object",
-        "required": [
-          "playbook_id",
-          "scope",
-          "markdown"
-        ],
-        "title": "CreatePlaybookRequest"
-      },
-      "CreatePlaybookResponse": {
-        "properties": {
-          "created": {
-            "type": "boolean",
-            "title": "Created",
-            "default": true
-          },
-          "playbook_id": {
-            "type": "string",
-            "title": "Playbook Id"
-          },
-          "path": {
-            "type": "string",
-            "title": "Path"
-          },
-          "source_hash": {
-            "type": "string",
-            "title": "Source Hash"
-          }
-        },
-        "type": "object",
-        "required": [
-          "playbook_id",
-          "path",
-          "source_hash"
-        ],
-        "title": "CreatePlaybookResponse"
       },
       "CreateProfileRequest": {
         "properties": {
@@ -17592,54 +17340,6 @@
           "deleted"
         ],
         "title": "DeleteNoteResponse"
-      },
-      "DeletePlaybookRequest": {
-        "properties": {
-          "playbook_id": {
-            "type": "string",
-            "title": "Playbook Id",
-            "description": "The playbook identifier to delete."
-          }
-        },
-        "type": "object",
-        "required": [
-          "playbook_id"
-        ],
-        "title": "DeletePlaybookRequest"
-      },
-      "DeletePlaybookResponse": {
-        "properties": {
-          "deleted": {
-            "type": "boolean",
-            "title": "Deleted",
-            "default": true
-          },
-          "playbook_id": {
-            "type": "string",
-            "title": "Playbook Id"
-          },
-          "archived_path": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Archived Path"
-          },
-          "removed_from_registry": {
-            "type": "boolean",
-            "title": "Removed From Registry",
-            "default": false
-          }
-        },
-        "type": "object",
-        "required": [
-          "playbook_id"
-        ],
-        "title": "DeletePlaybookResponse"
       },
       "DeleteProfileRequest": {
         "properties": {
@@ -30156,45 +29856,6 @@
         "title": "PlaybookHealthResponse",
         "description": "Loose shape \u2014 compute_playbook_health returns a rich dynamic dict."
       },
-      "PlaybookInstallRequest": {
-        "properties": {
-          "playbook_id": {
-            "type": "string",
-            "title": "Playbook Id",
-            "description": "The playbook id being installed. Must equal the artifact's own id."
-          },
-          "compiled_path": {
-            "type": "string",
-            "title": "Compiled Path",
-            "description": "Path to the compiled .json artifact, inside the vault."
-          }
-        },
-        "type": "object",
-        "required": [
-          "playbook_id",
-          "compiled_path"
-        ],
-        "title": "PlaybookInstallRequest"
-      },
-      "PlaybookInstallResponse": {
-        "properties": {
-          "success": {
-            "type": "boolean",
-            "title": "Success",
-            "default": true
-          },
-          "errors": {
-            "items": {
-              "$ref": "#/components/schemas/PlaybookValidationError"
-            },
-            "type": "array",
-            "title": "Errors",
-            "default": []
-          }
-        },
-        "type": "object",
-        "title": "PlaybookInstallResponse"
-      },
       "PlaybookLastRun": {
         "properties": {
           "run_id": {
@@ -30419,11 +30080,6 @@
         },
         "type": "object",
         "title": "PlaybookPendingEventsRequest"
-      },
-      "PlaybookReleaseCheckRequest": {
-        "properties": {},
-        "type": "object",
-        "title": "PlaybookReleaseCheckRequest"
       },
       "PlaybookRunOverlayRequest": {
         "properties": {
@@ -31354,78 +31010,6 @@
           "counts"
         ],
         "title": "PlaybookV2ValidateResponse"
-      },
-      "PlaybookValidateRequest": {
-        "properties": {
-          "path": {
-            "type": "string",
-            "title": "Path",
-            "description": "Path to the .md source or .json artifact, inside the vault."
-          }
-        },
-        "type": "object",
-        "required": [
-          "path"
-        ],
-        "title": "PlaybookValidateRequest"
-      },
-      "PlaybookValidateResponse": {
-        "properties": {
-          "success": {
-            "type": "boolean",
-            "title": "Success",
-            "default": true
-          },
-          "errors": {
-            "items": {
-              "$ref": "#/components/schemas/PlaybookValidationError"
-            },
-            "type": "array",
-            "title": "Errors",
-            "default": []
-          },
-          "requires_compile": {
-            "type": "boolean",
-            "title": "Requires Compile",
-            "default": false
-          }
-        },
-        "type": "object",
-        "title": "PlaybookValidateResponse"
-      },
-      "PlaybookValidationError": {
-        "properties": {
-          "node": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Node"
-          },
-          "field": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Field"
-          },
-          "message": {
-            "type": "string",
-            "title": "Message",
-            "default": ""
-          }
-        },
-        "type": "object",
-        "title": "PlaybookValidationError",
-        "description": "One structured validation failure.\n\n``node`` is the compiled node the error belongs to, or None for a\nwhole-file problem (missing frontmatter, path outside the vault)."
       },
       "PluginConfigRequest": {
         "properties": {},
@@ -32943,6 +32527,33 @@
             "type": "boolean",
             "title": "Has System Prompt",
             "default": false
+          },
+          "lifecycle": {
+            "type": "string",
+            "title": "Lifecycle",
+            "default": "task"
+          },
+          "min_active": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Min Active"
+          },
+          "max_active": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Active"
           }
         },
         "type": "object",
@@ -34267,70 +33878,6 @@
           "record"
         ],
         "title": "RecordFileInspectionResponse"
-      },
-      "RecoverWorkflowRequest": {
-        "properties": {
-          "workflow_id": {
-            "type": "string",
-            "title": "Workflow Id",
-            "description": "The workflow ID to recover"
-          }
-        },
-        "type": "object",
-        "required": [
-          "workflow_id"
-        ],
-        "title": "RecoverWorkflowRequest"
-      },
-      "RecoverWorkflowResponse": {
-        "properties": {
-          "success": {
-            "type": "boolean",
-            "title": "Success",
-            "default": false
-          },
-          "workflow_id": {
-            "type": "string",
-            "title": "Workflow Id",
-            "default": ""
-          },
-          "action": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Action"
-          },
-          "message": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Message"
-          },
-          "error": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Error"
-          }
-        },
-        "type": "object",
-        "title": "RecoverWorkflowResponse",
-        "description": "Shape mirrors OrphanWorkflowRecovery.recover_workflow output."
       },
       "RedactionRowDTO": {
         "properties": {
@@ -37093,18 +36640,6 @@
             "type": "boolean",
             "title": "Enabled",
             "description": "True to resume; false to pause."
-          },
-          "expected_source_hash": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Expected Source Hash",
-            "description": "Optional optimistic-concurrency token from the last get_playbook_source call."
           }
         },
         "type": "object",

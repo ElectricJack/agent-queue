@@ -16,13 +16,16 @@ tags: [profile, agent-type, merger]
 }
 ```
 
-## Tools
+## Capabilities
 ```json
 {
-  "allowed": [
-    "Bash", "Read", "Write", "Edit", "Glob", "Grep", "Task", "TodoWrite", "Skill",
-    "get_task", "task_close", "task_heartbeat", "task_comment", "pr_merge", "git_diff"
-  ]
+  "harness_tools": [
+    "Bash", "Read", "Write", "Edit", "Glob", "Grep", "Task", "TodoWrite", "Skill"
+  ],
+  "aq_commands": [
+    "get_task", "task_close", "task_heartbeat", "task_comment", "pr_merge"
+  ],
+  "plugin_tools": []
 }
 ```
 
