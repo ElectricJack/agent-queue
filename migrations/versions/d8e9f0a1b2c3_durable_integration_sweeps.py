@@ -47,6 +47,21 @@ _IDENTITY_COLUMNS = (
 )
 
 
+def _guard_legacy_batch_identity() -> None:
+    invalid = op.get_bind().execute(
+        sa.text(
+            "SELECT id FROM integration_batches WHERE lifecycle <> 'empty' AND "
+            "(base_sha IS NULL OR integration_branch IS NULL) ORDER BY id LIMIT 1"
+        )
+    ).first()
+    if invalid is not None:
+        raise RuntimeError(
+            "cannot upgrade integration batch sealing schema while legacy non-empty "
+            "batches have a null base SHA or integration branch; drain or reconcile "
+            "those batches before upgrading"
+        )
+
+
 def _drop_existing_guards() -> None:
     if op.get_bind().dialect.name == "postgresql":
         for event in ("insert", "update", "delete"):
@@ -292,6 +307,7 @@ def _drop_task8a_guards() -> None:
 
 
 def upgrade() -> None:
+    _guard_legacy_batch_identity()
     _drop_existing_guards()
     with op.batch_alter_table("integration_batches") as batch:
         batch.add_column(sa.Column("request_id", sa.Text(), nullable=True))

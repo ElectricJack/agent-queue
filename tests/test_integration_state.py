@@ -932,6 +932,258 @@ def test_sqlite_task8a_migration_cycle_from_previous_head(tmp_path):
         engine.dispose()
 
 
+@pytest.mark.parametrize(
+    ("base_sha", "integration_branch"),
+    (
+        (None, "refs/heads/integration/legacy"),
+        ("a" * 40, None),
+        (None, None),
+    ),
+    ids=("null-base", "null-branch", "both-null"),
+)
+def test_sqlite_task8a_upgrade_refuses_legacy_null_batch_identity_before_ddl(
+    tmp_path, base_sha, integration_branch
+):
+    from alembic import command
+    from alembic.config import Config
+    from sqlalchemy import create_engine, inspect, text
+
+    engine = create_engine(f"sqlite:///{tmp_path / 'task8a-null-identity.db'}")
+    config = Config("alembic.ini")
+
+    def migrate(revision: str, *, downgrade: bool = False) -> None:
+        with engine.connect() as conn:
+            config.attributes["connection"] = conn
+            try:
+                (command.downgrade if downgrade else command.upgrade)(config, revision)
+            except BaseException:
+                conn.rollback()
+                raise
+            conn.commit()
+
+    try:
+        migrate("c7d8e9f0a1b2")
+        with engine.begin() as conn:
+            conn.execute(
+                integration_batches.insert().values(
+                    id="legacy-null",
+                    project_id="legacy-project",
+                    repository_id="repo",
+                    trigger="manual",
+                    source_manifest_digest="manifest",
+                    base_sha=base_sha,
+                    lifecycle="sealed",
+                    integration_branch=integration_branch,
+                    policy_snapshot={},
+                    artifact_snapshot={},
+                    cleanup_state="pending",
+                    created_at=1.0,
+                    updated_at=1.0,
+                )
+            )
+        with engine.connect() as conn:
+            columns_before = tuple(
+                column["name"]
+                for column in inspect(conn).get_columns("integration_batches")
+            )
+            guards_before = tuple(
+                conn.execute(
+                    text(
+                        "SELECT name FROM sqlite_master WHERE type = 'trigger' "
+                        "ORDER BY name"
+                    )
+                ).scalars()
+            )
+
+        with pytest.raises(RuntimeError, match="drain or reconcile"):
+            migrate("head")
+
+        with engine.connect() as conn:
+            assert conn.execute(text("SELECT version_num FROM alembic_version")).scalar_one() == (
+                "c7d8e9f0a1b2"
+            )
+            assert conn.execute(
+                text(
+                    "SELECT base_sha, integration_branch FROM integration_batches "
+                    "WHERE id = 'legacy-null'"
+                )
+            ).one() == (base_sha, integration_branch)
+            assert tuple(
+                column["name"]
+                for column in inspect(conn).get_columns("integration_batches")
+            ) == columns_before
+            assert tuple(
+                conn.execute(
+                    text(
+                        "SELECT name FROM sqlite_master WHERE type = 'trigger' "
+                        "ORDER BY name"
+                    )
+                ).scalars()
+            ) == guards_before
+            assert "request_id" not in columns_before
+
+        with engine.begin() as conn:
+            conn.execute(
+                text("DELETE FROM integration_batches WHERE id = 'legacy-null'")
+            )
+        migrate("head")
+        migrate("c7d8e9f0a1b2", downgrade=True)
+        migrate("head")
+        assert "request_id" in {
+            column["name"]
+            for column in inspect(engine).get_columns("integration_batches")
+        }
+    finally:
+        engine.dispose()
+
+
+@pytest.mark.skipif(not POSTGRES_TEST_DSN, reason="POSTGRES_TEST_DSN not set")
+@pytest.mark.parametrize(
+    ("base_sha", "integration_branch"),
+    (
+        (None, "refs/heads/integration/legacy"),
+        ("a" * 40, None),
+        (None, None),
+    ),
+    ids=("null-base", "null-branch", "both-null"),
+)
+async def test_postgres_task8a_upgrade_refuses_legacy_null_batch_identity_before_ddl(
+    base_sha, integration_branch
+):
+    import asyncpg
+    from alembic import command
+    from alembic.config import Config
+    from sqlalchemy import inspect, text
+
+    from src.database.engine import create_postgres_engine
+
+    prefix, _, database_name = POSTGRES_TEST_DSN.rpartition("/")
+    cycle_name = f"{database_name}_task8a_null_{uuid.uuid4().hex[:8]}"
+    cycle_dsn = f"{prefix}/{cycle_name}"
+    admin_dsn = POSTGRES_TEST_DSN.replace(
+        "postgresql+asyncpg://", "postgresql://"
+    )
+    admin = await asyncpg.connect(admin_dsn)
+    try:
+        await admin.execute(f'CREATE DATABASE "{cycle_name}"')
+        engine = create_postgres_engine(cycle_dsn, 0, 1)
+        try:
+            async def migrate(revision: str, *, downgrade: bool = False) -> None:
+                config = Config("alembic.ini")
+                async with engine.connect() as conn:
+                    def run(sync_conn):
+                        config.attributes["connection"] = sync_conn
+                        (command.downgrade if downgrade else command.upgrade)(
+                            config, revision
+                        )
+
+                    try:
+                        await conn.run_sync(run)
+                    except BaseException:
+                        await conn.rollback()
+                        raise
+                    await conn.commit()
+
+            await migrate("c7d8e9f0a1b2")
+            async with engine.begin() as conn:
+                await conn.execute(
+                    integration_batches.insert().values(
+                        id="legacy-null",
+                        project_id="legacy-project",
+                        repository_id="repo",
+                        trigger="manual",
+                        source_manifest_digest="manifest",
+                        base_sha=base_sha,
+                        lifecycle="sealed",
+                        integration_branch=integration_branch,
+                        policy_snapshot={},
+                        artifact_snapshot={},
+                        cleanup_state="pending",
+                        created_at=1.0,
+                        updated_at=1.0,
+                    )
+                )
+            async with engine.connect() as conn:
+                columns_before = await conn.run_sync(
+                    lambda sync_conn: tuple(
+                        column["name"]
+                        for column in inspect(sync_conn).get_columns(
+                            "integration_batches"
+                        )
+                    )
+                )
+                guards_before = tuple(
+                    (
+                        await conn.execute(
+                            text(
+                                "SELECT tgname FROM pg_trigger WHERE NOT tgisinternal "
+                                "ORDER BY tgname"
+                            )
+                        )
+                    ).scalars()
+                )
+
+            with pytest.raises(RuntimeError, match="drain or reconcile"):
+                await migrate("head")
+
+            async with engine.connect() as conn:
+                assert (
+                    await conn.execute(text("SELECT version_num FROM alembic_version"))
+                ).scalar_one() == "c7d8e9f0a1b2"
+                assert (
+                    await conn.execute(
+                        text(
+                            "SELECT base_sha, integration_branch FROM integration_batches "
+                            "WHERE id = 'legacy-null'"
+                        )
+                    )
+                ).one() == (base_sha, integration_branch)
+                columns_after = await conn.run_sync(
+                    lambda sync_conn: tuple(
+                        column["name"]
+                        for column in inspect(sync_conn).get_columns(
+                            "integration_batches"
+                        )
+                    )
+                )
+                guards_after = tuple(
+                    (
+                        await conn.execute(
+                            text(
+                                "SELECT tgname FROM pg_trigger WHERE NOT tgisinternal "
+                                "ORDER BY tgname"
+                            )
+                        )
+                    ).scalars()
+                )
+                assert columns_after == columns_before
+                assert guards_after == guards_before
+                assert "request_id" not in columns_before
+
+            async with engine.begin() as conn:
+                await conn.execute(
+                    text("DELETE FROM integration_batches WHERE id = 'legacy-null'")
+                )
+            await migrate("head")
+            await migrate("c7d8e9f0a1b2", downgrade=True)
+            await migrate("head")
+            async with engine.connect() as conn:
+                columns = await conn.run_sync(
+                    lambda sync_conn: {
+                        column["name"]
+                        for column in inspect(sync_conn).get_columns(
+                            "integration_batches"
+                        )
+                    }
+                )
+                assert "request_id" in columns
+        finally:
+            await engine.dispose()
+    finally:
+        await admin.execute(f'DROP DATABASE IF EXISTS "{cycle_name}"')
+        await admin.close()
+
+
 async def test_read_projections_and_receipts_survive_task_deletion(db):
     from src.database.tables import (
         integration_repair_operations,
