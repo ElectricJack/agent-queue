@@ -12,7 +12,12 @@ from typing import Any
 from sqlalchemy import insert, select, update
 from sqlalchemy.exc import IntegrityError
 
-from src.database.tables import integration_branch_owners, sessions, workspaces
+from src.database.tables import (
+    integration_branch_owners,
+    integration_candidate_ref_mutations,
+    sessions,
+    workspaces,
+)
 from src.integration.models import BranchKey, Fence
 
 
@@ -42,9 +47,16 @@ class BranchOwnership:
     and can be claimed without treating expiry as liveness evidence.
     """
 
-    def __init__(self, db, *, confirm_handoff: HandoffConfirmation | None = None) -> None:
+    def __init__(
+        self,
+        db,
+        *,
+        confirm_handoff: HandoffConfirmation | None = None,
+        clock: Callable[[], float] = time.time,
+    ) -> None:
         self._db = db
         self._confirm_handoff = confirm_handoff
+        self._clock = clock
 
     async def get_owner(self, target: BranchKey) -> dict[str, Any] | None:
         """Return the current durable owner snapshot for command validation."""
@@ -108,6 +120,19 @@ class BranchOwnership:
         async with self._db.immediate() as conn:
             row = await self._locked_row(conn, fence.target)
             self._require_current(row, fence)
+            live_mutation = (
+                await conn.execute(
+                    select(integration_candidate_ref_mutations.c.id).where(
+                        integration_candidate_ref_mutations.c.repository_id
+                        == fence.target.repository_id,
+                        integration_candidate_ref_mutations.c.branch == fence.target.branch,
+                        integration_candidate_ref_mutations.c.state == "reserved",
+                        integration_candidate_ref_mutations.c.expires_at > self._clock(),
+                    )
+                )
+            ).scalar_one_or_none()
+            if live_mutation is not None:
+                raise BranchBusy("branch has a live external mutation claim")
             state = row["handoff_state"]
             needs_confirmation = state in {"attached", "handoff_pending"}
             if needs_confirmation and (not row["session_id"] or not row["workspace_id"]):

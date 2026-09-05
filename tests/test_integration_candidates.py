@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import subprocess
+from contextlib import asynccontextmanager
 from dataclasses import replace
 from pathlib import Path
 
@@ -15,12 +17,15 @@ from src.database.tables import (
     integration_batches,
     integration_branch_owners,
     integration_candidate_member_results,
+    integration_candidate_publications,
+    integration_candidate_ref_mutations,
     integration_candidate_revisions,
     integration_repair_operations,
     integration_repair_stages,
     integration_review_evidence,
     playbook_artifacts,
     project_integration_leases,
+    sessions,
     tasks,
     workspaces,
 )
@@ -331,21 +336,25 @@ def _make_conflicting_origin(tmp_path: Path):
 
 
 class _AuditForge:
-    def __init__(self):
-        self.calls = []
-        self._result = None
+    def __init__(self, backing=None):
+        self.backing = backing if backing is not None else {"result": None, "calls": []}
+
+    @property
+    def calls(self):
+        return self.backing["calls"]
 
     async def lookup_audit_pr(self, *, idempotency_key):
-        if self._result is not None and self._result.idempotency_key == idempotency_key:
-            return self._result
+        result = self.backing["result"]
+        if result is not None and result.idempotency_key == idempotency_key:
+            return result
         return None
 
     async def create_audit_pr(self, **kwargs):
         from src.integration.candidates import AuditPullRequest
 
-        if self._result is None:
+        if self.backing["result"] is None:
             self.calls.append(kwargs)
-            self._result = AuditPullRequest(
+            self.backing["result"] = AuditPullRequest(
                 url="https://github.com/example/repo/pull/9",
                 number=9,
                 head_sha=kwargs["head_sha"],
@@ -355,7 +364,7 @@ class _AuditForge:
                 repository_full_name=kwargs["repository_full_name"],
                 idempotency_key=kwargs["idempotency_key"],
             )
-        return self._result
+        return self.backing["result"]
 
 
 class _AppClient:
@@ -679,11 +688,14 @@ async def test_build_restarts_at_every_persisted_external_boundary(db, tmp_path,
 
     with pytest.raises(RuntimeError, match=f"crash at {crash_point}"):
         await crashed.build("batch")
+    replay_forge = (
+        _AuditForge(forge.backing) if crash_point == "after_audit_pr_create" else forge
+    )
     completed = await CandidateService(
         db,
         data_dir=tmp_path / "data",
         git_manager=git,
-        forge_provider=forge,
+        forge_provider=replay_forge,
         app_client=app,
         clock=lambda: 100.0,
     ).build("batch")
@@ -720,6 +732,237 @@ async def test_conflict_partial_is_published_before_repair_handoff(db, tmp_path)
     conflict = await service.build("batch")
     assert conflict.head_sha
     assert _git(origin, "rev-parse", conflict.branch) == conflict.head_sha
+
+
+async def test_same_owner_concurrent_builds_never_duplicate_external_mutation(db, tmp_path):
+    from src.git.github_app import GitHubRepositoryBinding
+    from src.integration.candidates import CandidateService
+
+    origin, _work, base, members = _make_origin(tmp_path)
+    await db.update_repo("repo", url=str(origin))
+    await _seed_batch(db, members=members[:1], base_sha=base)
+    app = _AppClient(origin)
+    app.repository = GitHubRepositoryBinding(repository_id=9, full_name="example/repo")
+    git = _LocalPushGit(origin)
+    forge = _AuditForge()
+    services = [
+        CandidateService(
+            db,
+            data_dir=tmp_path / "data",
+            git_manager=git,
+            forge_provider=forge,
+            app_client=app,
+            clock=lambda: 100.0,
+        )
+        for _ in range(2)
+    ]
+
+    results = await asyncio.gather(*(service.build("batch") for service in services))
+
+    assert {result.outcome for result in results} <= {"built", "already_built", "wait"}
+    assert any(result.outcome in {"built", "already_built"} for result in results)
+    assert len(git.pushes) == 1
+    assert len(forge.calls) == 1
+
+
+async def test_stage_change_before_conflict_cas_cannot_mark_new_stage_repairing(db, tmp_path):
+    from src.git.github_app import GitHubRepositoryBinding
+    from src.integration.candidates import CandidateService
+
+    origin, _work, base, members = _make_conflicting_origin(tmp_path)
+    await db.update_repo("repo", url=str(origin))
+    await _seed_batch(db, members=members, base_sha=base)
+    app = _AppClient(origin)
+    app.repository = GitHubRepositoryBinding(repository_id=9, full_name="example/repo")
+    service = CandidateService(
+        db,
+        data_dir=tmp_path / "data",
+        git_manager=_LocalPushGit(origin),
+        forge_provider=_AuditForge(),
+        app_client=app,
+        clock=lambda: 100.0,
+    )
+    original = service._conflict
+
+    async def change_stage(*args, **kwargs):
+        async with db.immediate() as conn:
+            await conn.execute(
+                update(integration_repair_operations)
+                .where(integration_repair_operations.c.id == "repair-batch-batch")
+                .values(active_stage=1)
+            )
+        return await original(*args, **kwargs)
+
+    service._conflict = change_stage
+    result = await service.build("batch")
+
+    assert result.outcome == "wait"
+    async with db._engine.connect() as conn:
+        batch = (
+            await conn.execute(select(integration_batches).where(integration_batches.c.id == "batch"))
+        ).mappings().one()
+        conflict_rows = (
+            await conn.execute(
+                select(integration_candidate_member_results).where(
+                    integration_candidate_member_results.c.result == "conflict"
+                )
+            )
+        ).all()
+    assert batch["lifecycle"] == "building"
+    assert conflict_rows == []
+
+
+async def test_partial_push_crash_reconciles_from_fresh_service_before_dispatch(db, tmp_path):
+    from src.git.github_app import GitHubRepositoryBinding
+    from src.integration.candidates import CandidateService
+
+    origin, _work, base, members = _make_conflicting_origin(tmp_path)
+    await db.update_repo("repo", url=str(origin))
+    await _seed_batch(db, members=members, base_sha=base)
+    app = _AppClient(origin)
+    app.repository = GitHubRepositoryBinding(repository_id=9, full_name="example/repo")
+    git = _LocalPushGit(origin)
+    crashed = CandidateService(
+        db,
+        data_dir=tmp_path / "data",
+        git_manager=git,
+        forge_provider=_AuditForge(),
+        app_client=app,
+        crash_hook=_CrashOnce("after_partial_push"),
+        clock=lambda: 100.0,
+    )
+    with pytest.raises(RuntimeError, match="crash at after_partial_push"):
+        await crashed.build("batch")
+
+    result = await CandidateService(
+        db,
+        data_dir=tmp_path / "data",
+        git_manager=git,
+        forge_provider=_AuditForge(),
+        app_client=app,
+        clock=lambda: 100.0,
+    ).build("batch")
+
+    assert result.outcome == "conflict"
+    assert _git(origin, "rev-parse", result.branch) == result.head_sha
+    assert len(git.pushes) == 1
+
+
+async def test_candidate_network_awaits_run_after_database_commit(db, tmp_path):
+    from src.git.github_app import GitHubRepositoryBinding
+    from src.integration.candidates import CandidateService
+
+    origin, _work, base, members = _make_origin(tmp_path)
+    await db.update_repo("repo", url=str(origin))
+    await _seed_batch(db, members=members[:1], base_sha=base)
+    depth = 0
+    original_immediate = db.immediate
+
+    @asynccontextmanager
+    async def tracked_immediate():
+        nonlocal depth
+        async with original_immediate() as conn:
+            depth += 1
+            try:
+                yield conn
+            finally:
+                depth -= 1
+
+    db.immediate = tracked_immediate
+
+    class GuardedApp(_AppClient):
+        async def installation_token(self):
+            assert depth == 0
+            return await super().installation_token()
+
+        async def exact_head_ref(self, branch):
+            assert depth == 0
+            return await super().exact_head_ref(branch)
+
+    class GuardedGit(_LocalPushGit):
+        async def apush_oid_with_app_auth(self, *args, **kwargs):
+            assert depth == 0
+            return await super().apush_oid_with_app_auth(*args, **kwargs)
+
+    app = GuardedApp(origin)
+    app.repository = GitHubRepositoryBinding(repository_id=9, full_name="example/repo")
+    result = await CandidateService(
+        db,
+        data_dir=tmp_path / "data",
+        git_manager=GuardedGit(origin),
+        forge_provider=_AuditForge(),
+        app_client=app,
+        clock=lambda: 100.0,
+    ).build("batch")
+
+    assert result.outcome == "built"
+
+
+async def test_live_external_claim_blocks_rebuild_and_branch_transfer(db, tmp_path):
+    from src.git.github_app import GitHubRepositoryBinding
+    from src.integration.candidates import CandidateService
+    from src.integration.models import BranchKey, Fence
+    from src.integration.ownership import BranchBusy, BranchOwnership
+
+    origin, _work, base, members = _make_origin(tmp_path)
+    await db.update_repo("repo", url=str(origin))
+    await _seed_batch(db, members=members[:1], base_sha=base)
+    app = _AppClient(origin)
+    app.repository = GitHubRepositoryBinding(repository_id=9, full_name="example/repo")
+    service = CandidateService(
+        db,
+        data_dir=tmp_path / "data",
+        git_manager=_LocalPushGit(origin),
+        forge_provider=_AuditForge(),
+        app_client=app,
+        clock=lambda: 100.0,
+    )
+    built = await service.build("batch")
+    async with db.immediate() as conn:
+        await conn.execute(
+            insert(integration_candidate_ref_mutations).values(
+                id="live-claim",
+                batch_id="batch",
+                revision=0,
+                member_ordinal=None,
+                resolution_id=None,
+                purpose="candidate_final",
+                repository_id="repo",
+                branch=built.branch,
+                target_branch=built.branch,
+                expected_old_sha=built.head_sha,
+                desired_sha="f" * 40,
+                operation_id="repair-batch-batch",
+                operation_episode_id="batch",
+                operation_stage=0,
+                lease_owner_id="sealer",
+                lease_fence_token=1,
+                branch_owner_id="repair-batch-batch",
+                branch_owner_role="collector",
+                branch_fence_token=1,
+                nonce="claim-nonce",
+                state="reserved",
+                expires_at=160.0,
+                created_at=100.0,
+                updated_at=100.0,
+            )
+        )
+    waiting = await service.rebuild("batch", 0, base)
+    assert waiting.outcome == "wait"
+    owner = BranchOwnership(db, clock=lambda: 100.0)
+    with pytest.raises(BranchBusy, match="live external mutation claim"):
+        await owner.transfer(
+            Fence(
+                target=BranchKey(repository_id="repo", branch=built.branch),
+                owner_id="repair-batch-batch",
+                token=1,
+            ),
+            "repair-task",
+            "repair",
+        )
+    expiry = await service.repair.expire("repair-batch-batch", 0, now=131.0)
+    assert expiry["outcome"] == "not_due"
+    assert expiry["action"] == "wait"
 
 
 async def test_changed_reviewed_tree_fails_closed_as_source_moved(db, tmp_path):
@@ -1069,6 +1312,66 @@ async def test_instance_bound_repair_reservation_push_and_accept_once(
             await service.reserve_repair(request)
     with principal_context(principal):
         reservation_id = await service.reserve_repair(request)
+        if stage == 0 and repair_change == "exact":
+            replacement_workspace = "candidate-repair-workspace-replacement"
+            replacement_path = tmp_path / "replacement-workspace"
+            replacement_path.mkdir()
+            async with db.immediate() as conn:
+                await conn.execute(
+                    insert(workspaces).values(
+                        id=replacement_workspace,
+                        project_id="p",
+                        workspace_path=str(replacement_path),
+                        source_type="link",
+                        locked_by_task_id=repair_task,
+                        enabled=True,
+                        created_at=100.0,
+                    )
+                )
+                await conn.execute(
+                    update(integration_branch_owners)
+                    .where(integration_branch_owners.c.repository_id == "repo")
+                    .values(workspace_id=replacement_workspace)
+                )
+                await conn.execute(
+                    update(sessions)
+                    .where(sessions.c.id == session_id)
+                    .values(work_dir=str(replacement_path))
+                )
+            with pytest.raises(CandidateAuthorizationError):
+                await service.push_repair(reservation_id, repair_fence)
+            async with db.immediate() as conn:
+                await conn.execute(
+                    update(integration_branch_owners)
+                    .where(integration_branch_owners.c.repository_id == "repo")
+                    .values(workspace_id=workspace_id)
+                )
+                await conn.execute(
+                    update(sessions)
+                    .where(sessions.c.id == session_id)
+                    .values(work_dir=str(work))
+                )
+        wrong_target = Fence(
+            target={"repository_id": "repo", "branch": conflict.branch + "-other"},
+            owner_id=repair_task,
+            token=repair_fence.token,
+        )
+        with pytest.raises(CandidateAuthorizationError):
+            await service.push_repair(reservation_id, wrong_target)
+        if stage == 1 and repair_change == "exact":
+            service.crash_hook = _CrashOnce("after_repair_push")
+            with pytest.raises(RuntimeError, match="crash at after_repair_push"):
+                await service.push_repair(reservation_id, repair_fence)
+            service = CandidateService(
+                db,
+                data_dir=tmp_path / "data",
+                git_manager=_LocalPushGit(origin),
+                forge_provider=_AuditForge(),
+                app_client=app,
+                repair_service=repair,
+                branch_ownership=ownership,
+                clock=lambda: 100.0,
+            )
         assert await service.push_repair(reservation_id, repair_fence) == reservation_id
     await db.update_session(session_id, state="stopped")
     accepted = await service.accept_repair(reservation_id)
@@ -1076,6 +1379,18 @@ async def test_instance_bound_repair_reservation_push_and_accept_once(
 
     assert accepted.outcome == expected
     assert replay.outcome == ("already_accepted" if expected == "accepted" else "stale")
+    if repair_change == "exact" and stage == 0:
+        source_before = _git(origin, "rev-parse", "refs/heads/root-1")
+        _git(work, "switch", "-C", "main", base)
+        (work / "upstream.txt").write_text("new base\n")
+        _git(work, "add", "upstream.txt")
+        _git(work, "commit", "-m", "advance main after accepted repair")
+        new_base = _git(work, "rev-parse", "HEAD")
+        _git(work, "push", "--force", "origin", "main")
+        rebuilt = await service.rebuild("batch", 0, new_base)
+        assert rebuilt.outcome in {"built", "already_built"}
+        assert _git(origin, "show", f"{rebuilt.head_sha}:shared.txt") == "first and second"
+        assert _git(origin, "rev-parse", "refs/heads/root-1") == source_before
 
 
 async def test_nonempty_build_requires_authenticated_repository_dependencies(db, tmp_path):
@@ -1120,6 +1435,38 @@ async def test_persisted_pr_never_hides_diverged_candidate_ref(db, tmp_path):
     replay = await service.build("batch")
 
     assert replay.outcome == "wait"
+
+
+async def test_published_pr_identity_is_immutable_and_replay_is_canonical(db, tmp_path):
+    from sqlalchemy.exc import IntegrityError
+
+    from src.git.github_app import GitHubRepositoryBinding
+    from src.integration.candidates import CandidateService
+
+    origin, _work, base, members = _make_origin(tmp_path)
+    await db.update_repo("repo", url=str(origin))
+    await _seed_batch(db, members=members[:1], base_sha=base)
+    app = _AppClient(origin)
+    app.repository = GitHubRepositoryBinding(repository_id=9, full_name="example/repo")
+    forge = _AuditForge()
+    service = CandidateService(
+        db,
+        data_dir=tmp_path / "data",
+        git_manager=_LocalPushGit(origin),
+        forge_provider=forge,
+        app_client=app,
+        clock=lambda: 100.0,
+    )
+    built = await service.build("batch")
+    replay = await service.build("batch")
+    assert replay.pr_url == built.pr_url
+    with pytest.raises(IntegrityError):
+        async with db.immediate() as conn:
+            await conn.execute(
+                update(integration_candidate_publications)
+                .where(integration_candidate_publications.c.batch_id == "batch")
+                .values(pr_number=10, pr_url="https://github.com/example/repo/pull/10")
+            )
     assert replay.head_sha == built.head_sha
 
 

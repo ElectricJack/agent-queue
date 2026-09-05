@@ -3117,12 +3117,21 @@ class GitManager:
     @staticmethod
     async def _settle_app_credential_broker(task: asyncio.Task[bool]) -> bool:
         """Collect a completed broker or cancel it without waiting for channel EOF."""
-        await asyncio.sleep(0)
-        if not task.done():
-            task.cancel()
         try:
+            await asyncio.sleep(0)
+            if not task.done():
+                task.cancel()
             return await asyncio.shield(task)
         except asyncio.CancelledError:
+            caller = asyncio.current_task()
+            if caller is not None and caller.cancelling():
+                if not task.done():
+                    task.cancel()
+                try:
+                    await task
+                except (asyncio.CancelledError, Exception):
+                    pass
+                raise
             return False
         except Exception:
             return False

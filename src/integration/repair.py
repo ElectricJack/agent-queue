@@ -14,6 +14,7 @@ from src.database.tables import (
     integration_batches,
     integration_branch_owners,
     integration_candidate_revisions,
+    integration_candidate_ref_mutations,
     integration_check_evidence,
     integration_operation_artifact_pins,
     integration_promotion_intents,
@@ -55,7 +56,7 @@ class RepairService:
     ) -> None:
         self.db = db
         self.clock = clock
-        self._ownership = BranchOwnership(db, confirm_handoff=confirm_handoff)
+        self._ownership = BranchOwnership(db, confirm_handoff=confirm_handoff, clock=clock)
         self._confirm_stopped = confirm_stopped
         self._route_validator = route_validator
 
@@ -793,6 +794,18 @@ class RepairService:
             ):
                 return self._timeout_value("stale", "ignore", operation_id, stage)
             if row["deadline_at"] is None or observed_at < float(row["deadline_at"]):
+                return self._timeout_value("not_due", "wait", operation_id, stage)
+            live_mutation = (
+                await conn.execute(
+                    select(integration_candidate_ref_mutations.c.id).where(
+                        integration_candidate_ref_mutations.c.operation_id == operation_id,
+                        integration_candidate_ref_mutations.c.operation_stage == stage,
+                        integration_candidate_ref_mutations.c.state == "reserved",
+                        integration_candidate_ref_mutations.c.expires_at > observed_at,
+                    )
+                )
+            ).scalar_one_or_none()
+            if live_mutation is not None:
                 return self._timeout_value("not_due", "wait", operation_id, stage)
             if (
                 operation["target_kind"] == "batch"

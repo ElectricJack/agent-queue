@@ -52,6 +52,31 @@ def _git_push_case(tmp_path: Path) -> tuple[Path, Path, Path, str, str]:
 
 
 @pytest.mark.asyncio
+async def test_exact_fetch_broker_settlement_preserves_caller_cancellation():
+    entered_settlement = asyncio.Event()
+    reaped = asyncio.Event()
+
+    async def stubborn_broker():
+        try:
+            try:
+                await asyncio.Future()
+            except asyncio.CancelledError:
+                entered_settlement.set()
+                await asyncio.Future()
+        finally:
+            reaped.set()
+
+    broker = asyncio.create_task(stubborn_broker())
+    settlement = asyncio.create_task(GitManager._settle_app_credential_broker(broker))
+    await asyncio.wait_for(entered_settlement.wait(), timeout=1)
+    settlement.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(settlement, timeout=1)
+    assert broker.done()
+    assert reaped.is_set()
+
+
+@pytest.mark.asyncio
 async def test_app_exact_fetch_imports_only_requested_oid_to_daemon_namespace(tmp_path):
     checkout, source, _trap, _base, tip = _git_push_case(tmp_path)
     _git(["push", str(source), f"{tip}:refs/heads/topic"], checkout)
