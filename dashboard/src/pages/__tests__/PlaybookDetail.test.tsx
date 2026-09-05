@@ -60,6 +60,7 @@ vi.mock("../../api/hooks", () => ({
   useSetPlaybookActivation: () => ({ mutate: vi.fn() }),
   usePlaybookPendingEventAction: () => ({ mutate: vi.fn() }),
   usePlaybookRunOverlay: () => ({ data: undefined }),
+  useSavePlaybookGraphLayout: () => ({ mutate: vi.fn() }),
 }));
 
 function page() {
