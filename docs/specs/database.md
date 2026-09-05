@@ -1215,6 +1215,22 @@ Multi-agent pipelines with stage gates and agent affinity.
 
 Inserts a new row into `projects`. The `created_at` value is always `time.time()` — the value on the `Project` dataclass is ignored. The `status` field is serialized from `ProjectStatus.value`. The `discord_control_channel_id` column is **not** written by this method (only `discord_channel_id` is). Commits after insert.
 
+`create_project` is a database primitive, not the dashboard repository-onboarding
+flow. `onboard_project` owns the user-facing orchestration of a project, its
+primary `project-repo` workspace, and vault setup from a configured
+root-relative destination; it does not permit arbitrary paths.
+
+### `project_onboarding_requests`
+
+The onboarding service persists an idempotency and recovery record for every
+request. Each row stores the request ID, normalized-input fingerprint, status,
+current phase, request-owned resource ledger, scrubbed result or error, and
+timestamps. The ledger contains only identifiers and paths needed for bounded
+recovery; it never contains GitHub credentials. Terminal records follow the
+operational-event retention policy. This record permits safe replay after an
+interrupted process without treating GitHub, filesystem, vault, and database
+operations as one transaction.
+
 ### `get_project(project_id: str) -> Project | None`
 
 Selects by primary key. Returns `None` if not found. Delegates to `_row_to_project`.

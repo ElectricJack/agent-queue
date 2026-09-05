@@ -32527,6 +32527,33 @@
             "type": "boolean",
             "title": "Has System Prompt",
             "default": false
+          },
+          "lifecycle": {
+            "type": "string",
+            "title": "Lifecycle",
+            "default": "task"
+          },
+          "min_active": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Min Active"
+          },
+          "max_active": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Active"
           }
         },
         "type": "object",

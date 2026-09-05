@@ -97,7 +97,6 @@ function fieldErrors(error: ErrorPayload): Record<string, string> {
   }
   return Object.fromEntries(Object.entries(values).filter((entry): entry is [string, string] => typeof entry[1] === "string"));
 }
-
 function survivors(error: { details?: unknown }): string[] | undefined {
   if (!error.details || typeof error.details !== "object") return undefined;
   const details = error.details as Record<string, unknown>;

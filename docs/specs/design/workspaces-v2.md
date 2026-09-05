@@ -430,7 +430,8 @@ The migration is one Alembic revision; if it crashes mid-way, Alembic rolls back
 New / updated commands (in `CommandHandler`, exposed via all three surfaces):
 
 - **`list_workspace_kinds(project_id=None)`** — list system + project-scoped kinds. New.
-- **`add_workspace(project_id, kind_id=None, workspace_path, source_type, ...)`** — gains `kind_id`. When `kind_id` is None, defaults to `project-repo` *only if* that kind resolves for the project; otherwise raises a clear error. The system `project-repo` kind is treated as undeletable (recreated on daemon start) so the default reliably resolves.
+- **`onboard_project(...)`** — the dashboard and CLI path for creating a project with its primary `project-repo` workspace. It validates a root-relative repository destination and orchestrates project, workspace, vault, and Git operations as specified in the project-onboarding design; it does not accept arbitrary filesystem paths.
+- **`add_workspace(project_id, kind_id=None, workspace_path, source_type, ...)`** — gains `kind_id`. It remains the lower-level workspace operation. When `kind_id` is None, defaults to `project-repo` *only if* that kind resolves for the project; otherwise raises a clear error. The system `project-repo` kind is treated as undeletable (recreated on daemon start) so the default reliably resolves.
 - **`create_task(...)`** — gains `requires_kinds` parameter (see §5.1).
 
 Editing kind definitions is done by editing the markdown files in the vault — no dedicated edit command, same as profiles and MCP servers.

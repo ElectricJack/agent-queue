@@ -74,12 +74,9 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-import sqlalchemy.exc
-
 from src.database.queries.hierarchy_queries import HierarchyError
 from src.config import AppConfig, ConfigWatcher
 from src.llm_logger import LLMLogger
-from src.logging_config import CorrelationContext
 from src.database import create_database
 from src.notifications.builder import build_task_detail
 from src.notifications.events import (
@@ -100,7 +97,6 @@ from src.models import (
     Task,
     TaskStatus,
 )
-from src.review_keys import flag_review_task_event
 from src.scheduler import AssignAction, Scheduler, SchedulerState, idle_workers
 from src.tokens.budget import BudgetManager
 from src.vault_manager import VaultManager

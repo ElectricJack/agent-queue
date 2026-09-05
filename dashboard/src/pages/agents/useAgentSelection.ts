@@ -42,6 +42,23 @@ export function parseAgentSelection(key: string): AgentSelection {
   };
 }
 
+/**
+ * Which creation surface is open on the agents page.
+ *
+ * A durable agent and a worker pool are different objects with different
+ * scope and lifecycle, so the entry point is a fork rather than one form:
+ * ``add=1`` is the fork, ``add=agent`` and ``add=pool`` the two forms.
+ * ``add=1`` keeps the value the old boolean flag used, so links that predate
+ * the fork still open something sensible.
+ */
+export type CreateMode = "choice" | "agent" | "pool";
+
+export function parseCreateMode(value: string | null): CreateMode | null {
+  if (value === "1" || value === "choice") return "choice";
+  if (value === "agent" || value === "pool") return value;
+  return null;
+}
+
 /** Ordered, shareable selection. Unknown IDs remain closable in the workspace. */
 export function useAgentSelection() {
   const location = useLocation();
@@ -66,12 +83,12 @@ export function useAgentSelection() {
     return () => { current.mounted = false; };
   }, []);
 
-  const adding = location.pathname === "/agents" && params.get("add") === "1";
+  const adding = location.pathname === "/agents" ? parseCreateMode(params.get("add")) : null;
 
-  const navigateTo = (ids: string[], replaceSelection = false, add = false) => {
+  const navigateTo = (ids: string[], replaceSelection = false, add: CreateMode | null = null) => {
     const search = new URLSearchParams();
     ids.forEach((id) => search.append("agent", id));
-    if (add) search.set("add", "1");
+    if (add) search.set("add", add === "choice" ? "1" : add);
     navigate(
       { pathname: "/agents", search: search.toString() },
       { state: replaceSelection ? { agentSelection: "replace" } : null },
@@ -105,9 +122,13 @@ export function useAgentSelection() {
         ? poolSelectionKey(selection.projectId, selection.profileId, instanceId)
         : selected));
     },
-    /** The Add-agent form is URL state so the left rail can open it from any page. */
+    /**
+     * The create flow is URL state so the left rail can open it from any page.
+     * ``choice`` is the fork an operator lands on first; the two concrete forms
+     * are only reachable through it (or a shared link).
+     */
     adding,
-    setAdding: (next: boolean) => navigateTo(selectedIds, false, next),
+    setAdding: (next: CreateMode | null) => navigateTo(selectedIds, false, next),
     close: (id: string) => {
       // A deletion may finish after selection changes or the workspace unmounts.
       const address = selectionAddress(id);

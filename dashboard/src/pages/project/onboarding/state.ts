@@ -132,7 +132,14 @@ export function defaultSource(mode: SourceMode): SourceState {
         githubVisibility: "private",
       };
     case "github_clone":
-      return { mode, rootId: null, githubRepository: null, githubUrl: "", directoryName: "", directoryNameAuto: true };
+      return {
+        mode,
+        rootId: null,
+        githubRepository: null,
+        githubUrl: "",
+        directoryName: "",
+        directoryNameAuto: true,
+      };
   }
 }
 

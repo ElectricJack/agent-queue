@@ -136,7 +136,15 @@ aq hook runs <hook-id> --limit 50      # More history
 aq project list                        # List all projects
 aq project list -s ACTIVE              # Filter by status
 aq project details <project-id>        # Full project info
+aq project onboard --help              # Create/link/clone a project through onboarding
 ```
+
+`aq project onboard` is the CLI equivalent of the dashboard's **Add project**
+wizard. It links an existing local Git repository, initializes a new repository,
+or clones a GitHub repository beneath a configured `project_roots` entry. It is
+the project-creation path that creates the project, primary `project-repo`
+workspace, and vault structure together. See the [project onboarding guide](project-onboarding.md)
+for root configuration, host `gh` authentication, modes, and recovery.
 
 ### MCP Commands
 
