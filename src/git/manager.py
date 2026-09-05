@@ -2653,6 +2653,65 @@ class GitManager:
         )
         return tip
 
+    async def apush_expected_delivery(
+        self,
+        checkout_path: str,
+        base_oid: str,
+        tip_oid: str,
+        branch: str,
+        expected_old_oid: str,
+    ) -> str:
+        """Push one validated candidate with an exact remote old-tip lease.
+
+        Callers have already selected the target transition.  This helper
+        checks the candidate's local ancestry and daemon-owned-path policy,
+        then uses only immutable object IDs in its refspec.  The explicit
+        lease is deliberately independent of ``origin/<branch>``: a stale
+        tracking ref is not authority to overwrite a concurrent remote move.
+        """
+        branch = _validate_ref(branch)
+        for name, oid in (
+            ("delivery base", base_oid),
+            ("delivery tip", tip_oid),
+            ("expected target", expected_old_oid),
+        ):
+            if not isinstance(oid, str) or not _OID_RE.fullmatch(oid.lower()):
+                raise GitError(f"invalid {name} OID")
+
+        # Fetch the target branch without updating a local branch or relying
+        # on a tracking ref for authority.  This makes the expected old tip's
+        # commit available for the ancestry proof even in a fresh checkout;
+        # the explicit lease below remains the remote-movement guard.
+        await self._arun(
+            ["fetch", "--no-tags", "origin", f"refs/heads/{branch}"],
+            cwd=checkout_path,
+        )
+        for oid in (base_oid, tip_oid, expected_old_oid):
+            await self._arun(["cat-file", "-e", f"{oid}^{{commit}}"], cwd=checkout_path)
+        if await self.ais_ancestor(checkout_path, base_oid, tip_oid, strict=True) is not True:
+            raise GitError("delivery tip is not a descendant of its expected base")
+        if (
+            await self.ais_ancestor(
+                checkout_path, expected_old_oid, tip_oid, strict=True
+            )
+            is not True
+        ):
+            raise GitError("delivery tip is not a descendant of its expected target")
+        paths = await self.areserved_paths_in_diff(checkout_path, base_oid, tip_oid)
+        if paths:
+            raise GitError("reserved delivery paths: " + ", ".join(paths))
+
+        await self._arun(
+            [
+                "push",
+                "origin",
+                f"--force-with-lease=refs/heads/{branch}:{expected_old_oid}",
+                f"{tip_oid}:refs/heads/{branch}",
+            ],
+            cwd=checkout_path,
+        )
+        return tip_oid
+
     async def alist_prs(
         self,
         checkout_path: str,

@@ -73,7 +73,10 @@ def test_builtin_registration_invokes_integration_registration(monkeypatch):
 def test_unimplemented_integration_operations_are_not_registered():
     registry = ContractRegistry()
     register_integration_contracts(registry)
-    assert not (registry.names() & DESIGN_INTEGRATION_COMMANDS)
+    assert registry.names() & DESIGN_INTEGRATION_COMMANDS == {"integration_transfer_owner"}
+    assert not (
+        registry.names() & (DESIGN_INTEGRATION_COMMANDS - {"integration_transfer_owner"})
+    )
 
 
 @pytest.mark.asyncio

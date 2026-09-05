@@ -15,6 +15,7 @@ from src.models import (
     Workspace,
     WorkspaceMode,
 )
+from src.sessions.provider import SessionHandle
 
 logger = logging.getLogger(__name__)
 
@@ -881,6 +882,97 @@ class WorkspaceMixin:
             await self._cleanup_worktree_workspace(ws)
         else:
             await self.db.release_workspace(ws.id)
+
+    async def aconfirm_integration_owner_handoff(self, owner: dict) -> bool:
+        """Stop and detach an attached integration writer before fencing it out.
+
+        A database unlock is not termination evidence: slot worktrees retain
+        their branch after ordinary release.  This path uses the provider's
+        uncached ``confirm_stopped`` probe, then requires a slot to be truly
+        detached before releasing it.  If any proof is unavailable, retain
+        the lock and return ``False`` so the ownership record stays fenced.
+        """
+        session_id = owner.get("session_id")
+        workspace_id = owner.get("workspace_id")
+        from src.orchestrator.workspace_attachments import (
+            integration_handoff_release_is_confirmed,
+            mark_integration_handoff_released,
+        )
+
+        if await integration_handoff_release_is_confirmed(self.db, owner):
+            return True
+        if not session_id or not workspace_id:
+            return False
+        session = await self.db.get_session(session_id)
+        workspace = await self.db.get_workspace(workspace_id)
+        repository = await self.db.get_repo(str(owner.get("repository_id") or ""))
+        task = await self.db.get_task(session.task_id) if session and session.task_id else None
+        if (
+            session is None
+            or workspace is None
+            or repository is None
+            or task is None
+            or workspace.locked_by_task_id != session.task_id
+            or workspace.project_id != repository.project_id
+            or session.project_id != repository.project_id
+            or task.project_id != repository.project_id
+            or task.repo_id != repository.id
+            or task.branch_name != owner.get("ref")
+            or os.path.realpath(session.work_dir) != os.path.realpath(workspace.workspace_path)
+        ):
+            return False
+        if (
+            await self.git.aget_current_branch(workspace.workspace_path, strict=True)
+            != owner.get("ref")
+        ):
+            return False
+        try:
+            provider = self.session_providers.create(session.provider, self.config)
+            handle = SessionHandle(
+                name=session.name,
+                provider=session.provider,
+                instance_token=session.instance_token,
+            )
+            await provider.stop(handle, grace=2.0)
+            if not await provider.confirm_stopped(handle):
+                return False
+        except Exception:
+            logger.warning("Could not confirm integration writer %s stopped", session_id, exc_info=True)
+            return False
+
+        if workspace.is_slot:
+            try:
+                from src.orchestrator.workspace_attachments import (
+                    detach_slot_for_integration_handoff,
+                )
+
+                if not await detach_slot_for_integration_handoff(
+                    self.db,
+                    self.git,
+                    self._git_mutex,
+                    workspace,
+                    expected_branch=str(owner["ref"]),
+                ):
+                    return False
+            except Exception:
+                logger.warning("Could not detach integration slot %s", workspace.id, exc_info=True)
+                return False
+
+        current_workspace = await self.db.get_workspace(workspace.id)
+        if (
+            current_workspace is None
+            or current_workspace.locked_by_task_id != session.task_id
+        ):
+            return False
+        await self.db.update_session(
+            session.id, state="stopped", desired_state="stopped", end_reason="integration_handoff"
+        )
+        if not await mark_integration_handoff_released(
+            self.db, owner, workspace=workspace, task_id=session.task_id
+        ):
+            return False
+        released = await self.db.get_workspace(workspace.id)
+        return released is not None and released.locked_by_task_id is None
 
     async def _cleanup_worktree_workspace(self, ws: Workspace) -> None:
         """Remove a *legacy* git worktree and delete its workspace record.

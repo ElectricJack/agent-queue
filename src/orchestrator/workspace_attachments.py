@@ -8,6 +8,12 @@ acquires every required lock.
 
 from __future__ import annotations
 
+import time
+from collections.abc import Callable
+
+from sqlalchemy import select, update
+
+from src.database.tables import integration_branch_owners, workspaces
 from src.models import (
     ResolvedRequirement,
     SYSTEM_KIND_SCOPE,
@@ -35,6 +41,150 @@ class AcquisitionFailed(Exception):
     def __init__(self, kind_id: str):
         self.kind_id = kind_id
         super().__init__(f"could not acquire workspace of kind {kind_id!r}")
+
+
+async def integration_handoff_release_is_confirmed(db, owner: dict) -> bool:
+    """Whether *owner* already durably released its exact old attachment."""
+    owner_id = owner.get("id")
+    workspace_id = owner.get("workspace_id") or owner.get("confirmed_workspace_id")
+    if not owner_id or not workspace_id:
+        return False
+    async with db.immediate() as conn:
+        row = (
+            await conn.execute(
+                select(integration_branch_owners).where(
+                    integration_branch_owners.c.id == owner_id,
+                    integration_branch_owners.c.fence_token == owner.get("fence_token"),
+                    integration_branch_owners.c.owner_id == owner.get("owner_id"),
+                )
+            )
+        ).mappings().one_or_none()
+    return bool(
+        row is not None
+        and row["handoff_state"] == "released"
+        and row["confirmed_workspace_id"] == workspace_id
+    )
+
+
+async def mark_integration_handoff_released(
+    db,
+    owner: dict,
+    *,
+    workspace,
+    task_id: str,
+) -> bool:
+    """Atomically record detach proof and release the exact old DB lock."""
+    async with db.immediate() as conn:
+        owner_row = (
+            await conn.execute(
+                select(integration_branch_owners)
+                .where(integration_branch_owners.c.id == owner.get("id"))
+                .with_for_update()
+            )
+        ).mappings().one_or_none()
+        workspace_row = (
+            await conn.execute(
+                select(workspaces)
+                .where(workspaces.c.id == workspace.id)
+                .with_for_update()
+            )
+        ).mappings().one_or_none()
+        if (
+            owner_row is None
+            or workspace_row is None
+            or owner_row["fence_token"] != owner.get("fence_token")
+            or owner_row["owner_id"] != owner.get("owner_id")
+            or owner_row["handoff_state"] != "handoff_pending"
+            or owner_row["session_id"] != owner.get("session_id")
+            or owner_row["workspace_id"] != workspace.id
+            or workspace_row["locked_by_task_id"] != task_id
+        ):
+            return False
+
+        released_owner = await conn.execute(
+            update(integration_branch_owners)
+            .where(
+                integration_branch_owners.c.id == owner_row["id"],
+                integration_branch_owners.c.fence_token == owner_row["fence_token"],
+                integration_branch_owners.c.handoff_state == "handoff_pending",
+                integration_branch_owners.c.session_id == owner_row["session_id"],
+                integration_branch_owners.c.workspace_id == workspace.id,
+            )
+            .values(
+                handoff_state="released",
+                session_id=None,
+                workspace_id=None,
+                confirmed_workspace_id=workspace.id,
+                updated_at=time.time(),
+            )
+        )
+        released_workspace = await conn.execute(
+            update(workspaces)
+            .where(
+                workspaces.c.id == workspace.id,
+                workspaces.c.locked_by_task_id == task_id,
+            )
+            .values(
+                locked_by_agent_id=None,
+                locked_by_task_id=None,
+                locked_at=None,
+                lock_mode=None,
+            )
+        )
+        if released_owner.rowcount != 1 or released_workspace.rowcount != 1:
+            raise RuntimeError("integration handoff release lost its compare-and-swap")
+    return True
+
+
+async def detach_slot_for_integration_handoff(
+    db,
+    git,
+    git_mutex: Callable,
+    workspace,
+    *,
+    expected_branch: str,
+) -> bool:
+    """Detach a clean, fully pushed slot without resetting its contents.
+
+    Handoff is not terminal-failure cleanup.  It must never invoke the slot
+    restore ladder, which may salvage and reset work.  Instead, hold the
+    repository mutex while proving the checkout is clean, its exact current
+    branch tip equals the freshly fetched remote tip, and then detach that
+    immutable HEAD.  Unknown Git state is a failed proof, never release
+    evidence.
+    """
+    if not workspace.is_slot or not workspace.base_workspace_id:
+        return False
+    base = await db.get_workspace(workspace.base_workspace_id)
+    if base is None or base.project_id != workspace.project_id:
+        return False
+
+    checkout = workspace.workspace_path
+    branch_ref = f"refs/heads/{expected_branch}"
+    remote_ref = f"refs/remotes/origin/{expected_branch}"
+    async with git_mutex(base.workspace_path):
+        current = await git._arun_unlocked(
+            ["rev-parse", "--abbrev-ref", "HEAD"], cwd=checkout
+        )
+        if current != expected_branch:
+            return False
+        status = await git._arun_unlocked(["status", "--porcelain"], cwd=checkout)
+        if status:
+            return False
+
+        await git._arun_unlocked(["fetch", "origin"], cwd=base.workspace_path)
+        local_tip = await git._arun_unlocked(["rev-parse", branch_ref], cwd=checkout)
+        remote_tip = await git._arun_unlocked(["rev-parse", remote_ref], cwd=checkout)
+        head = await git._arun_unlocked(["rev-parse", "HEAD"], cwd=checkout)
+        if not local_tip or local_tip != remote_tip or head != local_tip:
+            return False
+
+        await git._arun_unlocked(["switch", "--detach", head], cwd=checkout)
+        detached = await git._arun_unlocked(
+            ["rev-parse", "--abbrev-ref", "HEAD"], cwd=checkout
+        )
+        detached_head = await git._arun_unlocked(["rev-parse", "HEAD"], cwd=checkout)
+        return detached == "HEAD" and detached_head == head
 
 
 async def effective_requirements(db, task: Task) -> list[ResolvedRequirement]:

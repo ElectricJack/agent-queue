@@ -488,6 +488,65 @@ async def test_delivery_push_checks_and_pushes_one_immutable_tip_despite_head_mu
     assert pushed == [["push", "origin", f"{clean_tip}:refs/heads/main"]]
 
 
+@pytest.mark.asyncio
+async def test_expected_delivery_push_moves_only_the_validated_tip(clone, mgr):
+    """Replacing the OID refspec with HEAD would permit a post-check rewrite."""
+    base = _git(["rev-parse", "main"], cwd=clone)
+    _git(["switch", "-c", "delivery/immutable"], cwd=clone)
+    tip = _commit_file(clone, "delivery.txt", "candidate\n", "candidate")
+
+    pushed = await mgr.apush_expected_delivery(clone, base, tip, "main", base)
+
+    assert pushed == tip
+    assert _git(["rev-parse", "refs/heads/delivery/immutable"], cwd=clone) == tip
+    assert _git(["ls-remote", "--heads", "origin", "refs/heads/main"], cwd=clone).split()[0] == tip
+
+
+@pytest.mark.asyncio
+async def test_expected_delivery_push_preserves_a_remote_move_after_validation(clone, bare_repo, mgr, tmp_path):
+    """Dropping the explicit old-OID lease would overwrite a competing push."""
+    base = _git(["rev-parse", "main"], cwd=clone)
+    _git(["switch", "-c", "delivery/candidate"], cwd=clone)
+    tip = _commit_file(clone, "candidate.txt", "candidate\n", "candidate")
+
+    competing = str(tmp_path / "competing")
+    subprocess.run(["git", "clone", bare_repo, competing], check=True, capture_output=True)
+    _git(["config", "user.name", "Competitor"], cwd=competing)
+    _git(["config", "user.email", "competitor@example.test"], cwd=competing)
+    competing_tip = _commit_file(competing, "competing.txt", "other\n", "competing")
+    _git(["push", "origin", "main"], cwd=competing)
+
+    with pytest.raises(GitError, match="force-with-lease"):
+        await mgr.apush_expected_delivery(clone, base, tip, "main", base)
+
+    assert _git(["rev-parse", "refs/heads/delivery/candidate"], cwd=clone) == tip
+    remote_main = _git(["ls-remote", "--heads", "origin", "refs/heads/main"], cwd=clone)
+    assert remote_main.split()[0] == competing_tip
+
+
+@pytest.mark.asyncio
+async def test_expected_delivery_push_rejects_a_divergent_expected_target(
+    clone, bare_repo, mgr, tmp_path
+):
+    """Checking only base-to-tip ancestry would permit a divergent force rewrite."""
+    base = _git(["rev-parse", "main"], cwd=clone)
+    _git(["switch", "-c", "delivery/candidate"], cwd=clone)
+    tip = _commit_file(clone, "candidate.txt", "candidate\n", "candidate")
+
+    competing = str(tmp_path / "divergent")
+    subprocess.run(["git", "clone", bare_repo, competing], check=True, capture_output=True)
+    _git(["config", "user.name", "Competitor"], cwd=competing)
+    _git(["config", "user.email", "competitor@example.test"], cwd=competing)
+    competing_tip = _commit_file(competing, "competing.txt", "other\n", "competing")
+    _git(["push", "origin", "main"], cwd=competing)
+
+    with pytest.raises(GitError, match="expected target"):
+        await mgr.apush_expected_delivery(clone, base, tip, "main", competing_tip)
+
+    remote_main = _git(["ls-remote", "--heads", "origin", "refs/heads/main"], cwd=clone)
+    assert remote_main.split()[0] == competing_tip
+
+
 _RENAMEABLE_CONTENT = "".join(f"line {i}\n" for i in range(30))
 
 
