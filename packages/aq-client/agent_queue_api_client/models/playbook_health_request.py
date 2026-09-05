@@ -16,7 +16,7 @@ class PlaybookHealthRequest:
     """
     Attributes:
         playbook_id (None | str | Unset): Filter to a specific playbook ID. Omit for all playbooks.
-        status (None | str | Unset): Filter by run status: running, paused, completed, failed, timed_out.
+        status (None | str | Unset): Filter by run status: running, paused, completed, failed, blocked, timed_out.
         limit (int | Unset): Max runs to analyse (default 200). Default: 200.
     """
 

@@ -526,6 +526,29 @@ async def test_commit_boundary_rejects_an_illegal_lifecycle_move(db):
         )
 
 
+async def test_blocked_run_persists_reloads_and_cannot_be_resurrected(db):
+    blocked = RunLifecycle.BLOCKED
+    snapshot = await db.create_run(make_snapshot())
+    stopped = await db.commit_boundary(
+        replace(snapshot, lifecycle=blocked, completed_at=NOW + 5),
+        make_receipt(snapshot, outcome="failure"),
+    )
+
+    reloaded = await db.load_run(snapshot.run_id)
+    assert reloaded == stopped
+    assert reloaded.lifecycle is blocked
+    assert reloaded.is_terminal
+    assert [run.run_id for run in await db.list_runs(lifecycle="blocked")] == [
+        snapshot.run_id
+    ]
+
+    with pytest.raises(IllegalLifecycleTransition):
+        await db.commit_boundary(
+            replace(reloaded, lifecycle=RunLifecycle.RUNNING),
+            make_receipt(reloaded, receipt_id="receipt-late", step_id="late"),
+        )
+
+
 async def test_commit_boundary_refuses_a_receipt_from_another_run(db):
     snapshot = await db.create_run(make_snapshot())
     other = make_snapshot(run_id="run-other")

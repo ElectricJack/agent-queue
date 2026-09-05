@@ -72,6 +72,14 @@ def test_reviewed_hierarchy_routes_lifecycle_without_invented_success():
     assert isinstance(
         artifact.steps["project-delivery-readiness--failed-policy"], DecisionStep
     )
+    assert {
+        artifact.steps[f"{rule}--blocked"].outcome
+        for rule in (
+            "project-delivery-readiness",
+            "completed-child-readiness",
+            "failed-child-readiness",
+        )
+    } == {"blocked"}
     assert by_rule["completed-child-readiness"].command == (
         "integration_delivery_readiness"
     )
@@ -82,7 +90,7 @@ def test_reviewed_hierarchy_routes_lifecycle_without_invented_success():
 
 @pytest.mark.parametrize(
     ("policy", "terminal_outcome", "gate_count"),
-    [("block", "failed", 0), ("ask", "completed", 1)],
+    [("block", "blocked", 0), ("ask", "completed", 1)],
 )
 async def test_failed_delivery_event_runs_real_readiness_and_policy_commands(
     command_handler_factory,

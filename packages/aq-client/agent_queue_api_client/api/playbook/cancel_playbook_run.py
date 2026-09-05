@@ -67,12 +67,12 @@ def sync_detailed(
 ) -> Response[CancelPlaybookRunResponse | CancelPlaybookRunResponse422]:
     """Cancel a playbook run that is running or paused. Marks the run as cancelled and stamps completed_at.
     Does not interrupt a node mid-execution — see the command's docstring for the current limitation.
-    Fails if the run is already in a terminal state (completed, failed, timed_out, or already
+    Fails if the run is already in a terminal state (completed, failed, blocked, timed_out, or already
     cancelled).
 
      Cancel a playbook run that is running or paused. Marks the run as cancelled and stamps completed_at.
     Does not interrupt a node mid-execution — see the command's docstring for the current limitation.
-    Fails if the run is already in a terminal state (completed, failed, timed_out, or already
+    Fails if the run is already in a terminal state (completed, failed, blocked, timed_out, or already
     cancelled).
 
     Args:
@@ -104,12 +104,12 @@ def sync(
 ) -> CancelPlaybookRunResponse | CancelPlaybookRunResponse422 | None:
     """Cancel a playbook run that is running or paused. Marks the run as cancelled and stamps completed_at.
     Does not interrupt a node mid-execution — see the command's docstring for the current limitation.
-    Fails if the run is already in a terminal state (completed, failed, timed_out, or already
+    Fails if the run is already in a terminal state (completed, failed, blocked, timed_out, or already
     cancelled).
 
      Cancel a playbook run that is running or paused. Marks the run as cancelled and stamps completed_at.
     Does not interrupt a node mid-execution — see the command's docstring for the current limitation.
-    Fails if the run is already in a terminal state (completed, failed, timed_out, or already
+    Fails if the run is already in a terminal state (completed, failed, blocked, timed_out, or already
     cancelled).
 
     Args:
@@ -136,12 +136,12 @@ async def asyncio_detailed(
 ) -> Response[CancelPlaybookRunResponse | CancelPlaybookRunResponse422]:
     """Cancel a playbook run that is running or paused. Marks the run as cancelled and stamps completed_at.
     Does not interrupt a node mid-execution — see the command's docstring for the current limitation.
-    Fails if the run is already in a terminal state (completed, failed, timed_out, or already
+    Fails if the run is already in a terminal state (completed, failed, blocked, timed_out, or already
     cancelled).
 
      Cancel a playbook run that is running or paused. Marks the run as cancelled and stamps completed_at.
     Does not interrupt a node mid-execution — see the command's docstring for the current limitation.
-    Fails if the run is already in a terminal state (completed, failed, timed_out, or already
+    Fails if the run is already in a terminal state (completed, failed, blocked, timed_out, or already
     cancelled).
 
     Args:
@@ -171,12 +171,12 @@ async def asyncio(
 ) -> CancelPlaybookRunResponse | CancelPlaybookRunResponse422 | None:
     """Cancel a playbook run that is running or paused. Marks the run as cancelled and stamps completed_at.
     Does not interrupt a node mid-execution — see the command's docstring for the current limitation.
-    Fails if the run is already in a terminal state (completed, failed, timed_out, or already
+    Fails if the run is already in a terminal state (completed, failed, blocked, timed_out, or already
     cancelled).
 
      Cancel a playbook run that is running or paused. Marks the run as cancelled and stamps completed_at.
     Does not interrupt a node mid-execution — see the command's docstring for the current limitation.
-    Fails if the run is already in a terminal state (completed, failed, timed_out, or already
+    Fails if the run is already in a terminal state (completed, failed, blocked, timed_out, or already
     cancelled).
 
     Args:

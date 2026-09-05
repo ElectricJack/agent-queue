@@ -31,7 +31,7 @@ observation as delivery evidence, and it never supplies resolution Git object ID
 On `task.completed` or `task.failed` for a hydrated task whose
 `task.parent_task_id` is present, call `integration_delivery_readiness` with that
 immediate parent as `task_id` and bind `readiness`. Outcomes `ready` and `waiting`
-complete. On `failed`, inspect `on_failed_child`: `block` terminates failed while
+complete. On `failed`, inspect `on_failed_child`: `block` terminates the run as blocked while
 `ask` calls `gate_create` with stable failed-parent `await_id`, the event `project_id`,
 literal `gate_type` `human`, failed-child `title` and `question`, and the parent in
 `waiter_task_ids`. Gate outcomes `created`, `reused`, and `skipped` complete;
@@ -66,7 +66,8 @@ call `integration_repair_dispatch` for literal `stage` zero. Repair outcomes
 
 On `delivery.applied`, call `integration_delivery_readiness` for `target_task_id` and
 bind `readiness`. Outcomes `ready` and `waiting` complete. On `failed`, inspect
-`on_failed_child`: `block` terminates failed and preserves the parent's suspended failed
+`on_failed_child`: `block` terminates the run as blocked and preserves the parent's suspended
+failed
 child blocker; `ask` calls `gate_create` with the event `project_id`, literal `gate_type`
 `human`, a failed-child `title`, a failed-child `question`, and a one-item
 `waiter_task_ids` list containing `target_task_id`. Bind stable `await_id` from the

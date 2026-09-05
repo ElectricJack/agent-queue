@@ -1,7 +1,7 @@
 ---
 playbook_id: hierarchical-delivery
-artifact_sha256: sha256:b78b12e31efc1cc5338c00a13541dd2657abc99a3c08350e4e73ee30b506fdcb
-source_sha256: sha256:7046de82db414a94cb300ae6f2920e9e7f8501dca8394e6ca670b467ad33116c
+artifact_sha256: sha256:1cc620b3bc3e02a0e2feb5ae257689299d3ee667aeb5f0a92132706bf7b40c09
+source_sha256: sha256:adfdc677da623f46f75d3f1acb3b0485430a4f0462ad2ef45d4aa42e8dee6ddc
 contract_fingerprint: sha256:1b9a053e0dfb874435d0b813bbd4771990287bef91525cecb38e5c5f98102770
 questions_resolved: []
 capabilities_granted:
@@ -26,7 +26,7 @@ profiles_referenced: []
 # Review decision
 
 Approved as a disabled offline-reviewed artifact. Every route uses a registered
-deterministic command. Failed-child `block` remains a failed terminal with the
+deterministic command. Failed-child `block` ends the run as blocked with the
 parent suspended; `ask` opens one ordinary deduplicated human gate. Repair close
 and resolution-push facts are explicitly lifecycle-only and are not success proof.
 

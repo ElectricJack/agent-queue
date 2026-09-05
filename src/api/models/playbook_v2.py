@@ -705,6 +705,7 @@ RunLifecycle = Literal[
     "cancelling",
     "completed",
     "failed",
+    "blocked",
     "timed_out",
     "cancelled",
 ]

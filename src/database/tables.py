@@ -1164,7 +1164,7 @@ playbook_v2_runs = Table(
     Column("completed_at", Float, nullable=True),
     CheckConstraint(
         "lifecycle IN ('running', 'paused', 'cancelling', 'completed', "
-        "'failed', 'timed_out', 'cancelled')",
+        "'failed', 'blocked', 'timed_out', 'cancelled')",
         name="ck_playbook_v2_runs_lifecycle",
     ),
     CheckConstraint("mode IN ('live', 'dry_run', 'shadow')", name="ck_playbook_v2_runs_mode"),

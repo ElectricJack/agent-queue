@@ -424,6 +424,9 @@ class TestStepStructure:
             PlaybookDefinition.model_validate(artifact)
 
     def test_a_terminal_outcome_is_a_closed_enum(self):
+        terminal = TerminalStep(rule="r1", title="T", outcome="blocked", source=source())
+        assert terminal.outcome == "blocked"
+
         with pytest.raises(ValidationError):
             TerminalStep(rule="r1", title="T", outcome="whatever", source=source())
 

@@ -3465,14 +3465,16 @@ _ALL_TOOL_DEFINITIONS = [
                 "status": {
                     "type": "string",
                     "description": (
-                        "Filter by run status: running, paused, completed, failed, "
-                        "timed_out, cancelled"
+                        "Filter by run status: running, paused, cancelling, completed, failed, "
+                        "blocked, timed_out, cancelled"
                     ),
                     "enum": [
                         "running",
                         "paused",
+                        "cancelling",
                         "completed",
                         "failed",
+                        "blocked",
                         "timed_out",
                         "cancelled",
                     ],
@@ -3538,7 +3540,7 @@ _ALL_TOOL_DEFINITIONS = [
             "as cancelled and stamps completed_at. Does not interrupt a "
             "node mid-execution — see the command's docstring for the "
             "current limitation. Fails if the run is already in a terminal "
-            "state (completed, failed, timed_out, or already cancelled)."
+            "state (completed, failed, blocked, timed_out, or already cancelled)."
         ),
         "input_schema": {
             "type": "object",
@@ -3592,7 +3594,8 @@ _ALL_TOOL_DEFINITIONS = [
                 "status": {
                     "type": "string",
                     "description": (
-                        "Filter by run status: running, paused, completed, failed, timed_out."
+                        "Filter by run status: running, paused, completed, failed, blocked, "
+                        "timed_out."
                     ),
                 },
                 "limit": {

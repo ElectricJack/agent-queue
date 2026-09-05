@@ -271,6 +271,7 @@ class RunLifecycle(str, Enum):
     CANCELLING = "cancelling"
     COMPLETED = "completed"
     FAILED = "failed"
+    BLOCKED = "blocked"
     TIMED_OUT = "timed_out"
     CANCELLED = "cancelled"
 
@@ -279,6 +280,7 @@ TERMINAL_LIFECYCLES: frozenset[RunLifecycle] = frozenset(
     {
         RunLifecycle.COMPLETED,
         RunLifecycle.FAILED,
+        RunLifecycle.BLOCKED,
         RunLifecycle.TIMED_OUT,
         RunLifecycle.CANCELLED,
     }
@@ -295,6 +297,7 @@ LEGAL_TRANSITIONS: dict[RunLifecycle, frozenset[RunLifecycle]] = {
             RunLifecycle.CANCELLING,
             RunLifecycle.COMPLETED,
             RunLifecycle.FAILED,
+            RunLifecycle.BLOCKED,
             RunLifecycle.TIMED_OUT,
         }
     ),
@@ -317,6 +320,7 @@ LEGAL_TRANSITIONS: dict[RunLifecycle, frozenset[RunLifecycle]] = {
     ),
     RunLifecycle.COMPLETED: frozenset(),
     RunLifecycle.FAILED: frozenset(),
+    RunLifecycle.BLOCKED: frozenset(),
     RunLifecycle.TIMED_OUT: frozenset(),
     RunLifecycle.CANCELLED: frozenset(),
 }

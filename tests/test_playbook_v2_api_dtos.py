@@ -12,8 +12,10 @@ from __future__ import annotations
 
 import inspect
 import json
+from typing import get_args
 
-from pydantic import BaseModel
+import pytest
+from pydantic import BaseModel, TypeAdapter, ValidationError
 
 from src.api import codegen
 from src.api import models as api_models
@@ -264,10 +266,23 @@ class TestDelegationNarrowing:
 
 
 class TestHealthAndEnums:
+    def test_run_status_filter_admits_every_v2_lifecycle(self):
+        definition = next(
+            item for item in _ALL_TOOL_DEFINITIONS if item["name"] == "list_playbook_runs"
+        )
+        status = definition["input_schema"]["properties"]["status"]
+
+        assert set(status["enum"]) == set(get_args(playbook_v2.RunLifecycle))
+
+    def test_public_run_lifecycle_accepts_blocked_and_rejects_unknown_values(self):
+        adapter = TypeAdapter(playbook_v2.RunLifecycle)
+
+        assert adapter.validate_python("blocked") == "blocked"
+        with pytest.raises(ValidationError):
+            adapter.validate_python("waiting_for_magic")
+
     def test_activation_health_carries_all_six_values(self):
         """Roadmap §4's five, plus the transient ``unavailable`` §2.1 adds."""
-        from typing import get_args
-
         assert set(get_args(playbook_v2.ActivationHealthValue)) == {
             "ready",
             "question_required",

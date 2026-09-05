@@ -88,6 +88,7 @@ from src.playbooks.run_state import (
     RunSnapshot,
     SnapshotVersionConflict,
     StateLimitExceeded,
+    TERMINAL_LIFECYCLES,
     bind_step_output,
     canonical_json,
 )
@@ -138,6 +139,7 @@ EVENT_RUN_FINISHED = "playbook.v2.run.finished"
 _TERMINAL_LIFECYCLE: dict[str, RunLifecycle] = {
     "completed": RunLifecycle.COMPLETED,
     "failed": RunLifecycle.FAILED,
+    "blocked": RunLifecycle.BLOCKED,
     "cancelled": RunLifecycle.CANCELLED,
 }
 
@@ -2845,12 +2847,7 @@ class PlaybookEngine:
     ) -> tuple[RunSnapshot, StepReceipt | None, str]:
         now = self.services.clock()
         snapshot = attempt.snapshot
-        terminal = attempt.lifecycle in {
-            RunLifecycle.COMPLETED,
-            RunLifecycle.FAILED,
-            RunLifecycle.TIMED_OUT,
-            RunLifecycle.CANCELLED,
-        }
+        terminal = attempt.lifecycle in TERMINAL_LIFECYCLES
         attempts = dict(snapshot.attempts)
         attempts[f"{attempt.step_id}:{attempt.iteration}"] = attempt.attempt
         agent_task_ids = snapshot.agent_task_ids

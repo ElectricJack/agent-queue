@@ -1478,6 +1478,7 @@ class TestDecisionAndTerminal:
         [
             ("completed", RunLifecycle.COMPLETED),
             ("failed", RunLifecycle.FAILED),
+            ("blocked", RunLifecycle.BLOCKED),
             ("cancelled", RunLifecycle.CANCELLED),
         ],
     )
@@ -1495,6 +1496,31 @@ class TestDecisionAndTerminal:
             artifact_ref_for(mutated), "review", event("task-completed-code"), TRUSTED_LOCAL
         )
         assert outcome.lifecycle is lifecycle
+
+    @pytest.mark.asyncio
+    async def test_blocked_terminal_returns_and_emits_the_blocked_outcome(self):
+        blocked = RunLifecycle.BLOCKED
+        engine, adapter, _runs, bus, _ref = build()
+        artifact = load_artifact("two-rules-one-event.artifact.json")
+        mutated = with_step(
+            artifact,
+            "review-done",
+            artifact.steps["review-done"].model_copy(update={"outcome": "blocked"}),
+        )
+        engine.services.artifact_store.put(mutated)
+        adapter.queue.append(ok())
+
+        outcome = await engine.run_rule(
+            artifact_ref_for(mutated), "review", event("task-completed-code"), TRUSTED_LOCAL
+        )
+
+        assert outcome.lifecycle is blocked
+        assert outcome.outcome == "blocked"
+        finished = [payload for name, payload in bus.events if name == "playbook.v2.run.finished"]
+        assert len(finished) == 1
+        assert finished[0]["run_id"] == outcome.run_id
+        assert finished[0]["lifecycle"] == "blocked"
+        assert finished[0]["outcome"] == "blocked"
 
 
 class TestModes:

@@ -349,7 +349,7 @@ class ForEachStep(StepBase):
     transitions: dict[str, Identifier]  # {"completed": …, "failed": …}
 
 
-TerminalOutcome = Literal["completed", "failed", "cancelled"]
+TerminalOutcome = Literal["completed", "failed", "blocked", "cancelled"]
 
 
 class TerminalStep(StepBase):

@@ -16,7 +16,8 @@ class ListPlaybookRunsRequest:
     """
     Attributes:
         playbook_id (None | str | Unset): Filter to a specific playbook ID
-        status (None | str | Unset): Filter by run status: running, paused, completed, failed, timed_out, cancelled
+        status (None | str | Unset): Filter by run status: running, paused, cancelling, completed, failed, blocked,
+            timed_out, cancelled
         limit (int | Unset): Maximum number of results (default 20) Default: 20.
     """
 

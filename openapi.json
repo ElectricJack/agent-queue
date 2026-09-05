@@ -5556,8 +5556,8 @@
         "tags": [
           "playbook"
         ],
-        "summary": "Cancel a playbook run that is running or paused. Marks the run as cancelled and stamps completed_at. Does not interrupt a node mid-execution \u2014 see the command's docstring for the current limitation. Fails if the run is already in a terminal state (completed, failed, timed_out, or already cancelled).",
-        "description": "Cancel a playbook run that is running or paused. Marks the run as cancelled and stamps completed_at. Does not interrupt a node mid-execution \u2014 see the command's docstring for the current limitation. Fails if the run is already in a terminal state (completed, failed, timed_out, or already cancelled).",
+        "summary": "Cancel a playbook run that is running or paused. Marks the run as cancelled and stamps completed_at. Does not interrupt a node mid-execution \u2014 see the command's docstring for the current limitation. Fails if the run is already in a terminal state (completed, failed, blocked, timed_out, or already cancelled).",
+        "description": "Cancel a playbook run that is running or paused. Marks the run as cancelled and stamps completed_at. Does not interrupt a node mid-execution \u2014 see the command's docstring for the current limitation. Fails if the run is already in a terminal state (completed, failed, blocked, timed_out, or already cancelled).",
         "operationId": "cancel_playbook_run",
         "requestBody": {
           "content": {
@@ -25607,7 +25607,7 @@
               }
             ],
             "title": "Status",
-            "description": "Filter by run status: running, paused, completed, failed, timed_out, cancelled"
+            "description": "Filter by run status: running, paused, cancelling, completed, failed, blocked, timed_out, cancelled"
           },
           "limit": {
             "type": "integer",
@@ -29099,7 +29099,7 @@
               }
             ],
             "title": "Status",
-            "description": "Filter by run status: running, paused, completed, failed, timed_out."
+            "description": "Filter by run status: running, paused, completed, failed, blocked, timed_out."
           },
           "limit": {
             "type": "integer",
@@ -29475,6 +29475,7 @@
               "cancelling",
               "completed",
               "failed",
+              "blocked",
               "timed_out",
               "cancelled"
             ],
