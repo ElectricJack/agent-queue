@@ -125,6 +125,121 @@ async def test_stale_owner_cannot_write_after_confirmed_transfer(db):
     await ownership.assert_current(collector)
 
 
+async def test_confirmed_transfer_consumes_production_shaped_release_first_try(db):
+    target = BranchKey(repository_id="repo", branch="parent")
+
+    async def release_like_orchestrator(row: dict) -> bool:
+        async with db.immediate() as conn:
+            changed = await conn.execute(
+                update(integration_branch_owners)
+                .where(
+                    integration_branch_owners.c.id == row["id"],
+                    integration_branch_owners.c.fence_token == row["fence_token"],
+                    integration_branch_owners.c.handoff_state == "handoff_pending",
+                )
+                .values(
+                    handoff_state="released",
+                    session_id=None,
+                    workspace_id=None,
+                    confirmed_workspace_id=row["workspace_id"],
+                )
+            )
+        return changed.rowcount == 1
+
+    ownership = BranchOwnership(db, confirm_handoff=release_like_orchestrator)
+    repair = await ownership.acquire(target, "repair-task", "repair")
+    async with db.immediate() as conn:
+        await conn.execute(
+            update(integration_branch_owners)
+            .where(
+                integration_branch_owners.c.repository_id == target.repository_id,
+                integration_branch_owners.c.ref == target.branch,
+            )
+            .values(
+                handoff_state="attached",
+                session_id="repair-session",
+                workspace_id="repair-workspace",
+            )
+        )
+
+    confirmation = await ownership.confirm_transfer(repair)
+    assert confirmation["handoff_state"] == "released"
+    assert confirmation["session_id"] is None
+    assert confirmation["workspace_id"] is None
+    assert confirmation["confirmed_workspace_id"] == "repair-workspace"
+    async with db.immediate() as conn:
+        collector = await ownership.transfer_confirmed_on(
+            conn, repair, "collector-op", "collector", confirmation
+        )
+    assert collector == Fence(target=target, owner_id="collector-op", token=2)
+
+
+async def test_confirmed_transfer_rejects_mismatched_released_workspace(db):
+    target = BranchKey(repository_id="repo", branch="parent")
+
+    async def release_wrong_workspace(row: dict) -> bool:
+        async with db.immediate() as conn:
+            changed = await conn.execute(
+                update(integration_branch_owners)
+                .where(
+                    integration_branch_owners.c.id == row["id"],
+                    integration_branch_owners.c.fence_token == row["fence_token"],
+                    integration_branch_owners.c.handoff_state == "handoff_pending",
+                )
+                .values(
+                    handoff_state="released",
+                    session_id=None,
+                    workspace_id=None,
+                    confirmed_workspace_id="different-workspace",
+                )
+            )
+        return changed.rowcount == 1
+
+    ownership = BranchOwnership(db, confirm_handoff=release_wrong_workspace)
+    repair = await ownership.acquire(target, "repair-task", "repair")
+    async with db.immediate() as conn:
+        await conn.execute(
+            update(integration_branch_owners)
+            .where(
+                integration_branch_owners.c.repository_id == target.repository_id,
+                integration_branch_owners.c.ref == target.branch,
+            )
+            .values(
+                handoff_state="attached",
+                session_id="repair-session",
+                workspace_id="repair-workspace",
+            )
+        )
+
+    with pytest.raises(BranchBusy, match="release evidence changed"):
+        await ownership.confirm_transfer(repair)
+
+
+async def test_confirm_transfer_replays_existing_canonical_release(db):
+    target = BranchKey(repository_id="repo", branch="parent")
+    ownership = BranchOwnership(db)
+    repair = await ownership.acquire(target, "repair-task", "repair")
+    async with db.immediate() as conn:
+        await conn.execute(
+            update(integration_branch_owners)
+            .where(
+                integration_branch_owners.c.repository_id == target.repository_id,
+                integration_branch_owners.c.ref == target.branch,
+            )
+            .values(
+                handoff_state="released",
+                session_id=None,
+                workspace_id=None,
+                confirmed_workspace_id="repair-workspace",
+            )
+        )
+
+    confirmation = await ownership.confirm_transfer(repair)
+
+    assert confirmation["handoff_state"] == "released"
+    assert confirmation["confirmed_workspace_id"] == "repair-workspace"
+
+
 async def test_failed_handoff_keeps_the_old_fence_current(db):
     """Treating a failed stop confirmation as detached would create two writers."""
     async def not_confirmed(_row: dict) -> bool:

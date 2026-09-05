@@ -801,7 +801,6 @@ class RepairService:
                         integration_candidate_ref_mutations.c.operation_id == operation_id,
                         integration_candidate_ref_mutations.c.operation_stage == stage,
                         integration_candidate_ref_mutations.c.state == "reserved",
-                        integration_candidate_ref_mutations.c.expires_at > observed_at,
                     )
                 )
             ).scalar_one_or_none()

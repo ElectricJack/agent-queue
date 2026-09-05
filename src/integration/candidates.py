@@ -814,51 +814,80 @@ class CandidateService:
                     or owner["owner_role"] != "collector"
                 ):
                     raise CandidateStaleAuthority("candidate repair handoff owner changed")
-                state["fence"] = Fence(
+                collector = Fence(
                     target=target,
                     owner_id=canonical["handoff_owner_id"],
                     token=int(canonical["handoff_fence_token"]),
                 )
-                state["batch"] = dict(batch)
-                state["operation"] = dict(operation)
-                state["lease"] = dict(lease)
-                return state
-            if confirmation is None:
-                raise CandidateStaleAuthority("candidate repair handoff confirmation is absent")
-            predicted_token = int(reservation["fence_token"]) + 1
-            collector = await self.ownership.transfer_confirmed_on(
-                conn,
-                Fence(
-                    target=target,
-                    owner_id=reservation["fence_owner_id"],
-                    token=int(reservation["fence_token"]),
-                ),
-                reservation["operation_id"],
-                "collector",
-                confirmation,
-            )
-            if collector.token != predicted_token:
-                raise CandidateStaleAuthority("candidate repair handoff fence prediction changed")
-            changed = await conn.execute(
-                update(integration_candidate_resolutions)
-                .where(
-                    integration_candidate_resolutions.c.id == reservation["id"],
-                    integration_candidate_resolutions.c.state == "pushed",
-                    integration_candidate_resolutions.c.handoff_owner_id.is_(None),
-                    integration_candidate_resolutions.c.handoff_fence_token.is_(None),
+            else:
+                if confirmation is None:
+                    raise CandidateStaleAuthority(
+                        "candidate repair handoff confirmation is absent"
+                    )
+                predicted_token = int(reservation["fence_token"]) + 1
+                collector = await self.ownership.transfer_confirmed_on(
+                    conn,
+                    Fence(
+                        target=target,
+                        owner_id=reservation["fence_owner_id"],
+                        token=int(reservation["fence_token"]),
+                    ),
+                    reservation["operation_id"],
+                    "collector",
+                    confirmation,
                 )
-                .values(
-                    handoff_owner_id=collector.owner_id,
-                    handoff_fence_token=collector.token,
-                    updated_at=now,
+                if collector.token != predicted_token:
+                    raise CandidateStaleAuthority(
+                        "candidate repair handoff fence prediction changed"
+                    )
+                changed = await conn.execute(
+                    update(integration_candidate_resolutions)
+                    .where(
+                        integration_candidate_resolutions.c.id == reservation["id"],
+                        integration_candidate_resolutions.c.state == "pushed",
+                        integration_candidate_resolutions.c.handoff_owner_id.is_(None),
+                        integration_candidate_resolutions.c.handoff_fence_token.is_(None),
+                    )
+                    .values(
+                        handoff_owner_id=collector.owner_id,
+                        handoff_fence_token=collector.token,
+                        updated_at=now,
+                    )
                 )
-            )
-            if changed.rowcount != 1:
-                raise CandidateStaleAuthority("candidate repair handoff persistence CAS lost")
+                if changed.rowcount != 1:
+                    raise CandidateStaleAuthority(
+                        "candidate repair handoff persistence CAS lost"
+                    )
             state["fence"] = collector
             state["batch"] = dict(batch)
             state["operation"] = dict(operation)
             state["lease"] = dict(lease)
+            mutation_id = self._mutation_id(
+                purpose="repair_handoff",
+                batch_id=reservation["batch_id"],
+                revision=int(reservation["revision"]),
+                ordinal=int(reservation["member_ordinal"]),
+                resolution_id=reservation["id"],
+            )
+            identity = self._mutation_identity(
+                state,
+                revision=int(reservation["revision"]),
+                purpose="repair_handoff",
+                target_branch=reservation["branch"],
+                expected_old_sha=reservation["partial_head_sha"],
+                desired_sha=reservation["resolved_head_sha"],
+                member_ordinal=int(reservation["member_ordinal"]),
+                resolution_id=reservation["id"],
+                expected_role="collector",
+            )
+            mutation, _inserted = await self._reserve_mutation_on(
+                conn,
+                mutation_id=mutation_id,
+                identity=identity,
+                nonce=str(uuid.uuid4()),
+                now=now,
+            )
+            state["adopted_mutations"] = {mutation_id: mutation["nonce"]}
         return state
 
     async def push_repair(self, reservation_id: str, fence: Fence) -> str:
@@ -1704,6 +1733,88 @@ class CandidateService:
         identity = f"{purpose}:{batch_id}:{revision}:{ordinal}:{resolution_id or ''}"
         return str(uuid.uuid5(uuid.UUID("fa976640-ae31-47b5-86c4-5fc250818fdd"), identity))
 
+    @staticmethod
+    def _mutation_identity(
+        state,
+        *,
+        revision,
+        purpose,
+        target_branch,
+        expected_old_sha,
+        desired_sha,
+        member_ordinal,
+        resolution_id,
+        expected_role,
+    ):
+        return {
+            "batch_id": state["batch"]["id"],
+            "revision": revision,
+            "member_ordinal": member_ordinal,
+            "resolution_id": resolution_id,
+            "purpose": purpose,
+            "repository_id": state["batch"]["repository_id"],
+            "branch": state["fence"].target.branch,
+            "target_branch": target_branch,
+            "expected_old_sha": expected_old_sha,
+            "desired_sha": desired_sha,
+            "operation_id": state["operation"]["id"],
+            "operation_episode_id": state["operation"]["episode_id"],
+            "operation_stage": int(state["operation"]["active_stage"]),
+            "lease_owner_id": state["lease"]["owner_id"],
+            "lease_fence_token": int(state["lease"]["fence_token"]),
+            "branch_owner_id": state["fence"].owner_id,
+            "branch_owner_role": expected_role,
+            "branch_fence_token": state["fence"].token,
+        }
+
+    async def _reserve_mutation_on(self, conn, *, mutation_id, identity, nonce, now):
+        row = (
+            await conn.execute(
+                select(integration_candidate_ref_mutations)
+                .where(integration_candidate_ref_mutations.c.id == mutation_id)
+                .with_for_update()
+            )
+        ).mappings().one_or_none()
+        inserted = False
+        if row is None:
+            try:
+                async with conn.begin_nested():
+                    await conn.execute(
+                        insert(integration_candidate_ref_mutations).values(
+                            id=mutation_id,
+                            **identity,
+                            nonce=nonce,
+                            state="reserved",
+                            expires_at=now + _MUTATION_CLAIM_SECONDS,
+                            created_at=now,
+                            updated_at=now,
+                        )
+                    )
+            except IntegrityError:
+                row = (
+                    await conn.execute(
+                        select(integration_candidate_ref_mutations)
+                        .where(integration_candidate_ref_mutations.c.id == mutation_id)
+                        .with_for_update()
+                    )
+                ).mappings().one_or_none()
+                if row is None:
+                    raise CandidateStaleAuthority(
+                        "candidate mutation reservation raced without canonical state"
+                    ) from None
+            else:
+                inserted = True
+                row = {
+                    "id": mutation_id,
+                    **identity,
+                    "nonce": nonce,
+                    "state": "reserved",
+                    "expires_at": now + _MUTATION_CLAIM_SECONDS,
+                }
+        if any(row[key] != value for key, value in identity.items()):
+            raise CandidateStaleAuthority("candidate mutation identity changed")
+        return dict(row), inserted
+
     async def _mutate_ref(
         self,
         state,
@@ -1745,37 +1856,17 @@ class CandidateService:
                 expected_role=expected_role,
                 expected_handoff=expected_handoff,
             )
-            row = (
-                (
-                    await conn.execute(
-                        select(integration_candidate_ref_mutations)
-                        .where(integration_candidate_ref_mutations.c.id == mutation_id)
-                        .with_for_update()
-                    )
-                )
-                .mappings()
-                .one_or_none()
+            identity = self._mutation_identity(
+                state,
+                revision=revision,
+                purpose=purpose,
+                target_branch=target_branch,
+                expected_old_sha=expected_old_sha,
+                desired_sha=desired_sha,
+                member_ordinal=member_ordinal,
+                resolution_id=resolution_id,
+                expected_role=expected_role,
             )
-            identity = {
-                "batch_id": state["batch"]["id"],
-                "revision": revision,
-                "member_ordinal": member_ordinal,
-                "resolution_id": resolution_id,
-                "purpose": purpose,
-                "repository_id": state["batch"]["repository_id"],
-                "branch": state["fence"].target.branch,
-                "target_branch": target_branch,
-                "expected_old_sha": expected_old_sha,
-                "desired_sha": desired_sha,
-                "operation_id": state["operation"]["id"],
-                "operation_episode_id": state["operation"]["episode_id"],
-                "operation_stage": int(state["operation"]["active_stage"]),
-                "lease_owner_id": state["lease"]["owner_id"],
-                "lease_fence_token": int(state["lease"]["fence_token"]),
-                "branch_owner_id": state["fence"].owner_id,
-                "branch_owner_role": expected_role,
-                "branch_fence_token": state["fence"].token,
-            }
             lease_expires_at = (
                 await conn.execute(
                     select(project_integration_leases.c.expires_at).where(
@@ -1785,29 +1876,14 @@ class CandidateService:
             ).scalar_one()
             if float(lease_expires_at) < now + _MUTATION_CLAIM_SECONDS:
                 return False
-            if row is None:
-                await conn.execute(
-                    insert(integration_candidate_ref_mutations).values(
-                        id=mutation_id,
-                        **identity,
-                        nonce=nonce,
-                        state="reserved",
-                        expires_at=now + _MUTATION_CLAIM_SECONDS,
-                        created_at=now,
-                        updated_at=now,
-                    )
-                )
-                owns = True
-                row = {
-                    "id": mutation_id,
-                    **identity,
-                    "nonce": nonce,
-                    "state": "reserved",
-                    "expires_at": now + _MUTATION_CLAIM_SECONDS,
-                }
-            elif any(row[key] != value for key, value in identity.items()):
-                raise CandidateStaleAuthority("candidate mutation identity changed")
-            elif row["state"] == "applied":
+            row, inserted = await self._reserve_mutation_on(
+                conn, mutation_id=mutation_id, identity=identity, nonce=nonce, now=now
+            )
+            adopted_nonce = state.get("adopted_mutations", {}).get(mutation_id)
+            owns = inserted or adopted_nonce == row["nonce"]
+            if owns:
+                nonce = row["nonce"]
+            if row["state"] == "applied":
                 already_applied = True
 
         token = await self.app_client.installation_token()

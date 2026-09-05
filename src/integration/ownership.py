@@ -127,7 +127,6 @@ class BranchOwnership:
                         == fence.target.repository_id,
                         integration_candidate_ref_mutations.c.branch == fence.target.branch,
                         integration_candidate_ref_mutations.c.state == "reserved",
-                        integration_candidate_ref_mutations.c.expires_at > self._clock(),
                     )
                 )
             ).scalar_one_or_none()
@@ -200,7 +199,31 @@ class BranchOwnership:
                 confirmed = await confirmed
             if not confirmed:
                 raise BranchBusy("previous writer has not confirmed stopped and detached")
-        return dict(row)
+        async with self._db.immediate() as conn:
+            current = await self._locked_row(conn, fence.target)
+            self._require_current(current, fence)
+            if current["handoff_state"] == "released":
+                expected_workspace = (
+                    row.get("confirmed_workspace_id")
+                    if row["handoff_state"] == "released"
+                    else row.get("workspace_id")
+                )
+                if (
+                    current["session_id"] is not None
+                    or current["workspace_id"] is not None
+                    or not expected_workspace
+                    or current.get("confirmed_workspace_id") != expected_workspace
+                ):
+                    raise BranchBusy("branch release evidence changed while confirming handoff")
+            elif current["handoff_state"] == "handoff_pending":
+                if (
+                    current["session_id"] != row.get("session_id")
+                    or current["workspace_id"] != row.get("workspace_id")
+                ):
+                    raise BranchBusy("branch handoff changed while confirmation ran")
+            else:
+                raise BranchBusy("branch handoff changed while confirmation ran")
+            return dict(current)
 
     async def transfer_confirmed_on(
         self,
@@ -216,17 +239,24 @@ class BranchOwnership:
         self._validate_identity(fence.target, next_owner_id, next_role)
         current = await self._locked_row(conn, fence.target)
         self._require_current(current, fence)
-        if (
-            current["session_id"] != confirmation.get("session_id")
-            or current["workspace_id"] != confirmation.get("workspace_id")
-            or current["handoff_state"] not in {"handoff_pending", "released"}
+        confirmation_fields = (
+            "id",
+            "owner_id",
+            "owner_role",
+            "fence_token",
+            "handoff_state",
+            "session_id",
+            "workspace_id",
+            "confirmed_workspace_id",
+        )
+        if current["handoff_state"] not in {"handoff_pending", "released"} or any(
+            current.get(field) != confirmation.get(field) for field in confirmation_fields
         ):
             raise BranchBusy("branch handoff changed after confirmation")
         query = select(integration_candidate_ref_mutations.c.id).where(
             integration_candidate_ref_mutations.c.repository_id == fence.target.repository_id,
             integration_candidate_ref_mutations.c.branch == fence.target.branch,
             integration_candidate_ref_mutations.c.state == "reserved",
-            integration_candidate_ref_mutations.c.expires_at > self._clock(),
         )
         if ignore_mutation_id is not None:
             query = query.where(integration_candidate_ref_mutations.c.id != ignore_mutation_id)

@@ -140,6 +140,16 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     """Downgrade schema."""
+    live_handoffs = op.get_bind().execute(
+        sa.text(
+            "SELECT COUNT(*) FROM integration_candidate_resolutions "
+            "WHERE handoff_owner_id IS NOT NULL OR handoff_fence_token IS NOT NULL"
+        )
+    ).scalar_one()
+    if live_handoffs:
+        raise RuntimeError(
+            "cannot downgrade candidate resolutions with live candidate handoff provenance"
+        )
     with op.batch_alter_table("integration_candidate_resolutions") as batch_op:
         batch_op.drop_constraint(
             "ck_integration_candidate_resolutions_handoff", type_="check"

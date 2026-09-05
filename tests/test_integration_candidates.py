@@ -9,7 +9,7 @@ from dataclasses import replace
 from pathlib import Path
 
 import pytest
-from sqlalchemy import insert, select, update
+from sqlalchemy import func, insert, select, update
 
 from src.database import Database
 from src.database.tables import (
@@ -965,6 +965,170 @@ async def test_live_external_claim_blocks_rebuild_and_branch_transfer(db, tmp_pa
     assert expiry["action"] == "wait"
 
 
+@pytest.mark.parametrize("invalidator", ("stage", "ordinary", "confirmed", "rebuild"))
+async def test_expired_ambiguous_claim_blocks_every_invalidator(db, tmp_path, invalidator):
+    from src.git.github_app import GitHubRepositoryBinding
+    from src.integration.candidates import CandidateService
+    from src.integration.models import BranchKey, Fence
+    from src.integration.ownership import BranchBusy, BranchOwnership
+
+    origin, _work, base, members = _make_origin(tmp_path)
+    await db.update_repo("repo", url=str(origin))
+    await _seed_batch(db, members=members[:1], base_sha=base)
+    app = _AppClient(origin)
+    app.repository = GitHubRepositoryBinding(repository_id=9, full_name="example/repo")
+    service = CandidateService(
+        db,
+        data_dir=tmp_path / "data",
+        git_manager=_LocalPushGit(origin),
+        forge_provider=_AuditForge(),
+        app_client=app,
+        clock=lambda: 100.0,
+    )
+    built = await service.build("batch")
+    async with db.immediate() as conn:
+        await conn.execute(
+            insert(integration_candidate_ref_mutations).values(
+                id=f"expired-ambiguous-{invalidator}",
+                batch_id="batch",
+                revision=0,
+                member_ordinal=None,
+                resolution_id=None,
+                purpose="candidate_final",
+                repository_id="repo",
+                branch=built.branch,
+                target_branch=built.branch,
+                expected_old_sha="e" * 40,
+                desired_sha="f" * 40,
+                operation_id="repair-batch-batch",
+                operation_episode_id="batch",
+                operation_stage=0,
+                lease_owner_id="sealer",
+                lease_fence_token=1,
+                branch_owner_id="repair-batch-batch",
+                branch_owner_role="collector",
+                branch_fence_token=1,
+                nonce="expired-ambiguous",
+                state="reserved",
+                expires_at=99.0,
+                created_at=1.0,
+                updated_at=1.0,
+            )
+        )
+    ownership = BranchOwnership(db, clock=lambda: 100.0)
+    fence = Fence(
+        target=BranchKey(repository_id="repo", branch=built.branch),
+        owner_id="repair-batch-batch",
+        token=1,
+    )
+    if invalidator == "stage":
+        result = await service.repair.expire("repair-batch-batch", 0, now=131.0)
+        assert result["outcome"] == "not_due"
+        assert result["action"] == "wait"
+    elif invalidator == "ordinary":
+        with pytest.raises(BranchBusy, match="external mutation claim"):
+            await ownership.transfer(fence, "repair-task", "repair")
+    elif invalidator == "confirmed":
+        async with db.immediate() as conn:
+            await conn.execute(
+                update(integration_branch_owners)
+                .where(integration_branch_owners.c.repository_id == "repo")
+                .values(handoff_state="handoff_pending")
+            )
+        confirmation = await ownership.get_owner(fence.target)
+        async with db.immediate() as conn:
+            with pytest.raises(BranchBusy, match="external mutation claim"):
+                await ownership.transfer_confirmed_on(
+                    conn, fence, "repair-task", "repair", confirmation
+                )
+    else:
+        result = await service.rebuild("batch", 0, base)
+        assert result.outcome == "wait"
+    async with db._engine.connect() as conn:
+        claim = (
+            await conn.execute(
+                select(integration_candidate_ref_mutations.c.state).where(
+                    integration_candidate_ref_mutations.c.id
+                    == f"expired-ambiguous-{invalidator}"
+                )
+            )
+        ).scalar_one()
+    assert claim == "reserved"
+
+
+@pytest.mark.parametrize("invalidator", ("stage", "ordinary", "confirmed", "rebuild"))
+async def test_invalidator_commit_fences_later_mutation_reservation(db, tmp_path, invalidator):
+    from src.git.github_app import GitHubRepositoryBinding
+    from src.integration.candidates import CandidateService, CandidateStaleAuthority
+    from src.integration.models import BranchKey, Fence
+    from src.integration.ownership import BranchOwnership
+
+    origin, _work, base, members = _make_origin(tmp_path)
+    await db.update_repo("repo", url=str(origin))
+    await _seed_batch(db, members=members[:1], base_sha=base)
+    app = _AppClient(origin)
+    app.repository = GitHubRepositoryBinding(repository_id=9, full_name="example/repo")
+    service = CandidateService(
+        db,
+        data_dir=tmp_path / "data",
+        git_manager=_LocalPushGit(origin),
+        forge_provider=_AuditForge(),
+        app_client=app,
+        clock=lambda: 100.0,
+    )
+    built = await service.build("batch")
+    stale_state = await service._locked_state("batch")
+    ownership = BranchOwnership(db, clock=lambda: 100.0)
+    fence = Fence(
+        target=BranchKey(repository_id="repo", branch=built.branch),
+        owner_id="repair-batch-batch",
+        token=1,
+    )
+
+    if invalidator == "stage":
+        expired = await service.repair.expire("repair-batch-batch", 0, now=131.0)
+        assert expired["outcome"] == "expired"
+    elif invalidator == "ordinary":
+        await ownership.transfer(fence, "repair-task", "repair")
+    elif invalidator == "confirmed":
+        async with db.immediate() as conn:
+            await conn.execute(
+                update(integration_branch_owners)
+                .where(integration_branch_owners.c.repository_id == "repo")
+                .values(handoff_state="handoff_pending")
+            )
+        confirmation = await ownership.get_owner(fence.target)
+        async with db.immediate() as conn:
+            await ownership.transfer_confirmed_on(
+                conn, fence, "repair-task", "repair", confirmation
+            )
+    else:
+        service.forge_provider = _AuditForge()
+        rebuilt = await service.rebuild("batch", 0, base)
+        assert rebuilt.outcome in {"built", "already_built"}
+
+    with pytest.raises(CandidateStaleAuthority):
+        await service._mutate_ref(
+            stale_state,
+            revision=0,
+            purpose="candidate_partial",
+            target_branch=built.branch,
+            expected_old_sha=built.head_sha,
+            desired_sha="f" * 40,
+            store=tmp_path / "data" / "integration-objects" / "repo.git",
+            member_ordinal=0,
+        )
+    async with db._engine.connect() as conn:
+        late_claims = (
+            await conn.execute(
+                select(func.count()).select_from(integration_candidate_ref_mutations).where(
+                    integration_candidate_ref_mutations.c.desired_sha == "f" * 40
+                )
+            )
+        ).scalar_one()
+    assert late_claims == 0
+
+
 async def test_rebuild_rechecks_claim_inside_supersession_transaction(db, tmp_path):
     from src.git.github_app import GitHubRepositoryBinding
     from src.integration.candidates import CandidateService
@@ -1422,7 +1586,7 @@ async def test_instance_bound_repair_reservation_push_and_accept_once(
         CandidateService,
     )
     from src.integration.models import BranchKey, Fence
-    from src.integration.ownership import BranchOwnership
+    from src.integration.ownership import BranchBusy, BranchOwnership
     from src.integration.repair import RepairService
     from src.profiles.capabilities import CapabilityPolicy
 
@@ -1431,7 +1595,26 @@ async def test_instance_bound_repair_reservation_push_and_accept_once(
     await _seed_batch(db, members=members, base_sha=base)
     app = _AppClient(origin)
     app.repository = GitHubRepositoryBinding(repository_id=9, full_name="example/repo")
-    ownership = BranchOwnership(db, confirm_handoff=lambda _row: True)
+
+    async def release_like_orchestrator(row: dict) -> bool:
+        async with db.immediate() as conn:
+            changed = await conn.execute(
+                update(integration_branch_owners)
+                .where(
+                    integration_branch_owners.c.id == row["id"],
+                    integration_branch_owners.c.fence_token == row["fence_token"],
+                    integration_branch_owners.c.handoff_state == "handoff_pending",
+                )
+                .values(
+                    handoff_state="released",
+                    session_id=None,
+                    workspace_id=None,
+                    confirmed_workspace_id=row["workspace_id"],
+                )
+            )
+        return changed.rowcount == 1
+
+    ownership = BranchOwnership(db, confirm_handoff=release_like_orchestrator)
     repair = RepairService(db, route_validator=lambda *_: True)
     service = CandidateService(
         db,
@@ -1641,6 +1824,30 @@ async def test_instance_bound_repair_reservation_push_and_accept_once(
         service.crash_hook = _CrashOnce(handoff_crash)
         with pytest.raises(RuntimeError, match=f"crash at {handoff_crash}"):
             await service.accept_repair(reservation_id)
+        if handoff_crash == "after_handoff_reservation":
+            blocked_expiry = await repair.expire("repair-batch-batch", stage, now=131.0)
+            assert blocked_expiry["outcome"] == "not_due"
+            collector_owner = await ownership.get_owner(repair_fence.target)
+            collector_fence = Fence(
+                target=repair_fence.target,
+                owner_id=collector_owner["owner_id"],
+                token=collector_owner["fence_token"],
+            )
+            with pytest.raises(BranchBusy, match="external mutation claim"):
+                await ownership.transfer(collector_fence, "other-repair", "repair")
+            blocked_rebuild = await service.rebuild("batch", 0, base)
+            assert blocked_rebuild.outcome == "wait"
+            async with db._engine.connect() as conn:
+                handoff_claim = (
+                    await conn.execute(
+                        select(integration_candidate_ref_mutations.c.state).where(
+                            integration_candidate_ref_mutations.c.batch_id == "batch",
+                            integration_candidate_ref_mutations.c.revision == 0,
+                            integration_candidate_ref_mutations.c.purpose == "repair_handoff",
+                        )
+                    )
+                ).scalar_one()
+            assert handoff_claim == "reserved"
         service = CandidateService(
             db,
             data_dir=tmp_path / "data",
@@ -1653,7 +1860,6 @@ async def test_instance_bound_repair_reservation_push_and_accept_once(
         )
     accepted = await service.accept_repair(reservation_id)
     replay = await service.accept_repair(reservation_id)
-
     assert accepted.outcome == expected
     assert replay.outcome == ("already_accepted" if expected == "accepted" else "stale")
     if repair_change == "exact" and stage == 0:

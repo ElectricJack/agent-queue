@@ -220,6 +220,16 @@ def _assert_schema(connection) -> None:
     assert "applied candidate mutation is immutable" in guards
 
 
+def _bind_live_handoff(connection) -> None:
+    connection.execute(
+        text(
+            "UPDATE integration_candidate_resolutions "
+            "SET handoff_owner_id='repair-batch-batch', handoff_fence_token=2 "
+            "WHERE id='legacy-resolution'"
+        )
+    )
+
+
 async def test_sqlite_candidate_mutation_claim_upgrade_downgrade_upgrade(tmp_path):
     path = tmp_path / "candidate-mutations.db"
     database = Database(str(path))
@@ -235,6 +245,7 @@ async def test_sqlite_candidate_mutation_claim_upgrade_downgrade_upgrade(tmp_pat
             _migrate(conn, HEAD)
         with engine.connect() as conn:
             _assert_schema(conn)
+        with engine.connect() as conn:
             legacy = conn.execute(
                 text(
                     "SELECT branch, target_branch, target_kind, repair_workspace_path "
@@ -266,6 +277,19 @@ async def test_sqlite_candidate_mutation_claim_upgrade_downgrade_upgrade(tmp_pat
             _migrate(conn, HEAD)
         with engine.connect() as conn:
             _assert_schema(conn)
+        with engine.begin() as conn:
+            _bind_live_handoff(conn)
+        with engine.begin() as conn:
+            with pytest.raises(RuntimeError, match="live candidate handoff provenance"):
+                _migrate(conn, REVISION, downgrade=True)
+        with engine.connect() as conn:
+            handoff = conn.execute(
+                text(
+                    "SELECT handoff_owner_id, handoff_fence_token "
+                    "FROM integration_candidate_resolutions WHERE id='legacy-resolution'"
+                )
+            ).one()
+            assert handoff == ("repair-batch-batch", 2)
     finally:
         engine.dispose()
 
@@ -293,6 +317,7 @@ async def test_postgres_candidate_mutation_claim_upgrade_downgrade_upgrade():
         await migrate(HEAD)
         async with engine.connect() as conn:
             await conn.run_sync(_assert_schema)
+        async with engine.connect() as conn:
             legacy = (
                 await conn.execute(
                     text(
@@ -326,6 +351,20 @@ async def test_postgres_candidate_mutation_claim_upgrade_downgrade_upgrade():
         await migrate(HEAD)
         async with engine.connect() as conn:
             await conn.run_sync(_assert_schema)
+        async with engine.begin() as conn:
+            await conn.run_sync(_bind_live_handoff)
+        with pytest.raises(RuntimeError, match="live candidate handoff provenance"):
+            await migrate(REVISION, downgrade=True)
+        async with engine.connect() as conn:
+            handoff = (
+                await conn.execute(
+                    text(
+                        "SELECT handoff_owner_id, handoff_fence_token "
+                        "FROM integration_candidate_resolutions WHERE id='legacy-resolution'"
+                    )
+                )
+            ).one()
+            assert handoff == ("repair-batch-batch", 2)
     finally:
         await engine.dispose()
         _, _, scratch_name = dsn.rpartition("/")
