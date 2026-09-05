@@ -164,6 +164,49 @@ describe("pool derivation", () => {
   });
 });
 
+describe("useDebouncedBusyPoolEntries under a live flock", () => {
+  afterEach(() => { vi.useRealTimers(); });
+
+  it("shows a pool that turned busy even when the rail re-renders faster than the debounce", () => {
+    // Every agent/session/task/message event invalidates the flock query, so
+    // during real activity AgentFlock re-renders several times a second and
+    // usePoolFlock hands the hook a *new* entries array each time.  A debounce
+    // keyed on that array's identity re-armed on every render and never
+    // fired, so a pool that had just claimed work stayed hidden for as long
+    // as the fleet was busy — exactly when an operator looks for it.
+    vi.useFakeTimers();
+    const idle = () => poolEntries([pool({ running_busy: 0, running_idle: 1 })], []);
+    const busy = () => poolEntries([pool({ running_busy: 1 })], []);
+    const { result, rerender } = renderHook(({ entries }) => useDebouncedBusyPoolEntries(entries), {
+      initialProps: { entries: idle() },
+    });
+    expect(result.current.busy).toEqual([]);
+
+    // The pool claims a task; the rail then keeps re-rendering every 300ms
+    // with fresh-but-equal entries for the next three seconds.
+    for (let tick = 0; tick < 10; tick += 1) {
+      rerender({ entries: busy() });
+      act(() => { vi.advanceTimersByTime(300); });
+    }
+    expect(result.current.busy.map((entry) => entry.profileId)).toEqual(["worker-standard"]);
+    expect(result.current.hiddenCount).toBe(0);
+  });
+
+  it("still holds a flip that is reverted within the debounce window", () => {
+    vi.useFakeTimers();
+    const busy = poolEntries([pool({ running_busy: 1 })], []);
+    const idle = poolEntries([pool({ running_busy: 0, running_idle: 1 })], []);
+    const { result, rerender } = renderHook(({ entries }) => useDebouncedBusyPoolEntries(entries), {
+      initialProps: { entries: busy },
+    });
+    rerender({ entries: idle });
+    act(() => { vi.advanceTimersByTime(400); });
+    rerender({ entries: busy });
+    act(() => { vi.advanceTimersByTime(1_000); });
+    expect(result.current.busy).toHaveLength(1);
+  });
+});
+
 describe("pool selection keys", () => {
   it("round-trips a pool key with and without a pinned instance", () => {
     const bare = poolSelectionKey("agent-queue", "worker-standard");
