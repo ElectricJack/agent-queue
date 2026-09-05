@@ -7,10 +7,11 @@ Deviation from the plan's draft: ``Database.get_all_dependencies`` returns
 ``dict[str, set[str]]`` (task_id -> depended-on task ids) with no
 ``dep_type`` in the payload — it collapses typed edges into a plain
 readiness graph. To surface the typed ``dep_type`` the graph payload
-requires, this router instead calls ``get_typed_dependencies(task_id)``
-per task in the project (returns ``[(depends_on_task_id, dep_type), ...]``
-for that task's *outgoing* edges) and keeps edges whose "from" task is in
-this project — same semantics the plan described, different helper.
+requires, this router instead reads edges with ``list_project_edges``,
+which returns every outgoing edge for tasks in the project in a single
+statement (``task_id``, ``depends_on_task_id``, ``dep_type``,
+``description``) — same semantics the plan described, different helper,
+and no longer one statement per task.
 """
 
 from __future__ import annotations
@@ -40,35 +41,33 @@ def build_graph_router(*, db) -> APIRouter:
         if project is None:
             raise HTTPException(status_code=404, detail=f"No project '{project_id}'")
 
-        tasks = await db.list_tasks(project_id=project_id)
-        task_ids = {t.id for t in tasks}
+        rows = await db.list_graph_task_rows(project_id)
+        task_ids = {r["id"] for r in rows}
 
-        # Edges — for each task in this project, pull its typed outgoing
-        # edges. Cross-project edges land on the client side only when the
-        # peer project's graph is also loaded (spec §9.2).
-        edges: list[GraphEdge] = []
-        for t in tasks:
-            for edge in await db.get_typed_dependencies_detailed(t.id):
-                edges.append(GraphEdge(
-                    from_task_id=t.id,
-                    to_task_id=edge["depends_on_task_id"],
-                    dep_type=edge["dep_type"],
-                    description=edge["description"],
-                ))
+        # One statement for every outgoing edge of every task in the project
+        # (cross-project edges land client-side when the peer project's graph
+        # is also loaded, spec §9.2) — was one statement per task.
+        edges = [
+            GraphEdge(
+                from_task_id=e["task_id"],
+                to_task_id=e["depends_on_task_id"],
+                dep_type=e["dep_type"],
+                description=e["description"],
+            )
+            for e in await db.list_project_edges(project_id)
+        ]
 
-        gate_rows = await db.list_gates(project_id=project_id)
-        gates: list[GraphGate] = []
-        for g in gate_rows:
-            waiters = await db.get_gate_waiters(g["id"])
-            gates.append(GraphGate(
+        waiters_by_gate = await db.list_gate_waiters_for_project(project_id)
+        gates = [
+            GraphGate(
                 id=g["id"],
                 gate_type=g["gate_type"],
                 status=g["status"],
-                task_ids=sorted(waiters),
-            ))
+                task_ids=waiters_by_gate.get(g["id"], []),
+            )
+            for g in await db.list_gates(project_id=project_id)
+        ]
 
-        # Agents currently assigned to a task in this project.
-        all_agents = await db.list_agents()
         agents = [
             GraphAgent(
                 id=a.id,
@@ -77,30 +76,31 @@ def build_graph_router(*, db) -> APIRouter:
                 current_task_id=a.current_task_id,
                 session_id=getattr(a, "session_id", None),
             )
-            for a in all_agents
+            for a in await db.list_agents()
             if a.current_task_id in task_ids
         ]
+
+        def _run_id(dedup_key: str | None) -> str | None:
+            if dedup_key and dedup_key.startswith("playbook-run:"):
+                return dedup_key.removeprefix("playbook-run:")
+            return None
 
         return ProjectGraphResponse(
             tasks=[
                 GraphTaskNode(
-                    id=t.id,
-                    title=t.title,
-                    status=t.status.value if hasattr(t.status, "value") else str(t.status),
-                    priority=t.priority,
-                    is_blocked=t.is_blocked,
-                    profile_id=t.profile_id,
-                    intelligence_class=getattr(t, "intelligence_class", None),
-                    assigned_agent_id=t.assigned_agent_id,
-                    branch_name=t.branch_name,
-                    pr_url=t.pr_url,
-                    playbook_run_id=(
-                        t.dedup_key.removeprefix("playbook-run:")
-                        if t.dedup_key and t.dedup_key.startswith("playbook-run:")
-                        else None
-                    ),
+                    id=r["id"],
+                    title=r["title"],
+                    status=r["status"],
+                    priority=r["priority"],
+                    is_blocked=r["is_blocked"],
+                    profile_id=r["profile_id"],
+                    intelligence_class=r["intelligence_class"],
+                    assigned_agent_id=r["assigned_agent_id"],
+                    branch_name=r["branch_name"],
+                    pr_url=r["pr_url"],
+                    playbook_run_id=_run_id(r["dedup_key"]),
                 )
-                for t in tasks
+                for r in rows
             ],
             edges=edges,
             gates=gates,

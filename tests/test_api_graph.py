@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
+from sqlalchemy import event
 
 from src.api.graph import build_graph_router
 from src.database import Database
@@ -124,3 +125,32 @@ async def test_list_graph_task_rows_is_a_narrow_projection(db):
     assert rows[1]["dedup_key"] == "playbook-run:run-1"
     assert rows[1]["is_blocked"] is False
     assert rows[1]["status"] == "DEFINED"
+
+
+async def test_graph_endpoint_statement_count_does_not_grow_with_tasks(db, client_factory):
+    # 40 tasks in a chain, one gate over half of them.
+    ids = [f"t{i}" for i in range(40)]
+    for tid in ids:
+        await db.create_task(Task(id=tid, project_id="p1", title=tid, description=""))
+    for a, b in zip(ids[1:], ids):
+        await db.add_dependency(a, b)
+    await db.create_gate(project_id="p1", gate_type="human", title="r", waiter_task_ids=ids[:20])
+
+    counter = {"n": 0}
+
+    def _hook(conn, cursor, statement, parameters, context, executemany):
+        counter["n"] += 1
+
+    event.listen(db._engine.sync_engine, "before_cursor_execute", _hook)
+    try:
+        async with client_factory() as ac:
+            r = await ac.get("/api/projects/p1/graph")
+    finally:
+        event.remove(db._engine.sync_engine, "before_cursor_execute", _hook)
+
+    assert r.status_code == 200
+    body = r.json()
+    assert len(body["tasks"]) == 40 and len(body["edges"]) == 39
+    assert body["gates"][0]["task_ids"] == sorted(ids[:20])
+    # project + tasks + edges + gates + waiters + agents
+    assert counter["n"] <= 6, counter["n"]
