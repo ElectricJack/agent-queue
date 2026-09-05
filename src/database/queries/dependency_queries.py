@@ -187,6 +187,40 @@ class DependencyQueryMixin:
             )
             return [(r[0], r[1]) for r in result.fetchall()]
 
+    async def get_typed_dependencies_for_tasks(
+        self, task_ids: list[str]
+    ) -> dict[str, list[tuple[str, str]]]:
+        """``get_typed_dependencies`` for many tasks in ``ceil(n / 900)`` statements.
+
+        The promotion cascade asks this every cycle for every DEFINED and
+        BLOCKED task; one statement per task cost 9 s per 5 s cycle at 4,600
+        DEFINED tasks.  Every requested id is a key so callers can index
+        without a default.
+        """
+        out: dict[str, list[tuple[str, str]]] = {tid: [] for tid in task_ids}
+        ids = sorted(out)
+        if not ids:
+            return out
+        async with self._engine.begin() as conn:
+            for i in range(0, len(ids), 900):
+                chunk = ids[i : i + 900]
+                result = await conn.execute(
+                    select(
+                        task_dependencies.c.task_id,
+                        task_dependencies.c.depends_on_task_id,
+                        task_dependencies.c.dep_type,
+                    )
+                    .where(task_dependencies.c.task_id.in_(chunk))
+                    .order_by(
+                        task_dependencies.c.task_id.asc(),
+                        task_dependencies.c.dep_type.asc(),
+                        task_dependencies.c.depends_on_task_id.asc(),
+                    )
+                )
+                for tid, dep, typ in result.fetchall():
+                    out[tid].append((dep, typ))
+        return out
+
     async def get_typed_dependencies_detailed(self, task_id: str) -> list[dict]:
         """Return every outgoing edge, including its human-readable why."""
         async with self._engine.begin() as conn:

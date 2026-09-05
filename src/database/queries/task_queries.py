@@ -316,6 +316,23 @@ class TaskQueryMixin:
                 out.append(d)
             return out
 
+    async def get_task_statuses(self, task_ids: list[str]) -> dict[str, str]:
+        """``id -> status`` for the ids that exist, in ``ceil(n / 900)`` statements."""
+        ids = sorted(set(task_ids))
+        if not ids:
+            return {}
+        out: dict[str, str] = {}
+        async with self._engine.begin() as conn:
+            for i in range(0, len(ids), 900):
+                chunk = ids[i : i + 900]
+                rows = (
+                    await conn.execute(
+                        select(tasks.c.id, tasks.c.status).where(tasks.c.id.in_(chunk))
+                    )
+                ).fetchall()
+                out.update({r[0]: r[1] for r in rows})
+        return out
+
     async def list_active_tasks(
         self,
         project_id: str | None = None,
