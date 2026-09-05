@@ -2123,11 +2123,15 @@ integration_candidate_resolutions = Table(
     Column("repair_session_id", Text, nullable=False),
     Column("repair_session_instance_token", Text, nullable=False),
     Column("repair_workspace_id", Text, nullable=False),
+    Column("repair_workspace_path", Text, nullable=False),
     Column("repository_id", Text, nullable=False),
     Column("branch", Text, nullable=False),
     Column("target_branch", Text, nullable=False),
+    Column("target_kind", Text, nullable=False),
     Column("fence_owner_id", Text, nullable=False),
     Column("fence_token", Integer, nullable=False),
+    Column("handoff_owner_id", Text, nullable=True),
+    Column("handoff_fence_token", Integer, nullable=True),
     Column("partial_head_sha", Text, nullable=False),
     Column("source_base_sha", Text, nullable=False),
     Column("source_head_sha", Text, nullable=False),
@@ -2150,6 +2154,16 @@ integration_candidate_resolutions = Table(
     ),
     CheckConstraint("stage_ordinal IN (0, 1)", name="ck_integration_candidate_resolutions_stage"),
     CheckConstraint("fence_token >= 0", name="ck_integration_candidate_resolutions_fence"),
+    CheckConstraint(
+        "(handoff_owner_id IS NULL AND handoff_fence_token IS NULL) OR "
+        "(handoff_owner_id IS NOT NULL AND handoff_fence_token IS NOT NULL "
+        "AND handoff_fence_token >= 0)",
+        name="ck_integration_candidate_resolutions_handoff",
+    ),
+    CheckConstraint(
+        "target_kind IN ('qualified', 'legacy_integration')",
+        name="ck_integration_candidate_resolutions_target_kind",
+    ),
     CheckConstraint(
         "state IN ('reserved', 'pushed', 'accepted')",
         name="ck_integration_candidate_resolutions_state",

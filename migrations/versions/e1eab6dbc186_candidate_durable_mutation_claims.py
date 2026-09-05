@@ -190,6 +190,21 @@ def _create_mutation_guards() -> None:
 
 def upgrade() -> None:
     """Upgrade schema."""
+    irreconstructible = op.get_bind().execute(
+        sa.text(
+            "SELECT COUNT(*) FROM integration_candidate_resolutions r "
+            "LEFT JOIN integration_repair_operations o ON o.id = r.operation_id "
+            "LEFT JOIN integration_repair_stages s ON s.operation_id = r.operation_id "
+            "AND s.ordinal = r.stage_ordinal "
+            "LEFT JOIN integration_batches b ON b.id = r.batch_id "
+            "WHERE o.episode_id IS NULL OR s.deadline_at IS NULL OR b.project_id IS NULL"
+        )
+    ).scalar_one()
+    if irreconstructible:
+        raise RuntimeError(
+            "cannot upgrade candidate resolutions: irreconstructible legacy authority "
+            "(missing operation episode, stage deadline, or project)"
+        )
     op.add_column(
         "integration_candidate_resolutions",
         sa.Column("operation_episode_id", sa.Text(), nullable=True),
@@ -204,10 +219,7 @@ def upgrade() -> None:
     op.add_column(
         "integration_candidate_resolutions", sa.Column("target_branch", sa.Text(), nullable=True)
     )
-    op.execute(
-        "UPDATE integration_candidate_resolutions SET target_branch = "
-        "'refs/heads/aq/integration-repairs/' || id"
-    )
+    op.execute("UPDATE integration_candidate_resolutions SET target_branch = branch")
     op.execute(
         "UPDATE integration_candidate_resolutions SET "
         "operation_episode_id = (SELECT episode_id FROM integration_repair_operations "

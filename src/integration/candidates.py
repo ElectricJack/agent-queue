@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any, Literal, Protocol
 
 from pydantic import BaseModel, ConfigDict
-from sqlalchemy import insert, select, update
+from sqlalchemy import case, delete, insert, select, update
 from sqlalchemy.exc import IntegrityError
 
 from src.commands.principal import PrincipalKind, current_principal, matches_session_instance
@@ -136,7 +136,10 @@ class AuditForgeProvider(Protocol):
 CrashHook = Callable[[str], Awaitable[None] | None]
 RepositoryResolver = Callable[[str], Awaitable[Any] | Any]
 _COAUTHOR_RE = re.compile(r"(?im)^co-authored-by:\s*(?P<name>[^<\n]+?)\s*<(?P<email>[^>\n]+)>\s*$")
-_MUTATION_CLAIM_SECONDS = 60.0
+_MUTATION_TRANSPORT_SECONDS = 120.0
+_MUTATION_SAFETY_MARGIN_SECONDS = 15.0
+_MUTATION_PREPUSH_MARGIN_SECONDS = 5.0
+_MUTATION_CLAIM_SECONDS = _MUTATION_TRANSPORT_SECONDS + _MUTATION_SAFETY_MARGIN_SECONDS
 
 
 class CandidateService:
@@ -168,6 +171,9 @@ class CandidateService:
         self.clock = clock
 
     async def build(self, batch_id: str) -> CandidateBuildResult:
+        observed_mutation = False
+        if self.app_client is not None:
+            observed_mutation = await self._observe_unresolved_mutations(batch_id)
         state = await self._locked_state(batch_id)
         batch = state["batch"]
         if batch["lifecycle"] == "empty":
@@ -175,6 +181,10 @@ class CandidateService:
                 outcome="empty", batch_id=batch_id, revision=int(batch["current_revision"])
             )
         if state.get("authority_wait"):
+            return CandidateBuildResult(
+                outcome="wait", batch_id=batch_id, revision=int(batch["current_revision"])
+            )
+        if observed_mutation:
             return CandidateBuildResult(
                 outcome="wait", batch_id=batch_id, revision=int(batch["current_revision"])
             )
@@ -229,11 +239,21 @@ class CandidateService:
     ) -> CandidateBuildResult:
         if not is_valid_git_oid(new_base_sha):
             raise ValueError("candidate rebuild base must be an exact Git OID")
+        observed_mutation = False
+        if self.app_client is not None:
+            observed_mutation = await self._observe_unresolved_mutations(batch_id)
         state = await self._locked_state(batch_id)
         batch = state["batch"]
         if state.get("authority_wait"):
             return CandidateBuildResult(
                 outcome="wait", batch_id=batch_id, revision=int(batch["current_revision"])
+            )
+        if observed_mutation:
+            return CandidateBuildResult(
+                outcome="wait",
+                batch_id=batch_id,
+                revision=int(batch["current_revision"]),
+                operation_id=state["operation"]["id"],
             )
         if self.app_client is None or self.forge_provider is None:
             return CandidateBuildResult(
@@ -295,6 +315,24 @@ class CandidateService:
         async with self.db.immediate() as conn:
             await self.db.lock_hierarchy_project(conn, batch["project_id"])
             await self._validate_authority_on(conn, state, revision=expected_revision)
+            unresolved = (
+                await conn.execute(
+                    select(integration_candidate_ref_mutations.c.id)
+                    .where(
+                        integration_candidate_ref_mutations.c.batch_id == batch_id,
+                        integration_candidate_ref_mutations.c.revision == expected_revision,
+                        integration_candidate_ref_mutations.c.state == "reserved",
+                    )
+                    .with_for_update()
+                )
+            ).scalar_one_or_none()
+            if unresolved is not None:
+                return CandidateBuildResult(
+                    outcome="wait",
+                    batch_id=batch_id,
+                    revision=expected_revision,
+                    operation_id=state["operation"]["id"],
+                )
             locked = (
                 (
                     await conn.execute(
@@ -456,6 +494,9 @@ class CandidateService:
             scope = await self.db.get_repair_filing_scope(
                 principal.task_id, session_id=principal.session_id, conn=conn
             )
+            workspace_path = self._canonical_workspace_path(
+                scope["workspace_path"] if scope else None
+            )
             if (
                 int(batch["current_revision"]) != request.revision
                 or batch["project_id"] != project_id
@@ -518,9 +559,11 @@ class CandidateService:
                             repair_session_id=principal.session_id,
                             repair_session_instance_token=scope["instance_token"],
                             repair_workspace_id=scope["workspace_id"],
+                            repair_workspace_path=workspace_path,
                             repository_id=batch["repository_id"],
                             branch=request.fence.target.branch,
                             target_branch=target_branch,
+                            target_kind="qualified",
                             fence_owner_id=request.fence.owner_id,
                             fence_token=request.fence.token,
                             partial_head_sha=detail["partial_head_sha"],
@@ -551,9 +594,11 @@ class CandidateService:
                         "repair_session_id": principal.session_id,
                         "repair_session_instance_token": scope["instance_token"],
                         "repair_workspace_id": scope["workspace_id"],
+                        "repair_workspace_path": workspace_path,
                         "repository_id": batch["repository_id"],
                         "branch": request.fence.target.branch,
                         "target_branch": target_branch,
+                        "target_kind": "qualified",
                     }.items()
                 ):
                     raise CandidateAuthorizationError(
@@ -578,7 +623,12 @@ class CandidateService:
             state["operation"]["active_stage"]
         ) != int(reservation["stage_ordinal"]):
             return self._repair_result("stale", reservation)
-        branch = reservation["target_branch"].removeprefix("refs/heads/")
+        target_branch = (
+            reservation["branch"]
+            if reservation["target_kind"] == "legacy_integration"
+            else reservation["target_branch"]
+        )
+        branch = target_branch.removeprefix("refs/heads/")
         if await self.app_client.exact_head_ref(branch) != reservation["resolved_head_sha"]:
             return self._repair_result("stale", reservation)
         repository = await self._repository(reservation["repository_id"])
@@ -623,14 +673,19 @@ class CandidateService:
             owner_id=reservation["fence_owner_id"],
             token=reservation["fence_token"],
         )
+        current_owner = await self.ownership.get_owner(repair_fence.target)
+        confirmation = None
+        if current_owner and current_owner["owner_id"] == repair_fence.owner_id:
+            try:
+                confirmation = await self.ownership.confirm_transfer(repair_fence)
+            except BranchBusy:
+                return self._repair_result("wait", reservation)
         try:
-            collector = await self.ownership.transfer(
-                repair_fence, reservation["operation_id"], "collector"
-            )
-        except BranchBusy:
+            state = await self._reserve_repair_handoff(state, reservation, confirmation)
+        except (BranchBusy, CandidateStaleAuthority, StaleFence):
             return self._repair_result("wait", reservation)
-        state["fence"] = collector
-        token = await self.app_client.installation_token()
+        await self._crash("after_handoff_reservation")
+        await self._crash("after_handoff_transfer")
         handed_back = await self._mutate_ref(
             state,
             revision=int(reservation["revision"]),
@@ -639,12 +694,13 @@ class CandidateService:
             expected_old_sha=reservation["partial_head_sha"],
             desired_sha=reservation["resolved_head_sha"],
             store=store,
-            token=token,
             member_ordinal=int(reservation["member_ordinal"]),
             resolution_id=lineage,
         )
         if not handed_back:
             return self._repair_result("wait", reservation)
+        await self._crash("after_handoff_push")
+        await self._crash("before_repair_acceptance")
         now = self.clock()
         async with self.db.immediate() as conn:
             await self.db.lock_hierarchy_project(conn, state["project"]["id"])
@@ -696,6 +752,115 @@ class CandidateService:
             )
         return self._repair_result("accepted", reservation)
 
+    async def _reserve_repair_handoff(self, state, reservation, confirmation):
+        now = self.clock()
+        async with self.db.immediate() as conn:
+            await self.db.lock_hierarchy_project(conn, reservation["project_id"])
+            canonical = await self._resolution_on(conn, reservation["id"])
+            if canonical is None or canonical["state"] != "pushed":
+                raise CandidateStaleAuthority("candidate repair handoff reservation is stale")
+            project = (
+                await conn.execute(
+                    select(projects)
+                    .where(projects.c.id == reservation["project_id"])
+                    .with_for_update()
+                )
+            ).mappings().one()
+            batch = (
+                await conn.execute(
+                    select(integration_batches)
+                    .where(integration_batches.c.id == reservation["batch_id"])
+                    .with_for_update()
+                )
+            ).mappings().one()
+            operation = (
+                await conn.execute(
+                    select(integration_repair_operations)
+                    .where(integration_repair_operations.c.id == reservation["operation_id"])
+                    .with_for_update()
+                )
+            ).mappings().one()
+            lease = (
+                await conn.execute(
+                    select(project_integration_leases)
+                    .where(project_integration_leases.c.project_id == reservation["project_id"])
+                    .with_for_update()
+                )
+            ).mappings().one()
+            if (
+                project["hierarchical_integration_mode"] != "train"
+                or project["integration_repository_id"] != reservation["repository_id"]
+                or int(batch["current_revision"]) != int(reservation["revision"])
+                or batch["repository_id"] != reservation["repository_id"]
+                or batch["integration_branch"] != reservation["branch"]
+                or operation["batch_id"] != reservation["batch_id"]
+                or operation["episode_id"] != reservation["operation_episode_id"]
+                or int(operation["active_stage"]) != int(reservation["stage_ordinal"])
+                or operation["state"] not in {"active", "escalated"}
+                or lease["batch_id"] != reservation["batch_id"]
+                or lease["repository_id"] != reservation["repository_id"]
+                or float(lease["expires_at"]) < now + _MUTATION_CLAIM_SECONDS
+            ):
+                raise CandidateStaleAuthority("candidate repair handoff authority changed")
+            target = BranchKey(
+                repository_id=reservation["repository_id"], branch=reservation["branch"]
+            )
+            if canonical["handoff_owner_id"] is not None:
+                owner = await self.ownership._locked_row(conn, target)
+                if (
+                    owner is None
+                    or owner["owner_id"] != canonical["handoff_owner_id"]
+                    or int(owner["fence_token"]) != int(canonical["handoff_fence_token"])
+                    or owner["owner_role"] != "collector"
+                ):
+                    raise CandidateStaleAuthority("candidate repair handoff owner changed")
+                state["fence"] = Fence(
+                    target=target,
+                    owner_id=canonical["handoff_owner_id"],
+                    token=int(canonical["handoff_fence_token"]),
+                )
+                state["batch"] = dict(batch)
+                state["operation"] = dict(operation)
+                state["lease"] = dict(lease)
+                return state
+            if confirmation is None:
+                raise CandidateStaleAuthority("candidate repair handoff confirmation is absent")
+            predicted_token = int(reservation["fence_token"]) + 1
+            collector = await self.ownership.transfer_confirmed_on(
+                conn,
+                Fence(
+                    target=target,
+                    owner_id=reservation["fence_owner_id"],
+                    token=int(reservation["fence_token"]),
+                ),
+                reservation["operation_id"],
+                "collector",
+                confirmation,
+            )
+            if collector.token != predicted_token:
+                raise CandidateStaleAuthority("candidate repair handoff fence prediction changed")
+            changed = await conn.execute(
+                update(integration_candidate_resolutions)
+                .where(
+                    integration_candidate_resolutions.c.id == reservation["id"],
+                    integration_candidate_resolutions.c.state == "pushed",
+                    integration_candidate_resolutions.c.handoff_owner_id.is_(None),
+                    integration_candidate_resolutions.c.handoff_fence_token.is_(None),
+                )
+                .values(
+                    handoff_owner_id=collector.owner_id,
+                    handoff_fence_token=collector.token,
+                    updated_at=now,
+                )
+            )
+            if changed.rowcount != 1:
+                raise CandidateStaleAuthority("candidate repair handoff persistence CAS lost")
+            state["fence"] = collector
+            state["batch"] = dict(batch)
+            state["operation"] = dict(operation)
+            state["lease"] = dict(lease)
+        return state
+
     async def push_repair(self, reservation_id: str, fence: Fence) -> str:
         principal = current_principal()
         reservation = await self._resolution(reservation_id)
@@ -704,7 +869,6 @@ class CandidateService:
         if reservation["state"] in {"pushed", "accepted"}:
             return reservation_id
         state, scope = await self._repair_state(reservation, principal, fence)
-        token = await self.app_client.installation_token()
         pushed = await self._mutate_ref(
             state,
             revision=int(reservation["revision"]),
@@ -712,8 +876,7 @@ class CandidateService:
             target_branch=reservation["target_branch"],
             expected_old_sha="0" * 40,
             desired_sha=reservation["resolved_head_sha"],
-            store=Path(scope["workspace_path"]),
-            token=token,
+            store=Path(reservation["repair_workspace_path"]),
             member_ordinal=int(reservation["member_ordinal"]),
             resolution_id=reservation_id,
             expected_role="repair",
@@ -792,6 +955,9 @@ class CandidateService:
             scope = await self.db.get_repair_filing_scope(
                 principal.task_id, session_id=principal.session_id, conn=conn
             )
+            workspace_path = self._canonical_workspace_path(
+                scope["workspace_path"] if scope else None
+            )
             if (
                 int(batch["current_revision"]) != int(reservation["revision"])
                 or batch["repository_id"] != reservation["repository_id"]
@@ -814,6 +980,7 @@ class CandidateService:
                 or scope["workspace_id"] != reservation["repair_workspace_id"]
                 or scope["repository_id"] != reservation["repository_id"]
                 or scope["workspace_path"] is None
+                or workspace_path != reservation["repair_workspace_path"]
                 or fence.target.repository_id != reservation["repository_id"]
                 or fence.target.branch != reservation["branch"]
                 or fence.owner_id != reservation["fence_owner_id"]
@@ -833,6 +1000,23 @@ class CandidateService:
             "operation": dict(operation),
             "fence": fence,
         }, dict(scope)
+
+    @staticmethod
+    def _canonical_workspace_path(value: str | None) -> str:
+        if not value:
+            raise CandidateAuthorizationError("candidate repair workspace path is absent")
+        path = Path(value)
+        if not path.is_absolute():
+            raise CandidateAuthorizationError("candidate repair workspace path is not absolute")
+        try:
+            resolved = path.resolve(strict=True)
+        except OSError as exc:
+            raise CandidateAuthorizationError(
+                "candidate repair workspace path does not resolve"
+            ) from exc
+        if not resolved.is_dir():
+            raise CandidateAuthorizationError("candidate repair workspace path is not a directory")
+        return str(resolved)
 
     async def _locked_state(self, batch_id: str) -> dict[str, Any]:
         # Resolve only the lock key before entering the canonical hierarchy-first
@@ -1136,12 +1320,62 @@ class CandidateService:
         publication_key = hashlib.sha256(
             f"{batch['id']}:{revision['revision']}:{revision['head_sha']}".encode()
         ).hexdigest()
-        previous = await self._revision(batch["id"], int(revision["revision"]) - 1)
-        expected_old = previous.get("head_sha") if previous else "0" * 40
         now = self.clock()
         async with self.db.immediate() as conn:
             await self.db.lock_hierarchy_project(conn, batch["project_id"])
             await self._validate_authority_on(conn, state, revision=int(revision["revision"]))
+            latest_applied = (
+                (
+                    await conn.execute(
+                        select(integration_candidate_ref_mutations.c.desired_sha)
+                        .where(
+                            integration_candidate_ref_mutations.c.batch_id == batch["id"],
+                            integration_candidate_ref_mutations.c.revision
+                            == int(revision["revision"]),
+                            integration_candidate_ref_mutations.c.target_branch
+                            == batch["integration_branch"],
+                            integration_candidate_ref_mutations.c.state == "applied",
+                        )
+                        .order_by(
+                            case(
+                                (
+                                    integration_candidate_ref_mutations.c.purpose
+                                    == "repair_handoff",
+                                    0,
+                                ),
+                                (
+                                    integration_candidate_ref_mutations.c.purpose
+                                    == "candidate_partial",
+                                    1,
+                                ),
+                                else_=2,
+                            ),
+                            integration_candidate_ref_mutations.c.updated_at.desc(),
+                            integration_candidate_ref_mutations.c.id,
+                        )
+                        .limit(1)
+                    )
+                )
+                .mappings()
+                .one_or_none()
+            )
+            if latest_applied is not None:
+                expected_old = latest_applied["desired_sha"]
+            else:
+                previous = (
+                    (
+                        await conn.execute(
+                            select(integration_candidate_revisions.c.head_sha).where(
+                                integration_candidate_revisions.c.batch_id == batch["id"],
+                                integration_candidate_revisions.c.revision
+                                == int(revision["revision"]) - 1,
+                            )
+                        )
+                    )
+                    .mappings()
+                    .one_or_none()
+                )
+                expected_old = previous["head_sha"] if previous else "0" * 40
             row = (
                 (
                     await conn.execute(
@@ -1173,7 +1407,6 @@ class CandidateService:
                     )
                 )
                 row = {"state": "reserved", "expected_old_sha": expected_old}
-        token = await self.app_client.installation_token()
         published = await self._mutate_ref(
             state,
             revision=int(revision["revision"]),
@@ -1182,7 +1415,6 @@ class CandidateService:
             expected_old_sha=row["expected_old_sha"],
             desired_sha=revision["head_sha"],
             store=store,
-            token=token,
         )
         if not published:
             return {**revision, "publication_wait": True}
@@ -1482,7 +1714,6 @@ class CandidateService:
         expected_old_sha: str,
         desired_sha: str,
         store: Path,
-        token: str,
         member_ordinal: int | None = None,
         resolution_id: str | None = None,
         expected_role: str = "collector",
@@ -1545,6 +1776,15 @@ class CandidateService:
                 "branch_owner_role": expected_role,
                 "branch_fence_token": state["fence"].token,
             }
+            lease_expires_at = (
+                await conn.execute(
+                    select(project_integration_leases.c.expires_at).where(
+                        project_integration_leases.c.project_id == state["project"]["id"]
+                    )
+                )
+            ).scalar_one()
+            if float(lease_expires_at) < now + _MUTATION_CLAIM_SECONDS:
+                return False
             if row is None:
                 await conn.execute(
                     insert(integration_candidate_ref_mutations).values(
@@ -1552,29 +1792,25 @@ class CandidateService:
                         **identity,
                         nonce=nonce,
                         state="reserved",
-                        expires_at=min(
-                            now + _MUTATION_CLAIM_SECONDS,
-                            float(state["lease"]["expires_at"]),
-                        ),
+                        expires_at=now + _MUTATION_CLAIM_SECONDS,
                         created_at=now,
                         updated_at=now,
                     )
                 )
                 owns = True
                 row = {
+                    "id": mutation_id,
                     **identity,
                     "nonce": nonce,
                     "state": "reserved",
-                    "expires_at": min(
-                        now + _MUTATION_CLAIM_SECONDS,
-                        float(state["lease"]["expires_at"]),
-                    ),
+                    "expires_at": now + _MUTATION_CLAIM_SECONDS,
                 }
             elif any(row[key] != value for key, value in identity.items()):
                 raise CandidateStaleAuthority("candidate mutation identity changed")
             elif row["state"] == "applied":
                 already_applied = True
 
+        token = await self.app_client.installation_token()
         remote = await self.app_client.exact_head_ref(target_branch.removeprefix("refs/heads/"))
         if already_applied:
             return remote == desired_sha
@@ -1585,9 +1821,31 @@ class CandidateService:
         elif remote != expected_old_sha and not (remote is None and expected_old_sha == "0" * 40):
             return False
         elif not owns:
-            if float(row["expires_at"]) > self.clock():
+            if float(row["expires_at"]) <= self.clock():
+                await self._reconcile_observed_mutation(dict(row), remote)
+            return False
+        if remote != desired_sha:
+            if not owns:
                 return False
-            takeover_nonce = str(uuid.uuid4())
+            if not await self._prepush_authorized(
+                state,
+                mutation_id=mutation_id,
+                nonce=nonce,
+                revision=revision,
+                expected_role=expected_role,
+                expected_handoff=expected_handoff,
+            ):
+                return False
+            await self.git.apush_oid_with_app_auth(
+                str(store),
+                repository=self.app_client.repository,
+                token=token,
+                tip_oid=desired_sha,
+                branch=target_branch.removeprefix("refs/heads/"),
+                expected_old_oid=expected_old_sha,
+            )
+
+        try:
             async with self.db.immediate() as conn:
                 await self.db.lock_hierarchy_project(conn, state["project"]["id"])
                 await self._validate_authority_on(
@@ -1602,70 +1860,138 @@ class CandidateService:
                     .where(
                         integration_candidate_ref_mutations.c.id == mutation_id,
                         integration_candidate_ref_mutations.c.state == "reserved",
-                        integration_candidate_ref_mutations.c.nonce == row["nonce"],
-                        integration_candidate_ref_mutations.c.expires_at <= self.clock(),
+                        integration_candidate_ref_mutations.c.desired_sha == desired_sha,
+                        integration_candidate_ref_mutations.c.nonce
+                        == (nonce if owns else row["nonce"]),
                     )
-                    .values(
-                        nonce=takeover_nonce,
-                        expires_at=min(
-                            self.clock() + _MUTATION_CLAIM_SECONDS,
-                            float(state["lease"]["expires_at"]),
-                        ),
-                        updated_at=self.clock(),
-                    )
+                    .values(state="applied", remote_sha=desired_sha, updated_at=self.clock())
                 )
-                if changed.rowcount != 1:
-                    return False
-            nonce = takeover_nonce
-            owns = True
-        if remote != desired_sha:
-            if not owns:
-                return False
-            await self.git.apush_oid_with_app_auth(
-                str(store),
-                repository=self.app_client.repository,
-                token=token,
-                tip_oid=desired_sha,
-                branch=target_branch.removeprefix("refs/heads/"),
-                expected_old_oid=expected_old_sha,
-            )
-
-        async with self.db.immediate() as conn:
-            await self.db.lock_hierarchy_project(conn, state["project"]["id"])
-            await self._validate_authority_on(
-                conn,
-                state,
-                revision=revision,
-                expected_role=expected_role,
-                expected_handoff=expected_handoff,
-            )
-            changed = await conn.execute(
-                update(integration_candidate_ref_mutations)
-                .where(
-                    integration_candidate_ref_mutations.c.id == mutation_id,
-                    integration_candidate_ref_mutations.c.state == "reserved",
-                    integration_candidate_ref_mutations.c.desired_sha == desired_sha,
-                    integration_candidate_ref_mutations.c.nonce == row["nonce"]
-                    if not owns
-                    else integration_candidate_ref_mutations.c.nonce == nonce,
-                )
-                .values(state="applied", remote_sha=desired_sha, updated_at=self.clock())
-            )
-            if changed.rowcount == 0:
-                canonical = (
-                    (
+                if changed.rowcount == 0:
+                    canonical = (
                         await conn.execute(
                             select(integration_candidate_ref_mutations).where(
                                 integration_candidate_ref_mutations.c.id == mutation_id
                             )
                         )
-                    )
-                    .mappings()
-                    .one()
-                )
-                if canonical["state"] != "applied" or canonical["remote_sha"] != desired_sha:
-                    raise CandidateStaleAuthority("candidate mutation reconciliation CAS lost")
+                    ).mappings().one()
+                    if canonical["state"] != "applied" or canonical["remote_sha"] != desired_sha:
+                        raise CandidateStaleAuthority(
+                            "candidate mutation reconciliation CAS lost"
+                        )
+        except CandidateStaleAuthority:
+            canonical = await self._mutation(mutation_id)
+            if canonical is not None:
+                await self._reconcile_observed_mutation(canonical, desired_sha)
+            return False
         return True
+
+    async def _prepush_authorized(
+        self, state, *, mutation_id, nonce, revision, expected_role, expected_handoff
+    ) -> bool:
+        minimum = self.clock() + _MUTATION_TRANSPORT_SECONDS + _MUTATION_PREPUSH_MARGIN_SECONDS
+        async with self.db.immediate() as conn:
+            await self.db.lock_hierarchy_project(conn, state["project"]["id"])
+            try:
+                await self._validate_authority_on(
+                    conn,
+                    state,
+                    revision=revision,
+                    expected_role=expected_role,
+                    expected_handoff=expected_handoff,
+                )
+            except CandidateStaleAuthority:
+                return False
+            claim = (
+                await conn.execute(
+                    select(integration_candidate_ref_mutations.c.id).where(
+                        integration_candidate_ref_mutations.c.id == mutation_id,
+                        integration_candidate_ref_mutations.c.state == "reserved",
+                        integration_candidate_ref_mutations.c.nonce == nonce,
+                        integration_candidate_ref_mutations.c.expires_at >= minimum,
+                    )
+                )
+            ).scalar_one_or_none()
+            lease = (
+                await conn.execute(
+                    select(project_integration_leases.c.project_id).where(
+                        project_integration_leases.c.project_id == state["project"]["id"],
+                        project_integration_leases.c.expires_at >= minimum,
+                    )
+                )
+            ).scalar_one_or_none()
+            return claim is not None and lease is not None
+
+    async def _mutation(self, mutation_id):
+        async with self.db._engine.connect() as conn:
+            row = (
+                await conn.execute(
+                    select(integration_candidate_ref_mutations).where(
+                        integration_candidate_ref_mutations.c.id == mutation_id
+                    )
+                )
+            ).mappings().one_or_none()
+        return dict(row) if row else None
+
+    async def _reconcile_observed_mutation(self, row, remote) -> None:
+        async with self.db._engine.connect() as read_conn:
+            project_id = (
+                await read_conn.execute(
+                    select(integration_batches.c.project_id).where(
+                        integration_batches.c.id == row["batch_id"]
+                    )
+                )
+            ).scalar_one_or_none()
+        if project_id is None:
+            return
+        async with self.db.immediate() as conn:
+            await self.db.lock_hierarchy_project(conn, project_id)
+            canonical = (
+                await conn.execute(
+                    select(integration_candidate_ref_mutations)
+                    .where(integration_candidate_ref_mutations.c.id == row["id"])
+                    .with_for_update()
+                )
+            ).mappings().one_or_none()
+            if canonical is None or canonical["state"] != "reserved":
+                return
+            if remote == canonical["desired_sha"]:
+                await conn.execute(
+                    update(integration_candidate_ref_mutations)
+                    .where(
+                        integration_candidate_ref_mutations.c.id == row["id"],
+                        integration_candidate_ref_mutations.c.nonce == canonical["nonce"],
+                        integration_candidate_ref_mutations.c.state == "reserved",
+                    )
+                    .values(state="applied", remote_sha=remote, updated_at=self.clock())
+                )
+            elif float(canonical["expires_at"]) <= self.clock() and (
+                remote == canonical["expected_old_sha"]
+                or (remote is None and canonical["expected_old_sha"] == "0" * 40)
+            ):
+                await conn.execute(
+                    delete(integration_candidate_ref_mutations).where(
+                        integration_candidate_ref_mutations.c.id == row["id"],
+                        integration_candidate_ref_mutations.c.nonce == canonical["nonce"],
+                        integration_candidate_ref_mutations.c.state == "reserved",
+                    )
+                )
+
+    async def _observe_unresolved_mutations(self, batch_id: str) -> bool:
+        async with self.db._engine.connect() as conn:
+            rows = (
+                await conn.execute(
+                    select(integration_candidate_ref_mutations).where(
+                        integration_candidate_ref_mutations.c.batch_id == batch_id,
+                        integration_candidate_ref_mutations.c.state == "reserved",
+                    )
+                )
+            ).mappings().all()
+        for row in rows:
+            remote = await self.app_client.exact_head_ref(
+                row["target_branch"].removeprefix("refs/heads/")
+            )
+            await self._reconcile_observed_mutation(dict(row), remote)
+        return bool(rows)
 
     async def _accepted_parent_repair(self, revision, ordinal, store: Path):
         parent = revision.get("repair_parent_revision")
@@ -1765,7 +2091,6 @@ class CandidateService:
         repository = await self._repository(state["batch"]["repository_id"])
         self._assert_repository_binding(repository)
         store = await self._ensure_store(repository)
-        token = await self.app_client.installation_token()
         previous = await self._revision(state["batch"]["id"], int(revision["revision"]) - 1)
         expected_old = previous.get("head_sha") if previous else "0" * 40
         published = await self._mutate_ref(
@@ -1776,7 +2101,6 @@ class CandidateService:
             expected_old_sha=expected_old,
             desired_sha=partial,
             store=store,
-            token=token,
             member_ordinal=int(member["ordinal"]),
         )
         if not published:

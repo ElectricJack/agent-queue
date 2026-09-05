@@ -170,6 +170,70 @@ class BranchOwnership:
                 raise BranchBusy("branch handoff changed while confirmation ran")
             return await self._claim_released(conn, current, fence.target, next_owner_id, next_role)
 
+    async def confirm_transfer(self, fence: Fence) -> dict[str, Any]:
+        """Persist handoff intent, then obtain server-side stop evidence outside SQL."""
+        async with self._db.immediate() as conn:
+            row = await self._locked_row(conn, fence.target)
+            self._require_current(row, fence)
+            if row["handoff_state"] == "attached":
+                if not row["session_id"] or not row["workspace_id"]:
+                    raise BranchBusy("attached owner lacks session/workspace handoff evidence")
+                changed = await conn.execute(
+                    update(integration_branch_owners)
+                    .where(
+                        integration_branch_owners.c.id == row["id"],
+                        integration_branch_owners.c.fence_token == fence.token,
+                        integration_branch_owners.c.handoff_state == "attached",
+                    )
+                    .values(handoff_state="handoff_pending", updated_at=time.time())
+                )
+                if changed.rowcount != 1:
+                    raise BranchBusy("branch handoff changed while reserving confirmation")
+                row = {**row, "handoff_state": "handoff_pending"}
+            elif row["handoff_state"] not in {"handoff_pending", "released"}:
+                raise BranchBusy("branch ownership state is not transferable")
+        if row["handoff_state"] != "released":
+            if self._confirm_handoff is None:
+                raise BranchBusy("no server-side handoff confirmer is installed")
+            confirmed = self._confirm_handoff(dict(row))
+            if inspect.isawaitable(confirmed):
+                confirmed = await confirmed
+            if not confirmed:
+                raise BranchBusy("previous writer has not confirmed stopped and detached")
+        return dict(row)
+
+    async def transfer_confirmed_on(
+        self,
+        conn,
+        fence: Fence,
+        next_owner_id: str,
+        next_role: str,
+        confirmation: dict[str, Any],
+        *,
+        ignore_mutation_id: str | None = None,
+    ) -> Fence:
+        """Consume exact external handoff proof in the caller's local transaction."""
+        self._validate_identity(fence.target, next_owner_id, next_role)
+        current = await self._locked_row(conn, fence.target)
+        self._require_current(current, fence)
+        if (
+            current["session_id"] != confirmation.get("session_id")
+            or current["workspace_id"] != confirmation.get("workspace_id")
+            or current["handoff_state"] not in {"handoff_pending", "released"}
+        ):
+            raise BranchBusy("branch handoff changed after confirmation")
+        query = select(integration_candidate_ref_mutations.c.id).where(
+            integration_candidate_ref_mutations.c.repository_id == fence.target.repository_id,
+            integration_candidate_ref_mutations.c.branch == fence.target.branch,
+            integration_candidate_ref_mutations.c.state == "reserved",
+            integration_candidate_ref_mutations.c.expires_at > self._clock(),
+        )
+        if ignore_mutation_id is not None:
+            query = query.where(integration_candidate_ref_mutations.c.id != ignore_mutation_id)
+        if (await conn.execute(query)).scalar_one_or_none() is not None:
+            raise BranchBusy("branch has a live external mutation claim")
+        return await self._claim_released(conn, current, fence.target, next_owner_id, next_role)
+
     async def assert_current(self, fence: Fence, *, expected_role: str | None = None) -> None:
         """Raise unless *fence* remains the current write authority."""
         async with self._db.immediate() as conn:
