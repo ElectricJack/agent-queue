@@ -56,6 +56,8 @@ def _create_immutability_guards() -> None:
             ("integration_schedule_sequence_is_monotone", "project_integration_schedules", "request_sequence < OLD.request_sequence", "integration schedule request sequence cannot decrease"),
             ("integration_outbox_attempts_monotone", "integration_outbox", "attempts < OLD.attempts", "integration outbox attempts cannot decrease"),
             ("integration_repair_attempts_monotone", "integration_repair_stages", "attempts < OLD.attempts", "integration repair attempts cannot decrease"),
+            ("integration_candidate_progress_monotone", "integration_candidate_revisions", "next_member_ordinal < OLD.next_member_ordinal", "integration candidate progress cannot decrease"),
+            ("integration_repair_operation_stage_monotone", "integration_repair_operations", "active_stage < OLD.active_stage", "integration repair operation stage cannot decrease"),
         ):
             op.execute(
                 f"""
@@ -84,7 +86,10 @@ def _create_immutability_guards() -> None:
                     NEW.repository_id IS DISTINCT FROM OLD.repository_id OR
                     NEW.target_branch IS DISTINCT FROM OLD.target_branch OR
                     NEW.expected_target IS DISTINCT FROM OLD.expected_target OR
-                    NEW.prepared_sha IS DISTINCT FROM OLD.prepared_sha
+                    NEW.prepared_sha IS DISTINCT FROM OLD.prepared_sha OR
+                    NEW.fence_owner_id IS DISTINCT FROM OLD.fence_owner_id OR
+                    NEW.fence_token IS DISTINCT FROM OLD.fence_token OR
+                    NEW.recovery_ref IS DISTINCT FROM OLD.recovery_ref
                 ) THEN RAISE EXCEPTION 'prepared integration identity is immutable'; END IF;
                 RETURN NEW;
             END;
@@ -131,9 +136,11 @@ def _create_immutability_guards() -> None:
         ("trg_integration_schedule_sequence_monotone", "project_integration_schedules", "NEW.request_sequence < OLD.request_sequence", "integration schedule request sequence cannot decrease"),
         ("trg_integration_outbox_attempts_monotone", "integration_outbox", "NEW.attempts < OLD.attempts", "integration outbox attempts cannot decrease"),
         ("trg_integration_repair_attempts_monotone", "integration_repair_stages", "NEW.attempts < OLD.attempts", "integration repair attempts cannot decrease"),
+        ("trg_integration_candidate_progress_monotone", "integration_candidate_revisions", "NEW.next_member_ordinal < OLD.next_member_ordinal", "integration candidate progress cannot decrease"),
+        ("trg_integration_repair_operation_stage_monotone", "integration_repair_operations", "NEW.active_stage < OLD.active_stage", "integration repair operation stage cannot decrease"),
     ):
         op.execute(f"CREATE TRIGGER {trigger} BEFORE UPDATE ON {table} WHEN {condition} BEGIN SELECT RAISE(ABORT, '{message}'); END")
-    op.execute("""CREATE TRIGGER trg_integration_prepared_identity_immutable BEFORE UPDATE ON integration_promotion_intents WHEN OLD.prepared_sha IS NOT NULL AND (NEW.domain_key IS NOT OLD.domain_key OR NEW.receipt_id IS NOT OLD.receipt_id OR NEW.source_task_id IS NOT OLD.source_task_id OR NEW.source_head IS NOT OLD.source_head OR NEW.source_base IS NOT OLD.source_base OR NEW.repository_id IS NOT OLD.repository_id OR NEW.target_branch IS NOT OLD.target_branch OR NEW.expected_target IS NOT OLD.expected_target OR NEW.prepared_sha IS NOT OLD.prepared_sha) BEGIN SELECT RAISE(ABORT, 'prepared integration identity is immutable'); END""")
+    op.execute("""CREATE TRIGGER trg_integration_prepared_identity_immutable BEFORE UPDATE ON integration_promotion_intents WHEN OLD.prepared_sha IS NOT NULL AND (NEW.domain_key IS NOT OLD.domain_key OR NEW.receipt_id IS NOT OLD.receipt_id OR NEW.source_task_id IS NOT OLD.source_task_id OR NEW.source_head IS NOT OLD.source_head OR NEW.source_base IS NOT OLD.source_base OR NEW.repository_id IS NOT OLD.repository_id OR NEW.target_branch IS NOT OLD.target_branch OR NEW.expected_target IS NOT OLD.expected_target OR NEW.prepared_sha IS NOT OLD.prepared_sha OR NEW.fence_owner_id IS NOT OLD.fence_owner_id OR NEW.fence_token IS NOT OLD.fence_token OR NEW.recovery_ref IS NOT OLD.recovery_ref) BEGIN SELECT RAISE(ABORT, 'prepared integration identity is immutable'); END""")
     op.execute("CREATE TRIGGER trg_task_delivery_receipts_update BEFORE UPDATE ON task_delivery_receipts BEGIN SELECT RAISE(ABORT, 'task delivery receipts are append-only'); END")
     op.execute("CREATE TRIGGER trg_task_delivery_receipts_delete BEFORE DELETE ON task_delivery_receipts BEGIN SELECT RAISE(ABORT, 'task delivery receipts are append-only'); END")
     op.execute("CREATE TRIGGER trg_task_branch_origins_materialized_update BEFORE UPDATE ON task_branch_origins WHEN OLD.materialized = 1 BEGIN SELECT RAISE(ABORT, 'materialized task branch origin is immutable'); END")
@@ -152,6 +159,8 @@ def _drop_immutability_guards() -> None:
             ("integration_schedule_sequence_is_monotone", "project_integration_schedules"),
             ("integration_outbox_attempts_monotone", "integration_outbox"),
             ("integration_repair_attempts_monotone", "integration_repair_stages"),
+            ("integration_candidate_progress_monotone", "integration_candidate_revisions"),
+            ("integration_repair_operation_stage_monotone", "integration_repair_operations"),
         ):
             op.execute(f"DROP TRIGGER trg_{function} ON {table}")
             op.execute(f"DROP FUNCTION {function}()")
@@ -174,6 +183,8 @@ def _drop_immutability_guards() -> None:
         "trg_integration_schedule_sequence_monotone",
         "trg_integration_outbox_attempts_monotone",
         "trg_integration_repair_attempts_monotone",
+        "trg_integration_candidate_progress_monotone",
+        "trg_integration_repair_operation_stage_monotone",
         "trg_integration_prepared_identity_immutable",
         "trg_task_delivery_receipts_update",
         "trg_task_delivery_receipts_delete",
@@ -303,6 +314,8 @@ def upgrade() -> None:
     sa.CheckConstraint('member_ordinal >= 0', name='ck_integration_candidate_member_results_member_ordinal'),
     sa.CheckConstraint("result IN ('pending', 'applied', 'conflict', 'skipped')", name='ck_integration_candidate_member_results_result'),
     sa.CheckConstraint("result <> 'applied' OR generated_squash_sha IS NOT NULL", name='ck_integration_candidate_member_results_applied_sha'),
+    sa.ForeignKeyConstraint(['batch_id', 'member_ordinal'], ['integration_batch_members.batch_id', 'integration_batch_members.ordinal'], name='fk_integration_candidate_member_results_member'),
+    sa.ForeignKeyConstraint(['batch_id', 'revision'], ['integration_candidate_revisions.batch_id', 'integration_candidate_revisions.revision'], name='fk_integration_candidate_member_results_revision'),
     sa.PrimaryKeyConstraint('batch_id', 'revision', 'member_ordinal')
     )
     op.create_table('integration_outbox',
