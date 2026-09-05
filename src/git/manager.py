@@ -79,6 +79,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, AsyncIterator
 
 from src.git.askpass_fd import answer_prompt
+from src.git.askpass_broker import make_request_channel, serve_one_credential, zeroize
 from src.git.github_app import GitHubRepositoryBinding
 
 if TYPE_CHECKING:
@@ -299,6 +300,7 @@ def _delivery_source_rev(source: str) -> str:
 
 class GitManager:
     _APP_GIT_EXECUTABLE = "/usr/bin/git"
+    _APP_CREDENTIAL_BROKER_TIMEOUT = 30.0
     # Environment overrides for all git/gh subprocess calls.  Prevents
     # interactive credential prompts that would otherwise write directly to
     # /dev/tty, bypassing capture_output and flooding the terminal (or
@@ -2904,21 +2906,6 @@ class GitManager:
         }
 
     @staticmethod
-    def _write_app_token(write_fd: int, token: bytes) -> None:
-        """Feed one non-seekable credential stream, then permanently close it."""
-        try:
-            view = memoryview(token)
-            while view:
-                written = os.write(write_fd, view)
-                view = view[written:]
-        except BrokenPipeError:
-            # A local test transport, or Git failing before authentication,
-            # can close the sole reader without ever invoking askpass.
-            pass
-        finally:
-            os.close(write_fd)
-
-    @staticmethod
     async def _kill_app_git_group(process: asyncio.subprocess.Process) -> None:
         """Terminate and reap the isolated privileged process group."""
         if process.returncode is None:
@@ -2937,6 +2924,17 @@ class GitManager:
         except ProcessLookupError:
             pass
         await asyncio.shield(process.wait())
+
+    @staticmethod
+    async def _settle_app_credential_broker(task: asyncio.Task[bool]) -> bool:
+        """Collect a completed broker or cancel it without waiting for channel EOF."""
+        await asyncio.sleep(0)
+        if not task.done():
+            task.cancel()
+        try:
+            return await asyncio.shield(task)
+        except asyncio.CancelledError:
+            return False
 
     async def _run_isolated_import_git(
         self,
@@ -2998,7 +2996,8 @@ class GitManager:
             raise GitError("invalid authenticated Git destination")
 
         checkout = Path(checkout_path).resolve(strict=True)
-        token_bytes = token.encode("utf-8")
+        token_buffer = bytearray(token.encode("utf-8"))
+        token = ""
         with tempfile.TemporaryDirectory(prefix="aq-app-push-") as temporary:
             root = Path(temporary)
             root.chmod(0o700)
@@ -3030,25 +3029,27 @@ class GitManager:
             if imported.decode("ascii", errors="replace") != tip_oid:
                 raise GitError("authenticated Git push preparation failed")
 
-            read_fd, write_fd = os.pipe()
-            os.set_inheritable(write_fd, False)
-            broker_fd = os.dup(write_fd)
-            os.set_inheritable(broker_fd, False)
-            os.close(write_fd)
-            write_fd = -1
-            writer = asyncio.create_task(
-                asyncio.to_thread(self._write_app_token, broker_fd, token_bytes)
-            )
-            broker_fd = -1
             authority = "https://x-access-token@github.com"
+            prompt = f"Password for '{authority}': "
+            broker_channel = None
+            request_channel = None
+            broker_task: asyncio.Task[bool] | None = None
+            process: asyncio.subprocess.Process | None = None
+            try:
+                broker_channel, request_channel = make_request_channel()
+            except OSError as exc:
+                zeroize(token_buffer)
+                raise GitError("authenticated Git credential broker is unavailable") from exc
+            request_fd = request_channel.fileno()
             environment = self._app_git_environment(home)
             environment.update(
                 {
                     "GIT_ASKPASS": str(Path(answer_prompt.__code__.co_filename)),
                     "GIT_ASKPASS_REQUIRE": "force",
-                    "AQ_GIT_APP_TOKEN_FD": str(read_fd),
+                    "AQ_GIT_APP_REQUEST_FD": str(request_fd),
                     "AQ_GIT_APP_USERNAME": "x-access-token",
                     "AQ_GIT_APP_AUTHORITY": authority,
+                    "AQ_GIT_APP_REPOSITORY": destination_url,
                 }
             )
             arguments = [
@@ -3079,7 +3080,6 @@ class GitManager:
                     f"{tip_oid}:refs/heads/{branch}",
                 ]
             )
-            process: asyncio.subprocess.Process | None = None
             try:
                 process = await asyncio.create_subprocess_exec(
                     self._APP_GIT_EXECUTABLE,
@@ -3089,32 +3089,49 @@ class GitManager:
                     stdout=asyncio.subprocess.DEVNULL,
                     stderr=asyncio.subprocess.DEVNULL,
                     env=environment,
-                    pass_fds=(read_fd,),
+                    pass_fds=(request_fd,),
                     start_new_session=True,
                 )
-                os.close(read_fd)
-                read_fd = -1
+                request_channel.close()
+                request_channel = None
+                broker_task = asyncio.create_task(
+                    serve_one_credential(
+                        broker_channel,
+                        token_buffer,
+                        git_pid=process.pid,
+                        helper_path=str(Path(answer_prompt.__code__.co_filename).resolve()),
+                        authority=authority,
+                        repository=destination_url,
+                        prompt=prompt,
+                        timeout=min(
+                            float(self._GIT_TIMEOUT), self._APP_CREDENTIAL_BROKER_TIMEOUT
+                        ),
+                    )
+                )
+                broker_channel = None
                 await asyncio.wait_for(process.wait(), timeout=self._GIT_TIMEOUT)
-                await writer
+                await self._kill_app_git_group(process)
+                broker_served = await self._settle_app_credential_broker(broker_task)
+                broker_task = None
             except BaseException as exc:
-                if read_fd >= 0:
-                    os.close(read_fd)
-                    read_fd = -1
                 if process is not None:
                     await self._kill_app_git_group(process)
-                await asyncio.shield(writer)
+                if broker_task is not None:
+                    await self._settle_app_credential_broker(broker_task)
+                    broker_task = None
                 if isinstance(exc, asyncio.CancelledError):
                     raise
                 raise GitError("authenticated Git push failed") from exc
             finally:
-                if read_fd >= 0:
-                    os.close(read_fd)
-                if write_fd >= 0:
-                    os.close(write_fd)
-                if broker_fd >= 0:
-                    os.close(broker_fd)
+                if request_channel is not None:
+                    request_channel.close()
+                if broker_channel is not None:
+                    broker_channel.close()
+                if broker_task is None and token_buffer:
+                    zeroize(token_buffer)
             if process.returncode != 0:
-                await self._kill_app_git_group(process)
+                raise GitError("authenticated Git push failed")
+            if destination_url.startswith("https://") and not broker_served:
                 raise GitError("authenticated Git push failed")
         return tip_oid
 

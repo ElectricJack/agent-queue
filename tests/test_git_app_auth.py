@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import asyncio
 import os
+import signal
 import subprocess
 from pathlib import Path
 
 import pytest
 
 from src.git.askpass_fd import answer_prompt
+from src.git.askpass_broker import make_request_channel
 from src.git.github_app import GitHubRepositoryBinding
 from src.git.manager import GitError, GitManager
 
@@ -163,32 +165,30 @@ async def test_app_push_error_never_repeats_remote_output_or_token(tmp_path):
     assert "remote echoed" not in str(caught.value)
 
 
-def test_askpass_reads_token_only_for_password_prompt():
-    read_fd, write_fd = os.pipe()
-    os.write(write_fd, b"secret")
-    os.close(write_fd)
+def test_askpass_username_and_invalid_prompts_do_not_send_broker_requests():
+    broker, request = make_request_channel()
+    broker.setblocking(False)
     try:
         authority = "https://x-access-token@github.com"
         assert answer_prompt(
-            "Username for 'https://github.com': ", read_fd, "x-access-token", authority
+            "Username for 'https://github.com': ",
+            request.fileno(),
+            "x-access-token",
+            authority,
+            "https://github.com/acme/widgets.git",
         ) == "x-access-token"
         assert answer_prompt(
-            "Password for 'https://attacker.example': ", read_fd, "x-access-token", authority
-        ) == ""
-        assert answer_prompt(
-            "Password for 'https://x-access-token@github.com': ",
-            read_fd,
+            "Password for 'https://attacker.example': ",
+            request.fileno(),
             "x-access-token",
             authority,
-        ) == "secret"
-        assert answer_prompt(
-            "Password for 'https://x-access-token@github.com': ",
-            read_fd,
-            "x-access-token",
-            authority,
+            "https://github.com/acme/widgets.git",
         ) == ""
+        with pytest.raises(BlockingIOError):
+            broker.recv(1)
     finally:
-        os.close(read_fd)
+        broker.close()
+        request.close()
 
 
 async def _wait_for_file(path: Path) -> None:
@@ -205,6 +205,19 @@ def _process_group_exists(group_id: int) -> bool:
     except ProcessLookupError:
         return False
     return True
+
+
+def _open_fd_count() -> int:
+    return len(os.listdir("/proc/self/fd"))
+
+
+def _assert_no_broker_tasks() -> None:
+    assert not [
+        task
+        for task in asyncio.all_tasks()
+        if task is not asyncio.current_task()
+        and "serve_one_credential" in task.get_coro().__qualname__
+    ]
 
 
 @pytest.mark.asyncio
@@ -226,6 +239,7 @@ async def test_app_push_timeout_or_cancellation_kills_entire_process_group(
     manager = GitManager()
     manager._APP_GIT_EXECUTABLE = str(hanging_git)
     manager._GIT_TIMEOUT = 0.2 if not cancel else 30
+    open_fds_before = _open_fd_count()
     task = asyncio.create_task(
         manager._apush_oid_with_app_auth_to_url(
             str(checkout),
@@ -252,6 +266,9 @@ async def test_app_push_timeout_or_cancellation_kills_entire_process_group(
         await asyncio.sleep(0.01)
     assert not _process_group_exists(leader)
     assert not Path(f"/proc/{descendant}").exists()
+    await asyncio.sleep(0)
+    assert _open_fd_count() == open_fds_before
+    _assert_no_broker_tasks()
 
 
 @pytest.mark.asyncio
@@ -259,6 +276,7 @@ async def test_app_push_spawn_failure_closes_broker_reader_before_waiting(tmp_pa
     checkout, target, _, base, tip = _git_push_case(tmp_path)
     manager = GitManager()
     manager._APP_GIT_EXECUTABLE = str(tmp_path / "missing-git")
+    open_fds_before = _open_fd_count()
 
     with pytest.raises(GitError, match="authenticated Git push failed"):
         await manager._apush_oid_with_app_auth_to_url(
@@ -269,35 +287,202 @@ async def test_app_push_spawn_failure_closes_broker_reader_before_waiting(tmp_pa
             branch="main",
             expected_old_oid=base,
         )
+    await asyncio.sleep(0)
+    assert _open_fd_count() == open_fds_before
+    _assert_no_broker_tasks()
 
 
 @pytest.mark.asyncio
-async def test_askpass_helper_is_directly_executable_with_inherited_fd_only():
+async def test_broker_timeout_closes_request_channel_without_waiting_for_eof(tmp_path):
+    checkout, target, _, base, tip = _git_push_case(tmp_path)
+    helper_output = tmp_path / "late-helper-output"
+    late_git = tmp_path / "late-git"
+    late_git.write_text(
+        "#!/bin/sh\n"
+        "python3 -c 'import time; time.sleep(0.1)'\n"
+        f'"$GIT_ASKPASS" "Password for \'https://x-access-token@github.com\': " '
+        f"> {helper_output}\n"
+        "exit 0\n"
+    )
+    late_git.chmod(0o700)
+    manager = GitManager()
+    manager._APP_GIT_EXECUTABLE = str(late_git)
+    manager._APP_CREDENTIAL_BROKER_TIMEOUT = 0.02
+    manager._GIT_TIMEOUT = 2
+    open_fds_before = _open_fd_count()
+
+    result = await manager._apush_oid_with_app_auth_to_url(
+        str(checkout),
+        destination_url=target.as_uri(),
+        token="never-released-token",
+        tip_oid=tip,
+        branch="main",
+        expected_old_oid=base,
+    )
+
+    assert result == tip
+    assert helper_output.read_bytes() == b""
+    await asyncio.sleep(0)
+    assert _open_fd_count() == open_fds_before
+    _assert_no_broker_tasks()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("capability", ["SO_PASSCRED", "SCM_RIGHTS"])
+async def test_unsupported_credential_broker_fails_closed(
+    tmp_path, monkeypatch, capability
+):
+    import src.git.askpass_broker as broker_module
+
+    checkout, target, _, base, tip = _git_push_case(tmp_path)
+    monkeypatch.delattr(broker_module.socket, capability)
+    manager = GitManager()
+    open_fds_before = _open_fd_count()
+
+    with pytest.raises(GitError, match="credential broker is unavailable"):
+        await manager._apush_oid_with_app_auth_to_url(
+            str(checkout),
+            destination_url=target.as_uri(),
+            token="unsupported-capability-token",
+            tip_oid=tip,
+            branch="main",
+            expected_old_oid=base,
+        )
+
+    assert _open_fd_count() == open_fds_before
+    _assert_no_broker_tasks()
+
+
+@pytest.mark.asyncio
+async def test_descendant_cannot_drain_or_retain_askpass_credential_channel(
+    tmp_path, monkeypatch
+):
+    """Break: an arbitrary Git descendant drains a pre-populated token FD."""
+    checkout, target, _, base, tip = _git_push_case(tmp_path)
+    captured = tmp_path / "descendant-capture"
+    helper_output = tmp_path / "helper-output"
+    environment_capture = tmp_path / "credentialed-environment"
+    argument_capture = tmp_path / "credentialed-arguments"
+    pids = tmp_path / "process-pids"
+    helper_path = Path(answer_prompt.__code__.co_filename).resolve()
+    probe = tmp_path / "probe.py"
+    probe.write_text(
+        "import array, os, select, socket\n"
+        "fd = int(os.environ.get('AQ_GIT_APP_TOKEN_FD', "
+        "os.environ.get('AQ_GIT_APP_REQUEST_FD')))\n"
+        "try:\n"
+        "    channel = socket.socket(fileno=os.dup(fd))\n"
+        "    reply, broker_reply = socket.socketpair(socket.AF_UNIX, socket.SOCK_STREAM)\n"
+        "    authority = os.environ['AQ_GIT_APP_AUTHORITY']\n"
+        "    repository = os.environ['AQ_GIT_APP_REPOSITORY']\n"
+        "    prompt = \"Password for 'https://x-access-token@github.com': \"\n"
+        "    payload = b'aq.git-app-askpass.v1\\0' + b'\\0'.join(\n"
+        "        value.encode() for value in (authority, repository, prompt))\n"
+        "    rights = array.array('i', [broker_reply.fileno()])\n"
+        "    channel.send(b'malformed-request-without-reply-fd')\n"
+        "    channel.sendmsg([payload], [(socket.SOL_SOCKET, socket.SCM_RIGHTS, rights)])\n"
+        "    broker_reply.close()\n"
+        "    reply.settimeout(0.5)\n"
+        "    stolen = reply.recv(1048576)\n"
+        "except OSError:\n"
+        "    ready, _, _ = select.select([fd], [], [], 0.2)\n"
+        "    stolen = os.read(fd, 1048576) if ready else b''\n"
+        f"open({str(captured)!r}, 'wb').write(stolen)\n"
+    )
+    username_output = tmp_path / "username-output"
+    second_output = tmp_path / "second-output"
+    fake_git = tmp_path / "descendant-git"
+    fake_git.write_text(
+        "#!/bin/sh\n"
+        "python3 -c 'import time; time.sleep(300)' &\n"
+        "retainer=$!\n"
+        f"printf '%s %s' \"$$\" \"$retainer\" > {pids}\n"
+        f"tr '\\0' '\\n' < /proc/$$/cmdline > {argument_capture}\n"
+        f"env > {environment_capture}\n"
+        f'python3 {probe} {helper_path} "Password for '
+        "'https://x-access-token@github.com': \"\n"
+        f'"$GIT_ASKPASS" "Username for \'https://github.com\': " > {username_output}\n'
+        f'"$GIT_ASKPASS" "Password for \'https://x-access-token@github.com\': " '
+        f"> {helper_output}\n"
+        f'"$GIT_ASKPASS" "Password for \'https://x-access-token@github.com\': " '
+        f"> {second_output}\n"
+        "exit 0\n"
+    )
+    fake_git.chmod(0o700)
+    manager = GitManager()
+    manager._APP_GIT_EXECUTABLE = str(fake_git)
+    secret = "installation-token-sentinel"
+    daemon_secret = "unrelated-daemon-secret-sentinel"
+    monkeypatch.setenv("DAEMON_SECRET", daemon_secret)
+    open_fds_before = _open_fd_count()
+    leader = None
+    try:
+        result = await asyncio.wait_for(
+            manager._apush_oid_with_app_auth_to_url(
+                str(checkout),
+                destination_url=target.as_uri(),
+                token=secret,
+                tip_oid=tip,
+                branch="main",
+                expected_old_oid=base,
+            ),
+            timeout=3,
+        )
+        leader, descendant = (int(value) for value in pids.read_text().split())
+        assert result == tip
+        assert captured.read_bytes() == b""
+        assert username_output.read_text() == "x-access-token"
+        assert helper_output.read_text() == secret
+        assert second_output.read_bytes() == b""
+        assert secret not in environment_capture.read_text()
+        assert daemon_secret not in environment_capture.read_text()
+        assert secret not in argument_capture.read_text()
+        assert daemon_secret not in argument_capture.read_text()
+        assert not _process_group_exists(leader)
+        assert not Path(f"/proc/{descendant}").exists()
+        await asyncio.sleep(0)
+        assert _open_fd_count() == open_fds_before
+        _assert_no_broker_tasks()
+    finally:
+        if leader is None and pids.exists():
+            leader = int(pids.read_text().split()[0])
+        if leader is not None:
+            try:
+                os.killpg(leader, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+
+
+@pytest.mark.asyncio
+async def test_askpass_helper_username_is_local_with_inherited_request_fd_only():
     helper = Path(answer_prompt.__code__.co_filename)
-    token_fd, write_fd = os.pipe()
-    os.write(write_fd, b"helper-secret")
-    os.close(write_fd)
+    broker, request = make_request_channel()
+    broker.setblocking(False)
     try:
         env = {
-            "AQ_GIT_APP_TOKEN_FD": str(token_fd),
+            "AQ_GIT_APP_REQUEST_FD": str(request.fileno()),
             "AQ_GIT_APP_USERNAME": "x-access-token",
             "AQ_GIT_APP_AUTHORITY": "https://x-access-token@github.com",
+            "AQ_GIT_APP_REPOSITORY": "https://github.com/acme/widgets.git",
         }
         process = await asyncio.create_subprocess_exec(
             str(helper),
-            "Password for 'https://x-access-token@github.com': ",
+            "Username for 'https://github.com': ",
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             env=env,
-            pass_fds=(token_fd,),
+            pass_fds=(request.fileno(),),
         )
         stdout, stderr = await process.communicate()
     finally:
-        os.close(token_fd)
+        request.close()
 
     assert process.returncode == 0
-    assert stdout == b"helper-secret"
+    assert stdout == b"x-access-token"
     assert stderr == b""
+    with pytest.raises(BlockingIOError):
+        broker.recv(1)
+    broker.close()
 
 
 def test_trust_manifest_path_is_reserved_from_worker_delivery():
