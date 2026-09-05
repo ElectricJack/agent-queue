@@ -56,7 +56,11 @@ GITHUB_DISCOVERY_COMMANDS = {
     "list_github_owners",
     "search_github_repositories",
 }
-STUB_COMMANDS = SEVEN - GITHUB_DISCOVERY_COMMANDS
+IMPLEMENTED_COMMANDS = GITHUB_DISCOVERY_COMMANDS | {
+    "onboard_project",
+    "get_project_onboarding",
+}
+STUB_COMMANDS = SEVEN - IMPLEMENTED_COMMANDS
 FAKE_GH = Path(__file__).parent / "fixtures" / "fake_gh" / "gh"
 
 

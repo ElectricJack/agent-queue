@@ -9,6 +9,7 @@ import pytest
 
 from src.config import EventsConfig, load_config
 from src.database import Database, DatabaseBackend, SQLiteDatabaseAdapter
+from src.models import Project, RepoSourceType, Workspace
 from tests.pg_dsn import ensure_worker_postgres_dsn
 
 POSTGRES_TEST_DSN = ensure_worker_postgres_dsn()
@@ -83,6 +84,51 @@ async def test_create_replay_phase_ledger_and_terminal_finish(db):
     assert not await db.finish_onboarding_request(
         "request-1", "failed", error={"code": "late"}, now=105.0
     )
+
+
+async def test_onboarding_registration_is_atomic_and_rollback_is_exact(db):
+    project = Project(id="onboarded", name="Onboarded")
+    workspace = Workspace(
+        id="onboarded-primary",
+        project_id="onboarded",
+        workspace_path="/tmp/onboarded",
+        source_type=RepoSourceType.INIT,
+        name="primary",
+        kind_id="project-repo",
+    )
+
+    await db.register_onboarded_project(project, workspace)
+
+    assert await db.get_project("onboarded") == project
+    assert await db.get_workspace("onboarded-primary") == workspace
+    await db.rollback_onboarded_project("onboarded", "onboarded-primary")
+    assert await db.get_project("onboarded") is None
+    assert await db.get_workspace("onboarded-primary") is None
+
+
+async def test_onboarding_registration_rolls_back_project_when_workspace_insert_fails(db):
+    await db.create_project(Project(id="existing", name="Existing"))
+    await db.create_workspace(
+        Workspace(
+            id="duplicate-primary",
+            project_id="existing",
+            workspace_path="/tmp/existing",
+            source_type=RepoSourceType.LINK,
+        )
+    )
+
+    with pytest.raises(Exception):
+        await db.register_onboarded_project(
+            Project(id="must-rollback", name="Must Roll Back"),
+            Workspace(
+                id="duplicate-primary",
+                project_id="must-rollback",
+                workspace_path="/tmp/must-rollback",
+                source_type=RepoSourceType.INIT,
+            ),
+        )
+
+    assert await db.get_project("must-rollback") is None
 
 
 async def test_purge_only_removes_old_terminal_requests(db):

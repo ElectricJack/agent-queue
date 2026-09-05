@@ -1,10 +1,10 @@
 """Project-onboarding commands mixin (design §5, §7).
 
 Wires the seven onboarding command names into ``CommandHandler`` with the
-contract's request validation and scope policy in front of **stub bodies**:
-every command currently answers the structured ``not_implemented`` error.
-The service packages replace ``_execute_*`` bodies without changing the
-command signatures, the validation, or the scope gate.
+contract's request validation and scope policy.  Local link/init mutations
+and durable status reads delegate to ``ProjectOnboardingService``; GitHub
+discovery delegates to the daemon-host ``gh`` client. Root browsing remains
+a structured stub for its owning package.
 
 Scope (§7).  Filesystem authorisation happens on the daemon under the same
 privileged local / global-admin policy that gates project management: a
@@ -106,12 +106,13 @@ class ProjectOnboardingCommandsMixin:
         """Read the durable status, phase, result or error of an onboarding request."""
         return await self._run_onboarding_command(GET_PROJECT_ONBOARDING, args)
 
-    # -- bodies: contract-only stubs --------------------------------------
+    # -- bodies -----------------------------------------------------------
     #
     # Each takes the validated request model from
     # ``src.commands.contracts.project_onboarding`` and returns the matching
     # result model (or a ``dict`` already in command-result shape).  Later
-    # packages replace these; the ``_cmd_*`` wrappers above do not change.
+    # packages replace the remaining root-browsing stubs without changing
+    # the ``_cmd_*`` wrappers above.
 
     async def _execute_list_project_roots(self, request) -> Any:
         raise _not_implemented(LIST_PROJECT_ROOTS)
@@ -204,7 +205,13 @@ class ProjectOnboardingCommandsMixin:
         }
 
     async def _execute_onboard_project(self, request) -> Any:
-        raise _not_implemented(ONBOARD_PROJECT)
+        from src.projects.onboarding import ProjectOnboardingService
+
+        service = ProjectOnboardingService(self.db, self.config, self.orchestrator.git)
+        return await service.onboard_project(request)
 
     async def _execute_get_project_onboarding(self, request) -> Any:
-        raise _not_implemented(GET_PROJECT_ONBOARDING)
+        from src.projects.onboarding import ProjectOnboardingService
+
+        service = ProjectOnboardingService(self.db, self.config, self.orchestrator.git)
+        return await service.get_project_onboarding(request.request_id)

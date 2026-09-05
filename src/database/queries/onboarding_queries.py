@@ -12,11 +12,12 @@ from __future__ import annotations
 import time
 from typing import Any
 
-from sqlalchemy import and_, delete, select, update
+from sqlalchemy import and_, delete, insert, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
-from src.database.tables import project_onboarding_requests
+from src.database.tables import project_onboarding_requests, projects, workspaces
+from src.models import Project, Workspace
 
 _PENDING = "pending"
 _TERMINAL = ("succeeded", "failed")
@@ -77,6 +78,58 @@ class OnboardingQueryMixin:
             if row is None:  # pragma: no cover - defensive
                 raise RuntimeError("onboarding request insert did not persist")
             return result.rowcount == 0, str(row.input_fingerprint)
+
+    async def register_onboarded_project(self, project: Project, workspace: Workspace) -> None:
+        """Atomically insert the project and its primary repository workspace."""
+        now = time.time()
+        async with self.immediate() as conn:
+            await conn.execute(
+                insert(projects).values(
+                    id=project.id,
+                    name=project.name,
+                    credit_weight=project.credit_weight,
+                    max_concurrent_agents=project.max_concurrent_agents,
+                    status=project.status.value,
+                    total_tokens_used=project.total_tokens_used,
+                    budget_limit=project.budget_limit,
+                    discord_channel_id=project.discord_channel_id,
+                    repo_url=project.repo_url,
+                    repo_default_branch=project.repo_default_branch,
+                    default_profile_id=project.default_profile_id,
+                    assignment_playbook_id=project.assignment_playbook_id,
+                    integration_mode=project.integration_mode,
+                    created_at=now,
+                )
+            )
+            await conn.execute(
+                insert(workspaces).values(
+                    id=workspace.id,
+                    project_id=workspace.project_id,
+                    workspace_path=workspace.workspace_path,
+                    source_type=workspace.source_type.value,
+                    name=workspace.name,
+                    kind_id=workspace.kind_id or "project-repo",
+                    locked_by_agent_id=workspace.locked_by_agent_id,
+                    locked_by_task_id=workspace.locked_by_task_id,
+                    locked_at=workspace.locked_at,
+                    lock_mode=(workspace.lock_mode.value if workspace.lock_mode else None),
+                    enabled=workspace.enabled,
+                    slot_index=workspace.slot_index,
+                    base_workspace_id=workspace.base_workspace_id,
+                    created_at=now,
+                )
+            )
+
+    async def rollback_onboarded_project(self, project_id: str, workspace_id: str) -> None:
+        """Remove exactly the two rows inserted by an onboarding request."""
+        async with self.immediate() as conn:
+            await conn.execute(
+                delete(workspaces).where(
+                    workspaces.c.id == workspace_id,
+                    workspaces.c.project_id == project_id,
+                )
+            )
+            await conn.execute(delete(projects).where(projects.c.id == project_id))
 
     async def get_onboarding_request(self, request_id: str) -> dict[str, Any] | None:
         """Return the stored request, including its safe JSON ledger/result."""
