@@ -17,6 +17,7 @@ from sqlalchemy import (
     Column,
     Float,
     ForeignKey,
+    ForeignKeyConstraint,
     Index,
     Integer,
     JSON,
@@ -1784,6 +1785,16 @@ integration_candidate_member_results = Table(
     CheckConstraint(
         "result <> 'applied' OR generated_squash_sha IS NOT NULL",
         name="ck_integration_candidate_member_results_applied_sha",
+    ),
+    ForeignKeyConstraint(
+        ["batch_id", "revision"],
+        ["integration_candidate_revisions.batch_id", "integration_candidate_revisions.revision"],
+        name="fk_integration_candidate_member_results_revision",
+    ),
+    ForeignKeyConstraint(
+        ["batch_id", "member_ordinal"],
+        ["integration_batch_members.batch_id", "integration_batch_members.ordinal"],
+        name="fk_integration_candidate_member_results_member",
     ),
 )
 

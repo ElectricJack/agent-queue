@@ -116,6 +116,22 @@ aq test tests/test_migration_boolean_defaults.py -x
 1 passed
 ```
 
+## Fix round 2
+
+Added a follow-on migration, `9c4a7d2e1b6f`, so databases already at the
+initial Task 1 revision receive the new guarantees rather than relying on a
+rewritten historical revision. It freezes prepared intent fence owner/token
+and recovery ref, prevents candidate progress and repair-operation stage
+regression, and adds composite foreign keys from candidate-member results to
+both the candidate revision and sealed member identity. Regression tests seed
+the real parent batch/member/revision and prove orphan and ordinal-mismatch
+results fail on SQLite and PostgreSQL.
+
+Verification remained green against the supplied scratch PostgreSQL DSN:
+`aq test tests/test_integration_state.py -x` (28 passed) and
+`aq test tests/test_migration_boolean_defaults.py -x` (1 passed), plus Ruff
+and `git diff --check`.
+
 ## Changed files
 
 - `src/integration/__init__.py`
