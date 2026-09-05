@@ -35,6 +35,26 @@ medians of 3–5 runs after one warm-up. Scripts live in the session scratchpad
 | `create_task` (no parent) | — | 4.2 ms | 3 |
 | `transition_task` | status change | 13 ms | 9 |
 
+## After (2026-09-04, branch worktree-perf-dashboard)
+
+Measured on a fresh PostgreSQL 18 database `aq_perfprobe_wt` seeded from this branch with the
+same two projects as the "Headline numbers" table (the original `aq_perfprobe` was stamped by
+another session with a migration this branch lacks). Note that the original `bench.py`
+incremental rows marked dirty with reason `status`, which does not exercise the `status.*` fast
+path; the After `process_dirty` rows below come from real `transition_task` calls.
+
+| path | before | after |
+|---|---|---|
+| `GET /api/projects/{pid}/graph` (perf, 5,607 tasks) | 11,544 ms, 5,611 statements | 134 ms, 6 statements |
+| `GET /api/projects/{pid}/graph` (flat, 5,000 tasks) | 10,211 ms, 5,004 statements | 67 ms, 6 statements |
+| promotion scan dependency reads, 4,647 DEFINED tasks | 9,091 ms, 4,647 statements (one per task) | 42 ms, 1 statement (batched) |
+| `process_dirty`, one real `status.finished` leaf, flat project, both variants | 1,342 ms | 214–262 ms |
+| `process_dirty`, one real `status.finished` leaf in the 1,000-task epic | 649 ms | 351 ms |
+| `set_parent` (single) | 92–95 ms, 26 statements | 32.5 ms, 26 statements |
+| `add_dependency` | 17 ms | 16 ms (unchanged) |
+| `create_task` | 4.2 ms | 5 ms (unchanged) |
+| `POST /graph/tiles` root rect, geometry cached | 42–82 ms | 41–88 ms (unchanged, not targeted) |
+
 Seeding 5,100 hierarchical tasks one-by-one took 344 s (≈67 ms/task), dominated by `set_parent`.
 
 ## Findings, in priority order
