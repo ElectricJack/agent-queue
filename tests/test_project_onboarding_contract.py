@@ -1,11 +1,9 @@
 """Project-onboarding command contract (design §5, §8).
 
-The contract lands before any behaviour: every later package builds against
-these request/response types, the stable error codes, and the seven command
-names wired through ``CommandHandler``.  The handler bodies are stubs that
-answer a structured ``not_implemented`` error, so these tests pin the
-*shape* of the surface — validation, dispatch, scope, and the generated
-API — rather than any onboarding behaviour.
+The contract landed before behaviour so every package could build against
+these request/response types, stable error codes, and seven command names.
+These tests pin the surface shape, validation, discovery dispatch, scope, and
+generated API; service behaviour is covered in its focused suite.
 """
 
 from __future__ import annotations
@@ -56,7 +54,10 @@ GITHUB_DISCOVERY_COMMANDS = {
     "list_github_owners",
     "search_github_repositories",
 }
-STUB_COMMANDS = SEVEN - GITHUB_DISCOVERY_COMMANDS
+STUB_COMMANDS = SEVEN - GITHUB_DISCOVERY_COMMANDS - {
+    "onboard_project",
+    "get_project_onboarding",
+}
 FAKE_GH = Path(__file__).parent / "fixtures" / "fake_gh" / "gh"
 
 
