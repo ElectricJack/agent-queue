@@ -111,6 +111,7 @@ class DatabaseBackend(Protocol):
         labels: list[str] | None = None,
         any_label: list[str] | None = None,
     ) -> list[Task]: ...
+    async def list_graph_task_rows(self, project_id: str) -> list[dict]: ...
     async def list_active_tasks(
         self,
         project_id: str | None = None,

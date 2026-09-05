@@ -105,3 +105,22 @@ async def test_list_gate_waiters_for_project_groups_waiters_by_gate(db):
 
     assert waiters == {g1: ["t1", "t2"]}
     assert g2 not in waiters
+
+
+async def test_list_graph_task_rows_is_a_narrow_projection(db):
+    await db.create_task(Task(
+        id="t1", project_id="p1", title="One", description="a very long description",
+        priority=10, dedup_key="playbook-run:run-1",
+    ))
+    await db.create_task(Task(id="t2", project_id="p1", title="Two", description="", priority=5))
+
+    rows = await db.list_graph_task_rows("p1")
+
+    assert [r["id"] for r in rows] == ["t2", "t1"]  # priority asc
+    assert set(rows[0]) == {
+        "id", "title", "status", "priority", "is_blocked", "profile_id", "intelligence_class",
+        "assigned_agent_id", "branch_name", "pr_url", "dedup_key",
+    }
+    assert rows[1]["dedup_key"] == "playbook-run:run-1"
+    assert rows[1]["is_blocked"] is False
+    assert rows[1]["status"] == "DEFINED"
