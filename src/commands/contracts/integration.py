@@ -71,6 +71,19 @@ class IntegrationScheduleDueValue(CommandValue):
     next_due_at: float | None = None
 
 
+class IntegrationSealArgs(CommandArgs):
+    project_id: str = Field(min_length=1)
+    request_id: str = Field(min_length=1)
+    now: float
+
+
+class IntegrationSealValue(CommandValue):
+    project_id: str | None = None
+    request_id: str | None = None
+    batch_id: str | None = None
+    operation_id: str | None = None
+
+
 class IntegrationTransferOwnerArgs(CommandArgs):
     target: BranchKey
     expected_token: int
@@ -456,6 +469,36 @@ INTEGRATION_SCHEDULE_DUE = CommandContract(
     presentation=CommandPresentation(
         title="Schedule integration sweep",
         summary="Coalesce a periodic or manual trigger into one durable sweep request.",
+    ),
+)
+
+
+INTEGRATION_SEAL = CommandContract(
+    execution=ExecutionContract(
+        name="integration_seal",
+        args_model=IntegrationSealArgs,
+        result_model=IntegrationSealValue,
+        outcomes=tuple(
+            OutcomeSpec(
+                name=name,
+                classification=(
+                    OutcomeClass.SUCCESS
+                    if name in {"sealed", "empty"}
+                    else OutcomeClass.FAILURE
+                ),
+            )
+            for name in ("sealed", "empty", "busy")
+        ),
+        capability="integration_seal",
+        side_effect=SideEffectClass.COMPOSITE,
+        idempotency=IdempotencySpec(mode="natural"),
+        retry_safe=True,
+        effects=(UpdateClause(subject=EffectSubject.INTEGRATION_OPERATION),),
+        receipt_projection=tuple(IntegrationSealValue.model_fields),
+    ),
+    presentation=CommandPresentation(
+        title="Seal integration frontier",
+        summary="Atomically snapshot the full eligible integration frontier.",
     ),
 )
 
@@ -1069,6 +1112,16 @@ async def _schedule_due_adapter(
     )
 
 
+async def _seal_adapter(args: IntegrationSealArgs, ctx: CommandContext | None):
+    return await _hierarchy_adapter(
+        "integration_seal",
+        args,
+        ctx,
+        IntegrationSealValue,
+        {"sealed", "empty", "busy"},
+    )
+
+
 def register_integration_contracts(registry: ContractRegistry) -> None:
     """Register contracts whose real handlers have landed.
 
@@ -1086,6 +1139,7 @@ def register_integration_contracts(registry: ContractRegistry) -> None:
         )
     for contract, adapter in (
         (INTEGRATION_SCHEDULE_DUE, _schedule_due_adapter),
+        (INTEGRATION_SEAL, _seal_adapter),
         (INTEGRATION_FILE_CHILDREN, _file_children_adapter),
         (INTEGRATION_CHECKPOINT_PARENT, _checkpoint_parent_adapter),
         (INTEGRATION_MUTATE_HIERARCHY, _mutate_hierarchy_adapter),

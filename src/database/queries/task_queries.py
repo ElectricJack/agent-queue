@@ -1194,7 +1194,12 @@ class TaskQueryMixin:
         Returns the blocked-state flips (unchanged contract).  Settled
         containers are delivered to the settlement listener after commit.
         """
-        async with self._engine.begin() as conn:
+        # SQLite's project hierarchy lock is its BEGIN IMMEDIATE writer lock.
+        # Acquire it before the pre-state read so a reopen cannot retain a
+        # stale snapshot across a concurrent integration seal. PostgreSQL's
+        # immediate() remains an ordinary transaction; the project advisory
+        # lock in guard_integration_mutation supplies its scoped exclusion.
+        async with self.immediate() as conn:
             result = await self._apply_transition(
                 conn,
                 task_id,

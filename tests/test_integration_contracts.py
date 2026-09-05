@@ -181,6 +181,7 @@ def test_unimplemented_integration_operations_are_not_registered():
     register_integration_contracts(registry)
     implemented = {
         "integration_schedule_due",
+        "integration_seal",
         "integration_transfer_owner",
         "integration_file_children",
         "integration_checkpoint_parent",

@@ -483,6 +483,18 @@ class DatabaseBackend(Protocol):
     async def get_integration_batch(self, batch_id: str) -> dict | None: ...
     async def get_integration_operation(self, operation_id: str) -> dict | None: ...
     async def get_active_integration_repair_for_task(self, repair_task_id: str) -> dict | None: ...
+    async def eligible_root_page_on(
+        self,
+        conn: AsyncConnection,
+        *,
+        project_id: str,
+        repository_id: str,
+        after: tuple[str, str] | None,
+        limit: int,
+    ) -> list[dict]: ...
+    async def latest_exact_reviews_on(
+        self, conn: AsyncConnection, candidates: list[dict]
+    ) -> dict[tuple[str, str, str, str, int], dict]: ...
     async def get_repair_filing_scope(
         self,
         repair_task_id: str,

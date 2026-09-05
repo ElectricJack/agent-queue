@@ -269,6 +269,17 @@ class IntegrationCommandsMixin:
 
         return IntegrationScheduler(self.db)
 
+    def _integration_train_service(self):
+        service = getattr(self.orchestrator, "integration_train_service", None)
+        if service is not None:
+            return service
+        from src.integration.scheduler import TrainService
+
+        return TrainService(
+            self.db,
+            default_mode=self.config.integration.default_mode,
+        )
+
     async def _cmd_integration_schedule_due(self, args: dict) -> dict:
         from pydantic import ValidationError
 
@@ -290,6 +301,32 @@ class IntegrationCommandsMixin:
         )
         return {
             "success": result["outcome"] in {"due", "not_due", "coalesced"},
+            **result,
+        }
+
+    async def _cmd_integration_seal(self, args: dict) -> dict:
+        from pydantic import ValidationError
+
+        from src.commands.contracts.integration import IntegrationSealArgs
+
+        try:
+            request = IntegrationSealArgs.model_validate(args)
+        except ValidationError as exc:
+            return _failure("runtime_error", f"invalid integration seal request: {exc}")
+        project = await self.db.get_project(request.project_id)
+        if project is None:
+            return _failure("runtime_error", "integration seal project does not exist")
+        if not await self._integration_delivery_authorized(
+            request.project_id, "integration_seal"
+        ):
+            return _failure("unauthorized", "caller cannot seal this project")
+        result = await self._integration_train_service().seal(
+            request.project_id,
+            request.request_id,
+            request.now,
+        )
+        return {
+            "success": result["outcome"] in {"sealed", "empty"},
             **result,
         }
 
