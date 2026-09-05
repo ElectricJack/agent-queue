@@ -357,3 +357,42 @@ blocked is persisted, reloadable, terminal, and non-resurrectable; downgrade is
 lossless-by-refusal; the parent remains PAUSED; no `TaskStatus.BLOCKED`,
 `human_required`, fake receipt, repair exhaustion, activation, operator database,
 external push, or Task 8 work was introduced.
+
+## Review fix round 2: blocked receipt classification
+
+Rereview found that `_classify` treated only `RunLifecycle.FAILED` as a failure,
+causing the actual committed terminal-step receipt for a blocked run to say
+`success`. Runtime/test commit `9431806b` (`fix(playbooks): classify blocked receipts
+as failures`) adds `RunLifecycle.BLOCKED` to that single classifier branch. The
+receipt vocabulary remains unchanged: the step's named outcome and run lifecycle are
+still `blocked`, while the orthogonal six-value receipt classification is `failure`.
+
+RED:
+
+- `pytest -q tests/test_v2_engine.py::TestDecisionAndTerminal::test_blocked_terminal_returns_and_emits_the_blocked_outcome`
+  - `1 failed, 3 warnings in 1.09s`.
+  - The real engine returned a blocked run and emitted the blocked finished event,
+    but the committed `review-done` step receipt was `success` instead of the literal
+    expected classification `failure`.
+
+GREEN and final verification:
+
+- The same direct engine command after the one-line classifier change:
+  - `1 passed, 3 warnings in 0.84s`.
+- `aq test tests/test_v2_engine.py tests/test_hierarchical_delivery_playbook.py -k 'not a_cancelled_run_projects_onto_an_occupied_task'`
+  - Focused engine plus real hierarchy gate: `109 passed, 11 warnings in 3.81s`.
+  - The exclusion remains the independently verified base-stale cancellation test
+    that imports absent `src.playbooks.run_task`; this fix does not touch it.
+- `ruff check src/playbooks/engine.py tests/test_v2_engine.py`
+  - `All checks passed!`.
+- `git diff --check`
+  - Exited 0 with no output.
+
+Self-review traced `TerminalExecutor` through `_commit` and inspected the committed
+step receipt rather than calling the private classifier. The regression would fail if
+the blocked lifecycle is removed from the failure branch. Failed runs retain their
+existing classification, and the test continues to prove the named run outcome,
+terminal lifecycle, and finished-event fields. No receipt vocabulary, schema, API,
+artifact, task state, playbook activation, process-minor cleanup, or Task 8 behavior
+changed. There are no new correctness concerns; the existing dependency warnings and
+base-stale cancellation exclusion remain documented.
