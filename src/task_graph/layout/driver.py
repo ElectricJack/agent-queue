@@ -481,13 +481,17 @@ class _IncrementalBatch:
         on a leaf with a stored row changes no box — only the ancestors'
         counters.
 
-        ``active``: a leaf that just FINISHED leaves the variant.  Its row is
-        deleted here and the slot is left empty rather than re-flowing the
-        parent (1.4 s for a 5,000-child root); the next ordinary pass over
-        that container — a created, moved or reopened sibling, a tidy job,
-        the reconcile sweep — closes the gap.  A REOPENED leaf needs a slot,
-        and a container's status can turn it into a stub, so both take the
-        ordinary path.
+        ``active``: a leaf that just FINISHED leaves the variant.  The
+        vanished-tasks loop in ``run()`` deletes its row (and the container
+        stays untouched) rather than re-flowing the parent (1.4 s for a
+        5,000-child root); the next ordinary pass over that container — a
+        created, moved or reopened sibling, or a tidy job — closes the gap.
+        A REOPENED leaf needs a slot, and a container's own status can turn
+        it into a stub, so both take the ordinary path.  So does a finished
+        leaf whose parent must itself flip to a stub or vanish (its own
+        LAST active child just finished): the parent needs relaying to
+        become the one-card stub in that case, not to stay a full-size
+        empty container.
         """
         if not reason.startswith("status."):
             return False
@@ -499,10 +503,12 @@ class _IncrementalBatch:
             return False
         if self.variant == "all":
             return True
-        if reason == "status.finished" and tid not in self.present:
-            self.ws.deletes.append(tid)
-            return True
-        return False
+        if reason != "status.finished" or tid in self.present:
+            return False
+        parent = self.parent_of.get(tid)
+        if parent is not None and (parent in self.stubs or parent not in self.present):
+            return False
+        return True
 
     # ── dirty → containers ──────────────────────────────────────────────
     async def _seed_queue(self) -> None:

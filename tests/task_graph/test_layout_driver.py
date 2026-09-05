@@ -617,3 +617,20 @@ async def test_finished_leaf_leaves_active_variant_without_relaying_siblings(db)
         assert (after[k].abs_x, after[k].abs_y) == (before[k].abs_x, before[k].abs_y)
     assert after["e"].agg_completed == 1 and after["e"].agg_active == 3
     assert (after["e"].w, after["e"].h) == (before["e"].w, before["e"].h)
+
+
+async def test_last_finished_child_still_collapses_its_container_to_a_stub(db):
+    kids = await seed_epic(db, n=2)
+    drv = LayoutDriver(db)
+    await drv.full_layout("p1", "all")
+    await drv.full_layout("p1", "active")
+    await drv.process_dirty("p1", min_age_seconds=0)  # drain creation marks
+
+    await db.transition_task(kids[0], TaskStatus.COMPLETED, force=True)
+    await db.transition_task(kids[1], TaskStatus.COMPLETED, force=True)
+    await drv.process_dirty("p1", min_age_seconds=0)
+
+    rows = await db.load_layout_rows("p1", "active", ["e", *kids])
+    assert rows["e"].kind == "stub"
+    for k in kids:
+        assert k not in rows
