@@ -74,7 +74,28 @@ These fields appear at the root of the YAML document and map directly to scalar 
 | `database_path` | `str` | `~/.agent-queue/agent-queue.db` (home-expanded at class instantiation time) | Filesystem path to the SQLite database file. Legacy field — prefer using the `database` section for new setups. |
 | `global_token_budget_daily` | `int` or `None` | `None` | Daily token budget across all agents. `None` means no global cap is enforced. |
 
-### 4.1.1 `database` Section
+### 4.1.1 `project_roots`
+
+`project_roots` is a root-level list of operator-owned source repository roots
+used by project onboarding. It is distinct from `workspace_dir`, which contains
+AQ-managed agent worktrees.
+
+```yaml
+project_roots:
+  - id: development
+    label: Development
+    path: /home/aq/dev
+```
+
+Each entry has a unique URL-safe `id`, an operator-facing `label`, and an
+absolute or home-relative `path`. Loading expands and canonicalizes paths; both
+IDs and canonical paths must be unique. Roots must exist and be readable, and
+operations that create or clone require a writable root. This configuration is
+hot-reloadable through the round-trip config editor. Removing a root prevents
+future browsing and onboarding below it without changing registered projects or
+workspaces.
+
+### 4.1.2 `database` Section
 
 Maps to `DatabaseConfig`. The YAML key is `database`. This section configures the database backend. The backend (SQLite or PostgreSQL) is inferred automatically from the URL scheme.
 

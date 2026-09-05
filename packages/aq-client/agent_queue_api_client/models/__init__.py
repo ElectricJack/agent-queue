@@ -58,6 +58,9 @@ from .check_profile_response_manifest import CheckProfileResponseManifest
 from .checkout_branch_request import CheckoutBranchRequest
 from .checkout_branch_response import CheckoutBranchResponse
 from .checkout_branch_response_422 import CheckoutBranchResponse422
+from .ci_baseline_status_request import CiBaselineStatusRequest
+from .ci_baseline_status_response import CiBaselineStatusResponse
+from .ci_baseline_status_response_422 import CiBaselineStatusResponse422
 from .claim_session_summary import ClaimSessionSummary
 from .claimed_by import ClaimedBy
 from .claude_usage_request import ClaudeUsageRequest
@@ -73,9 +76,6 @@ from .commit_changes_response_422 import CommitChangesResponse422
 from .compare_specs_notes_request import CompareSpecsNotesRequest
 from .compare_specs_notes_response import CompareSpecsNotesResponse
 from .compare_specs_notes_response_422 import CompareSpecsNotesResponse422
-from .compile_playbook_request import CompilePlaybookRequest
-from .compile_playbook_response import CompilePlaybookResponse
-from .compile_playbook_response_422 import CompilePlaybookResponse422
 from .compiled_playbook_node import CompiledPlaybookNode
 from .compiled_playbook_node_action_type_0 import CompiledPlaybookNodeActionType0
 from .compiled_playbook_node_for_each_type_0 import CompiledPlaybookNodeForEachType0
@@ -100,9 +100,6 @@ from .create_mcp_server_request_env_type_0 import CreateMcpServerRequestEnvType0
 from .create_mcp_server_request_headers_type_0 import CreateMcpServerRequestHeadersType0
 from .create_mcp_server_response import CreateMcpServerResponse
 from .create_mcp_server_response_422 import CreateMcpServerResponse422
-from .create_playbook_request import CreatePlaybookRequest
-from .create_playbook_response import CreatePlaybookResponse
-from .create_playbook_response_422 import CreatePlaybookResponse422
 from .create_profile_request import CreateProfileRequest
 from .create_profile_response import CreateProfileResponse
 from .create_profile_response_422 import CreateProfileResponse422
@@ -129,9 +126,6 @@ from .delete_mcp_server_response_422 import DeleteMcpServerResponse422
 from .delete_note_request import DeleteNoteRequest
 from .delete_note_response import DeleteNoteResponse
 from .delete_note_response_422 import DeleteNoteResponse422
-from .delete_playbook_request import DeletePlaybookRequest
-from .delete_playbook_response import DeletePlaybookResponse
-from .delete_playbook_response_422 import DeletePlaybookResponse422
 from .delete_profile_request import DeleteProfileRequest
 from .delete_profile_response import DeleteProfileResponse
 from .delete_profile_response_422 import DeleteProfileResponse422
@@ -638,9 +632,6 @@ from .playbook_health_request import PlaybookHealthRequest
 from .playbook_health_response import PlaybookHealthResponse
 from .playbook_health_response_422 import PlaybookHealthResponse422
 from .playbook_health_response_metrics import PlaybookHealthResponseMetrics
-from .playbook_install_request import PlaybookInstallRequest
-from .playbook_install_response import PlaybookInstallResponse
-from .playbook_install_response_422 import PlaybookInstallResponse422
 from .playbook_last_run import PlaybookLastRun
 from .playbook_node_llm_config import PlaybookNodeLlmConfig
 from .playbook_pending_event_action_request import PlaybookPendingEventActionRequest
@@ -649,8 +640,6 @@ from .playbook_pending_event_action_response_422 import PlaybookPendingEventActi
 from .playbook_pending_event_action_response_action import PlaybookPendingEventActionResponseAction
 from .playbook_pending_events_request import PlaybookPendingEventsRequest
 from .playbook_pending_events_response_422 import PlaybookPendingEventsResponse422
-from .playbook_release_check_request import PlaybookReleaseCheckRequest
-from .playbook_release_check_response_422 import PlaybookReleaseCheckResponse422
 from .playbook_run_overlay_request import PlaybookRunOverlayRequest
 from .playbook_run_overlay_response import PlaybookRunOverlayResponse
 from .playbook_run_overlay_response_422 import PlaybookRunOverlayResponse422
@@ -679,10 +668,6 @@ from .playbook_v2_shadow_compile_response_422 import PlaybookV2ShadowCompileResp
 from .playbook_v2_validate_request import PlaybookV2ValidateRequest
 from .playbook_v2_validate_response import PlaybookV2ValidateResponse
 from .playbook_v2_validate_response_422 import PlaybookV2ValidateResponse422
-from .playbook_validate_request import PlaybookValidateRequest
-from .playbook_validate_response import PlaybookValidateResponse
-from .playbook_validate_response_422 import PlaybookValidateResponse422
-from .playbook_validation_error import PlaybookValidationError
 from .plugin_config_request import PluginConfigRequest
 from .plugin_config_response import PluginConfigResponse
 from .plugin_config_response_422 import PluginConfigResponse422
@@ -806,9 +791,6 @@ from .receipt_dto_step_kind import ReceiptDTOStepKind
 from .record_file_inspection_request import RecordFileInspectionRequest
 from .record_file_inspection_response import RecordFileInspectionResponse
 from .record_file_inspection_response_422 import RecordFileInspectionResponse422
-from .recover_workflow_request import RecoverWorkflowRequest
-from .recover_workflow_response import RecoverWorkflowResponse
-from .recover_workflow_response_422 import RecoverWorkflowResponse422
 from .redaction_row_dto import RedactionRowDTO
 from .redaction_row_dto_policy import RedactionRowDTOPolicy
 from .release_project_constraint_request import ReleaseProjectConstraintRequest
@@ -1167,6 +1149,9 @@ __all__ = (
     "CheckProfileResponse",
     "CheckProfileResponse422",
     "CheckProfileResponseManifest",
+    "CiBaselineStatusRequest",
+    "CiBaselineStatusResponse",
+    "CiBaselineStatusResponse422",
     "ClaimedBy",
     "ClaimSessionSummary",
     "ClaudeUsageRequest",
@@ -1186,9 +1171,6 @@ __all__ = (
     "CompiledPlaybookNodeActionType0",
     "CompiledPlaybookNodeForEachType0",
     "CompiledPlaybookNodeOutputType0",
-    "CompilePlaybookRequest",
-    "CompilePlaybookResponse",
-    "CompilePlaybookResponse422",
     "CompilerDiagnosticCountsDTO",
     "CompilerDiagnosticDTO",
     "CompilerDiagnosticDTOSeverity",
@@ -1209,9 +1191,6 @@ __all__ = (
     "CreateMcpServerRequestHeadersType0",
     "CreateMcpServerResponse",
     "CreateMcpServerResponse422",
-    "CreatePlaybookRequest",
-    "CreatePlaybookResponse",
-    "CreatePlaybookResponse422",
     "CreateProfileRequest",
     "CreateProfileResponse",
     "CreateProfileResponse422",
@@ -1238,9 +1217,6 @@ __all__ = (
     "DeleteNoteRequest",
     "DeleteNoteResponse",
     "DeleteNoteResponse422",
-    "DeletePlaybookRequest",
-    "DeletePlaybookResponse",
-    "DeletePlaybookResponse422",
     "DeleteProfileRequest",
     "DeleteProfileResponse",
     "DeleteProfileResponse422",
@@ -1741,9 +1717,6 @@ __all__ = (
     "PlaybookHealthResponse",
     "PlaybookHealthResponse422",
     "PlaybookHealthResponseMetrics",
-    "PlaybookInstallRequest",
-    "PlaybookInstallResponse",
-    "PlaybookInstallResponse422",
     "PlaybookLastRun",
     "PlaybookNodeLlmConfig",
     "PlaybookPendingEventActionRequest",
@@ -1752,8 +1725,6 @@ __all__ = (
     "PlaybookPendingEventActionResponseAction",
     "PlaybookPendingEventsRequest",
     "PlaybookPendingEventsResponse422",
-    "PlaybookReleaseCheckRequest",
-    "PlaybookReleaseCheckResponse422",
     "PlaybookRunOverlayRequest",
     "PlaybookRunOverlayResponse",
     "PlaybookRunOverlayResponse422",
@@ -1782,10 +1753,6 @@ __all__ = (
     "PlaybookV2ValidateRequest",
     "PlaybookV2ValidateResponse",
     "PlaybookV2ValidateResponse422",
-    "PlaybookValidateRequest",
-    "PlaybookValidateResponse",
-    "PlaybookValidateResponse422",
-    "PlaybookValidationError",
     "PluginConfigRequest",
     "PluginConfigResponse",
     "PluginConfigResponse422",
@@ -1907,9 +1874,6 @@ __all__ = (
     "RecordFileInspectionRequest",
     "RecordFileInspectionResponse",
     "RecordFileInspectionResponse422",
-    "RecoverWorkflowRequest",
-    "RecoverWorkflowResponse",
-    "RecoverWorkflowResponse422",
     "RedactionRowDTO",
     "RedactionRowDTOPolicy",
     "ReleaseProjectConstraintRequest",

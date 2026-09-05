@@ -33,10 +33,13 @@ INSTALLED_SOURCE_ROOTS = (
 
 #: Playbook-shaped Markdown that no code path installs.  The child plan drafted
 #: this against ``src/prompts/example_playbooks/`` and ``src/prompts/default_rules/``;
-#: neither directory exists on the live tree any more (reconciliation, §2).  The
-#: tuple stays so a reintroduced sample root is classified rather than silently
-#: swept into the installed corpus by assertion 3.
-EXCLUDED_SAMPLE_ROOTS: tuple[str, ...] = ()
+#: neither directory exists on the live tree any more (reconciliation, §2).
+#: ``src/prompts/project_playbooks/`` holds the project-scoped ``pr-merge-sweep``
+#: source: ``src/vault.py`` never copies it, it reaches a vault only through its
+#: reviewed bundle (``tests/fixtures/playbooks/v2/pr-merge-sweep/``), which
+#: ``tests/test_default_playbook_v2_artifacts.py`` validates against the live
+#: registries.
+EXCLUDED_SAMPLE_ROOTS: tuple[str, ...] = ("src/prompts/project_playbooks",)
 
 #: Prompt Markdown that is not a playbook at all.
 NON_PLAYBOOK_PROMPTS = (

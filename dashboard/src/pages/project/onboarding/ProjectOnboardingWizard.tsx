@@ -14,7 +14,7 @@ import {
 } from "./state";
 import { WizardContext, fieldLabel, type WizardContextValue } from "./context";
 import { defaultStepRegistry, type WizardStep } from "./stepRegistry";
-import { toSubmissionError } from "./submission";
+import { daemonSubmit, newRequestId, toSubmissionError } from "./submission";
 import { useFocusTrap } from "./useFocusTrap";
 import type { ProjectRootsSource } from "./useProjectRoots";
 
@@ -44,6 +44,8 @@ export interface ProjectOnboardingWizardProps {
   /** Element that opened the wizard; focus returns to it on close. */
   returnFocusRef?: RefObject<HTMLElement | null>;
   roots: ProjectRootsSource;
+  /** IDs from the already-loaded left-rail project list for immediate collision feedback. */
+  projectIds?: readonly string[];
   steps?: WizardStep[];
   submit?: SubmitProject;
   onSuccess?: (result: OnboardingResult) => void;
@@ -63,11 +65,13 @@ function WizardDialog({
   onClose,
   returnFocusRef,
   roots,
+  projectIds = [],
   steps = defaultStepRegistry,
   submit,
   onSuccess,
 }: ProjectOnboardingWizardProps) {
-  const [state, dispatch] = useReducer(wizardReducer, undefined, initialWizardState);
+  const [state, dispatch] = useReducer(wizardReducer, projectIds, initialWizardState);
+  const requestId = useRef(newRequestId()).current;
   const dialogRef = useRef<HTMLDivElement>(null);
   const summaryRef = useRef<HTMLDivElement>(null);
   const fieldSteps = useRef(new Map<string, StepId>());
@@ -80,6 +84,7 @@ function WizardDialog({
   const stepId = step.id;
   const submitting = state.submission.status === "submitting";
   const failed = state.submission.status === "failed" ? state.submission.error : null;
+  const effectiveSubmit = useMemo(() => submit ?? daemonSubmit(requestId), [submit, requestId]);
   const noRoots = roots.status === "ready" && roots.roots.length === 0;
   const isReview = stepId === "review";
 
@@ -117,7 +122,7 @@ function WizardDialog({
   const clearPendingFocus = useCallback(() => setPendingFocusField(null), []);
 
   const ctx = useMemo<WizardContextValue>(
-    () => ({ state, dispatch, roots, stepId, registerField, pendingFocusField, clearPendingFocus }),
+    () => ({ state, dispatch, roots, projectIds: state.projectIds, stepId, registerField, pendingFocusField, clearPendingFocus }),
     [state, roots, stepId, registerField, pendingFocusField, clearPendingFocus],
   );
 
@@ -138,11 +143,11 @@ function WizardDialog({
   })();
 
   const runSubmit = async () => {
-    if (!submit || state.source.mode === null || submitting) return;
+    if (state.source.mode === null || submitting) return;
     const request: WizardSubmission = { mode: state.source.mode, source: state.source, identity: state.identity };
     dispatch({ type: "submit_started" });
     try {
-      const result = await submit(request, { onPhase: (phase) => dispatch({ type: "submit_phase", phase }) });
+      const result = await effectiveSubmit(request, { onPhase: (phase) => dispatch({ type: "submit_phase", phase }) });
       dispatch({ type: "submit_succeeded", result });
       onSuccess?.(result);
       onClose();
@@ -250,6 +255,8 @@ function WizardDialog({
                         )}
                       </ul>
                     )}
+                    {failed.phase && <p className="mt-2">Failed during: {failed.phase}</p>}
+                    {failed.survivors?.map((survivor) => <p key={survivor} className="mt-1">Still exists: {survivor}</p>)}
                   </div>
                 )}
 
@@ -286,8 +293,7 @@ function WizardDialog({
                   <button
                     type="button"
                     onClick={() => void runSubmit()}
-                    disabled={submitting || !submit || state.source.mode === null}
-                    title={submit ? undefined : "Project creation is not available yet"}
+                    disabled={submitting || state.source.mode === null}
                     className={primaryButton}
                   >
                     {reviewActionLabel(state.source.mode)}

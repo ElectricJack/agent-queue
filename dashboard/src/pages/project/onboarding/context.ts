@@ -6,6 +6,7 @@ export interface WizardContextValue {
   state: WizardState;
   dispatch: Dispatch<WizardAction>;
   roots: ProjectRootsSource;
+  projectIds: readonly string[];
   /** The step whose panel is currently rendered. */
   stepId: StepId;
   /** Remember which step owns a field so the error summary can jump to it. */

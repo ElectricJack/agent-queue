@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { axe, toHaveNoViolations } from "jest-axe";
 
 expect.extend(toHaveNoViolations);
@@ -186,6 +186,47 @@ describe("ProjectOnboardingWizard shell", () => {
     await user.click(screen.getByRole("button", { name: "Back" }));
     await user.click(screen.getByRole("button", { name: "Back" }));
     expect(within(dialog()).getByRole("radio", { name: /New repository/ })).toBeChecked();
+  });
+
+  it("derives editable identity values and surfaces an obvious loaded-project collision", async () => {
+    function RepositoryStep() {
+      const { dispatch } = useWizard();
+      useEffect(() => {
+        dispatch({ type: "update_source", mode: "init", patch: { directoryName: "My Widgets" } });
+      }, [dispatch]);
+      return <p>Repository selected</p>;
+    }
+    const user = userEvent.setup();
+    render(<Harness projectIds={["my-widgets"]} steps={createStepRegistry({ repository: RepositoryStep })} />);
+    await chooseSource(user, /New repository/);
+    await user.click(screen.getByRole("button", { name: "Next" }));
+    await user.click(screen.getByRole("button", { name: "Next" }));
+    expect(screen.getByRole("textbox", { name: "Display name" })).toHaveValue("My Widgets");
+    const projectId = screen.getByRole("textbox", { name: "Project ID" });
+    expect(projectId).toHaveValue("my-widgets");
+    expect(screen.getByText(/already in use/i)).toBeInTheDocument();
+    await user.clear(projectId);
+    await user.type(projectId, "available-widgets");
+    expect(screen.queryByText(/already in use/i)).not.toBeInTheDocument();
+  });
+
+  it("lists every persistent init action and warns when GitHub creation cannot push", async () => {
+    function RepositoryStep() {
+      const { dispatch } = useWizard();
+      useEffect(() => {
+        dispatch({ type: "update_source", mode: "init", patch: { directoryName: "widgets", createReadme: false, createGithub: true, githubOwner: "acme", githubRepo: "widgets" } });
+      }, [dispatch]);
+      return <p>Repository selected</p>;
+    }
+    const user = userEvent.setup();
+    render(<Harness steps={createStepRegistry({ repository: RepositoryStep })} />);
+    await chooseSource(user, /New repository/);
+    await goToReview(user);
+    expect(screen.getByText(/Create a new Git repository/)).toBeInTheDocument();
+    expect(screen.getByText(/Register project/)).toBeInTheDocument();
+    expect(screen.getByText(/GitHub creation/)).toBeInTheDocument();
+    expect(screen.getByText(/without pushing a branch/i)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Create project" })).toBeEnabled();
   });
 
   it("lets plugged-in steps associate field errors with their inputs", async () => {

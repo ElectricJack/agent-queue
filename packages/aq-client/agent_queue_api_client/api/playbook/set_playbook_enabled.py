@@ -65,13 +65,13 @@ def sync_detailed(
     client: AuthenticatedClient | Client,
     body: SetPlaybookEnabledRequest,
 ) -> Response[SetPlaybookEnabledResponse | SetPlaybookEnabledResponse422]:
-    """Toggle a playbook's `enabled` frontmatter flag. When set to false, trigger events stop spawning new
-    runs and run_playbook refuses unless force=true. In-flight runs are not cancelled — disabling means
-    stop new starts, not preempt existing instances.
+    """Pause or resume a playbook's activation. When set to false, trigger events stop spawning new runs of
+    the active artifact; the artifact stays activated and enabled=true resumes it. In-flight runs are
+    not cancelled — disabling means stop new starts, not preempt existing instances.
 
-     Toggle a playbook's `enabled` frontmatter flag. When set to false, trigger events stop spawning new
-    runs and run_playbook refuses unless force=true. In-flight runs are not cancelled — disabling means
-    stop new starts, not preempt existing instances.
+     Pause or resume a playbook's activation. When set to false, trigger events stop spawning new runs of
+    the active artifact; the artifact stays activated and enabled=true resumes it. In-flight runs are
+    not cancelled — disabling means stop new starts, not preempt existing instances.
 
     Args:
         body (SetPlaybookEnabledRequest):
@@ -100,13 +100,13 @@ def sync(
     client: AuthenticatedClient | Client,
     body: SetPlaybookEnabledRequest,
 ) -> SetPlaybookEnabledResponse | SetPlaybookEnabledResponse422 | None:
-    """Toggle a playbook's `enabled` frontmatter flag. When set to false, trigger events stop spawning new
-    runs and run_playbook refuses unless force=true. In-flight runs are not cancelled — disabling means
-    stop new starts, not preempt existing instances.
+    """Pause or resume a playbook's activation. When set to false, trigger events stop spawning new runs of
+    the active artifact; the artifact stays activated and enabled=true resumes it. In-flight runs are
+    not cancelled — disabling means stop new starts, not preempt existing instances.
 
-     Toggle a playbook's `enabled` frontmatter flag. When set to false, trigger events stop spawning new
-    runs and run_playbook refuses unless force=true. In-flight runs are not cancelled — disabling means
-    stop new starts, not preempt existing instances.
+     Pause or resume a playbook's activation. When set to false, trigger events stop spawning new runs of
+    the active artifact; the artifact stays activated and enabled=true resumes it. In-flight runs are
+    not cancelled — disabling means stop new starts, not preempt existing instances.
 
     Args:
         body (SetPlaybookEnabledRequest):
@@ -130,13 +130,13 @@ async def asyncio_detailed(
     client: AuthenticatedClient | Client,
     body: SetPlaybookEnabledRequest,
 ) -> Response[SetPlaybookEnabledResponse | SetPlaybookEnabledResponse422]:
-    """Toggle a playbook's `enabled` frontmatter flag. When set to false, trigger events stop spawning new
-    runs and run_playbook refuses unless force=true. In-flight runs are not cancelled — disabling means
-    stop new starts, not preempt existing instances.
+    """Pause or resume a playbook's activation. When set to false, trigger events stop spawning new runs of
+    the active artifact; the artifact stays activated and enabled=true resumes it. In-flight runs are
+    not cancelled — disabling means stop new starts, not preempt existing instances.
 
-     Toggle a playbook's `enabled` frontmatter flag. When set to false, trigger events stop spawning new
-    runs and run_playbook refuses unless force=true. In-flight runs are not cancelled — disabling means
-    stop new starts, not preempt existing instances.
+     Pause or resume a playbook's activation. When set to false, trigger events stop spawning new runs of
+    the active artifact; the artifact stays activated and enabled=true resumes it. In-flight runs are
+    not cancelled — disabling means stop new starts, not preempt existing instances.
 
     Args:
         body (SetPlaybookEnabledRequest):
@@ -163,13 +163,13 @@ async def asyncio(
     client: AuthenticatedClient | Client,
     body: SetPlaybookEnabledRequest,
 ) -> SetPlaybookEnabledResponse | SetPlaybookEnabledResponse422 | None:
-    """Toggle a playbook's `enabled` frontmatter flag. When set to false, trigger events stop spawning new
-    runs and run_playbook refuses unless force=true. In-flight runs are not cancelled — disabling means
-    stop new starts, not preempt existing instances.
+    """Pause or resume a playbook's activation. When set to false, trigger events stop spawning new runs of
+    the active artifact; the artifact stays activated and enabled=true resumes it. In-flight runs are
+    not cancelled — disabling means stop new starts, not preempt existing instances.
 
-     Toggle a playbook's `enabled` frontmatter flag. When set to false, trigger events stop spawning new
-    runs and run_playbook refuses unless force=true. In-flight runs are not cancelled — disabling means
-    stop new starts, not preempt existing instances.
+     Pause or resume a playbook's activation. When set to false, trigger events stop spawning new runs of
+    the active artifact; the artifact stays activated and enabled=true resumes it. In-flight runs are
+    not cancelled — disabling means stop new starts, not preempt existing instances.
 
     Args:
         body (SetPlaybookEnabledRequest):

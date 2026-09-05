@@ -1,0 +1,150 @@
+#!/bin/bash
+# Fake ``gh`` executable for tests/test_project_github.py.
+#
+# Behaviour is driven by environment variables so a test can stage every
+# scenario without a network or a real account:
+#
+#   FAKE_GH_STATE          authed (default) | unauthed
+#   FAKE_GH_LOGIN          login reported for the authenticated user (octocat)
+#   FAKE_GH_ARGV_LOG       file that receives one record per invocation: the
+#                          raw argv, each argument NUL-terminated, the record
+#                          closed by a 0x1E record separator
+#   FAKE_GH_FAIL_STDERR    when set, every invocation exits 1 and prints this
+#                          text on stderr (used by the secret-scrubbing tests)
+#   FAKE_GH_SLEEP          seconds to sleep before answering (timeout tests)
+#
+# Only argument arrays are inspected; nothing here is ever evaluated.
+set -u
+
+if [ -n "${FAKE_GH_ARGV_LOG:-}" ]; then
+  printf '%s\0' "$@" >>"$FAKE_GH_ARGV_LOG"
+  printf '\036' >>"$FAKE_GH_ARGV_LOG"
+fi
+
+if [ -n "${FAKE_GH_SLEEP:-}" ]; then
+  sleep "$FAKE_GH_SLEEP"
+fi
+
+if [ -n "${FAKE_GH_FAIL_STDERR:-}" ]; then
+  printf '%s\n' "$FAKE_GH_FAIL_STDERR" >&2
+  exit 1
+fi
+
+state="${FAKE_GH_STATE:-authed}"
+login="${FAKE_GH_LOGIN:-octocat}"
+
+not_logged_in() {
+  echo "You are not logged into any GitHub hosts. To log in, run: gh auth login" >&2
+  exit "$1"
+}
+
+# Collect ``-f name=value`` / ``-F name=value`` fields into shell variables
+# named ``field_<name>`` so GraphQL variables can be inspected.
+field_q=""
+field_after=""
+field_first=""
+field_query=""
+args=("$@")
+i=0
+while [ "$i" -lt "${#args[@]}" ]; do
+  a="${args[$i]}"
+  case "$a" in
+    -f|-F)
+      i=$((i + 1))
+      kv="${args[$i]}"
+      name="${kv%%=*}"
+      value="${kv#*=}"
+      case "$name" in
+        q) field_q="$value" ;;
+        after) field_after="$value" ;;
+        first) field_first="$value" ;;
+        query) field_query="$value" ;;
+      esac
+      ;;
+  esac
+  i=$((i + 1))
+done
+
+case "${1:-} ${2:-}" in
+  "auth status")
+    if [ "$state" = "authed" ]; then
+      echo "github.com"
+      echo "  ✓ Logged in to github.com account ${login} (keyring)"
+      echo "  - Active account: true"
+      echo "  - Token: gho_FAKE0000000000000000000000000000000000"
+      exit 0
+    fi
+    not_logged_in 1
+    ;;
+  "auth token")
+    echo "gho_FAKE0000000000000000000000000000000000"
+    exit 0
+    ;;
+  "api user")
+    [ "$state" = "authed" ] || not_logged_in 4
+    printf '%s\n' "$login"
+    exit 0
+    ;;
+  "api graphql")
+    [ "$state" = "authed" ] || not_logged_in 4
+    case "$field_query" in
+      *organizations*)
+        cat <<JSON
+{"data":{"viewer":{"login":"${login}","organizations":{"nodes":[
+  {"login":"acme-corp","viewerCanCreateRepositories":true},
+  {"login":"readonly-org","viewerCanCreateRepositories":false},
+  {"login":"beta-labs","viewerCanCreateRepositories":true}
+]}}}}
+JSON
+        exit 0
+        ;;
+      *search\(*)
+        if [ -z "$field_after" ]; then
+          cat <<JSON
+{"data":{"search":{"pageInfo":{"endCursor":"CURSOR-PAGE-2","hasNextPage":true},"nodes":[
+  {"nameWithOwner":"acme-corp/widgets","name":"widgets","owner":{"login":"acme-corp"},
+   "isPrivate":true,"visibility":"PRIVATE","url":"https://github.com/acme-corp/widgets",
+   "sshUrl":"git@github.com:acme-corp/widgets.git","defaultBranchRef":{"name":"main"}},
+  {"nameWithOwner":"${login}/dotfiles","name":"dotfiles","owner":{"login":"${login}"},
+   "isPrivate":false,"visibility":"PUBLIC","url":"https://github.com/${login}/dotfiles",
+   "sshUrl":"git@github.com:${login}/dotfiles.git","defaultBranchRef":{"name":"trunk"}}
+]}}}
+JSON
+        else
+          cat <<JSON
+{"data":{"search":{"pageInfo":{"endCursor":"CURSOR-END","hasNextPage":false},"nodes":[
+  {"nameWithOwner":"beta-labs/empty-repo","name":"empty-repo","owner":{"login":"beta-labs"},
+   "isPrivate":true,"visibility":"PRIVATE","url":"https://github.com/beta-labs/empty-repo",
+   "sshUrl":"git@github.com:beta-labs/empty-repo.git","defaultBranchRef":null},
+  {"nameWithOwner":"evil/../escape","name":"../escape","owner":{"login":"evil"},
+   "isPrivate":false,"visibility":"PUBLIC","url":"https://github.com/evil/escape",
+   "sshUrl":"git@github.com:evil/escape.git","defaultBranchRef":{"name":"main"}}
+]}}}
+JSON
+        fi
+        exit 0
+        ;;
+    esac
+    echo "unsupported graphql query" >&2
+    exit 1
+    ;;
+  "repo create")
+    [ "$state" = "authed" ] || not_logged_in 4
+    full="${3:-}"
+    case "$full" in
+      */taken)
+        echo "GraphQL: Name already exists on this account (createRepository)" >&2
+        exit 1
+        ;;
+      */forbidden)
+        echo "GraphQL: Resource not accessible by integration (createRepository)" >&2
+        exit 1
+        ;;
+    esac
+    echo "https://github.com/${full}"
+    exit 0
+    ;;
+esac
+
+echo "fake gh: unsupported invocation: $*" >&2
+exit 1

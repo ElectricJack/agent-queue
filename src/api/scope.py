@@ -290,8 +290,6 @@ _TRIAGE_COMMANDS = frozenset({
 
 _PLAYBOOK_COMPILER_COMMANDS = frozenset(
     {
-        "playbook_validate",
-        "playbook_install",
         "playbook_v2_validate",
         "playbook_v2_propose",
     }

@@ -61,6 +61,41 @@ class ConfigValidationError(Exception):
         super().__init__(msg)
 
 
+_PROJECT_ROOT_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+
+
+@dataclass
+class ProjectRoot:
+    """One operator-configured location from which projects may be onboarded.
+
+    ``path`` is normalized by :func:`load_config` before an instance is
+    created.  Accessibility deliberately remains a property rather than
+    stored configuration: a mounted volume can disappear after startup, and
+    callers need the answer at the time they perform an operation.
+    """
+
+    id: str
+    label: str
+    path: str
+
+    @property
+    def readable(self) -> bool:
+        return os.path.isdir(self.path) and os.access(self.path, os.R_OK)
+
+    @property
+    def writable(self) -> bool:
+        return os.path.isdir(self.path) and os.access(self.path, os.W_OK)
+
+
+def resolve_project_root(config: "AppConfig", root_id: str) -> ProjectRoot | None:
+    """Return a configured project root by id, or ``None`` when unknown.
+
+    The returned root's ``readable`` and ``writable`` properties query the
+    filesystem when accessed, rather than carrying stale load-time state.
+    """
+    return next((root for root in config.project_roots if root.id == root_id), None)
+
+
 @dataclass
 class PerProjectChannelsConfig:
     """Configuration for automatic per-project Discord channel management."""
@@ -1293,8 +1328,20 @@ class EventsConfig:
     #: docs/superpowers/plans/2026-08-21-dv2-phase5-observability.md
     #: ("Phase 5 Follow-up") for the motivation.
     command_invoked_enabled: bool = True
+    #: Terminal onboarding records are operational audit/idempotency state.
+    #: Keep them long enough for browser retries and recovery, then purge them
+    #: in the hourly operational retention pass.
+    onboarding_request_retention_days: int = 30
 
     def validate(self) -> list[ConfigError]:
+        if self.onboarding_request_retention_days <= 0:
+            return [
+                ConfigError(
+                    "events",
+                    "onboarding_request_retention_days",
+                    "must be > 0",
+                )
+            ]
         return []
 
 
@@ -1789,6 +1836,7 @@ class AppConfig:
     workspace_dir: str = field(
         default_factory=lambda: os.path.expanduser("~/agent-queue-workspaces")
     )
+    project_roots: list[ProjectRoot] = field(default_factory=list)
     database_path: str = ""  # Legacy SQLite path — use database.url instead
     database: DatabaseConfig = field(default_factory=DatabaseConfig)
     profile: str = ""
@@ -1852,6 +1900,7 @@ class AppConfig:
         }
     )
     _config_path: str = field(default="", repr=False)
+    _project_roots_errors: list[ConfigError] = field(default_factory=list, repr=False)
 
     # -- Vault path properties (derived from data_dir) -----------------------
     # See docs/specs/design/vault.md Section 2 for the full directory layout.
@@ -1899,6 +1948,58 @@ class AppConfig:
         function still raises ``ConfigValidationError`` for backward compatibility.
         """
         errors: list[ConfigError] = []
+
+        errors.extend(self._project_roots_errors)
+        seen_root_ids: set[str] = set()
+        seen_root_paths: set[str] = set()
+        for index, root in enumerate(self.project_roots):
+            field_name = f"project_roots[{index}]"
+            if not isinstance(root, ProjectRoot):
+                errors.append(
+                    ConfigError("project_roots", field_name, "must be a project root mapping")
+                )
+                continue
+            if not isinstance(root.id, str) or not _PROJECT_ROOT_ID_RE.fullmatch(root.id):
+                errors.append(
+                    ConfigError(
+                        "project_roots",
+                        f"{field_name}.id",
+                        "must be URL-safe (letters, digits, '.', '_' and '-' only)",
+                    )
+                )
+            elif root.id in seen_root_ids:
+                errors.append(
+                    ConfigError("project_roots", f"{field_name}.id", f"duplicate id '{root.id}'")
+                )
+            seen_root_ids.add(root.id)
+            if not isinstance(root.label, str):
+                errors.append(
+                    ConfigError("project_roots", f"{field_name}.label", "must be a string")
+                )
+            if not isinstance(root.path, str) or not root.path:
+                errors.append(
+                    ConfigError("project_roots", f"{field_name}.path", "must be a non-empty string")
+                )
+                continue
+            if root.path in seen_root_paths:
+                errors.append(
+                    ConfigError(
+                        "project_roots", f"{field_name}.path", f"duplicate canonical path '{root.path}'"
+                    )
+                )
+            seen_root_paths.add(root.path)
+            if not os.path.isdir(root.path):
+                errors.append(
+                    ConfigError(
+                        "project_roots", f"{field_name}.path", f"'{root.path}' does not exist or is not a directory"
+                    )
+                )
+            elif not root.readable:
+                errors.append(
+                    ConfigError(
+                        "project_roots", f"{field_name}.path", f"'{root.path}' is not readable"
+                    )
+                )
 
         # Cross-field: critical path checks
         if not self.workspace_dir:
@@ -2151,6 +2252,7 @@ HOT_RELOADABLE_SECTIONS = {
     "graph_layout",
     "pricing",
     "surface",
+    "project_roots",
 }
 """Config sections that can be safely updated at runtime without restart."""
 
@@ -2404,6 +2506,61 @@ def _deep_merge(base: dict, override: dict) -> dict:
     return result
 
 
+def _load_project_roots(raw_value: object) -> tuple[list[ProjectRoot], list[ConfigError]]:
+    """Parse the authored ``project_roots`` list without losing all errors.
+
+    Paths are deliberately required to be absolute after ``~`` expansion.
+    Accepting a relative path would make an operator's configured root depend
+    on the daemon process's working directory.
+    """
+    if not isinstance(raw_value, list):
+        return [], [ConfigError("project_roots", "project_roots", "must be a list")]
+
+    roots: list[ProjectRoot] = []
+    errors: list[ConfigError] = []
+    expected_keys = {"id", "label", "path"}
+    for index, value in enumerate(raw_value):
+        field_name = f"project_roots[{index}]"
+        if not isinstance(value, dict):
+            errors.append(ConfigError("project_roots", field_name, "must be a mapping"))
+            continue
+        actual_keys = set(value)
+        if actual_keys != expected_keys:
+            missing = sorted(expected_keys - actual_keys)
+            extra = sorted(actual_keys - expected_keys)
+            parts = []
+            if missing:
+                parts.append(f"missing keys: {', '.join(missing)}")
+            if extra:
+                parts.append(f"unexpected keys: {', '.join(extra)}")
+            errors.append(
+                ConfigError(
+                    "project_roots",
+                    field_name,
+                    f"must contain exactly id, label, path ({'; '.join(parts)})",
+                )
+            )
+            continue
+        root_id, label, raw_path = value["id"], value["label"], value["path"]
+        if not isinstance(root_id, str):
+            errors.append(ConfigError("project_roots", f"{field_name}.id", "must be a string"))
+            continue
+        if not isinstance(label, str):
+            errors.append(ConfigError("project_roots", f"{field_name}.label", "must be a string"))
+            continue
+        if not isinstance(raw_path, str) or not raw_path:
+            errors.append(ConfigError("project_roots", f"{field_name}.path", "must be a non-empty string"))
+            continue
+        expanded_path = os.path.expanduser(raw_path)
+        if not os.path.isabs(expanded_path):
+            errors.append(
+                ConfigError("project_roots", f"{field_name}.path", "must be an absolute path")
+            )
+            continue
+        roots.append(ProjectRoot(id=root_id, label=label, path=os.path.realpath(expanded_path)))
+    return roots, errors
+
+
 def _load_env_file(config_path: str) -> None:
     """Load .env file from the same directory as the config file.
 
@@ -2614,6 +2771,10 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
         config.data_dir = raw["data_dir"]
     if "workspace_dir" in raw:
         config.workspace_dir = raw["workspace_dir"]
+    if "project_roots" in raw:
+        config.project_roots, config._project_roots_errors = _load_project_roots(
+            raw["project_roots"]
+        )
     if "database_path" in raw:
         config.database_path = raw["database_path"]
     if "database" in raw and isinstance(raw["database"], dict):
@@ -2910,6 +3071,9 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
         ev = raw["events"]
         config.events = EventsConfig(
             command_invoked_enabled=bool(ev.get("command_invoked_enabled", True)),
+            onboarding_request_retention_days=int(
+                ev.get("onboarding_request_retention_days", 30)
+            ),
         )
 
     if "supervisor_agent" in raw and isinstance(raw["supervisor_agent"], dict):

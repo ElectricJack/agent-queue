@@ -34,19 +34,22 @@ def test_v1_modules_are_deleted() -> None:
         assert not (ROOT / (module.replace(".", "/") + ".py")).exists(), module
 
 
-def test_source_does_not_import_v1_modules() -> None:
+def test_source_or_tests_do_not_import_v1_modules() -> None:
     violations: list[str] = []
-    for path in (ROOT / "src").rglob("*.py"):
-        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-        for node in ast.walk(tree):
-            names: list[str] = []
-            if isinstance(node, ast.Import):
-                names = [alias.name for alias in node.names]
-            elif isinstance(node, ast.ImportFrom) and node.module:
-                names = [node.module]
-            for name in names:
-                if name in V1_MODULES:
-                    violations.append(f"{path.relative_to(ROOT)}:{node.lineno}: {name}")
+    for root in ("src", "tests"):
+        for path in (ROOT / root).rglob("*.py"):
+            if root == "tests" and not path.name.startswith("test_"):
+                continue
+            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+            for node in ast.walk(tree):
+                names: list[str] = []
+                if isinstance(node, ast.Import):
+                    names = [alias.name for alias in node.names]
+                elif isinstance(node, ast.ImportFrom) and node.module:
+                    names = [node.module]
+                for name in names:
+                    if name in V1_MODULES:
+                        violations.append(f"{path.relative_to(ROOT)}:{node.lineno}: {name}")
     assert violations == []
 
 
