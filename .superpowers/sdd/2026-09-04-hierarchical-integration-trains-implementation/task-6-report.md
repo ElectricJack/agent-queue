@@ -316,3 +316,28 @@ append-only episode evidence. PostgreSQL used only the helper-created disposable
 - The reviewer-requested broad `ParentCompletion` decomposition remains deferred as
   directed for final review; this fix pass made only invariant-focused edits.
 - No known Task 6 product failure or architectural conflict remains.
+
+### Final-code evidence and commit
+
+The four post-gate focused tests cited above were run as these exact commands against
+the final runtime code:
+
+```text
+pytest -q tests/test_integration_review_evidence.py::test_leaf_close_review_hook_and_delivery_promote_command_end_to_end tests/test_integration_parent_completion.py::test_parent_verify_consumes_exact_stored_evidence_and_guarded_completion tests/test_integration_parent_completion.py::test_parent_identity_foreign_keys_reject_mismatched_episode_links
+...                                                                      [100%]
+3 passed, 3 warnings in 2.67s
+
+pytest -q tests/test_integration_parent_completion.py::test_receipt_bound_to_unrelated_historic_episode_is_rejected
+.                                                                        [100%]
+1 passed, 2 warnings in 0.53s
+```
+
+The exact final changed-file lint and whitespace check was:
+
+```text
+ruff check migrations/versions/e4c6a8b20d31_parent_collection_and_review_evidence.py src/commands/surface_commands.py src/database/queries/hierarchy_queries.py src/database/queries/integration_delivery_queries.py src/database/tables.py src/integration/hierarchy.py src/integration/parent_completion.py src/integration/review_evidence.py src/orchestrator/execution.py tests/test_hierarchy_settlement.py tests/test_integration_parent_completion.py tests/test_integration_review_evidence.py tests/test_migration_parent_collection.py tests/test_surface_commands.py && git diff --check
+All checks passed!
+```
+
+`git diff --check` produced no output. The complete fix-round runtime implementation was
+committed as `62cad36e fix(integration): bind parent collection receipts`.
