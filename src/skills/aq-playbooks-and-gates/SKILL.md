@@ -55,16 +55,12 @@ When a gate does resolve, two things happen:
 2. Every waiter task attached to the gate re-checks its blocked state;
    if the gate was the only blocker, the task flips to `READY`.
 
-## Compile + install a playbook (compiler-as-agent path)
+## Playbook compilation (compiler-as-agent path)
 
 Ordinary playbook markdown edits enqueue a compile task under the
-`playbook-compiler` profile. You don't compile inline any more:
-
-```bash
-aq playbook validate vault/system/playbooks/<name>.md   # parse + lint
-aq playbook install --playbook-id <playbook_id> \
-  --compiled-path <compiled_json_path>                  # atomic swap
-```
+`playbook-compiler` profile. Do not validate or install the source inline:
+the compiler task validates the artifact and activates it through the reviewed
+workflow.
 
 For the `pipeline` kind (deterministic parse, no LLM), edits go
 straight to the parser — no task enqueued.
