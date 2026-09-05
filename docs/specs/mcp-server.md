@@ -70,6 +70,13 @@ They are grouped by category (see `src/tools/registry.py`):
 |------|---------|
 | `list_projects` | List all projects |
 | `create_project` | Create a project |
+| `onboard_project` | Link, initialize, or clone a root-scoped repository as a project |
+| `get_project_onboarding` | Get durable onboarding progress or result by request ID |
+| `list_project_roots` | List configured roots and their capabilities |
+| `browse_project_root` | Browse safe root-relative directory entries |
+| `get_github_auth_status` | Report daemon-host `gh` availability without credentials |
+| `list_github_owners` | List owners available for GitHub repository creation |
+| `search_github_repositories` | Find host-accessible GitHub repositories for cloning |
 | `pause_project` | Pause a project |
 | `resume_project` | Resume a paused project |
 | `edit_project` | Edit project settings |
