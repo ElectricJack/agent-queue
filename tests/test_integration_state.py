@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import uuid
+
 import pytest
 from sqlalchemy import delete, inspect, insert, select, update
 from sqlalchemy.exc import DBAPIError, IntegrityError
@@ -472,6 +474,76 @@ async def test_upgrade_from_prior_schema_creates_every_integration_table(tmp_pat
         } <= names
     finally:
         await database.close()
+
+
+@pytest.mark.skipif(not POSTGRES_TEST_DSN, reason="POSTGRES_TEST_DSN not set")
+async def test_postgres_migration_cycle_from_prior_revision_to_final_and_back():
+    """The unpublished final migration supports a real prior-schema round trip."""
+    import asyncpg
+    from alembic import command
+    from alembic.config import Config
+    from sqlalchemy import text
+
+    from src.database.engine import create_postgres_engine
+
+    prefix, _, database_name = POSTGRES_TEST_DSN.rpartition("/")
+    cycle_name = f"{database_name}_integration_cycle_{uuid.uuid4().hex[:8]}"
+    cycle_dsn = f"{prefix}/{cycle_name}"
+    admin_dsn = POSTGRES_TEST_DSN.replace("postgresql+asyncpg://", "postgresql://")
+    admin = await asyncpg.connect(admin_dsn)
+    try:
+        await admin.execute(f'CREATE DATABASE "{cycle_name}"')
+        engine = create_postgres_engine(cycle_dsn, 0, 1)
+        try:
+            async def migrate(revision: str, *, downgrade: bool = False) -> None:
+                config = Config("alembic.ini")
+                async with engine.connect() as conn:
+                    def run(sync_conn):
+                        config.attributes["connection"] = sync_conn
+                        (command.downgrade if downgrade else command.upgrade)(config, revision)
+                    await conn.run_sync(run)
+                    await conn.commit()
+
+            await migrate("e6a1b2c3d4f5")
+            await migrate("head")
+            await migrate("e6a1b2c3d4f5", downgrade=True)
+            await migrate("head")
+            async with engine.connect() as conn:
+                assert (await conn.execute(text("SELECT to_regclass('integration_candidate_member_results')"))).scalar_one()
+        finally:
+            await engine.dispose()
+    finally:
+        await admin.execute(f'DROP DATABASE IF EXISTS "{cycle_name}"')
+        await admin.close()
+
+
+def test_sqlite_migration_cycle_from_prior_revision_to_final_and_back(tmp_path):
+    from alembic import command
+    from alembic.config import Config
+    from sqlalchemy import create_engine, inspect
+
+    engine = create_engine(f"sqlite:///{tmp_path / 'integration-cycle.db'}")
+    config = Config("alembic.ini")
+    try:
+        with engine.connect() as conn:
+            config.attributes["connection"] = conn
+            command.upgrade(config, "e6a1b2c3d4f5")
+            conn.commit()
+        with engine.connect() as conn:
+            config.attributes["connection"] = conn
+            command.upgrade(config, "head")
+            conn.commit()
+        with engine.connect() as conn:
+            config.attributes["connection"] = conn
+            command.downgrade(config, "e6a1b2c3d4f5")
+            conn.commit()
+        with engine.connect() as conn:
+            config.attributes["connection"] = conn
+            command.upgrade(config, "head")
+            conn.commit()
+            assert "integration_candidate_member_results" in inspect(conn).get_table_names()
+    finally:
+        engine.dispose()
 
 
 async def test_read_projections_and_receipts_survive_task_deletion(db):

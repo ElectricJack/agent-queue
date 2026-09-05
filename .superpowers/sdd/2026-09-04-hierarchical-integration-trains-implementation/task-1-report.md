@@ -132,6 +132,13 @@ Verification remained green against the supplied scratch PostgreSQL DSN:
 `aq test tests/test_migration_boolean_defaults.py -x` (1 passed), plus Ruff
 and `git diff --check`.
 
+Round 3 adds isolated migration-cycle regressions for both SQLite and the
+supplied disposable PostgreSQL service. Each explicitly runs
+`e6a1b2c3d4f5 → head → e6a1b2c3d4f5 → head` and asserts the final normalized
+candidate-member-result table is restored. PostgreSQL creates and drops a
+unique scratch database derived from the worker test DSN, never the operator
+database. The final focused run reports 30 passed.
+
 ## Changed files
 
 - `src/integration/__init__.py`
