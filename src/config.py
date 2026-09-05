@@ -1293,8 +1293,20 @@ class EventsConfig:
     #: docs/superpowers/plans/2026-08-21-dv2-phase5-observability.md
     #: ("Phase 5 Follow-up") for the motivation.
     command_invoked_enabled: bool = True
+    #: Terminal onboarding records are operational audit/idempotency state.
+    #: Keep them long enough for browser retries and recovery, then purge them
+    #: in the hourly operational retention pass.
+    onboarding_request_retention_days: int = 30
 
     def validate(self) -> list[ConfigError]:
+        if self.onboarding_request_retention_days <= 0:
+            return [
+                ConfigError(
+                    "events",
+                    "onboarding_request_retention_days",
+                    "must be > 0",
+                )
+            ]
         return []
 
 
@@ -2910,6 +2922,9 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
         ev = raw["events"]
         config.events = EventsConfig(
             command_invoked_enabled=bool(ev.get("command_invoked_enabled", True)),
+            onboarding_request_retention_days=int(
+                ev.get("onboarding_request_retention_days", 30)
+            ),
         )
 
     if "supervisor_agent" in raw and isinstance(raw["supervisor_agent"], dict):

@@ -12,6 +12,7 @@ continue to work without migration.
 from __future__ import annotations
 
 from sqlalchemy import (
+    JSON,
     Boolean,
     CheckConstraint,
     Column,
@@ -531,6 +532,41 @@ events = Table(
     Column("payload", Text, nullable=True),
     Column("timestamp", Float, nullable=False),
     Index("idx_events_type_project_id", "event_type", "project_id", "id"),
+)
+
+# The onboarding service writes this row before it touches the filesystem or
+# GitHub.  It is intentionally independent of ``projects``: a failed request
+# may never create a project, but its idempotency record must still survive a
+# browser retry.  JSON columns contain only service-scrubbed data; in
+# particular, ``created_resources`` is a recovery ledger of identifiers and
+# paths, never a place for credentials or subprocess output.
+project_onboarding_requests = Table(
+    "project_onboarding_requests",
+    metadata,
+    Column("request_id", Text, primary_key=True),
+    Column("input_fingerprint", Text, nullable=False),
+    Column("status", Text, nullable=False, server_default="pending"),
+    Column("phase", Text, nullable=False, server_default="pending"),
+    Column("created_resources", JSON, nullable=False, server_default="[]"),
+    Column("result", JSON, nullable=True),
+    Column("error", JSON, nullable=True),
+    Column("created_at", Float, nullable=False),
+    Column("updated_at", Float, nullable=False),
+    Column("finished_at", Float, nullable=True),
+    CheckConstraint(
+        "status IN ('pending', 'succeeded', 'failed')",
+        name="ck_project_onboarding_requests_status",
+    ),
+    CheckConstraint(
+        "(status = 'pending' AND finished_at IS NULL) "
+        "OR (status IN ('succeeded', 'failed') AND finished_at IS NOT NULL)",
+        name="ck_project_onboarding_requests_terminal_timestamp",
+    ),
+    Index(
+        "idx_project_onboarding_requests_finished",
+        "status",
+        "finished_at",
+    ),
 )
 
 rate_limits = Table(

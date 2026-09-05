@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import logging
 
-
 from src.database.engine import (
     create_postgres_engine,
     run_schema_setup,
@@ -38,23 +37,24 @@ from src.database.queries.layout_queries import LayoutQueryMixin
 from src.database.queries.merge_slot_queries import MergeSlotQueriesMixin
 from src.database.queries.message_queries import MessageQueriesMixin
 from src.database.queries.metrics_queries import MetricsQueryMixin
+from src.database.queries.onboarding_queries import OnboardingQueryMixin
+from src.database.queries.playbook_artifact_queries import PlaybookArtifactQueryMixin
+from src.database.queries.playbook_run_queries import PlaybookRunQueryMixin
+from src.database.queries.plugin_queries import PluginQueryMixin
 from src.database.queries.profile_queries import ProfileQueryMixin
 from src.database.queries.project_queries import ProjectQueryMixin
 from src.database.queries.repo_queries import RepoQueryMixin
 from src.database.queries.result_queries import ResultQueryMixin
 from src.database.queries.session_queries import SessionQueryMixin
 from src.database.queries.subagent_queries import SubagentQueriesMixin
-from src.database.queries.task_session_queries import TaskSessionQueryMixin
 from src.database.queries.task_comment_queries import TaskCommentQueriesMixin
 from src.database.queries.task_queries import TaskQueryMixin
 from src.database.queries.task_recovery_queries import TaskRecoveryQueryMixin
 from src.database.queries.task_requirements_queries import TaskRequirementsQueryMixin
+from src.database.queries.task_session_queries import TaskSessionQueryMixin
 from src.database.queries.token_queries import TokenQueryMixin
 from src.database.queries.transaction_queries import TransactionQueryMixin
 from src.database.queries.transcript_queries import TranscriptQueryMixin
-from src.database.queries.playbook_artifact_queries import PlaybookArtifactQueryMixin
-from src.database.queries.playbook_run_queries import PlaybookRunQueryMixin
-from src.database.queries.plugin_queries import PluginQueryMixin
 from src.database.queries.workflow_queries import WorkflowQueryMixin
 from src.database.queries.workspace_kinds_queries import WorkspaceKindQueryMixin
 from src.database.queries.workspace_queries import WorkspaceQueryMixin
@@ -93,6 +93,7 @@ class PostgreSQLDatabaseAdapter(
     MergeSlotQueriesMixin,
     MessageQueriesMixin,
     MetricsQueryMixin,
+    OnboardingQueryMixin,
     PluginQueryMixin,
     PlaybookArtifactQueryMixin,
     PlaybookRunQueryMixin,
