@@ -8,6 +8,10 @@ export type {
 export { toSubmissionError } from "./submission";
 export * from "./state";
 export { ChooseSourceStep } from "./ChooseSourceStep";
+export { ChooseRepositoryStep } from "./ChooseRepositoryStep";
+export { directoryNameError } from "./repositoryValidation";
+export { browseProjectRoot } from "./projectRootsClient";
+export type { ProjectRootBrowseEntry, ProjectRootBrowseResult } from "./projectRootsClient";
 export { SOURCE_MODE_COPY, STEP_TITLES } from "./copy";
 export { DEFAULT_STEP_COMPONENTS, createStepRegistry, defaultStepRegistry } from "./stepRegistry";
 export type { WizardStep } from "./stepRegistry";
