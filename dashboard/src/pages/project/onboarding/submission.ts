@@ -57,10 +57,8 @@ function requestBody(requestId: string, request: WizardSubmission) {
     ...(source.createGithub ? { github_owner: source.githubOwner, github_repo: source.githubRepo || source.directoryName, github_visibility: source.githubVisibility } : {}),
   };
   if (source.mode === "github_clone") {
-    const urlParts = source.githubUrl.split("/").filter(Boolean);
-    const destination = urlParts[urlParts.length - 1]?.replace(/\.git$/, "") ?? "";
     return {
-      ...common, relative_path: source.githubRepository?.name ?? destination,
+      ...common, relative_path: source.directoryName,
       ...(source.githubRepository ? { github_repository: { owner: source.githubRepository.owner, name: source.githubRepository.name } } : { github_url: source.githubUrl }),
     };
   }

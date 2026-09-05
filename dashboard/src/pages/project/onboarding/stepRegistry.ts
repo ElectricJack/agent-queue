@@ -2,8 +2,8 @@ import type { ComponentType } from "react";
 import { STEP_IDS, type StepId } from "./state";
 import { STEP_TITLES } from "./copy";
 import { ChooseSourceStep } from "./ChooseSourceStep";
+import { InitOptionsStep } from "./InitOptionsStep";
 import { ChooseRepositoryStep } from "./ChooseRepositoryStep";
-import { placeholder } from "./PlaceholderStep";
 import { ProjectIdentityStep } from "./ProjectIdentityStep";
 import { ReviewProjectStep } from "./ReviewProjectStep";
 
@@ -17,7 +17,7 @@ export const DEFAULT_STEP_COMPONENTS: Record<StepId, ComponentType> = {
   source: ChooseSourceStep,
   repository: ChooseRepositoryStep,
   identity: ProjectIdentityStep,
-  options: placeholder(STEP_TITLES.options, "wizard-identity-review"),
+  options: InitOptionsStep,
   review: ReviewProjectStep,
 };
 

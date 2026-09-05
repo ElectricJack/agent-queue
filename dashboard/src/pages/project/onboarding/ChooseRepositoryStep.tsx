@@ -1,5 +1,6 @@
 import { useEffect, useId, useMemo, useState, type KeyboardEvent } from "react";
 import { useWizard } from "./context";
+import { GithubRepositoryStep } from "./GithubRepositoryStep";
 import { browseProjectRoot, type ProjectRootBrowseEntry } from "./projectRootsClient";
 import { directoryNameError } from "./repositoryValidation";
 
@@ -59,9 +60,7 @@ export function ChooseRepositoryStep() {
     return () => { active = false; };
   }, [isLink, rootId, path]);
 
-  if (!isLink && !isInit) {
-    return <p className="text-sm text-gray-400">Repository selection for this source is provided by its source-specific step.</p>;
-  }
+  if (!isLink && !isInit) return <GithubRepositoryStep />;
 
   const chooseRoot = (nextRootId: string) => {
     if (isLink) dispatch({ type: "update_source", mode: "link", patch: { rootId: nextRootId, relativePath: null } });

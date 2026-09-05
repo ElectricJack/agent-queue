@@ -56,7 +56,12 @@ export interface GithubCloneSource {
   mode: "github_clone";
   rootId: string | null;
   githubRepository: GithubRepositoryRef | null;
+  /** Unmodified pasted input; the daemon, not the browser, validates it. */
   githubUrl: string;
+  /** Root-relative clone destination, initially inferred from the repository. */
+  directoryName: string;
+  /** Keeps the suggested destination in sync until the operator edits it. */
+  directoryNameAuto: boolean;
 }
 
 export interface NoSource {
@@ -127,7 +132,14 @@ export function defaultSource(mode: SourceMode): SourceState {
         githubVisibility: "private",
       };
     case "github_clone":
-      return { mode, rootId: null, githubRepository: null, githubUrl: "" };
+      return {
+        mode,
+        rootId: null,
+        githubRepository: null,
+        githubUrl: "",
+        directoryName: "",
+        directoryNameAuto: true,
+      };
   }
 }
 
