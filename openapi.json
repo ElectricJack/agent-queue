@@ -7805,6 +7805,53 @@
         }
       }
     },
+    "/api/project/browse-root": {
+      "post": {
+        "tags": [
+          "project"
+        ],
+        "summary": "List the child directories of a root-relative path beneath a configured project root. Returns names, root-relative paths, directory/Git-repository flags and whether each entry may be linked. Never returns file contents.",
+        "description": "List the child directories of a root-relative path beneath a configured project root. Returns names, root-relative paths, directory/Git-repository flags and whether each entry may be linked. Never returns file contents.",
+        "operationId": "browse_project_root",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BrowseProjectRootRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BrowseProjectRootResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/project/create": {
       "post": {
         "tags": [
@@ -8040,6 +8087,53 @@
         }
       }
     },
+    "/api/project/get-github-auth-status": {
+      "post": {
+        "tags": [
+          "project"
+        ],
+        "summary": "Report whether the daemon host's `gh` CLI is installed and authenticated. Never returns credentials.",
+        "description": "Report whether the daemon host's `gh` CLI is installed and authenticated. Never returns credentials.",
+        "operationId": "get_github_auth_status",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GetGithubAuthStatusRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GithubAuthStatusResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/project/get": {
       "post": {
         "tags": [
@@ -8181,6 +8275,147 @@
         }
       }
     },
+    "/api/project/get-onboarding": {
+      "post": {
+        "tags": [
+          "project"
+        ],
+        "summary": "Read the durable status of an onboarding request by request_id: its status, current phase, safe result or structured error.",
+        "description": "Read the durable status of an onboarding request by request_id: its status, current phase, safe result or structured error.",
+        "operationId": "get_project_onboarding",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GetProjectOnboardingRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GetProjectOnboardingResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/project/list-github-owners": {
+      "post": {
+        "tags": [
+          "project"
+        ],
+        "summary": "List the GitHub owners (the authenticated user and their organisations) a new repository may be created under via the daemon host's `gh` session.",
+        "description": "List the GitHub owners (the authenticated user and their organisations) a new repository may be created under via the daemon host's `gh` session.",
+        "operationId": "list_github_owners",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ListGithubOwnersRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ListGithubOwnersResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/project/list-roots": {
+      "post": {
+        "tags": [
+          "project"
+        ],
+        "summary": "List the configured project roots (config `project_roots`) an operator may browse and onboard projects beneath, with readable/writable flags.",
+        "description": "List the configured project roots (config `project_roots`) an operator may browse and onboard projects beneath, with readable/writable flags.",
+        "operationId": "list_project_roots",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ListProjectRootsRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ListProjectRootsResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/project/list": {
       "post": {
         "tags": [
@@ -8298,6 +8533,53 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ListWorkspacesResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/project/onboard": {
+      "post": {
+        "tags": [
+          "project"
+        ],
+        "summary": "Onboard a project from the dashboard: link an existing local repository, initialise a new one (optionally creating a GitHub remote and README commit), or clone a GitHub repository, always beneath a configured project root. Creates the project, its primary project-repo workspace and vault structure in one server-owned saga. `request_id` is a durable idempotency key. Mode-specific fields are only valid for their `source_mode`.",
+        "description": "Onboard a project from the dashboard: link an existing local repository, initialise a new one (optionally creating a GitHub remote and README commit), or clone a GitHub repository, always beneath a configured project root. Creates the project, its primary project-repo workspace and vault structure in one server-owned saga. `request_id` is a durable idempotency key. Mode-specific fields are only valid for their `source_mode`.",
+        "operationId": "onboard_project",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OnboardProjectRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OnboardProjectResponse"
                 }
               }
             }
@@ -8627,6 +8909,53 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ResumeProjectResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/project/search-github-repositories": {
+      "post": {
+        "tags": [
+          "project"
+        ],
+        "summary": "Search GitHub repositories visible to the daemon host's `gh` session. Returns identity, visibility, clone URLs and default branch, paged by cursor.",
+        "description": "Search GitHub repositories visible to the daemon host's `gh` session. Returns identity, visibility, clone URLs and default branch, paged by cursor.",
+        "operationId": "search_github_repositories",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SearchGithubRepositoriesRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SearchGithubRepositoriesResponse"
                 }
               }
             }
@@ -14553,6 +14882,95 @@
           "file"
         ],
         "title": "Body_upload_attachment_api_tasks__task_id__attachments_post"
+      },
+      "BrowseEntry": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "relative_path": {
+            "type": "string",
+            "title": "Relative Path"
+          },
+          "is_directory": {
+            "type": "boolean",
+            "title": "Is Directory",
+            "default": true
+          },
+          "is_git_repository": {
+            "type": "boolean",
+            "title": "Is Git Repository",
+            "default": false
+          },
+          "selectable": {
+            "type": "boolean",
+            "title": "Selectable",
+            "default": false
+          }
+        },
+        "type": "object",
+        "required": [
+          "name",
+          "relative_path"
+        ],
+        "title": "BrowseEntry"
+      },
+      "BrowseProjectRootRequest": {
+        "properties": {
+          "root_id": {
+            "type": "string",
+            "title": "Root Id",
+            "description": "Configured project root id"
+          },
+          "relative_path": {
+            "type": "string",
+            "title": "Relative Path",
+            "description": "Root-relative directory to list (default: the root itself)",
+            "default": ""
+          }
+        },
+        "type": "object",
+        "required": [
+          "root_id"
+        ],
+        "title": "BrowseProjectRootRequest"
+      },
+      "BrowseProjectRootResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "root_id": {
+            "type": "string",
+            "title": "Root Id"
+          },
+          "relative_path": {
+            "type": "string",
+            "title": "Relative Path",
+            "default": ""
+          },
+          "entries": {
+            "items": {
+              "$ref": "#/components/schemas/BrowseEntry"
+            },
+            "type": "array",
+            "title": "Entries",
+            "default": []
+          },
+          "truncated": {
+            "type": "boolean",
+            "title": "Truncated",
+            "default": false
+          }
+        },
+        "type": "object",
+        "required": [
+          "root_id"
+        ],
+        "title": "BrowseProjectRootResponse"
       },
       "CancelPlaybookRunRequest": {
         "properties": {
@@ -21383,6 +21801,11 @@
         ],
         "title": "GetGitStatusResponse"
       },
+      "GetGithubAuthStatusRequest": {
+        "properties": {},
+        "type": "object",
+        "title": "GetGithubAuthStatusRequest"
+      },
       "GetMcpServerRequest": {
         "properties": {
           "name": {
@@ -21754,6 +22177,102 @@
           "channel_id"
         ],
         "title": "GetProjectForChannelResponse"
+      },
+      "GetProjectOnboardingRequest": {
+        "properties": {
+          "request_id": {
+            "type": "string",
+            "title": "Request Id",
+            "description": "The onboard_project request_id"
+          }
+        },
+        "type": "object",
+        "required": [
+          "request_id"
+        ],
+        "title": "GetProjectOnboardingRequest"
+      },
+      "GetProjectOnboardingResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "request_id": {
+            "type": "string",
+            "title": "Request Id"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "pending",
+              "running",
+              "completed",
+              "failed"
+            ],
+            "title": "Status"
+          },
+          "phase": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Phase"
+          },
+          "result": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/OnboardProjectResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "error": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/OnboardingErrorInfo"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "created_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Created At"
+          },
+          "updated_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Updated At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "request_id",
+          "status"
+        ],
+        "title": "GetProjectOnboardingResponse"
       },
       "GetProjectRequest": {
         "properties": {
@@ -23407,6 +23926,175 @@
           "project_id"
         ],
         "title": "GitRemoteUrlResponse"
+      },
+      "GithubAuthStatusResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "installed": {
+            "type": "boolean",
+            "title": "Installed",
+            "default": false
+          },
+          "authenticated": {
+            "type": "boolean",
+            "title": "Authenticated",
+            "default": false
+          },
+          "host": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Host"
+          },
+          "login": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Login"
+          },
+          "cli_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cli Version"
+          },
+          "message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Message"
+          }
+        },
+        "type": "object",
+        "title": "GithubAuthStatusResponse"
+      },
+      "GithubOwner": {
+        "properties": {
+          "login": {
+            "type": "string",
+            "title": "Login"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "user",
+              "organization"
+            ],
+            "title": "Kind",
+            "default": "user"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          }
+        },
+        "type": "object",
+        "required": [
+          "login"
+        ],
+        "title": "GithubOwner"
+      },
+      "GithubRepository": {
+        "properties": {
+          "owner": {
+            "type": "string",
+            "title": "Owner"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "full_name": {
+            "type": "string",
+            "title": "Full Name"
+          },
+          "visibility": {
+            "type": "string",
+            "enum": [
+              "private",
+              "public",
+              "internal"
+            ],
+            "title": "Visibility",
+            "default": "private"
+          },
+          "clone_url_https": {
+            "type": "string",
+            "title": "Clone Url Https"
+          },
+          "clone_url_ssh": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Clone Url Ssh"
+          },
+          "default_branch": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Default Branch"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          }
+        },
+        "type": "object",
+        "required": [
+          "owner",
+          "name",
+          "full_name",
+          "clone_url_https"
+        ],
+        "title": "GithubRepository"
       },
       "GlobFilesRequest": {
         "properties": {
@@ -25344,6 +26032,30 @@
         "type": "object",
         "title": "ListEventTriggersResponse"
       },
+      "ListGithubOwnersRequest": {
+        "properties": {},
+        "type": "object",
+        "title": "ListGithubOwnersRequest"
+      },
+      "ListGithubOwnersResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "owners": {
+            "items": {
+              "$ref": "#/components/schemas/GithubOwner"
+            },
+            "type": "array",
+            "title": "Owners",
+            "default": []
+          }
+        },
+        "type": "object",
+        "title": "ListGithubOwnersResponse"
+      },
       "ListIntelligenceClassesRequest": {
         "properties": {},
         "type": "object",
@@ -25710,6 +26422,30 @@
         },
         "type": "object",
         "title": "ListProfilesResponse"
+      },
+      "ListProjectRootsRequest": {
+        "properties": {},
+        "type": "object",
+        "title": "ListProjectRootsRequest"
+      },
+      "ListProjectRootsResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "roots": {
+            "items": {
+              "$ref": "#/components/schemas/ProjectRootInfo"
+            },
+            "type": "array",
+            "title": "Roots",
+            "default": []
+          }
+        },
+        "type": "object",
+        "title": "ListProjectRootsResponse"
       },
       "ListProjectsRequest": {
         "properties": {},
@@ -27933,6 +28669,271 @@
         },
         "type": "object",
         "title": "NoteSummary"
+      },
+      "OnboardProjectRequest": {
+        "properties": {
+          "request_id": {
+            "type": "string",
+            "title": "Request Id",
+            "description": "Idempotency key; replaying it returns the prior result"
+          },
+          "source_mode": {
+            "type": "string",
+            "title": "Source Mode",
+            "description": "link an existing repo, init a new one, or clone from GitHub"
+          },
+          "root_id": {
+            "type": "string",
+            "title": "Root Id",
+            "description": "Configured project root id"
+          },
+          "relative_path": {
+            "type": "string",
+            "title": "Relative Path",
+            "description": "Root-relative destination: the existing repository (link) or the directory to create (init, github_clone)"
+          },
+          "project_name": {
+            "type": "string",
+            "title": "Project Name",
+            "description": "Display name"
+          },
+          "project_id": {
+            "type": "string",
+            "title": "Project Id",
+            "description": "URL-safe project id (slug)"
+          },
+          "default_branch": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Default Branch",
+            "description": "Default branch; detected for link/github_clone and `main` for init when omitted"
+          },
+          "create_readme": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Create Readme",
+            "description": "init only: create README.md and an initial commit (default true)"
+          },
+          "create_github": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Create Github",
+            "description": "init only: also create a GitHub repository (default false)"
+          },
+          "github_owner": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Github Owner",
+            "description": "init with create_github: owner to create the repository under"
+          },
+          "github_repo": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Github Repo",
+            "description": "init with create_github: repository name (default: destination directory name)"
+          },
+          "github_visibility": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Github Visibility",
+            "description": "init with create_github: visibility (default private)"
+          },
+          "github_repository": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Github Repository",
+            "description": "github_clone only: {owner, name} selected through search_github_repositories (exactly one of github_repository / github_url)"
+          },
+          "github_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Github Url",
+            "description": "github_clone only: pasted GitHub HTTPS/SSH URL or owner/name shorthand (exactly one of github_repository / github_url)"
+          }
+        },
+        "type": "object",
+        "required": [
+          "request_id",
+          "source_mode",
+          "root_id",
+          "relative_path",
+          "project_name",
+          "project_id"
+        ],
+        "title": "OnboardProjectRequest"
+      },
+      "OnboardProjectResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "request_id": {
+            "type": "string",
+            "title": "Request Id"
+          },
+          "project_id": {
+            "type": "string",
+            "title": "Project Id"
+          },
+          "workspace_id": {
+            "type": "string",
+            "title": "Workspace Id"
+          },
+          "source_type": {
+            "type": "string",
+            "enum": [
+              "link",
+              "init",
+              "clone"
+            ],
+            "title": "Source Type"
+          },
+          "root_id": {
+            "type": "string",
+            "title": "Root Id"
+          },
+          "relative_path": {
+            "type": "string",
+            "title": "Relative Path"
+          },
+          "canonical_path": {
+            "type": "string",
+            "title": "Canonical Path"
+          },
+          "default_branch": {
+            "type": "string",
+            "title": "Default Branch"
+          },
+          "remote_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Remote Url"
+          },
+          "actions": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Actions",
+            "default": []
+          }
+        },
+        "type": "object",
+        "required": [
+          "request_id",
+          "project_id",
+          "workspace_id",
+          "source_type",
+          "root_id",
+          "relative_path",
+          "canonical_path",
+          "default_branch"
+        ],
+        "title": "OnboardProjectResponse",
+        "description": "The success payload of \u00a75.3."
+      },
+      "OnboardingErrorInfo": {
+        "properties": {
+          "error_code": {
+            "type": "string",
+            "title": "Error Code"
+          },
+          "error": {
+            "type": "string",
+            "title": "Error"
+          },
+          "phase": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Phase"
+          },
+          "details": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Details",
+            "default": {}
+          },
+          "field_errors": {
+            "items": {
+              "additionalProperties": {
+                "type": "string"
+              },
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Field Errors",
+            "default": []
+          }
+        },
+        "type": "object",
+        "required": [
+          "error_code",
+          "error"
+        ],
+        "title": "OnboardingErrorInfo"
       },
       "OperatorDecisionDTO": {
         "properties": {
@@ -32084,6 +33085,39 @@
         "type": "object",
         "title": "ProjectReadyResponse"
       },
+      "ProjectRootInfo": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "label": {
+            "type": "string",
+            "title": "Label"
+          },
+          "path": {
+            "type": "string",
+            "title": "Path"
+          },
+          "readable": {
+            "type": "boolean",
+            "title": "Readable",
+            "default": true
+          },
+          "writable": {
+            "type": "boolean",
+            "title": "Writable",
+            "default": true
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "label",
+          "path"
+        ],
+        "title": "ProjectRootInfo"
+      },
       "ProjectSummary": {
         "properties": {
           "id": {
@@ -34412,6 +35446,68 @@
         },
         "type": "object",
         "title": "SearchFilesResponse"
+      },
+      "SearchGithubRepositoriesRequest": {
+        "properties": {
+          "query": {
+            "type": "string",
+            "title": "Query",
+            "description": "Search text (1-200 characters)"
+          },
+          "limit": {
+            "type": "integer",
+            "title": "Limit",
+            "description": "Page size (1-50, default 20)",
+            "default": 20
+          },
+          "cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cursor",
+            "description": "Opaque page cursor from a previous result"
+          }
+        },
+        "type": "object",
+        "required": [
+          "query"
+        ],
+        "title": "SearchGithubRepositoriesRequest"
+      },
+      "SearchGithubRepositoriesResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "repositories": {
+            "items": {
+              "$ref": "#/components/schemas/GithubRepository"
+            },
+            "type": "array",
+            "title": "Repositories",
+            "default": []
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          }
+        },
+        "type": "object",
+        "title": "SearchGithubRepositoriesResponse"
       },
       "SelectFilesForInspectionRequest": {
         "properties": {
