@@ -103,6 +103,7 @@ export default function LeftRail() {
         onClose={() => setWizardOpen(false)}
         returnFocusRef={addProjectRef}
         roots={roots}
+        projectIds={(projects ?? []).map((project) => project.id)}
         onSuccess={onProjectCreated}
       />
     </aside>

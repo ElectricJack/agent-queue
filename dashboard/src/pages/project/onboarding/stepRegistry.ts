@@ -3,6 +3,8 @@ import { STEP_IDS, type StepId } from "./state";
 import { STEP_TITLES } from "./copy";
 import { ChooseSourceStep } from "./ChooseSourceStep";
 import { placeholder } from "./PlaceholderStep";
+import { ProjectIdentityStep } from "./ProjectIdentityStep";
+import { ReviewProjectStep } from "./ReviewProjectStep";
 
 export interface WizardStep {
   id: StepId;
@@ -13,9 +15,9 @@ export interface WizardStep {
 export const DEFAULT_STEP_COMPONENTS: Record<StepId, ComponentType> = {
   source: ChooseSourceStep,
   repository: placeholder(STEP_TITLES.repository, "wizard-directory-browser / wizard-github-step"),
-  identity: placeholder(STEP_TITLES.identity, "wizard-identity-review"),
+  identity: ProjectIdentityStep,
   options: placeholder(STEP_TITLES.options, "wizard-identity-review"),
-  review: placeholder(STEP_TITLES.review, "wizard-identity-review"),
+  review: ReviewProjectStep,
 };
 
 /**

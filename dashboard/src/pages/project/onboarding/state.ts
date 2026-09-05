@@ -69,6 +69,8 @@ export type SourceFor<M extends SourceMode> = Extract<SourceState, { mode: M }>;
 export interface SubmissionError {
   message: string;
   code?: string;
+  phase?: string;
+  survivors?: string[];
   /** Field errors keyed by the identity/source field they belong to. */
   fieldErrors: Record<string, string>;
 }
@@ -90,6 +92,7 @@ export interface WizardState {
   furthestStepIndex: number;
   source: SourceState;
   identity: IdentityValues;
+  projectIds: string[];
   submission: SubmissionState;
 }
 
@@ -128,12 +131,13 @@ export function defaultSource(mode: SourceMode): SourceState {
   }
 }
 
-export function initialWizardState(): WizardState {
+export function initialWizardState(projectIds: readonly string[] = []): WizardState {
   return {
     stepIndex: 0,
     furthestStepIndex: 0,
     source: { mode: null },
     identity: { projectName: "", projectId: "", defaultBranch: DEFAULT_BRANCH },
+    projectIds: [...projectIds],
     submission: { status: "idle" },
   };
 }
