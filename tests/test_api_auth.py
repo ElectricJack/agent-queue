@@ -135,12 +135,22 @@ class TestSessionTokenStore:
 
     async def test_mint_returns_prefixed_plaintext_once(self, tmp_path):
         db, store = await self._store(tmp_path)
-        tok = await store.mint(session_id="s1", task_id="t1", project_id="p1")
+        tok = await store.mint(
+            session_id="s1",
+            task_id="t1",
+            project_id="p1",
+            session_instance_token="instance-1",
+        )
         assert tok.startswith(TOKEN_PREFIX)
         assert len(tok) >= len(TOKEN_PREFIX) + 32
         h = hashlib.sha256(tok.encode()).hexdigest()
         row = await db.get_api_token(h)
         assert row is not None and row["session_id"] == "s1"
+        assert row["session_instance_token"] == "instance-1"
+        assert (await store.validate(tok)).session_instance_token == "instance-1"
+        reloaded = await SessionTokenStore(db).validate(tok)
+        assert reloaded is not None
+        assert reloaded.session_instance_token == "instance-1"
         await db.close()
 
     async def test_validate_happy_path(self, tmp_path):
@@ -463,12 +473,20 @@ class TestTokenAuthMiddleware:
     async def test_client_supplied_scope_is_stripped(self, tmp_path):
         db, store, ch, app = await _seed_app(tmp_path)
         try:
-            tok = await store.mint(session_id="s1", task_id="t1", project_id="p1")
+            tok = await store.mint(
+                session_id="s1",
+                session_instance_token="tok-s1",
+                task_id="t1",
+                project_id="p1",
+            )
             # Capture what CommandHandler saw as _current_scope during dispatch.
             captured: dict = {}
 
             async def _stub_capture(args):
+                from src.commands.principal import current_principal
+
                 captured["scope"] = ch._current_scope
+                captured["principal"] = current_principal()
                 ch._recorded.append(("task_show", dict(args)))
                 return {"success": True}
 
@@ -484,6 +502,7 @@ class TestTokenAuthMiddleware:
                             "_scope": {
                                 "kind": "session",
                                 "session_id": "SPOOFED",
+                                "session_instance_token": "SPOOFED",
                                 "task_id": "SPOOFED",
                                 "project_id": "SPOOFED",
                             },
@@ -494,6 +513,8 @@ class TestTokenAuthMiddleware:
             # The scope that reached the handler is the server one, not the spoof.
             assert captured["scope"]["session_id"] == "s1"
             assert captured["scope"]["task_id"] == "t1"
+            assert captured["scope"]["session_instance_token"] == "tok-s1"
+            assert captured["principal"].session_instance_token == "tok-s1"
         finally:
             deps._orchestrator = None
             deps._command_handler = None

@@ -506,6 +506,7 @@ class SessionCommandsMixin:
         task_id = session.task_id if session.lifecycle == "task" else None
         token = await token_store.mint(
             session_id=session.id,
+            session_instance_token=session.instance_token,
             task_id=task_id,
             project_id=session.project_id,
         )

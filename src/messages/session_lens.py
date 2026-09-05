@@ -355,6 +355,7 @@ class SessionLens:
                 mint_project = None if is_global else derived_project
                 api_token = await self._token_store.mint(
                     session_id=session_id,
+                    session_instance_token=instance_token,
                     task_id=None,
                     project_id=mint_project,
                     # Supervisor is the trusted operator — elevate so it

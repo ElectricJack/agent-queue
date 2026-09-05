@@ -88,6 +88,7 @@ async def post_message(
     args["_scope"] = {
         "kind": scope.kind,
         "session_id": scope.session_id,
+        "session_instance_token": scope.session_instance_token,
         "task_id": scope.task_id,
         "project_id": scope.project_id,
         "elevated": scope.elevated,
@@ -173,6 +174,7 @@ async def post_session_message(
     args["_scope"] = {
         "kind": scope.kind,
         "session_id": scope.session_id,
+        "session_instance_token": scope.session_instance_token,
         "task_id": scope.task_id,
         "project_id": scope.project_id,
         "elevated": scope.elevated,
@@ -222,6 +224,7 @@ async def get_session_messages(
     args["_scope"] = {
         "kind": scope.kind,
         "session_id": scope.session_id,
+        "session_instance_token": scope.session_instance_token,
         "task_id": scope.task_id,
         "project_id": scope.project_id,
         "elevated": scope.elevated,

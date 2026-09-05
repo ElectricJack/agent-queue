@@ -291,12 +291,18 @@ class IntegrationDeliveryQueriesMixin:
             return intent | {"_resolution_replayed": True}
         if intent["state"] != "conflict":
             raise ValueError("only a conflicted promotion can reserve a resolution")
-        result = await conn.execute(
-            update(integration_promotion_intents)
-            .where(integration_promotion_intents.c.id == intent_id)
-            .where(integration_promotion_intents.c.state == "conflict")
-            .values(**frozen, state="resolution_reserved", updated_at=time.time())
-        )
+        try:
+            async with conn.begin_nested():
+                result = await conn.execute(
+                    update(integration_promotion_intents)
+                    .where(integration_promotion_intents.c.id == intent_id)
+                    .where(integration_promotion_intents.c.state == "conflict")
+                    .values(**frozen, state="resolution_reserved", updated_at=time.time())
+                )
+        except IntegrityError:
+            raise ValueError(
+                "target has another unresolved promotion"
+            ) from None
         if result.rowcount != 1:
             raise ValueError("promotion conflict changed during resolution reservation")
         return intent | frozen | {"state": "resolution_reserved"}

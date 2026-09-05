@@ -144,7 +144,10 @@ class TestReconcilePools:
         self, orch, db, tmp_path
     ):
         """Pool launch protects its checkout before the session receives it."""
+        from src.api.auth import SessionTokenStore
+
         orch.config.worktrees.enabled = False
+        orch.token_store = SessionTokenStore(db)
         workspace = tmp_path / "ws0"
         workspace.mkdir(parents=True)
 
@@ -154,6 +157,11 @@ class TestReconcilePools:
 
         assert session_id is not None
         orch._ensure_control_files_excluded.assert_awaited_once_with(str(workspace))
+        row = await db.get_session(session_id)
+        spec = orch.session_providers.create("fake").starts[0]
+        scope = await orch.token_store.validate(spec.env["AQ_API_TOKEN"])
+        assert scope is not None
+        assert scope.session_instance_token == row.instance_token
 
     async def test_pool_handoff_refuses_unverifiable_daemon_excludes(
         self, orch, db, tmp_path

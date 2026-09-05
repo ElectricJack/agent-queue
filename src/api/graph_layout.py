@@ -750,6 +750,7 @@ def build_graph_layout_router(*, db, command_handler=None) -> APIRouter:
                     "_scope": {
                         "kind": scope.kind,
                         "session_id": scope.session_id,
+                        "session_instance_token": scope.session_instance_token,
                         "task_id": scope.task_id,
                         "project_id": scope.project_id,
                         "elevated": scope.elevated,

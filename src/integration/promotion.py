@@ -13,7 +13,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from src.commands.principal import PrincipalKind, TRUSTED_LOCAL, current_principal
+from src.commands.principal import (
+    PrincipalKind,
+    TRUSTED_LOCAL,
+    current_principal,
+    matches_session_instance,
+)
 from src.git.manager import GitError, GitManager, RemoteRefState
 from src.integration.models import ConflictResolutionInput, Fence, PromotionInput, PromotionValue
 from src.integration.ownership import BranchOwnership
@@ -333,6 +338,7 @@ class PromotionService:
             principal.task_id is None
             or principal.session_id is None
             or principal.project_id is None
+            or principal.session_instance_token is None
         ):
             raise PromotionAuthorizationError("repair session identity is incomplete")
 
@@ -363,6 +369,7 @@ class PromotionService:
                 or scope["session_id"] != principal.session_id
                 or scope["workspace_id"] is None
                 or not scope["instance_token"]
+                or not matches_session_instance(principal, scope["instance_token"])
                 or scope["fence_token"] != request.fence.token
                 or request.fence.owner_id != principal.task_id
                 or scope["deadline_at"] is None
@@ -402,12 +409,11 @@ class PromotionService:
             principal.task_id is None
             or principal.session_id is None
             or principal.project_id is None
+            or principal.session_instance_token is None
         ):
             raise PromotionAuthorizationError("repair session identity is incomplete")
         intent = await self._intent(intent_id)
-        if intent["state"] == "committed":
-            return self._value(intent), True
-        if intent["state"] != "resolution_reserved":
+        if intent["state"] not in {"resolution_reserved", "committed"}:
             raise PromotionInvariantError("promotion has no reserved conflict resolution")
         if (
             fence.target.repository_id != intent["repository_id"]
@@ -435,17 +441,15 @@ class PromotionService:
                 or scope["workspace_id"] is None
                 or scope["workspace_path"] is None
                 or not scope["instance_token"]
-                or (
-                    principal.session_id == intent["resolution_session_id"]
-                    and scope["instance_token"]
-                    != intent["resolution_session_instance_token"]
-                )
+                or not matches_session_instance(principal, scope["instance_token"])
                 or scope["fence_token"] != fence.token
                 or fence.owner_id != principal.task_id
                 or scope["deadline_at"] is None
                 or self.clock() >= float(scope["deadline_at"])
             ):
                 raise PromotionTargetMoved("repair resolution push authority is stale")
+            if intent["state"] == "committed":
+                return self._value(intent), True
             async with self.ownership.mutation_exclusion_on(
                 conn, fence, state="attached", expected_role="repair"
             ):
@@ -453,7 +457,9 @@ class PromotionService:
                 async with self.git.arepository_transaction(str(workspace)):
                     await self._assert_exact_resolution(workspace, intent)
                     remote = await self.git.als_remote_ref(
-                        str(workspace), intent["target_branch"]
+                        str(workspace),
+                        intent["target_branch"],
+                        remote=intent["origin_url"],
                     )
                     if remote.state is RemoteRefState.ERROR:
                         raise PromotionRuntimeError(
@@ -476,6 +482,7 @@ class PromotionService:
                                 intent["target_branch"],
                                 intent["expected_target"],
                                 lock_held=True,
+                                remote=intent["origin_url"],
                             )
                         except GitError as exc:
                             raise PromotionRuntimeError(str(exc)) from exc

@@ -558,6 +558,7 @@ class TestSessionToken:
         scope = await store.validate(r["token"])
         assert scope is not None
         assert (scope.session_id, scope.project_id, scope.task_id) == ("sess-1", "p1", "t1")
+        assert scope.session_instance_token == "tok-1"
         # Never elevated: the minted token is the worker's own scope, not
         # the operator's.
         assert scope.elevated is False
@@ -1109,6 +1110,9 @@ class TestEndToEndOnFakeProvider:
     async def test_full_lifecycle(
         self, db, real_orch, real_handler, provider, tmp_path, config, monkeypatch
     ):
+        from src.api.auth import SessionTokenStore
+
+        real_orch.token_store = SessionTokenStore(db)
         # 1. Launch through the real ``_execute_task`` — routing fork,
         #    ``platform = None``, workspace prep, then return immediately
         #    with no stream to block on.
@@ -1140,6 +1144,9 @@ class TestEndToEndOnFakeProvider:
         assert spec.env["AQ_TASK_ID"] == "t1"
         assert spec.env["AQ_SESSION_ID"] == session.id
         assert spec.env["AQ_INSTANCE_TOKEN"] == session.instance_token
+        scope = await real_orch.token_store.validate(spec.env["AQ_API_TOKEN"])
+        assert scope is not None
+        assert scope.session_instance_token == session.instance_token
         assert spec.env["AQ_WORK_DIR"] == wd
         assert "aq prime" in spec.prompt
 

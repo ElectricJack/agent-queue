@@ -935,6 +935,10 @@ api_session_tokens = Table(
     metadata,
     Column("token_hash", Text, primary_key=True),  # sha256 hex
     Column("session_id", Text, nullable=False),
+    # Immutable launch-instance claim bound by the daemon when minting.
+    # NULL preserves old tokens for unrelated commands; managed writer
+    # mutations require a freshly bound claim and fail closed without one.
+    Column("session_instance_token", Text, nullable=True),
     Column("task_id", Text, nullable=True),
     # Soft ref (matches the agents.profile_id pattern).
     Column("project_id", Text, nullable=True),

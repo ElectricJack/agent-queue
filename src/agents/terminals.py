@@ -194,6 +194,7 @@ async def _start_locked(orchestrator, agent_id, config):
         )
         api_token = await token_store.mint(
             session_id=session_id,
+            session_instance_token=instance_token,
             task_id=None,
             project_id=None,
             elevated=False,

@@ -143,6 +143,8 @@ class TestGlobalSupervisorColdStart:
         assert call["project_id"] is None
         assert call["elevated"] is True
         assert call["task_id"] is None
+        row = await lens._db.get_session_by_name("n-supervisor--global")
+        assert call["session_instance_token"] == row.instance_token
         # Provider actually got a start with the ``n-supervisor--global``
         # runtime name so the reconciler can adopt it.
         starts = providers.create("fake").starts
@@ -178,3 +180,5 @@ class TestGlobalSupervisorColdStart:
         call = token_store.mint.await_args.kwargs
         assert call["project_id"] == "proj1"
         assert call["elevated"] is True
+        row = await lens._db.get_session_by_name("n-supervisor--proj1")
+        assert call["session_instance_token"] == row.instance_token

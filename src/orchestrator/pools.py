@@ -439,7 +439,10 @@ class PoolsMixin:
 
             if token_store is not None:
                 api_token = await token_store.mint(
-                    session_id=session_id, task_id=None, project_id=project.id
+                    session_id=session_id,
+                    session_instance_token=instance_token,
+                    task_id=None,
+                    project_id=project.id,
                 )
                 minted_token = True
             else:

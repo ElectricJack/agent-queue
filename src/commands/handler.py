@@ -757,6 +757,7 @@ class CommandHandler(
         common = {
             "kind": PrincipalKind.SESSION,
             "session_id": session_id,
+            "session_instance_token": scope.get("session_instance_token"),
             "task_id": scope.get("task_id"),
             "project_id": scope.get("project_id"),
             "elevated": bool(scope.get("elevated")),

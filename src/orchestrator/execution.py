@@ -820,6 +820,7 @@ class ExecutionMixin:
         if token_store is not None:
             api_token = await token_store.mint(
                 session_id=session_id,
+                session_instance_token=instance_token,
                 task_id=task.id,
                 project_id=task.project_id,
             )

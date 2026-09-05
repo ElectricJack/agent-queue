@@ -173,10 +173,13 @@ class TestSeamDerivation:
             ),
         )
 
-        p = await handler._principal_from_scope(_scope())
+        p = await handler._principal_from_scope(
+            _scope(session_instance_token="authenticated-instance")
+        )
 
         assert p.kind is PrincipalKind.SESSION
         assert p.profile_id == "narrow"
+        assert p.session_instance_token == "authenticated-instance"
         assert p.policy.aq_commands == frozenset({"task_close"})
         assert p.enforced is True
 

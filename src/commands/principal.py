@@ -34,7 +34,7 @@ import contextvars
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from enum import StrEnum
-from typing import Iterator
+from typing import Any, Iterator, Mapping
 
 from src.profiles.capabilities import DENY_ALL, CapabilityPolicy
 
@@ -85,6 +85,7 @@ class ExecutionPrincipal:
     kind: PrincipalKind
     policy: CapabilityPolicy
     session_id: str | None = None
+    session_instance_token: str | None = None
     service_name: str | None = None
     task_id: str | None = None
     project_id: str | None = None
@@ -146,6 +147,16 @@ class ExecutionPrincipal:
 TRUSTED_LOCAL: ExecutionPrincipal = ExecutionPrincipal(
     kind=PrincipalKind.LOCAL, policy=DENY_ALL
 )
+
+
+def matches_session_instance(identity: Mapping[str, Any] | object, expected: str | None) -> bool:
+    """Whether a server-derived caller claim matches a locked session instance."""
+    claim = (
+        identity.get("session_instance_token")
+        if isinstance(identity, Mapping)
+        else getattr(identity, "session_instance_token", None)
+    )
+    return bool(expected and claim and claim == expected)
 
 
 _principal_var: contextvars.ContextVar[ExecutionPrincipal | None] = contextvars.ContextVar(

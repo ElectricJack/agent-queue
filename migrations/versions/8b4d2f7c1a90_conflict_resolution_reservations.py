@@ -34,6 +34,10 @@ _RESOLUTION_COLUMNS = (
 
 
 def upgrade() -> None:
+    with op.batch_alter_table("api_session_tokens") as batch_op:
+        batch_op.add_column(
+            sa.Column("session_instance_token", sa.Text(), nullable=True)
+        )
     with op.batch_alter_table("integration_promotion_intents") as batch_op:
         batch_op.drop_constraint("ck_integration_promotion_intents_state", type_="check")
         batch_op.add_column(sa.Column("resolution_head_sha", sa.Text(), nullable=True))
@@ -82,6 +86,16 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    live_resolution = op.get_bind().execute(
+        sa.text(
+            "SELECT 1 FROM integration_promotion_intents "
+            "WHERE state = 'resolution_reserved' LIMIT 1"
+        )
+    ).first()
+    if live_resolution is not None:
+        raise RuntimeError(
+            "reconcile/drain resolution reservations before downgrade"
+        )
     with op.batch_alter_table("integration_promotion_intents") as batch_op:
         batch_op.drop_constraint(
             "ck_integration_promotion_intents_resolution_fence", type_="check"
@@ -99,3 +113,5 @@ def downgrade() -> None:
             "ck_integration_promotion_intents_state",
             "state IN ('reserved', 'prepared', 'pushed', 'reconciled', 'committed', 'conflict')",
         )
+    with op.batch_alter_table("api_session_tokens") as batch_op:
+        batch_op.drop_column("session_instance_token")

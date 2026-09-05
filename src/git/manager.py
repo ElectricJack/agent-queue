@@ -2619,11 +2619,13 @@ class GitManager:
         result = await self.als_remote_ref(checkout_path, branch)
         return result.oid if result.state is RemoteRefState.PRESENT else None
 
-    async def als_remote_ref(self, checkout_path: str, branch: str) -> RemoteRefResult:
+    async def als_remote_ref(
+        self, checkout_path: str, branch: str, *, remote: str = "origin"
+    ) -> RemoteRefResult:
         """Read one exact remote head without conflating absence and I/O failure."""
         branch = _validate_ref(branch)
         result = await self.arun_git_result(
-            ["ls-remote", "--heads", "origin", f"refs/heads/{branch}"],
+            ["ls-remote", "--heads", remote, f"refs/heads/{branch}"],
             cwd=checkout_path,
             env={"LC_ALL": "C"},
         )
@@ -2803,6 +2805,7 @@ class GitManager:
         expected_old_oid: str,
         *,
         lock_held: bool = False,
+        remote: str = "origin",
     ) -> str:
         """Push one validated candidate with an exact remote old-tip lease.
 
@@ -2826,7 +2829,7 @@ class GitManager:
         # commit available for the ancestry proof even in a fresh checkout;
         # the explicit lease below remains the remote-movement guard.
         runner = self._arun_unlocked if lock_held else self._arun
-        await runner(["fetch", "--no-tags", "origin", f"refs/heads/{branch}"], cwd=checkout_path)
+        await runner(["fetch", "--no-tags", remote, f"refs/heads/{branch}"], cwd=checkout_path)
         for oid in (base_oid, tip_oid, expected_old_oid):
             await self._arun(["cat-file", "-e", f"{oid}^{{commit}}"], cwd=checkout_path)
         if await self.ais_ancestor(checkout_path, base_oid, tip_oid, strict=True) is not True:
@@ -2843,7 +2846,7 @@ class GitManager:
         await runner(
             [
                 "push",
-                "origin",
+                remote,
                 f"--force-with-lease=refs/heads/{branch}:{expected_old_oid}",
                 f"{tip_oid}:refs/heads/{branch}",
             ],

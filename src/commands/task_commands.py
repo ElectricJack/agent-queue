@@ -49,6 +49,7 @@ from src.commands.helpers import (
     _format_task_tree,
     format_dependency_list,
 )
+from src.commands.principal import matches_session_instance
 from src.review_keys import REVIEW_PROFILE_IDS, is_review_completion, reviewed_task_id
 from src.task_summary import write_task_summary
 
@@ -1270,8 +1271,21 @@ class TaskCommandsMixin:
                 session_id=(repair_filing_binding or {}).get("session_id"),
                 conn=conn,
             )
+            if repair_filing_binding is not None and repair_scope is None:
+                raise _FilingScope("repair stage is no longer active")
             if repair_scope is not None:
                 if not repair_scope["active"]:
+                    raise _FilingScope("repair stage is no longer active")
+                if not matches_session_instance(
+                    {
+                        "session_instance_token": repair_filing_binding.get(
+                            "caller_session_instance_token"
+                        )
+                        if repair_filing_binding
+                        else None
+                    },
+                    repair_scope["instance_token"],
+                ):
                     raise _FilingScope("repair stage is no longer active")
                 current_binding = {
                     key: repair_scope[key]
@@ -1285,7 +1299,10 @@ class TaskCommandsMixin:
                         "fence_token",
                     )
                 }
-                if current_binding != repair_filing_binding:
+                expected_binding = {
+                    key: repair_filing_binding[key] for key in current_binding
+                }
+                if current_binding != expected_binding:
                     raise _FilingScope("repair stage is no longer active")
                 if repair_scope["target_kind"] == "parent":
                     held_parent_id = repair_scope["parent_task_id"]
@@ -1543,6 +1560,11 @@ class TaskCommandsMixin:
                         "success": False,
                         "error": "repair stage is no longer active",
                     }
+                if not matches_session_instance(scope, repair_scope["instance_token"]):
+                    return {
+                        "success": False,
+                        "error": "repair stage is no longer active",
+                    }
                 repair_filing_binding = {
                     key: repair_scope[key]
                     for key in (
@@ -1555,6 +1577,9 @@ class TaskCommandsMixin:
                         "fence_token",
                     )
                 }
+                repair_filing_binding["caller_session_instance_token"] = scope.get(
+                    "session_instance_token"
+                )
                 if repair_scope["target_kind"] == "parent":
                     held_parent_id = repair_scope["parent_task_id"]
                     from src.integration.hierarchy import resolve_workspace_repair_proof

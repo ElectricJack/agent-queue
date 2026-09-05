@@ -38,6 +38,10 @@ class RequestScope:
 
     kind: Literal["local", "session"]
     session_id: str | None = None
+    # Immutable daemon-minted launch instance. Unlike profile identity this
+    # must not follow a replacement ``sessions`` row: managed writes compare
+    # the caller's original token claim with the currently locked instance.
+    session_instance_token: str | None = None
     task_id: str | None = None
     project_id: str | None = None
     #: Trusted-scope flag. When True (currently only per-project
@@ -84,6 +88,7 @@ class SessionTokenStore:
         self,
         *,
         session_id: str,
+        session_instance_token: str | None = None,
         task_id: str | None,
         project_id: str | None,
         elevated: bool = False,
@@ -95,6 +100,7 @@ class SessionTokenStore:
         await self._db.insert_api_token(
             token_hash=h,
             session_id=session_id,
+            session_instance_token=session_instance_token,
             task_id=task_id,
             project_id=project_id,
             created_at=now,
@@ -105,6 +111,7 @@ class SessionTokenStore:
             RequestScope(
                 kind="session",
                 session_id=session_id,
+                session_instance_token=session_instance_token,
                 task_id=task_id,
                 project_id=project_id,
                 elevated=elevated,
@@ -138,6 +145,7 @@ class SessionTokenStore:
         scope = RequestScope(
             kind="session",
             session_id=row["session_id"],
+            session_instance_token=row.get("session_instance_token"),
             task_id=row.get("task_id"),
             project_id=row.get("project_id"),
             elevated=bool(row.get("elevated") or False),

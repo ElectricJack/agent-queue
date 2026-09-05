@@ -21,6 +21,7 @@ class ApiSessionTokenQueriesMixin:
         *,
         token_hash: str,
         session_id: str,
+        session_instance_token: str | None = None,
         task_id: str | None,
         project_id: str | None,
         created_at: float,
@@ -32,6 +33,7 @@ class ApiSessionTokenQueriesMixin:
                 insert(api_session_tokens).values(
                     token_hash=token_hash,
                     session_id=session_id,
+                    session_instance_token=session_instance_token,
                     task_id=task_id,
                     project_id=project_id,
                     created_at=created_at,

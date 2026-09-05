@@ -114,6 +114,7 @@ async def test_worker_starts_private_named_terminal_with_scoped_token(handler):
     assert Path(row.work_dir).is_dir()
     scope = await handler.orchestrator.token_store.validate(spec.env["AQ_API_TOKEN"])
     assert scope.session_id == row.id and not scope.elevated
+    assert scope.session_instance_token == row.instance_token
     assert scope.project_id is None and scope.task_id is None
     assert "aq task claim" not in spec.prompt and "aq inbox" not in spec.prompt
     assert await handler.db.list_projects() == [] and await handler.db.list_tasks() == []

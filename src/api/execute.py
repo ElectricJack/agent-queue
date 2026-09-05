@@ -78,6 +78,7 @@ async def api_execute(
     args["_scope"] = {
         "kind": scope.kind,
         "session_id": scope.session_id,
+        "session_instance_token": scope.session_instance_token,
         "task_id": scope.task_id,
         "project_id": scope.project_id,
         # Commands that fence reads on the scope need to know whether this
@@ -142,6 +143,7 @@ async def api_tools(
         {
             "kind": scope.kind,
             "session_id": scope.session_id,
+            "session_instance_token": scope.session_instance_token,
             "task_id": scope.task_id,
             "project_id": scope.project_id,
             "elevated": scope.elevated,

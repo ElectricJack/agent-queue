@@ -24,6 +24,7 @@ from src.database.tables import (
     integration_repair_stage_evidence,
     integration_repair_stages,
     playbook_artifacts,
+    sessions,
     task_integration_checkpoints,
     task_branch_origins,
     task_delivery_receipts,
@@ -1307,6 +1308,7 @@ async def test_primary_dispatch_reuses_only_exact_live_attached_verifier(
     handler._current_scope = {
         "kind": "session",
         "session_id": "verifier-session",
+        "session_instance_token": "token",
         "task_id": "verifier",
         "project_id": "p",
         "elevated": False,
@@ -2328,6 +2330,7 @@ async def test_running_repair_delegate_files_real_child_from_clean_pushed_head(
     handler._current_scope = {
         "kind": "session",
         "session_id": "repair-session",
+        "session_instance_token": "token",
         "task_id": repair_task_id,
         "project_id": "p",
         "elevated": False,
@@ -2377,6 +2380,20 @@ async def test_running_repair_delegate_files_real_child_from_clean_pushed_head(
     assert wrong_session["error"] == "repair stage is no longer active"
     handler._current_scope["session_id"] = "repair-session"
 
+    handler._current_scope["session_instance_token"] = None
+    missing_instance = await handler._cmd_create_task(
+        {"title": "Missing instance", "description": "fix", "reason": "old token"}
+    )
+    assert missing_instance["success"] is False
+    assert missing_instance["error"] == "repair stage is no longer active"
+    handler._current_scope["session_instance_token"] = "stale-token"
+    stale_instance = await handler._cmd_create_task(
+        {"title": "Stale instance", "description": "fix", "reason": "old token"}
+    )
+    assert stale_instance["success"] is False
+    assert stale_instance["error"] == "repair stage is no longer active"
+    handler._current_scope["session_instance_token"] = "token"
+
     original_lock = handler.db.lock_filing_scope
     raced = False
 
@@ -2402,6 +2419,29 @@ async def test_running_repair_delegate_files_real_child_from_clean_pushed_head(
     assert stale_fence["success"] is False
     assert stale_fence["error"] == "repair stage is no longer active"
     monkeypatch.setattr(handler.db, "lock_filing_scope", original_lock)
+
+    replaced = False
+
+    async def replace_session_instance(conn, task_ids):
+        nonlocal replaced
+        result = await original_lock(conn, task_ids)
+        if not replaced:
+            replaced = True
+            await conn.execute(
+                update(sessions)
+                .where(sessions.c.id == "repair-session")
+                .values(instance_token="replacement-token")
+            )
+        return result
+
+    monkeypatch.setattr(handler.db, "lock_filing_scope", replace_session_instance)
+    stale_at_cas = await handler._cmd_create_task(
+        {"title": "Session replaced", "description": "fix", "reason": "raced restart"}
+    )
+    assert stale_at_cas["success"] is False
+    assert stale_at_cas["error"] == "repair stage is no longer active"
+    monkeypatch.setattr(handler.db, "lock_filing_scope", original_lock)
+    await handler.db.update_session("repair-session", instance_token="token")
 
     filed = await handler._cmd_create_task(
         {"title": "Follow-up", "description": "fix", "reason": "repair found it"}
@@ -2848,6 +2888,7 @@ async def test_batch_repair_delegate_can_file_only_explicit_project_root(
     handler._current_scope = {
         "kind": "session",
         "session_id": "batch-repair-session",
+        "session_instance_token": "token",
         "task_id": repair_task_id,
         "project_id": "p",
         "elevated": False,

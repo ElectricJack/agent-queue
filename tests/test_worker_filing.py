@@ -73,6 +73,22 @@ def created_events(handler):
 
 
 class TestFiling:
+    async def test_legacy_null_instance_claim_keeps_unmanaged_worker_filing_compatible(
+        self, handler, db
+    ):
+        sid = await holding_session(db)
+
+        result = await scoped(handler, sid)._cmd_create_task(
+            {
+                "title": "Legacy finding",
+                "description": "d",
+                "reason": "unmanaged project compatibility",
+            }
+        )
+
+        assert "session_instance_token" not in handler._current_scope
+        assert result["success"] is True
+
     async def test_reason_is_required_before_worker_filing_mutates_state(self, handler, db):
         sid = await holding_session(db)
 

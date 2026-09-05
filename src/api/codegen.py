@@ -186,6 +186,7 @@ def _make_route_handler(cmd_name: str, input_model: type[BaseModel]):
         args["_scope"] = {
             "kind": scope.kind,
             "session_id": scope.session_id,
+            "session_instance_token": scope.session_instance_token,
             "task_id": scope.task_id,
             "project_id": scope.project_id,
             "elevated": scope.elevated,
