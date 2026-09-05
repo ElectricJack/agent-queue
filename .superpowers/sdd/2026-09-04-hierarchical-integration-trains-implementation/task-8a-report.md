@@ -264,3 +264,83 @@ survivors=[]
   consumed batch is released; that is the reviewed handoff contract that makes subsequent
   triggers coalesce to the first request.
 
+## Fix round 1 — legacy nullable batch identity
+
+Review found that c7 legally permitted a non-empty batch with a null `base_sha`, null
+`integration_branch`, or both, while the Task 8a structural constraint requires both for
+every non-empty lifecycle. The revision now begins `upgrade()` with a read-only
+compatibility query. If any such row exists, it raises:
+
+```text
+cannot upgrade integration batch sealing schema while legacy non-empty batches have a
+null base SHA or integration branch; drain or reconcile those batches before upgrading
+```
+
+This check executes before existing-trigger drops, column creation, backfill, or batch
+rewrite. It does not invent Git identity from optional history.
+
+The regression tests parameterize all three legal c7 null combinations on both SQLite
+and PostgreSQL. For every case they snapshot the row, batch columns, and complete trigger
+set; assert the explicit refusal, unchanged row/schema/guards, and c7 Alembic version;
+then delete the incompatible row and prove upgrade/downgrade/upgrade succeeds.
+
+### Fix-round RED
+
+The corrected SQLite RED reached the old behavior's accidental structural-constraint
+failure rather than the required compatibility refusal:
+
+```text
+$ .venv/bin/pytest -q tests/test_integration_state.py -k 'sqlite_task8a_upgrade_refuses_legacy_null_batch_identity' -x
+FAILED tests/test_integration_state.py::test_sqlite_task8a_upgrade_refuses_legacy_null_batch_identity_before_ddl[null-base]
+E sqlite3.IntegrityError: CHECK constraint failed: ck_integration_batches_empty_identity
+1 failed, 40 deselected in 9.31s
+```
+
+### Fix-round GREEN
+
+```text
+$ .venv/bin/pytest -q tests/test_integration_state.py -k 'sqlite_task8a_upgrade_refuses_legacy_null_batch_identity'
+3 passed, 40 deselected in 44.08s
+```
+
+The PostgreSQL proof used only the unique disposable
+`aq_task8a_fix1_8f23a4d1` prefix:
+
+```text
+$ POSTGRES_TEST_DSN='postgresql+asyncpg://integration_test:integration_test@127.0.0.1:16833/aq_task8a_fix1_8f23a4d1' .venv/bin/pytest -q tests/test_integration_state.py -k 'postgres_task8a_upgrade_refuses_legacy_null_batch_identity'
+3 passed, 40 deselected in 9.54s
+```
+
+### Fix-round final focused migration gate
+
+This selection includes the six null-combination refusal/drain/U-D-U cases, the seeded
+SQLite Task 8a U-D-U case, and the PostgreSQL prior-revision U-D-U case:
+
+```text
+$ POSTGRES_TEST_DSN='postgresql+asyncpg://integration_test:integration_test@127.0.0.1:16833/aq_task8a_fix1_final_6c19b2e7' .venv/bin/pytest -q tests/test_integration_state.py -k 'task8a_migration_cycle or task8a_upgrade_refuses_legacy_null_batch_identity or postgres_migration_cycle_from_prior_revision_to_final_and_back'
+8 passed, 35 deselected in 64.68s (0:01:04)
+```
+
+Changed-file checks:
+
+```text
+$ ruff check migrations/versions/d8e9f0a1b2c3_durable_integration_sweeps.py tests/test_integration_state.py
+All checks passed!
+$ git diff --check
+```
+
+The final disposable prefix was removed and verified:
+
+```text
+removed=['aq_task8a_fix1_final_6c19b2e7', 'aq_task8a_fix1_final_6c19b2e7_master']
+survivors=[]
+```
+
+Fix implementation commit: `97bef63f` (`fix: guard legacy integration batch upgrade`).
+
+Self-review: the guard is intentionally a precondition, not a repair. Its predicate
+matches exactly the population rejected by the new non-empty identity constraint; it
+does not reject empty rows (which cannot exist at c7) and it performs no mutation before
+raising. The before/after trigger-set and column snapshots establish that the explicit
+failure leaves both dialects at the untouched c7 schema. No warning cleanup or Task 8b
+consumer behavior was included.
