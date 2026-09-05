@@ -915,3 +915,6 @@ def register_builtin_contracts(registry: ContractRegistry) -> None:
                     _adapter(name, value),
                 )
             )
+    from src.commands.contracts.integration import register_integration_contracts
+
+    register_integration_contracts(registry)

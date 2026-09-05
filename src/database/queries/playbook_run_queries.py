@@ -247,6 +247,7 @@ def _row_to_pending_event(row) -> dict[str, Any]:
         "resolved_by": row["resolved_by"],
         "resolution": row["resolution"],
         "resolution_reason": row["resolution_reason"],
+        "protected": bool(row["protected"]),
     }
 
 
@@ -1420,6 +1421,7 @@ class PlaybookRunQueryMixin:
             playbook_pending_events.c.playbook_id == playbook_id,
             playbook_pending_events.c.resolved_at.is_(None),
             playbook_pending_events.c.dispatch_claim_token.is_(None),
+            playbook_pending_events.c.protected.is_(False),
         ]
         if exclude is not None:
             held_back.append(playbook_pending_events.c.pending_event_id != exclude)
@@ -1554,6 +1556,7 @@ class PlaybookRunQueryMixin:
                         .where(
                             playbook_pending_events.c.playbook_id == playbook_id,
                             playbook_pending_events.c.resolved_at.is_(None),
+                            playbook_pending_events.c.protected.is_(False),
                         )
                     )
                 ).scalar_one()
@@ -1571,6 +1574,104 @@ class PlaybookRunQueryMixin:
                     if int(unresolved) - dropped > quota:
                         _warn_pending_quota(playbook_id, quota, now)
                         raise PendingEventQuotaExceeded(playbook_id, quota)
+        except IntegrityError as exc:
+            raise PendingEventIntegrityError(playbook_id) from exc
+        return pending_event_id
+
+    async def retain_integration_event(
+        self,
+        *,
+        playbook_id: str,
+        scope: str,
+        scope_identifier: str,
+        event_type: str,
+        event: Mapping[str, Any],
+        event_id: str,
+        now: float,
+    ) -> str:
+        """Durably retain one integration event outside generic loss policy.
+
+        The stable primary key makes a partial multi-playbook delivery safe to
+        retry even after the row was successfully dispatched.  ``protected``
+        rows bypass the ordinary per-playbook flood quota and cannot be
+        expired, overflow-evicted, or manually discarded.  Only the claimed
+        successful-dispatch path may resolve one.
+        """
+        if not event_id:
+            raise ValueError("integration event_id is required")
+        identity = _dumps([playbook_id, scope, scope_identifier, event_id])
+        pending_event_id = uuid.uuid5(uuid.NAMESPACE_OID, f"integration|{identity}").hex
+        body = dict(event)
+        # The same playbook may be activated in more than one scope. The
+        # existing unresolved-row uniqueness is keyed by playbook + dedup, so
+        # scope belongs in the destination identity as well as the stable PK.
+        dedup_key = f"integration:{scope}:{scope_identifier}:{event_id}"
+        try:
+            async with self.immediate() as conn:
+                insert_fn = pg_insert if conn.dialect.name == "postgresql" else sqlite_insert
+                await conn.execute(
+                    insert_fn(playbook_pending_events)
+                    .values(
+                        pending_event_id=pending_event_id,
+                        playbook_id=playbook_id,
+                        scope=scope,
+                        scope_identifier=scope_identifier,
+                        event_type=event_type,
+                        event=_dumps(body),
+                        event_id=event_id,
+                        dedup_key=dedup_key,
+                        reason="unavailable",
+                        attempts=0,
+                        last_error=None,
+                        received_at=now,
+                        # SQLAlchemy supports infinity on both SQLite and
+                        # PostgreSQL, but a finite year-9999 timestamp keeps
+                        # dumps and database inspection portable.
+                        expires_at=253_402_300_799.0,
+                        protected=True,
+                        dispatch_claim_token=None,
+                        dispatch_claimed_by=None,
+                        dispatch_claimed_at=None,
+                        resolved_at=None,
+                        resolved_by=None,
+                        resolution=None,
+                    )
+                    .on_conflict_do_nothing(
+                        index_elements=[playbook_pending_events.c.pending_event_id]
+                    )
+                )
+                row = (
+                    (
+                        await conn.execute(
+                            select(playbook_pending_events).where(
+                                playbook_pending_events.c.pending_event_id
+                                == pending_event_id
+                            )
+                        )
+                    )
+                    .mappings()
+                    .one()
+                )
+                stored = (
+                    row["playbook_id"],
+                    row["scope"],
+                    row["scope_identifier"],
+                    row["event_type"],
+                    row["event_id"],
+                    json.loads(row["event"]),
+                    bool(row["protected"]),
+                )
+                expected = (
+                    playbook_id,
+                    scope,
+                    scope_identifier,
+                    event_type,
+                    event_id,
+                    body,
+                    True,
+                )
+                if stored != expected:
+                    raise PendingEventIntegrityError(playbook_id)
         except IntegrityError as exc:
             raise PendingEventIntegrityError(playbook_id) from exc
         return pending_event_id
@@ -1599,6 +1700,7 @@ class PlaybookRunQueryMixin:
                     playbook_pending_events.c.pending_event_id == pending_event_id,
                     playbook_pending_events.c.resolved_at.is_(None),
                     playbook_pending_events.c.dispatch_claim_token.is_(None),
+                    playbook_pending_events.c.protected.is_(False),
                 )
                 .values(
                     resolved_at=now,
@@ -1757,6 +1859,35 @@ class PlaybookRunQueryMixin:
         by_id = {row["pending_event_id"]: _row_to_pending_event(row) for row in rows}
         return [by_id[event_id] for event_id in wanted if event_id in by_id]
 
+    async def list_pending_integration_events(
+        self, *, playbook_ids: Collection[str], limit: int = 100
+    ) -> list[dict[str, Any]]:
+        """Return one bounded restart-reconciliation page of protected events."""
+        wanted = list(dict.fromkeys(playbook_ids))
+        if not wanted or limit <= 0:
+            return []
+        async with self._engine.connect() as conn:
+            rows = (
+                (
+                    await conn.execute(
+                        select(playbook_pending_events)
+                        .where(
+                            playbook_pending_events.c.playbook_id.in_(wanted),
+                            playbook_pending_events.c.protected.is_(True),
+                            playbook_pending_events.c.resolved_at.is_(None),
+                        )
+                        .order_by(
+                            playbook_pending_events.c.received_at,
+                            playbook_pending_events.c.pending_event_id,
+                        )
+                        .limit(limit)
+                    )
+                )
+                .mappings()
+                .all()
+            )
+        return [_row_to_pending_event(row) for row in rows]
+
     async def count_pending_events(
         self, playbook_id: str, *, reasons: Collection[str] | None = None
     ) -> int:
@@ -1794,6 +1925,7 @@ class PlaybookRunQueryMixin:
                         select(playbook_pending_events.c.pending_event_id)
                         .where(
                             playbook_pending_events.c.resolved_at.is_(None),
+                            playbook_pending_events.c.protected.is_(False),
                             claim_available,
                             playbook_pending_events.c.expires_at <= now,
                         )
@@ -1810,6 +1942,7 @@ class PlaybookRunQueryMixin:
                     .where(
                         playbook_pending_events.c.pending_event_id.in_(list(expiring)),
                         playbook_pending_events.c.resolved_at.is_(None),
+                        playbook_pending_events.c.protected.is_(False),
                         claim_available,
                         playbook_pending_events.c.expires_at <= now,
                     )

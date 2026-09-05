@@ -73,6 +73,9 @@ class EffectSubject(StrEnum):
     GATE = "gate"
     GATE_WAITER = "gate_waiter"
     ROUTING_GATE = "routing_gate"
+    INTEGRATION_OPERATION = "integration_operation"
+    BRANCH_OWNERSHIP = "branch_ownership"
+    DELIVERY_EVIDENCE = "delivery_evidence"
 
 
 class ClausePredicate(BaseModel):

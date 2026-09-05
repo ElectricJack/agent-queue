@@ -1285,6 +1285,10 @@ playbook_pending_events = Table(
     # resolution vocabulary says *what* happened; this says why, which is the
     # difference between an audit trail and a counter.
     Column("resolution_reason", Text, nullable=True),
+    # Correctness-critical integration events are released only by successful
+    # playbook dispatch. Generic quota, expiry, and operator-discard paths may
+    # not resolve them.
+    Column("protected", Boolean, nullable=False, server_default=false()),
     CheckConstraint(
         "reason IN ('stale_contract', 'invalid_artifact', 'disabled', "
         "'unavailable', 'question_required', 'wait_registration')",

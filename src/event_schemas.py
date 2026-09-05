@@ -1068,6 +1068,39 @@ _METRICS_SCHEMAS: dict[str, EventSchema] = {
 
 
 # ---------------------------------------------------------------------------
+# Hierarchical delivery and root integration trains
+# ---------------------------------------------------------------------------
+
+_INTEGRATION_SCHEMAS: dict[str, EventSchema] = {
+    event_type: {
+        "required": ["project_id", "operation_id"],
+        "optional": [],
+        "types": {"project_id": str, "operation_id": str},
+        "fields": {
+            "project_id": {"type": "string", "description": "project"},
+            "operation_id": {"type": "string", "description": "integration operation"},
+        },
+    }
+    for event_type in (
+        "task.child_added",
+        "task.parent_checkpointed",
+        "delivery.ready",
+        "delivery.applied",
+        "task.integration_ready",
+        "task.integration_verified",
+        "integration.sweep_due",
+        "integration.sealed",
+        "integration.ci_completed",
+        "integration.repair_exhausted",
+        "integration.repair_deadline_due",
+        "integration.human_blocked",
+        "integration.promoted",
+        "integration.cleanup_pending",
+    )
+}
+
+
+# ---------------------------------------------------------------------------
 # Combined registry
 # ---------------------------------------------------------------------------
 
@@ -1098,6 +1131,7 @@ EVENT_SCHEMAS: dict[str, EventSchema] = {
     **_COMMAND_SCHEMAS,
     **_FORMULA_SCHEMAS,
     **_METRICS_SCHEMAS,
+    **_INTEGRATION_SCHEMAS,
 }
 """Master registry of all event schemas.
 
