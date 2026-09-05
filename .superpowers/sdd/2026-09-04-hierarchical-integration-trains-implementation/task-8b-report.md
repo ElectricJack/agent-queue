@@ -261,3 +261,146 @@ Commits:
 - No known functional concerns remain. PostgreSQL is intentionally exercised only for
   the required lock-order acceptance; the complete invariant matrix runs on SQLite and
   both adapters share the same SQLAlchemy query/service implementation.
+
+## Fix round 1 — request provenance, review exclusion, ref safety, sealed payload
+
+Review base: `4548c151`. Runtime/tests commit: `d1ec6d85` (`fix: preserve train
+sealing boundaries`). The review file was read completely before changes. Only its three
+Important findings and the controller's explicit sealed-payload checklist omission were
+addressed; the warning and test-module-size Minors remain out of scope.
+
+### RED
+
+Nonempty request ownership:
+
+```text
+$ pytest -q tests/test_integration_sealing.py::test_nonempty_seal_retains_first_request_for_manual_and_periodic_coalescing
+FAILED ...test_nonempty_seal_retains_first_request_for_manual_and_periodic_coalescing
+E AssertionError: assert 'due' == 'coalesced'
+1 failed, 3 warnings in 0.96s
+```
+
+The failure proves the seal had consumed the original manual request, allowing a second
+request and sequence to be allocated while the sealed batch and lease remained active.
+
+Typed sealed payload:
+
+```text
+$ pytest -q tests/test_integration_sealing.py -k 'retains_first_request or ref_safe or one_root_seal' -x
+FAILED ...test_one_root_seal_freezes_review_and_real_unstarted_operation
+E Right contains 1 more item: {'batch_id': 'integration-batch-bf00b1312321cf65db7cc7b3233367e6'}
+1 failed, 14 deselected, 3 warnings in 0.95s
+```
+
+Ref safety:
+
+```text
+$ pytest -q tests/test_integration_sealing.py::test_integration_branch_is_ref_safe_for_adversarial_project_and_request_ids
+FAILED ...test_integration_branch_is_ref_safe_for_adversarial_project_and_request_ids
+E AssertionError: assert None
+E ref = 'refs/heads/aq/integration/../project:^~ with space.lock/cee7f6e03d407ce9d3d1'
+1 failed, 3 warnings in 0.68s
+```
+
+Public append identity and review-writer exclusion:
+
+```text
+$ pytest -q tests/test_integration_sealing.py::test_public_review_append_requires_existing_source_task_project
+FAILED ...test_public_review_append_requires_existing_source_task_project
+E Failed: DID NOT RAISE <class 'ValueError'>
+1 failed, 3 warnings in 0.85s
+
+$ POSTGRES_TEST_DSN=postgresql+asyncpg://integration_test:integration_test@127.0.0.1:16833/task8b_fix1_review pytest -q tests/test_integration_sealing.py -k 'postgres_sealer_first or postgres_rejection_writer_first' -x
+FAILED ...test_postgres_sealer_first_freezes_approval_before_later_rejection[postgres]
+E AssertionError: assert not True
+1 failed, 1 skipped, 18 deselected, 3 warnings in 4.47s
+```
+
+The PostgreSQL failure shows the newer rejection append completed while the sealer was
+paused after selecting the approval.
+
+### GREEN implementation and evidence
+
+- A nonempty seal no longer consumes its outstanding schedule request. The batch and
+  lease retain the original request ID, manual trigger, timestamp, and sequence so both
+  manual and due-periodic calls coalesce. Terminal empty seals still consume immediately;
+  Task 10 owns eventual active-batch release and request clearing.
+- `append_integration_review_evidence()` now resolves the source task through its real
+  project inside `immediate()`, acquires that project's existing hierarchy lock, rechecks
+  the task/project identity after waiting, and inserts only while holding the lock.
+  `ReviewEvidenceProducer._revalidate_on()` was not changed and retains its existing lock.
+- Integration branch components are now labeled, independent lowercase SHA-256 prefixes:
+  `p-<32hex>/r-<32hex>`. Tests pass adversarial legal IDs through both the existing
+  `_validate_ref` guard and real read-only `git check-ref-format`, and prove distinct
+  inputs stay distinct.
+- New `integration.sealed` events carry distinct `batch_id` and actual `operation_id`.
+  The event schema types `batch_id` narrowly but keeps it optional for replay of durable
+  legacy events.
+
+Focused local GREEN:
+
+```text
+$ pytest -q tests/test_integration_sealing.py -k 'retains_first_request or ref_safe or one_root_seal or public_review_append_requires' -x
+4 passed, 18 deselected, 3 warnings in 1.22s
+
+$ pytest -q tests/test_integration_sealing.py -x
+16 passed, 6 skipped, 3 warnings in 3.89s
+```
+
+PostgreSQL coordinated orderings on the unique disposable databases
+`task8b_fix1_review` / `task8b_fix1_review_master`:
+
+```text
+$ POSTGRES_TEST_DSN=postgresql+asyncpg://integration_test:integration_test@127.0.0.1:16833/task8b_fix1_review pytest -q tests/test_integration_sealing.py -k 'postgres_sealer_first or postgres_rejection_writer_first' -x
+2 passed, 2 skipped, 18 deselected, 3 warnings in 5.23s
+```
+
+The sealer-first ordering freezes the approval, commits the batch, and only then permits
+the newer rejection append. The rejection-writer-first ordering holds the same project
+lock, makes seal wait, commits the rejection, and causes the fresh seal to exclude the
+root and produce `empty`. Cleanup verification after dropping both databases returned
+`[]` from `pg_database`.
+
+Shared review producer/public append and transition compatibility:
+
+```text
+$ aq test tests/test_integration_review_evidence.py tests/test_integration_promotion.py tests/test_task_ready_event.py -x
+aq test: slot 1 of 2, -n 3
+74 passed, 11 warnings in 29.18s
+
+$ pytest -q tests/test_event_schema_registry_validation.py -x
+416 passed, 2 warnings in 0.67s
+```
+
+Required Task 8b gate:
+
+```text
+$ aq test tests/test_integration_schedule.py tests/test_integration_sealing.py -x
+aq test: slot 1 of 2, -n 3
+23 passed, 6 skipped, 11 warnings in 5.91s
+```
+
+Static verification:
+
+```text
+$ ruff check src/integration/scheduler.py src/database/queries/integration_delivery_queries.py src/event_schemas.py tests/test_integration_sealing.py
+All checks passed!
+
+$ git diff --check
+(no output; exit 0)
+```
+
+### Fix-round self-review
+
+- Manual and periodic coalescing assertions independently verify the original request ID,
+  first trigger, requested timestamp, sequence 1, and exactly one sweep event.
+- Removing `_consume_request()` only from the nonempty path preserves the already-tested
+  terminal-empty behavior and does not introduce a second request queue.
+- The alternate append path uses the source task's actual project key; it does not take a
+  global or caller-supplied cross-project lock.
+- Both race tests exercise real database transactions and the real append/seal methods;
+  monkeypatches only pause execution after the relevant real read/lock boundary.
+- Batch ID and operation ID remain separate in both the service return and event payload.
+- No schema migration, public API/codegen, Git write, activation, or Task 9 behavior was
+  required.
+- No known functional concerns remain from this fix round.
