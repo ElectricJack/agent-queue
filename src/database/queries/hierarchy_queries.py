@@ -545,7 +545,10 @@ class HierarchyQueryMixin:
 
         Unlike the whole-graph check it replaced, this only detects a cycle
         the new edge would close; a graph that is already cyclic from drift
-        is not rejected here.
+        is not rejected here.  ``REACHABILITY_MAX_DEPTH`` is a safety net for
+        that case, not a performance bound: the ``UNION`` keys on
+        ``(id, depth)``, so a drifted cycle yields up to ``depth × |cycle|``
+        rows before the guard stops it.
         """
         from src.models import BLOCKING_DEP_TYPES
 

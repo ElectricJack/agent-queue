@@ -47,6 +47,18 @@ def build_graph_router(*, db) -> APIRouter:
         # One statement for every outgoing edge of every task in the project
         # (cross-project edges land client-side when the peer project's graph
         # is also loaded, spec §9.2) — was one statement per task.
+        # Same order the per-task loop produced (task list order, then
+        # dep_type, then target), sorted here rather than trusting the DB
+        # collation so the payload is byte-stable across dialects.
+        position = {r["id"]: i for i, r in enumerate(rows)}
+        edge_rows = sorted(
+            await db.list_project_edges(project_id),
+            key=lambda e: (
+                position.get(e["task_id"], len(position)),
+                e["dep_type"],
+                e["depends_on_task_id"],
+            ),
+        )
         edges = [
             GraphEdge(
                 from_task_id=e["task_id"],
@@ -54,7 +66,7 @@ def build_graph_router(*, db) -> APIRouter:
                 dep_type=e["dep_type"],
                 description=e["description"],
             )
-            for e in await db.list_project_edges(project_id)
+            for e in edge_rows
         ]
 
         waiters_by_gate = await db.list_gate_waiters_for_project(project_id)
@@ -63,7 +75,7 @@ def build_graph_router(*, db) -> APIRouter:
                 id=g["id"],
                 gate_type=g["gate_type"],
                 status=g["status"],
-                task_ids=waiters_by_gate.get(g["id"], []),
+                task_ids=sorted(waiters_by_gate.get(g["id"], [])),
             )
             for g in await db.list_gates(project_id=project_id)
         ]

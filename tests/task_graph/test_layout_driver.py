@@ -591,7 +591,10 @@ async def test_status_flip_in_all_variant_updates_aggregates_without_relaying(db
     # variant. (A plain "container_id = " substring also matches the routine
     # upsert's "SET container_id = excluded.container_id", which fires on
     # every publish including the aggregates-only path, so it can't be used
-    # to distinguish a container relay from an ordinary row write.)
+    # to distinguish a container relay from an ordinary row write.)  The
+    # ``?`` is SQLite's paramstyle — this fixture is SQLite-only; on
+    # PostgreSQL (``$1``) the fragment would never match and the assertion
+    # would pass vacuously.
     assert not any("task_layouts.container_id = ?" in s for s in statements), statements
 
 

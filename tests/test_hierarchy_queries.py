@@ -714,11 +714,17 @@ class TestAbandonReleasesResources:
 
 
 async def test_set_parent_cycle_check_does_not_load_the_whole_edge_table(db):
-    # 200 unrelated blocking edges elsewhere in the project.
+    # 200 unrelated blocking edges elsewhere in the project, inserted
+    # directly: add_dependency's own whole-graph DAG validation is O(E) per
+    # call and is not what this test measures.
     for i in range(200):
         await db.create_task(Task(id=f"u{i}", project_id=PROJECT_ID, title="", description=""))
-        if i:
-            await db.add_dependency(f"u{i}", f"u{i-1}")
+    rows = [
+        {"task_id": f"u{i}", "depends_on_task_id": f"u{i - 1}", "dep_type": DepType.BLOCKS.value}
+        for i in range(1, 200)
+    ]
+    async with db._engine.begin() as conn:
+        await conn.execute(insert(task_dependencies), rows)
     for tid in ("parent", "child"):
         await db.create_task(Task(id=tid, project_id=PROJECT_ID, title=tid, description=""))
 

@@ -288,8 +288,17 @@ class TaskQueryMixin:
             return [self._row_to_task(r) for r in result.mappings().fetchall()]
 
     _GRAPH_NODE_COLUMNS = (
-        "id", "title", "status", "priority", "is_blocked", "profile_id",
-        "intelligence_class", "assigned_agent_id", "branch_name", "pr_url", "dedup_key",
+        "id",
+        "title",
+        "status",
+        "priority",
+        "is_blocked",
+        "profile_id",
+        "intelligence_class",
+        "assigned_agent_id",
+        "branch_name",
+        "pr_url",
+        "dedup_key",
     )
 
     async def list_graph_task_rows(self, project_id: str) -> list[dict]:
