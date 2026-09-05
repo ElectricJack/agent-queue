@@ -471,6 +471,7 @@ async def test_upgrade_from_prior_schema_creates_every_integration_table(tmp_pat
             "integration_candidate_member_results", "integration_repair_operations",
             "integration_repair_stages", "integration_check_evidence", "project_integration_schedules",
             "project_integration_leases", "integration_outbox",
+            "integration_outbox_artifact_pins",
         } <= names
     finally:
         await database.close()

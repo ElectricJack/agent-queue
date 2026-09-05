@@ -6,13 +6,14 @@ import asyncio
 from types import SimpleNamespace
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.exc import IntegrityError
 
 from src.config import PlaybooksConfig
 from src.database import Database
 from src.database.tables import (
     integration_outbox,
+    integration_outbox_artifact_pins,
     playbook_activations,
     playbook_pending_events,
     playbook_v2_runs,
@@ -21,6 +22,7 @@ from src.integration.outbox import (
     IntegrationOutbox,
     enqueue_integration_event,
     freeze_destination_manifest,
+    load_acceptance_state,
 )
 from src.models import Project
 from src.playbooks.artifact_store import ArtifactStore
@@ -171,6 +173,13 @@ async def _pending_rows(db):
         return (await conn.execute(select(playbook_pending_events))).mappings().all()
 
 
+async def _artifact_pin_rows(db):
+    async with db._engine.connect() as conn:
+        return (
+            await conn.execute(select(integration_outbox_artifact_pins))
+        ).mappings().all()
+
+
 async def _accepted_activation_count(db, event_id: str) -> int:
     async with db._engine.connect() as conn:
         rows = (
@@ -220,6 +229,7 @@ async def test_committed_event_survives_dispatcher_restart(db, tmp_path):
 
     [row] = await _outbox_rows(db)
     assert row["delivered_at"] == NOW
+    assert await _artifact_pin_rows(db) == []
     assert await _accepted_activation_count(db, "event-1") == 1
 
 
@@ -675,6 +685,8 @@ async def test_artifact_retention_keeps_unaccepted_manifest_pin(db, tmp_path):
             }
         ],
     )
+    [pin] = await _artifact_pin_rows(db)
+    assert pin["artifact_sha256"] == old_sha
     await _activate(
         db, compiled, "integration-train", "integration.sealed", source_digit="2"
     )
@@ -684,6 +696,128 @@ async def test_artifact_retention_keeps_unaccepted_manifest_pin(db, tmp_path):
     )
 
     assert old_sha not in {sha for sha, _path in collected}
+
+
+async def test_artifact_gc_retains_a_candidate_on_concurrent_fk_conflict(db, tmp_path):
+    compiled = tmp_path / "compiled"
+    _activation_id, old_sha = await _activate(
+        db, compiled, "integration-train", "integration.sealed", source_digit="1"
+    )
+    await _activate(
+        db, compiled, "integration-train", "integration.sealed", source_digit="2"
+    )
+    await _enqueue(db)
+    async with db.immediate() as conn:
+        await conn.execute(
+            text(
+                "CREATE TRIGGER test_concurrent_artifact_pin BEFORE DELETE ON "
+                f"playbook_artifacts WHEN OLD.artifact_sha256 = '{old_sha}' BEGIN "
+                "INSERT INTO integration_outbox_artifact_pins(event_id, artifact_sha256) "
+                "VALUES ('event-1', OLD.artifact_sha256); END"
+            )
+        )
+
+    collected = await db.collect_playbook_artifacts(
+        NOW + 1_000_000, min_versions=0, limit=100
+    )
+
+    assert old_sha not in {sha for sha, _path in collected}
+    assert await db.get_playbook_artifact(old_sha) is not None
+
+
+async def test_gc_win_does_not_freeze_an_unusable_artifact_manifest(db, tmp_path):
+    compiled = tmp_path / "compiled"
+    _activation_id, old_sha = await _activate(
+        db, compiled, "integration-train", "integration.sealed", source_digit="1"
+    )
+    await _enqueue(db)
+    accepting = _runtime(db, compiled)
+    await accepting.refresh()
+    accepting._integration_reconciler_task.cancel()
+    await asyncio.gather(accepting._integration_reconciler_task, return_exceptions=True)
+    accepting._integration_reconciler_task = None
+    accepting._integration_wakeup.clear()
+    accepting._schedule_integration_pending = lambda _rows: None
+
+    _same_activation, new_sha = await _activate(
+        db, compiled, "integration-train", "integration.sealed", source_digit="2"
+    )
+    collected = await db.collect_playbook_artifacts(
+        NOW + 1_000_000, min_versions=0, limit=100
+    )
+    assert old_sha in {sha for sha, _path in collected}
+
+    payload = {"project_id": "p", "operation_id": "operation-1"}
+    assert not await accepting.accept_integration_event(
+        "integration.sealed", payload, "event-1"
+    )
+    assert (await load_acceptance_state(db, "event-1")).manifest is None
+    assert await accepting.accept_integration_event(
+        "integration.sealed", payload, "event-1"
+    )
+    [pending] = await _pending_rows(db)
+    assert pending["artifact_sha256"] == new_sha
+
+
+async def test_reconciler_recovers_after_transient_pending_list_failure(db, tmp_path):
+    compiled = tmp_path / "compiled"
+    activation_id, artifact_sha256 = await _activate(
+        db, compiled, "integration-train", "integration.sealed"
+    )
+    await db.retain_integration_event(
+        playbook_id="integration-train",
+        activation_id=activation_id,
+        artifact_sha256=artifact_sha256,
+        scope="project",
+        scope_identifier="p",
+        event_type="integration.sealed",
+        event={
+            "_event_type": "integration.sealed",
+            "event_id": "event-1",
+            "project_id": "p",
+            "operation_id": "operation-1",
+        },
+        event_id="event-1",
+        now=NOW,
+    )
+    original = db.list_pending_integration_events
+    fail_once = True
+
+    async def transient_failure(**kwargs):
+        nonlocal fail_once
+        if fail_once:
+            fail_once = False
+            raise RuntimeError("transient pending read")
+        return await original(**kwargs)
+
+    db.list_pending_integration_events = transient_failure
+    runtime = _runtime(db, compiled)
+    await runtime.refresh()
+    try:
+        async with asyncio.timeout(2):
+            while not (await _pending_rows(db))[0]["resolved_at"]:
+                await asyncio.sleep(0.02)
+    finally:
+        await runtime.shutdown()
+
+    assert (await _pending_rows(db))[0]["resolution"] == "dispatched"
+
+
+async def test_refresh_restarts_a_completed_reconciler(db, tmp_path):
+    runtime = _runtime(db, tmp_path / "compiled")
+    await runtime.refresh()
+    stopped = runtime._integration_reconciler_task
+    stopped.cancel()
+    await asyncio.gather(stopped, return_exceptions=True)
+    assert stopped.cancelled()
+
+    await runtime.refresh()
+    restarted = runtime._integration_reconciler_task
+    try:
+        assert restarted is not stopped
+        assert not restarted.done()
+    finally:
+        await runtime.shutdown()
 
 
 async def test_acceptance_cursor_cannot_regress(db):

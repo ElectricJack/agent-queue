@@ -13,9 +13,10 @@ from sqlalchemy import delete, insert, select, text, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.ext.asyncio import AsyncConnection
+from sqlalchemy.exc import IntegrityError
 
 from src.database.tables import (
-    integration_outbox,
+    integration_outbox_artifact_pins,
     playbook_activations,
     playbook_artifacts,
     playbook_pending_events,
@@ -489,53 +490,43 @@ class PlaybookArtifactQueryMixin:
                 playbook_pending_events.c.resolved_at.is_(None),
                 playbook_pending_events.c.artifact_sha256.is_not(None),
             )
-            candidates = (
-                (
-                    await conn.execute(
-                        select(
-                            playbook_artifacts.c.artifact_sha256,
-                            playbook_artifacts.c.playbook_id,
-                            playbook_artifacts.c.path,
-                        )
-                        .where(
-                            playbook_artifacts.c.created_at < before,
-                            playbook_artifacts.c.artifact_sha256.not_in(
-                                activated.scalar_subquery()
-                            ),
-                            playbook_artifacts.c.artifact_sha256.not_in(
-                                pinned_by_run.scalar_subquery()
-                            ),
-                            playbook_artifacts.c.artifact_sha256.not_in(
-                                pinned_by_pending.scalar_subquery()
-                            ),
-                        )
-                        .order_by(playbook_artifacts.c.created_at)
-                        .limit(limit)
-                    )
+            pinned_by_outbox = select(
+                integration_outbox_artifact_pins.c.artifact_sha256
+            )
+            candidate_query = (
+                select(
+                    playbook_artifacts.c.artifact_sha256,
+                    playbook_artifacts.c.playbook_id,
+                    playbook_artifacts.c.path,
                 )
+                .where(
+                    playbook_artifacts.c.created_at < before,
+                    playbook_artifacts.c.artifact_sha256.not_in(
+                        activated.scalar_subquery()
+                    ),
+                    playbook_artifacts.c.artifact_sha256.not_in(
+                        pinned_by_run.scalar_subquery()
+                    ),
+                    playbook_artifacts.c.artifact_sha256.not_in(
+                        pinned_by_pending.scalar_subquery()
+                    ),
+                    playbook_artifacts.c.artifact_sha256.not_in(
+                        pinned_by_outbox.scalar_subquery()
+                    ),
+                )
+                .order_by(playbook_artifacts.c.created_at)
+                .limit(limit)
+            )
+            if conn.dialect.name == "postgresql":
+                candidate_query = candidate_query.with_for_update()
+            candidates = (
+                (await conn.execute(candidate_query))
                 .mappings()
                 .fetchall()
             )
             if not candidates:
                 return []
             protected: set[str] = set()
-            manifests = (
-                (
-                    await conn.execute(
-                        select(integration_outbox.c.destination_manifest).where(
-                            integration_outbox.c.delivered_at.is_(None),
-                            integration_outbox.c.destination_manifest.is_not(None),
-                        )
-                    )
-                )
-                .scalars()
-                .all()
-            )
-            for manifest in manifests:
-                for destination in manifest or ():
-                    artifact_sha256 = destination.get("artifact_sha256")
-                    if artifact_sha256:
-                        protected.add(artifact_sha256)
             for playbook_id in {row["playbook_id"] for row in candidates}:
                 newest = (
                     (
@@ -553,16 +544,53 @@ class PlaybookArtifactQueryMixin:
                     .all()
                 )
                 protected.update(newest)
-            doomed = [
+            eligible = [
                 (row["artifact_sha256"], row["path"])
                 for row in candidates
                 if row["artifact_sha256"] not in protected
             ]
-            if not doomed:
+            if not eligible:
                 return []
-            await conn.execute(
-                delete(playbook_artifacts).where(
-                    playbook_artifacts.c.artifact_sha256.in_([sha for sha, _ in doomed])
+            doomed: list[tuple[str, str]] = []
+            for artifact_sha256, path in eligible:
+                still_unreferenced = (
+                    ~select(1)
+                    .where(
+                        playbook_activations.c.active_artifact_sha256
+                        == artifact_sha256
+                    )
+                    .exists(),
+                    ~select(1)
+                    .where(playbook_v2_runs.c.artifact_sha256 == artifact_sha256)
+                    .exists(),
+                    ~select(1)
+                    .where(
+                        playbook_pending_events.c.artifact_sha256 == artifact_sha256,
+                        playbook_pending_events.c.resolved_at.is_(None),
+                    )
+                    .exists(),
+                    ~select(1)
+                    .where(
+                        integration_outbox_artifact_pins.c.artifact_sha256
+                        == artifact_sha256
+                    )
+                    .exists(),
                 )
-            )
+                try:
+                    async with conn.begin_nested():
+                        result = await conn.execute(
+                            delete(playbook_artifacts).where(
+                                playbook_artifacts.c.artifact_sha256
+                                == artifact_sha256,
+                                *still_unreferenced,
+                            )
+                        )
+                except IntegrityError:
+                    logger.info(
+                        "retaining artifact %s after a concurrent reference",
+                        artifact_sha256,
+                    )
+                    continue
+                if int(result.rowcount) == 1:
+                    doomed.append((artifact_sha256, path))
         return doomed

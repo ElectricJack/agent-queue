@@ -1981,3 +1981,21 @@ integration_outbox = Table(
         postgresql_where=text("delivered_at IS NULL"),
     ),
 )
+
+integration_outbox_artifact_pins = Table(
+    "integration_outbox_artifact_pins",
+    metadata,
+    Column(
+        "event_id",
+        Text,
+        ForeignKey("integration_outbox.id", ondelete="CASCADE"),
+        primary_key=True,
+    ),
+    Column(
+        "artifact_sha256",
+        Text,
+        ForeignKey("playbook_artifacts.artifact_sha256", ondelete="RESTRICT"),
+        primary_key=True,
+    ),
+    Index("idx_integration_outbox_artifact_pins_sha", "artifact_sha256"),
+)

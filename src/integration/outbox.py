@@ -7,12 +7,13 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
 
-from sqlalchemy import or_, select, update
+from sqlalchemy import delete, insert, or_, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.ext.asyncio import AsyncConnection
+from sqlalchemy.exc import IntegrityError
 
-from src.database.tables import integration_outbox
+from src.database.tables import integration_outbox, integration_outbox_artifact_pins
 
 
 AcceptIntegrationEvent = Callable[[str, dict[str, Any], str], Awaitable[bool]]
@@ -22,6 +23,10 @@ AcceptIntegrationEvent = Callable[[str, dict[str, Any], str], Awaitable[bool]]
 class AcceptanceState:
     manifest: tuple[dict[str, str], ...] | None
     cursor: int
+
+
+class DestinationArtifactUnavailable(RuntimeError):
+    """A captured activation artifact disappeared before it could be pinned."""
 
 
 async def load_acceptance_state(db: Any, event_id: str) -> AcceptanceState:
@@ -50,17 +55,55 @@ async def freeze_destination_manifest(
     """Persist the first non-empty destination snapshot; concurrent retries reuse it."""
     if not manifest:
         raise ValueError("an empty integration destination manifest is not frozen")
-    async with db.immediate() as conn:
-        await conn.execute(
-            update(integration_outbox)
-            .where(
-                integration_outbox.c.id == event_id,
-                integration_outbox.c.delivered_at.is_(None),
-                integration_outbox.c.destination_manifest.is_(None),
+    try:
+        async with db.immediate() as conn:
+            row = (
+                (
+                    await conn.execute(
+                        select(integration_outbox)
+                        .where(
+                            integration_outbox.c.id == event_id,
+                            integration_outbox.c.delivered_at.is_(None),
+                        )
+                        .with_for_update()
+                    )
+                )
+                .mappings()
+                .one()
             )
-            .values(destination_manifest=manifest)
-        )
-    return await load_acceptance_state(db, event_id)
+            existing = row["destination_manifest"]
+            if existing is not None:
+                return AcceptanceState(
+                    manifest=tuple(dict(item) for item in existing),
+                    cursor=int(row["acceptance_cursor"]),
+                )
+            artifact_shas = sorted(
+                {destination["artifact_sha256"] for destination in manifest}
+            )
+            await conn.execute(
+                insert(integration_outbox_artifact_pins),
+                [
+                    {"event_id": event_id, "artifact_sha256": artifact_sha256}
+                    for artifact_sha256 in artifact_shas
+                ],
+            )
+            result = await conn.execute(
+                update(integration_outbox)
+                .where(
+                    integration_outbox.c.id == event_id,
+                    integration_outbox.c.delivered_at.is_(None),
+                    integration_outbox.c.destination_manifest.is_(None),
+                )
+                .values(destination_manifest=manifest)
+            )
+            if int(result.rowcount) != 1:
+                raise RuntimeError("integration destination manifest lost its row lock")
+            return AcceptanceState(
+                manifest=tuple(dict(item) for item in manifest),
+                cursor=int(row["acceptance_cursor"]),
+            )
+    except IntegrityError as exc:
+        raise DestinationArtifactUnavailable(event_id) from exc
 
 
 async def advance_acceptance_cursor(
@@ -199,6 +242,11 @@ class IntegrationOutbox:
 
     async def _acknowledge(self, event_id: str, *, now: float) -> bool:
         async with self._db.immediate() as conn:
+            await conn.execute(
+                delete(integration_outbox_artifact_pins).where(
+                    integration_outbox_artifact_pins.c.event_id == event_id
+                )
+            )
             result = await conn.execute(
                 update(integration_outbox)
                 .where(

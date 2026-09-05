@@ -237,3 +237,73 @@ three individual test nodes, but mistakenly used plain `pytest` across two
 files instead of the repository-required `aq test` wrapper. It was not rerun
 solely to change the wrapper after all three checks passed; subsequent
 multi-file commands must use `aq test`.
+
+## Fix round 2 — atomic artifact pins and reconciler recovery
+
+Review of `853b7a1c` identified a transaction gap between freezing the JSON
+destination manifest and inserting artifact-FK pending rows. Artifact GC could
+win in that gap, leaving an immutable manifest that could never be replayed.
+The JSON scan also was not an authoritative concurrency barrier.
+
+The consolidated unpublished migration now creates
+`integration_outbox_artifact_pins`, keyed by event and artifact with `CASCADE`
+event cleanup and a `RESTRICT` artifact foreign key. Manifest freeze locks the
+undelivered outbox row, inserts its unique artifact pins in deterministic
+order, and writes the manifest in one transaction. A losing freeze rolls the
+transaction back, refreshes activation discovery, and leaves the outbox event
+unacknowledged for a fresh capture. Pins are removed in the acknowledgement
+transaction only after every manifest page has already produced durable
+pending destinations.
+
+Artifact collection now derives protection from relational pins. PostgreSQL
+candidate rows are locked, and the delete statement rechecks activations,
+runs, unresolved pending rows, and outbox pins at deletion time. A late FK pin
+conflict is isolated in a savepoint and retains that artifact while collection
+continues, rather than aborting the whole batch.
+
+The protected-pending reconciler now catches transient `Exception` failures
+from listing, retries with exponential backoff capped at five seconds, and
+resets the backoff after success. `CancelledError` is explicitly propagated.
+Refresh/acceptance/completion recreate a reconciler task that has unexpectedly
+finished, while shutdown prevents recreation and cancels/awaits live work.
+
+Round-2 TDD evidence:
+
+```text
+GC-before-freeze regression
+RED: stale JSON manifest froze, then pending insertion failed on the missing artifact FK
+GREEN: atomic pin insertion rolls back the manifest; refresh recaptures the new artifact
+
+concurrent-pin collection regression
+GREEN: deterministic delete-time FK conflict is contained and the artifact is retained
+
+transient-list regression
+RED: the reconciler task exited and the protected pending row timed out unresolved
+GREEN: bounded retry recovered and resolved the row as dispatched
+
+completed-task restart regression
+RED: refresh retained the cancelled reconciler task
+GREEN: refresh installs a distinct live task; shutdown still propagates cancellation
+
+aq test tests/test_integration_outbox.py tests/test_integration_contracts.py -x
+26 passed, 11 warnings
+
+POSTGRES_TEST_DSN=postgresql+asyncpg://integration_test:integration_test@\
+127.0.0.1:16833/integration_test_final aq test \
+tests/test_integration_state.py::test_upgrade_from_prior_schema_creates_every_integration_table \
+tests/test_integration_state.py::test_postgres_migration_cycle_from_prior_revision_to_final_and_back \
+tests/test_integration_state.py::test_sqlite_migration_cycle_from_prior_revision_to_final_and_back \
+tests/test_migration_boolean_defaults.py -x
+4 passed, 8 warnings
+
+aq test tests/test_integration_outbox.py \
+-k 'artifact_gc_retains_a_candidate_on_concurrent_fk_conflict or \
+gc_win_does_not_freeze_an_unusable_artifact_manifest or \
+reconciler_recovers_after_transient_pending_list_failure or \
+refresh_restarts_a_completed_reconciler' -x
+4 passed, 11 warnings
+```
+
+The PostgreSQL migration-cycle check again used its test-managed, fresh
+UUID-named scratch database. The operator database and worker database
+variables were untouched.

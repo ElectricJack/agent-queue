@@ -11,6 +11,7 @@ from typing import Any
 
 from src.commands.principal import ExecutionPrincipal
 from src.integration.outbox import (
+    DestinationArtifactUnavailable,
     advance_acceptance_cursor,
     freeze_destination_manifest,
     load_acceptance_state,
@@ -23,6 +24,7 @@ from src.playbooks.waits import PENDING_EVENT_DISPATCH_LEASE_SECONDS
 logger = logging.getLogger(__name__)
 _INTEGRATION_REPLAY_PAGE_SIZE = 32
 _INTEGRATION_RECONCILE_INTERVAL_SECONDS = 0.25
+_INTEGRATION_RECONCILE_MAX_BACKOFF_SECONDS = 5.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -56,6 +58,7 @@ class V2PlaybookRuntime:
         self._integration_tasks: dict[str, asyncio.Task[Any]] = {}
         self._integration_reconciler_task: asyncio.Task[Any] | None = None
         self._integration_wakeup = asyncio.Event()
+        self._integration_shutting_down = False
 
     async def refresh(self) -> None:
         rows = await self._db.list_playbook_activations(enabled_only=True)
@@ -167,7 +170,14 @@ class V2PlaybookRuntime:
                     destinations, key=lambda item: (item.activation_id, item.artifact_sha256)
                 )
             ]
-            state = await freeze_destination_manifest(self._db, event_id, manifest)
+            try:
+                state = await freeze_destination_manifest(self._db, event_id, manifest)
+            except DestinationArtifactUnavailable:
+                # Artifact collection won the race before the relational pin.
+                # The freeze transaction rolled back its manifest, so refresh
+                # mutable activations and let a later outbox tick recapture.
+                await self.refresh()
+                return False
 
         assert state.manifest is not None
         page = state.manifest[
@@ -197,11 +207,17 @@ class V2PlaybookRuntime:
             expected=state.cursor,
             accepted=state.cursor + len(page),
         )
+        self._ensure_integration_reconciler()
         self._integration_wakeup.set()
         return state.cursor == len(state.manifest)
 
     def _ensure_integration_reconciler(self) -> None:
-        if self._integration_reconciler_task is not None:
+        if self._integration_shutting_down:
+            return
+        if (
+            self._integration_reconciler_task is not None
+            and not self._integration_reconciler_task.done()
+        ):
             return
         self._integration_reconciler_task = asyncio.create_task(
             self._reconcile_integration_pending(),
@@ -237,30 +253,50 @@ class V2PlaybookRuntime:
     ) -> None:
         if self._integration_tasks.get(pending_event_id) is task:
             self._integration_tasks.pop(pending_event_id, None)
+        self._ensure_integration_reconciler()
         self._integration_wakeup.set()
 
     async def _reconcile_integration_pending(self) -> None:
         list_pending = getattr(self._db, "list_pending_integration_events", None)
         if not callable(list_pending):
             return
+        failures = 0
         while True:
             capacity = _INTEGRATION_REPLAY_PAGE_SIZE - len(self._integration_tasks)
             if capacity > 0:
                 now = time.time()
-                pending = await list_pending(
-                    limit=capacity,
-                    exclude_ids=self._integration_tasks,
-                    stale_before=now - PENDING_EVENT_DISPATCH_LEASE_SECONDS,
-                )
+                try:
+                    pending = await list_pending(
+                        limit=capacity,
+                        exclude_ids=self._integration_tasks,
+                        stale_before=now - PENDING_EVENT_DISPATCH_LEASE_SECONDS,
+                    )
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    failures += 1
+                    logger.exception(
+                        "Could not list protected integration events; retrying"
+                    )
+                    delay = min(
+                        _INTEGRATION_RECONCILE_MAX_BACKOFF_SECONDS,
+                        _INTEGRATION_RECONCILE_INTERVAL_SECONDS
+                        * (2 ** min(failures - 1, 10)),
+                    )
+                    await self._wait_for_integration_wakeup(delay)
+                    continue
+                failures = 0
                 self._schedule_integration_pending(pending)
-            self._integration_wakeup.clear()
-            try:
-                await asyncio.wait_for(
-                    self._integration_wakeup.wait(),
-                    timeout=_INTEGRATION_RECONCILE_INTERVAL_SECONDS,
-                )
-            except TimeoutError:
-                pass
+            await self._wait_for_integration_wakeup(
+                _INTEGRATION_RECONCILE_INTERVAL_SECONDS
+            )
+
+    async def _wait_for_integration_wakeup(self, timeout: float) -> None:
+        self._integration_wakeup.clear()
+        try:
+            await asyncio.wait_for(self._integration_wakeup.wait(), timeout=timeout)
+        except TimeoutError:
+            pass
 
     async def _dispatch_integration_pending(self, row: dict[str, Any]) -> None:
         """Dispatch one protected row; every failure leaves it retryable."""
@@ -318,6 +354,7 @@ class V2PlaybookRuntime:
             )
 
     async def shutdown(self) -> None:
+        self._integration_shutting_down = True
         if self._unsubscribe is not None:
             self._unsubscribe()
             self._unsubscribe = None

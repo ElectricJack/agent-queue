@@ -84,12 +84,36 @@ def upgrade() -> None:
         batch.create_check_constraint(
             "ck_integration_outbox_acceptance_cursor", "acceptance_cursor >= 0"
         )
+    op.create_table(
+        "integration_outbox_artifact_pins",
+        sa.Column("event_id", sa.Text(), nullable=False),
+        sa.Column("artifact_sha256", sa.Text(), nullable=False),
+        sa.ForeignKeyConstraint(
+            ["event_id"], ["integration_outbox.id"], ondelete="CASCADE"
+        ),
+        sa.ForeignKeyConstraint(
+            ["artifact_sha256"],
+            ["playbook_artifacts.artifact_sha256"],
+            ondelete="RESTRICT",
+        ),
+        sa.PrimaryKeyConstraint("event_id", "artifact_sha256"),
+    )
+    op.create_index(
+        "idx_integration_outbox_artifact_pins_sha",
+        "integration_outbox_artifact_pins",
+        ["artifact_sha256"],
+    )
     _restore_sqlite_outbox_guard()
     _create_cursor_guard()
 
 
 def downgrade() -> None:
     _drop_cursor_guard()
+    op.drop_index(
+        "idx_integration_outbox_artifact_pins_sha",
+        table_name="integration_outbox_artifact_pins",
+    )
+    op.drop_table("integration_outbox_artifact_pins")
     with op.batch_alter_table("integration_outbox") as batch:
         batch.drop_constraint("ck_integration_outbox_acceptance_cursor", type_="check")
         batch.drop_column("acceptance_cursor")
