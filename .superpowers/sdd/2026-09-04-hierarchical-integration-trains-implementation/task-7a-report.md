@@ -185,5 +185,6 @@ admission. Independent phase review is the next gate.
 
 ## Commit
 
-The scoped implementation commit is recorded after this report is staged; its hash is
-reported to the controller and in the final task response.
+- `0650d4e8` — `feat(integration): add durable repair stages`
+- This report's final hash is a documentation-only follow-up commit and is reported to
+  the controller in the final task response.
