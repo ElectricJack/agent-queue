@@ -1,6 +1,6 @@
 ---
 tags: [design, dashboard, projects, workspaces, git, github, security]
-status: draft — approved in chat; awaiting written-spec review
+status: approved
 date: 2026-09-03
 related:
   - 2026-08-21-dashboard-v2-and-work-pipeline-design.md
@@ -539,6 +539,9 @@ Rejected. It selects paths on the browser's machine rather than necessarily the
 AQ daemon host and cannot enforce daemon-side repository authorization.
 
 ## 13. Implementation task graph
+
+> **Status:** the implementation epic has been created in agent queue as
+> `brisk-beacon`, with its work packages as sibling children.
 
 After written-spec approval, create one implementation epic with these sibling
 work packages:
