@@ -1447,6 +1447,31 @@ class GitHubAppConfig:
         return errors
 
 
+_GITHUB_APP_CONFIG_KEYS = frozenset(
+    {"client_id", "app_id", "installation_id", "private_key_path"}
+)
+
+
+def validate_github_app_raw_config(raw: Mapping[str, object]) -> None:
+    """Reject inline or structurally ambiguous GitHub App credentials."""
+    integration = raw.get("integration")
+    if not isinstance(integration, Mapping) or "github_app" not in integration:
+        return
+    github_app = integration["github_app"]
+    if not isinstance(github_app, Mapping):
+        raise ConfigValidationError(
+            ["[integration] github_app: must be a mapping of non-secret references"]
+        )
+    unexpected = sorted(str(key) for key in github_app if key not in _GITHUB_APP_CONFIG_KEYS)
+    if unexpected:
+        raise ConfigValidationError(
+            [
+                "[integration] github_app: unsupported fields: "
+                + ", ".join(unexpected)
+            ]
+        )
+
+
 @dataclass
 class IntegrationConfig:
     """System-wide default integration policy.
@@ -2628,6 +2653,7 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
             profile_raw = yaml.safe_load(f) or {}
         raw = _deep_merge(raw, profile_raw)
 
+    validate_github_app_raw_config(raw)
     raw = _process_values(raw)
 
     config = AppConfig()
@@ -2982,7 +3008,7 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
         raw_checks = integ.get("merge_required_checks") or []
         github_app_raw = integ.get("github_app")
         github_app = None
-        if isinstance(github_app_raw, dict):
+        if isinstance(github_app_raw, Mapping):
             github_app = GitHubAppConfig(
                 client_id=github_app_raw.get("client_id", ""),
                 app_id=github_app_raw.get("app_id"),

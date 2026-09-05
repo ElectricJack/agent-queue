@@ -240,6 +240,21 @@ class TestGetConfigCommand:
         result = await handler.execute("get_config", {})
         assert "error" in result
 
+    @pytest.mark.asyncio
+    async def test_externally_modified_inline_github_secret_is_never_returned(
+        self, handler_with_config
+    ):
+        handler, cfg_path = handler_with_config
+        sentinel = "externally-written-token-sentinel"
+        raw = yaml.safe_load(cfg_path.read_text())
+        raw["integration"] = {"github_app": {"token": sentinel}}
+        cfg_path.write_text(yaml.safe_dump(raw))
+
+        result = await handler.execute("get_config", {})
+
+        assert "error" in result
+        assert sentinel not in repr(result)
+
 
 class TestUpdateConfigCommand:
     @pytest.fixture
@@ -310,6 +325,39 @@ class TestUpdateConfigCommand:
         assert result["changed"] is False
         assert result["validation_errors"]
         assert cfg_path.read_text() == before
+        watcher.reload.assert_not_called()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("dry_run", [True, False])
+    async def test_inline_github_secret_edit_is_rejected_without_round_trip(
+        self, handler_with_config, dry_run
+    ):
+        handler, cfg_path, watcher = handler_with_config
+        before = cfg_path.read_text()
+        sentinel = "editor-inline-token-sentinel"
+
+        result = await handler.execute(
+            "update_config",
+            {
+                "section": "integration",
+                "data": {
+                    "github_app": {
+                        "client_id": "Iv1.example",
+                        "app_id": 101,
+                        "installation_id": 202,
+                        "private_key_path": "/run/secrets/key.pem",
+                        "token": sentinel,
+                    }
+                },
+                "dry_run": dry_run,
+            },
+        )
+
+        assert result["applied"] is False
+        assert result["changed"] is False
+        assert result["validation_errors"]
+        assert cfg_path.read_text() == before
+        assert sentinel not in cfg_path.read_text()
         watcher.reload.assert_not_called()
 
     @pytest.mark.asyncio
@@ -394,5 +442,10 @@ class TestGetConfigSchemaCommand:
         result = await handler.execute("get_config_schema", {})
         schema = result["schema"]
         assert schema["type"] == "object"
+        assert schema["additionalProperties"] is False
         assert "scheduling" in schema["properties"]
         assert schema["properties"]["scheduling"]["x-reload"] == "hot"
+        integration = schema["properties"]["integration"]
+        assert integration["additionalProperties"] is False
+        assert integration["properties"]["github_app"]["additionalProperties"] is False
+        assert isinstance(schema["properties"]["rate_limits"]["additionalProperties"], dict)

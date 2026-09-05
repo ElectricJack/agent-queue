@@ -68,6 +68,7 @@ import json
 import logging
 import os
 import re
+import signal
 import subprocess
 import tempfile
 from contextlib import asynccontextmanager
@@ -297,6 +298,7 @@ def _delivery_source_rev(source: str) -> str:
 
 
 class GitManager:
+    _APP_GIT_EXECUTABLE = "/usr/bin/git"
     # Environment overrides for all git/gh subprocess calls.  Prevents
     # interactive credential prompts that would otherwise write directly to
     # /dev/tty, bypassing capture_output and flooding the terminal (or
@@ -2869,63 +2871,252 @@ class GitManager:
         branch: str,
         expected_old_oid: str,
     ) -> str:
-        """Push one immutable OID to a frozen GitHub.com repository using FD askpass."""
-        if not isinstance(token, str) or not token or len(token.encode()) > self._MAX_STDIN_BYTES:
+        """Push one immutable OID through an isolated daemon-owned Git context."""
+        if not isinstance(token, str) or not token:
             raise GitError("invalid GitHub App credential")
         branch = _validate_ref(branch)
         for label, oid in (("tip", tip_oid), ("expected target", expected_old_oid)):
             if not isinstance(oid, str) or _OID_RE.fullmatch(oid) is None:
                 raise GitError(f"invalid {label} OID")
         remote_url = f"https://github.com/{repository.full_name}.git"
-        args = [
-            "push",
-            remote_url,
-            f"--force-with-lease=refs/heads/{branch}:{expected_old_oid}",
-            f"{tip_oid}:refs/heads/{branch}",
-        ]
-        with tempfile.TemporaryFile() as token_file:
-            token_file.write(token.encode())
-            token_file.flush()
-            token_file.seek(0)
-            token_fd = token_file.fileno()
-            child_env = {
-                key: value
-                for key, value in self._SUBPROCESS_ENV.items()
-                if key not in {"GH_TOKEN", "GITHUB_TOKEN"}
-            }
-            child_env.update(
+        return await self._apush_oid_with_app_auth_to_url(
+            checkout_path,
+            destination_url=remote_url,
+            token=token,
+            tip_oid=tip_oid,
+            branch=branch,
+            expected_old_oid=expected_old_oid,
+        )
+
+    @staticmethod
+    def _app_git_environment(home: Path) -> dict[str, str]:
+        """Return the complete allowlist for the privileged Git process."""
+        return {
+            "HOME": str(home),
+            "LANG": "C",
+            "LC_ALL": "C",
+            "PATH": "/usr/bin:/bin",
+            "GIT_CONFIG_NOSYSTEM": "1",
+            "GIT_CONFIG_SYSTEM": "/dev/null",
+            "GIT_CONFIG_GLOBAL": "/dev/null",
+            "GIT_NO_REPLACE_OBJECTS": "1",
+            "GIT_TERMINAL_PROMPT": "0",
+        }
+
+    @staticmethod
+    def _write_app_token(write_fd: int, token: bytes) -> None:
+        """Feed one non-seekable credential stream, then permanently close it."""
+        try:
+            view = memoryview(token)
+            while view:
+                written = os.write(write_fd, view)
+                view = view[written:]
+        except BrokenPipeError:
+            # A local test transport, or Git failing before authentication,
+            # can close the sole reader without ever invoking askpass.
+            pass
+        finally:
+            os.close(write_fd)
+
+    @staticmethod
+    async def _kill_app_git_group(process: asyncio.subprocess.Process) -> None:
+        """Terminate and reap the isolated privileged process group."""
+        if process.returncode is None:
+            try:
+                os.killpg(process.pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+            try:
+                await asyncio.wait_for(asyncio.shield(process.wait()), timeout=0.25)
+            except asyncio.TimeoutError:
+                pass
+        # The leader can exit before a transport descendant.  Address the
+        # original process-group id once more even after the leader is reaped.
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        await asyncio.shield(process.wait())
+
+    async def _run_isolated_import_git(
+        self,
+        args: list[str],
+        *,
+        home: Path,
+    ) -> bytes:
+        """Run a credential-free Git import/verification command safely."""
+        try:
+            process = await asyncio.create_subprocess_exec(
+                "/usr/bin/git",
+                *args,
+                cwd=str(home),
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.DEVNULL,
+                env=self._app_git_environment(home),
+                start_new_session=True,
+            )
+            try:
+                stdout, _ = await asyncio.wait_for(
+                    process.communicate(), timeout=self._GIT_TIMEOUT
+                )
+            except BaseException:
+                await self._kill_app_git_group(process)
+                raise
+        except (FileNotFoundError, asyncio.TimeoutError) as exc:
+            raise GitError("authenticated Git push preparation failed") from exc
+        if process.returncode != 0:
+            raise GitError("authenticated Git push preparation failed")
+        return stdout.strip()
+
+    async def _apush_oid_with_app_auth_to_url(
+        self,
+        checkout_path: str,
+        *,
+        destination_url: str,
+        token: str,
+        tip_oid: str,
+        branch: str,
+        expected_old_oid: str,
+    ) -> str:
+        """Stage an exact graph, then push it without consulting worker Git state.
+
+        ``destination_url`` is private so production callers cannot choose a
+        transport.  Its file-URL support exists only for credential-free local
+        containment tests; :meth:`apush_oid_with_app_auth` always constructs a
+        literal validated GitHub.com URL from the frozen repository binding.
+        """
+        if not isinstance(token, str) or not token:
+            raise GitError("invalid GitHub App credential")
+        branch = _validate_ref(branch)
+        for label, oid in (("tip", tip_oid), ("expected target", expected_old_oid)):
+            if not isinstance(oid, str) or _OID_RE.fullmatch(oid) is None:
+                raise GitError(f"invalid {label} OID")
+        if not (
+            destination_url.startswith("https://github.com/")
+            or destination_url.startswith("file://")
+        ) or "\n" in destination_url or "\x00" in destination_url:
+            raise GitError("invalid authenticated Git destination")
+
+        checkout = Path(checkout_path).resolve(strict=True)
+        token_bytes = token.encode("utf-8")
+        with tempfile.TemporaryDirectory(prefix="aq-app-push-") as temporary:
+            root = Path(temporary)
+            root.chmod(0o700)
+            home = root / "home"
+            home.mkdir(mode=0o700)
+            repository = root / "repository.git"
+            await self._run_isolated_import_git(
+                ["init", "--bare", "--template=", str(repository)], home=home
+            )
+            await self._run_isolated_import_git(
+                [
+                    "-c",
+                    "protocol.allow=never",
+                    "-c",
+                    "protocol.file.allow=always",
+                    f"--git-dir={repository}",
+                    "fetch",
+                    "--no-tags",
+                    "--force",
+                    str(checkout),
+                    f"{tip_oid}:refs/aq/imported",
+                ],
+                home=home,
+            )
+            imported = await self._run_isolated_import_git(
+                [f"--git-dir={repository}", "rev-parse", "refs/aq/imported^{commit}"],
+                home=home,
+            )
+            if imported.decode("ascii", errors="replace") != tip_oid:
+                raise GitError("authenticated Git push preparation failed")
+
+            read_fd, write_fd = os.pipe()
+            os.set_inheritable(write_fd, False)
+            broker_fd = os.dup(write_fd)
+            os.set_inheritable(broker_fd, False)
+            os.close(write_fd)
+            write_fd = -1
+            writer = asyncio.create_task(
+                asyncio.to_thread(self._write_app_token, broker_fd, token_bytes)
+            )
+            broker_fd = -1
+            authority = "https://x-access-token@github.com"
+            environment = self._app_git_environment(home)
+            environment.update(
                 {
                     "GIT_ASKPASS": str(Path(answer_prompt.__code__.co_filename)),
                     "GIT_ASKPASS_REQUIRE": "force",
-                    "GIT_TERMINAL_PROMPT": "0",
-                    "AQ_GIT_APP_TOKEN_FD": str(token_fd),
+                    "AQ_GIT_APP_TOKEN_FD": str(read_fd),
                     "AQ_GIT_APP_USERNAME": "x-access-token",
+                    "AQ_GIT_APP_AUTHORITY": authority,
                 }
             )
+            arguments = [
+                "-c",
+                "core.hooksPath=/dev/null",
+                "-c",
+                "credential.helper=",
+                "-c",
+                "http.proxy=",
+                "-c",
+                "https.proxy=",
+                "-c",
+                "protocol.allow=never",
+                "-c",
+                "protocol.https.allow=always",
+                "-c",
+                "protocol.ext.allow=never",
+            ]
+            if destination_url.startswith("file://"):
+                arguments.extend(["-c", "protocol.file.allow=always"])
+            arguments.extend(
+                [
+                    f"--git-dir={repository}",
+                    "push",
+                    "--no-verify",
+                    destination_url,
+                    f"--force-with-lease=refs/heads/{branch}:{expected_old_oid}",
+                    f"{tip_oid}:refs/heads/{branch}",
+                ]
+            )
+            process: asyncio.subprocess.Process | None = None
             try:
                 process = await asyncio.create_subprocess_exec(
-                    "git",
-                    *args,
-                    cwd=checkout_path,
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE,
-                    env=child_env,
-                    pass_fds=(token_fd,),
+                    self._APP_GIT_EXECUTABLE,
+                    *arguments,
+                    cwd=str(home),
+                    stdin=asyncio.subprocess.DEVNULL,
+                    stdout=asyncio.subprocess.DEVNULL,
+                    stderr=asyncio.subprocess.DEVNULL,
+                    env=environment,
+                    pass_fds=(read_fd,),
+                    start_new_session=True,
                 )
-            except FileNotFoundError as exc:
+                os.close(read_fd)
+                read_fd = -1
+                await asyncio.wait_for(process.wait(), timeout=self._GIT_TIMEOUT)
+                await writer
+            except BaseException as exc:
+                if read_fd >= 0:
+                    os.close(read_fd)
+                    read_fd = -1
+                if process is not None:
+                    await self._kill_app_git_group(process)
+                await asyncio.shield(writer)
+                if isinstance(exc, asyncio.CancelledError):
+                    raise
                 raise GitError("authenticated Git push failed") from exc
-            try:
-                await asyncio.wait_for(process.communicate(), timeout=self._GIT_TIMEOUT)
-            except asyncio.TimeoutError as exc:
-                try:
-                    process.kill()
-                except ProcessLookupError:
-                    pass
-                await process.wait()
-                raise GitError("authenticated Git push failed") from exc
+            finally:
+                if read_fd >= 0:
+                    os.close(read_fd)
+                if write_fd >= 0:
+                    os.close(write_fd)
+                if broker_fd >= 0:
+                    os.close(broker_fd)
             if process.returncode != 0:
+                await self._kill_app_git_group(process)
                 raise GitError("authenticated Git push failed")
-            return tip_oid
+        return tip_oid
 
     async def alist_prs(
         self,

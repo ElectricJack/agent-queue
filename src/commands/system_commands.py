@@ -201,6 +201,7 @@ class SystemCommandsMixin:
         sees resolved secrets.  Pass ``section`` to restrict to one
         top-level section.
         """
+        from src.config import ConfigValidationError, validate_github_app_raw_config
         from src.config_editor import (
             classify_sections,
             find_env_var_refs,
@@ -214,6 +215,15 @@ class SystemCommandsMixin:
             return {"error": f"Config file does not exist: {path}"}
 
         raw = read_raw_config(path)
+        try:
+            validate_github_app_raw_config(raw)
+        except ConfigValidationError:
+            return {
+                "error": (
+                    "Configuration contains an invalid integration.github_app section; "
+                    "edit the file directly."
+                )
+            }
         section = args.get("section") or None
         if section is not None:
             raw = {section: raw.get(section)}

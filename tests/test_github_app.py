@@ -17,6 +17,15 @@ from src.git.github_app import (
 )
 
 
+@pytest.mark.parametrize(
+    "full_name",
+    ["acme/widgets?redirect=https://attacker.example", "acme/widgets/extra", "-acme/widgets"],
+)
+def test_repository_binding_rejects_nonliteral_github_full_name(full_name):
+    with pytest.raises(ValueError, match="full_name"):
+        GitHubRepositoryBinding(303, full_name)
+
+
 class StaticKeyProvider:
     def __init__(self, key: bytes):
         self.key = key

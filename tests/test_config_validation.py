@@ -49,6 +49,41 @@ integration:
         )
         assert "private_key" not in vars(config.integration.github_app)
 
+    @pytest.mark.parametrize(
+        "github_app",
+        [
+            "inline-secret-sentinel",
+            {
+                "client_id": "Iv1.example",
+                "app_id": 101,
+                "installation_id": 202,
+                "private_key_path": "/run/secrets/key.pem",
+                "token": "inline-token-sentinel",
+            },
+            {
+                "client_id": "Iv1.example",
+                "app_id": 101,
+                "installation_id": 202,
+                "private_key_path": "/run/secrets/key.pem",
+                "private_key": "inline-key-sentinel",
+            },
+        ],
+    )
+    def test_load_rejects_nonmapping_or_unknown_inline_material(self, tmp_path, github_app):
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text(
+            yaml.safe_dump(
+                {
+                    "messaging_platform": "none",
+                    "database_path": "queue.db",
+                    "integration": {"github_app": github_app},
+                }
+            )
+        )
+
+        with pytest.raises(ConfigValidationError, match="github_app"):
+            load_config(str(config_file))
+
     @pytest.mark.parametrize("field,value", [("app_id", 0), ("installation_id", True)])
     def test_rejects_non_positive_numeric_identities(self, field, value):
         values = {

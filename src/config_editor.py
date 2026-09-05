@@ -233,7 +233,11 @@ def _dataclass_to_schema(cls: type) -> dict[str, Any]:
         if default is not dataclasses.MISSING:
             prop["default"] = default
         properties[f.name] = prop
-    return {"type": "object", "properties": properties}
+    return {
+        "type": "object",
+        "properties": properties,
+        "additionalProperties": False,
+    }
 
 
 def _field_default(f: dataclasses.Field) -> Any:

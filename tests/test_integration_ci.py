@@ -4,7 +4,7 @@ import json
 
 import pytest
 from pydantic import ValidationError
-from sqlalchemy import insert, select, update
+from sqlalchemy import event, insert, select, update
 
 from src.database import Database
 from src.database.tables import (
@@ -106,6 +106,15 @@ def check_record(record_id: int, payload: bytes, *, conclusion: str = "success")
     }
 
 
+def malformed_record_id(record: dict, kind: str) -> dict:
+    changed = dict(record)
+    if kind == "missing":
+        changed.pop("id", None)
+    else:
+        changed["id"] = {"bool": True, "string": "90", "nonpositive": 0}[kind]
+    return changed
+
+
 def test_manifest_rejects_bool_ids_duplicate_checks_and_equal_apps():
     base = trust().model_dump(mode="json", by_alias=True)
     for mutate in (
@@ -145,6 +154,16 @@ def test_newest_exact_name_trusted_app_record_wins_and_invalid_newest_fails_clos
     selected = select_trusted_attestation([older], trust(), expected_head_sha=SHA)
     assert selected.external_id.startswith("aq-attestation-v1:")
     assert selected.checks[0].name == "unit"
+
+
+@pytest.mark.parametrize("kind", ["missing", "bool", "string", "nonpositive"])
+def test_attestation_read_rejects_any_malformed_trusted_ordering_id(kind):
+    payload = canonical(payload_dict())
+    older = check_record(50, payload)
+    malformed = malformed_record_id(check_record(90, payload), kind)
+
+    with pytest.raises(AttestationError, match="ordering identity"):
+        select_trusted_attestation([older, malformed], trust(), expected_head_sha=SHA)
 
 
 class FakeGitHubClient:
@@ -205,6 +224,25 @@ async def test_authenticated_observer_rejects_partial_required_matrix():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("kind", ["missing", "bool", "string", "nonpositive"])
+async def test_required_check_rejects_any_malformed_trusted_ordering_id(kind):
+    valid = {
+        "id": 11,
+        "name": "unit",
+        "head_sha": SHA,
+        "status": "completed",
+        "conclusion": "success",
+        "app": {"id": 404},
+        "check_suite": {"id": 21},
+    }
+    malformed = malformed_record_id({**valid, "id": 12}, kind)
+    client = FakeGitHubClient({"unit": [valid, malformed], "postgres": []}, [])
+
+    with pytest.raises(AttestationError, match="ordering identity"):
+        await AuthenticatedGitHubObserver(client).observe(trust(), SHA)
+
+
+@pytest.mark.asyncio
 async def test_authenticated_observer_returns_normalized_conclusive_failure():
     checks = {
         "unit": [{"id": 11, "name": "unit", "head_sha": SHA, "status": "completed",
@@ -252,6 +290,19 @@ async def test_publish_attestation_reuses_byte_identical_trusted_record():
     assert client.published == []
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind", ["missing", "bool", "string", "nonpositive"])
+async def test_publish_rejects_any_malformed_trusted_ordering_id(kind):
+    payload = AttestationPayload.model_validate(payload_dict())
+    older = check_record(71, payload.canonical_bytes())
+    malformed = malformed_record_id(check_record(90, payload.canonical_bytes()), kind)
+    client = FakeGitHubClient({"attestation": [older, malformed]}, [])
+
+    with pytest.raises(AttestationError, match="ordering identity"):
+        await AuthenticatedGitHubObserver(client).publish(trust(), payload)
+    assert client.published == []
+
+
 @pytest.fixture
 async def ci_db(tmp_path):
     database = Database(str(tmp_path / "ci.db"))
@@ -259,6 +310,11 @@ async def ci_db(tmp_path):
     await database.create_project(Project(id="p", name="project"))
     await database.create_repo(
         RepoConfig(id="repo-config-1", project_id="p", source_type=RepoSourceType.LINK)
+    )
+    await database.update_project(
+        "p",
+        hierarchical_integration_mode="hierarchy",
+        integration_repository_id="repo-config-1",
     )
     await database.create_task(
         Task(
@@ -348,6 +404,176 @@ async def test_ci_service_rejects_stale_parent_and_untyped_caller_evidence(ci_db
 
 
 @pytest.mark.asyncio
+async def test_ci_service_rejects_parent_outside_designated_repository(ci_db):
+    observation = TrustedCIObservation(
+        payload=AttestationPayload.model_validate(payload_dict()), workflow_ids={21: 301, 22: 302}
+    )
+    async with ci_db.immediate() as conn:
+        await conn.execute(
+            update(task_integration_checkpoints)
+            .where(task_integration_checkpoints.c.task_id == "parent")
+            .values(repository_id="wrong-repository")
+        )
+
+    result = await CIService(
+        ci_db, trust(), TrustedFixtureObserver(observation)
+    ).observe_parent(
+        ParentCISubject(
+            operation_id="parent-op", parent_task_id="parent", generation=3, head_sha=SHA
+        )
+    )
+
+    assert result == {"outcome": "stale_subject", "evidence_ids": []}
+    async with ci_db._engine.connect() as conn:
+        assert not (await conn.execute(select(integration_check_evidence))).all()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("case", ["wrong-op", "completed", "old-episode"])
+async def test_ci_service_rejects_wrong_completed_or_old_parent_operation(ci_db, case):
+    observation = TrustedCIObservation(
+        payload=AttestationPayload.model_validate(payload_dict()), workflow_ids={21: 301, 22: 302}
+    )
+    if case in {"completed", "old-episode"}:
+        async with ci_db.immediate() as conn:
+            await conn.execute(
+                update(integration_repair_operations)
+                .where(integration_repair_operations.c.id == "parent-op")
+                .values(state="completed")
+            )
+            if case == "old-episode":
+                await conn.execute(
+                    insert(integration_parent_episodes).values(
+                        id="current-episode",
+                        parent_task_id="parent",
+                        repository_id="repo-config-1",
+                        generation=3,
+                        pre_collection_checkpoint_sha="0" * 40,
+                        created_at=2.0,
+                    )
+                )
+                await conn.execute(
+                    update(task_integration_checkpoints)
+                    .where(task_integration_checkpoints.c.task_id == "parent")
+                    .values(episode_id="current-episode")
+                )
+                await conn.execute(
+                    insert(integration_repair_operations).values(
+                        id="current-parent-op",
+                        target_kind="parent",
+                        parent_task_id="parent",
+                        episode_id="current-episode",
+                        state="active",
+                        active_stage=0,
+                        policy_snapshot=policy_snapshot(),
+                        artifact_snapshot={},
+                        required_check_version="checks-v1",
+                        created_at=2.0,
+                        updated_at=2.0,
+                    )
+                )
+
+    result = await CIService(
+        ci_db, trust(), TrustedFixtureObserver(observation)
+    ).observe_parent(
+        ParentCISubject(
+            operation_id=("wrong-op" if case == "wrong-op" else "parent-op"),
+            parent_task_id="parent",
+            generation=3,
+            head_sha=SHA,
+        )
+    )
+
+    assert result == {"outcome": "stale_subject", "evidence_ids": []}
+    async with ci_db._engine.connect() as conn:
+        assert not (await conn.execute(select(integration_check_evidence))).all()
+
+
+@pytest.mark.asyncio
+async def test_ci_service_rechecks_parent_after_observation_before_append(ci_db):
+    observation = TrustedCIObservation(
+        payload=AttestationPayload.model_validate(payload_dict()), workflow_ids={21: 301, 22: 302}
+    )
+
+    class CompletingObserver(TrustedFixtureObserver):
+        async def observe(self, declared_trust, head_sha):
+            async with ci_db.immediate() as conn:
+                await conn.execute(
+                    update(integration_repair_operations)
+                    .where(integration_repair_operations.c.id == "parent-op")
+                    .values(state="completed")
+                )
+            return await super().observe(declared_trust, head_sha)
+
+    result = await CIService(
+        ci_db, trust(), CompletingObserver(observation)
+    ).observe_parent(
+        ParentCISubject(
+            operation_id="parent-op", parent_task_id="parent", generation=3, head_sha=SHA
+        )
+    )
+
+    assert result == {"outcome": "stale_subject", "evidence_ids": []}
+    async with ci_db._engine.connect() as conn:
+        assert not (await conn.execute(select(integration_check_evidence))).all()
+
+
+@pytest.mark.asyncio
+async def test_ci_service_parent_lock_order_is_hierarchy_subject_operation(
+    ci_db, monkeypatch
+):
+    trace: list[str] = []
+    original_lock = ci_db.lock_hierarchy_project
+
+    async def traced_project_lock(conn, project_id):
+        trace.append("project-lock")
+        await original_lock(conn, project_id)
+
+    def traced_sql(_conn, _cursor, statement, _parameters, _context, _executemany):
+        if statement.lstrip().startswith("SELECT"):
+            if "FROM task_integration_checkpoints" in statement:
+                trace.append("checkpoint-lock")
+            elif "FROM integration_repair_operations" in statement:
+                trace.append("operation-lock")
+        elif statement.lstrip().startswith("INSERT INTO integration_check_evidence"):
+            trace.append("evidence-append")
+
+    monkeypatch.setattr(ci_db, "lock_hierarchy_project", traced_project_lock)
+    event.listen(ci_db._engine.sync_engine, "before_cursor_execute", traced_sql)
+    observation = TrustedCIObservation(
+        payload=AttestationPayload.model_validate(payload_dict()), workflow_ids={21: 301, 22: 302}
+    )
+    try:
+        result = await CIService(
+            ci_db, trust(), TrustedFixtureObserver(observation)
+        ).observe_parent(
+            ParentCISubject(
+                operation_id="parent-op", parent_task_id="parent", generation=3, head_sha=SHA
+            )
+        )
+    finally:
+        event.remove(ci_db._engine.sync_engine, "before_cursor_execute", traced_sql)
+
+    assert result["outcome"] == "green"
+    expected = [
+        "project-lock",
+        "checkpoint-lock",
+        "operation-lock",
+        "project-lock",
+        "checkpoint-lock",
+        "operation-lock",
+    ]
+    positions = []
+    start = 0
+    for item in expected:
+        position = trace.index(item, start)
+        positions.append(position)
+        start = position + 1
+    assert positions == sorted(positions)
+    assert trace.index("evidence-append", positions[-1]) > positions[-1]
+
+
+@pytest.mark.asyncio
 async def test_ci_service_appends_conclusive_failure_without_marking_green(ci_db):
     failure = FailedCIObservation(
         checks=(
@@ -418,6 +644,12 @@ async def test_ci_service_binds_root_evidence_to_exact_batch_revision_and_candid
         )
         await conn.execute(
             insert(integration_candidate_revisions).values(
+                batch_id="batch", revision=3, construction_base_sha="0" * 40,
+                next_member_ordinal=2, head_sha=SHA, state="built", created_at=1.0, updated_at=1.0,
+            )
+        )
+        await conn.execute(
+            insert(integration_candidate_revisions).values(
                 batch_id="batch", revision=4, construction_base_sha="0" * 40,
                 next_member_ordinal=2, head_sha=SHA, state="testing", created_at=1.0, updated_at=1.0,
             )
@@ -456,3 +688,57 @@ async def test_ci_service_binds_root_evidence_to_exact_batch_revision_and_candid
         and row["parent_task_id"] is None
         for row in rows
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mutation", ["wrong-repository", "completed-operation", "wrong-operation"])
+async def test_ci_service_rejects_noncurrent_root_authority(ci_db, mutation):
+    async with ci_db.immediate() as conn:
+        await conn.execute(
+            insert(integration_batches).values(
+                id="batch", project_id="p",
+                repository_id=(
+                    "wrong-repository" if mutation == "wrong-repository" else "repo-config-1"
+                ),
+                request_id="request",
+                source_manifest_digest="sha256:" + "d" * 64, base_sha="0" * 40,
+                lifecycle="testing", current_revision=4, integration_branch="integration/batch",
+                policy_snapshot=policy_snapshot(), artifact_snapshot={}, cleanup_state="pending",
+                created_at=1.0, updated_at=1.0,
+            )
+        )
+        await conn.execute(
+            insert(integration_candidate_revisions).values(
+                batch_id="batch", revision=4, construction_base_sha="0" * 40,
+                next_member_ordinal=2, head_sha=SHA, state="testing", created_at=1.0, updated_at=1.0,
+            )
+        )
+        await conn.execute(
+            insert(integration_repair_operations).values(
+                id="root-op", target_kind="batch", batch_id="batch", episode_id="batch",
+                state="active", active_stage=0, policy_snapshot=policy_snapshot(), artifact_snapshot={},
+                required_check_version="checks-v1", created_at=1.0, updated_at=1.0,
+            )
+        )
+        if mutation == "completed-operation":
+            await conn.execute(
+                update(integration_repair_operations)
+                .where(integration_repair_operations.c.id == "root-op")
+                .values(state="completed")
+            )
+    observation = TrustedCIObservation(
+        payload=AttestationPayload.model_validate(payload_dict()), workflow_ids={21: 301, 22: 302}
+    )
+    operation_id = "wrong-op" if mutation == "wrong-operation" else "root-op"
+
+    result = await CIService(
+        ci_db, trust(), TrustedFixtureObserver(observation)
+    ).observe_candidate(
+        CandidateCISubject(
+            operation_id=operation_id, batch_id="batch", revision=4, candidate_sha=SHA
+        )
+    )
+
+    assert result == {"outcome": "stale_subject", "evidence_ids": []}
+    async with ci_db._engine.connect() as conn:
+        assert not (await conn.execute(select(integration_check_evidence))).all()

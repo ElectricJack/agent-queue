@@ -14,10 +14,13 @@ from pydantic import BaseModel, ConfigDict, Field, StrictInt, model_validator
 from sqlalchemy import insert, select
 
 from src.database.tables import (
+    integration_batches,
     integration_candidate_revisions,
     integration_check_evidence,
     integration_repair_operations,
+    projects,
     task_integration_checkpoints,
+    tasks,
 )
 
 ATTESTATION_CHECK_NAME = "Agent Queue Integration Attestation"
@@ -146,14 +149,14 @@ def select_trusted_attestation(
     trusted: list[tuple[int, dict[str, Any]]] = []
     for record in records:
         app = record.get("app")
-        record_id = record.get("id")
         if (
             record.get("name") == trust.attestation_name
             and isinstance(app, dict)
             and _strict_int(app.get("id")) == trust.attestation_app_id
-            and _strict_int(record_id) is not None
-            and record_id > 0
         ):
+            record_id = _strict_int(record.get("id"))
+            if record_id is None or record_id <= 0:
+                raise AttestationError("trusted attestation ordering identity is malformed")
             trusted.append((record_id, record))
     if not trusted:
         raise AttestationError("trusted attestation is missing")
@@ -331,40 +334,22 @@ class CIService:
         if not isinstance(subject, ParentCISubject):
             raise TypeError("observe_parent requires ParentCISubject")
         async with self.db.immediate() as conn:
-            operation = (
-                await conn.execute(
-                    select(integration_repair_operations)
-                    .where(integration_repair_operations.c.id == subject.operation_id)
-                    .with_for_update()
-                )
-            ).mappings().one_or_none()
-            checkpoint = (
-                await conn.execute(
-                    select(task_integration_checkpoints)
-                    .where(task_integration_checkpoints.c.task_id == subject.parent_task_id)
-                    .with_for_update()
-                )
-            ).mappings().one_or_none()
-            declared_trust = self._operation_trust(operation, "parent")
-            if (
-                operation is None
-                or checkpoint is None
-                or operation["target_kind"] != "parent"
-                or operation["parent_task_id"] != subject.parent_task_id
-                or declared_trust is None
-                or checkpoint["generation"] != subject.generation
-                or checkpoint["checkpoint_sha"] != subject.head_sha
-            ):
+            declared_trust = await self._lock_parent_subject_on(conn, subject)
+        if declared_trust is None:
+            return {"outcome": "stale_subject", "evidence_ids": []}
+        try:
+            observation = await self.observer.observe(declared_trust, subject.head_sha)
+        except AttestationError:
+            outcome = (
+                "full_suite_required"
+                if declared_trust.required_checks != self.trust.required_checks
+                else "not_green"
+            )
+            return {"outcome": outcome, "evidence_ids": []}
+        async with self.db.immediate() as conn:
+            rechecked_trust = await self._lock_parent_subject_on(conn, subject)
+            if rechecked_trust != declared_trust:
                 return {"outcome": "stale_subject", "evidence_ids": []}
-            try:
-                observation = await self.observer.observe(declared_trust, subject.head_sha)
-            except AttestationError:
-                outcome = (
-                    "full_suite_required"
-                    if declared_trust.required_checks != self.trust.required_checks
-                    else "not_green"
-                )
-                return {"outcome": outcome, "evidence_ids": []}
             evidence_ids = await self._append_observation_on(
                 conn, subject, observation, trust=declared_trust
             )
@@ -377,37 +362,16 @@ class CIService:
         if not isinstance(subject, CandidateCISubject):
             raise TypeError("observe_candidate requires CandidateCISubject")
         async with self.db.immediate() as conn:
-            operation = (
-                await conn.execute(
-                    select(integration_repair_operations)
-                    .where(integration_repair_operations.c.id == subject.operation_id)
-                    .with_for_update()
-                )
-            ).mappings().one_or_none()
-            candidate = (
-                await conn.execute(
-                    select(integration_candidate_revisions)
-                    .where(
-                        integration_candidate_revisions.c.batch_id == subject.batch_id,
-                        integration_candidate_revisions.c.revision == subject.revision,
-                    )
-                    .with_for_update()
-                )
-            ).mappings().one_or_none()
-            if (
-                operation is None
-                or candidate is None
-                or operation["target_kind"] != "batch"
-                or operation["batch_id"] != subject.batch_id
-                or self._operation_trust(operation, "root") != self.trust
-                or candidate["head_sha"] != subject.candidate_sha
-                or candidate["state"] not in {"built", "testing"}
-            ):
+            current = await self._lock_candidate_subject_on(conn, subject)
+        if not current:
+            return {"outcome": "stale_subject", "evidence_ids": []}
+        try:
+            observation = await self.observer.observe(self.trust, subject.candidate_sha)
+        except AttestationError:
+            return {"outcome": "not_green", "evidence_ids": []}
+        async with self.db.immediate() as conn:
+            if not await self._lock_candidate_subject_on(conn, subject):
                 return {"outcome": "stale_subject", "evidence_ids": []}
-            try:
-                observation = await self.observer.observe(self.trust, subject.candidate_sha)
-            except AttestationError:
-                return {"outcome": "not_green", "evidence_ids": []}
             evidence_ids = await self._append_observation_on(
                 conn, subject, observation, trust=self.trust
             )
@@ -415,6 +379,167 @@ class CIService:
                 "outcome": "green" if isinstance(observation, TrustedCIObservation) else "red",
                 "evidence_ids": evidence_ids,
             }
+
+    async def _lock_parent_subject_on(
+        self, conn: Any, subject: ParentCISubject
+    ) -> IntegrationTrustManifest | None:
+        parent = (
+            await conn.execute(select(tasks).where(tasks.c.id == subject.parent_task_id))
+        ).mappings().one_or_none()
+        project = None
+        if parent is not None:
+            project = (
+                await conn.execute(
+                    select(projects).where(projects.c.id == parent["project_id"])
+                )
+            ).mappings().one_or_none()
+        if not self._enabled_project_repository(project):
+            return None
+        await self.db.lock_hierarchy_project(conn, project["id"])
+        project = (
+            await conn.execute(
+                select(projects)
+                .where(projects.c.id == project["id"])
+                .with_for_update()
+            )
+        ).mappings().one_or_none()
+        parent = (
+            await conn.execute(
+                select(tasks)
+                .where(tasks.c.id == subject.parent_task_id)
+                .with_for_update()
+            )
+        ).mappings().one_or_none()
+        if (
+            not self._enabled_project_repository(project)
+            or parent is None
+            or parent["project_id"] != project["id"]
+        ):
+            return None
+        checkpoint = (
+            await conn.execute(
+                select(task_integration_checkpoints)
+                .where(task_integration_checkpoints.c.task_id == subject.parent_task_id)
+                .with_for_update()
+            )
+        ).mappings().one_or_none()
+        operation = None
+        if checkpoint is not None and checkpoint["episode_id"] is not None:
+            operation = (
+                await conn.execute(
+                    select(integration_repair_operations)
+                    .where(
+                        integration_repair_operations.c.parent_task_id
+                        == subject.parent_task_id,
+                        integration_repair_operations.c.episode_id
+                        == checkpoint["episode_id"],
+                    )
+                    .with_for_update()
+                )
+            ).mappings().one_or_none()
+        declared_trust = self._operation_trust(operation, "parent")
+        if (
+            operation is None
+            or checkpoint is None
+            or parent["repo_id"] != self.trust.canonical_repository_id
+            or checkpoint["repository_id"] != self.trust.canonical_repository_id
+            or checkpoint["state"] != "verifying"
+            or operation["target_kind"] != "parent"
+            or operation["id"] != subject.operation_id
+            or operation["parent_task_id"] != subject.parent_task_id
+            or operation["episode_id"] != checkpoint["episode_id"]
+            or operation["state"] not in {"active", "escalated"}
+            or declared_trust is None
+            or checkpoint["generation"] != subject.generation
+            or checkpoint["checkpoint_sha"] != subject.head_sha
+        ):
+            return None
+        return declared_trust
+
+    async def _lock_candidate_subject_on(
+        self, conn: Any, subject: CandidateCISubject
+    ) -> bool:
+        initial_batch = (
+            await conn.execute(
+                select(integration_batches).where(
+                    integration_batches.c.id == subject.batch_id
+                )
+            )
+        ).mappings().one_or_none()
+        project = None
+        if initial_batch is not None:
+            project = (
+                await conn.execute(
+                    select(projects).where(projects.c.id == initial_batch["project_id"])
+                )
+            ).mappings().one_or_none()
+        if not self._enabled_project_repository(project):
+            return False
+        await self.db.lock_hierarchy_project(conn, project["id"])
+        project = (
+            await conn.execute(
+                select(projects)
+                .where(projects.c.id == project["id"])
+                .with_for_update()
+            )
+        ).mappings().one_or_none()
+        if not self._enabled_project_repository(project):
+            return False
+        batch = (
+            await conn.execute(
+                select(integration_batches)
+                .where(integration_batches.c.id == subject.batch_id)
+                .with_for_update()
+            )
+        ).mappings().one_or_none()
+        candidate = (
+            await conn.execute(
+                select(integration_candidate_revisions)
+                .where(
+                    integration_candidate_revisions.c.batch_id == subject.batch_id,
+                    integration_candidate_revisions.c.revision == subject.revision,
+                )
+                .with_for_update()
+            )
+        ).mappings().one_or_none()
+        operation = None
+        if batch is not None:
+            operation = (
+                await conn.execute(
+                    select(integration_repair_operations)
+                    .where(
+                        integration_repair_operations.c.batch_id == batch["id"],
+                        integration_repair_operations.c.episode_id == batch["id"],
+                    )
+                    .with_for_update()
+                )
+            ).mappings().one_or_none()
+        return bool(
+            operation is not None
+            and batch is not None
+            and candidate is not None
+            and batch["project_id"] == project["id"]
+            and batch["repository_id"] == self.trust.canonical_repository_id
+            and batch["current_revision"] == subject.revision
+            and batch["lifecycle"] in {"testing", "repairing"}
+            and operation["target_kind"] == "batch"
+            and operation["id"] == subject.operation_id
+            and operation["batch_id"] == subject.batch_id
+            and operation["episode_id"] == batch["id"]
+            and operation["state"] in {"active", "escalated"}
+            and self._operation_trust(operation, "root") == self.trust
+            and candidate["head_sha"] == subject.candidate_sha
+            and candidate["state"] in {"built", "testing"}
+        )
+
+    def _enabled_project_repository(self, project: Any | None) -> bool:
+        return bool(
+            project is not None
+            and project["status"] == "ACTIVE"
+            and project["hierarchical_integration_mode"] in {"hierarchy", "train"}
+            and project["integration_repository_id"]
+            == self.trust.canonical_repository_id
+        )
 
     async def _append_observation_on(
         self,
@@ -548,14 +673,16 @@ class AuthenticatedGitHubObserver:
             candidates: list[tuple[int, dict[str, Any]]] = []
             for record in records:
                 app = record.get("app")
-                record_id = _strict_int(record.get("id"))
                 if (
                     record.get("name") == name
                     and isinstance(app, dict)
                     and _strict_int(app.get("id")) == trust.ci_producer_app_id
-                    and record_id is not None
-                    and record_id > 0
                 ):
+                    record_id = _strict_int(record.get("id"))
+                    if record_id is None or record_id <= 0:
+                        raise AttestationError(
+                            f"required check ordering identity is malformed: {name}"
+                        )
                     candidates.append((record_id, record))
             if not candidates:
                 raise AttestationError(f"required check is missing: {name}")
@@ -661,16 +788,22 @@ class AuthenticatedGitHubObserver:
             f"?check_name={quote(trust.attestation_name, safe='')}&filter=all&per_page=100",
             key="check_runs",
         )
-        trusted_existing = [
-            record
-            for record in existing
-            if record.get("name") == trust.attestation_name
-            and isinstance(record.get("app"), dict)
-            and _strict_int(record["app"].get("id")) == trust.attestation_app_id
-            and _strict_int(record.get("id")) is not None
-        ]
+        trusted_existing: list[tuple[int, dict[str, Any]]] = []
+        for record in existing:
+            app = record.get("app")
+            if (
+                record.get("name") == trust.attestation_name
+                and isinstance(app, dict)
+                and _strict_int(app.get("id")) == trust.attestation_app_id
+            ):
+                record_id = _strict_int(record.get("id"))
+                if record_id is None or record_id <= 0:
+                    raise AttestationError(
+                        "trusted attestation ordering identity is malformed"
+                    )
+                trusted_existing.append((record_id, record))
         if trusted_existing:
-            newest = max(trusted_existing, key=lambda record: record["id"])
+            _, newest = max(trusted_existing, key=lambda item: item[0])
             output = newest.get("output")
             if (
                 newest.get("status") == "completed"

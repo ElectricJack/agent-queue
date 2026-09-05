@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import stat
 import time
 from dataclasses import dataclass
@@ -28,6 +29,7 @@ _PERMISSIONS = {
     "contents": "write",
     "administration": "read",
 }
+_FULL_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9-]*/[A-Za-z0-9._-]+")
 
 
 @dataclass(frozen=True)
@@ -45,8 +47,7 @@ class GitHubRepositoryBinding:
             raise ValueError("repository_id must be a positive integer")
         if self.forge_host != "github.com":
             raise ValueError("unsupported_host")
-        owner, separator, repo = self.full_name.partition("/")
-        if not separator or not owner or not repo or "/" in repo:
+        if _FULL_NAME.fullmatch(self.full_name) is None:
             raise ValueError("full_name must be owner/repository")
 
 
