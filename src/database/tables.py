@@ -19,6 +19,7 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Integer,
+    JSON,
     MetaData,
     Table,
     Text,
@@ -1493,4 +1494,435 @@ message_discord_receipts = Table(
     Column("message_id", Text, primary_key=True),
     Column("discord_channel_id", Text),
     Column("discord_message_id", Text),
+)
+
+# ---------------------------------------------------------------------------
+# Hierarchical delivery and integration trains.
+#
+# These records deliberately retain task identifiers as text rather than task
+# foreign keys.  A delivery receipt is audit evidence: deleting or archiving a
+# task must not delete the proof that its reviewed change reached a branch.
+# JSON is confined to frozen evidence and policy/artifact snapshots; mutable
+# progress remains normalized scalar state.
+# ---------------------------------------------------------------------------
+
+task_integration_checkpoints = Table(
+    "task_integration_checkpoints",
+    metadata,
+    Column("task_id", Text, primary_key=True),
+    Column("repository_id", Text, nullable=False),
+    Column("branch", Text, nullable=False),
+    Column("generation", Integer, nullable=False, server_default="0"),
+    Column("checkpoint_sha", Text, nullable=True),
+    Column("verified_sha", Text, nullable=True),
+    Column("verified_generation", Integer, nullable=True),
+    Column("state", Text, nullable=False, server_default="working"),
+    Column("version", Integer, nullable=False, server_default="0"),
+    Column("last_transition_id", Text, nullable=True),
+    Column("playbook_activation_id", Text, nullable=True),
+    Column("branch_owner_id", Text, nullable=True),
+    Column("updated_at", Float, nullable=False),
+    CheckConstraint("generation >= 0", name="ck_task_integration_checkpoints_generation"),
+    CheckConstraint("version >= 0", name="ck_task_integration_checkpoints_version"),
+    CheckConstraint(
+        "verified_generation IS NULL OR verified_generation >= 0",
+        name="ck_task_integration_checkpoints_verified_generation",
+    ),
+    CheckConstraint(
+        "state IN ('working', 'awaiting_children', 'integration_ready', 'verifying')",
+        name="ck_task_integration_checkpoints_state",
+    ),
+)
+
+task_branch_origins = Table(
+    "task_branch_origins",
+    metadata,
+    Column("id", Text, primary_key=True),
+    Column("task_id", Text, nullable=False),
+    Column("repository_id", Text, nullable=False),
+    Column("parent_task_id", Text, nullable=True),
+    Column("parent_repository_id", Text, nullable=True),
+    Column("parent_ref", Text, nullable=True),
+    Column("base_sha", Text, nullable=False),
+    Column("creation_generation", Integer, nullable=False),
+    Column("reserved", Boolean, nullable=False, server_default=false()),
+    Column("materialized", Boolean, nullable=False, server_default=false()),
+    Column("retired_at", Float, nullable=True),
+    Column("created_at", Float, nullable=False),
+    Column("materialized_at", Float, nullable=True),
+    CheckConstraint("creation_generation >= 0", name="ck_task_branch_origins_generation"),
+    CheckConstraint(
+        "materialized = false OR reserved = true",
+        name="ck_task_branch_origins_materialized_reserved",
+    ),
+    Index(
+        "uq_task_branch_origins_live_task_repo",
+        "task_id",
+        "repository_id",
+        unique=True,
+        sqlite_where=text("retired_at IS NULL"),
+        postgresql_where=text("retired_at IS NULL"),
+    ),
+)
+
+integration_branch_owners = Table(
+    "integration_branch_owners",
+    metadata,
+    Column("id", Text, primary_key=True),
+    Column("repository_id", Text, nullable=False),
+    Column("ref", Text, nullable=False),
+    Column("owner_id", Text, nullable=False),
+    Column("owner_role", Text, nullable=False),
+    Column("fence_token", Integer, nullable=False),
+    Column("handoff_state", Text, nullable=False, server_default="reserved"),
+    Column("session_id", Text, nullable=True),
+    Column("workspace_id", Text, nullable=True),
+    Column("confirmed_workspace_id", Text, nullable=True),
+    Column("expires_at", Float, nullable=True),
+    Column("created_at", Float, nullable=False),
+    Column("updated_at", Float, nullable=False),
+    UniqueConstraint("repository_id", "ref", name="uq_integration_branch_owners_ref"),
+    CheckConstraint("fence_token >= 0", name="ck_integration_branch_owners_fence"),
+    CheckConstraint(
+        "handoff_state IN ('reserved', 'attached', 'handoff_pending', 'released')",
+        name="ck_integration_branch_owners_handoff_state",
+    ),
+)
+
+integration_promotion_intents = Table(
+    "integration_promotion_intents",
+    metadata,
+    Column("id", Text, primary_key=True),
+    Column("domain_key", Text, nullable=False),
+    Column("receipt_id", Text, nullable=False),
+    Column("source_task_id", Text, nullable=True),
+    Column("source_head", Text, nullable=False),
+    Column("source_base", Text, nullable=False),
+    Column("repository_id", Text, nullable=False),
+    Column("target_branch", Text, nullable=False),
+    Column("expected_target", Text, nullable=False),
+    Column("prepared_sha", Text, nullable=True),
+    Column("recovery_ref", Text, nullable=True),
+    Column("fence_owner_id", Text, nullable=False),
+    Column("fence_token", Integer, nullable=False),
+    Column("state", Text, nullable=False),
+    Column("remote_evidence", JSON, nullable=True),
+    Column("committed_at", Float, nullable=True),
+    Column("created_at", Float, nullable=False),
+    Column("updated_at", Float, nullable=False),
+    UniqueConstraint("domain_key", name="uq_integration_promotion_intents_domain_key"),
+    CheckConstraint("fence_token >= 0", name="ck_integration_promotion_intents_fence"),
+    CheckConstraint(
+        "state IN ('reserved', 'prepared', 'pushed', 'reconciled', 'committed', 'conflict')",
+        name="ck_integration_promotion_intents_state",
+    ),
+    CheckConstraint(
+        "(state <> 'committed' OR (committed_at IS NOT NULL AND remote_evidence IS NOT NULL)) "
+        "AND (committed_at IS NULL OR remote_evidence IS NOT NULL)",
+        name="ck_integration_promotion_intents_committed_evidence",
+    ),
+)
+
+task_delivery_receipts = Table(
+    "task_delivery_receipts",
+    metadata,
+    Column("id", Text, primary_key=True),
+    Column("domain_key", Text, nullable=False),
+    Column("source_task_id", Text, nullable=True),
+    Column("target_task_id", Text, nullable=True),
+    Column("repository_id", Text, nullable=False),
+    Column("target_branch", Text, nullable=False),
+    Column("workspace_kind", Text, nullable=True),
+    Column("source_pr", Text, nullable=True),
+    Column("reviewed_head_sha", Text, nullable=True),
+    Column("reviewed_tree_sha", Text, nullable=True),
+    Column("before_sha", Text, nullable=True),
+    Column("squash_sha", Text, nullable=True),
+    Column("after_sha", Text, nullable=True),
+    Column("review_evidence", JSON, nullable=True),
+    Column("verification_evidence", JSON, nullable=True),
+    Column("resolution_evidence", JSON, nullable=True),
+    Column("batch_id", Text, nullable=True),
+    Column("member_ordinal", Integer, nullable=True),
+    Column("candidate_revision", Integer, nullable=True),
+    Column("disposition", Text, nullable=False),
+    Column("created_at", Float, nullable=False),
+    UniqueConstraint("domain_key", name="uq_task_delivery_receipts_domain_key"),
+    CheckConstraint(
+        "disposition IN ('code', 'noop', 'ineligible', 'skipped', 'failed')",
+        name="ck_task_delivery_receipts_disposition",
+    ),
+    CheckConstraint(
+        "disposition = 'code' OR resolution_evidence IS NOT NULL",
+        name="ck_task_delivery_receipts_disposition_evidence",
+    ),
+    CheckConstraint(
+        "member_ordinal IS NULL OR member_ordinal >= 0",
+        name="ck_task_delivery_receipts_member_ordinal",
+    ),
+    CheckConstraint(
+        "candidate_revision IS NULL OR candidate_revision >= 0",
+        name="ck_task_delivery_receipts_candidate_revision",
+    ),
+    Index("idx_task_delivery_receipts_source", "source_task_id", "repository_id"),
+)
+
+integration_batches = Table(
+    "integration_batches",
+    metadata,
+    Column("id", Text, primary_key=True),
+    Column("project_id", Text, nullable=False),
+    Column("repository_id", Text, nullable=False),
+    Column("trigger", Text, nullable=True),
+    Column("source_manifest_digest", Text, nullable=False),
+    Column("base_sha", Text, nullable=True),
+    Column("lifecycle", Text, nullable=False),
+    Column("current_revision", Integer, nullable=False, server_default="0"),
+    Column("integration_branch", Text, nullable=True),
+    Column("pr_url", Text, nullable=True),
+    Column("repair_stage_ordinal", Integer, nullable=True),
+    Column("tested_candidate_sha", Text, nullable=True),
+    Column("ci_evidence_id", Text, nullable=True),
+    Column("final_main_sha", Text, nullable=True),
+    Column("human_abort_reason", Text, nullable=True),
+    Column("policy_snapshot", JSON, nullable=False),
+    Column("artifact_snapshot", JSON, nullable=False),
+    Column("cleanup_state", Text, nullable=False),
+    Column("created_at", Float, nullable=False),
+    Column("updated_at", Float, nullable=False),
+    CheckConstraint("current_revision >= 0", name="ck_integration_batches_revision"),
+    CheckConstraint(
+        "repair_stage_ordinal IS NULL OR repair_stage_ordinal >= 0",
+        name="ck_integration_batches_repair_stage",
+    ),
+    CheckConstraint(
+        "lifecycle IN ('sealing', 'sealed', 'building', 'testing', 'repairing', "
+        "'human_blocked', 'promoting', 'cleanup_pending', 'promoted', 'aborted', 'failed')",
+        name="ck_integration_batches_lifecycle",
+    ),
+    Index(
+        "uq_integration_batches_active_project",
+        "project_id",
+        unique=True,
+        sqlite_where=text(
+            "lifecycle IN ('sealing', 'sealed', 'building', 'testing', 'repairing', "
+            "'human_blocked', 'promoting', 'cleanup_pending')"
+        ),
+        postgresql_where=text(
+            "lifecycle IN ('sealing', 'sealed', 'building', 'testing', 'repairing', "
+            "'human_blocked', 'promoting', 'cleanup_pending')"
+        ),
+    ),
+)
+
+integration_batch_members = Table(
+    "integration_batch_members",
+    metadata,
+    Column("batch_id", Text, primary_key=True),
+    Column("ordinal", Integer, primary_key=True),
+    Column("task_id", Text, nullable=False),
+    Column("pr_url", Text, nullable=True),
+    Column("repository_id", Text, nullable=False),
+    Column("source_base_sha", Text, nullable=False),
+    Column("reviewed_head_sha", Text, nullable=False),
+    Column("reviewed_tree_sha", Text, nullable=False),
+    Column("review_evidence", JSON, nullable=False),
+    UniqueConstraint("batch_id", "task_id", name="uq_integration_batch_members_task"),
+    CheckConstraint("ordinal >= 0", name="ck_integration_batch_members_ordinal"),
+)
+
+integration_candidate_revisions = Table(
+    "integration_candidate_revisions",
+    metadata,
+    Column("batch_id", Text, primary_key=True),
+    Column("revision", Integer, primary_key=True),
+    Column("construction_base_sha", Text, nullable=False),
+    Column("next_member_ordinal", Integer, nullable=False, server_default="0"),
+    Column("repair_parent_revision", Integer, nullable=True),
+    Column("head_sha", Text, nullable=True),
+    Column("ci_evidence_id", Text, nullable=True),
+    Column("state", Text, nullable=False),
+    Column("created_at", Float, nullable=False),
+    Column("updated_at", Float, nullable=False),
+    CheckConstraint("revision >= 0", name="ck_integration_candidate_revisions_revision"),
+    CheckConstraint(
+        "next_member_ordinal >= 0", name="ck_integration_candidate_revisions_next_member"
+    ),
+    CheckConstraint(
+        "repair_parent_revision IS NULL OR repair_parent_revision >= 0",
+        name="ck_integration_candidate_revisions_repair_parent",
+    ),
+    CheckConstraint(
+        "state IN ('constructing', 'built', 'testing', 'green', 'red', 'superseded', 'promoted')",
+        name="ck_integration_candidate_revisions_state",
+    ),
+)
+
+integration_repair_operations = Table(
+    "integration_repair_operations",
+    metadata,
+    Column("id", Text, primary_key=True),
+    Column("target_kind", Text, nullable=False),
+    Column("batch_id", Text, nullable=True),
+    Column("parent_task_id", Text, nullable=True),
+    Column("episode_id", Text, nullable=False),
+    Column("active_stage", Integer, nullable=False, server_default="0"),
+    Column("state", Text, nullable=False),
+    Column("policy_snapshot", JSON, nullable=False),
+    Column("artifact_snapshot", JSON, nullable=False),
+    Column("required_check_version", Text, nullable=False),
+    Column("created_at", Float, nullable=False),
+    Column("updated_at", Float, nullable=False),
+    CheckConstraint("active_stage >= 0", name="ck_integration_repair_operations_active_stage"),
+    CheckConstraint(
+        "(target_kind = 'batch' AND batch_id IS NOT NULL AND parent_task_id IS NULL) OR "
+        "(target_kind = 'parent' AND parent_task_id IS NOT NULL AND batch_id IS NULL)",
+        name="ck_integration_repair_operations_target",
+    ),
+    CheckConstraint(
+        "state IN ('active', 'escalated', 'human_required', 'completed', 'cancelled')",
+        name="ck_integration_repair_operations_state",
+    ),
+    Index(
+        "uq_integration_repair_operations_active_batch",
+        "batch_id",
+        unique=True,
+        sqlite_where=text("batch_id IS NOT NULL AND state IN ('active', 'escalated', 'human_required')"),
+        postgresql_where=text("batch_id IS NOT NULL AND state IN ('active', 'escalated', 'human_required')"),
+    ),
+    Index(
+        "uq_integration_repair_operations_active_parent",
+        "parent_task_id",
+        "episode_id",
+        unique=True,
+        sqlite_where=text(
+            "parent_task_id IS NOT NULL AND state IN ('active', 'escalated', 'human_required')"
+        ),
+        postgresql_where=text(
+            "parent_task_id IS NOT NULL AND state IN ('active', 'escalated', 'human_required')"
+        ),
+    ),
+)
+
+integration_repair_stages = Table(
+    "integration_repair_stages",
+    metadata,
+    Column("operation_id", Text, primary_key=True),
+    Column("ordinal", Integer, primary_key=True),
+    Column("policy", JSON, nullable=False),
+    Column("intelligence_class", Text, nullable=False),
+    Column("profile_id", Text, nullable=True),
+    Column("repair_task_id", Text, nullable=True),
+    Column("starting_sha", Text, nullable=False),
+    Column("started_at", Float, nullable=True),
+    Column("deadline_at", Float, nullable=True),
+    Column("attempts", Integer, nullable=False, server_default="0"),
+    Column("dossier", JSON, nullable=True),
+    Column("state", Text, nullable=False),
+    Column("completed_at", Float, nullable=True),
+    CheckConstraint("ordinal IN (0, 1)", name="ck_integration_repair_stages_ordinal"),
+    CheckConstraint("attempts >= 0", name="ck_integration_repair_stages_attempts"),
+    CheckConstraint(
+        "state IN ('pending', 'active', 'passed', 'failed', 'expired', 'cancelled')",
+        name="ck_integration_repair_stages_state",
+    ),
+)
+
+integration_check_evidence = Table(
+    "integration_check_evidence",
+    metadata,
+    Column("id", Text, primary_key=True),
+    Column("operation_id", Text, nullable=True),
+    Column("batch_id", Text, nullable=True),
+    Column("candidate_revision", Integer, nullable=True),
+    Column("parent_task_id", Text, nullable=True),
+    Column("parent_generation", Integer, nullable=True),
+    Column("parent_head_sha", Text, nullable=True),
+    Column("producer_id", Text, nullable=False),
+    Column("workflow_id", Text, nullable=False),
+    Column("run_id", Text, nullable=False),
+    Column("attempt", Integer, nullable=False),
+    Column("required_check_version", Text, nullable=False),
+    Column("checks", JSON, nullable=False),
+    Column("conclusion", Text, nullable=False),
+    Column("classification", Text, nullable=False),
+    Column("observed_at", Float, nullable=False),
+    UniqueConstraint(
+        "producer_id", "run_id", "attempt", "required_check_version",
+        name="uq_integration_check_evidence_producer_run_attempt_checks",
+    ),
+    CheckConstraint("attempt >= 0", name="ck_integration_check_evidence_attempt"),
+    CheckConstraint(
+        "(batch_id IS NOT NULL AND candidate_revision IS NOT NULL AND parent_task_id IS NULL "
+        "AND parent_generation IS NULL AND parent_head_sha IS NULL) OR "
+        "(batch_id IS NULL AND candidate_revision IS NULL AND parent_task_id IS NOT NULL "
+        "AND parent_generation IS NOT NULL AND parent_head_sha IS NOT NULL)",
+        name="ck_integration_check_evidence_subject",
+    ),
+    CheckConstraint(
+        "conclusion IN ('success', 'failure', 'pending', 'cancelled', 'inconclusive')",
+        name="ck_integration_check_evidence_conclusion",
+    ),
+)
+
+project_integration_schedules = Table(
+    "project_integration_schedules",
+    metadata,
+    Column("project_id", Text, primary_key=True),
+    Column("enabled", Boolean, nullable=False, server_default=false()),
+    Column("interval_seconds", Integer, nullable=False),
+    Column("next_due_at", Float, nullable=False),
+    Column("last_observed_window", Float, nullable=True),
+    Column("request_sequence", Integer, nullable=False, server_default="0"),
+    Column("outstanding_request_id", Text, nullable=True),
+    Column("outstanding_trigger", Text, nullable=True),
+    Column("outstanding_requested_at", Float, nullable=True),
+    Column("last_completed_sweep_at", Float, nullable=True),
+    Column("updated_at", Float, nullable=False),
+    CheckConstraint("interval_seconds > 0", name="ck_project_integration_schedules_interval"),
+    CheckConstraint("request_sequence >= 0", name="ck_project_integration_schedules_sequence"),
+    CheckConstraint(
+        "(outstanding_request_id IS NULL AND outstanding_trigger IS NULL "
+        "AND outstanding_requested_at IS NULL) OR "
+        "(outstanding_request_id IS NOT NULL AND outstanding_trigger IS NOT NULL "
+        "AND outstanding_requested_at IS NOT NULL)",
+        name="ck_project_integration_schedules_outstanding_request",
+    ),
+)
+
+project_integration_leases = Table(
+    "project_integration_leases",
+    metadata,
+    Column("project_id", Text, primary_key=True),
+    Column("repository_id", Text, nullable=False),
+    Column("batch_id", Text, nullable=False),
+    Column("owner_id", Text, nullable=False),
+    Column("fence_token", Integer, nullable=False),
+    Column("heartbeat_at", Float, nullable=False),
+    Column("expires_at", Float, nullable=False),
+    CheckConstraint("fence_token >= 0", name="ck_project_integration_leases_fence"),
+    CheckConstraint("expires_at >= heartbeat_at", name="ck_project_integration_leases_expiry"),
+)
+
+integration_outbox = Table(
+    "integration_outbox",
+    metadata,
+    Column("id", Text, primary_key=True),
+    Column("dedup_key", Text, nullable=False),
+    Column("project_id", Text, nullable=False),
+    Column("event_type", Text, nullable=False),
+    Column("payload", JSON, nullable=False),
+    Column("available_at", Float, nullable=False),
+    Column("delivered_at", Float, nullable=True),
+    Column("attempts", Integer, nullable=False, server_default="0"),
+    Column("last_error", Text, nullable=True),
+    Column("created_at", Float, nullable=False),
+    UniqueConstraint("dedup_key", name="uq_integration_outbox_dedup_key"),
+    CheckConstraint("attempts >= 0", name="ck_integration_outbox_attempts"),
+    Index(
+        "idx_integration_outbox_pending_available",
+        "available_at",
+        sqlite_where=text("delivered_at IS NULL"),
+        postgresql_where=text("delivered_at IS NULL"),
+    ),
 )
