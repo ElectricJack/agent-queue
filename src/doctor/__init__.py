@@ -24,6 +24,7 @@ from src.doctor.models import (
 )
 from src.doctor.playbook_v2_checks import playbook_v2_checks
 from src.doctor.pool_checks import pool_checks
+from src.doctor.project_checks import project_checks
 from src.doctor.profile_checks import profile_checks
 from src.doctor.resource_checks import resource_checks
 from src.doctor.runner import DoctorRegistry, exit_code_for, run_doctor
@@ -47,6 +48,7 @@ __all__ = [
     "integration_checks",
     "intelligence_class_checks",
     "playbook_v2_checks",
+    "project_checks",
     "profile_checks",
     "resource_checks",
     "run_doctor",
@@ -86,5 +88,7 @@ def default_registry() -> DoctorRegistry:
     for check in db_checks():
         registry.register(check)
     for check in playbook_v2_checks():
+        registry.register(check)
+    for check in project_checks():
         registry.register(check)
     return registry
