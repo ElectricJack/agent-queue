@@ -86,12 +86,12 @@ class BranchOwnership:
             if row is None:  # pragma: no cover - narrowed by the insert race above
                 raise BranchBusy("branch acquisition could not resolve its owner")
 
+            if row["handoff_state"] == "released":
+                return await self._claim_released(conn, row, target, owner_id, role)
             if row["owner_id"] == owner_id and row["owner_role"] == role:
                 if row["handoff_state"] == "handoff_pending":
                     raise BranchBusy("branch handoff is awaiting termination evidence")
                 return self._fence(row)
-            if row["handoff_state"] == "released":
-                return await self._claim_released(conn, row, target, owner_id, role)
             raise BranchBusy("branch has an active or unresolved owner")
 
     async def transfer(self, fence: Fence, next_owner_id: str, next_role: str) -> Fence:
@@ -142,8 +142,8 @@ class BranchOwnership:
         async with self._db.immediate() as conn:
             row = await self._locked_row(conn, fence.target)
             self._require_current(row, fence)
-            if row["handoff_state"] == "handoff_pending":
-                raise BranchBusy("branch handoff is awaiting termination evidence")
+            if row["handoff_state"] not in {"reserved", "attached"}:
+                raise BranchBusy("branch ownership is not write-authoritative")
 
     async def _claim_released(self, conn, row: dict[str, Any], target, owner_id, role) -> Fence:
         token = int(row["fence_token"]) + 1

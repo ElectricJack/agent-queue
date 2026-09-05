@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
-from sqlalchemy import select
+from sqlalchemy import and_, select
 
 from src.database.tables import (
     integration_batches,
     integration_repair_operations,
+    integration_repair_stages,
     task_integration_checkpoints,
 )
 
@@ -35,3 +36,32 @@ class IntegrationStateQueriesMixin:
         async with self._engine.connect() as conn:
             row = (await conn.execute(statement)).mappings().one_or_none()
         return dict(row) if row is not None else None
+
+    async def get_active_integration_repair_for_task(
+        self, repair_task_id: str
+    ) -> dict | None:
+        """Resolve one repair task's current active, nonterminal operation."""
+        statement = (
+            select(integration_repair_operations)
+            .select_from(
+                integration_repair_operations.join(
+                    integration_repair_stages,
+                    and_(
+                        integration_repair_stages.c.operation_id
+                        == integration_repair_operations.c.id,
+                        integration_repair_stages.c.ordinal
+                        == integration_repair_operations.c.active_stage,
+                    ),
+                )
+            )
+            .where(integration_repair_stages.c.repair_task_id == repair_task_id)
+            .where(integration_repair_stages.c.state == "active")
+            .where(
+                integration_repair_operations.c.state.in_(
+                    ("active", "escalated", "human_required")
+                )
+            )
+        )
+        async with self._engine.connect() as conn:
+            rows = (await conn.execute(statement)).mappings().all()
+        return dict(rows[0]) if len(rows) == 1 else None

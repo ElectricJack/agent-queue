@@ -202,3 +202,27 @@ async def test_concurrent_initial_acquisition_has_one_winner_and_one_named_busy(
 
     assert sum(isinstance(result, Fence) for result in results) == 1
     assert sum(isinstance(result, BranchBusy) for result in results) == 1
+
+
+async def test_released_fence_cannot_write_and_same_owner_reacquires_with_new_token(db):
+    """Returning token N from a released row would revive a detached writer."""
+    ownership = BranchOwnership(db)
+    target = BranchKey(repository_id="repo", branch="parent")
+    old = await ownership.acquire(target, "parent-task", "worker")
+    async with db.immediate() as conn:
+        await conn.execute(
+            update(integration_branch_owners)
+            .where(integration_branch_owners.c.repository_id == target.repository_id)
+            .where(integration_branch_owners.c.ref == target.branch)
+            .values(handoff_state="released", confirmed_workspace_id="slot-1")
+        )
+
+    with pytest.raises(BranchBusy):
+        await ownership.assert_current(old)
+
+    reacquired = await ownership.acquire(target, "parent-task", "worker")
+
+    assert reacquired == Fence(target=target, owner_id="parent-task", token=2)
+    with pytest.raises(StaleFence):
+        await ownership.assert_current(old)
+    await ownership.assert_current(reacquired)

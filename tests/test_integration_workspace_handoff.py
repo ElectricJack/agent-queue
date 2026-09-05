@@ -11,6 +11,8 @@ from sqlalchemy import insert, select, update
 
 from src.database.tables import integration_branch_owners, workspaces
 from src.git.manager import GitError
+from src.integration.models import BranchKey, Fence
+from src.integration.ownership import BranchOwnership
 from src.models import Project, RepoConfig, RepoSourceType, SessionRecord, Task, Workspace
 
 
@@ -122,14 +124,17 @@ def _clean_git(
     dirty: bool = False,
     pushed: bool = True,
     detach_error: Exception | None = None,
+    already_detached: bool = False,
+    detached_head_matches: bool = True,
 ):
     head = "a" * 40
     remote = head if pushed else "b" * 40
-    detached = False
+    detached = already_detached
+    checkout_head = head if detached_head_matches else "c" * 40
 
     async def current_branch(_path, *, strict=False):
         events.append("validate-branch")
-        return "aq/parent"
+        return "HEAD" if detached else "aq/parent"
 
     async def run(args, *, cwd):
         nonlocal detached
@@ -146,7 +151,7 @@ def _clean_git(
         if args[:2] == ["rev-parse", "refs/remotes/origin/aq/parent"]:
             return remote
         if args[:2] == ["rev-parse", "HEAD"]:
-            return head
+            return checkout_head if detached else head
         if args[:2] == ["switch", "--detach"]:
             events.append("detach")
             if detach_error is not None:
@@ -355,3 +360,111 @@ async def test_released_handoff_recovers_after_crash_without_touching_a_new_hold
     assert result["outcome"] == "transferred"
     assert result["fence"]["token"] == 5
     assert events == []
+
+
+async def test_detached_handoff_retries_after_crash_before_durable_release(
+    orchestrator_factory, tmp_path, monkeypatch
+):
+    """Requiring the named branch on retry would wedge a proven detached HEAD."""
+    orchestrator = await _orchestrator(orchestrator_factory, tmp_path)
+    events: list[str] = []
+    provider = _provider(events)
+    monkeypatch.setattr(orchestrator.session_providers, "create", lambda *_args: provider)
+    current_branch, run = _clean_git(events)
+    orchestrator.git.aget_current_branch = AsyncMock(side_effect=current_branch)
+    orchestrator.git._arun_unlocked = AsyncMock(side_effect=run)
+    from src.orchestrator import workspace_attachments
+
+    real_mark = workspace_attachments.mark_integration_handoff_released
+    attempts = 0
+
+    async def fail_once_before_mark(*args, **kwargs):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise RuntimeError("crash before durable release")
+        return await real_mark(*args, **kwargs)
+
+    monkeypatch.setattr(
+        workspace_attachments,
+        "mark_integration_handoff_released",
+        fail_once_before_mark,
+    )
+    target = BranchKey(repository_id="repo", branch="aq/parent")
+    old_fence = Fence(target=target, owner_id="task", token=4)
+
+    with pytest.raises(RuntimeError, match="crash before durable release"):
+        await BranchOwnership(
+            orchestrator.db,
+            confirm_handoff=orchestrator.aconfirm_integration_owner_handoff,
+        ).transfer(old_fence, "next", "worker")
+
+    pending = await BranchOwnership(orchestrator.db).get_owner(target)
+    assert pending is not None
+    assert pending["handoff_state"] == "handoff_pending"
+    assert pending["fence_token"] == 4
+    assert (await orchestrator.db.get_workspace("slot")).locked_by_task_id == "task"
+
+    fresh_ownership = BranchOwnership(
+        orchestrator.db,
+        confirm_handoff=orchestrator.aconfirm_integration_owner_handoff,
+    )
+    transferred = await fresh_ownership.transfer(old_fence, "next", "worker")
+
+    assert transferred == Fence(target=target, owner_id="next", token=5)
+    assert attempts == 2
+    assert events.count("detach") == 1
+    assert events.count("confirm") == 2
+    assert (await orchestrator.db.get_workspace("slot")).locked_by_task_id is None
+
+
+async def test_detached_handoff_with_wrong_head_remains_busy(
+    orchestrator_factory, tmp_path, monkeypatch
+):
+    """Detached state alone must not release a checkout at an unrelated SHA."""
+    orchestrator = await _orchestrator(orchestrator_factory, tmp_path)
+    events: list[str] = []
+    provider = _provider(events)
+    monkeypatch.setattr(orchestrator.session_providers, "create", lambda *_args: provider)
+    current_branch, run = _clean_git(
+        events,
+        already_detached=True,
+        detached_head_matches=False,
+    )
+    orchestrator.git.aget_current_branch = AsyncMock(side_effect=current_branch)
+    orchestrator.git._arun_unlocked = AsyncMock(side_effect=run)
+
+    confirmed = await orchestrator.aconfirm_integration_owner_handoff(_owner())
+
+    assert confirmed is False
+    assert events == ["validate-branch", "stop", "confirm", "clean-check", "fetch"]
+    assert (await orchestrator.db.get_workspace("slot")).locked_by_task_id == "task"
+
+
+async def test_detached_non_slot_cannot_bypass_slot_proof(
+    orchestrator_factory, tmp_path, monkeypatch
+):
+    """Accepting detached HEAD without the slot mutex proof would unlock unknown work."""
+    orchestrator = await _orchestrator(orchestrator_factory, tmp_path)
+    async with orchestrator.db.immediate() as conn:
+        await conn.execute(
+            update(workspaces)
+            .where(workspaces.c.id == "slot")
+            .values(
+                source_type=RepoSourceType.CLONE.value,
+                slot_index=None,
+                base_workspace_id=None,
+            )
+        )
+    events: list[str] = []
+    provider = _provider(events)
+    monkeypatch.setattr(orchestrator.session_providers, "create", lambda *_args: provider)
+    current_branch, run = _clean_git(events, already_detached=True)
+    orchestrator.git.aget_current_branch = AsyncMock(side_effect=current_branch)
+    orchestrator.git._arun_unlocked = AsyncMock(side_effect=run)
+
+    confirmed = await orchestrator.aconfirm_integration_owner_handoff(_owner())
+
+    assert confirmed is False
+    assert events == ["validate-branch"]
+    assert (await orchestrator.db.get_workspace("slot")).locked_by_task_id == "task"

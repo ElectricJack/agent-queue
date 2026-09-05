@@ -12,6 +12,7 @@ from typing import Any
 from src.commands.principal import PrincipalKind, TRUSTED_LOCAL, current_principal
 from src.integration.models import BranchKey, Fence
 from src.integration.ownership import BranchBusy, BranchOwnership, StaleFence
+from src.models import TaskStatus
 
 
 _TASK_OWNER_ROLES = frozenset({"worker", "repair", "verifier"})
@@ -55,6 +56,13 @@ class IntegrationCommandsMixin:
         operation = await self.db.get_integration_operation(owner_id)
         if operation is None:
             return False
+        return await self._integration_operation_matches_target(
+            operation, target, project_id
+        )
+
+    async def _integration_operation_matches_target(
+        self, operation: dict, target: BranchKey, project_id: str
+    ) -> bool:
         if operation["target_kind"] == "batch":
             batch_id = operation.get("batch_id")
             return bool(
@@ -75,9 +83,34 @@ class IntegrationCommandsMixin:
         # real persisted relationship this command can resolve.
         return False
 
+    async def _integration_repair_task_matches_target(
+        self, task_id: str, target: BranchKey, project_id: str
+    ) -> bool:
+        task = await self.db.get_task(task_id)
+        if (
+            task is None
+            or task.project_id != project_id
+            or task.repo_id != target.repository_id
+            or task.status in {TaskStatus.COMPLETED, TaskStatus.FAILED}
+        ):
+            return False
+        if task.branch_name == target.branch:
+            return True
+        operation = await self.db.get_active_integration_repair_for_task(task_id)
+        return bool(
+            operation
+            and await self._integration_operation_matches_target(
+                operation, target, project_id
+            )
+        )
+
     async def _integration_destination_matches_target(
         self, owner_id: str, role: str, target: BranchKey, project_id: str
     ) -> bool:
+        if role == "repair":
+            return await self._integration_repair_task_matches_target(
+                owner_id, target, project_id
+            )
         if role in _TASK_OWNER_ROLES:
             return await self._integration_task_matches_target(owner_id, target, project_id)
         if role == "collector":

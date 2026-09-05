@@ -166,7 +166,7 @@ async def detach_slot_for_integration_handoff(
         current = await git._arun_unlocked(
             ["rev-parse", "--abbrev-ref", "HEAD"], cwd=checkout
         )
-        if current != expected_branch:
+        if current not in {expected_branch, "HEAD"}:
             return False
         status = await git._arun_unlocked(["status", "--porcelain"], cwd=checkout)
         if status:
@@ -179,7 +179,8 @@ async def detach_slot_for_integration_handoff(
         if not local_tip or local_tip != remote_tip or head != local_tip:
             return False
 
-        await git._arun_unlocked(["switch", "--detach", head], cwd=checkout)
+        if current == expected_branch:
+            await git._arun_unlocked(["switch", "--detach", head], cwd=checkout)
         detached = await git._arun_unlocked(
             ["rev-parse", "--abbrev-ref", "HEAD"], cwd=checkout
         )

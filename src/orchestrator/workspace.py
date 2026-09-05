@@ -921,9 +921,11 @@ class WorkspaceMixin:
             or os.path.realpath(session.work_dir) != os.path.realpath(workspace.workspace_path)
         ):
             return False
-        if (
-            await self.git.aget_current_branch(workspace.workspace_path, strict=True)
-            != owner.get("ref")
+        current_branch = await self.git.aget_current_branch(
+            workspace.workspace_path, strict=True
+        )
+        if current_branch != owner.get("ref") and not (
+            workspace.is_slot and current_branch == "HEAD"
         ):
             return False
         try:

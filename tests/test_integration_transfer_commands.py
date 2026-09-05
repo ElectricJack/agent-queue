@@ -5,6 +5,7 @@ from __future__ import annotations
 import time
 from unittest.mock import AsyncMock
 
+import pytest
 from sqlalchemy import insert, select
 
 from src.commands.principal import ExecutionPrincipal, PrincipalKind, principal_context
@@ -12,8 +13,9 @@ from src.database.tables import (
     integration_batches,
     integration_branch_owners,
     integration_repair_operations,
+    integration_repair_stages,
 )
-from src.models import Project, RepoConfig, RepoSourceType, Task
+from src.models import Project, RepoConfig, RepoSourceType, Task, TaskStatus
 from src.profiles.capabilities import CapabilityPolicy
 
 
@@ -218,6 +220,137 @@ async def test_transfer_rejects_a_collector_operation_bound_to_another_branch(
 
     result = await handler.execute(
         "integration_transfer_owner", _args("operation", "collector")
+    )
+
+    assert result["outcome"] == "human_required"
+    confirm.assert_not_awaited()
+
+
+async def test_transfer_accepts_repair_task_bound_by_current_active_stage(
+    command_handler_factory,
+):
+    """Requiring the repair task's own branch would ignore its persisted target."""
+    handler = await command_handler_factory()
+    await _seed(handler)
+    await handler.db.create_task(
+        Task(
+            id="repair-task",
+            project_id="p",
+            repo_id="repo",
+            branch_name="aq/repair-work",
+            status=TaskStatus.IN_PROGRESS,
+            title="Repair",
+            description="",
+        )
+    )
+    async with handler.db.immediate() as conn:
+        await conn.execute(
+            insert(integration_repair_operations).values(
+                id="repair-operation",
+                target_kind="parent",
+                parent_task_id="parent",
+                episode_id="episode",
+                active_stage=0,
+                state="active",
+                policy_snapshot={},
+                artifact_snapshot={},
+                required_check_version="checks-v1",
+                created_at=time.time(),
+                updated_at=time.time(),
+            )
+        )
+        await conn.execute(
+            insert(integration_repair_stages).values(
+                operation_id="repair-operation",
+                ordinal=0,
+                policy={},
+                intelligence_class="primary",
+                repair_task_id="repair-task",
+                starting_sha="a" * 40,
+                state="active",
+            )
+        )
+    confirm = AsyncMock(return_value=True)
+    handler.orchestrator.aconfirm_integration_owner_handoff = confirm
+
+    result = await handler.execute(
+        "integration_transfer_owner", _args("repair-task", "repair")
+    )
+
+    assert result["outcome"] == "transferred"
+    assert result["fence"]["owner_id"] == "repair-task"
+
+
+@pytest.mark.parametrize(
+    ("parent_branch", "operation_state", "task_status"),
+    [
+        ("aq/unrelated", "active", TaskStatus.IN_PROGRESS),
+        ("aq/parent", "completed", TaskStatus.IN_PROGRESS),
+        ("aq/parent", "active", TaskStatus.COMPLETED),
+    ],
+)
+async def test_transfer_rejects_unrelated_or_terminal_repair_relationship(
+    command_handler_factory,
+    parent_branch,
+    operation_state,
+    task_status,
+):
+    """Only a live current repair stage for the exact target may take ownership."""
+    handler = await command_handler_factory()
+    await _seed(handler)
+    await handler.db.create_task(
+        Task(
+            id="repair-target",
+            project_id="p",
+            repo_id="repo",
+            branch_name=parent_branch,
+            title="Repair target",
+            description="",
+        )
+    )
+    await handler.db.create_task(
+        Task(
+            id="repair-task",
+            project_id="p",
+            repo_id="repo",
+            branch_name="aq/repair-work",
+            status=task_status,
+            title="Repair",
+            description="",
+        )
+    )
+    async with handler.db.immediate() as conn:
+        await conn.execute(
+            insert(integration_repair_operations).values(
+                id="repair-operation",
+                target_kind="parent",
+                parent_task_id="repair-target",
+                episode_id="episode",
+                active_stage=0,
+                state=operation_state,
+                policy_snapshot={},
+                artifact_snapshot={},
+                required_check_version="checks-v1",
+                created_at=time.time(),
+                updated_at=time.time(),
+            )
+        )
+        await conn.execute(
+            insert(integration_repair_stages).values(
+                operation_id="repair-operation",
+                ordinal=0,
+                policy={},
+                intelligence_class="primary",
+                repair_task_id="repair-task",
+                starting_sha="a" * 40,
+                state="active",
+            )
+        )
+    confirm = AsyncMock(return_value=True)
+    handler.orchestrator.aconfirm_integration_owner_handoff = confirm
+
+    result = await handler.execute(
+        "integration_transfer_owner", _args("repair-task", "repair")
     )
 
     assert result["outcome"] == "human_required"
