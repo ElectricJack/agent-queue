@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
+from sqlalchemy import event
 
 from src.api.auth import LOCAL_SCOPE, RequestScope
 from src.api.graph_layout import build_graph_layout_router
@@ -969,3 +970,38 @@ async def test_tiles_expand_a_finished_epic_from_the_active_view(db, client_fact
     assert nodes["child"]["container_id"] == "done"
     assert list_response.status_code == 200
     assert {node["id"] for node in list_response.json()["nodes"]} >= {"done", "child"}
+
+
+async def test_tiles_gate_lookup_is_two_statements_regardless_of_gate_count(db, client_factory):
+    await seed(db)
+    # An open gate over visible tasks is reported; 300 historical gates are not,
+    # and they must not cost a statement each.
+    open_gid, _ = await db.create_gate(
+        project_id="p1", gate_type="human", title="review", waiter_task_ids=["z", "hub"]
+    )
+    for i in range(300):
+        gid, _ = await db.create_gate(
+            project_id="p1", gate_type="timer", title=f"old{i}", await_id=f"t{i}",
+            waiter_task_ids=["hub"],
+        )
+        await db.resolve_gate(gid, resolved_by="test", resolution="done")
+
+    statements: list[str] = []
+
+    def _hook(conn, cursor, statement, parameters, context, executemany):
+        statements.append(statement)
+
+    event.listen(db._engine.sync_engine, "before_cursor_execute", _hook)
+    try:
+        async with client_factory() as ac:
+            r = await ac.post("/api/projects/p1/graph/tiles", json=ALL)
+    finally:
+        event.remove(db._engine.sync_engine, "before_cursor_execute", _hook)
+
+    assert r.status_code == 200
+    gates = r.json()["gates"]
+    assert gates == [
+        {"id": open_gid, "gate_type": "human", "status": "open", "task_ids": ["hub", "z"]}
+    ]
+    gate_reads = [s for s in statements if "FROM gates" in s or "task_gates" in s]
+    assert len(gate_reads) <= 2, gate_reads

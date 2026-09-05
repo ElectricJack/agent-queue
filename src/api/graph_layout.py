@@ -3,10 +3,13 @@
 Mirrors the router-factory pattern of :mod:`src.api.graph` so tests can
 wire a lightweight ``db`` without booting the full daemon.
 
-The gates loop calls ``get_gate_waiters`` once per gate.  That is the one
-non-bulk call in this module and it matches what the existing
-``/api/projects/{id}/graph`` endpoint already does; gates per project are
-few, so it is left as-is rather than given a bulk query of its own.
+The gates lookup is two statements regardless of gate count:
+``list_gates(status="open")`` plus one batched
+``list_gate_waiters_for_project`` call, rather than ``get_gate_waiters``
+once per gate — a long-lived project accumulates hundreds of resolved
+gates and the per-gate loop paid for all of them on every tiles request.
+Only open gates are consulted; a resolved or expired gate never docks a
+badge on a node.
 
 Scope policy: the read routes are un-scoped, exactly like
 :mod:`src.api.graph` — they expose project graph geometry the dashboard
@@ -479,16 +482,22 @@ def build_graph_layout_router(*, db, command_handler=None) -> APIRouter:
             )
             for d in docked
         ]
+        # Two statements for every gate in the project, not one per gate: a
+        # long-lived project accumulates hundreds of resolved gates (327 on
+        # the reference daemon, 668 ms per tiles request).  Only open gates
+        # can dock on a node.
         gates_out: list[GraphGate] = []
-        for g in await db.list_gates(project_id=project_id):
-            waiters = await db.get_gate_waiters(g["id"])
-            ids = sorted(w for w in waiters if w in visible)
-            if ids:
-                gates_out.append(
-                    GraphGate(
-                        id=g["id"], gate_type=g["gate_type"], status=g["status"], task_ids=ids
+        open_gates = await db.list_gates(project_id=project_id, status="open")
+        if open_gates:
+            waiters_by_gate = await db.list_gate_waiters_for_project(project_id)
+            for g in open_gates:
+                ids = sorted(w for w in waiters_by_gate.get(g["id"], ()) if w in visible)
+                if ids:
+                    gates_out.append(
+                        GraphGate(
+                            id=g["id"], gate_type=g["gate_type"], status=g["status"], task_ids=ids
+                        )
                     )
-                )
 
         with_tasks = await db.load_rows_with_tasks(project_id, variant, list(visible))
         nodes = [
