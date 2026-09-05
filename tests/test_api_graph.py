@@ -91,3 +91,17 @@ async def test_playbook_run_root_exposes_run_identity(db, client_factory):
 
     assert response.status_code == 200
     assert response.json()["tasks"][0]["playbook_run_id"] == "run-123"
+
+
+async def test_list_gate_waiters_for_project_groups_waiters_by_gate(db):
+    await db.create_task(Task(id="t1", project_id="p1", title="One", description=""))
+    await db.create_task(Task(id="t2", project_id="p1", title="Two", description=""))
+    g1, _ = await db.create_gate(
+        project_id="p1", gate_type="human", title="review", waiter_task_ids=["t2", "t1"]
+    )
+    g2, _ = await db.create_gate(project_id="p1", gate_type="timer", title="wait", await_id="x")
+
+    waiters = await db.list_gate_waiters_for_project("p1")
+
+    assert waiters == {g1: ["t1", "t2"]}
+    assert g2 not in waiters
