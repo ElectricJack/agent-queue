@@ -126,4 +126,19 @@ describe("GitHub onboarding wizard panels", () => {
     expect(review).toHaveTextContent('"githubRepo":"widgets"');
     expect(review).toHaveTextContent('"githubVisibility":"public"');
   });
+
+  it("shows setup guidance when the init GitHub auth check fails", async () => {
+    authStatus.mockRejectedValue(new Error("GitHub status unavailable"));
+    const user = userEvent.setup();
+    render(<Harness />);
+    await selectSource(user, /New repository/);
+    await user.click(screen.getByRole("button", { name: "Next" }));
+    await user.click(screen.getByRole("button", { name: "Next" }));
+
+    await user.click(screen.getByRole("checkbox", { name: "Create GitHub repository" }));
+
+    expect(
+      await screen.findByText("GitHub setup could not be checked. Check the daemon host and try again."),
+    ).toHaveAttribute("role", "status");
+  });
 });

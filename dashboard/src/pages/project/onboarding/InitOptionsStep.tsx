@@ -15,21 +15,26 @@ export function InitOptionsStep() {
   useEffect(() => {
     if (!initSource || !createGithub) return;
     let active = true;
-    void githubAuthStatus().then(async (status) => {
-      if (!active) return;
-      if (!status.installed || !status.authenticated) {
-        setSetupMessage(!status.installed ? "Install gh and sign in on the daemon host before creating a GitHub repository." : "Sign in with gh auth login on the daemon host before creating a GitHub repository.");
-        return;
-      }
-      try {
-        const values = await githubOwners();
+    void githubAuthStatus().then(
+      async (status) => {
         if (!active) return;
-        setOwners(values);
-        if (!githubOwner && values[0]) dispatch({ type: "update_source", mode: "init", patch: { githubOwner: values[0].login } });
-      } catch {
-        if (active) setSetupMessage("GitHub owners could not be loaded. Check GitHub setup and try again.");
-      }
-    });
+        if (!status.installed || !status.authenticated) {
+          setSetupMessage(!status.installed ? "Install gh and sign in on the daemon host before creating a GitHub repository." : "Sign in with gh auth login on the daemon host before creating a GitHub repository.");
+          return;
+        }
+        try {
+          const values = await githubOwners();
+          if (!active) return;
+          setOwners(values);
+          if (!githubOwner && values[0]) dispatch({ type: "update_source", mode: "init", patch: { githubOwner: values[0].login } });
+        } catch {
+          if (active) setSetupMessage("GitHub owners could not be loaded. Check GitHub setup and try again.");
+        }
+      },
+      () => {
+        if (active) setSetupMessage("GitHub setup could not be checked. Check the daemon host and try again.");
+      },
+    );
     return () => { active = false; };
   }, [initSource, createGithub, githubOwner, dispatch]);
 
