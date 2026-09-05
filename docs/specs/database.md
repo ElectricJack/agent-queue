@@ -417,6 +417,31 @@ Audit log of system events (immutable append-only).
 
 No foreign key declarations despite the ID columns — these are soft references. Events are deleted only by cascading `delete_project`.
 
+### Table: `project_onboarding_requests`
+
+Durable idempotency and recovery state for the project-onboarding saga. The
+service creates the row before filesystem or GitHub mutation, then advances its
+phase and owned-resource ledger as work completes. Terminal rows are retained
+for bounded replay and later garbage collection.
+
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| `request_id` | TEXT | PRIMARY KEY | Operator-supplied idempotency key |
+| `input_fingerprint` | TEXT | NOT NULL | SHA-256 of the normalized request; prevents reuse with different inputs |
+| `status` | TEXT | NOT NULL DEFAULT 'pending' | One of: pending, succeeded, failed |
+| `phase` | TEXT | NOT NULL DEFAULT 'pending' | Current saga phase for status and recovery |
+| `created_resources` | JSON | NOT NULL DEFAULT '[]' | Owned paths and non-secret identifiers used for bounded compensation |
+| `result` | JSON | nullable | Safe terminal success response |
+| `error` | JSON | nullable | Safe, secret-scrubbed terminal error response |
+| `created_at` | REAL | NOT NULL | Unix timestamp when the request was first recorded |
+| `updated_at` | REAL | NOT NULL | Unix timestamp of the latest phase or ledger change |
+| `finished_at` | REAL | nullable | Unix timestamp for terminal rows; NULL while pending |
+
+The status constraint requires pending rows to have no `finished_at` and
+terminal rows to have one. The recovery ledger never stores GitHub credentials
+or subprocess output. An index on `(status, finished_at)` supports bounded
+terminal-record retention.
+
 ### Table: `rate_limits`
 
 Tracks rolling-window token consumption for rate-limit enforcement.
@@ -1189,6 +1214,22 @@ Multi-agent pipelines with stage gates and agent affinity.
 ### `create_project(project: Project) -> None`
 
 Inserts a new row into `projects`. The `created_at` value is always `time.time()` — the value on the `Project` dataclass is ignored. The `status` field is serialized from `ProjectStatus.value`. The `discord_control_channel_id` column is **not** written by this method (only `discord_channel_id` is). Commits after insert.
+
+`create_project` is a database primitive, not the dashboard repository-onboarding
+flow. `onboard_project` owns the user-facing orchestration of a project, its
+primary `project-repo` workspace, and vault setup from a configured
+root-relative destination; it does not permit arbitrary paths.
+
+### `project_onboarding_requests`
+
+The onboarding service persists an idempotency and recovery record for every
+request. Each row stores the request ID, normalized-input fingerprint, status,
+current phase, request-owned resource ledger, scrubbed result or error, and
+timestamps. The ledger contains only identifiers and paths needed for bounded
+recovery; it never contains GitHub credentials. Terminal records follow the
+operational-event retention policy. This record permits safe replay after an
+interrupted process without treating GitHub, filesystem, vault, and database
+operations as one transaction.
 
 ### `get_project(project_id: str) -> Project | None`
 

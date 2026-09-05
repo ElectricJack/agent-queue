@@ -62,8 +62,11 @@ Ordinary playbook markdown edits enqueue a compile task under the
 the compiler task validates the artifact and activates it through the reviewed
 workflow.
 
-For the `pipeline` kind (deterministic parse, no LLM), edits go
-straight to the parser — no task enqueued.
+`playbook-compiler` agents iterate with `aq playbook v2-propose` and never
+activate; activation is `aq playbook activate` against a reviewed hash.
+
+For the `pipeline` kind (deterministic parse, no LLM), edits go straight to
+the parser — no compiler task is enqueued.
 
 ## Run a playbook by hand
 

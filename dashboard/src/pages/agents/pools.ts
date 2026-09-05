@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { usePoolSessions, usePoolStatus, type PoolStatusRow, type SessionSummary } from "../../api/hooks";
+import { useProfiles, usePoolSessions, usePoolStatus, type Profile, type PoolStatusRow, type SessionSummary } from "../../api/hooks";
 import type { FlockAgent } from "../../api/agents";
 
 /** A pool profile in one project, together with the sessions currently running it. */
@@ -88,9 +88,25 @@ export function useDebouncedBusyPoolEntries(entries: PoolEntry[], delay = 1_000)
   return visible;
 }
 
-/** Profile IDs that run as pools anywhere. `pool_status` is the only source. */
-export function poolProfileIds(pools: PoolStatusRow[]): Set<string> {
-  return new Set(pools.map((pool) => pool.profile_id));
+/**
+ * Profile IDs that run as pools.
+ *
+ * ``list_profiles`` reports each profile's own ``lifecycle`` and is the
+ * authoritative answer: it covers a pool profile that no active project has
+ * measured yet, which is exactly the case the create-a-pool form has to
+ * offer. ``pool_status`` rows are unioned in so a pool the daemon is already
+ * sizing is never treated as ineligible because of a stale profile list.
+ */
+export function poolProfileIds(pools: PoolStatusRow[], profiles: Profile[] = []): Set<string> {
+  return new Set([
+    ...pools.map((pool) => pool.profile_id),
+    ...profiles.filter(isPoolProfile).map((profile) => profile.id),
+  ]);
+}
+
+/** A profile that defines elastic pool capacity rather than one durable worker. */
+export function isPoolProfile(profile: Profile): boolean {
+  return profile.lifecycle === "pool";
 }
 
 /**
@@ -131,9 +147,10 @@ export function formatIdle(seconds: number | undefined | null): string {
 export function usePoolFlock() {
   const pools = usePoolStatus();
   const sessions = usePoolSessions();
+  const profiles = useProfiles();
   return {
     entries: poolEntries(pools.data ?? [], sessions.data ?? []),
-    poolIds: poolProfileIds(pools.data ?? []),
+    poolIds: poolProfileIds(pools.data ?? [], profiles.data ?? []),
     isLoading: pools.isLoading,
     error: pools.error,
   };

@@ -58,6 +58,7 @@ SHIPPED = {
     "default-assignment-routing": "src/prompts/default_playbooks/default-assignment-routing.md",
     "memory-consolidation": "src/prompts/default_playbooks/memory-consolidation.md",
     "pr-merge-sweep": "src/prompts/project_playbooks/agent-queue/pr-merge-sweep.md",
+    "ci-main-sentinel": "src/prompts/project_playbooks/agent-queue/ci-main-sentinel.md",
 }
 SOURCES = SHIPPED
 
@@ -205,7 +206,106 @@ def semantic_body(playbook_id: str, source: PlaybookSource) -> dict[str, Any]:
         return remapped
     if playbook_id == "memory-consolidation":
         return _memory_consolidation_body(source)
+    if playbook_id == "ci-main-sentinel":
+        return _ci_main_sentinel_body(source)
     return {}
+
+
+def _ci_main_sentinel_body(source: PlaybookSource) -> dict[str, Any]:
+    """The reviewer-authored deterministic graph for ``ci-main-sentinel``.
+
+    Three command steps and two terminals, lowered from the numbered prose
+    items so every step carries the line that authorises it.  See
+    ``docs/superpowers/specs/2026-09-05-ci-main-sentinel-design.md``.
+    """
+    index = ProseIndex(source, source.vault_path)
+    rule = "keep-main-green"
+    observe = f"{rule}--read_baseline"
+    repair = f"{rule}--ensure_repair_task"
+    escalate = f"{rule}--escalate_to_human"
+    done = f"{rule}--done"
+    failed = f"{rule}--failed"
+    project = {"type": "literal", "value": "agent-queue"}
+
+    def bound(path: str) -> dict[str, Any]:
+        return {"type": "binding_ref", "binding": "baseline", "path": path}
+
+    return {
+        "rules": [
+            {
+                "id": rule,
+                "name": rule,
+                "trigger": {"event_type": "timer.15m"},
+                "entry_step": observe,
+                "source": index.rule_ref(rule),
+            }
+        ],
+        "steps": {
+            observe: {
+                "type": "command",
+                "rule": rule,
+                "title": "read_baseline",
+                "source": index.step_ref(rule, 1),
+                "command": "ci_baseline_status",
+                "inputs": {"project_id": project},
+                "save_result_as": "baseline",
+                "transitions": {
+                    "green": done,
+                    "pending": done,
+                    "unknown": done,
+                    "red": repair,
+                    "red_escalated": escalate,
+                    "rejected": failed,
+                    "runtime_error": failed,
+                },
+            },
+            repair: {
+                "type": "command",
+                "rule": rule,
+                "title": "ensure_repair_task",
+                "source": index.step_ref(rule, 2),
+                "command": "ensure_task",
+                "inputs": {
+                    "project_id": project,
+                    "dedup_key": bound("dedup_key"),
+                    "title": bound("title"),
+                    "description": bound("description"),
+                    "priority": {"type": "literal", "value": 5},
+                    "intelligence_class": {"type": "literal", "value": "deep-high"},
+                },
+                "save_result_as": "repair",
+                "transitions": {
+                    "created": done,
+                    "reused": done,
+                    "rejected": failed,
+                    "runtime_error": failed,
+                },
+            },
+            escalate: {
+                "type": "command",
+                "rule": rule,
+                "title": "escalate_to_human",
+                "source": index.step_ref(rule, 3),
+                "command": "gate_create",
+                "inputs": {
+                    "project_id": project,
+                    "gate_type": {"type": "literal", "value": "human"},
+                    "title": bound("escalation_title"),
+                    "question": bound("escalation_question"),
+                    "await_id": bound("escalation_key"),
+                },
+                "transitions": {
+                    "created": done,
+                    "reused": done,
+                    "skipped": done,
+                    "rejected": failed,
+                    "runtime_error": failed,
+                },
+            },
+            done: _terminal(rule, "completed", index.step_ref(rule, None)),
+            failed: _terminal(rule, "failed", index.step_ref(rule, None)),
+        },
+    }
 
 
 def _source_ref_for_heading(source: PlaybookSource, heading: str) -> dict[str, Any]:

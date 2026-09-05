@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import replace
 import logging
-import os
 
 from src.git.manager import GitError
 from src.models import (
@@ -116,14 +114,10 @@ class ProjectCommandsMixin:
         )
         await self.db.create_project(project)
 
-        # Ensure the per-project task directory exists (vault migration Phase 1).
-        project_tasks_dir = os.path.join(self.config.data_dir, "tasks", project_id)
-        os.makedirs(project_tasks_dir, exist_ok=True)
+        # Keep command-created and onboarding-created projects on one storage contract.
+        from src.projects.storage import ensure_project_storage
 
-        # Create vault subdirectories for the new project (vault spec §2).
-        from src.vault import ensure_vault_project_dirs
-
-        ensure_vault_project_dirs(self.config.data_dir, project_id)
+        ensure_project_storage(self.config.data_dir, project_id)
 
         # Determine whether auto-channel creation should happen.
         # An explicit ``auto_create_channels`` arg takes precedence;

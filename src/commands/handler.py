@@ -44,6 +44,7 @@ from src.commands.claim_commands import ClaimCommandsMixin
 from src.commands.question_commands import QuestionCommandsMixin
 from src.commands.system_commands import SystemCommandsMixin
 from src.commands.project_commands import ProjectCommandsMixin
+from src.commands.project_onboarding_commands import ProjectOnboardingCommandsMixin
 from src.commands.task_commands import TaskCommandsMixin
 from src.commands.task_comment_commands import TaskCommentCommandsMixin
 from src.commands.agent_commands import AgentCommandsMixin
@@ -76,6 +77,7 @@ from src.commands.surface_commands import SurfaceCommandsMixin
 from src.commands.ops_commands import OpsCommandsMixin
 from src.commands.worktree_commands import WorktreeCommandsMixin
 from src.commands.git_commands import GitCommandsMixin
+from src.commands.ci_commands import CiCommandsMixin
 
 # -- dv2 phase 6 mixins ---------------------------------------------------
 from src.commands.proposal_commands import TaskProposalCommandsMixin
@@ -323,6 +325,7 @@ class CommandHandler(
     QuestionCommandsMixin,
     SystemCommandsMixin,
     ProjectCommandsMixin,
+    ProjectOnboardingCommandsMixin,
     TaskCommandsMixin,
     TaskCommentCommandsMixin,
     AgentCommandsMixin,
@@ -347,6 +350,7 @@ class CommandHandler(
     WorktreeCommandsMixin,
     # -- dv2 phase 2 mixins -----------------------------------------------
     GitCommandsMixin,
+    CiCommandsMixin,
     # -- dv2 phase 6 mixins -----------------------------------------------
     TaskProposalCommandsMixin,
     SpecCommandsMixin,
@@ -384,6 +388,8 @@ class CommandHandler(
 
     - :class:`SystemCommandsMixin` — config, diagnostics, orchestrator control
     - :class:`ProjectCommandsMixin` — project CRUD, channels
+    - :class:`ProjectOnboardingCommandsMixin` — dashboard project onboarding
+      (root browsing, GitHub discovery, the ``onboard_project`` saga)
     - :class:`TaskCommandsMixin` — task CRUD, lifecycle, dependencies
     - :class:`AgentCommandsMixin` — agent/workspace management
     - :class:`ProfileCommandsMixin` — agent profile CRUD

@@ -397,8 +397,10 @@ describe("Tiled agent workspace", () => {
   it("defines a new shared worker without creating a running session", async () => {
     renderFlock("/agents", true);
     const rail = within(await screen.findByRole("region", { name: "Agent flock" }));
-    fireEvent.click(rail.getByRole("button", { name: "Add agent" }));
-    const form = screen.getByRole("form", { name: "Add agent" });
+    fireEvent.click(rail.getByRole("button", { name: "Create agent or pool" }));
+    fireEvent.click(within(screen.getByRole("region", { name: "Create agent or pool" }))
+      .getByRole("button", { name: "Create agent" }));
+    const form = screen.getByRole("form", { name: "Create agent" });
     fireEvent.change(within(form).getByLabelText("Name"), { target: { value: "Designer" } });
     await within(form).findByRole("option", { name: "Implementer" });
     fireEvent.change(within(form).getByLabelText("Profile"), { target: { value: "implementer" } });
@@ -409,12 +411,14 @@ describe("Tiled agent workspace", () => {
     expect(TerminalSocketMock.instances).toHaveLength(0);
   });
 
-  it("opens the add-agent form on the agents page from any other page", async () => {
+  it("opens the create fork on the agents page from any other page", async () => {
     renderFlock("/tasks", true);
     const rail = within(await screen.findByRole("region", { name: "Agent flock" }));
-    fireEvent.click(rail.getByRole("button", { name: "Add agent" }));
+    fireEvent.click(rail.getByRole("button", { name: "Create agent or pool" }));
     expect(screen.getByLabelText("Current location")).toHaveTextContent("/agents?add=1");
-    expect(screen.getByRole("form", { name: "Add agent" })).toBeInTheDocument();
+    expect(screen.getByRole("region", { name: "Create agent or pool" })).toBeInTheDocument();
+    // The fork comes first: neither form is mounted until a choice is made.
+    expect(screen.queryByRole("form")).not.toBeInTheDocument();
     expect(rail.queryByRole("link", { name: /manage agent/i })).not.toBeInTheDocument();
   });
 
@@ -422,8 +426,8 @@ describe("Tiled agent workspace", () => {
     renderFlock("/agents?agent=b", true);
     await screen.findByRole("region", { name: "Builder agent window" });
     expect(screen.queryByRole("heading", { name: "Agent flock" })).not.toBeInTheDocument();
-    // The only remaining Add-agent control is the left rail's; the page header is gone.
-    const addButtons = screen.getAllByRole("button", { name: "Add agent" });
+    // The only remaining create control is the left rail's; the page header is gone.
+    const addButtons = screen.getAllByRole("button", { name: "Create agent or pool" });
     expect(addButtons).toHaveLength(1);
     expect(screen.getByRole("region", { name: "Agent flock" })).toContainElement(addButtons[0]!);
   });
@@ -564,8 +568,10 @@ describe("Deleting a defined worker", () => {
     const window = await builderSettings();
     await within(window).findByRole("option", { name: "Implementer" });
     expect(within(window).queryByRole("option", { name: "Supervisor" })).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Add agent" }));
-    const form = screen.getByRole("form", { name: "Add agent" });
+    fireEvent.click(screen.getByRole("button", { name: "Create agent or pool" }));
+    fireEvent.click(within(screen.getByRole("region", { name: "Create agent or pool" }))
+      .getByRole("button", { name: "Create agent" }));
+    const form = screen.getByRole("form", { name: "Create agent" });
     await within(form).findByRole("option", { name: "Implementer" });
     expect(within(form).queryByRole("option", { name: "Supervisor" })).not.toBeInTheDocument();
   });

@@ -74,12 +74,9 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-import sqlalchemy.exc
-
 from src.database.queries.hierarchy_queries import HierarchyError
 from src.config import AppConfig, ConfigWatcher
 from src.llm_logger import LLMLogger
-from src.logging_config import CorrelationContext
 from src.database import create_database
 from src.notifications.builder import build_task_detail
 from src.notifications.events import (
@@ -100,7 +97,6 @@ from src.models import (
     Task,
     TaskStatus,
 )
-from src.review_keys import flag_review_task_event
 from src.scheduler import AssignAction, Scheduler, SchedulerState, idle_workers
 from src.tokens.budget import BudgetManager
 from src.vault_manager import VaultManager
@@ -299,6 +295,9 @@ class Orchestrator(
             retention_days=config.llm_logging.retention_days,
         )
         self._last_log_cleanup: float = 0.0
+        # Terminal onboarding records share the hourly operational retention
+        # cadence, but remain independent of Playbook V2 being enabled.
+        self._last_operational_event_retention_sweep: float = 0.0
         # Playbook V2 retention sweep, interval-limited by configuration.
         self._last_playbook_retention_sweep: float = 0.0
         self._last_worktree_reaper: float = 0.0
@@ -2332,6 +2331,10 @@ class Orchestrator(
                     self.llm_logger.flush_analytics()
                 except Exception as e:
                     logger.error("LLM log cleanup error: %s", e)
+
+            # Terminal onboarding requests are durable idempotency state; a
+            # failed cleanup must not interrupt scheduling.
+            await self._sweep_operational_event_retention()
 
             # 10. Auto-archive stale terminal tasks (~once per hour).
             await self._auto_archive_tasks()
