@@ -115,7 +115,6 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "graph_layout_rebuild": "graph",
     "graph_tidy": "graph",
     # playbook — compilation, run management, human-in-the-loop resume
-    "compile_playbook": "playbook",
     "run_playbook": "playbook",
     "dry_run_playbook": "playbook",
     "show_playbook_graph": "playbook",
@@ -124,13 +123,10 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "inspect_playbook_run": "playbook",
     "resume_playbook": "playbook",
     "cancel_playbook_run": "playbook",
-    "recover_workflow": "playbook",
     "playbook_health": "playbook",
     "playbook_graph_view": "playbook",
     "get_playbook_source": "playbook",
     "update_playbook_source": "playbook",
-    "create_playbook": "playbook",
-    "delete_playbook": "playbook",
     "set_playbook_enabled": "playbook",
     # playbook V2 semantic graph -- src/commands/playbook_v2_commands.py
     "playbook_v2_graph": "playbook",
@@ -148,7 +144,6 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "playbook_v2_import": "playbook",
     "playbook_v2_shadow_compile": "playbook",
     # playbook V1->V2 migration readiness -- Package 6
-    "playbook_release_check": "playbook",
     # playbook V1 drain / runtime cutover -- Package 7
     # plugin — installation, configuration, lifecycle
     "plugin_list": "plugin",
@@ -252,8 +247,6 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "task_batch_discard": "task",
     # playbook authoring — an agent writes the markdown, validates it, then
     # installs the compiled artifact (src/playbooks/validator_command.py).
-    "playbook_validate": "playbook",
-    "playbook_install": "playbook",
     # control plane — dv2 phase 1
     "ensure_task": "task",
     "get_downstream_tasks": "task",
@@ -3270,54 +3263,6 @@ _ALL_TOOL_DEFINITIONS = [
     # Playbook commands (spec §15)
     # ------------------------------------------------------------------
     {
-        "name": "compile_playbook",
-        "description": (
-            "Manually trigger compilation of a playbook markdown file. "
-            "Provide the full markdown content (including YAML frontmatter) "
-            "or a file path. Returns the compiled playbook metadata on "
-            "success, or detailed errors on failure."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "markdown": {
-                    "type": "string",
-                    "description": (
-                        "Full playbook markdown content including YAML frontmatter. "
-                        "Frontmatter must include: id, triggers (list), scope "
-                        "(system|project|agent-type:xxx). One of 'markdown', "
-                        "'path', or 'playbook_id' is required."
-                    ),
-                },
-                "path": {
-                    "type": "string",
-                    "description": (
-                        "Absolute path to a playbook .md file on disk. "
-                        "If provided, the file is read and used as the markdown."
-                    ),
-                },
-                "playbook_id": {
-                    "type": "string",
-                    "description": (
-                        "ID of an already-compiled playbook. Resolves to its "
-                        "source path via the playbook manager and recompiles it. "
-                        "Use this to recompile by ID without remembering the "
-                        "vault path. One of 'markdown', 'path', or 'playbook_id' "
-                        "is required."
-                    ),
-                },
-                "force": {
-                    "type": "boolean",
-                    "description": (
-                        "Force recompilation even if source is unchanged. "
-                        "Defaults to true for manual compilation."
-                    ),
-                    "default": True,
-                },
-            },
-        },
-    },
-    {
         "name": "run_playbook",
         "description": (
             "Manually trigger a playbook run. Executes the full compiled "
@@ -3549,28 +3494,6 @@ _ALL_TOOL_DEFINITIONS = [
                 },
             },
             "required": ["run_id"],
-        },
-    },
-    {
-        "name": "recover_workflow",
-        "description": (
-            "Recover an orphaned coordination workflow whose playbook run "
-            "has died (crashed, failed, timed out). If the playbook was "
-            "paused waiting for stage completion and all tasks are done, "
-            "re-emits the missed event to resume the playbook. If the "
-            "playbook run failed, emits a workflow.orphaned event for "
-            "manual intervention. Tasks in the workflow continue executing "
-            "independently regardless of playbook state."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "workflow_id": {
-                    "type": "string",
-                    "description": "The workflow ID to recover",
-                },
-            },
-            "required": ["workflow_id"],
         },
     },
     {
@@ -4033,61 +3956,13 @@ _ALL_TOOL_DEFINITIONS = [
         },
     },
     {
-        "name": "create_playbook",
-        "description": (
-            "Create a new playbook markdown file in the vault at the scope-appropriate "
-            "location. Does NOT compile — authors iterate on the source and compile "
-            "explicitly via update_playbook_source (or let the vault watcher pick it up). "
-            "Fails if a playbook with the same id already exists anywhere in the vault."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "playbook_id": {
-                    "type": "string",
-                    "description": "The new playbook identifier (used as filename without .md).",
-                },
-                "scope": {
-                    "type": "string",
-                    "description": (
-                        "Where the file lives on disk: 'system', 'project:<project_id>', "
-                        "or 'agent-type:<type>'. The frontmatter scope field takes the "
-                        "bare form ('system' / 'project' / 'agent-type:<type>') because "
-                        "the project id is recovered from the vault path."
-                    ),
-                },
-                "markdown": {
-                    "type": "string",
-                    "description": "Full markdown content including YAML frontmatter.",
-                },
-            },
-            "required": ["playbook_id", "scope", "markdown"],
-        },
-    },
-    {
-        "name": "delete_playbook",
-        "description": (
-            "Archive a playbook's source file to vault/trash/playbooks/ and remove it "
-            "from the active registry. Historical playbook_runs rows are preserved."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "playbook_id": {
-                    "type": "string",
-                    "description": "The playbook identifier to delete.",
-                },
-            },
-            "required": ["playbook_id"],
-        },
-    },
-    {
         "name": "set_playbook_enabled",
         "description": (
-            "Toggle a playbook's `enabled` frontmatter flag. When set to false, "
-            "trigger events stop spawning new runs and run_playbook refuses unless "
-            "force=true. In-flight runs are not cancelled — disabling means stop "
-            "new starts, not preempt existing instances."
+            "Pause or resume a playbook's activation. When set to false, trigger "
+            "events stop spawning new runs of the active artifact; the artifact "
+            "stays activated and enabled=true resumes it. In-flight runs are not "
+            "cancelled — disabling means stop new starts, not preempt existing "
+            "instances."
         ),
         "input_schema": {
             "type": "object",
@@ -4096,10 +3971,6 @@ _ALL_TOOL_DEFINITIONS = [
                 "enabled": {
                     "type": "boolean",
                     "description": "True to resume; false to pause.",
-                },
-                "expected_source_hash": {
-                    "type": "string",
-                    "description": "Optional optimistic-concurrency token from the last get_playbook_source call.",
                 },
             },
             "required": ["playbook_id", "enabled"],
@@ -5409,69 +5280,6 @@ _ALL_TOOL_DEFINITIONS = [
                     "description": "Optional source-scope filter.",
                 }
             },
-        },
-    },
-    {
-        "name": "playbook_release_check",
-        "description": (
-            "Check that every reviewed V2 artifact still matches the command "
-            "contracts it was compiled against. Compares the checked-in reviewed "
-            "fixtures and every enabled activation against the live registry, and "
-            "names each command whose execution fingerprint moved. Offline and "
-            "read-only: no network, no LLM, no compile. A presentation-only label "
-            "change does not trip it. Fails closed: any evidence source the daemon "
-            "could not read appears in evidence_errors, any enabled activation it "
-            "could not compare appears in unverified, and both block — an unread "
-            "activation table is never reported as a clean fleet."
-        ),
-        "input_schema": {"type": "object", "properties": {}},
-    },
-    {
-        "name": "playbook_validate",
-        "description": (
-            "Validate a playbook file inside the vault. A ``.md`` source is "
-            "checked for YAML frontmatter only and comes back with "
-            "``requires_compile: true`` — compiling it is a separate, "
-            "agent-produced step. A ``.json`` artifact is fully validated "
-            "against the compiled-playbook schema. Errors are returned as "
-            "structured ``{node, field, message}`` rows, not prose. Paths "
-            "outside the vault root are refused."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "path": {
-                    "type": "string",
-                    "description": ("Path to the .md source or .json artifact, inside the vault."),
-                },
-            },
-            "required": ["path"],
-        },
-    },
-    {
-        "name": "playbook_install",
-        "description": (
-            "Install a compiled playbook artifact into the live registry. "
-            "Re-validates server-side before installing (a caller's own "
-            "validation is not trusted), refuses a markdown source, and "
-            "refuses an artifact whose ``id`` does not match the requested "
-            "playbook_id. Paths outside the vault root are refused."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "playbook_id": {
-                    "type": "string",
-                    "description": (
-                        "The playbook id being installed. Must equal the artifact's own id."
-                    ),
-                },
-                "compiled_path": {
-                    "type": "string",
-                    "description": "Path to the compiled .json artifact, inside the vault.",
-                },
-            },
-            "required": ["playbook_id", "compiled_path"],
         },
     },
     {

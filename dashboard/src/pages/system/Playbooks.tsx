@@ -1,14 +1,12 @@
 import { useMemo, useState } from "react";
 import { Link, useLocation } from "react-router-dom";
-import { PauseIcon, PlayIcon, PlusIcon, TrashIcon } from "@heroicons/react/24/outline";
+import { PauseIcon, PlayIcon } from "@heroicons/react/24/outline";
 import {
   usePlaybooks,
   useSetPlaybookEnabled,
   type PlaybookSummary,
 } from "../../api/hooks";
 import StatusBadge from "../../components/StatusBadge";
-import CreatePlaybookModal from "../../components/CreatePlaybookModal";
-import DeletePlaybookModal from "../../components/DeletePlaybookModal";
 
 const SCOPE_FILTERS = ["all", "system", "project", "agent-type"] as const;
 type ScopeFilter = (typeof SCOPE_FILTERS)[number];
@@ -17,7 +15,6 @@ export default function Playbooks() {
   const location = useLocation();
   const from = `${location.pathname}${location.search}`;
   const [scope, setScope] = useState<ScopeFilter>("all");
-  const [createOpen, setCreateOpen] = useState(false);
   const { data: playbooks, isLoading } = usePlaybooks(scope === "all" ? undefined : scope);
 
   const rows = useMemo(() => playbooks ?? [], [playbooks]);
@@ -26,16 +23,7 @@ export default function Playbooks() {
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-bold">Playbooks</h1>
-        <button
-          onClick={() => setCreateOpen(true)}
-          className="inline-flex items-center gap-1.5 rounded-md bg-indigo-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-indigo-500"
-        >
-          <PlusIcon className="h-4 w-4" />
-          New playbook
-        </button>
       </div>
-
-      <CreatePlaybookModal open={createOpen} onClose={() => setCreateOpen(false)} />
 
       <div className="flex items-center gap-1 border-b border-gray-800">
         {SCOPE_FILTERS.map((s) => (
@@ -65,7 +53,6 @@ export default function Playbooks() {
 }
 
 function PlaybookTable({ rows, from }: { rows: PlaybookSummary[]; from: string }) {
-  const [deleteId, setDeleteId] = useState<string | null>(null);
   const setEnabled = useSetPlaybookEnabled();
 
   const togglePlaybook = (p: PlaybookSummary) => {
@@ -170,13 +157,6 @@ function PlaybookTable({ rows, from }: { rows: PlaybookSummary[]; from: string }
                         <PauseIcon className="h-3.5 w-3.5" />
                       )}
                     </button>
-                    <button
-                      onClick={() => setDeleteId(p.id)}
-                      title="Delete"
-                      className="rounded p-1 text-red-400 transition-colors hover:bg-red-500/20"
-                    >
-                      <TrashIcon className="h-3.5 w-3.5" />
-                    </button>
                   </div>
                 </td>
               </tr>
@@ -184,14 +164,6 @@ function PlaybookTable({ rows, from }: { rows: PlaybookSummary[]; from: string }
           })}
         </tbody>
       </table>
-      {deleteId && (
-        <DeletePlaybookModal
-          open={true}
-          onClose={() => setDeleteId(null)}
-          playbookId={deleteId}
-          returnTo={from}
-        />
-      )}
     </div>
   );
 }

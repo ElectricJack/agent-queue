@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import time
 from types import SimpleNamespace
-from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
@@ -62,21 +61,33 @@ async def handler(db, config):
         )
     }
     await db.create_profile(AgentProfile(id="worker", name="Worker", harness="claude"))
-    from src.playbooks.compiler import compile_playbook
+    # The V2 assignment router resolves the routing playbook from a *ready*
+    # activation row, so seed one for the shipped default: explain then reports
+    # "awaiting_intelligence_route" rather than "assignment_playbook_unavailable".
+    from src.playbooks.artifact_ref import ArtifactRef
 
-    compiled = compile_playbook(
-        (
-            Path(__file__).parent.parent
-            / "src"
-            / "prompts"
-            / "default_playbooks"
-            / "default-assignment-routing.md"
-        ).read_text(encoding="utf-8")
-    ).playbook
-    orch.playbook_manager = SimpleNamespace(
-        get_playbook=lambda playbook_id: compiled if playbook_id == compiled.id else None,
-        get_scope_identifier=lambda _playbook_id: None,
+    ref = ArtifactRef(
+        playbook_id="default-assignment-routing",
+        artifact_sha256="sha256:" + "a" * 64,
+        schema_generation=2,
+        contract_fingerprint="sha256:" + "b" * 64,
+        source_digest="sha256:" + "c" * 64,
+        compiler_build="test-build",
     )
+    await db.upsert_playbook_artifact(
+        ref, scope="system", path=f"/artifacts/{ref.digest}.json", size_bytes=1
+    )
+    await db.set_playbook_activation(
+        playbook_id=ref.playbook_id,
+        scope="system",
+        scope_identifier="",
+        artifact_sha256=ref.artifact_sha256,
+        enabled=True,
+        activated_by="test",
+        health="ready",
+        reasons="[]",
+    )
+    orch.playbook_manager = SimpleNamespace(get_scope_identifier=lambda _playbook_id: None)
     return CommandHandler(orch, config)
 
 
@@ -127,7 +138,17 @@ class TestExplainCommand:
         self, handler, db
     ):
         await mktask(db, "unavailable", status=TaskStatus.READY)
-        handler.orchestrator.playbook_manager = None
+        # No ready activation: the router cannot resolve an assignment artifact.
+        await db.set_playbook_activation(
+            playbook_id="default-assignment-routing",
+            scope="system",
+            scope_identifier="",
+            artifact_sha256="sha256:" + "a" * 64,
+            enabled=False,
+            activated_by="test",
+            health="disabled",
+            reasons="[]",
+        )
         state = make_state(
             projects=[Project(id=PROJECT_ID, name="Explain")],
             project_available_workspaces={PROJECT_ID: 1},

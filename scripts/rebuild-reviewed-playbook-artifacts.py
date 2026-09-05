@@ -37,7 +37,6 @@ import re
 import sys
 from collections.abc import Mapping
 from pathlib import Path
-from types import SimpleNamespace
 from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -51,9 +50,7 @@ from src.playbooks.proposal import propose
 from src.playbooks.validation import (
     RegisteredEventLookup,
     RegistryContractLookup,
-    VaultProfileLookup,
 )
-from src.profiles.parser import parse_profile, parsed_profile_to_agent_profile
 
 FIXTURE_ROOT = REPO_ROOT / "tests" / "fixtures" / "playbooks" / "v2"
 SHIPPED = {
@@ -170,18 +167,13 @@ def profile_lookup(playbook_id: str | None = None) -> Any:
 
     Production resolves profiles from the database (``_v2_lookups``); a fixture
     must not depend on one operator's install, so the reviewed artifact is held
-    to the profiles this repository ships.  The construction lives in
-    ``src.playbooks.migration`` so the release check that later *holds* the
-    fixture to those profiles resolves them the same way this build did.
+    to the profiles this repository ships — the same lookup
+    ``tests/test_default_playbook_v2_artifacts.py`` later holds the fixture to.
+    ``pr-merger`` ships there too since the V2 cutover, so the sweep no longer
+    needs a staged copy of its profile.
     """
-    if playbook_id != "pr-merge-sweep":
-        return shipped_profile_lookup()
-    profile_path = FIXTURE_ROOT / "pr-merge-sweep" / "pr-merger-profile.md"
-    parsed = parse_profile(profile_path.read_text(encoding="utf-8"))
-    if not parsed.is_valid:
-        raise ValueError(f"staged profile {profile_path} does not parse: {parsed.errors}")
-    fields = parsed_profile_to_agent_profile(parsed)
-    return VaultProfileLookup({fields["id"]: SimpleNamespace(**fields)})
+    del playbook_id
+    return shipped_profile_lookup()
 
 
 def _load(rel_path: str) -> PlaybookSource:

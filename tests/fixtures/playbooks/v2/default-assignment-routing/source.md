@@ -32,6 +32,11 @@ Leave provider null unless the supplied AQ availability data gives a concrete
 reason to pin it. Temporary worker occupancy is not a reason to change the
 required intelligence class.
 
+Each `assignment.route.requested` event carries the batch to route: the
+`tasks` to decide, the binding `options` catalog, and the `catalog_hash` and
+`options_hash` freshness digests AQ computed for them. Your decision object is
+saved as `routing_result` and is what the terminal step returns.
+
 Return one decision for every supplied task and no others. Copy each task's
 `task_id` exactly. AQ attaches the freshness hash deterministically; do not
 return `input_hash`. Choose `intelligence_class` and optional

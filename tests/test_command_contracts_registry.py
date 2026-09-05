@@ -119,7 +119,7 @@ def test_the_explanation_module_can_be_imported_first() -> None:
     import subprocess
     import sys
 
-    for first in ("src.playbooks.explanation", "src.playbooks.graph_view", "src.commands.contracts"):
+    for first in ("src.playbooks.explanation", "src.commands.contracts"):
         proc = subprocess.run(
             [sys.executable, "-c", f"import {first}; from src.commands.contracts import CONTRACTS;"
              " assert len(CONTRACTS.names()) == 19"],
