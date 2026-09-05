@@ -111,6 +111,49 @@ async def resolve_workspace_checkpoint(db, git, task: dict, repo: RepoConfig) ->
     return actual_head
 
 
+async def resolve_repair_commit_proof(
+    git, checkout: str, *, base_sha: str, head_sha: str
+) -> dict[str, Any]:
+    """Snapshot the exact ordered commits in one proved repair lineage.
+
+    This performs Git I/O only.  Callers bind the immutable snapshot to the
+    locked operation/stage/owner identity in their following database
+    transaction.
+    """
+    if not is_valid_git_oid(base_sha) or not is_valid_git_oid(head_sha):
+        raise HierarchyError("dirty", "repair lineage is not an exact Git OID pair")
+    if base_sha == head_sha:
+        commits: list[str] = []
+    else:
+        if await git.ais_ancestor(checkout, base_sha, head_sha, strict=True) is not True:
+            raise HierarchyError("dirty", "repair HEAD does not descend from its bound subject")
+        output = await git._arun(
+            ["rev-list", "--reverse", f"{base_sha}..{head_sha}"], cwd=checkout
+        )
+        commits = [value.strip().lower() for value in output.splitlines() if value.strip()]
+        if (
+            not commits
+            or commits[-1] != head_sha
+            or len(commits) != len(set(commits))
+            or any(not is_valid_git_oid(value) for value in commits)
+        ):
+            raise HierarchyError("dirty", "repair commit lineage is incomplete or invalid")
+    return {"base_sha": base_sha, "head_sha": head_sha, "commits": commits}
+
+
+async def resolve_workspace_repair_proof(
+    db, git, task: dict, repo: RepoConfig, *, base_sha: str
+) -> dict[str, Any]:
+    """Prove a clean pushed writer HEAD and snapshot all commits from its subject."""
+    head_sha = await resolve_workspace_checkpoint(db, git, task, repo)
+    workspace = await db.get_workspace_for_task(task["id"])
+    if workspace is None:
+        raise HierarchyError("dirty", "task has no exact owned integration workspace")
+    return await resolve_repair_commit_proof(
+        git, workspace.workspace_path, base_sha=base_sha, head_sha=head_sha
+    )
+
+
 async def verify_workspace_checkpoint(db, git, task: dict, repo: RepoConfig, head_sha: str) -> str:
     """Prove a parent's actual checkout HEAD is clean and exactly pushed."""
     actual_head = await resolve_workspace_checkpoint(db, git, task, repo)

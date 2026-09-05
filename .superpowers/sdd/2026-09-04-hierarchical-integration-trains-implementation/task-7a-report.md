@@ -369,3 +369,67 @@ conflict receipt, Task 7c playbook/invocation/frozen-route admission, or Task 9
 candidate rebuild behavior was added. No operator database, protected database
 environment, project enablement, external push, or PR action was performed. The
 scoped local fix commit hash is reported to the controller after commit creation.
+
+## Fix round 2 — exact debug dossier lineage and late receipts
+
+The sole open rereview finding is addressed. Repair writer Git inspection now occurs
+outside database transactions and returns a server-generated proof containing the
+persisted subject SHA, proved workspace HEAD, and the complete
+`git rev-list --reverse <subject>..<HEAD>` sequence. Clean pushed filing/close and
+retained unpushed handoff feed that proof into the existing locked operation,
+stage, session, workspace, owner, and fence CAS. A subject change without a writer
+proof no longer mislabels a bare tip as an exact repair commit.
+
+Parent subject binding appends the proof's commits in order, rejects a proof bound to
+an older subject, preserves an exact-current replay without duplicating or dropping
+context, and leaves the stage-start manifest and elapsed/attempt budgets frozen.
+Receipts matching the frozen parent operation/episode (or batch) are refreshed at
+debug activation and again at retained dispatch immediately before the debug task is
+woken, so receipts finalized during primary repair are present in the launched
+debugger's persisted dossier and task description.
+
+RED evidence:
+
+- `pytest -q tests/test_integration_repair.py -k debug_dossier_refreshes_exact -x`
+  - `1 failed, 33 deselected, 3 warnings in 1.36s`; the binder rejected the new
+    `commit_proof` argument, demonstrating the missing lineage contract.
+
+GREEN evidence:
+
+- Same command after the first service/handoff implementation:
+  `1 passed, 33 deselected, 3 warnings in 1.42s`.
+- After changing the regression to drive the production workspace stop confirmer
+  and real Git proof collector: same command initially returned `busy`; moving the
+  active-stage-independent primary lookup to the handoff proof boundary produced
+  `1 passed, 33 deselected, 3 warnings in 1.27s`.
+- Clean filing/close compatibility:
+  `pytest -q tests/test_integration_repair.py -k 'primary_dispatch_reuses_only_exact_live_attached_verifier or running_repair_delegate_files_real_child or real_task_close_bypasses' -x`
+  - `3 passed, 31 deselected, 3 warnings in 2.68s`.
+
+The new regression creates a real repository with three ordered, unpushed repair
+commits, finalizes a matching receipt after primary start, and uses the production
+stop confirmer plus retained handoff. It asserts all three commits and the late
+receipt reach the debugger before launch; exact-current dispatch/binder replay is
+idempotent; an old snapshot is rejected; and manifest membership plus both stage
+budgets are unchanged.
+
+Final focused verification:
+
+- `pytest -q tests/test_integration_repair.py -k 'dossier or retained or exhaustion or repair_delegate_files or real_task_close or primary_dispatch_reuses' -x`
+  - First run found one negative-test compatibility regression (`10 passed, 1
+    failed, 21 deselected`): a missing repair-stage row prevented the replacement
+    token race from reaching provider confirmation. The scope check was moved after
+    stop confirmation without weakening the final token CAS.
+  - Final run: `13 passed, 21 deselected, 3 warnings in 7.67s`.
+- `ruff check src/commands/task_commands.py src/database/queries/integration_state_queries.py src/integration/hierarchy.py src/integration/repair.py src/orchestrator/execution.py src/orchestrator/workspace.py tests/test_integration_repair.py`
+  - `All checks passed!`.
+- `git diff --check`
+  - Exited 0 with no output.
+
+The three warnings are the existing deferred environment deprecations for
+`pkg_resources`, the legacy `zope` namespace declaration, and Discord's `audioop`
+import. No schema changed, so no migration cycle was required. Changed code is
+limited to repair dossier/subject binding, the shared Git proof helper, repair scope,
+and the existing filing/close/workspace handoff callers, plus the focused repair
+regression and this report. No Task 7b, Task 7c, or Task 9 behavior was added. No
+operator database, protected database environment, external push, or PR was touched.

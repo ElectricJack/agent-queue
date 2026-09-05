@@ -1249,6 +1249,7 @@ class ExecutionMixin:
         managed_parent_completed = False
         repair_writer_closed = False
         repair_writer_head = None
+        repair_commit_proof = None
         if outcome == "pass":
             try:
                 children = await self.db.get_children(task.id, limit=1)
@@ -1264,7 +1265,7 @@ class ExecutionMixin:
                 hierarchy_managed = bool(hierarchy_enabled and checkpoint)
                 verifier_operation = await self.db.get_integration_verifier_operation(task.id)
                 if repair_delegate:
-                    from src.integration.hierarchy import resolve_workspace_checkpoint
+                    from src.integration.hierarchy import resolve_workspace_repair_proof
 
                     repair_repo = await self.db.get_repo(task.repo_id or "")
                     if (
@@ -1276,7 +1277,8 @@ class ExecutionMixin:
                             "invariant_error",
                             "repair repository/workspace attachment is not configured",
                         )
-                    repair_writer_head = await resolve_workspace_checkpoint(
+                    subject = repair_scope["current_subject"]
+                    repair_commit_proof = await resolve_workspace_repair_proof(
                         self.db,
                         self.git,
                         {
@@ -1285,7 +1287,9 @@ class ExecutionMixin:
                             "branch_name": task.branch_name,
                         },
                         repair_repo,
+                        base_sha=str(subject["head_sha"]),
                     )
+                    repair_writer_head = repair_commit_proof["head_sha"]
                     repair_writer_closed = True
                 elif verifier_operation is not None:
                     # A branchless verifier owns no source branch and must
@@ -1487,6 +1491,7 @@ class ExecutionMixin:
                     workspace_id=repair_scope["workspace_id"],
                     fence_token=int(repair_scope["fence_token"]),
                     head_sha=repair_writer_head,
+                    commit_proof=repair_commit_proof,
                 )
                 if closed["outcome"] != "completed":
                     return {

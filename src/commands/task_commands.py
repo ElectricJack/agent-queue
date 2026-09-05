@@ -1199,6 +1199,7 @@ class TaskCommandsMixin:
         routing_policy: Callable[[Task], bool] | None = None,
         current_parent_head: str | None = None,
         repair_filing_binding: dict | None = None,
+        repair_commit_proof: dict | None = None,
     ) -> tuple[str, str | None, str | None, bool, str | None]:
         """Write a worker-filed task + its edges in one ``immediate()`` txn.
 
@@ -1333,6 +1334,7 @@ class TaskCommandsMixin:
                             conn,
                             repair_scope["operation_id"],
                             head_sha=current_parent_head,
+                            commit_proof=repair_commit_proof,
                         )
                 else:
                     created = await service.file_root_on(
@@ -1511,6 +1513,7 @@ class TaskCommandsMixin:
         parent_explicit = False
         repair_filing_head: str | None = None
         repair_filing_binding: dict | None = None
+        repair_commit_proof: dict | None = None
         if scope.get("kind") == "session" and not scope.get("elevated"):
             filing_session = await self.db.get_session(scope.get("session_id") or "")
             if filing_session is None:
@@ -1554,7 +1557,7 @@ class TaskCommandsMixin:
                 }
                 if repair_scope["target_kind"] == "parent":
                     held_parent_id = repair_scope["parent_task_id"]
-                    from src.integration.hierarchy import resolve_workspace_checkpoint
+                    from src.integration.hierarchy import resolve_workspace_repair_proof
 
                     repo = await self.db.get_repo(repair_scope["repository_id"])
                     if held_task is None or repo is None:
@@ -1563,7 +1566,8 @@ class TaskCommandsMixin:
                             "error": "repair filing target is no longer configured",
                         }
                     try:
-                        repair_filing_head = await resolve_workspace_checkpoint(
+                        subject = repair_scope["current_subject"]
+                        repair_commit_proof = await resolve_workspace_repair_proof(
                             self.db,
                             self.orchestrator.git,
                             {
@@ -1572,7 +1576,9 @@ class TaskCommandsMixin:
                                 "branch_name": held_task.branch_name,
                             },
                             repo,
+                            base_sha=str(subject["head_sha"]),
                         )
+                        repair_filing_head = repair_commit_proof["head_sha"]
                     except HierarchyError as exc:
                         return {
                             "success": False,
@@ -2065,6 +2071,7 @@ class TaskCommandsMixin:
                     routing_policy=routing_policy,
                     current_parent_head=repair_filing_head,
                     repair_filing_binding=repair_filing_binding,
+                    repair_commit_proof=repair_commit_proof,
                 )
                 hierarchy_created = hierarchy_enabled
             except _FilingScope as exc:

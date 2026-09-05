@@ -1233,6 +1233,11 @@ class WorkspaceMixin:
         workspace = await self.db.get_workspace(workspace_id)
         repository = await self.db.get_repo(str(owner.get("repository_id") or ""))
         task = await self.db.get_task(session.task_id) if session and session.task_id else None
+        repair_scope = (
+            await self.db.get_repair_filing_scope(task.id, session_id=session.id)
+            if task is not None and session is not None
+            else None
+        )
         if (
             session is None
             or workspace is None
@@ -1265,12 +1270,24 @@ class WorkspaceMixin:
             await provider.stop(handle, grace=2.0)
             if not await provider.confirm_stopped(handle):
                 return None
+            if repair_scope is None:
+                return None
             current_branch = await self.git.aget_current_branch(
                 workspace.workspace_path, strict=True
             )
             head_sha = (
                 await self.git._arun(["rev-parse", "HEAD"], cwd=workspace.workspace_path)
             ).strip().lower()
+            subject = repair_scope["current_subject"]
+            base_sha = str(subject.get("head_sha") or subject.get("candidate_sha") or "")
+            from src.integration.hierarchy import resolve_repair_commit_proof
+
+            commit_proof = await resolve_repair_commit_proof(
+                self.git,
+                workspace.workspace_path,
+                base_sha=base_sha,
+                head_sha=head_sha,
+            )
         except Exception:
             logger.warning(
                 "Could not prove retained repair writer %s stopped",
@@ -1293,6 +1310,7 @@ class WorkspaceMixin:
             "workspace_id": workspace.id,
             "head_sha": head_sha,
             "instance_token": session.instance_token,
+            "commit_proof": commit_proof,
         }
 
     async def arelease_integration_writer_for_retry(self, task, *, reason: str) -> bool | None:

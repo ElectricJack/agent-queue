@@ -96,6 +96,7 @@ class IntegrationStateQueriesMixin:
                     integration_repair_stages.c.ordinal.label("stage_ordinal"),
                     integration_repair_stages.c.state.label("stage_state"),
                     integration_repair_stages.c.writer_kind.label("writer_kind"),
+                    integration_repair_stages.c.current_subject.label("current_subject"),
                 )
                 .select_from(
                     integration_repair_operations.join(
@@ -217,6 +218,7 @@ class IntegrationStateQueriesMixin:
                 "parent_task_id": parent_task_id,
                 "stage": int(row["stage_ordinal"]),
                 "writer_kind": row["writer_kind"],
+                "current_subject": row["current_subject"],
                 "session_id": owner["session_id"] if owner is not None else None,
                 "instance_token": (
                     attached_session["instance_token"]

@@ -672,6 +672,7 @@ class RepairService:
         workspace_id: str,
         fence_token: int,
         head_sha: str,
+        commit_proof: dict[str, Any] | None = None,
         now: float | None = None,
     ) -> dict[str, Any]:
         """Atomically close one exact attached repair writer and enqueue its fact."""
@@ -710,7 +711,11 @@ class RepairService:
                 return {"outcome": "stale"}
             if scope["target_kind"] == "parent":
                 await self.bind_current_parent_subject_on(
-                    conn, operation_id, head_sha=head_sha, now=completed_at
+                    conn,
+                    operation_id,
+                    head_sha=head_sha,
+                    commit_proof=commit_proof,
+                    now=completed_at,
                 )
             transition = await self.db._apply_transition(
                 conn,
@@ -925,6 +930,7 @@ class RepairService:
         operation_id: str,
         *,
         head_sha: str,
+        commit_proof: dict[str, Any] | None = None,
         now: float | None = None,
     ) -> dict[str, Any]:
         """Bind a transaction-proved parent HEAD without resetting stage budget."""
@@ -976,12 +982,10 @@ class RepairService:
         changed = stage["current_subject"] != subject
         if changed:
             previous_sha = self._subject_sha(stage["current_subject"])
-            dossier = self._dossier_with_repair_tip(
-                stage["dossier"], previous_sha, head_sha
+            dossier = self._dossier_with_repair_commits(
+                stage["dossier"], previous_sha, head_sha, commit_proof
             )
-            manifest = dict(dossier.get("manifest", {}))
-            manifest["generation"] = int(checkpoint["generation"])
-            dossier["manifest"] = manifest
+            dossier["receipts"] = await self._current_receipts_on(conn, operation)
             await conn.execute(
                 update(integration_repair_stages)
                 .where(
@@ -1242,6 +1246,7 @@ class RepairService:
         session_id = str(proof.get("session_id") or "")
         head_sha = str(proof.get("head_sha") or "")
         instance_token = str(proof.get("instance_token") or "")
+        commit_proof = proof.get("commit_proof")
         if (
             workspace_id != owner.get("workspace_id")
             or session_id != owner.get("session_id")
@@ -1367,7 +1372,10 @@ class RepairService:
             }
             if operation["target_kind"] == "parent":
                 await self.bind_current_parent_subject_on(
-                    conn, operation["id"], head_sha=head_sha
+                    conn,
+                    operation["id"],
+                    head_sha=head_sha,
+                    commit_proof=commit_proof,
                 )
             current_debug = (
                 await conn.execute(
@@ -1377,11 +1385,8 @@ class RepairService:
                     )
                 )
             ).mappings().one()
-            debug_dossier = self._dossier_with_repair_tip(
-                current_debug["dossier"],
-                self._subject_sha(current_debug["current_subject"]),
-                head_sha,
-            )
+            debug_dossier = dict(current_debug["dossier"] or {})
+            debug_dossier["receipts"] = await self._current_receipts_on(conn, operation)
             stage_changed = await conn.execute(
                 update(integration_repair_stages)
                 .where(
@@ -1528,15 +1533,6 @@ class RepairService:
                 "episode_id": operation["episode_id"],
                 "generation": int(subject["generation"]),
             }
-            receipt_rows = (
-                await conn.execute(
-                    select(task_delivery_receipts).where(
-                        task_delivery_receipts.c.parent_operation_id == operation["id"],
-                        task_delivery_receipts.c.parent_episode_id
-                        == operation["episode_id"],
-                    )
-                )
-            ).mappings().all()
         else:
             batch = (
                 await conn.execute(
@@ -1551,22 +1547,7 @@ class RepairService:
                 "source_manifest_digest": batch["source_manifest_digest"],
                 "revision": int(subject["revision"]),
             }
-            receipt_rows = (
-                await conn.execute(
-                    select(task_delivery_receipts).where(
-                        task_delivery_receipts.c.batch_id == operation["batch_id"]
-                    )
-                )
-            ).mappings().all()
-        receipts = [
-            {
-                "id": row["id"],
-                "source_task_id": row["source_task_id"],
-                "disposition": row["disposition"],
-                "after_sha": row["after_sha"],
-            }
-            for row in sorted(receipt_rows, key=lambda item: item["id"])
-        ]
+        receipts = await self._current_receipts_on(conn, operation)
         limit = boundary.repair.primary_attempts
         return {
             "operation_id": operation["id"],
@@ -1635,14 +1616,55 @@ class RepairService:
         updated["budget"] = budget
         return updated
 
+    async def _current_receipts_on(self, conn, operation) -> list[dict[str, Any]]:
+        if operation["target_kind"] == "parent":
+            statement = select(task_delivery_receipts).where(
+                task_delivery_receipts.c.parent_operation_id == operation["id"],
+                task_delivery_receipts.c.parent_episode_id == operation["episode_id"],
+            )
+        else:
+            statement = select(task_delivery_receipts).where(
+                task_delivery_receipts.c.batch_id == operation["batch_id"]
+            )
+        rows = (await conn.execute(statement)).mappings().all()
+        return [
+            {
+                "id": row["id"],
+                "source_task_id": row["source_task_id"],
+                "disposition": row["disposition"],
+                "after_sha": row["after_sha"],
+            }
+            for row in sorted(rows, key=lambda item: item["id"])
+        ]
+
     @staticmethod
-    def _dossier_with_repair_tip(
-        dossier: dict[str, Any] | None, previous_sha: str, head_sha: str
+    def _dossier_with_repair_commits(
+        dossier: dict[str, Any] | None,
+        previous_sha: str,
+        head_sha: str,
+        proof: dict[str, Any] | None,
     ) -> dict[str, Any]:
         updated = dict(dossier or {})
         commits = list(updated.get("repair_commits", []))
-        if head_sha != previous_sha and head_sha not in commits:
-            commits.append(head_sha)
+        if proof is None:
+            # Some authoritative subject changes (for example Task9 candidate
+            # rebinding) have no writer checkout to inspect.  Never relabel a
+            # bare tip as the exact repair lineage; writer paths supply proof.
+            additions = []
+        else:
+            additions = list(proof.get("commits") or [])
+            if (
+                proof.get("base_sha") != previous_sha
+                or proof.get("head_sha") != head_sha
+                or len(additions) != len(set(additions))
+                or any(not is_valid_git_oid(value) for value in additions)
+                or (head_sha != previous_sha and (not additions or additions[-1] != head_sha))
+                or (head_sha == previous_sha and additions)
+            ):
+                raise ValueError("repair commit proof does not match the current subject")
+        for commit_sha in additions:
+            if commit_sha not in commits:
+                commits.append(commit_sha)
         updated["repair_commits"] = commits
         updated["branch_sha"] = head_sha
         return updated
@@ -1659,6 +1681,8 @@ class RepairService:
     ) -> None:
         policy = HierarchicalIntegrationPolicy.model_validate(operation["policy_snapshot"])
         boundary = policy.parent if operation["target_kind"] == "parent" else policy.root
+        primary_dossier = dict(primary["dossier"] or {})
+        primary_dossier["receipts"] = await self._current_receipts_on(conn, operation)
         await conn.execute(
             update(integration_repair_stages)
             .where(
@@ -1669,11 +1693,10 @@ class RepairService:
             .values(
                 state=terminal_state,
                 attempts=attempts,
-                dossier=primary["dossier"],
+                dossier=primary_dossier,
                 completed_at=now,
             )
         )
-        primary_dossier = dict(primary["dossier"] or {})
         primary_budget = dict(primary_dossier.get("budget", {}))
         debug_dossier = dict(primary_dossier)
         debug_dossier["starting_sha"] = self._subject_sha(primary["current_subject"])

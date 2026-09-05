@@ -134,7 +134,9 @@ async def _configure_db(database) -> None:
     )
 
 
-async def _seed_parent_operation(db, *, evidence_id: str = "failed-check") -> None:
+async def _seed_parent_operation(
+    db, *, evidence_id: str = "failed-check", starting_sha: str = STARTING_SHA
+) -> None:
     await db.create_task(
         Task(
             id="parent",
@@ -153,7 +155,7 @@ async def _seed_parent_operation(db, *, evidence_id: str = "failed-check") -> No
                 parent_task_id="parent",
                 repository_id="repo",
                 generation=3,
-                pre_collection_checkpoint_sha=STARTING_SHA,
+                pre_collection_checkpoint_sha=starting_sha,
                 created_at=1.0,
             )
         )
@@ -182,7 +184,7 @@ async def _seed_parent_operation(db, *, evidence_id: str = "failed-check") -> No
                 repository_id="repo",
                 branch="aq/parent",
                 generation=3,
-                checkpoint_sha=STARTING_SHA,
+                checkpoint_sha=starting_sha,
                 state="verifying",
                 episode_id="episode",
                 version=1,
@@ -195,7 +197,7 @@ async def _seed_parent_operation(db, *, evidence_id: str = "failed-check") -> No
                 operation_id="operation",
                 parent_task_id="parent",
                 parent_generation=3,
-                parent_head_sha=STARTING_SHA,
+                parent_head_sha=starting_sha,
                 producer_id="forge",
                 workflow_id="workflow",
                 run_id="run-1",
@@ -216,6 +218,8 @@ async def _add_parent_evidence(
     run_id: str,
     conclusion: str,
     classification: str = "conclusive",
+    generation: int = 3,
+    head_sha: str = STARTING_SHA,
 ) -> None:
     async with db.immediate() as conn:
         await conn.execute(
@@ -223,8 +227,8 @@ async def _add_parent_evidence(
                 id=evidence_id,
                 operation_id="operation",
                 parent_task_id="parent",
-                parent_generation=3,
-                parent_head_sha=STARTING_SHA,
+                parent_generation=generation,
+                parent_head_sha=head_sha,
                 producer_id="forge",
                 workflow_id="workflow",
                 run_id=run_id,
@@ -1299,6 +1303,7 @@ async def test_primary_dispatch_reuses_only_exact_live_attached_verifier(
     handler.orchestrator.git.als_remote_ref = AsyncMock(
         return_value=RemoteRefResult(RemoteRefState.PRESENT, oid=next_head)
     )
+    handler.orchestrator.git.ais_ancestor = AsyncMock(return_value=True)
     handler._current_scope = {
         "kind": "session",
         "session_id": "verifier-session",
@@ -1567,6 +1572,224 @@ async def test_debug_dispatch_retains_unfinished_primary_workspace_atomically(
         },
     )
     assert after == before
+
+
+async def test_debug_dossier_refreshes_exact_unpushed_commits_and_late_receipts(
+    db, tmp_path
+):
+    """Fresh debug context snapshots exact lineage and current matching receipts."""
+    from src.integration.repair import RepairService
+
+    checkout = tmp_path / "dossier-retained"
+    checkout.mkdir()
+
+    def git(*args: str) -> str:
+        result = subprocess.run(
+            ["git", "-C", str(checkout), *args],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        return result.stdout.strip()
+
+    git("init", "-b", "aq/parent")
+    git("config", "user.name", "Dossier Test")
+    git("config", "user.email", "dossier@example.test")
+    (checkout / "repair.txt").write_text("base\n")
+    git("add", "repair.txt")
+    git("commit", "-m", "base")
+    base_sha = git("rev-parse", "HEAD")
+
+    await _seed_parent_operation(db, starting_sha=base_sha)
+    await _add_parent_evidence(
+        db,
+        "dossier-failed-2",
+        run_id="dossier-run-2",
+        conclusion="failure",
+        head_sha=base_sha,
+    )
+    async with db.immediate() as conn:
+        await conn.execute(
+            insert(integration_branch_owners).values(
+                id="dossier-owner",
+                repository_id="repo",
+                ref="aq/parent",
+                owner_id="operation",
+                owner_role="collector",
+                fence_token=1,
+                handoff_state="reserved",
+                created_at=1.0,
+                updated_at=1.0,
+            )
+        )
+    service = RepairService(
+        db, route_validator=lambda _intelligence_class, _profile_id: True
+    )
+    await service.start("operation", base_sha, "failed-check", now=100.0)
+    async with db._engine.connect() as conn:
+        initial_dossier = (
+            await conn.execute(
+                select(integration_repair_stages.c.dossier).where(
+                    integration_repair_stages.c.operation_id == "operation",
+                    integration_repair_stages.c.ordinal == 0,
+                )
+            )
+        ).scalar_one()
+
+    # This receipt is deliberately finalized after primary stage creation.
+    async with db.immediate() as conn:
+        await conn.execute(
+            insert(task_delivery_receipts).values(
+                id="late-receipt",
+                domain_key="late-parent-receipt",
+                source_task_id=None,
+                target_task_id="parent",
+                repository_id="repo",
+                target_branch="aq/parent",
+                disposition="noop",
+                resolution_evidence={"reason": "resolved during primary repair"},
+                parent_operation_id="operation",
+                parent_episode_id="episode",
+                created_at=101.0,
+            )
+        )
+    primary = await service.dispatch("operation", 0)
+    primary_task_id = primary["repair_task_id"]
+    await db.create_session(
+        SessionRecord(
+            id="dossier-primary-session",
+            task_id=primary_task_id,
+            project_id="p",
+            profile_id="repairer",
+            harness="fake",
+            provider="fake",
+            name="s-dossier-primary",
+            lifecycle="task",
+            state="running",
+            work_dir=str(checkout),
+            epoch="epoch",
+            instance_token="dossier-token",
+            started_at=102.0,
+        )
+    )
+    async with db.immediate() as conn:
+        await conn.execute(
+            insert(workspaces).values(
+                id="dossier-workspace",
+                project_id="p",
+                workspace_path=str(checkout),
+                source_type="link",
+                locked_by_task_id=primary_task_id,
+                enabled=True,
+                created_at=102.0,
+            )
+        )
+        await conn.execute(
+            update(tasks)
+            .where(tasks.c.id == primary_task_id)
+            .values(status="IN_PROGRESS")
+        )
+        await conn.execute(
+            update(integration_branch_owners)
+            .where(integration_branch_owners.c.id == "dossier-owner")
+            .values(
+                handoff_state="attached",
+                session_id="dossier-primary-session",
+                workspace_id="dossier-workspace",
+            )
+        )
+    await service.record_result("operation", "failed-check", now=103.0)
+    await service.record_result("operation", "dossier-failed-2", now=104.0)
+
+    for index in (1, 2, 3):
+        with (checkout / "repair.txt").open("a") as stream:
+            stream.write(f"repair {index}\n")
+        git("add", "repair.txt")
+        git("commit", "-m", f"repair {index}")
+    head_sha = git("rev-parse", "HEAD")
+    exact_commits = git("rev-list", "--reverse", f"{base_sha}..{head_sha}").splitlines()
+    assert len(exact_commits) == 3
+
+    from src.orchestrator.workspace import WorkspaceMixin
+
+    provider = SimpleNamespace(
+        stop=AsyncMock(),
+        confirm_stopped=AsyncMock(return_value=True),
+    )
+    runtime = SimpleNamespace(
+        db=db,
+        config=SimpleNamespace(),
+        session_providers=SimpleNamespace(create=lambda *_args: provider),
+        git=GitManager(),
+    )
+
+    async def stopped(owner):
+        return await WorkspaceMixin.aconfirm_integration_owner_stopped_for_repair(
+            runtime, owner
+        )
+
+    handoff_service = RepairService(
+        db,
+        route_validator=lambda _intelligence_class, _profile_id: True,
+        confirm_stopped=stopped,
+    )
+    debug = await handoff_service.dispatch("operation", 1)
+    assert debug["outcome"] == "dispatched"
+    commit_proof = {
+        "base_sha": base_sha,
+        "head_sha": head_sha,
+        "commits": exact_commits,
+    }
+    async with db.immediate() as conn:
+        replay = await handoff_service.bind_current_parent_subject_on(
+            conn,
+            "operation",
+            head_sha=head_sha,
+            commit_proof=commit_proof,
+            now=105.0,
+        )
+    assert replay["changed"] is False
+    assert (await handoff_service.dispatch("operation", 1))["outcome"] == (
+        "already_dispatched"
+    )
+    async with db.immediate() as conn:
+        with pytest.raises(
+            ValueError, match="repair commit proof does not match the current subject"
+        ):
+            await handoff_service.bind_current_parent_subject_on(
+                conn,
+                "operation",
+                head_sha=base_sha,
+                commit_proof=commit_proof,
+                now=106.0,
+            )
+
+    async with db._engine.connect() as conn:
+        stages = (
+            await conn.execute(
+                select(integration_repair_stages)
+                .where(integration_repair_stages.c.operation_id == "operation")
+                .order_by(integration_repair_stages.c.ordinal)
+            )
+        ).mappings().all()
+    dossier = stages[1]["dossier"]
+    assert dossier["repair_commits"] == exact_commits
+    assert [receipt["id"] for receipt in dossier["receipts"]] == ["late-receipt"]
+    assert dossier["manifest"] == initial_dossier["manifest"]
+    assert dossier["previous_stage"]["dossier"]["budget"] == {
+        **initial_dossier["budget"],
+        "attempts": 2,
+    }
+    assert dossier["budget"] == {
+        "ordinal": 1,
+        "started_at": 104.0,
+        "deadline_at": 164.0,
+        "attempt_limit": 1,
+        "attempts": 0,
+    }
+    debug_task = await db.get_task(debug["repair_task_id"])
+    assert "late-receipt" in debug_task.description
+    assert all(commit_sha in debug_task.description for commit_sha in exact_commits)
 
 
 async def _prepare_retained_debug_boundary(db, workspace_path: str, head_sha: str):
@@ -2101,6 +2324,7 @@ async def test_running_repair_delegate_files_real_child_from_clean_pushed_head(
     handler.orchestrator.git.als_remote_ref = AsyncMock(
         return_value=RemoteRefResult(RemoteRefState.PRESENT, oid=next_head)
     )
+    handler.orchestrator.git.ais_ancestor = AsyncMock(return_value=True)
     handler._current_scope = {
         "kind": "session",
         "session_id": "repair-session",
@@ -2430,6 +2654,7 @@ async def test_real_task_close_bypasses_legacy_pipeline_and_rejects_stale_stage(
     handler.orchestrator.git.als_remote_ref = AsyncMock(
         return_value=RemoteRefResult(RemoteRefState.PRESENT, oid=clean_head)
     )
+    handler.orchestrator.git.ais_ancestor = AsyncMock(return_value=True)
     handler.orchestrator.git.arev_parse = AsyncMock(return_value=clean_head)
     handler.orchestrator._run_completion_pipeline = AsyncMock(
         side_effect=AssertionError("repair delegate entered legacy integration")
