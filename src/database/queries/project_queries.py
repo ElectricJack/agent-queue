@@ -34,6 +34,12 @@ class ProjectQueryMixin:
     async def create_project(self, project: Project) -> None:
         """Insert a new project row."""
         async with self._engine.begin() as conn:
+            await self._validate_hierarchical_integration_project(
+                conn,
+                project.id,
+                project.hierarchical_integration_mode,
+                project.integration_repository_id,
+            )
             await conn.execute(
                 insert(projects).values(
                     id=project.id,
@@ -49,6 +55,8 @@ class ProjectQueryMixin:
                     default_profile_id=project.default_profile_id,
                     assignment_playbook_id=project.assignment_playbook_id,
                     integration_mode=project.integration_mode,
+                    hierarchical_integration_mode=project.hierarchical_integration_mode,
+                    integration_repository_id=project.integration_repository_id,
                     created_at=time.time(),
                 )
             )
@@ -82,7 +90,47 @@ class ProjectQueryMixin:
                 value = value.value
             values[key] = value
         async with self._engine.begin() as conn:
+            if {
+                "hierarchical_integration_mode",
+                "integration_repository_id",
+            } & values.keys():
+                current = (
+                    await conn.execute(select(projects).where(projects.c.id == project_id))
+                ).mappings().one_or_none()
+                if current is None:
+                    return
+                await self._validate_hierarchical_integration_project(
+                    conn,
+                    project_id,
+                    values.get(
+                        "hierarchical_integration_mode",
+                        current["hierarchical_integration_mode"],
+                    ),
+                    values.get(
+                        "integration_repository_id",
+                        current["integration_repository_id"],
+                    ),
+                )
             await conn.execute(update(projects).where(projects.c.id == project_id).values(**values))
+
+    @staticmethod
+    async def _validate_hierarchical_integration_project(
+        conn, project_id: str, mode: str, repository_id: str | None
+    ) -> None:
+        allowed = {"disabled", "observe", "hierarchy", "train"}
+        if mode not in allowed:
+            raise ValueError(
+                "hierarchical_integration_mode must be one of " + ", ".join(sorted(allowed))
+            )
+        if repository_id is None:
+            if mode in {"hierarchy", "train"}:
+                raise ValueError("hierarchy/train mode requires a designated integration repository")
+            return
+        owner = (
+            await conn.execute(select(repos.c.project_id).where(repos.c.id == repository_id))
+        ).scalar_one_or_none()
+        if owner != project_id:
+            raise ValueError("designated integration repository must belong to the same project")
 
     async def delete_project(self, project_id: str) -> None:
         """Delete a project and all associated data (cascading)."""
@@ -244,4 +292,8 @@ class ProjectQueryMixin:
             default_profile_id=row.get("default_profile_id"),
             assignment_playbook_id=row.get("assignment_playbook_id"),
             integration_mode=row.get("integration_mode"),
+            hierarchical_integration_mode=(
+                row.get("hierarchical_integration_mode") or "disabled"
+            ),
+            integration_repository_id=row.get("integration_repository_id"),
         )

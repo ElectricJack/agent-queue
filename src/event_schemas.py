@@ -1096,8 +1096,18 @@ _INTEGRATION_SCHEMAS: dict[str, EventSchema] = {
         "integration.human_blocked",
         "integration.promoted",
         "integration.cleanup_pending",
+        "integration.branch_materialization_pending",
     )
 }
+
+_INTEGRATION_SCHEMAS["integration.branch_materialization_pending"]["optional"] = [
+    "origin_id",
+    "task_id",
+    "repository_id",
+    "branch",
+    "parent_ref",
+    "base_sha",
+]
 
 
 # ---------------------------------------------------------------------------

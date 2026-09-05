@@ -12,7 +12,7 @@ from src.database import Database
 from src.database.tables import integration_branch_owners
 from src.integration.models import BranchKey, Fence
 from src.integration.ownership import BranchBusy, BranchOwnership, StaleFence
-from src.models import Project
+from src.models import Project, RepoSourceType, Task, Workspace
 
 
 pytestmark = pytest.mark.asyncio
@@ -226,3 +226,70 @@ async def test_released_fence_cannot_write_and_same_owner_reacquires_with_new_to
     with pytest.raises(StaleFence):
         await ownership.assert_current(old)
     await ownership.assert_current(reacquired)
+
+
+async def test_attach_binds_reserved_fence_to_locked_workspace(db, tmp_path):
+    ownership = BranchOwnership(db)
+    target = BranchKey(repository_id="repo", branch="aq/task")
+    await db.create_task(Task(id="task", project_id="p", title="task", description=""))
+    fence = await ownership.acquire(target, "task", "worker")
+    await db.create_workspace(
+        Workspace(
+            id="slot",
+            project_id="p",
+            workspace_path=str(tmp_path / "slot"),
+            source_type=RepoSourceType.WORKTREE,
+            locked_by_task_id="task",
+        )
+    )
+
+    await ownership.attach(fence, "session", "slot")
+
+    owner = await ownership.get_owner(target)
+    assert owner["handoff_state"] == "attached"
+    assert owner["session_id"] == "session"
+    assert owner["workspace_id"] == "slot"
+
+
+async def test_transfer_that_wins_before_attach_prevents_writer_binding(db, tmp_path):
+    ownership = BranchOwnership(db)
+    target = BranchKey(repository_id="repo", branch="aq/task")
+    await db.create_task(Task(id="task", project_id="p", title="task", description=""))
+    fence = await ownership.acquire(target, "task", "worker")
+    await db.create_workspace(
+        Workspace(
+            id="slot",
+            project_id="p",
+            workspace_path=str(tmp_path / "slot"),
+            source_type=RepoSourceType.WORKTREE,
+            locked_by_task_id="task",
+        )
+    )
+    await ownership.transfer(fence, "collector", "collector")
+
+    with pytest.raises(StaleFence):
+        await ownership.attach(fence, "session", "slot")
+
+
+async def test_transfer_waits_for_bounded_reserved_mutation_exclusion(db):
+    ownership = BranchOwnership(db)
+    target = BranchKey(repository_id="repo", branch="aq/task")
+    fence = await ownership.acquire(target, "task", "worker")
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    async def prepare():
+        async with ownership.mutation_exclusion(fence):
+            entered.set()
+            await release.wait()
+
+    preparation = asyncio.create_task(prepare())
+    await entered.wait()
+    transfer = asyncio.create_task(ownership.transfer(fence, "collector", "collector"))
+    await asyncio.sleep(0.05)
+    assert not transfer.done()
+    release.set()
+
+    await preparation
+    successor = await transfer
+    assert successor.owner_id == "collector"

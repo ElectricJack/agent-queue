@@ -24,6 +24,8 @@ class TaskRequirementsQueryMixin:
         self,
         task_id: str,
         requirements: list[tuple[str, str | None]],
+        *,
+        conn=None,
     ) -> None:
         """Insert rows; assigns ``position = MAX(position) + 1`` per
         ``(task_id, kind_id)``.
@@ -35,9 +37,9 @@ class TaskRequirementsQueryMixin:
         """
         if not requirements:
             return
-        async with self._engine.begin() as conn:
+        async def _write(connection) -> None:
             existing = (
-                await conn.execute(
+                await connection.execute(
                     select(
                         task_workspace_requirements.c.kind_id,
                         func.max(task_workspace_requirements.c.position),
@@ -60,7 +62,12 @@ class TaskRequirementsQueryMixin:
                         "alias": alias,
                     }
                 )
-            await conn.execute(insert(task_workspace_requirements), rows)
+            await connection.execute(insert(task_workspace_requirements), rows)
+        if conn is not None:
+            await _write(conn)
+            return
+        async with self._engine.begin() as owned_conn:
+            await _write(owned_conn)
 
     async def fetch_task_workspace_requirements(
         self, task_id: str

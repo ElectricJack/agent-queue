@@ -512,6 +512,14 @@ class SessionReconciler:
             if alive:
                 continue
 
+            if row.state == "starting" and not await self._claim_starting_reconciliation(
+                row, now
+            ):
+                # Enabled launches publish STARTING before provider.start.
+                # A stale scan must wait on and re-read the same branch fence;
+                # otherwise it can release the workspace under the writer.
+                continue
+
             task = await self.db.get_task(row.task_id) if row.task_id else None
             peek = await self._peek(provider, row)
             verdict = classify_exit(
@@ -522,6 +530,47 @@ class SessionReconciler:
                 rapid_crash_window=float(self.sessions_config.restart_window_seconds),
             )
             await self._apply_verdict(provider, row, task, verdict, now)
+
+    async def _claim_starting_reconciliation(self, row: SessionRecord, now: float) -> bool:
+        """Fence an enabled stale STARTING row, or defer a concurrent launch."""
+        task = await self.db.get_task(row.task_id) if row.task_id else None
+        project = await self.db.get_project(row.project_id) if row.project_id else None
+        if getattr(project, "hierarchical_integration_mode", "disabled") not in {
+            "hierarchy",
+            "train",
+        }:
+            return True
+        repository_id = getattr(project, "integration_repository_id", None)
+        if (
+            task is None
+            or not repository_id
+            or task.repo_id != repository_id
+            or not task.branch_name
+        ):
+            return False
+        from src.integration.models import BranchKey, Fence
+        from src.integration.ownership import BranchOwnership, BranchOwnershipError
+
+        ownership = BranchOwnership(self.db)
+        target = BranchKey(repository_id=repository_id, branch=task.branch_name)
+        owner = await ownership.get_owner(target)
+        if (
+            owner is None
+            or owner.get("owner_id") != task.id
+            or owner.get("session_id") != row.id
+            or not owner.get("workspace_id")
+        ):
+            return False
+        fence = Fence(target=target, owner_id=task.id, token=int(owner["fence_token"]))
+        try:
+            return await ownership.begin_startup_reconciliation(
+                fence,
+                row.id,
+                owner["workspace_id"],
+                now=now,
+            )
+        except BranchOwnershipError:
+            return False
 
     async def _apply_verdict(
         self,

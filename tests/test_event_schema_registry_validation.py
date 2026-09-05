@@ -79,6 +79,27 @@ _CANONICAL_PAYLOADS: dict[str, dict] = {
         "options_hash": "sha256:options",
         "catalog_hash": "sha256:catalog",
     },
+    # Hierarchical delivery and integration trains
+    **{
+        event_type: {"project_id": "proj-1", "operation_id": "op-1"}
+        for event_type in (
+            "task.child_added",
+            "task.parent_checkpointed",
+            "delivery.ready",
+            "delivery.applied",
+            "task.integration_ready",
+            "task.integration_verified",
+            "integration.sweep_due",
+            "integration.sealed",
+            "integration.ci_completed",
+            "integration.repair_exhausted",
+            "integration.repair_deadline_due",
+            "integration.human_blocked",
+            "integration.promoted",
+            "integration.cleanup_pending",
+            "integration.branch_materialization_pending",
+        )
+    },
     # Fleet metrics
     "metrics.tick": {"ts": 1.0},
     # Task lifecycle

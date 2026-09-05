@@ -89,6 +89,44 @@ class IntegrationReconcilePromotionArgs(CommandArgs):
     intent_id: str
 
 
+class IntegrationFileChildrenArgs(CommandArgs):
+    parent_id: str
+    children: list[dict[str, Any]]
+    expected_generation: int
+
+
+class IntegrationFileChildrenValue(CommandValue):
+    generation: int | None = None
+    children: tuple[dict[str, Any], ...] = ()
+    origins: tuple[dict[str, Any], ...] = ()
+
+
+class IntegrationCheckpointParentArgs(CommandArgs):
+    task_id: str
+    head_sha: str
+    generation: int
+
+
+class IntegrationCheckpointParentValue(CommandValue):
+    task_id: str | None = None
+    generation: int | None = None
+    head_sha: str | None = None
+
+
+class IntegrationMutateHierarchyArgs(CommandArgs):
+    task_id: str
+    mutation: str
+    arguments: dict[str, Any]
+
+
+class IntegrationMutateHierarchyValue(CommandValue):
+    task_id: str | None = None
+    old_parent_id: str | None = None
+    new_parent_id: str | None = None
+    old_parent_generation: int | None = None
+    new_parent_generation: int | None = None
+
+
 INTEGRATION_TRANSFER_OWNER = CommandContract(
     execution=ExecutionContract(
         name="integration_transfer_owner",
@@ -221,6 +259,102 @@ INTEGRATION_RECONCILE_PROMOTION = CommandContract(
 )
 
 
+INTEGRATION_FILE_CHILDREN = CommandContract(
+    execution=ExecutionContract(
+        name="integration_file_children",
+        args_model=IntegrationFileChildrenArgs,
+        result_model=IntegrationFileChildrenValue,
+        outcomes=tuple(
+            OutcomeSpec(
+                name=name,
+                classification=(OutcomeClass.SUCCESS if name == "filed" else OutcomeClass.FAILURE),
+            )
+            for name in ("filed", "stale_parent", "invalid")
+        ),
+        capability="integration_file_children",
+        side_effect=SideEffectClass.COMPOSITE,
+        idempotency=IdempotencySpec(mode="natural"),
+        retry_safe=True,
+        effects=(
+            UpdateClause(subject=EffectSubject.TASK_GRAPH),
+            UpdateClause(subject=EffectSubject.BRANCH_OWNERSHIP),
+        ),
+        receipt_projection=("generation", "children", "origins"),
+    ),
+    presentation=CommandPresentation(
+        title="File isolated child tasks",
+        summary="Reserve child origins and advance the parent integration generation atomically.",
+    ),
+)
+
+
+INTEGRATION_CHECKPOINT_PARENT = CommandContract(
+    execution=ExecutionContract(
+        name="integration_checkpoint_parent",
+        args_model=IntegrationCheckpointParentArgs,
+        result_model=IntegrationCheckpointParentValue,
+        outcomes=tuple(
+            OutcomeSpec(
+                name=name,
+                classification=(
+                    OutcomeClass.SUCCESS
+                    if name in {"checkpointed", "already_waiting"}
+                    else OutcomeClass.FAILURE
+                ),
+            )
+            for name in ("checkpointed", "already_waiting", "dirty", "stale")
+        ),
+        capability="integration_checkpoint_parent",
+        side_effect=SideEffectClass.UPDATE,
+        idempotency=IdempotencySpec(mode="natural"),
+        retry_safe=True,
+        effects=(UpdateClause(subject=EffectSubject.TASK),),
+        sensitive_args=frozenset({"head_sha"}),
+        sensitive_result_fields=frozenset({"head_sha"}),
+        receipt_projection=("task_id", "generation", "head_sha"),
+    ),
+    presentation=CommandPresentation(
+        title="Checkpoint integration parent",
+        summary="Pin the parent head and generation before waiting for child deliveries.",
+    ),
+)
+
+
+INTEGRATION_MUTATE_HIERARCHY = CommandContract(
+    execution=ExecutionContract(
+        name="integration_mutate_hierarchy",
+        args_model=IntegrationMutateHierarchyArgs,
+        result_model=IntegrationMutateHierarchyValue,
+        outcomes=tuple(
+            OutcomeSpec(
+                name=name,
+                classification=(OutcomeClass.SUCCESS if name == "updated" else OutcomeClass.FAILURE),
+            )
+            for name in ("updated", "sealed", "delivery_target_fixed", "reopen_required", "invalid")
+        ),
+        capability="integration_mutate_hierarchy",
+        side_effect=SideEffectClass.COMPOSITE,
+        idempotency=IdempotencySpec(mode="natural"),
+        retry_safe=True,
+        effects=(
+            UpdateClause(subject=EffectSubject.TASK_GRAPH),
+            UpdateClause(subject=EffectSubject.BRANCH_OWNERSHIP),
+        ),
+        receipt_projection=(
+            "task_id",
+            "old_parent_id",
+            "new_parent_id",
+            "old_parent_generation",
+            "new_parent_generation",
+        ),
+    ),
+    presentation=CommandPresentation(
+        title="Mutate integration hierarchy",
+        summary="Apply a guarded hierarchy change and invalidate affected parent generations.",
+    ),
+)
+
+
 async def _transfer_adapter(
     args: IntegrationTransferOwnerArgs, ctx: CommandContext | None
 ) -> CommandResult[IntegrationTransferOwnerValue]:
@@ -322,6 +456,74 @@ async def _reconcile_adapter(
     )
 
 
+async def _hierarchy_adapter(
+    command: str,
+    args: CommandArgs,
+    ctx: CommandContext | None,
+    value_model: type[CommandValue],
+    outcomes: set[str],
+) -> CommandResult:
+    from src.commands.contracts.builtin import _handler
+
+    payload = args.model_dump(mode="json")
+    if ctx is None:
+        raw = await _handler().execute(command, payload)
+    else:
+        with principal_context(ctx):
+            raw = await _handler().execute(command, payload)
+    outcome = raw.get("outcome")
+    if outcome not in outcomes | {"unauthorized", "runtime_error"}:
+        return CommandResult(
+            outcome="contract_violation",
+            value=value_model(),
+            summary=f"{command} returned an invalid outcome",
+        )
+    fields = set(value_model.model_fields)
+    try:
+        value = value_model(**{key: raw[key] for key in fields if key in raw})
+    except Exception as exc:
+        return CommandResult(
+            outcome="contract_violation",
+            value=value_model(),
+            summary=f"{command} result did not match its contract: {exc}",
+        )
+    return CommandResult(outcome=outcome, value=value, summary=str(raw.get("error") or outcome))
+
+
+async def _file_children_adapter(args: IntegrationFileChildrenArgs, ctx: CommandContext | None):
+    return await _hierarchy_adapter(
+        "integration_file_children",
+        args,
+        ctx,
+        IntegrationFileChildrenValue,
+        {"filed", "stale_parent", "invalid"},
+    )
+
+
+async def _checkpoint_parent_adapter(
+    args: IntegrationCheckpointParentArgs, ctx: CommandContext | None
+):
+    return await _hierarchy_adapter(
+        "integration_checkpoint_parent",
+        args,
+        ctx,
+        IntegrationCheckpointParentValue,
+        {"checkpointed", "already_waiting", "dirty", "stale"},
+    )
+
+
+async def _mutate_hierarchy_adapter(
+    args: IntegrationMutateHierarchyArgs, ctx: CommandContext | None
+):
+    return await _hierarchy_adapter(
+        "integration_mutate_hierarchy",
+        args,
+        ctx,
+        IntegrationMutateHierarchyValue,
+        {"updated", "sealed", "delivery_target_fixed", "reopen_required", "invalid"},
+    )
+
+
 def register_integration_contracts(registry: ContractRegistry) -> None:
     """Register contracts whose real handlers have landed.
 
@@ -338,6 +540,9 @@ def register_integration_contracts(registry: ContractRegistry) -> None:
             )
         )
     for contract, adapter in (
+        (INTEGRATION_FILE_CHILDREN, _file_children_adapter),
+        (INTEGRATION_CHECKPOINT_PARENT, _checkpoint_parent_adapter),
+        (INTEGRATION_MUTATE_HIERARCHY, _mutate_hierarchy_adapter),
         (DELIVERY_PROMOTE, _promote_adapter),
         (DELIVERY_RECEIPTS, _receipts_adapter),
         (INTEGRATION_RECONCILE_PROMOTION, _reconcile_adapter),

@@ -27,6 +27,8 @@ from src.database.tables import (
     task_assignment_routes,
     task_metadata,
     task_workspace_requirements,
+    task_branch_origins,
+    projects,
     tasks,
     workspaces,
 )
@@ -34,12 +36,30 @@ from src.models import AgentState, SessionRecord, Task, TaskEvent, TaskStatus, W
 
 
 def _frontier_where(project_id: str):
+    materialized_when_hierarchical = ~exists(
+        select(literal(1))
+        .select_from(projects)
+        .where(
+            projects.c.id == tasks.c.project_id,
+            projects.c.hierarchical_integration_mode.in_(("hierarchy", "train")),
+            ~exists(
+                select(literal(1)).where(
+                    task_branch_origins.c.task_id == tasks.c.id,
+                    task_branch_origins.c.repository_id
+                    == projects.c.integration_repository_id,
+                    task_branch_origins.c.retired_at.is_(None),
+                    task_branch_origins.c.materialized.is_(True),
+                )
+            ),
+        )
+    )
     return and_(
         tasks.c.project_id == project_id,
         tasks.c.status == TaskStatus.READY.value,
         tasks.c.is_blocked == 0,
         tasks.c.assigned_agent_id.is_(None),
         tasks.c.is_plan_subtask == 0,
+        materialized_when_hierarchical,
         # A flagged container (spec §7) has no deliverable of its own: it is
         # released to IN_PROGRESS by the orchestrator and settles when its
         # children finish.  A worker holding it could never close it

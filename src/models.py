@@ -391,6 +391,10 @@ class Project:
     # Project-level integration policy: "direct" | "pull_request" | None
     # (None = inherit the system default, config ``integration.default_mode``).
     integration_mode: str | None = None
+    # Rollout state for recursive delivery.  This is deliberately separate
+    # from the direct/pull_request completion policy above.
+    hierarchical_integration_mode: str = "disabled"
+    integration_repository_id: str | None = None
 
 
 @dataclass

@@ -1192,6 +1192,9 @@ class TaskCommandsMixin:
         explicit_root: bool,
         discovered_from: str | None,
         edges: list[tuple[str, str, str | None]],
+        requirements: list[tuple[str, str | None]],
+        labels: list[str],
+        hierarchy_enabled: bool,
         reason: str,
         routing_policy: Callable[[Task], bool] | None = None,
     ) -> tuple[str, str | None, str | None, bool, str | None]:
@@ -1275,12 +1278,52 @@ class TaskCommandsMixin:
                 conn, held_id, max_filings=self.config.swarm.max_filings_per_task
             ):
                 raise _FilingQuota()
-            if parent_id:
-                task.id, depth_cap_fallback = await child_task_id(conn, parent_id)
+            if hierarchy_enabled:
+                integration_edges = list(edges)
+                if origin != parent_id:
+                    integration_edges.append(
+                        (origin, DepType.DISCOVERED_FROM.value, reason)
+                    )
+                service = self._hierarchy_integration_service()
+                if parent_id:
+                    created = await service.file_prepared_child_on(
+                        conn,
+                        parent_id,
+                        task,
+                        requirements=requirements,
+                        edges=integration_edges,
+                        labels=labels,
+                        routing_policy=routing_policy,
+                    )
+                else:
+                    created = await service.file_root_on(
+                        conn,
+                        task,
+                        requirements=requirements,
+                        edges=integration_edges,
+                        labels=labels,
+                    )
+                    gate_id, _created, gate_flipped = await self.db._create_gate_on(
+                        conn,
+                        task.project_id,
+                        "routing",
+                        f"Route: {task.title}",
+                        question="",
+                        await_id=None,
+                        timeout_at=None,
+                        waiter_task_ids=[task.id],
+                        caller_owns_conn=True,
+                    )
+                    flipped |= gate_flipped
+                gate_id = created.get("gate_id") or gate_id
+                task.parent_task_id = parent_id
             else:
-                task.id = await fresh_root_id(conn)
-            await self.db.create_task(task, conn=conn)
-            if parent_id and not depth_cap_fallback:
+                if parent_id:
+                    task.id, depth_cap_fallback = await child_task_id(conn, parent_id)
+                else:
+                    task.id = await fresh_root_id(conn)
+                await self.db.create_task(task, conn=conn)
+            if not hierarchy_enabled and parent_id and not depth_cap_fallback:
                 result = await self.db.set_parent(
                     task.id, parent_id, conn=conn, description=reason
                 )
@@ -1302,7 +1345,7 @@ class TaskCommandsMixin:
                         )
                         or set()
                     )
-            elif parent_id:
+            elif not hierarchy_enabled and parent_id:
                 # Naming-depth cap: child_task_id already minted a root id;
                 # record provenance the same way create_task_under does,
                 # instead of a parent-child edge to the (too-deep) container.
@@ -1317,7 +1360,7 @@ class TaskCommandsMixin:
                     )
                     or set()
                 )
-            else:
+            elif not hierarchy_enabled:
                 flipped |= (
                     await self.db.add_dependency(
                         task.id,
@@ -1345,8 +1388,14 @@ class TaskCommandsMixin:
                     caller_owns_conn=True,
                 )
                 flipped |= gate_flipped
-            task.parent_task_id = parent_id if parent_id and not depth_cap_fallback else None
-            if parent_id and routing_policy is not None and routing_policy(task):
+            if not hierarchy_enabled:
+                task.parent_task_id = parent_id if parent_id and not depth_cap_fallback else None
+            if (
+                not hierarchy_enabled
+                and parent_id
+                and routing_policy is not None
+                and routing_policy(task)
+            ):
                 gate_id, _created, gate_flipped = await self.db._create_gate_on(
                     conn, task.project_id, "routing", "Route task",
                     question="Assign profile + intelligence class (+ workspace if profile needs one).",
@@ -1354,7 +1403,7 @@ class TaskCommandsMixin:
                 )
                 flipped |= gate_flipped
                 task.is_blocked = True
-            for dep_id, dep_type, dep_reason in edges:
+            for dep_id, dep_type, dep_reason in (() if hierarchy_enabled else edges):
                 flipped |= (
                     await self.db.add_dependency(
                         task.id,
@@ -1479,6 +1528,12 @@ class TaskCommandsMixin:
         project_id = args.get("project_id") or self._active_project_id
         if not project_id:
             return {"error": "project_id is required (no active project set)"}
+        project = await self.db.get_project(project_id)
+        if project is None:
+            return {"error": f"Project '{project_id}' not found"}
+        hierarchy_enabled = project.hierarchical_integration_mode in {"hierarchy", "train"}
+        if hierarchy_enabled and not project.integration_repository_id:
+            return {"error": "hierarchical integration requires a designated repository"}
         deliverables, deliverables_error = normalize_deliverables(args.get("deliverables"))
         if deliverables_error:
             return {"error": deliverables_error}
@@ -1806,6 +1861,7 @@ class TaskCommandsMixin:
             intelligence_class=args.get("intelligence_class"),
             created_by_kind="session" if creator_session_id else None,
             created_by_id=creator_session_id,
+            repo_id=project.integration_repository_id if hierarchy_enabled else None,
         )
         from src.playbooks.routing import requires_routing_gate
         manager = getattr(self.orchestrator, "playbook_manager", None)
@@ -1823,7 +1879,41 @@ class TaskCommandsMixin:
         gate_id: str | None = None
         discovered_from_origin: str | None = None
         depth_cap_fallback = False
-        if filing_session is not None:
+        hierarchy_created = False
+        if hierarchy_enabled and filing_session is None:
+            try:
+                async with self.db.immediate() as conn:
+                    service = self._hierarchy_integration_service()
+                    if parent_id:
+                        created = await service.file_prepared_child_on(
+                            conn,
+                            parent_id,
+                            task,
+                            requirements=normalized_requirements,
+                            edges=edges,
+                            labels=labels,
+                            routing_policy=routing_policy,
+                        )
+                        task.parent_task_id = parent_id
+                    else:
+                        created = await service.file_root_on(
+                            conn,
+                            task,
+                            requirements=normalized_requirements,
+                            edges=edges,
+                            labels=labels,
+                            routing_policy=routing_policy,
+                        )
+                task_id = created["task_id"]
+                gate_id = created.get("gate_id")
+                hierarchy_created = True
+            except HierarchyError as exc:
+                return {
+                    "success": False,
+                    "error": f"hierarchy.{exc.code}: {exc.detail}",
+                    "code": f"hierarchy.{exc.code}",
+                }
+        elif filing_session is not None:
             try:
                 (
                     task_id,
@@ -1843,9 +1933,13 @@ class TaskCommandsMixin:
                     explicit_root=explicit_root,
                     discovered_from=args.get("discovered_from"),
                     edges=edges,
+                    requirements=normalized_requirements,
+                    labels=labels,
+                    hierarchy_enabled=hierarchy_enabled,
                     reason=spawn_reason or "",
                     routing_policy=routing_policy,
                 )
+                hierarchy_created = hierarchy_enabled
             except _FilingScope as exc:
                 return {"success": False, "error": exc.error}
             except _FilingQuota:
@@ -1889,7 +1983,7 @@ class TaskCommandsMixin:
             await self.db.create_task(task, **({"routing_policy": routing_policy} if routing_policy is not None else {}))
 
         # Persist requires_kinds rows now that the FK target exists.
-        if normalized_requirements:
+        if normalized_requirements and not hierarchy_created:
             await self.db.add_task_workspace_requirements(task_id, normalized_requirements)
 
         # Graph edges and labels, now that the FK target exists.  Each
@@ -1899,7 +1993,7 @@ class TaskCommandsMixin:
         # ``_create_worker_filed_task``'s transaction above — only log them
         # here so the audit trail is identical either way.
         for dep_id, dep_type, dep_reason in edges:
-            if filing_session is None:
+            if filing_session is None and not hierarchy_created:
                 try:
                     await self.db.add_dependency(
                         task_id, dep_id, dep_type, description=dep_reason
@@ -1921,7 +2015,8 @@ class TaskCommandsMixin:
                 payload=f"{dep_type} -> {dep_id}",
             )
         for label in labels:
-            await self.db.add_task_label(task_id, label)
+            if not hierarchy_created:
+                await self.db.add_task_label(task_id, label)
             await self.db.log_event(
                 "label.added",
                 project_id=project_id,

@@ -19,6 +19,7 @@ from sqlalchemy import and_, select, update
 
 from src.database.queries import proposal_queries
 from src.database.tables import TASK_DEP_TYPES, task_proposals, tasks
+from src.models import DepType, Task, TaskStatus
 
 logger = logging.getLogger(__name__)
 
@@ -175,6 +176,7 @@ class TaskProposalCommandsMixin:
         cycles = proposal_queries.detect_cycles(existing, tasks_in, edges_in)
         if cycles:
             return {"success": False, "error": f"cycle(s): {cycles}"}
+
         await proposal_queries.update_proposal(
             self.db, proposal_id, payload=payload, status="ready"
         )
@@ -257,6 +259,19 @@ class TaskProposalCommandsMixin:
         cycles = proposal_queries.detect_cycles(existing, tasks_in, edges_in)
         if cycles:
             return {"success": False, "error": f"cycle(s): {cycles}"}
+
+        project = await self.db.get_project(project_id)
+        if project is not None and project.hierarchical_integration_mode in {
+            "hierarchy",
+            "train",
+        }:
+            return await self._commit_hierarchical_proposal(
+                proposal_id=proposal_id,
+                project_id=project_id,
+                source=row["source"],
+                tasks_in=tasks_in,
+                edges_in=edges_in,
+            )
 
         # Claim: single conditional flip. Only one concurrent caller
         # wins this UPDATE; the loser sees rowcount==0 and aborts.
@@ -345,6 +360,127 @@ class TaskProposalCommandsMixin:
             },
         )
         return {"success": True, "task_ids": created_ids}
+
+    async def _commit_hierarchical_proposal(
+        self,
+        *,
+        proposal_id: str,
+        project_id: str,
+        source: str,
+        tasks_in: list[dict],
+        edges_in: list[dict],
+    ) -> dict:
+        """Claim and materialize an enabled-project proposal in one transaction."""
+        parent_by_temp = {
+            edge["from"]: edge["to"]
+            for edge in edges_in
+            if edge.get("dep_type", DepType.BLOCKS.value) == DepType.PARENT_CHILD.value
+        }
+        specs = {spec["tempId"]: spec for spec in tasks_in}
+        unknown_parents = {
+            parent for parent in parent_by_temp.values() if parent not in specs
+        }
+        if unknown_parents:
+            return {
+                "success": False,
+                "error": "hierarchical proposal parents must be in the same batch: "
+                + ", ".join(sorted(unknown_parents)),
+            }
+        children_by_parent: dict[str, list[str]] = {}
+        for child, parent in parent_by_temp.items():
+            children_by_parent.setdefault(parent, []).append(child)
+
+        service = self._hierarchy_integration_service()
+        temp_to_real: dict[str, str] = {}
+        try:
+            async with self.db.immediate() as conn:
+                claim = await conn.execute(
+                    update(task_proposals)
+                    .where(
+                        and_(
+                            task_proposals.c.id == proposal_id,
+                            task_proposals.c.status == "ready",
+                        )
+                    )
+                    .values(status="committed", updated_at=time.time())
+                )
+                if claim.rowcount != 1:
+                    return {
+                        "success": False,
+                        "error": "proposal not in 'ready' state or already claimed by another commit",
+                    }
+                await self.db.lock_hierarchy_project(conn, project_id)
+
+                pending = set(specs)
+                while pending:
+                    roots = sorted(temp_id for temp_id in pending if temp_id not in parent_by_temp)
+                    ready_children = sorted(
+                        temp_id
+                        for temp_id in pending
+                        if parent_by_temp.get(temp_id) in temp_to_real
+                    )
+                    if not roots and not ready_children:
+                        raise RuntimeError("hierarchical proposal has an unresolved parent cycle")
+                    for temp_id in roots:
+                        task = self._proposal_task(project_id, specs[temp_id])
+                        created = await service.file_root_on(conn, task)
+                        temp_to_real[temp_id] = created["task_id"]
+                        await self.db._upsert_meta(
+                            created["task_id"], "proposal_source", source, conn=conn
+                        )
+                        pending.remove(temp_id)
+                    grouped: dict[str, list[str]] = {}
+                    for temp_id in ready_children:
+                        grouped.setdefault(parent_by_temp[temp_id], []).append(temp_id)
+                    for parent_temp, child_temps in grouped.items():
+                        task_models = [
+                            self._proposal_task(project_id, specs[temp_id])
+                            for temp_id in child_temps
+                        ]
+                        created = await service.file_prepared_children_on(
+                            conn, temp_to_real[parent_temp], task_models
+                        )
+                        for temp_id, item in zip(child_temps, created, strict=True):
+                            temp_to_real[temp_id] = item["task_id"]
+                            await self.db._upsert_meta(
+                                item["task_id"], "proposal_source", source, conn=conn
+                            )
+                            pending.remove(temp_id)
+
+                for edge in edges_in:
+                    dep_type = edge.get("dep_type", DepType.BLOCKS.value)
+                    if dep_type == DepType.PARENT_CHILD.value:
+                        continue
+                    await self.db.add_dependency(
+                        temp_to_real.get(edge["from"], edge["from"]),
+                        temp_to_real.get(edge["to"], edge["to"]),
+                        dep_type,
+                        conn=conn,
+                    )
+        except Exception as exc:
+            logger.exception("hierarchical task_batch_commit failed: %s", exc)
+            return {"success": False, "error": f"commit failed: {exc}"}
+
+        await self._emit_proposal_event(
+            "proposal.status_changed",
+            {"project_id": project_id, "proposal_id": proposal_id, "status": "committed"},
+        )
+        return {
+            "success": True,
+            "task_ids": [temp_to_real[spec["tempId"]] for spec in tasks_in],
+        }
+
+    @staticmethod
+    def _proposal_task(project_id: str, spec: dict) -> Task:
+        return Task(
+            id="",
+            project_id=project_id,
+            title=spec["title"],
+            description=spec.get("description", ""),
+            priority=spec.get("priority", 100),
+            deliverables=spec.get("deliverables", []),
+            status=TaskStatus.DEFINED,
+        )
 
 
 async def _create_one_task(

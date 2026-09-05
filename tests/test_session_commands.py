@@ -17,11 +17,15 @@ import pytest
 from src.commands.handler import CommandHandler
 from src.config import AppConfig
 from src.database import Database
+from src.database.tables import task_branch_origins
+from src.integration.models import BranchKey
+from src.integration.ownership import BranchBusy, BranchOwnership
 from src.models import (
     Agent,
     AgentProfile,
     AgentState,
     Project,
+    RepoConfig,
     RepoSourceType,
     SessionRecord,
     Task,
@@ -896,6 +900,42 @@ class TestEndToEndOnFakeProvider:
             )
         return str(wd)
 
+    async def _enable_hierarchy_launch(self, db, tmp_path):
+        await db.create_repo(
+            RepoConfig(
+                id="repo",
+                project_id="p1",
+                source_type=RepoSourceType.LINK,
+                source_path=str(tmp_path / "wd"),
+            )
+        )
+        await db.update_project(
+            "p1",
+            hierarchical_integration_mode="hierarchy",
+            integration_repository_id="repo",
+        )
+        await db.update_task("t1", repo_id="repo", branch_name="aq/t1")
+        async with db.immediate() as conn:
+            await conn.execute(
+                task_branch_origins.insert().values(
+                    id="origin-t1",
+                    task_id="t1",
+                    repository_id="repo",
+                    parent_ref="main",
+                    base_sha="a" * 40,
+                    creation_generation=0,
+                    reserved=True,
+                    materialized=True,
+                    created_at=time.time(),
+                    materialized_at=time.time(),
+                )
+            )
+        ownership = BranchOwnership(db)
+        fence = await ownership.acquire(
+            BranchKey(repository_id="repo", branch="aq/t1"), "t1", "worker"
+        )
+        return ownership, fence
+
     async def _launch_via_execute_task(self, db, real_orch, monkeypatch, tmp_path):
         """Drive a launch through the *real* ``_execute_task`` entry point.
 
@@ -1465,6 +1505,195 @@ class TestEndToEndOnFakeProvider:
         task = await db.get_task("t1")
         assert task.status is TaskStatus.PAUSED
         assert (await db.get_agent("a1")).state is AgentState.IDLE
+
+    async def test_hierarchy_launch_persists_starting_attachment_before_provider(
+        self, db, real_orch, provider, tmp_path, monkeypatch
+    ):
+        import asyncio
+
+        wd = await self._setup(db, tmp_path)
+        ownership, _fence = await self._enable_hierarchy_launch(db, tmp_path)
+        entered, proceed = asyncio.Event(), asyncio.Event()
+        original_start = provider.start
+
+        async def paused_start(spec):
+            entered.set()
+            await proceed.wait()
+            return await original_start(spec)
+
+        monkeypatch.setattr(provider, "start", paused_start)
+        task = await db.get_task("t1")
+        launch = asyncio.create_task(
+            real_orch._launch_session_for_task(
+                AssignAction("a1", "t1", "p1"),
+                task,
+                await db.get_profile("claude-opus"),
+                wd,
+            )
+        )
+        await entered.wait()
+        row = await db.get_session_for_task("t1")
+        proceed.set()
+        await launch
+        owner = await ownership.get_owner(
+            BranchKey(repository_id="repo", branch="aq/t1")
+        )
+
+        assert row.state == "starting"
+        assert owner["handoff_state"] == "attached"
+        assert owner["session_id"]
+        assert owner["workspace_id"] == "ws1"
+        assert (await db.get_session_for_task("t1")).state == "running"
+
+    async def test_hierarchy_transfer_winning_before_launch_prevents_provider_start(
+        self, db, real_orch, provider, tmp_path
+    ):
+        wd = await self._setup(db, tmp_path)
+        ownership, fence = await self._enable_hierarchy_launch(db, tmp_path)
+        await ownership.transfer(fence, "collector", "collector")
+        task = await db.get_task("t1")
+
+        await real_orch._launch_session_for_task(
+            AssignAction("a1", "t1", "p1"),
+            task,
+            await db.get_profile("claude-opus"),
+            wd,
+        )
+
+        assert provider.starts == []
+        assert await db.get_session_for_task("t1") is None
+
+    async def test_hierarchy_transfer_cannot_pass_provider_start_exclusion(
+        self, db, real_orch, provider, tmp_path, monkeypatch
+    ):
+        import asyncio
+
+        wd = await self._setup(db, tmp_path)
+        ownership, fence = await self._enable_hierarchy_launch(db, tmp_path)
+        entered, proceed = asyncio.Event(), asyncio.Event()
+        original_start = provider.start
+
+        async def slow_start(spec):
+            entered.set()
+            await proceed.wait()
+            return await original_start(spec)
+
+        monkeypatch.setattr(provider, "start", slow_start)
+        task = await db.get_task("t1")
+        launch = asyncio.create_task(
+            real_orch._launch_session_for_task(
+                AssignAction("a1", "t1", "p1"),
+                task,
+                await db.get_profile("claude-opus"),
+                wd,
+            )
+        )
+        await entered.wait()
+        transfer = asyncio.create_task(
+            ownership.transfer(fence, "collector", "collector")
+        )
+        await asyncio.sleep(0.05)
+        assert not transfer.done()
+        proceed.set()
+        await launch
+        with pytest.raises(BranchBusy):
+            await transfer
+        assert (await db.get_session_for_task("t1")).state == "running"
+
+    async def test_hierarchy_starting_reconciler_scan_cannot_release_inflight_launch(
+        self, db, real_orch, provider, tmp_path, monkeypatch
+    ):
+        import asyncio
+
+        wd = await self._setup(db, tmp_path)
+        await self._enable_hierarchy_launch(db, tmp_path)
+        entered, proceed = asyncio.Event(), asyncio.Event()
+        original_start = provider.start
+
+        async def slow_start(spec):
+            entered.set()
+            await proceed.wait()
+            return await original_start(spec)
+
+        monkeypatch.setattr(provider, "start", slow_start)
+        task = await db.get_task("t1")
+        launch = asyncio.create_task(
+            real_orch._launch_session_for_task(
+                AssignAction("a1", "t1", "p1"),
+                task,
+                await db.get_profile("claude-opus"),
+                wd,
+            )
+        )
+        await entered.wait()
+        starting = await db.get_session_for_task("t1")
+        scan = asyncio.create_task(
+            real_orch.session_reconciler._step_exits([starting], time.time())
+        )
+        await asyncio.sleep(0.05)
+        assert not scan.done()
+        proceed.set()
+        await asyncio.gather(launch, scan)
+
+        assert (await db.get_session_for_task("t1")).state == "running"
+        assert (await db.get_workspace("ws1")).locked_by_task_id == "t1"
+
+    async def test_hierarchy_failed_start_retains_stopped_session_binding(
+        self, db, real_orch, provider, tmp_path
+    ):
+        wd = await self._setup(db, tmp_path)
+        ownership, _fence = await self._enable_hierarchy_launch(db, tmp_path)
+        provider.script_startup_death("s-t1")
+        task = await db.get_task("t1")
+
+        await real_orch._launch_session_for_task(
+            AssignAction("a1", "t1", "p1"),
+            task,
+            await db.get_profile("claude-opus"),
+            wd,
+        )
+
+        session = await db.get_session_for_task("t1")
+        owner = await ownership.get_owner(
+            BranchKey(repository_id="repo", branch="aq/t1")
+        )
+        assert session.state == "stopped"
+        assert session.end_reason == "startup_exit"
+        assert owner["session_id"] == session.id
+        assert owner["workspace_id"] == "ws1"
+
+    async def test_hierarchy_crash_after_process_launch_leaves_starting_identity(
+        self, db, real_orch, provider, tmp_path, monkeypatch
+    ):
+        import asyncio
+
+        wd = await self._setup(db, tmp_path)
+        ownership, _fence = await self._enable_hierarchy_launch(db, tmp_path)
+        original_update = db.update_session
+
+        async def crash_before_running(session_id, *, conn=None, **fields):
+            if conn is not None and fields.get("state") == "running":
+                raise asyncio.CancelledError
+            return await original_update(session_id, conn=conn, **fields)
+
+        monkeypatch.setattr(db, "update_session", crash_before_running)
+        task = await db.get_task("t1")
+        with pytest.raises(asyncio.CancelledError):
+            await real_orch._launch_session_for_task(
+                AssignAction("a1", "t1", "p1"),
+                task,
+                await db.get_profile("claude-opus"),
+                wd,
+            )
+
+        session = await db.get_session_for_task("t1")
+        owner = await ownership.get_owner(
+            BranchKey(repository_id="repo", branch="aq/t1")
+        )
+        assert provider.starts
+        assert session.state == "starting"
+        assert owner["session_id"] == session.id
+        assert owner["workspace_id"] == "ws1"
 
     async def test_unknown_harness_fails_the_launch_loudly(
         self, db, real_orch, provider, tmp_path

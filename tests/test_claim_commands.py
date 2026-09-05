@@ -12,12 +12,16 @@ import pytest
 from src.commands.handler import CommandHandler
 from src.config import AppConfig, DiscordConfig
 from src.database import Database
+from src.database.tables import task_branch_origins
 from src.intelligence_classes import IntelligenceClass
+from src.integration.models import BranchKey
+from src.integration.ownership import BranchOwnership
 from src.models import (
     Agent,
     AgentProfile,
     AgentState,
     Project,
+    RepoConfig,
     RepoSourceType,
     SessionRecord,
     Task,
@@ -151,6 +155,84 @@ def emitted(handler):
 
 
 class TestClaim:
+    async def _hierarchy_task(self, db, tmp_path, task_id="child"):
+        await db.create_repo(
+            RepoConfig(
+                id="repo",
+                project_id=PROJECT_ID,
+                source_type=RepoSourceType.LINK,
+                source_path=str(tmp_path),
+            )
+        )
+        await db.update_project(
+            PROJECT_ID,
+            hierarchical_integration_mode="hierarchy",
+            integration_repository_id="repo",
+        )
+        await mktask(
+            db,
+            task_id,
+            profile_id="worker",
+            repo_id="repo",
+            branch_name=f"aq/{task_id}",
+        )
+        async with db.immediate() as conn:
+            await conn.execute(
+                task_branch_origins.insert().values(
+                    id=f"origin-{task_id}",
+                    task_id=task_id,
+                    repository_id="repo",
+                    parent_task_id="parent",
+                    parent_repository_id="repo",
+                    parent_ref="aq/parent",
+                    base_sha="a" * 40,
+                    creation_generation=1,
+                    reserved=True,
+                    materialized=True,
+                    created_at=time.time(),
+                    materialized_at=time.time(),
+                )
+            )
+        ownership = BranchOwnership(db)
+        fence = await ownership.acquire(
+            BranchKey(repository_id="repo", branch=f"aq/{task_id}"),
+            task_id,
+            "worker",
+        )
+        return ownership, fence
+
+    async def test_hierarchy_pool_claim_resets_from_exact_origin_and_attaches(
+        self, handler, db, tmp_path
+    ):
+        ownership, _fence = await self._hierarchy_task(db, tmp_path)
+        sid, _wd = await pool_session(db, tmp_path)
+
+        result = await scoped(handler, sid)._cmd_task_claim({"next": True})
+
+        assert result["result"] == "claimed"
+        reset = handler.orchestrator._worktree_slots.return_value.reset_slot_for_task
+        assert reset.await_args.kwargs["base_branch"] == "a" * 40
+        owner = await ownership.get_owner(
+            BranchKey(repository_id="repo", branch="aq/child")
+        )
+        assert owner["handoff_state"] == "attached"
+        assert owner["session_id"] == sid
+        assert owner["workspace_id"] == "ws-agent-1"
+
+    async def test_collector_owned_hierarchy_branch_cannot_reset_or_activate_pool_claim(
+        self, handler, db, tmp_path
+    ):
+        ownership, fence = await self._hierarchy_task(db, tmp_path)
+        sid, _wd = await pool_session(db, tmp_path)
+        await ownership.transfer(fence, "collector", "collector")
+
+        result = await scoped(handler, sid)._cmd_task_claim({"next": True})
+
+        assert result["result"] == "prepare_failed"
+        reset = handler.orchestrator._worktree_slots.return_value.reset_slot_for_task
+        reset.assert_not_awaited()
+        assert (await db.get_session(sid)).claim_phase is None
+
     async def test_reconciler_release_honors_fresh_context_drain(self, handler, db, config, tmp_path, monkeypatch):
         """A reconciler-won close release keeps fresh-context drain semantics."""
         await mktask(db, "t1", profile_id="worker")

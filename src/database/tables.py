@@ -52,7 +52,18 @@ projects = Table(
     # Project-level integration policy: 'direct' | 'pull_request' | NULL
     # (NULL = inherit config ``integration.default_mode``).
     Column("integration_mode", Text, nullable=True),
+    Column(
+        "hierarchical_integration_mode",
+        Text,
+        nullable=False,
+        server_default="disabled",
+    ),
+    Column("integration_repository_id", Text, nullable=True),
     Column("created_at", Float, nullable=False),
+    CheckConstraint(
+        "hierarchical_integration_mode IN ('disabled', 'observe', 'hierarchy', 'train')",
+        name="ck_projects_hierarchical_integration_mode",
+    ),
 )
 
 repos = Table(

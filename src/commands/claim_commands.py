@@ -511,28 +511,73 @@ class ClaimCommandsMixin:
         callers that did not have one.
         """
         epoch = task.claim_epoch
+        hierarchy_attached = False
+        fresh = None
         try:
             if slot is None:
                 slot = await self.db.get_workspace_for_agent(row.agent_id)
             if slot is None:
                 raise RuntimeError("session holds no workspace slot")
-            await self.orchestrator._worktree_slots().reset_slot_for_task(slot, task)
-            # Writing the claim file joins the same guard as the slot
-            # reset: any failure after ``record_holder`` committed — a slot
-            # reset error or an OSError on this write — must release the
-            # claim and leave no claim file behind.
-            write_claim_file(
-                row.work_dir,
-                {
-                    "task_id": task.id,
-                    "claim_epoch": epoch,
-                    "session_id": session.id,
-                    "claimed_at": time.time(),
-                },
-            )
+            project = await self.db.get_project(task.project_id)
+            hierarchy_enabled = getattr(
+                project, "hierarchical_integration_mode", "disabled"
+            ) in {"hierarchy", "train"}
+
+            async def prepare_and_activate(*, conn=None, base_branch=None):
+                reset_kwargs = {"base_branch": base_branch} if base_branch else {}
+                await self.orchestrator._worktree_slots().reset_slot_for_task(
+                    slot, task, **reset_kwargs
+                )
+                # Writing the claim file joins the same guard as the slot
+                # reset: any failure after ``record_holder`` committed — a slot
+                # reset error or an OSError on this write — must release the
+                # claim and leave no claim file behind.
+                write_claim_file(
+                    row.work_dir,
+                    {
+                        "task_id": task.id,
+                        "claim_epoch": epoch,
+                        "session_id": session.id,
+                        "claimed_at": time.time(),
+                    },
+                )
+                return await self.db.activate_claim(
+                    session.id, task.id, epoch=epoch, now=time.time(), conn=conn
+                )
+
+            if hierarchy_enabled:
+                from src.integration.ownership import BranchOwnership
+
+                origin, fence = await self.orchestrator._hierarchy_origin_and_fence(
+                    task, project
+                )
+                ownership = BranchOwnership(self.db)
+                await ownership.attach(
+                    fence,
+                    session.id,
+                    slot.id,
+                    agent_id=row.agent_id,
+                )
+                hierarchy_attached = True
+                async with ownership.mutation_exclusion(
+                    fence, state="attached"
+                ) as conn:
+                    fresh = await prepare_and_activate(
+                        conn=conn, base_branch=origin["base_sha"]
+                    )
+            else:
+                fresh = await prepare_and_activate()
         except Exception as exc:
             logger.warning("claim %s/%s: prepare failed: %s", session.id, task.id, exc)
             remove_claim_file(row.work_dir)
+            if hierarchy_attached:
+                # Never unlock a checkout still named by an attached fence.
+                # Reconciliation/handoff owns the stop+detach proof.
+                await self.db.set_task_meta(
+                    task.id, "needs_attention", "integration_prepare_failed_attached"
+                )
+                self._resolve_claim_waiters(session.id, epoch, "prepare_failed")
+                return self._simple(ClaimResult.PREPARE_FAILED, str(exc), row, cap)
             await self.db.release_claim(
                 session.id,
                 task_status=TaskStatus.READY,
@@ -554,7 +599,6 @@ class ClaimCommandsMixin:
             )
             self._resolve_claim_waiters(session.id, epoch, "prepare_failed")
             return self._simple(ClaimResult.PREPARE_FAILED, str(exc), row, cap)
-        fresh = await self.db.activate_claim(session.id, task.id, epoch=epoch, now=time.time())
         if not fresh:
             remove_claim_file(row.work_dir)
             self._resolve_claim_waiters(session.id, epoch, "prepare_failed")

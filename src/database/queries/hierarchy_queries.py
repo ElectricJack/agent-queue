@@ -20,7 +20,14 @@ from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from src.database.queries.task_queries import TransitionResult
 from src.database.tables import (
     agents,
+    integration_batch_members,
+    integration_batches,
+    integration_branch_owners,
     sessions,
+    projects,
+    task_branch_origins,
+    task_delivery_receipts,
+    task_integration_checkpoints,
     task_dependencies,
     task_metadata,
     tasks,
@@ -253,6 +260,144 @@ class HierarchyQueryMixin:
             )
         )
 
+    async def guard_integration_mutation(
+        self,
+        task_id: str,
+        mutation: str,
+        *,
+        conn,
+        retire_pending: bool = False,
+    ) -> bool:
+        """Fence canonical hierarchy/lifecycle writers for enabled projects.
+
+        Returns whether hierarchical delivery applies.  When
+        ``retire_pending`` is true, an unstarted removal retires its origins
+        and advances each surviving affected parent's generation in this
+        transaction.  Materialized, delivered, or batch-sealed identity is
+        never discarded.
+        """
+        task_row = (
+            await conn.execute(
+                select(tasks.c.project_id, tasks.c.parent_task_id).where(tasks.c.id == task_id)
+            )
+        ).one_or_none()
+        if task_row is None:
+            return False
+        mode = (
+            await conn.execute(
+                select(projects.c.hierarchical_integration_mode).where(
+                    projects.c.id == task_row.project_id
+                )
+            )
+        ).scalar_one_or_none()
+        if mode not in {"hierarchy", "train"}:
+            return False
+        await self.lock_hierarchy_project(conn, task_row.project_id)
+        ids = await self.subtree_ids(task_id, conn=conn)
+        if not ids:
+            return True
+        active_batch_states = (
+            "sealing",
+            "sealed",
+            "building",
+            "testing",
+            "repairing",
+            "human_blocked",
+            "promoting",
+            "cleanup_pending",
+        )
+        sealed = (
+            await conn.execute(
+                select(integration_batch_members.c.task_id)
+                .select_from(
+                    integration_batch_members.join(
+                        integration_batches,
+                        integration_batches.c.id == integration_batch_members.c.batch_id,
+                    )
+                )
+                .where(integration_batch_members.c.task_id.in_(ids))
+                .where(integration_batches.c.lifecycle.in_(active_batch_states))
+                .limit(1)
+            )
+        ).first()
+        if sealed:
+            raise HierarchyError("sealed", f"{mutation} would change a sealed subtree")
+        delivered = (
+            await conn.execute(
+                select(task_delivery_receipts.c.source_task_id)
+                .where(task_delivery_receipts.c.source_task_id.in_(ids))
+                .limit(1)
+            )
+        ).first()
+        if delivered:
+            raise HierarchyError(
+                "delivery_target_fixed", f"{mutation} would change delivered branch identity"
+            )
+        origins = (
+            await conn.execute(
+                select(task_branch_origins)
+                .where(task_branch_origins.c.task_id.in_(ids))
+                .where(task_branch_origins.c.retired_at.is_(None))
+                .with_for_update()
+            )
+        ).mappings().all()
+        if retire_pending and any(bool(row["materialized"]) for row in origins):
+            raise HierarchyError(
+                "delivery_target_fixed", f"{mutation} would discard a materialized origin"
+            )
+        if retire_pending and origins:
+            now = time.time()
+            await conn.execute(
+                update(task_branch_origins)
+                .where(task_branch_origins.c.id.in_([row["id"] for row in origins]))
+                .where(task_branch_origins.c.materialized.is_(False))
+                .values(retired_at=now)
+            )
+            owner_ids = [row["task_id"] for row in origins]
+            await conn.execute(
+                update(integration_branch_owners)
+                .where(integration_branch_owners.c.owner_id.in_(owner_ids))
+                .where(integration_branch_owners.c.owner_role == "worker")
+                .where(integration_branch_owners.c.handoff_state == "reserved")
+                .values(handoff_state="released", updated_at=now)
+            )
+            surviving_parents = {
+                row["parent_task_id"]
+                for row in origins
+                if row["parent_task_id"] and row["parent_task_id"] not in ids
+            }
+            for parent_id in sorted(surviving_parents):
+                await conn.execute(
+                    update(task_integration_checkpoints)
+                    .where(task_integration_checkpoints.c.task_id == parent_id)
+                    .values(
+                        generation=task_integration_checkpoints.c.generation + 1,
+                        verified_sha=None,
+                        verified_generation=None,
+                        version=task_integration_checkpoints.c.version + 1,
+                        updated_at=now,
+                    )
+                )
+        elif mutation in {"reopen", "disposition"} and task_row.parent_task_id:
+            # Reopening or changing the terminal disposition makes the
+            # parent's previously observed child aggregate stale even when
+            # no delivery receipt exists yet.  The transition and this
+            # invalidation share the caller's transaction.
+            await conn.execute(
+                update(task_integration_checkpoints)
+                .where(
+                    task_integration_checkpoints.c.task_id == task_row.parent_task_id
+                )
+                .values(
+                    generation=task_integration_checkpoints.c.generation + 1,
+                    verified_sha=None,
+                    verified_generation=None,
+                    version=task_integration_checkpoints.c.version + 1,
+                    updated_at=time.time(),
+                )
+            )
+        return True
+
     async def set_parent(
         self,
         task_id: str,
@@ -260,6 +405,7 @@ class HierarchyQueryMixin:
         *,
         conn,
         description: str | None = None,
+        integration_authorized: bool = False,
     ) -> TransitionResult:
         """Move *task_id* under *parent_id* (``None`` = root).  Spec §5.
 
@@ -295,6 +441,20 @@ class HierarchyQueryMixin:
         if task_row is None:
             raise HierarchyError("not_found", task_id)
         old_parent = task_row.parent_task_id
+
+        if not integration_authorized and old_parent != parent_id:
+            mode = (
+                await conn.execute(
+                    select(projects.c.hierarchical_integration_mode).where(
+                        projects.c.id == task_row.project_id
+                    )
+                )
+            ).scalar_one_or_none()
+            if mode in {"hierarchy", "train"}:
+                raise HierarchyError(
+                    "delivery_target_fixed",
+                    "hierarchical tasks must be reparented through integration_mutate_hierarchy",
+                )
 
         if parent_id is not None:
             if parent_id == task_id:

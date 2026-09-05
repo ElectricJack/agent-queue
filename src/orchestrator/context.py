@@ -205,11 +205,25 @@ class ContextMixin:
             if workspace
             else (project.repo_default_branch if project else "main")
         )
+        hierarchy_enabled = getattr(
+            project, "hierarchical_integration_mode", "disabled"
+        ) in {"hierarchy", "train"}
+        if hierarchy_enabled and project.integration_repository_id:
+            origin = await self.db.get_task_branch_origin_for_promotion(
+                task.id, project.integration_repository_id
+            )
+            if origin is not None and origin.get("parent_ref"):
+                default_branch = origin["parent_ref"]
         if workspace and await self.git.avalidate_checkout(workspace):
             has_remote = await self.git.ahas_remote(workspace)
         else:
             has_remote = False
-        is_final = (not task.is_plan_subtask) or await self._is_last_subtask(task)
+        is_final = hierarchy_enabled or (not task.is_plan_subtask) or await self._is_last_subtask(task)
+        integration_mode = await self._effective_integration_mode(task)
+        if hierarchy_enabled:
+            from src.models import INTEGRATION_MODE_PULL_REQUEST
+
+            integration_mode = INTEGRATION_MODE_PULL_REQUEST
         builder.add_context(
             "execution_rules",
             self._get_execution_rules(
@@ -218,7 +232,7 @@ class ContextMixin:
                 default_branch=default_branch,
                 has_remote=has_remote,
                 is_final_subtask=is_final,
-                integration_mode=await self._effective_integration_mode(task),
+                integration_mode=integration_mode,
             ),
         )
 

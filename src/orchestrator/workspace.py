@@ -7,6 +7,8 @@ import os
 from dataclasses import dataclass, field
 
 from src.git.manager import GitError, GitManager
+from src.integration.models import BranchKey, Fence
+from src.integration.ownership import BranchBusy, BranchOwnership, StaleFence
 from src.models import (
     KIND_MODE_WORKTREE,
     RepoSourceType,
@@ -173,6 +175,20 @@ class WorkspaceMixin:
         )
 
         project = await self.db.get_project(task.project_id)
+        integration_origin = None
+        integration_fence = None
+        if getattr(project, "hierarchical_integration_mode", "disabled") in {
+            "hierarchy",
+            "train",
+        }:
+            try:
+                integration_origin, integration_fence = (
+                    await self._hierarchy_origin_and_fence(task, project)
+                )
+            except (BranchBusy, StaleFence, ValueError) as exc:
+                logger.info("Task %s hierarchy workspace wait: %s", task.id, exc)
+                self._workspace_wait_reasons[task.id] = "branch_materialization_pending"
+                return None
         lock_mode = task.workspace_mode or WorkspaceMode.EXCLUSIVE
 
         # Directory-isolated mode is stubbed but not yet implemented.
@@ -252,7 +268,13 @@ class WorkspaceMixin:
             # Worktree mode replaces the whole CLONE/LINK provisioning block
             # and the branch-name computation below (worktree-execution
             # §6.1): reset_slot_for_task owns fetch, reset, clean and branch.
-            return await self._prepare_slot_workspace(task, project, primary)
+            return await self._prepare_slot_workspace(
+                task,
+                project,
+                primary,
+                integration_origin=integration_origin,
+                integration_fence=integration_fence,
+            )
 
         is_worktree = ws.source_type == RepoSourceType.WORKTREE
 
@@ -361,7 +383,9 @@ class WorkspaceMixin:
         #   steps in the chain accumulate commits on a single branch.
         #   This is what enables the "one PR for the whole plan" workflow
         #   in _complete_workspace.
-        if task.is_plan_subtask and task.parent_task_id:
+        if integration_origin is not None:
+            branch_name = task.branch_name
+        elif task.is_plan_subtask and task.parent_task_id:
             parent = await self.db.get_task(task.parent_task_id)
             branch_name = (
                 parent.branch_name
@@ -483,6 +507,29 @@ class WorkspaceMixin:
         )
 
         return workspace
+
+    async def _hierarchy_origin_and_fence(self, task: Task, project) -> tuple[dict, Fence]:
+        """Resolve the one materialized origin and current task-owner fence."""
+        repository_id = getattr(project, "integration_repository_id", None)
+        if not repository_id or task.repo_id != repository_id:
+            raise ValueError("task is not bound to the designated repository")
+        origin = await self.db.get_task_branch_origin_for_promotion(task.id, repository_id)
+        if origin is None or not origin.get("reserved") or not origin.get("materialized"):
+            raise ValueError("exact branch origin is not materialized")
+        branch = task.branch_name or ""
+        if branch != f"aq/{task.id}":
+            raise ValueError("task branch does not match its canonical origin")
+        target = BranchKey(repository_id=repository_id, branch=branch)
+        ownership = BranchOwnership(self.db)
+        owner = await ownership.get_owner(target)
+        if (
+            owner is None
+            or owner["owner_id"] != task.id
+            or owner["owner_role"] != "worker"
+            or owner["handoff_state"] != "reserved"
+        ):
+            raise BranchBusy("canonical branch is not reserved by this task")
+        return origin, Fence(target=target, owner_id=task.id, token=int(owner["fence_token"]))
 
     async def _ensure_control_files_excluded(self, workspace: str) -> bool:
         """Write and verify the managed block at Git's exact exclude path.
@@ -770,7 +817,15 @@ class WorkspaceMixin:
                 continue
             self._register_slot_bases([ws], base.workspace_path)
 
-    async def _prepare_slot_workspace(self, task: Task, project, attachment) -> str | None:
+    async def _prepare_slot_workspace(
+        self,
+        task: Task,
+        project,
+        attachment,
+        *,
+        integration_origin: dict | None = None,
+        integration_fence: Fence | None = None,
+    ) -> str | None:
         """Prepare an acquired slot worktree for *task*.  Returns its path.
 
         Worktree-execution §3.2.  Everything the legacy path did with
@@ -795,15 +850,28 @@ class WorkspaceMixin:
         if base is not None:
             self._register_slot_bases([ws], base.workspace_path)
 
-        resume_branch = await self._resume_branch_for(task)
+        resume_branch = None if integration_origin is not None else await self._resume_branch_for(task)
 
         try:
-            branch_name = await self._worktree_slots().reset_slot_for_task(
-                ws,
-                task,
-                resume_branch=resume_branch,
-                kind=attachment.kind,
-            )
+            reset_kwargs = {
+                "base_branch": integration_origin["base_sha"]
+                if integration_origin is not None
+                else None,
+                "resume_branch": resume_branch,
+                "kind": attachment.kind,
+            }
+            if integration_fence is not None:
+                async with BranchOwnership(self.db).mutation_exclusion(integration_fence):
+                    branch_name = await self._worktree_slots().reset_slot_for_task(
+                        ws, task, **reset_kwargs
+                    )
+            else:
+                # Keep the legacy call signature stable for existing slot
+                # managers and tests while the rollout flag is disabled.
+                reset_kwargs.pop("base_branch")
+                branch_name = await self._worktree_slots().reset_slot_for_task(
+                    ws, task, **reset_kwargs
+                )
         except Exception as e:
             if _is_branch_busy_error(e) and resume_branch:
                 # Two plan subtasks of the same parent resume the *same*

@@ -11,6 +11,7 @@ from typing import Any
 
 from src.commands.principal import PrincipalKind, TRUSTED_LOCAL, current_principal
 from src.git.manager import GitError
+from src.git.manager import RemoteRefState
 from src.integration.models import BranchKey, Fence
 from src.integration.ownership import BranchBusy, BranchOwnership, StaleFence
 from src.models import TaskStatus
@@ -221,6 +222,137 @@ class IntegrationCommandsMixin:
             data_dir=self.config.data_dir,
             git_manager=self.orchestrator.git,
         )
+
+    def _hierarchy_integration_service(self):
+        service = getattr(self.orchestrator, "hierarchy_integration", None)
+        if service is not None:
+            return service
+        from src.integration.hierarchy import (
+            HierarchyIntegration,
+            materialize_exact_branch,
+            verify_workspace_checkpoint,
+        )
+
+        async def resolve_head(repo, branch):
+            promotion = self._integration_promotion_service()
+            resolved = await promotion._resolve_repository(repo.id)
+            await promotion._ensure_retained_repository(resolved)
+            remote = await promotion.git.als_remote_ref(str(resolved.retained_git_dir), branch)
+            if remote.state is RemoteRefState.ERROR:
+                raise GitError(remote.error or "repository head state is unknown")
+            if remote.state is not RemoteRefState.PRESENT or remote.oid is None:
+                raise GitError(f"repository branch {branch!r} does not exist")
+            return remote.oid
+
+        async def materialize(repo, branch, base_sha):
+            promotion = self._integration_promotion_service()
+            resolved = await promotion._resolve_repository(repo.id)
+            await promotion._ensure_retained_repository(resolved)
+            async with promotion.git.arepository_transaction(
+                str(resolved.retained_git_dir)
+            ):
+                return await materialize_exact_branch(
+                    promotion.git, str(resolved.retained_git_dir), branch, base_sha
+                )
+
+        async def verify_checkpoint(task, repo, head_sha):
+            return await verify_workspace_checkpoint(
+                self.db, self.orchestrator.git, task, repo, head_sha
+            )
+
+        return HierarchyIntegration(
+            self.db,
+            default_head_resolver=resolve_head,
+            branch_materializer=materialize,
+            checkpoint_verifier=verify_checkpoint,
+        )
+
+    async def _cmd_integration_file_children(self, args: dict) -> dict:
+        from pydantic import ValidationError
+
+        from src.commands.contracts.integration import IntegrationFileChildrenArgs
+        from src.database.queries.hierarchy_queries import HierarchyError
+
+        try:
+            request = IntegrationFileChildrenArgs.model_validate(args)
+        except ValidationError as exc:
+            return _failure("invalid", f"invalid child filing: {exc}")
+        parent = await self.db.get_task(request.parent_id)
+        if parent is None:
+            return _failure("invalid", "parent task not found")
+        if not await self._integration_delivery_authorized(
+            parent.project_id, "integration_file_children"
+        ):
+            return _failure("unauthorized", "caller cannot file integration children")
+        try:
+            result = await self._hierarchy_integration_service().file_children(
+                request.parent_id, request.children, request.expected_generation
+            )
+        except HierarchyError as exc:
+            outcome = exc.code if exc.code in {"stale_parent", "invalid"} else "invalid"
+            return _failure(outcome, str(exc))
+        except GitError as exc:
+            return _failure("runtime_error", str(exc))
+        return {"success": True, **result}
+
+    async def _cmd_integration_checkpoint_parent(self, args: dict) -> dict:
+        from pydantic import ValidationError
+
+        from src.commands.contracts.integration import IntegrationCheckpointParentArgs
+        from src.database.queries.hierarchy_queries import HierarchyError
+
+        try:
+            request = IntegrationCheckpointParentArgs.model_validate(args)
+        except ValidationError as exc:
+            return _failure("dirty", f"invalid parent checkpoint: {exc}")
+        task = await self.db.get_task(request.task_id)
+        if task is None:
+            return _failure("stale", "task not found")
+        if not await self._integration_delivery_authorized(
+            task.project_id, "integration_checkpoint_parent"
+        ):
+            return _failure("unauthorized", "caller cannot checkpoint this parent")
+        try:
+            result = await self._hierarchy_integration_service().checkpoint_parent(
+                request.task_id, request.head_sha, request.generation
+            )
+        except HierarchyError as exc:
+            outcome = exc.code if exc.code in {"dirty", "stale"} else "stale"
+            return _failure(outcome, str(exc))
+        except GitError as exc:
+            return _failure("runtime_error", str(exc))
+        return {"success": True, **result}
+
+    async def _cmd_integration_mutate_hierarchy(self, args: dict) -> dict:
+        from pydantic import ValidationError
+
+        from src.commands.contracts.integration import IntegrationMutateHierarchyArgs
+        from src.database.queries.hierarchy_queries import HierarchyError
+
+        try:
+            request = IntegrationMutateHierarchyArgs.model_validate(args)
+        except ValidationError as exc:
+            return _failure("invalid", f"invalid hierarchy mutation: {exc}")
+        task = await self.db.get_task(request.task_id)
+        if task is None:
+            return _failure("invalid", "task not found")
+        if not await self._integration_delivery_authorized(
+            task.project_id, "integration_mutate_hierarchy"
+        ):
+            return _failure("unauthorized", "caller cannot mutate this hierarchy")
+        try:
+            result = await self._hierarchy_integration_service().mutate_hierarchy(
+                request.task_id, request.mutation, request.arguments
+            )
+        except HierarchyError as exc:
+            outcome = exc.code if exc.code in {
+                "sealed",
+                "delivery_target_fixed",
+                "reopen_required",
+                "invalid",
+            } else "invalid"
+            return _failure(outcome, str(exc))
+        return {"success": True, **result}
 
     async def _cmd_delivery_promote(self, args: dict) -> dict:
         from pydantic import ValidationError

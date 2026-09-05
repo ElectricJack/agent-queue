@@ -883,19 +883,75 @@ class ExecutionMixin:
             hooks_provisioned=spec.hooks_provisioned,
         )
 
+        project = await self.db.get_project(task.project_id)
+        hierarchy_enabled = getattr(
+            project, "hierarchical_integration_mode", "disabled"
+        ) in {"hierarchy", "train"}
+        integration_ownership = None
+        integration_fence = None
+        if hierarchy_enabled:
+            from src.integration.ownership import BranchOwnership
+
+            try:
+                _origin, integration_fence = await self._hierarchy_origin_and_fence(
+                    task, project
+                )
+                if ws_row is None:
+                    raise ValueError("hierarchical launch has no locked workspace row")
+                integration_ownership = BranchOwnership(self.db)
+                # The durable starting identity and its exact workspace/fence
+                # attachment become visible together, before any writer can
+                # start.  A transfer that won during earlier awaits makes this
+                # CAS fail and the process is never launched.
+                async with self.db.immediate() as conn:
+                    await self.db.create_session(launch_record, conn=conn)
+                    await integration_ownership.attach(
+                        integration_fence,
+                        session_id,
+                        ws_row.id,
+                        agent_id=action.agent_id,
+                        conn=conn,
+                    )
+            except Exception as exc:
+                await self._fail_session_launch(
+                    action, task, f"integration branch attachment refused: {exc}"
+                )
+                return
+
         async def record_failed_launch(reason):
             try:
-                await self.db.create_session(replace(
-                    launch_record, state="stopped", desired_state="stopped",
-                    ended_at=time.time(), end_reason=reason,
-                ))
+                if hierarchy_enabled:
+                    await self.db.update_session(
+                        launch_record.id,
+                        state="stopped",
+                        desired_state="stopped",
+                        ended_at=time.time(),
+                        end_reason=reason,
+                    )
+                else:
+                    await self.db.create_session(replace(
+                        launch_record, state="stopped", desired_state="stopped",
+                        ended_at=time.time(), end_reason=reason,
+                    ))
             except Exception:
                 # Recording failure must not prevent the existing resource
                 # cleanup and retry backoff from running.
                 logger.exception("Could not record failed launch for task %s", task.id)
 
         try:
-            await provider.start(spec)
+            if integration_ownership is not None and integration_fence is not None:
+                # Keep the same owner row locked from the final fence check,
+                # across bounded provider startup, through publishing RUNNING.
+                # transfer() therefore cannot pass at any await in this span.
+                async with integration_ownership.mutation_exclusion(
+                    integration_fence, state="attached"
+                ) as conn:
+                    await provider.start(spec)
+                    await self.db.update_session(
+                        session_id, conn=conn, state="running", last_activity=time.time()
+                    )
+            else:
+                await provider.start(spec)
         except SessionDiedDuringStartup as exc:
             await record_failed_launch("startup_exit")
             await self._fail_session_launch(
@@ -910,42 +966,42 @@ class ExecutionMixin:
             await self._fail_session_launch(action, task, f"session launch failed: {exc}")
             return
 
-        # The row is written *after* the session exists, so a crash between
-        # the two leaves an orphan session rather than a phantom row -- and
-        # adoption reconciles an orphan session by its env markers, which is
-        # the recoverable direction.
-        now = time.time()
-        try:
-            await self.db.create_session(
-                replace(launch_record, state="running", last_activity=now)
-            )
-        except Exception as exc:
+        # Legacy projects retain their original post-start insert. Enabled
+        # projects already moved STARTING -> RUNNING under ownership
+        # exclusion above, so a crash leaves a discoverable starting row.
+        if not hierarchy_enabled:
+            now = time.time()
+            try:
+                await self.db.create_session(
+                    replace(launch_record, state="running", last_activity=now)
+                )
+            except Exception as exc:
             # The process is already running and now has no row, so nothing
             # would ever reconcile it.  Kill what we just started before
             # handing the task back to the scheduler -- otherwise the generic
             # handler upstairs sets the task READY and releases the
             # workspace while a live agent is still writing to it.
-            logger.error("Task %s: session row insert failed", task.id, exc_info=True)
-            try:
-                await provider.stop(
-                    SessionHandle(
-                        name=spec.session_name,
-                        provider=provider.name,
-                        instance_token=instance_token,
-                    ),
-                    grace=2.0,
+                logger.error("Task %s: session row insert failed", task.id, exc_info=True)
+                try:
+                    await provider.stop(
+                        SessionHandle(
+                            name=spec.session_name,
+                            provider=provider.name,
+                            instance_token=instance_token,
+                        ),
+                        grace=2.0,
+                    )
+                except Exception:
+                    logger.error(
+                        "Task %s: could not stop the orphan session %s",
+                        task.id,
+                        spec.session_name,
+                        exc_info=True,
+                    )
+                await self._fail_session_launch(
+                    action, task, f"session started but its row could not be written: {exc}"
                 )
-            except Exception:
-                logger.error(
-                    "Task %s: could not stop the orphan session %s",
-                    task.id,
-                    spec.session_name,
-                    exc_info=True,
-                )
-            await self._fail_session_launch(
-                action, task, f"session started but its row could not be written: {exc}"
-            )
-            return
+                return
         await self.db.delete_task_meta(task.id, "manual_pause_checkpoint")
         logger.info(
             "Task %s: session %s started (%s/%s) in %s",

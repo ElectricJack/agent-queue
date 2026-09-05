@@ -816,6 +816,13 @@ class TaskQueryMixin:
             pre_blocked = bool(row[1])
 
         was_frontier = current_status == TaskStatus.READY and not pre_blocked
+        if (
+            current_status.value in self._TERMINAL_TASK_STATUSES
+            and new_status.value not in self._TERMINAL_TASK_STATUSES
+        ):
+            await self.guard_integration_mutation(task_id, "reopen", conn=conn)
+        if context == "abandoned_by_container":
+            await self.guard_integration_mutation(task_id, "disposition", conn=conn)
         stable = (
             projection_stable
             and current_status in _PROJECTION_NEUTRAL_STATUSES
@@ -1227,6 +1234,9 @@ class TaskQueryMixin:
         """The transactional body of :meth:`delete_task`, on a supplied ``conn``."""
         from src.database.queries.hierarchy_queries import HierarchyError
 
+        await self.guard_integration_mutation(
+            task_id, "delete", conn=conn, retire_pending=True
+        )
         parent = (
             await conn.execute(select(tasks.c.parent_task_id).where(tasks.c.id == task_id))
         ).scalar()
@@ -1522,16 +1532,21 @@ class TaskQueryMixin:
 
     # ---- task_labels (free-text tags — aq-surface spec `task_set`) ----
 
-    async def add_task_label(self, task_id: str, label: str) -> None:
+    async def add_task_label(self, task_id: str, label: str, *, conn=None) -> None:
         """Attach a label to a task. No-op if already present."""
-        async with self._engine.begin() as conn:
-            existing = await conn.execute(
+        async def _write(connection) -> None:
+            existing = await connection.execute(
                 select(task_labels.c.label).where(
                     and_(task_labels.c.task_id == task_id, task_labels.c.label == label)
                 )
             )
             if existing.fetchone() is None:
-                await conn.execute(insert(task_labels).values(task_id=task_id, label=label))
+                await connection.execute(insert(task_labels).values(task_id=task_id, label=label))
+        if conn is not None:
+            await _write(conn)
+            return
+        async with self._engine.begin() as owned_conn:
+            await _write(owned_conn)
 
     async def remove_task_label(self, task_id: str, label: str) -> list[str]:
         """Detach a label from a task. No-op if not present.

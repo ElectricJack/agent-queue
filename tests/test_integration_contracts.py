@@ -75,6 +75,9 @@ def test_unimplemented_integration_operations_are_not_registered():
     register_integration_contracts(registry)
     implemented = {
         "integration_transfer_owner",
+        "integration_file_children",
+        "integration_checkpoint_parent",
+        "integration_mutate_hierarchy",
         "delivery_promote",
         "delivery_receipts",
         "integration_reconcile_promotion",

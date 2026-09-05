@@ -36,6 +36,9 @@ class ArchiveQueryMixin:
 
         terminal = (TaskStatus.COMPLETED.value, TaskStatus.FAILED.value, TaskStatus.BLOCKED.value)
         async with self.immediate() as conn:
+            await self.guard_integration_mutation(
+                task_id, "archive", conn=conn, retire_pending=True
+            )
             ids = await self.subtree_ids(task_id, conn=conn)
             if not ids:
                 return False
