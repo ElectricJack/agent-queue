@@ -56,6 +56,21 @@ DESIGN_INTEGRATION_COMMANDS = frozenset(
 )
 
 
+class IntegrationScheduleDueArgs(CommandArgs):
+    project_id: str = Field(min_length=1)
+    now: float
+    trigger: Literal["periodic", "manual"]
+
+
+class IntegrationScheduleDueValue(CommandValue):
+    project_id: str | None = None
+    request_id: str | None = None
+    trigger: Literal["periodic", "manual"] | None = None
+    requested_at: float | None = None
+    request_sequence: int | None = None
+    next_due_at: float | None = None
+
+
 class IntegrationTransferOwnerArgs(CommandArgs):
     target: BranchKey
     expected_token: int
@@ -412,6 +427,36 @@ INTEGRATION_REPAIR_TIMEOUT = _repair_contract(
     IntegrationRepairTimeoutValue,
     ("expired", "not_due", "already_terminal", "stale"),
     effects=(UpdateClause(subject=EffectSubject.INTEGRATION_OPERATION),),
+)
+
+
+INTEGRATION_SCHEDULE_DUE = CommandContract(
+    execution=ExecutionContract(
+        name="integration_schedule_due",
+        args_model=IntegrationScheduleDueArgs,
+        result_model=IntegrationScheduleDueValue,
+        outcomes=tuple(
+            OutcomeSpec(
+                name=name,
+                classification=(
+                    OutcomeClass.SUCCESS
+                    if name in {"due", "not_due", "coalesced"}
+                    else OutcomeClass.FAILURE
+                ),
+            )
+            for name in ("due", "not_due", "coalesced", "disabled")
+        ),
+        capability="integration_schedule_due",
+        side_effect=SideEffectClass.COMPOSITE,
+        idempotency=IdempotencySpec(mode="natural"),
+        retry_safe=True,
+        effects=(UpdateClause(subject=EffectSubject.INTEGRATION_OPERATION),),
+        receipt_projection=tuple(IntegrationScheduleDueValue.model_fields),
+    ),
+    presentation=CommandPresentation(
+        title="Schedule integration sweep",
+        summary="Coalesce a periodic or manual trigger into one durable sweep request.",
+    ),
 )
 
 
@@ -1012,6 +1057,18 @@ async def _repair_timeout_adapter(
     )
 
 
+async def _schedule_due_adapter(
+    args: IntegrationScheduleDueArgs, ctx: CommandContext | None
+):
+    return await _hierarchy_adapter(
+        "integration_schedule_due",
+        args,
+        ctx,
+        IntegrationScheduleDueValue,
+        {"due", "not_due", "coalesced", "disabled"},
+    )
+
+
 def register_integration_contracts(registry: ContractRegistry) -> None:
     """Register contracts whose real handlers have landed.
 
@@ -1028,6 +1085,7 @@ def register_integration_contracts(registry: ContractRegistry) -> None:
             )
         )
     for contract, adapter in (
+        (INTEGRATION_SCHEDULE_DUE, _schedule_due_adapter),
         (INTEGRATION_FILE_CHILDREN, _file_children_adapter),
         (INTEGRATION_CHECKPOINT_PARENT, _checkpoint_parent_adapter),
         (INTEGRATION_MUTATE_HIERARCHY, _mutate_hierarchy_adapter),

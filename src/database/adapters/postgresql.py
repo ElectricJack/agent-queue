@@ -35,6 +35,7 @@ from src.database.queries.event_queries import EventQueryMixin
 from src.database.queries.gate_queries import GateQueriesMixin
 from src.database.queries.hierarchy_queries import HierarchyQueryMixin
 from src.database.queries.integration_state_queries import IntegrationStateQueriesMixin
+from src.database.queries.integration_schedule_queries import IntegrationScheduleQueriesMixin
 from src.database.queries.integration_delivery_queries import IntegrationDeliveryQueriesMixin
 from src.database.queries.layout_queries import LayoutQueryMixin
 from src.database.queries.merge_slot_queries import MergeSlotQueriesMixin
@@ -66,6 +67,7 @@ logger = logging.getLogger(__name__)
 
 class PostgreSQLDatabaseAdapter(
     IntegrationDeliveryQueriesMixin,
+    IntegrationScheduleQueriesMixin,
     IntegrationStateQueriesMixin,
     HierarchyQueryMixin,
     LayoutQueryMixin,

@@ -9,7 +9,11 @@ from sqlalchemy import delete, inspect, insert, select, update
 from sqlalchemy.exc import DBAPIError, IntegrityError
 
 from src.database import Database
-from src.database.tables import integration_batches, integration_promotion_intents
+from src.database.tables import (
+    integration_batches,
+    integration_promotion_intents,
+    integration_review_evidence,
+)
 from src.integration.models import BranchKey, Fence, RepairPolicy, RequiredCheckSet
 from src.models import Project, Task
 from tests.pg_dsn import ensure_worker_postgres_dsn
@@ -43,12 +47,270 @@ async def _integrity_error_in_savepoint(conn, statement) -> None:
             await conn.execute(statement)
 
 
+def _batch_values(**overrides):
+    values = {
+        "id": "batch",
+        "project_id": "p",
+        "repository_id": "repo",
+        "request_id": "request-1",
+        "trigger": "periodic",
+        "source_manifest_digest": "manifest",
+        "base_sha": "a" * 40,
+        "lifecycle": "sealing",
+        "current_revision": 0,
+        "integration_branch": "refs/heads/aq/integration/p/1",
+        "policy_snapshot": {},
+        "artifact_snapshot": {},
+        "cleanup_state": "pending",
+        "created_at": 1.0,
+        "updated_at": 1.0,
+    }
+    values.update(overrides)
+    return values
+
+
+def _review_evidence_values(**overrides):
+    values = {
+        "id": "review-1",
+        "source_task_id": "task-1",
+        "repository_id": "repo",
+        "source_base": "a" * 40,
+        "reviewed_head_sha": "b" * 40,
+        "reviewed_tree_sha": "c" * 40,
+        "reviewer_task_id": "reviewer-1",
+        "reviewer_session_attempt_id": None,
+        "review_kind": "review",
+        "generation": 0,
+        "verdict": "approved",
+        "evidence": {"approved": True},
+        "created_at": 1.0,
+    }
+    values.update(overrides)
+    return values
+
+
+async def test_batch_request_and_empty_structure_are_database_invariants(db):
+    from src.database.tables import (
+        integration_batch_members,
+        integration_repair_operations,
+        project_integration_leases,
+    )
+
+    async with db.immediate() as conn:
+        await conn.execute(
+            insert(integration_batches).values(
+                **_batch_values(
+                    id="empty",
+                    lifecycle="empty",
+                    base_sha=None,
+                    integration_branch=None,
+                )
+            )
+        )
+        await _integrity_error_in_savepoint(
+            conn,
+            insert(integration_batches).values(
+                **_batch_values(id="duplicate-request", lifecycle="failed")
+            ),
+        )
+        await _integrity_error_in_savepoint(
+            conn,
+            insert(integration_batches).values(
+                **_batch_values(
+                    id="invalid-empty",
+                    project_id="other-project",
+                    request_id="request-2",
+                    lifecycle="empty",
+                )
+            ),
+        )
+        await _integrity_error_in_savepoint(
+            conn,
+            insert(integration_batches).values(
+                **_batch_values(
+                    id="invalid-sealed",
+                    project_id="third-project",
+                    request_id="request-3",
+                    lifecycle="sealed",
+                    base_sha=None,
+                    integration_branch=None,
+                )
+            ),
+        )
+        await _integrity_error_in_savepoint(
+            conn,
+            insert(integration_batch_members).values(
+                batch_id="empty",
+                ordinal=0,
+                task_id="task-1",
+                repository_id="repo",
+                source_base_sha="a" * 40,
+                reviewed_head_sha="b" * 40,
+                reviewed_tree_sha="c" * 40,
+                review_evidence_id="review-1",
+                review_evidence={},
+            ),
+        )
+        await _integrity_error_in_savepoint(
+            conn,
+            insert(integration_repair_operations).values(
+                id="empty-repair",
+                target_kind="batch",
+                batch_id="empty",
+                episode_id="episode",
+                state="active",
+                policy_snapshot={},
+                artifact_snapshot={},
+                required_check_version="v1",
+                created_at=1.0,
+                updated_at=1.0,
+            ),
+        )
+        await _integrity_error_in_savepoint(
+            conn,
+            insert(project_integration_leases).values(
+                project_id="p",
+                repository_id="repo",
+                batch_id="empty",
+                owner_id="owner",
+                fence_token=1,
+                heartbeat_at=1.0,
+                expires_at=2.0,
+            ),
+        )
+        await conn.execute(
+            insert(integration_repair_operations).values(
+                id="preexisting-repair",
+                target_kind="batch",
+                batch_id="future-empty-repair",
+                episode_id="episode-2",
+                state="active",
+                policy_snapshot={},
+                artifact_snapshot={},
+                required_check_version="v1",
+                created_at=1.0,
+                updated_at=1.0,
+            )
+        )
+        await _integrity_error_in_savepoint(
+            conn,
+            insert(integration_batches).values(
+                **_batch_values(
+                    id="future-empty-repair",
+                    project_id="future-project-repair",
+                    request_id="request-future-repair",
+                    lifecycle="empty",
+                    base_sha=None,
+                    integration_branch=None,
+                )
+            ),
+        )
+        await conn.execute(
+            insert(project_integration_leases).values(
+                project_id="future-project-lease",
+                repository_id="repo",
+                batch_id="future-empty-lease",
+                owner_id="owner",
+                fence_token=1,
+                heartbeat_at=1.0,
+                expires_at=2.0,
+            )
+        )
+        await _integrity_error_in_savepoint(
+            conn,
+            insert(integration_batches).values(
+                **_batch_values(
+                    id="future-empty-lease",
+                    project_id="future-project-lease",
+                    request_id="request-future-lease",
+                    lifecycle="empty",
+                    base_sha=None,
+                    integration_branch=None,
+                )
+            ),
+        )
+
+
+async def test_post_sealing_batch_identity_is_frozen_and_cannot_return(db):
+    identity_edits = {
+        "project_id": "changed-project",
+        "repository_id": "changed-repo",
+        "request_id": "changed-request",
+        "trigger": "manual",
+        "source_manifest_digest": "changed-manifest",
+        "base_sha": "d" * 40,
+        "integration_branch": "refs/heads/changed",
+        "policy_snapshot": {"changed": True},
+        "artifact_snapshot": {"changed": True},
+        "created_at": 2.0,
+    }
+    async with db.immediate() as conn:
+        await conn.execute(insert(integration_batches).values(**_batch_values()))
+        await conn.execute(
+            update(integration_batches)
+            .where(integration_batches.c.id == "batch")
+            .values(lifecycle="sealed")
+        )
+        for field, value in identity_edits.items():
+            await _integrity_error_in_savepoint(
+                conn,
+                update(integration_batches)
+                .where(integration_batches.c.id == "batch")
+                .values(**{field: value}),
+            )
+        await conn.execute(
+            update(integration_batches)
+            .where(integration_batches.c.id == "batch")
+            .values(current_revision=1, updated_at=2.0)
+        )
+        await _integrity_error_in_savepoint(
+            conn,
+            update(integration_batches)
+            .where(integration_batches.c.id == "batch")
+            .values(lifecycle="sealing"),
+        )
+
+
+async def test_batch_member_requires_append_only_review_evidence(db):
+    from src.database.tables import integration_batch_members, integration_review_evidence
+
+    member = {
+        "batch_id": "batch",
+        "ordinal": 0,
+        "task_id": "task-1",
+        "repository_id": "repo",
+        "source_base_sha": "a" * 40,
+        "reviewed_head_sha": "b" * 40,
+        "reviewed_tree_sha": "c" * 40,
+        "review_evidence": {"approved": True},
+    }
+    async with db.immediate() as conn:
+        await conn.execute(insert(integration_batches).values(**_batch_values()))
+        await _integrity_error_in_savepoint(
+            conn,
+            insert(integration_batch_members).values(
+                **member, review_evidence_id="missing-review"
+            ),
+        )
+        await conn.execute(
+            insert(integration_review_evidence).values(**_review_evidence_values())
+        )
+        await conn.execute(
+            insert(integration_batch_members).values(
+                **member, review_evidence_id="review-1"
+            )
+        )
+
+
 async def test_active_batch_is_unique_per_project(db):
     values = {
         "project_id": "p",
         "repository_id": "repo",
+        "request_id": "request-b1",
         "source_manifest_digest": "manifest",
+        "base_sha": "a" * 40,
         "lifecycle": "sealed",
+        "integration_branch": "refs/heads/integration/b1",
         "current_revision": 0,
         "policy_snapshot": "{}",
         "artifact_snapshot": "{}",
@@ -59,7 +321,10 @@ async def test_active_batch_is_unique_per_project(db):
     async with db.immediate() as conn:
         await conn.execute(insert(integration_batches).values(id="b1", **values))
         await _integrity_error_in_savepoint(
-            conn, insert(integration_batches).values(id="b2", **values)
+            conn,
+            insert(integration_batches).values(
+                id="b2", **(values | {"request_id": "request-b2"})
+            ),
         )
 
 
@@ -110,8 +375,11 @@ async def test_sealed_batch_membership_is_immutable(db):
     batch = {
         "project_id": "p",
         "repository_id": "repo",
+        "request_id": "request-b1",
         "source_manifest_digest": "manifest",
+        "base_sha": "a" * 40,
         "lifecycle": "sealing",
+        "integration_branch": "refs/heads/integration/b1",
         "current_revision": 0,
         "policy_snapshot": {},
         "artifact_snapshot": {},
@@ -127,10 +395,14 @@ async def test_sealed_batch_membership_is_immutable(db):
         "source_base_sha": "a" * 40,
         "reviewed_head_sha": "b" * 40,
         "reviewed_tree_sha": "c" * 40,
+        "review_evidence_id": "review-1",
         "review_evidence": {},
     }
     async with db.immediate() as conn:
         await conn.execute(insert(integration_batches).values(id="b1", **batch))
+        await conn.execute(
+            insert(integration_review_evidence).values(**_review_evidence_values())
+        )
         await conn.execute(insert(integration_batch_members).values(**member))
         await conn.execute(
             update(integration_batches)
@@ -152,18 +424,31 @@ async def test_member_cannot_move_from_a_sealed_batch_to_a_sealing_batch(db):
     from src.database.tables import integration_batch_members
 
     batch = {
-        "project_id": "p", "repository_id": "repo", "source_manifest_digest": "manifest",
-        "lifecycle": "sealing", "current_revision": 0, "policy_snapshot": {},
+        "project_id": "p", "repository_id": "repo", "request_id": "request-b1",
+        "source_manifest_digest": "manifest", "base_sha": "a" * 40,
+        "lifecycle": "sealing", "integration_branch": "refs/heads/integration/b1",
+        "current_revision": 0, "policy_snapshot": {},
         "artifact_snapshot": {}, "cleanup_state": "pending", "created_at": 1.0, "updated_at": 1.0,
     }
     member = {
         "batch_id": "b1", "ordinal": 0, "task_id": "t1", "repository_id": "repo",
         "source_base_sha": "a" * 40, "reviewed_head_sha": "b" * 40,
-        "reviewed_tree_sha": "c" * 40, "review_evidence": {},
+        "reviewed_tree_sha": "c" * 40, "review_evidence_id": "review-1",
+        "review_evidence": {},
     }
     async with db.immediate() as conn:
         await conn.execute(insert(integration_batches).values(id="b1", **batch))
-        await conn.execute(insert(integration_batches).values(id="b2", **batch | {"project_id": "p2"}))
+        await conn.execute(insert(integration_batches).values(
+            id="b2",
+            **batch | {
+                "project_id": "p2",
+                "request_id": "request-b2",
+                "integration_branch": "refs/heads/integration/b2",
+            },
+        ))
+        await conn.execute(
+            insert(integration_review_evidence).values(**_review_evidence_values())
+        )
         await conn.execute(insert(integration_batch_members).values(**member))
         await conn.execute(update(integration_batches).where(integration_batches.c.id == "b1").values(lifecycle="sealed"))
         await _integrity_error_in_savepoint(
@@ -182,8 +467,10 @@ async def test_durable_counters_and_fences_never_decrease(db):
     )
 
     batch = {
-        "id": "b1", "project_id": "p", "repository_id": "repo", "source_manifest_digest": "manifest",
-        "lifecycle": "sealing", "current_revision": 2, "policy_snapshot": {}, "artifact_snapshot": {},
+        "id": "b1", "project_id": "p", "repository_id": "repo", "request_id": "request-b1",
+        "source_manifest_digest": "manifest", "base_sha": "a" * 40,
+        "lifecycle": "sealing", "integration_branch": "refs/heads/integration/b1",
+        "current_revision": 2, "policy_snapshot": {}, "artifact_snapshot": {},
         "cleanup_state": "pending", "created_at": 1.0, "updated_at": 1.0,
     }
     async with db.immediate() as conn:
@@ -291,13 +578,19 @@ async def test_candidate_member_results_are_ordered_and_unique_per_revision(db):
             ),
         )
         await conn.execute(insert(integration_batches).values(
-            id="b1", project_id="p", repository_id="repo", source_manifest_digest="manifest",
-            lifecycle="sealing", current_revision=0, policy_snapshot={}, artifact_snapshot={},
+            id="b1", project_id="p", repository_id="repo", request_id="request-b1",
+            source_manifest_digest="manifest", base_sha="a" * 40, lifecycle="sealing",
+            integration_branch="refs/heads/integration/b1", current_revision=0,
+            policy_snapshot={}, artifact_snapshot={},
             cleanup_state="pending", created_at=1.0, updated_at=1.0,
         ))
+        await conn.execute(
+            insert(integration_review_evidence).values(**_review_evidence_values())
+        )
         await conn.execute(insert(integration_batch_members).values(
             batch_id="b1", ordinal=0, task_id="root", repository_id="repo", source_base_sha="a" * 40,
-            reviewed_head_sha="b" * 40, reviewed_tree_sha="c" * 40, review_evidence={},
+            reviewed_head_sha="b" * 40, reviewed_tree_sha="c" * 40,
+            review_evidence_id="review-1", review_evidence={},
         ))
         await conn.execute(insert(integration_candidate_revisions).values(
             batch_id="b1", revision=0, construction_base_sha="a" * 40,
@@ -375,8 +668,10 @@ async def test_all_durable_records_round_trip(db):
     )
 
     batch = {
-        "id": "b1", "project_id": "p", "repository_id": "repo", "source_manifest_digest": "manifest",
-        "lifecycle": "sealing", "current_revision": 0, "policy_snapshot": {}, "artifact_snapshot": {},
+        "id": "b1", "project_id": "p", "repository_id": "repo", "request_id": "request-b1",
+        "source_manifest_digest": "manifest", "base_sha": "a" * 40,
+        "lifecycle": "sealing", "integration_branch": "refs/heads/integration/b1",
+        "current_revision": 0, "policy_snapshot": {}, "artifact_snapshot": {},
         "cleanup_state": "pending", "created_at": 1.0, "updated_at": 1.0,
     }
     async with db.immediate() as conn:
@@ -404,9 +699,13 @@ async def test_all_durable_records_round_trip(db):
             id="receipt", domain_key="receipt-key", repository_id="repo", target_branch="parent",
             disposition="noop", resolution_evidence={"reason": "already-delivered"}, created_at=1.0,
         ))
+        await conn.execute(
+            insert(integration_review_evidence).values(**_review_evidence_values())
+        )
         await conn.execute(insert(integration_batch_members).values(
             batch_id="b1", ordinal=0, task_id="root", repository_id="repo", source_base_sha="a" * 40,
-            reviewed_head_sha="b" * 40, reviewed_tree_sha="c" * 40, review_evidence={},
+            reviewed_head_sha="b" * 40, reviewed_tree_sha="c" * 40,
+            review_evidence_id="review-1", review_evidence={},
         ))
         await conn.execute(insert(integration_candidate_revisions).values(
             batch_id="b1", revision=0, construction_base_sha="a" * 40, next_member_ordinal=0,
@@ -511,6 +810,15 @@ async def test_postgres_migration_cycle_from_prior_revision_to_final_and_back():
             await migrate("head")
             async with engine.connect() as conn:
                 assert (await conn.execute(text("SELECT to_regclass('integration_candidate_member_results')"))).scalar_one()
+                assert (
+                    await conn.execute(
+                        text(
+                            "SELECT 1 FROM information_schema.columns "
+                            "WHERE table_name = 'integration_batches' "
+                            "AND column_name = 'request_id'"
+                        )
+                    )
+                ).scalar_one() == 1
         finally:
             await engine.dispose()
     finally:
@@ -547,6 +855,83 @@ def test_sqlite_migration_cycle_from_prior_revision_to_final_and_back(tmp_path):
         engine.dispose()
 
 
+def test_sqlite_task8a_migration_cycle_from_previous_head(tmp_path):
+    from alembic import command
+    from alembic.config import Config
+    from sqlalchemy import create_engine, inspect
+
+    engine = create_engine(f"sqlite:///{tmp_path / 'task8a-cycle.db'}")
+    config = Config("alembic.ini")
+
+    def migrate(revision: str, *, downgrade: bool = False) -> None:
+        with engine.connect() as conn:
+            config.attributes["connection"] = conn
+            (command.downgrade if downgrade else command.upgrade)(config, revision)
+            conn.commit()
+
+    try:
+        migrate("c7d8e9f0a1b2")
+        with engine.begin() as conn:
+            conn.execute(
+                integration_batches.insert().values(
+                    id="legacy-batch",
+                    project_id="legacy-project",
+                    repository_id="repo",
+                    trigger="manual",
+                    source_manifest_digest="manifest",
+                    base_sha="a" * 40,
+                    lifecycle="sealing",
+                    integration_branch="refs/heads/integration/legacy",
+                    policy_snapshot={},
+                    artifact_snapshot={},
+                    cleanup_state="pending",
+                    created_at=1.0,
+                    updated_at=1.0,
+                )
+            )
+            from src.database.tables import integration_batch_members
+
+            conn.execute(
+                integration_batch_members.insert().values(
+                    batch_id="legacy-batch",
+                    ordinal=0,
+                    task_id="legacy-task",
+                    repository_id="repo",
+                    source_base_sha="a" * 40,
+                    reviewed_head_sha="b" * 40,
+                    reviewed_tree_sha="c" * 40,
+                    review_evidence={"legacy": True},
+                )
+            )
+        migrate("head")
+        columns = {column["name"] for column in inspect(engine).get_columns("integration_batches")}
+        member_columns = {
+            column["name"]
+            for column in inspect(engine).get_columns("integration_batch_members")
+        }
+        assert "request_id" in columns
+        assert "review_evidence_id" in member_columns
+        with engine.connect() as conn:
+            migrated = conn.execute(
+                select(integration_batch_members).where(
+                    integration_batch_members.c.batch_id == "legacy-batch"
+                )
+            ).mappings().one()
+            assert migrated["review_evidence_id"] == (
+                "task8a-legacy-review:legacy-batch:0"
+            )
+
+        migrate("c7d8e9f0a1b2", downgrade=True)
+        columns = {column["name"] for column in inspect(engine).get_columns("integration_batches")}
+        assert "request_id" not in columns
+
+        migrate("head")
+        columns = {column["name"] for column in inspect(engine).get_columns("integration_batches")}
+        assert "request_id" in columns
+    finally:
+        engine.dispose()
+
+
 async def test_read_projections_and_receipts_survive_task_deletion(db):
     from src.database.tables import (
         integration_repair_operations,
@@ -558,8 +943,11 @@ async def test_read_projections_and_receipts_survive_task_deletion(db):
     batch_values = {
         "project_id": "p",
         "repository_id": "repo",
+        "request_id": "request-b1",
         "source_manifest_digest": "manifest",
+        "base_sha": "a" * 40,
         "lifecycle": "sealed",
+        "integration_branch": "refs/heads/integration/b1",
         "current_revision": 0,
         "policy_snapshot": {},
         "artifact_snapshot": {},

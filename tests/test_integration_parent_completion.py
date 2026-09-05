@@ -19,6 +19,7 @@ from src.database.tables import (
     integration_parent_verification_evidence,
     integration_parent_episodes,
     integration_parent_verifications,
+    integration_review_evidence,
     integration_repair_operations,
     integration_repair_stages,
     playbook_artifacts,
@@ -1053,14 +1054,33 @@ async def test_sealed_batch_member_protects_descendant_mutation(db):
                 id="batch",
                 project_id="p",
                 repository_id="repo",
+                request_id="request-batch",
                 source_manifest_digest="sha256:" + "d" * 64,
+                base_sha="a" * 40,
                 lifecycle="sealing",
+                integration_branch="refs/heads/integration/batch",
                 current_revision=0,
                 policy_snapshot={},
                 artifact_snapshot={},
                 cleanup_state="pending",
                 created_at=1.0,
                 updated_at=1.0,
+            )
+        )
+        await conn.execute(
+            insert(integration_review_evidence).values(
+                id="review-batch",
+                source_task_id="root",
+                repository_id="repo",
+                source_base="a" * 40,
+                reviewed_head_sha="b" * 40,
+                reviewed_tree_sha="c" * 40,
+                reviewer_task_id="root",
+                review_kind="review",
+                generation=0,
+                verdict="approved",
+                evidence={},
+                created_at=1.0,
             )
         )
         await conn.execute(
@@ -1072,6 +1092,7 @@ async def test_sealed_batch_member_protects_descendant_mutation(db):
                 source_base_sha="a" * 40,
                 reviewed_head_sha="b" * 40,
                 reviewed_tree_sha="c" * 40,
+                review_evidence_id="review-batch",
                 review_evidence={},
             )
         )

@@ -261,6 +261,38 @@ class IntegrationCommandsMixin:
             git_manager=self.orchestrator.git,
         )
 
+    def _integration_scheduler(self):
+        scheduler = getattr(self.orchestrator, "integration_scheduler", None)
+        if scheduler is not None:
+            return scheduler
+        from src.integration.scheduler import IntegrationScheduler
+
+        return IntegrationScheduler(self.db)
+
+    async def _cmd_integration_schedule_due(self, args: dict) -> dict:
+        from pydantic import ValidationError
+
+        from src.commands.contracts.integration import IntegrationScheduleDueArgs
+
+        try:
+            request = IntegrationScheduleDueArgs.model_validate(args)
+        except ValidationError as exc:
+            return _failure("runtime_error", f"invalid integration schedule trigger: {exc}")
+        project = await self.db.get_project(request.project_id)
+        if project is None:
+            return _failure("runtime_error", "integration schedule project does not exist")
+        if not await self._integration_delivery_authorized(
+            request.project_id, "integration_schedule_due"
+        ):
+            return _failure("unauthorized", "caller cannot schedule this project")
+        result = await self._integration_scheduler().mark_due(
+            request.project_id, request.now, request.trigger
+        )
+        return {
+            "success": result["outcome"] in {"due", "not_due", "coalesced"},
+            **result,
+        }
+
     def _hierarchy_integration_service(self):
         service = getattr(self.orchestrator, "hierarchy_integration", None)
         if service is not None:

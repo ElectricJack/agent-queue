@@ -180,6 +180,7 @@ def test_unimplemented_integration_operations_are_not_registered():
     registry = ContractRegistry()
     register_integration_contracts(registry)
     implemented = {
+        "integration_schedule_due",
         "integration_transfer_owner",
         "integration_file_children",
         "integration_checkpoint_parent",
@@ -199,6 +200,24 @@ def test_unimplemented_integration_operations_are_not_registered():
     }
     assert registry.names() & DESIGN_INTEGRATION_COMMANDS == implemented
     assert not (registry.names() & (DESIGN_INTEGRATION_COMMANDS - implemented))
+
+
+def test_schedule_contract_is_typed_and_retry_safe():
+    registry = ContractRegistry()
+    register_integration_contracts(registry)
+    schedule = registry.require("integration_schedule_due").contract.execution
+
+    assert {outcome.name for outcome in schedule.outcomes} == {
+        "due",
+        "not_due",
+        "coalesced",
+        "disabled",
+    }
+    assert schedule.idempotency.mode == "natural"
+    assert schedule.retry_safe is True
+    assert schedule.args_model(project_id="p", now=1.0, trigger="manual").trigger == "manual"
+    with pytest.raises(Exception):
+        schedule.args_model(project_id="p", now=1.0, trigger="caller-defined")
 
 
 def test_repair_contracts_expose_exact_typed_public_protocol():

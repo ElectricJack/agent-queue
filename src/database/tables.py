@@ -1895,6 +1895,7 @@ integration_batches = Table(
     Column("id", Text, primary_key=True),
     Column("project_id", Text, nullable=False),
     Column("repository_id", Text, nullable=False),
+    Column("request_id", Text, nullable=False),
     Column("trigger", Text, nullable=True),
     Column("source_manifest_digest", Text, nullable=False),
     Column("base_sha", Text, nullable=True),
@@ -1918,9 +1919,18 @@ integration_batches = Table(
         name="ck_integration_batches_repair_stage",
     ),
     CheckConstraint(
+        "(lifecycle = 'empty' AND base_sha IS NULL AND integration_branch IS NULL) OR "
+        "(lifecycle <> 'empty' AND base_sha IS NOT NULL AND integration_branch IS NOT NULL)",
+        name="ck_integration_batches_empty_identity",
+    ),
+    CheckConstraint(
         "lifecycle IN ('sealing', 'sealed', 'building', 'testing', 'repairing', "
-        "'human_blocked', 'promoting', 'cleanup_pending', 'promoted', 'aborted', 'failed')",
+        "'human_blocked', 'promoting', 'cleanup_pending', 'promoted', 'aborted', 'failed', "
+        "'empty')",
         name="ck_integration_batches_lifecycle",
+    ),
+    UniqueConstraint(
+        "project_id", "request_id", name="uq_integration_batches_project_request"
     ),
     Index(
         "uq_integration_batches_active_project",
@@ -1948,6 +1958,12 @@ integration_batch_members = Table(
     Column("source_base_sha", Text, nullable=False),
     Column("reviewed_head_sha", Text, nullable=False),
     Column("reviewed_tree_sha", Text, nullable=False),
+    Column(
+        "review_evidence_id",
+        Text,
+        ForeignKey("integration_review_evidence.id", ondelete="RESTRICT"),
+        nullable=False,
+    ),
     Column("review_evidence", JSON, nullable=False),
     UniqueConstraint("batch_id", "task_id", name="uq_integration_batch_members_task"),
     CheckConstraint("ordinal >= 0", name="ck_integration_batch_members_ordinal"),
