@@ -52,8 +52,9 @@ export default function AgentFlock() {
             <span className="font-mono text-[10px] text-gray-500">{agents.length + pools.length}</span>
           </span>
         </button>
-        <button type="button" data-listnav="1" aria-label="Add agent" title="Add agent"
-          onClick={() => selection.setAdding(true)}
+        <button type="button" data-listnav="1" aria-label="Create agent or pool"
+          title="Create agent or pool"
+          onClick={() => selection.setAdding("choice")}
           className="rounded p-2 text-gray-500 hover:bg-gray-800 hover:text-gray-200">
           <PlusIcon className="h-3.5 w-3.5" />
         </button>

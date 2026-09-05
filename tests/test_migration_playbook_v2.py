@@ -36,6 +36,7 @@ POSTGRES_DSN = ensure_worker_postgres_dsn()
 BASE_REVISION = "d3e7b1c9a204"
 PRE_TURN_RECEIPTS_REVISION = "c52f1a4fb6ba"
 PRE_RUN_DEDUP_SCOPE_REVISION = "d3f2c0de0005"
+PRE_V1_REMOVAL_REVISION = "e6a1b2c3d4f5"
 
 #: Every table the three revisions create, in creation order.
 V2_TABLES = (
@@ -46,6 +47,12 @@ V2_TABLES = (
     "playbook_waits",
     "playbook_pending_events",
 )
+
+V1_TABLES = {
+    "playbook_runs",
+    "playbook_cutover_events",
+    "playbook_migration_acks",
+}
 
 #: Every non-primary-key index they create, keyed by its table.
 V2_INDEXES = {
@@ -196,6 +203,31 @@ def test_upgrade_creates_every_table_and_index(tmp_path):
         for table, expected in V2_INDEXES.items():
             found = {index["name"] for index in inspector.get_indexes(table)}
             assert expected <= found, f"{table} missing {expected - found}"
+    finally:
+        engine.dispose()
+
+
+def test_v1_removal_reconciles_the_migrated_schema_with_v2_metadata(tmp_path):
+    """The V1 retirement is a migration, not merely a metadata edit."""
+    engine = _sqlite_engine(tmp_path, name="playbook-v1-removal.db", foreign_keys=True)
+    try:
+        migrate(engine, PRE_V1_REMOVAL_REVISION)
+        assert V1_TABLES <= _table_names(engine)
+
+        migrate(engine, "head")
+        inspector = _inspect(engine)
+        assert not (V1_TABLES & _table_names(engine))
+        assert not {
+            "reviewed_artifact_sha256",
+            "reviewed_by",
+            "reviewed_at",
+        } & {column["name"] for column in inspector.get_columns("playbook_activations")}
+        for table in ("task_assignment_routes", "workflows"):
+            assert any(
+                fk["referred_table"] == "playbook_v2_runs"
+                and fk["constrained_columns"] == ["playbook_run_id"]
+                for fk in inspector.get_foreign_keys(table)
+            )
     finally:
         engine.dispose()
 

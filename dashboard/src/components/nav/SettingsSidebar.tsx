@@ -4,6 +4,7 @@ import {
   UserGroupIcon,
   CpuChipIcon,
   Cog6ToothIcon,
+  FolderIcon,
 } from "@heroicons/react/24/outline";
 import { useListNav } from "../../shell/hotkeys/useListNav";
 
@@ -11,6 +12,7 @@ const links = [
   { to: "playbooks", label: "Playbooks", icon: BookOpenIcon },
   { to: "profiles", label: "Profiles", icon: UserGroupIcon },
   { to: "intelligence-classes", label: "Intelligence Classes", icon: CpuChipIcon },
+  { to: "project-roots", label: "Project roots", icon: FolderIcon },
   { to: "config", label: "Config", icon: Cog6ToothIcon },
 ];
 

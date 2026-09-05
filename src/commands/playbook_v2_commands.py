@@ -460,6 +460,24 @@ class PlaybookV2CommandsMixin:
         except OSError:
             return None
 
+    def _vault_playbook_dirs(self) -> list[Path]:
+        """Directories where playbook Markdown sources may live in the vault.
+
+        Mirrors the scope layout ``update_playbook_source`` writes to:
+        ``system/playbooks``, ``agent-types/<id>/playbooks`` and
+        ``projects/<pid>/playbooks``.
+        """
+        vault = self._v2_vault_root()
+        dirs = [vault / "system" / "playbooks"]
+        for parent in ("agent-types", "projects"):
+            root = vault / parent
+            if root.is_dir():
+                for child in sorted(root.iterdir()):
+                    playbooks = child / "playbooks"
+                    if playbooks.is_dir():
+                        dirs.append(playbooks)
+        return dirs
+
     def _v2_find_source(self, playbook_id: str) -> tuple[PlaybookSource | None, str | None]:
         matches: list[PlaybookSource] = []
         root = self._v2_vault_root()
@@ -1543,6 +1561,68 @@ class PlaybookV2CommandsMixin:
             "blockers": [],
             "pending_event_replay": replay,
         }
+
+    async def _cmd_set_playbook_enabled(self, args: dict) -> dict:
+        """Pause or resume a playbook's activation without changing its artifact.
+
+        ``enabled=false`` stops trigger events from starting new runs of the
+        active artifact; in-flight runs are not cancelled.  ``enabled=true``
+        resumes the same artifact.  Scope, artifact hash and the activating
+        principal are preserved; only ``enabled`` and the derived health change,
+        written exactly as ``playbook_activate`` writes them.
+
+        Args:
+            playbook_id: Required — the playbook whose activation to toggle.
+            enabled: Required — ``true`` to resume, ``false`` to pause.
+        """
+        if not self._v2_api_enabled():
+            return {"error": V2_API_DISABLED_ERROR}
+        if not self._v2_activation_writes_enabled():
+            return {"error": V2_WRITES_DISABLED_ERROR}
+        playbook_id = _clean_str(args, "playbook_id")
+        if not playbook_id:
+            return {"error": "playbook_id is required"}
+        if "enabled" not in args:
+            return {"error": "enabled is required"}
+        enabled = args["enabled"]
+        if not isinstance(enabled, bool):
+            return {"error": "enabled must be a boolean"}
+        if not self._v2_storage_ready("list_playbook_activations", "set_playbook_activation"):
+            return self._v2_storage_unavailable()
+        rows = [
+            dict(row)
+            for row in await self.db.list_playbook_activations(enabled_only=False)
+            if dict(row).get("playbook_id") == playbook_id
+        ]
+        if not rows:
+            return {"error": f"Playbook '{playbook_id}' not found"}
+        row = rows[0]
+        artifact_sha256 = row.get("active_artifact_sha256") or None
+        if enabled and not artifact_sha256:
+            return {
+                "error": (
+                    f"Playbook '{playbook_id}' has no active artifact to enable; "
+                    "activate one with playbook_activate"
+                )
+            }
+        if bool(row.get("enabled")) == enabled:
+            return {"success": True, "playbook_id": playbook_id, "enabled": enabled, "noop": True}
+        await self.db.set_playbook_activation(
+            playbook_id=playbook_id,
+            scope=row["scope"],
+            scope_identifier=row.get("scope_identifier") or "",
+            artifact_sha256=artifact_sha256,
+            enabled=enabled,
+            activated_by=row.get("activated_by"),
+            health="ready" if enabled else "disabled",
+            reasons="[]",
+        )
+        manager = getattr(getattr(self, "orchestrator", None), "playbook_manager", None)
+        if manager is not None:
+            from src.playbooks.routing import refresh_routing_activation_snapshot
+
+            await refresh_routing_activation_snapshot(manager, self.db)
+        return {"success": True, "playbook_id": playbook_id, "enabled": enabled, "noop": False}
 
     def _v2_replay_policy(self) -> str:
         """``manual`` or ``automatic`` — the configured activation replay policy."""

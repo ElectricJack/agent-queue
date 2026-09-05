@@ -1,6 +1,6 @@
 ---
 playbook_id: pr-merge-sweep
-artifact_sha256: sha256:711083ff17e87b279db2a4b791071bb5f14c0f022d806de15465369573c5e1a6
+artifact_sha256: sha256:90d121194684e05c91e2b00dc2273b103b07dab800f78a8ffee98c3788ac33e1
 source_sha256: sha256:fa8a07f2fad26a7386b7ce415feb51d29f550b983ea467955c1fc718206690eb
 contract_fingerprint: sha256:7d1dab70ae2d72185eace7dedc3836b1bdfeed3ce168936036372ee8e059aaf7
 questions_resolved: 2
