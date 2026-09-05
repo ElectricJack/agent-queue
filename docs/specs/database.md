@@ -1160,7 +1160,7 @@ most one current decision; the project index supports routing and audit views.
 | `provider` | TEXT | nullable | Selected provider, when specified |
 | `playbook_id` | TEXT | NOT NULL | Assignment playbook identifier |
 | `playbook_version` | INTEGER | NOT NULL | Compiled playbook version |
-| `playbook_run_id` | TEXT | NOT NULL REFERENCES playbook_runs(run_id) ON DELETE CASCADE | Source run |
+| `playbook_run_id` | TEXT | NOT NULL REFERENCES playbook_v2_runs(run_id) ON DELETE CASCADE | Source run |
 | `reason` | TEXT | NOT NULL | Decision rationale |
 | `decided_at` | REAL | NOT NULL | Unix timestamp of the decision |
 
@@ -1172,7 +1172,7 @@ Multi-agent pipelines with stage gates and agent affinity.
 |---|---|---|---|
 | `workflow_id` | TEXT | PRIMARY KEY | UUID string |
 | `playbook_id` | TEXT | NOT NULL | Playbook that defines the pipeline |
-| `playbook_run_id` | TEXT | NOT NULL REFERENCES playbook_runs(run_id) | Owning run |
+| `playbook_run_id` | TEXT | NOT NULL REFERENCES playbook_v2_runs(run_id) | Owning run |
 | `project_id` | TEXT | NOT NULL REFERENCES projects(id) | Owning project |
 | `status` | TEXT | NOT NULL DEFAULT 'running' | One of: running, completed, failed |
 | `current_stage` | TEXT | nullable | Stage the workflow is on |
@@ -1444,7 +1444,7 @@ Returns the most recent events ordered by `id DESC` (most recent first), limited
 
 ## 12. Playbook Runs (formerly Hooks)
 
-The `hooks` and `hook_runs` tables and their `Database` methods were **removed**. Event- and time-triggered automation is now expressed as playbooks — markdown DAGs compiled to JSON — and each execution is a row in `playbook_runs` (see `docs/specs/design/playbooks.md`). Queries live in `src/database/queries/playbook_queries.py`; workflow pipelines built on top of runs live in `src/database/queries/workflow_queries.py`.
+The `hooks`, `hook_runs`, and Playbook V1 persistence tables were **removed**. Event- and time-triggered automation is expressed as playbooks — markdown DAGs compiled to JSON — and each execution is a row in `playbook_v2_runs` (see `docs/specs/design/playbooks.md`). Durable query support lives under `src/database/queries/`; workflow pipelines build on those V2 runs.
 
 ---
 
