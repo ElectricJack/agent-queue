@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import time
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from typing import Any
 
 from sqlalchemy import or_, select, update
@@ -15,6 +16,70 @@ from src.database.tables import integration_outbox
 
 
 AcceptIntegrationEvent = Callable[[str, dict[str, Any], str], Awaitable[bool]]
+
+
+@dataclass(frozen=True, slots=True)
+class AcceptanceState:
+    manifest: tuple[dict[str, str], ...] | None
+    cursor: int
+
+
+async def load_acceptance_state(db: Any, event_id: str) -> AcceptanceState:
+    """Read the frozen destination manifest and its durable continuation."""
+    async with db._engine.connect() as conn:
+        row = (
+            (
+                await conn.execute(
+                    select(
+                        integration_outbox.c.destination_manifest,
+                        integration_outbox.c.acceptance_cursor,
+                    ).where(integration_outbox.c.id == event_id)
+                )
+            )
+            .mappings()
+            .one()
+        )
+    raw = row["destination_manifest"]
+    manifest = None if raw is None else tuple(dict(item) for item in raw)
+    return AcceptanceState(manifest=manifest, cursor=int(row["acceptance_cursor"]))
+
+
+async def freeze_destination_manifest(
+    db: Any, event_id: str, manifest: list[dict[str, str]]
+) -> AcceptanceState:
+    """Persist the first non-empty destination snapshot; concurrent retries reuse it."""
+    if not manifest:
+        raise ValueError("an empty integration destination manifest is not frozen")
+    async with db.immediate() as conn:
+        await conn.execute(
+            update(integration_outbox)
+            .where(
+                integration_outbox.c.id == event_id,
+                integration_outbox.c.delivered_at.is_(None),
+                integration_outbox.c.destination_manifest.is_(None),
+            )
+            .values(destination_manifest=manifest)
+        )
+    return await load_acceptance_state(db, event_id)
+
+
+async def advance_acceptance_cursor(
+    db: Any, event_id: str, *, expected: int, accepted: int
+) -> AcceptanceState:
+    """Advance only after the complete page is durable; never regress the cursor."""
+    if accepted < expected:
+        raise ValueError("integration acceptance cursor cannot regress")
+    async with db.immediate() as conn:
+        await conn.execute(
+            update(integration_outbox)
+            .where(
+                integration_outbox.c.id == event_id,
+                integration_outbox.c.delivered_at.is_(None),
+                integration_outbox.c.acceptance_cursor == expected,
+            )
+            .values(acceptance_cursor=accepted)
+        )
+    return await load_acceptance_state(db, event_id)
 
 
 async def enqueue_integration_event(

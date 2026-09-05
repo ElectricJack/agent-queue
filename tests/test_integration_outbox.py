@@ -2,15 +2,26 @@
 
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
 
 import pytest
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 
 from src.config import PlaybooksConfig
 from src.database import Database
-from src.database.tables import integration_outbox, playbook_pending_events, playbook_v2_runs
-from src.integration.outbox import IntegrationOutbox, enqueue_integration_event
+from src.database.tables import (
+    integration_outbox,
+    playbook_activations,
+    playbook_pending_events,
+    playbook_v2_runs,
+)
+from src.integration.outbox import (
+    IntegrationOutbox,
+    enqueue_integration_event,
+    freeze_destination_manifest,
+)
 from src.models import Project
 from src.playbooks.artifact_store import ArtifactStore
 from src.playbooks.definition import PlaybookDefinition
@@ -29,14 +40,25 @@ async def db(tmp_path):
     await database.close()
 
 
-def _terminal_playbook(playbook_id: str, event_type: str) -> PlaybookDefinition:
+def _terminal_playbook(
+    playbook_id: str,
+    event_type: str,
+    *,
+    scope: str = "project",
+    source_digit: str = "1",
+) -> PlaybookDefinition:
+    scope_value = (
+        {"type": "system"}
+        if scope == "system"
+        else {"type": "project", "project_id": "p"}
+    )
     return PlaybookDefinition.model_validate(
         {
             "schema_version": 2,
             "id": playbook_id,
             "version": 1,
-            "scope": {"type": "project", "project_id": "p"},
-            "source_hash": "sha256:" + "1" * 64,
+            "scope": scope_value,
+            "source_hash": "sha256:" + source_digit * 64,
             "compiled_at": "2026-09-04T00:00:00Z",
             "purpose": "routine",
             "rules": [
@@ -61,8 +83,18 @@ def _terminal_playbook(playbook_id: str, event_type: str) -> PlaybookDefinition:
     )
 
 
-async def _activate(db, compiled_root, playbook_id: str, event_type: str) -> None:
-    definition = _terminal_playbook(playbook_id, event_type)
+async def _activate(
+    db,
+    compiled_root,
+    playbook_id: str,
+    event_type: str,
+    *,
+    scope: str = "project",
+    source_digit: str = "1",
+) -> tuple[str, str]:
+    definition = _terminal_playbook(
+        playbook_id, event_type, scope=scope, source_digit=source_digit
+    )
     store = ArtifactStore(str(compiled_root))
     ref = store.put(
         definition,
@@ -81,14 +113,24 @@ async def _activate(db, compiled_root, playbook_id: str, event_type: str) -> Non
     )
     await db.set_playbook_activation(
         playbook_id=playbook_id,
-        scope="project",
-        scope_identifier="p",
+        scope=scope,
+        scope_identifier="p" if scope == "project" else "",
         artifact_sha256=ref.artifact_sha256,
         enabled=True,
         activated_by="test",
         health="ready",
         reasons="[]",
     )
+    async with db._engine.connect() as conn:
+        activation_id = (
+            await conn.execute(
+                select(playbook_activations.c.activation_id).where(
+                    playbook_activations.c.playbook_id == playbook_id,
+                    playbook_activations.c.scope == scope,
+                )
+            )
+        ).scalar_one()
+    return activation_id, ref.artifact_sha256
 
 
 def _runtime(db, compiled_root) -> V2PlaybookRuntime:
@@ -141,18 +183,39 @@ async def _accepted_activation_count(db, event_id: str) -> int:
     return len(rows)
 
 
+async def _wait_for_accepted(db, event_id: str, *, count: int = 1) -> None:
+    async with asyncio.timeout(10):
+        while await _accepted_activation_count(db, event_id) < count:
+            await asyncio.sleep(0.02)
+
+
+async def _wait_for_pending_resolution(db, event_id: str, *, count: int = 1) -> None:
+    async with asyncio.timeout(10):
+        while (
+            sum(
+                row["event_id"] == event_id and row["resolution"] == "dispatched"
+                for row in await _pending_rows(db)
+            )
+            < count
+        ):
+            await asyncio.sleep(0.02)
+
+
 async def test_committed_event_survives_dispatcher_restart(db, tmp_path):
     await _activate(db, tmp_path / "compiled", "integration-train", "integration.sealed")
     await _enqueue(db)
 
     first = _runtime(db, tmp_path / "compiled")
     await first.refresh()
+    await first.shutdown()
     del first
 
     restarted = _runtime(db, tmp_path / "compiled")
     await restarted.refresh()
     outbox = IntegrationOutbox(db, restarted.accept_integration_event)
     assert await outbox.dispatch_due(NOW) == 1
+    await _wait_for_accepted(db, "event-1")
+    await _wait_for_pending_resolution(db, "event-1")
     await restarted.shutdown()
 
     [row] = await _outbox_rows(db)
@@ -184,6 +247,8 @@ async def test_consumer_crash_after_acceptance_replays_one_activation(db, tmp_pa
     outbox = IntegrationOutbox(db, restarted.accept_integration_event)
     await outbox.dispatch_due(NOW)
     await outbox.dispatch_due(NOW)
+    await _wait_for_accepted(db, "event-1")
+    await _wait_for_pending_resolution(db, "event-1")
     await restarted.shutdown()
 
     assert await _accepted_activation_count(db, "event-1") == 1
@@ -191,9 +256,13 @@ async def test_consumer_crash_after_acceptance_replays_one_activation(db, tmp_pa
 
 async def test_runtime_restart_replays_an_accepted_but_unstarted_pending_event(db, tmp_path):
     compiled = tmp_path / "compiled"
-    await _activate(db, compiled, "integration-train", "integration.sealed")
+    activation_id, artifact_sha256 = await _activate(
+        db, compiled, "integration-train", "integration.sealed"
+    )
     await db.retain_integration_event(
         playbook_id="integration-train",
+        activation_id=activation_id,
+        artifact_sha256=artifact_sha256,
         scope="project",
         scope_identifier="p",
         event_type="integration.sealed",
@@ -209,6 +278,7 @@ async def test_runtime_restart_replays_an_accepted_but_unstarted_pending_event(d
 
     restarted = _runtime(db, compiled)
     await restarted.refresh()
+    await _wait_for_pending_resolution(db, "event-1")
     await restarted.shutdown()
 
     assert await _accepted_activation_count(db, "event-1") == 1
@@ -255,6 +325,8 @@ async def test_partial_destination_acceptance_is_completed_before_ack(db, tmp_pa
 
     db.retain_integration_event = original
     assert await outbox.dispatch_due(NOW + 1) == 1
+    await _wait_for_accepted(db, "event-1", count=2)
+    await _wait_for_pending_resolution(db, "event-1", count=2)
     await runtime.shutdown()
 
     rows = await _pending_rows(db)
@@ -265,11 +337,15 @@ async def test_partial_destination_acceptance_is_completed_before_ack(db, tmp_pa
 
 
 async def test_pending_row_stays_protected_until_every_selected_rule_has_a_run(db, tmp_path):
-    await _activate(db, tmp_path / "compiled", "integration-train", "integration.sealed")
+    activation_id, artifact_sha256 = await _activate(
+        db, tmp_path / "compiled", "integration-train", "integration.sealed"
+    )
     runtime = _runtime(db, tmp_path / "compiled")
     await runtime.refresh()
     pending_id = await db.retain_integration_event(
         playbook_id="integration-train",
+        activation_id=activation_id,
+        artifact_sha256=artifact_sha256,
         scope="project",
         scope_identifier="p",
         event_type="integration.sealed",
@@ -298,9 +374,16 @@ async def test_pending_row_stays_protected_until_every_selected_rule_has_a_run(d
     assert "no durable playbook run" in retained["last_error"]
 
 
-async def test_protected_pending_events_ignore_generic_expiry_overflow_and_discard(db):
+async def test_protected_pending_events_ignore_generic_expiry_overflow_and_discard(
+    db, tmp_path
+):
+    activation_id, artifact_sha256 = await _activate(
+        db, tmp_path / "compiled", "integration-train", "integration.sealed"
+    )
     await db.retain_integration_event(
         playbook_id="integration-train",
+        activation_id=activation_id,
+        artifact_sha256=artifact_sha256,
         scope="project",
         scope_identifier="p",
         event_type="integration.sealed",
@@ -353,7 +436,22 @@ async def test_protected_pending_events_ignore_generic_expiry_overflow_and_disca
     assert dropped["resolution"] == "discarded"
 
 
-async def test_protected_destination_identity_includes_activation_scope(db):
+async def test_protected_destination_identity_includes_activation_scope(db, tmp_path):
+    compiled = tmp_path / "compiled"
+    system_activation, system_sha = await _activate(
+        db,
+        compiled,
+        "integration-train",
+        "integration.sealed",
+        scope="system",
+    )
+    project_activation, project_sha = await _activate(
+        db,
+        compiled,
+        "integration-train",
+        "integration.sealed",
+        scope="project",
+    )
     event = {
         "event_id": "shared",
         "project_id": "p",
@@ -361,6 +459,8 @@ async def test_protected_destination_identity_includes_activation_scope(db):
     }
     system = await db.retain_integration_event(
         playbook_id="integration-train",
+        activation_id=system_activation,
+        artifact_sha256=system_sha,
         scope="system",
         scope_identifier="",
         event_type="integration.sealed",
@@ -370,6 +470,8 @@ async def test_protected_destination_identity_includes_activation_scope(db):
     )
     project = await db.retain_integration_event(
         playbook_id="integration-train",
+        activation_id=project_activation,
+        artifact_sha256=project_sha,
         scope="project",
         scope_identifier="p",
         event_type="integration.sealed",
@@ -380,6 +482,226 @@ async def test_protected_destination_identity_includes_activation_scope(db):
 
     assert system != project
     assert len(await _pending_rows(db)) == 2
+
+
+async def test_scoped_destinations_dispatch_only_their_pinned_activation(db, tmp_path):
+    compiled = tmp_path / "compiled"
+    _system_id, system_sha = await _activate(
+        db,
+        compiled,
+        "integration-train",
+        "integration.sealed",
+        scope="system",
+    )
+    _project_id, project_sha = await _activate(
+        db,
+        compiled,
+        "integration-train",
+        "integration.sealed",
+        scope="project",
+    )
+    await _enqueue(db)
+    runtime = _runtime(db, compiled)
+    await runtime.refresh()
+
+    assert await IntegrationOutbox(db, runtime.accept_integration_event).dispatch_due(NOW) == 1
+    await _wait_for_accepted(db, "event-1", count=2)
+    await _wait_for_pending_resolution(db, "event-1", count=2)
+    await runtime.shutdown()
+
+    async with db._engine.connect() as conn:
+        runs = (await conn.execute(select(playbook_v2_runs))).mappings().all()
+    assert {row["artifact_sha256"] for row in runs} == {system_sha, project_sha}
+    assert len({row["dispatch_id"] for row in runs}) == 2
+
+
+async def test_large_fanout_acceptance_resumes_in_bounded_pages(db, tmp_path):
+    compiled = tmp_path / "compiled"
+    for ordinal in range(65):
+        await _activate(
+            db,
+            compiled,
+            f"integration-train-{ordinal:02d}",
+            "integration.sealed",
+        )
+    await _enqueue(db)
+    runtime = _runtime(db, compiled)
+    await runtime.refresh()
+    runtime._schedule_integration_pending = lambda _rows: None
+    original = db.retain_integration_event
+    accepted: list[str] = []
+
+    async def record_destination(**kwargs):
+        accepted.append(kwargs["activation_id"])
+        return await original(**kwargs)
+
+    db.retain_integration_event = record_destination
+    payload = {"project_id": "p", "operation_id": "operation-1"}
+
+    assert not await runtime.accept_integration_event(
+        "integration.sealed", payload, "event-1"
+    )
+    assert len(accepted) == 32
+    assert not await runtime.accept_integration_event(
+        "integration.sealed", payload, "event-1"
+    )
+    assert len(accepted) == 64
+    assert await runtime.accept_integration_event(
+        "integration.sealed", payload, "event-1"
+    )
+    assert len(accepted) == 65
+    assert len(await _pending_rows(db)) == 65
+
+
+async def test_reactivation_does_not_replace_an_accepted_artifact(db, tmp_path):
+    compiled = tmp_path / "compiled"
+    _old_activation, old_sha = await _activate(
+        db, compiled, "integration-train", "integration.sealed", source_digit="1"
+    )
+    await _enqueue(db)
+    accepting = _runtime(db, compiled)
+    await accepting.refresh()
+    accepting._schedule_integration_pending = lambda _rows: None
+    assert await accepting.accept_integration_event(
+        "integration.sealed",
+        {"project_id": "p", "operation_id": "operation-1"},
+        "event-1",
+    )
+    await accepting.shutdown()
+
+    _new_activation, new_sha = await _activate(
+        db, compiled, "integration-train", "integration.sealed", source_digit="2"
+    )
+    assert new_sha != old_sha
+    restarted = _runtime(db, compiled)
+    await restarted.refresh()
+    await _wait_for_pending_resolution(db, "event-1")
+    await restarted.shutdown()
+
+    async with db._engine.connect() as conn:
+        runs = (await conn.execute(select(playbook_v2_runs))).mappings().all()
+    assert [row["artifact_sha256"] for row in runs] == [old_sha]
+
+
+async def test_restart_reconciler_drains_more_than_one_bounded_page(db, tmp_path):
+    compiled = tmp_path / "compiled"
+    activation_id, artifact_sha256 = await _activate(
+        db, compiled, "integration-train", "integration.sealed"
+    )
+    for ordinal in range(101):
+        event_id = f"event-{ordinal:03d}"
+        await db.retain_integration_event(
+            playbook_id="integration-train",
+            activation_id=activation_id,
+            artifact_sha256=artifact_sha256,
+            scope="project",
+            scope_identifier="p",
+            event_type="integration.sealed",
+            event={
+                "_event_type": "integration.sealed",
+                "event_id": event_id,
+                "project_id": "p",
+                "operation_id": f"operation-{ordinal:03d}",
+            },
+            event_id=event_id,
+            now=NOW + ordinal,
+        )
+
+    restarted = _runtime(db, compiled)
+    await restarted.refresh()
+    async with asyncio.timeout(10):
+        while (
+            sum(
+                row["resolution"] == "dispatched"
+                for row in await _pending_rows(db)
+            )
+            < 101
+        ):
+            await asyncio.sleep(0.02)
+    await restarted.shutdown()
+
+    assert await _accepted_activation_count(db, "event-100") == 1
+    assert sum(row["resolution"] == "dispatched" for row in await _pending_rows(db)) == 101
+
+
+async def test_artifact_retention_keeps_pending_pin(db, tmp_path):
+    compiled = tmp_path / "compiled"
+    activation_id, old_sha = await _activate(
+        db, compiled, "integration-train", "integration.sealed", source_digit="1"
+    )
+    await _enqueue(db)
+    accepting = _runtime(db, compiled)
+    await accepting.refresh()
+    accepting._integration_reconciler_task.cancel()
+    await asyncio.gather(accepting._integration_reconciler_task, return_exceptions=True)
+    accepting._integration_reconciler_task = None
+    accepting._integration_wakeup.clear()
+    accepting._schedule_integration_pending = lambda _rows: None
+    assert await accepting.accept_integration_event(
+        "integration.sealed",
+        {"project_id": "p", "operation_id": "operation-1"},
+        "event-1",
+    )
+
+    await _activate(
+        db, compiled, "integration-train", "integration.sealed", source_digit="2"
+    )
+    collected = await db.collect_playbook_artifacts(
+        NOW + 1_000_000, min_versions=0, limit=100
+    )
+
+    assert old_sha not in {sha for sha, _path in collected}
+    [pending] = await _pending_rows(db)
+    assert pending["activation_id"] == activation_id
+    assert pending["artifact_sha256"] == old_sha
+
+
+async def test_artifact_retention_keeps_unaccepted_manifest_pin(db, tmp_path):
+    compiled = tmp_path / "compiled"
+    activation_id, old_sha = await _activate(
+        db, compiled, "integration-train", "integration.sealed", source_digit="1"
+    )
+    await _enqueue(db)
+    await freeze_destination_manifest(
+        db,
+        "event-1",
+        [
+            {
+                "activation_id": activation_id,
+                "playbook_id": "integration-train",
+                "scope": "project",
+                "scope_identifier": "p",
+                "artifact_sha256": old_sha,
+            }
+        ],
+    )
+    await _activate(
+        db, compiled, "integration-train", "integration.sealed", source_digit="2"
+    )
+
+    collected = await db.collect_playbook_artifacts(
+        NOW + 1_000_000, min_versions=0, limit=100
+    )
+
+    assert old_sha not in {sha for sha, _path in collected}
+
+
+async def test_acceptance_cursor_cannot_regress(db):
+    await _enqueue(db)
+    async with db.immediate() as conn:
+        await conn.execute(
+            integration_outbox.update()
+            .where(integration_outbox.c.id == "event-1")
+            .values(acceptance_cursor=1)
+        )
+
+    with pytest.raises(IntegrityError, match="acceptance cursor cannot decrease"):
+        async with db.immediate() as conn:
+            await conn.execute(
+                integration_outbox.update()
+                .where(integration_outbox.c.id == "event-1")
+                .values(acceptance_cursor=0)
+            )
 
 
 async def test_retry_delay_is_exponential_and_bounded(db):

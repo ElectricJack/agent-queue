@@ -229,6 +229,8 @@ def _row_to_pending_event(row) -> dict[str, Any]:
     return {
         "pending_event_id": row["pending_event_id"],
         "playbook_id": row["playbook_id"],
+        "activation_id": row["activation_id"],
+        "artifact_sha256": row["artifact_sha256"],
         "scope": row["scope"],
         "scope_identifier": row["scope_identifier"],
         "event_type": row["event_type"],
@@ -1582,6 +1584,8 @@ class PlaybookRunQueryMixin:
         self,
         *,
         playbook_id: str,
+        activation_id: str,
+        artifact_sha256: str,
         scope: str,
         scope_identifier: str,
         event_type: str,
@@ -1597,15 +1601,15 @@ class PlaybookRunQueryMixin:
         expired, overflow-evicted, or manually discarded.  Only the claimed
         successful-dispatch path may resolve one.
         """
-        if not event_id:
-            raise ValueError("integration event_id is required")
-        identity = _dumps([playbook_id, scope, scope_identifier, event_id])
+        if not event_id or not activation_id or not artifact_sha256:
+            raise ValueError("integration event and destination identity are required")
+        identity = _dumps([activation_id, artifact_sha256, event_id])
         pending_event_id = uuid.uuid5(uuid.NAMESPACE_OID, f"integration|{identity}").hex
         body = dict(event)
         # The same playbook may be activated in more than one scope. The
         # existing unresolved-row uniqueness is keyed by playbook + dedup, so
         # scope belongs in the destination identity as well as the stable PK.
-        dedup_key = f"integration:{scope}:{scope_identifier}:{event_id}"
+        dedup_key = f"integration:{activation_id}:{artifact_sha256}:{event_id}"
         try:
             async with self.immediate() as conn:
                 insert_fn = pg_insert if conn.dialect.name == "postgresql" else sqlite_insert
@@ -1614,6 +1618,8 @@ class PlaybookRunQueryMixin:
                     .values(
                         pending_event_id=pending_event_id,
                         playbook_id=playbook_id,
+                        activation_id=activation_id,
+                        artifact_sha256=artifact_sha256,
                         scope=scope,
                         scope_identifier=scope_identifier,
                         event_type=event_type,
@@ -1654,6 +1660,8 @@ class PlaybookRunQueryMixin:
                 )
                 stored = (
                     row["playbook_id"],
+                    row["activation_id"],
+                    row["artifact_sha256"],
                     row["scope"],
                     row["scope_identifier"],
                     row["event_type"],
@@ -1663,6 +1671,8 @@ class PlaybookRunQueryMixin:
                 )
                 expected = (
                     playbook_id,
+                    activation_id,
+                    artifact_sha256,
                     scope,
                     scope_identifier,
                     event_type,
@@ -1860,23 +1870,37 @@ class PlaybookRunQueryMixin:
         return [by_id[event_id] for event_id in wanted if event_id in by_id]
 
     async def list_pending_integration_events(
-        self, *, playbook_ids: Collection[str], limit: int = 100
+        self,
+        *,
+        limit: int = 100,
+        exclude_ids: Collection[str] = (),
+        stale_before: float | None = None,
     ) -> list[dict[str, Any]]:
         """Return one bounded restart-reconciliation page of protected events."""
-        wanted = list(dict.fromkeys(playbook_ids))
-        if not wanted or limit <= 0:
+        if limit <= 0:
             return []
+        conditions = [
+            playbook_pending_events.c.protected.is_(True),
+            playbook_pending_events.c.resolved_at.is_(None),
+        ]
+        excluded = list(dict.fromkeys(exclude_ids))
+        if excluded:
+            conditions.append(playbook_pending_events.c.pending_event_id.not_in(excluded))
+        if stale_before is not None:
+            conditions.append(
+                or_(
+                    playbook_pending_events.c.dispatch_claim_token.is_(None),
+                    playbook_pending_events.c.dispatch_claimed_at <= stale_before,
+                )
+            )
         async with self._engine.connect() as conn:
             rows = (
                 (
                     await conn.execute(
                         select(playbook_pending_events)
-                        .where(
-                            playbook_pending_events.c.playbook_id.in_(wanted),
-                            playbook_pending_events.c.protected.is_(True),
-                            playbook_pending_events.c.resolved_at.is_(None),
-                        )
+                        .where(*conditions)
                         .order_by(
+                            playbook_pending_events.c.attempts,
                             playbook_pending_events.c.received_at,
                             playbook_pending_events.c.pending_event_id,
                         )

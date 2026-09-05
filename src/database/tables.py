@@ -1263,6 +1263,13 @@ playbook_pending_events = Table(
     metadata,
     Column("pending_event_id", Text, primary_key=True),
     Column("playbook_id", Text, nullable=False),
+    Column("activation_id", Text, nullable=True),
+    Column(
+        "artifact_sha256",
+        Text,
+        ForeignKey("playbook_artifacts.artifact_sha256", ondelete="RESTRICT"),
+        nullable=True,
+    ),
     Column("scope", Text, nullable=False, server_default="system"),
     Column("scope_identifier", Text, nullable=False, server_default=""),
     Column("event_type", Text, nullable=False),
@@ -1955,6 +1962,8 @@ integration_outbox = Table(
     Column("project_id", Text, nullable=False),
     Column("event_type", Text, nullable=False),
     Column("payload", JSON, nullable=False),
+    Column("destination_manifest", JSON, nullable=True),
+    Column("acceptance_cursor", Integer, nullable=False, server_default="0"),
     Column("available_at", Float, nullable=False),
     Column("delivered_at", Float, nullable=True),
     Column("attempts", Integer, nullable=False, server_default="0"),
@@ -1962,6 +1971,9 @@ integration_outbox = Table(
     Column("created_at", Float, nullable=False),
     UniqueConstraint("dedup_key", name="uq_integration_outbox_dedup_key"),
     CheckConstraint("attempts >= 0", name="ck_integration_outbox_attempts"),
+    CheckConstraint(
+        "acceptance_cursor >= 0", name="ck_integration_outbox_acceptance_cursor"
+    ),
     Index(
         "idx_integration_outbox_pending_available",
         "available_at",

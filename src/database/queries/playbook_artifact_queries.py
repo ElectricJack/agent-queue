@@ -15,8 +15,10 @@ from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from src.database.tables import (
+    integration_outbox,
     playbook_activations,
     playbook_artifacts,
+    playbook_pending_events,
     playbook_v2_runs,
 )
 from src.playbooks.artifact_ref import ArtifactRef
@@ -458,7 +460,7 @@ class PlaybookArtifactQueryMixin:
     ) -> list[tuple[str, str]]:
         """Delete collectable artifact rows and return their ``(sha, path)`` pairs.
 
-        §12.1's three protections, all of them explicit queries rather than
+        §12.1's protections, all of them explicit queries rather than
         foreign keys (§7.4) — the FKs are ``RESTRICT``, which would turn a
         mistake here into an ``IntegrityError`` rather than data loss, but
         relying on that would make the sweep's outcome depend on whether
@@ -466,7 +468,9 @@ class PlaybookArtifactQueryMixin:
 
         1. referenced by an activation (``active_artifact_sha256``);
         2. referenced by any retained run (``playbook_v2_runs.artifact_sha256``);
-        3. among the newest ``min_versions`` artifacts of its own playbook,
+        3. pinned by a protected pending integration destination or an
+           undelivered outbox destination manifest;
+        4. among the newest ``min_versions`` artifacts of its own playbook,
            ranked by ``version`` then ``created_at`` so a re-used version
            number cannot make the window ambiguous.
 
@@ -481,6 +485,10 @@ class PlaybookArtifactQueryMixin:
                 playbook_activations.c.active_artifact_sha256.is_not(None)
             )
             pinned_by_run = select(playbook_v2_runs.c.artifact_sha256)
+            pinned_by_pending = select(playbook_pending_events.c.artifact_sha256).where(
+                playbook_pending_events.c.resolved_at.is_(None),
+                playbook_pending_events.c.artifact_sha256.is_not(None),
+            )
             candidates = (
                 (
                     await conn.execute(
@@ -497,6 +505,9 @@ class PlaybookArtifactQueryMixin:
                             playbook_artifacts.c.artifact_sha256.not_in(
                                 pinned_by_run.scalar_subquery()
                             ),
+                            playbook_artifacts.c.artifact_sha256.not_in(
+                                pinned_by_pending.scalar_subquery()
+                            ),
                         )
                         .order_by(playbook_artifacts.c.created_at)
                         .limit(limit)
@@ -508,6 +519,23 @@ class PlaybookArtifactQueryMixin:
             if not candidates:
                 return []
             protected: set[str] = set()
+            manifests = (
+                (
+                    await conn.execute(
+                        select(integration_outbox.c.destination_manifest).where(
+                            integration_outbox.c.delivered_at.is_(None),
+                            integration_outbox.c.destination_manifest.is_not(None),
+                        )
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            for manifest in manifests:
+                for destination in manifest or ():
+                    artifact_sha256 = destination.get("artifact_sha256")
+                    if artifact_sha256:
+                        protected.add(artifact_sha256)
             for playbook_id in {row["playbook_id"] for row in candidates}:
                 newest = (
                     (

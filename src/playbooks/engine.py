@@ -476,6 +476,7 @@ class PlaybookEngine:
         *,
         playbook_ids: Collection[str] | None = None,
         dispatch_id: str | None = None,
+        artifact_sha256: str | None = None,
     ) -> DispatchResult:
         """Start one run per matching rule, across every ready activation.
 
@@ -493,6 +494,9 @@ class PlaybookEngine:
         that own admission themselves. ``dispatch_id`` lets a durable caller
         supply its own stable idempotency identity across process restarts;
         ordinary event dispatch derives the identity from the event as before.
+        ``artifact_sha256`` bypasses mutable activation lookup and dispatches
+        exactly one immutable artifact; it is reserved for callers that have
+        already durably admitted and pinned that destination.
         """
         hydrated = await self._hydrate_event(event)
         dispatch_id = dispatch_id or self._dispatch_id(hydrated)
@@ -500,7 +504,16 @@ class PlaybookEngine:
 
         refs: Sequence[ArtifactRef] = []
         pending: list[PendingEventRef] = []
-        if self.activations is not None:
+        if artifact_sha256 is not None:
+            if self.activations is None:
+                raise RuntimeError("pinned dispatch requires an artifact source")
+            by_sha = getattr(self.activations, "artifact_by_sha", None)
+            if not callable(by_sha):
+                raise RuntimeError("artifact source does not support pinned dispatch")
+            pinned = await by_sha(artifact_sha256)
+            if pinned is not None:
+                refs = [pinned]
+        elif self.activations is not None:
             refs = await self.activations.ready_activations(event_type, hydrated)
         if playbook_ids is not None:
             admitted = frozenset(playbook_ids)
