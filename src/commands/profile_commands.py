@@ -239,6 +239,15 @@ class ProfileCommandsMixin:
                     "allowed_tools": p.allowed_tools,
                     "mcp_servers": list(p.mcp_servers) if p.mcp_servers else [],
                     "has_system_prompt": bool(p.system_prompt_suffix),
+                    # Lifecycle and its sizing bounds decide whether a profile
+                    # defines a durable worker or elastic pool capacity.  Without
+                    # them here the only surface that reports lifecycle is
+                    # ``pool_status``, which enumerates active projects rather
+                    # than profiles and so cannot answer "is this profile
+                    # eligible for a pool?" before any pool exists.
+                    "lifecycle": getattr(p, "lifecycle", "task") or "task",
+                    "min_active": getattr(p, "min_active", None),
+                    "max_active": getattr(p, "max_active", None),
                 }
                 for p in profiles
             ],

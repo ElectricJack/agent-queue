@@ -92,6 +92,21 @@ because the change will then silently disappear on the next sync.
 Both commands are admin surfaces. A worker session's task-scoped token gets
 `out of scope: pool_scale`.
 
+### From the dashboard
+
+The Agents page's create control opens a fork — **Create agent** or **Create
+agent pool** — because the two are different objects: one durable global worker
+versus per-project elastic capacity. The pool form covers the second command
+only: it lists the profiles that already carry `lifecycle: pool`, takes the
+project whose pool view to open, collects `min_active` / `max_active`, and calls
+`pool_scale`. Giving a profile pool lifecycle in the first place is still
+`aq pool set-lifecycle`, and the form says so when no profile is eligible.
+
+The create-agent form deliberately cannot build a durable worker on a pool
+profile: the profile is shown but disabled, and a submit is refused, because
+such a worker becomes a pool instance the flock files under its pool entry —
+which reads as a creation that silently failed.
+
 ### The pool-only config keys
 
 These live in the (system) profile's own `## Config` block, not in
