@@ -56,11 +56,6 @@ GITHUB_DISCOVERY_COMMANDS = {
     "list_github_owners",
     "search_github_repositories",
 }
-IMPLEMENTED_COMMANDS = GITHUB_DISCOVERY_COMMANDS | {
-    "onboard_project",
-    "get_project_onboarding",
-}
-STUB_COMMANDS = SEVEN - IMPLEMENTED_COMMANDS
 FAKE_GH = Path(__file__).parent / "fixtures" / "fake_gh" / "gh"
 
 
@@ -297,7 +292,7 @@ def test_success_payload_carries_the_design_fields():
 
 
 # ---------------------------------------------------------------------------
-# CommandHandler wiring — callable, structured not_implemented
+# CommandHandler wiring — composed live implementations
 # ---------------------------------------------------------------------------
 
 VALID_ARGS = {
@@ -311,13 +306,14 @@ VALID_ARGS = {
 }
 
 
-@pytest.mark.parametrize("command", sorted(STUB_COMMANDS))
-async def test_each_command_dispatches_and_answers_not_implemented(command_handler_factory, command):
+async def test_root_commands_have_live_browse_semantics(command_handler_factory):
     handler = await command_handler_factory()
-    result = await handler.execute(command, dict(VALID_ARGS[command]))
-    assert result["success"] is False
-    assert result["error_code"] == "not_implemented"
-    assert command in result["error"]
+    roots = await handler.execute("list_project_roots", {})
+    assert roots == {"success": True, "roots": []}
+
+    browse = await handler.execute("browse_project_root", {"root_id": "development"})
+    assert browse["success"] is False
+    assert browse["error_code"] == "root_unavailable"
 
 
 @pytest.fixture
@@ -474,7 +470,7 @@ async def test_github_discovery_scrubs_credentialed_gh_stderr_from_response_and_
         assert "alice:" not in surface
 
 
-async def test_invalid_arguments_are_rejected_before_the_stub_answers(command_handler_factory):
+async def test_invalid_arguments_are_rejected_before_command_execution(command_handler_factory):
     handler = await command_handler_factory()
     result = await handler.execute(
         "onboard_project", {**COMMON, "source_mode": "github_clone"}
