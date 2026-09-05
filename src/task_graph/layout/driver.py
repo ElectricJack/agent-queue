@@ -477,21 +477,32 @@ class _IncrementalBatch:
     async def _aggregates_only(self, tid: str, reason: str) -> bool:
         """Can this mark be folded without re-laying any container?
 
-        Only in the ``all`` variant, where every task is present whatever
-        its status (``_visible``), and only for a status mark on a leaf that
-        already has a stored row: its box is unchanged, so the only stale
-        state is the ancestors' completed/active/running counters.  A
-        container's own status can flip a stub in ``active``, and a task
-        without a row still needs placing, so both fall through to the
-        ordinary path.  Measured: the ordinary path re-flows the whole
-        parent — 1.4 s for a 5,000-child root.
+        ``all``: every task is present whatever its status, so a status mark
+        on a leaf with a stored row changes no box — only the ancestors'
+        counters.
+
+        ``active``: a leaf that just FINISHED leaves the variant.  Its row is
+        deleted here and the slot is left empty rather than re-flowing the
+        parent (1.4 s for a 5,000-child root); the next ordinary pass over
+        that container — a created, moved or reopened sibling, a tidy job,
+        the reconcile sweep — closes the gap.  A REOPENED leaf needs a slot,
+        and a container's status can turn it into a stub, so both take the
+        ordinary path.
         """
-        if self.variant != "all" or not reason.startswith("status."):
+        if not reason.startswith("status."):
             return False
         task = self.snapshot[tid]
         if task.is_container:
             return False
-        return await self._db_row(tid) is not None
+        row = await self._db_row(tid)
+        if row is None:
+            return False
+        if self.variant == "all":
+            return True
+        if reason == "status.finished" and tid not in self.present:
+            self.ws.deletes.append(tid)
+            return True
+        return False
 
     # ── dirty → containers ──────────────────────────────────────────────
     async def _seed_queue(self) -> None:

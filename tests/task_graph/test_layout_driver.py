@@ -593,3 +593,27 @@ async def test_status_flip_in_all_variant_updates_aggregates_without_relaying(db
     # every publish including the aggregates-only path, so it can't be used
     # to distinguish a container relay from an ordinary row write.)
     assert not any("task_layouts.container_id = ?" in s for s in statements), statements
+
+
+async def test_finished_leaf_leaves_active_variant_without_relaying_siblings(db):
+    kids = await seed_epic(db, n=4)
+    drv = LayoutDriver(db)
+    await drv.full_layout("p1", "all")
+    await drv.full_layout("p1", "active")
+    # full_layout never consumes the dirty table; drain the "task.created"/
+    # "parent.changed" marks left behind by seed_epic's creation before
+    # taking the "before" snapshot, so only the status flip below rides in
+    # the batch under test (mirrors the D2 all-variant test above).
+    await drv.process_dirty("p1", min_age_seconds=0)
+    before = await db.load_layout_rows("p1", "active", ["e", *kids])
+
+    await db.transition_task(kids[1], TaskStatus.COMPLETED, force=True)
+    versions = await drv.process_dirty("p1", min_age_seconds=0)
+
+    assert versions["active"] == 3  # full_layout (1), the drain above (2), this fold (3)
+    after = await db.load_layout_rows("p1", "active", ["e", *kids])
+    assert kids[1] not in after
+    for k in (kids[0], kids[2], kids[3]):  # siblings did not close up
+        assert (after[k].abs_x, after[k].abs_y) == (before[k].abs_x, before[k].abs_y)
+    assert after["e"].agg_completed == 1 and after["e"].agg_active == 3
+    assert (after["e"].w, after["e"].h) == (before["e"].w, before["e"].h)
