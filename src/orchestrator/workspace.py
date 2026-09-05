@@ -8,7 +8,12 @@ from dataclasses import dataclass, field
 
 from src.git.manager import GitError, GitManager
 from src.integration.models import BranchKey, Fence
-from src.integration.ownership import BranchBusy, BranchOwnership, StaleFence
+from src.integration.ownership import (
+    BranchBusy,
+    BranchOwnership,
+    BranchOwnershipError,
+    StaleFence,
+)
 from src.models import (
     KIND_MODE_WORKTREE,
     RepoSourceType,
@@ -357,7 +362,7 @@ class WorkspaceMixin:
             logger.warning("Failed to write sentinel to %s: %s", workspace, e)
 
         from src.orchestrator.task_checkpoint import CHECKPOINT_META, restore_checkpoint
-        if await self.db.get_task_meta(task.id, CHECKPOINT_META):
+        if integration_origin is None and await self.db.get_task_meta(task.id, CHECKPOINT_META):
             try:
                 branch = await restore_checkpoint(self.db, self.git, task.id, workspace)
                 await self.db.update_task(task.id, branch_name=branch)
@@ -398,7 +403,15 @@ class WorkspaceMixin:
         # Git handoff is fail-closed. A workspace without verified managed
         # excludes or usable branch state is released instead of launched.
         try:
-            if is_worktree:
+            if integration_origin is not None and integration_fence is not None:
+                branch_name = await self._prepare_exact_origin_workspace(
+                    task,
+                    project,
+                    primary,
+                    integration_origin,
+                    integration_fence,
+                )
+            elif is_worktree:
                 # Legacy WORKTREE row: a pre-existing branch-isolated worktree
                 # from before worktree-execution retired that fallback.  New
                 # ones are never created; these are drained as their tasks
@@ -502,9 +515,10 @@ class WorkspaceMixin:
         # 2. A new task failing to write its own plan because the file already exists
         # This covers both archived plans (.claude/plans/) and primary plan files
         # (.claude/plan.md, plan.md, etc.).
-        await self._cleanup_plan_files_before_task(
-            workspace, task.id, branch_name=branch_name, default_branch=default_branch
-        )
+        if integration_origin is None:
+            await self._cleanup_plan_files_before_task(
+                workspace, task.id, branch_name=branch_name, default_branch=default_branch
+            )
 
         return workspace
 
@@ -530,6 +544,55 @@ class WorkspaceMixin:
         ):
             raise BranchBusy("canonical branch is not reserved by this task")
         return origin, Fence(target=target, owner_id=task.id, token=int(owner["fence_token"]))
+
+    async def _prepare_exact_origin_workspace(
+        self,
+        task: Task,
+        project,
+        attachment,
+        origin: dict,
+        fence: Fence,
+    ) -> str:
+        """Prepare any enabled checkout at its pinned origin under one owner fence."""
+        ws = attachment.workspace
+        workspace = ws.workspace_path
+        branch = f"aq/{task.id}"
+        base_sha = str(origin["base_sha"])
+        async with BranchOwnership(self.db).mutation_exclusion(fence):
+            if ws.is_slot:
+                return await self._worktree_slots().reset_slot_for_task(
+                    ws,
+                    task,
+                    base_branch=base_sha,
+                    resume_branch=None,
+                    kind=attachment.kind,
+                )
+
+            if ws.source_type == RepoSourceType.CLONE:
+                if not await self.git.avalidate_checkout(workspace):
+                    os.makedirs(os.path.dirname(workspace), exist_ok=True)
+                    if project.repo_url:
+                        await self.git.acreate_checkout(project.repo_url, workspace)
+            elif ws.source_type == RepoSourceType.LINK:
+                if not os.path.isdir(workspace):
+                    raise GitError(f"linked workspace path does not exist: {workspace}")
+            else:
+                raise GitError("enabled exact-origin preparation requires a clone or link")
+
+            if not await self.git.avalidate_checkout(workspace):
+                raise GitError(f"workspace is not a valid Git checkout: {workspace}")
+            await self._ensure_control_files_excluded(workspace)
+            if await self.git.ahas_uncommitted_changes(workspace):
+                await self.git.aforce_clean_workspace(workspace)
+            if await self.git.ahas_remote(workspace):
+                await self.git._arun(["fetch", "origin"], cwd=workspace)
+            await self.git._arun(["checkout", "-B", branch, base_sha], cwd=workspace)
+            actual_head = await self.git._arun(["rev-parse", "HEAD"], cwd=workspace)
+            if actual_head != base_sha:
+                raise GitError(
+                    f"exact origin checkout resolved {actual_head or 'no HEAD'}, expected {base_sha}"
+                )
+        return branch
 
     async def _ensure_control_files_excluded(self, workspace: str) -> bool:
         """Write and verify the managed block at Git's exact exclude path.
@@ -860,11 +923,10 @@ class WorkspaceMixin:
                 "resume_branch": resume_branch,
                 "kind": attachment.kind,
             }
-            if integration_fence is not None:
-                async with BranchOwnership(self.db).mutation_exclusion(integration_fence):
-                    branch_name = await self._worktree_slots().reset_slot_for_task(
-                        ws, task, **reset_kwargs
-                    )
+            if integration_fence is not None and integration_origin is not None:
+                branch_name = await self._prepare_exact_origin_workspace(
+                    task, project, attachment, integration_origin, integration_fence
+                )
             else:
                 # Keep the legacy call signature stable for existing slot
                 # managers and tests while the rollout flag is disabled.
@@ -992,9 +1054,7 @@ class WorkspaceMixin:
         current_branch = await self.git.aget_current_branch(
             workspace.workspace_path, strict=True
         )
-        if current_branch != owner.get("ref") and not (
-            workspace.is_slot and current_branch == "HEAD"
-        ):
+        if current_branch not in {owner.get("ref"), "HEAD"}:
             return False
         try:
             provider = self.session_providers.create(session.provider, self.config)
@@ -1010,23 +1070,36 @@ class WorkspaceMixin:
             logger.warning("Could not confirm integration writer %s stopped", session_id, exc_info=True)
             return False
 
-        if workspace.is_slot:
-            try:
-                from src.orchestrator.workspace_attachments import (
-                    detach_slot_for_integration_handoff,
-                )
+        try:
+            from src.orchestrator.workspace_attachments import (
+                detach_slot_for_integration_handoff,
+                detach_workspace_for_integration_handoff,
+            )
 
-                if not await detach_slot_for_integration_handoff(
+            if workspace.is_slot:
+                detached = await detach_slot_for_integration_handoff(
                     self.db,
                     self.git,
                     self._git_mutex,
                     workspace,
                     expected_branch=str(owner["ref"]),
-                ):
-                    return False
-            except Exception:
-                logger.warning("Could not detach integration slot %s", workspace.id, exc_info=True)
+                )
+            else:
+                detached = await detach_workspace_for_integration_handoff(
+                    self.git,
+                    self._git_mutex,
+                    workspace,
+                    expected_branch=str(owner["ref"]),
+                )
+            if not detached:
                 return False
+        except Exception:
+            logger.warning(
+                "Could not detach integration workspace %s",
+                workspace.id,
+                exc_info=True,
+            )
+            return False
 
         current_workspace = await self.db.get_workspace(workspace.id)
         if (
@@ -1034,15 +1107,57 @@ class WorkspaceMixin:
             or current_workspace.locked_by_task_id != session.task_id
         ):
             return False
-        await self.db.update_session(
-            session.id, state="stopped", desired_state="stopped", end_reason="integration_handoff"
-        )
+        if session.state != "stopped" or session.desired_state != "stopped":
+            await self.db.update_session(
+                session.id,
+                state="stopped",
+                desired_state="stopped",
+                end_reason="integration_handoff",
+            )
         if not await mark_integration_handoff_released(
             self.db, owner, workspace=workspace, task_id=session.task_id
         ):
             return False
         released = await self.db.get_workspace(workspace.id)
         return released is not None and released.locked_by_task_id is None
+
+    async def arelease_integration_writer_for_retry(self, task, *, reason: str) -> bool | None:
+        """Prove an enabled writer stopped, then restore its task reservation.
+
+        ``None`` means the project is unmanaged and legacy cleanup applies.
+        ``False`` means termination/detach is unknown, so the workspace lock
+        must remain held.  ``True`` means the exact attachment was atomically
+        released and the same task now owns a fresh reserved fence for retry.
+        """
+        project = await self.db.get_project(task.project_id)
+        if getattr(project, "hierarchical_integration_mode", "disabled") not in {
+            "hierarchy",
+            "train",
+        }:
+            return None
+        repository_id = getattr(project, "integration_repository_id", None)
+        if not repository_id or task.repo_id != repository_id or not task.branch_name:
+            return False
+        target = BranchKey(repository_id=repository_id, branch=task.branch_name)
+        ownership = BranchOwnership(
+            self.db, confirm_handoff=self.aconfirm_integration_owner_handoff
+        )
+        owner = await ownership.get_owner(target)
+        if owner is None or owner["owner_id"] != task.id or owner["owner_role"] != "worker":
+            return False
+        if owner["handoff_state"] == "reserved":
+            return True
+        fence = Fence(target=target, owner_id=task.id, token=int(owner["fence_token"]))
+        try:
+            await ownership.transfer(fence, task.id, "worker")
+        except BranchOwnershipError:
+            logger.warning(
+                "Task %s retains its integration workspace after %s: stop/detach unconfirmed",
+                task.id,
+                reason,
+            )
+            return False
+        return True
 
     async def _cleanup_worktree_workspace(self, ws: Workspace) -> None:
         """Remove a *legacy* git worktree and delete its workspace record.

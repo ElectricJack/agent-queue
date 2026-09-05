@@ -16,7 +16,10 @@ import time
 from sqlalchemy import Float, and_, case, cast, delete, exists, false, func, literal, select, update
 
 from src.database.queries.blocked_state import apply_label_filters
-from src.database.queries.hierarchy_queries import container_flag_exists
+from src.database.queries.hierarchy_queries import (
+    container_flag_exists,
+    materialized_origin_when_hierarchical,
+)
 from src.database.queries.session_queries import _row_to_session
 from src.database.queries.task_queries import (
     ManualPauseActive, TransitionResult, _not_manually_paused, supports_returning,
@@ -27,8 +30,6 @@ from src.database.tables import (
     task_assignment_routes,
     task_metadata,
     task_workspace_requirements,
-    task_branch_origins,
-    projects,
     tasks,
     workspaces,
 )
@@ -36,30 +37,13 @@ from src.models import AgentState, SessionRecord, Task, TaskEvent, TaskStatus, W
 
 
 def _frontier_where(project_id: str):
-    materialized_when_hierarchical = ~exists(
-        select(literal(1))
-        .select_from(projects)
-        .where(
-            projects.c.id == tasks.c.project_id,
-            projects.c.hierarchical_integration_mode.in_(("hierarchy", "train")),
-            ~exists(
-                select(literal(1)).where(
-                    task_branch_origins.c.task_id == tasks.c.id,
-                    task_branch_origins.c.repository_id
-                    == projects.c.integration_repository_id,
-                    task_branch_origins.c.retired_at.is_(None),
-                    task_branch_origins.c.materialized.is_(True),
-                )
-            ),
-        )
-    )
     return and_(
         tasks.c.project_id == project_id,
         tasks.c.status == TaskStatus.READY.value,
         tasks.c.is_blocked == 0,
         tasks.c.assigned_agent_id.is_(None),
         tasks.c.is_plan_subtask == 0,
-        materialized_when_hierarchical,
+        materialized_origin_when_hierarchical(),
         # A flagged container (spec §7) has no deliverable of its own: it is
         # released to IN_PROGRESS by the orchestrator and settles when its
         # children finish.  A worker holding it could never close it

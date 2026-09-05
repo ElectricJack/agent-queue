@@ -24,7 +24,7 @@ from src.database import Database
 from src.database.tables import task_branch_origins
 from src.git.manager import GitError
 from src.integration.models import BranchKey
-from src.integration.ownership import BranchOwnership
+from src.integration.ownership import BranchOwnership, BranchOwnershipError
 from src.models import (
     KIND_MODE_WORKTREE,
     Agent,
@@ -108,7 +108,12 @@ async def env(tmp_path):
     kind = WorkspaceKind(project_id="p", id="project-repo", mode=KIND_MODE_WORKTREE)
     attachment = SimpleNamespace(workspace=slot, kind=kind)
     yield SimpleNamespace(
-        db=db, orch=orch, slot=slot, attachment=attachment, notices=notices
+        db=db,
+        orch=orch,
+        base=base,
+        slot=slot,
+        attachment=attachment,
+        notices=notices,
     )
     await db.close()
 
@@ -259,6 +264,93 @@ async def test_hierarchy_slot_prep_uses_pinned_origin_and_never_parent_resume(en
     assert result == env.slot.workspace_path
     assert slots.calls[0][2]["base_branch"] == "b" * 40
     assert slots.calls[0][2]["resume_branch"] is None
+
+
+async def test_hierarchy_non_slot_prep_uses_exact_origin_under_owner_fence(
+    env, monkeypatch
+):
+    await env.db.create_repo(
+        RepoConfig(id="repo", project_id="p", source_type=RepoSourceType.CLONE)
+    )
+    await env.db.update_project(
+        "p",
+        hierarchical_integration_mode="hierarchy",
+        integration_repository_id="repo",
+    )
+    task = await _task(env, "child", repo_id="repo", branch_name="aq/child")
+    ownership = BranchOwnership(env.db)
+    fence = await ownership.acquire(
+        BranchKey(repository_id="repo", branch="aq/child"), task.id, "worker"
+    )
+    calls = []
+
+    class Git:
+        async def avalidate_checkout(self, _path):
+            return True
+
+        async def ahas_uncommitted_changes(self, _path):
+            return False
+
+        async def ahas_remote(self, _path):
+            return True
+
+        async def _arun(self, args, *, cwd):
+            calls.append((args, cwd))
+            return "c" * 40 if args == ["rev-parse", "HEAD"] else ""
+
+    env.orch.git = Git()
+
+    async def excluded(_path):
+        return True
+
+    monkeypatch.setattr(env.orch, "_ensure_control_files_excluded", excluded)
+    attachment = SimpleNamespace(workspace=env.base, kind=env.attachment.kind)
+    origin = {"base_sha": "c" * 40}
+
+    branch = await env.orch._prepare_exact_origin_workspace(
+        task, await env.db.get_project("p"), attachment, origin, fence
+    )
+
+    assert branch == "aq/child"
+    assert (["checkout", "-B", "aq/child", "c" * 40], env.base.workspace_path) in calls
+    assert not any("main" in args for args, _cwd in calls)
+
+
+async def test_hierarchy_non_slot_transfer_before_prep_runs_no_git(env):
+    await env.db.create_repo(
+        RepoConfig(id="repo", project_id="p", source_type=RepoSourceType.CLONE)
+    )
+    await env.db.update_project(
+        "p",
+        hierarchical_integration_mode="hierarchy",
+        integration_repository_id="repo",
+    )
+    task = await _task(env, "child", repo_id="repo", branch_name="aq/child")
+    ownership = BranchOwnership(env.db)
+    fence = await ownership.acquire(
+        BranchKey(repository_id="repo", branch="aq/child"), task.id, "worker"
+    )
+    await ownership.transfer(fence, "collector", "collector")
+    calls = []
+
+    class Git:
+        async def avalidate_checkout(self, path):
+            calls.append(path)
+            return True
+
+    env.orch.git = Git()
+    attachment = SimpleNamespace(workspace=env.base, kind=env.attachment.kind)
+
+    with pytest.raises(BranchOwnershipError):
+        await env.orch._prepare_exact_origin_workspace(
+            task,
+            await env.db.get_project("p"),
+            attachment,
+            {"base_sha": "c" * 40},
+            fence,
+        )
+
+    assert calls == []
 
 
 async def test_non_branch_git_failure_still_reports_a_git_error(env):

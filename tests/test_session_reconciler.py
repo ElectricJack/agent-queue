@@ -20,12 +20,16 @@ from src.models import (
     Agent,
     AgentState,
     Project,
+    RepoConfig,
     RepoSourceType,
     SessionRecord,
     Task,
     TaskStatus,
     Workspace,
 )
+from src.database.tables import task_branch_origins
+from src.integration.models import BranchKey, Fence
+from src.integration.ownership import BranchOwnership
 from src.sessions import SessionProviderRegistry
 from src.sessions.exit_classifier import Verdict, classify_exit
 from src.sessions.fake import FakeProvider
@@ -540,6 +544,121 @@ class TestDrainAck:
 
 
 class TestExitHandling:
+    async def test_stale_hierarchy_starting_release_is_fenced_and_transferable(
+        self, db, provider, registry, bus, config, tmp_path, monkeypatch
+    ):
+        from src.orchestrator.workspace import WorkspaceMixin
+
+        await db.create_repo(
+            RepoConfig(id="repo", project_id="p1", source_type=RepoSourceType.LINK)
+        )
+        await db.update_project(
+            "p1",
+            hierarchical_integration_mode="hierarchy",
+            integration_repository_id="repo",
+        )
+        await _task(db)
+        await db.update_task("t1", repo_id="repo", branch_name="aq/t1")
+        await _busy_agent_and_workspace(db, tmp_path)
+        row = await _session(
+            db,
+            provider,
+            started_at=NOW - 100,
+            state="starting",
+        )
+        await db.update_session(row.id, work_dir=str(tmp_path))
+        row = await db.get_session(row.id)
+        provider.script_death(row.name)
+        async with db.immediate() as conn:
+            await conn.execute(
+                task_branch_origins.insert().values(
+                    id="origin-t1",
+                    task_id="t1",
+                    repository_id="repo",
+                    parent_ref="main",
+                    base_sha="a" * 40,
+                    creation_generation=0,
+                    reserved=True,
+                    materialized=True,
+                    created_at=NOW - 200,
+                    materialized_at=NOW - 200,
+                )
+            )
+        target = BranchKey(repository_id="repo", branch="aq/t1")
+        ownership = BranchOwnership(db)
+        fence = await ownership.acquire(target, "t1", "worker")
+        await ownership.attach(fence, row.id, "ws1", agent_id="a1")
+        confirmations = []
+
+        async def confirmed_stopped(handle):
+            confirmations.append(handle.name)
+            return True
+
+        monkeypatch.setattr(provider, "confirm_stopped", confirmed_stopped)
+
+        class Git:
+            detached = False
+
+            async def aget_current_branch(self, _path, *, strict=False):
+                return "HEAD" if self.detached else "aq/t1"
+
+            async def _arun_unlocked(self, args, *, cwd):
+                if args == ["rev-parse", "--abbrev-ref", "HEAD"]:
+                    return "HEAD" if self.detached else "aq/t1"
+                if args == ["status", "--porcelain"] or args == ["fetch", "origin"]:
+                    return ""
+                if args in (
+                    ["rev-parse", "refs/heads/aq/t1"],
+                    ["rev-parse", "refs/remotes/origin/aq/t1"],
+                    ["rev-parse", "HEAD"],
+                ):
+                    return "a" * 40
+                if args == ["switch", "--detach", "a" * 40]:
+                    self.detached = True
+                    return ""
+                raise AssertionError(f"unexpected handoff git call: {args!r} in {cwd}")
+
+        class IntegrationOrchestrator(WorkspaceMixin):
+            def __init__(self):
+                self.db = db
+                self.git = Git()
+                self.session_providers = registry
+                self.config = config
+                self._git_locks = {}
+                self._running_tasks = {}
+
+            def _git_mutex(self, _path):
+                return asyncio.Lock()
+
+            async def release_session_task_resources(
+                self, task_id, *, agent_id=None, **_kwargs
+            ):
+                await self.db.release_workspaces_for_task(task_id)
+                if agent_id:
+                    await self.db.update_agent(
+                        agent_id, state=AgentState.IDLE, current_task_id=None
+                    )
+
+        orch = IntegrationOrchestrator()
+        reconciler = SessionReconciler(
+            db, config, registry, bus=bus, orchestrator=orch, epoch="epoch-new"
+        )
+        await reconciler._step_exits([row], NOW)
+
+        owner = await ownership.get_owner(target)
+        assert confirmations == [row.name]
+        assert owner["handoff_state"] == "reserved"
+        assert owner["fence_token"] == fence.token + 1
+        assert owner["confirmed_workspace_id"] == "ws1"
+        assert owner["session_id"] is None and owner["workspace_id"] is None
+        assert (await db.get_workspace("ws1")).locked_by_task_id is None
+        collector = await ownership.transfer(
+            Fence(target=target, owner_id="t1", token=owner["fence_token"]),
+            "collector",
+            "collector",
+        )
+        assert collector.owner_id == "collector"
+
     async def test_rate_limit_pauses_the_task_and_sleeps_the_session(
         self, db, provider, reconciler, bus
     ):

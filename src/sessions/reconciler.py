@@ -1460,6 +1460,15 @@ class SessionReconciler:
         if session is not None and session.lifecycle == "pool":
             await self.orchestrator._terminate_pool_session(session, reason=reason)
             return
+        release_integration = getattr(
+            self.orchestrator, "arelease_integration_writer_for_retry", None
+        )
+        if release_integration is not None:
+            released = await release_integration(task, reason=reason)
+            if released is False:
+                # Unknown termination/detach is not release evidence.  Keep
+                # the workspace locked so no successor can write concurrently.
+                return
         release = getattr(self.orchestrator, "release_session_task_resources", None)
         if release is None:
             return

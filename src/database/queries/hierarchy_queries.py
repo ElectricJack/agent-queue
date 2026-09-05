@@ -69,6 +69,27 @@ def container_flag_exists():
         )
     )
 
+
+def materialized_origin_when_hierarchical():
+    """Correlated predicate requiring an exact origin only in enabled projects."""
+    return ~exists(
+        select(literal(1))
+        .select_from(projects)
+        .where(
+            projects.c.id == tasks.c.project_id,
+            projects.c.hierarchical_integration_mode.in_(("hierarchy", "train")),
+            ~exists(
+                select(literal(1)).where(
+                    task_branch_origins.c.task_id == tasks.c.id,
+                    task_branch_origins.c.repository_id
+                    == projects.c.integration_repository_id,
+                    task_branch_origins.c.retired_at.is_(None),
+                    task_branch_origins.c.materialized.is_(True),
+                )
+            ),
+        )
+    )
+
 #: Session states that still hold their task — a container in one of these
 #: cannot be settled out from under a live worker (spec §7).
 LIVE_SESSION_STATES = ("starting", "running", "draining")
@@ -87,6 +108,38 @@ class HierarchyQueryMixin:
     """Expects ``self._engine`` plus BlockedStateMixin and TaskQueryMixin."""
 
     # -- container flag -------------------------------------------------
+
+    async def guard_hierarchy_bulk_write(self, project_id: str, *, conn) -> None:
+        """Reject legacy bulk hierarchy writers for hierarchy-enabled projects."""
+        mode = (
+            await conn.execute(
+                select(projects.c.hierarchical_integration_mode).where(
+                    projects.c.id == project_id
+                )
+            )
+        ).scalar_one_or_none()
+        if mode in {"hierarchy", "train"}:
+            raise HierarchyError(
+                "integration_required",
+                "bulk parent writes must use atomic hierarchy filing",
+            )
+
+    async def hierarchy_runnable_task_ids(self, task_ids: list[str]) -> set[str]:
+        """Return tasks whose project mode/origin permits writer assignment."""
+        if not task_ids:
+            return set()
+        async with self._engine.connect() as conn:
+            rows = (
+                await conn.execute(
+                    select(tasks.c.id).where(
+                        tasks.c.id.in_(task_ids), materialized_origin_when_hierarchical()
+                    )
+                )
+            ).scalars().all()
+        return set(rows)
+
+    async def is_hierarchy_task_runnable(self, task_id: str) -> bool:
+        return task_id in await self.hierarchy_runnable_task_ids([task_id])
 
     async def mark_container(self, task_id: str, *, conn) -> None:
         """Set ``task_metadata.container = true`` (idempotent).  Never cleared."""
@@ -586,6 +639,7 @@ class HierarchyQueryMixin:
         ).fetchone()
         if parent_row is None:
             raise HierarchyError("not_found", parent_id)
+        await self.guard_hierarchy_bulk_write(parent_row.project_id, conn=conn)
         if parent_row.status == TaskStatus.COMPLETED.value:
             raise HierarchyError("container_closed", parent_id)
 

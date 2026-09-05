@@ -131,6 +131,10 @@ class SchedulerState:
     # Number of tasks completed per project within the rolling window.
     # Projects with zero completions get priority via min_task_guarantee.
     tasks_completed_in_window: dict[str, int]
+    # Durable DB eligibility for hierarchy-enabled READY tasks.  ``None``
+    # preserves pure legacy/unit callers; production always supplies the
+    # snapshot computed from materialized origin rows.
+    hierarchy_runnable_task_ids: set[str] | None = None
     # Available (unlocked) workspaces per project.  A hard constraint:
     # the scheduler cannot assign more tasks than physical workspaces.
     # Empty dict = no workspace tracking (e.g., in tests).
@@ -298,7 +302,14 @@ class Scheduler:
         # Group ready tasks by project
         ready_by_project: dict[str, list[Task]] = {}
         for task in state.tasks:
-            if task.status == TaskStatus.READY and not task.is_blocked:
+            if (
+                task.status == TaskStatus.READY
+                and not task.is_blocked
+                and (
+                    state.hierarchy_runnable_task_ids is None
+                    or task.id in state.hierarchy_runnable_task_ids
+                )
+            ):
                 ready_by_project.setdefault(task.project_id, []).append(task)
 
         # Sort tasks within each project by priority (lower = higher priority),

@@ -60,7 +60,11 @@ async def db(tmp_path):
 
 @pytest.fixture
 def hierarchy(db):
-    return HierarchyIntegration(db, default_head_resolver=lambda _repo, _branch: BASE)
+    return HierarchyIntegration(
+        db,
+        default_head_resolver=lambda _repo, _branch: BASE,
+        checkpoint_verifier=lambda _task, _repo, head_sha: head_sha,
+    )
 
 
 async def _create(db, task_id: str, *, parent_id: str | None = None) -> None:
@@ -208,6 +212,20 @@ async def test_checkpoint_rejects_stale_generation(db, hierarchy):
     with pytest.raises(HierarchyError) as exc:
         await hierarchy.checkpoint_parent("parent", NEXT, 0)
     assert exc.value.code == "stale"
+
+
+async def test_checkpoint_without_verifier_fails_closed(db):
+    await _create(db, "parent")
+    hierarchy = HierarchyIntegration(
+        db, default_head_resolver=lambda _repo, _branch: BASE
+    )
+    await hierarchy.file_children("parent", [{"title": "child"}], 0)
+
+    with pytest.raises(HierarchyError) as exc:
+        await hierarchy.checkpoint_parent("parent", NEXT, 1)
+
+    assert exc.value.code == "dirty"
+    assert "verifier" in exc.value.detail
 
 
 async def test_ordinary_create_routes_all_child_writes_through_atomic_origin_writer(

@@ -74,12 +74,9 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-import sqlalchemy.exc
-
 from src.database.queries.hierarchy_queries import HierarchyError
 from src.config import AppConfig, ConfigWatcher
 from src.llm_logger import LLMLogger
-from src.logging_config import CorrelationContext
 from src.database import create_database
 from src.notifications.builder import build_task_detail
 from src.notifications.events import (
@@ -100,7 +97,6 @@ from src.models import (
     Task,
     TaskStatus,
 )
-from src.review_keys import flag_review_task_event
 from src.scheduler import AssignAction, Scheduler, SchedulerState, idle_workers
 from src.tokens.budget import BudgetManager
 from src.vault_manager import VaultManager
@@ -2864,6 +2860,9 @@ class Orchestrator(
         # Route freshness is resolved before agent supply. This prevents an
         # unspecified task from creating a worker from a profile default.
         task_snapshot = await self.db.list_active_tasks()
+        hierarchy_runnable_task_ids = await self.db.hierarchy_runnable_task_ids(
+            [task.id for task in task_snapshot if task.status == TaskStatus.READY]
+        )
         # A flagged container (spec §7) is settle-only work and never
         # dispatchable.  Promotion releases the ones it promotes; this catches
         # a container that was already READY when it gained its first child
@@ -2887,6 +2886,7 @@ class Orchestrator(
             task for task in tasks
             if task.status == TaskStatus.READY
             and not task.is_blocked
+            and task.id in hierarchy_runnable_task_ids
             and task.id in assignment_routes
         ]
         rep = await self._agent_reconciler.reconcile(
@@ -3018,6 +3018,7 @@ class Orchestrator(
             project_token_usage=project_usage,
             project_active_agent_counts=active_counts,
             tasks_completed_in_window={},
+            hierarchy_runnable_task_ids=hierarchy_runnable_task_ids,
             project_available_workspaces=workspace_counts,
             workspace_locks=workspace_locks,
             global_budget=self.config.global_token_budget_daily,

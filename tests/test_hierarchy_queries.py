@@ -20,6 +20,7 @@ from src.models import (
     AgentState,
     DepType,
     Project,
+    RepoConfig,
     RepoSourceType,
     SessionRecord,
     Task,
@@ -535,6 +536,25 @@ class TestSetParentBulk:
             assert ("p", DepType.PARENT_CHILD.value) in await db.get_typed_dependencies(k)
         async with db._engine.begin() as conn:
             assert await db.is_container("p", conn=conn)
+
+    async def test_enabled_project_rejects_bulk_parent_writer(self, db):
+        await db.create_repo(
+            RepoConfig(id="repo", project_id=PROJECT_ID, source_type=RepoSourceType.LINK)
+        )
+        await db.update_project(
+            PROJECT_ID,
+            hierarchical_integration_mode="hierarchy",
+            integration_repository_id="repo",
+        )
+        await mktask(db, "p", status=TaskStatus.IN_PROGRESS)
+        await mktask(db, "p.1")
+
+        async with db._engine.begin() as conn:
+            with pytest.raises(HierarchyError) as exc:
+                await db.set_parent_bulk(["p.1"], "p", conn=conn)
+
+        assert exc.value.code == "integration_required"
+        assert (await db.get_task("p.1")).parent_task_id is None
 
     async def test_empty_batch_is_a_no_op(self, db):
         await mktask(db, "p", status=TaskStatus.IN_PROGRESS)

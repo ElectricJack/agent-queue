@@ -159,10 +159,30 @@ async def detach_slot_for_integration_handoff(
     if base is None or base.project_id != workspace.project_id:
         return False
 
+    return await detach_workspace_for_integration_handoff(
+        git,
+        git_mutex,
+        workspace,
+        mutex_path=base.workspace_path,
+        expected_branch=expected_branch,
+    )
+
+
+async def detach_workspace_for_integration_handoff(
+    git,
+    git_mutex: Callable,
+    workspace,
+    *,
+    mutex_path: str | None = None,
+    expected_branch: str,
+) -> bool:
+    """Prove and detach an exact pushed checkout before releasing its lock."""
+
     checkout = workspace.workspace_path
+    mutex_path = mutex_path or checkout
     branch_ref = f"refs/heads/{expected_branch}"
     remote_ref = f"refs/remotes/origin/{expected_branch}"
-    async with git_mutex(base.workspace_path):
+    async with git_mutex(mutex_path):
         current = await git._arun_unlocked(
             ["rev-parse", "--abbrev-ref", "HEAD"], cwd=checkout
         )
@@ -172,7 +192,7 @@ async def detach_slot_for_integration_handoff(
         if status:
             return False
 
-        await git._arun_unlocked(["fetch", "origin"], cwd=base.workspace_path)
+        await git._arun_unlocked(["fetch", "origin"], cwd=mutex_path)
         local_tip = await git._arun_unlocked(["rev-parse", branch_ref], cwd=checkout)
         remote_tip = await git._arun_unlocked(["rev-parse", remote_ref], cwd=checkout)
         head = await git._arun_unlocked(["rev-parse", "HEAD"], cwd=checkout)

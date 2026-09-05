@@ -339,6 +339,17 @@ class ExecutionMixin:
             )
             return
 
+        # Re-read the durable origin fence at the last boundary before the
+        # atomic assignment.  The scheduler snapshot may be stale, and an
+        # enabled task must never reach ASSIGNED/IN_PROGRESS while its exact
+        # origin is pending or absent.
+        if not await self.db.is_hierarchy_task_runnable(action.task_id):
+            logger.info(
+                "Task %s is not runnable until its hierarchy origin is materialized",
+                action.task_id,
+            )
+            return
+
         # Assign
         if await self.db.assign_task_to_agent(action.task_id, action.agent_id) is False:
             logger.info("Assignment lost availability: task=%s agent=%s", action.task_id, action.agent_id)
@@ -1030,6 +1041,9 @@ class ExecutionMixin:
         """Pause the task with a backoff after a failed session launch."""
         backoff = 60
         logger.error("Task %s: session launch failed -- %s", task.id, reason)
+        integration_released = await self.arelease_integration_writer_for_retry(
+            task, reason="session_launch_failed"
+        )
         await self.db.transition_task(
             action.task_id,
             TaskStatus.PAUSED,
@@ -1037,8 +1051,11 @@ class ExecutionMixin:
             resume_after=time.time() + backoff,
             assigned_agent_id=None,
         )
-        await self.db.update_agent(action.agent_id, state=AgentState.IDLE, current_task_id=None)
-        await self._release_workspaces_for_task(action.task_id)
+        if integration_released is not False:
+            await self.db.update_agent(
+                action.agent_id, state=AgentState.IDLE, current_task_id=None
+            )
+            await self._release_workspaces_for_task(action.task_id)
         detail = f"\nStartup output: `{stderr_path}`" if stderr_path else ""
         await self._emit_text_notify(
             f"**Session launch failed:** task `{task.id}` -- {reason}. "

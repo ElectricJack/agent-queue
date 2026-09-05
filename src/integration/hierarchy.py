@@ -369,15 +369,16 @@ class HierarchyIntegration:
     async def checkpoint_parent(self, task_id: str, head_sha: str, generation: int) -> dict:
         if not _OID.fullmatch(head_sha):
             raise HierarchyError("dirty", "head_sha must be a lowercase 40-character Git OID")
-        if self.checkpoint_verifier is not None:
-            async with self.db._engine.connect() as read_conn:
-                task = await self._task_row(read_conn, task_id)
-                _project, repo = await self._enabled_route(read_conn, task)
-            verified = self.checkpoint_verifier(task, repo, head_sha)
-            if inspect.isawaitable(verified):
-                verified = await verified
-            if verified != head_sha:
-                raise HierarchyError("dirty", "checkpoint verifier returned another head")
+        if self.checkpoint_verifier is None:
+            raise HierarchyError("dirty", "workspace checkpoint verifier is unavailable")
+        async with self.db._engine.connect() as read_conn:
+            task = await self._task_row(read_conn, task_id)
+            _project, repo = await self._enabled_route(read_conn, task)
+        verified = self.checkpoint_verifier(task, repo, head_sha)
+        if inspect.isawaitable(verified):
+            verified = await verified
+        if verified != head_sha:
+            raise HierarchyError("dirty", "checkpoint verifier returned another head")
         async with self.db.immediate() as conn:
             task = await self._task_row(conn, task_id)
             project, repo = await self._enabled_route(conn, task)

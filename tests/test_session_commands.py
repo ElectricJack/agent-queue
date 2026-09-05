@@ -9,6 +9,7 @@ See docs/specs/implementation/session-runtime.md §3.8, §8.
 
 from __future__ import annotations
 
+import asyncio
 import time
 from types import SimpleNamespace
 
@@ -49,6 +50,36 @@ class _Bus:
 
     def types(self):
         return [t for t, _ in self.events]
+
+
+def _handoff_git():
+    detached = False
+    head = "a" * 40
+
+    async def current_branch(_path, *, strict=False):
+        return "HEAD" if detached else "aq/t1"
+
+    async def run(args, *, cwd):
+        nonlocal detached
+        if args == ["rev-parse", "--abbrev-ref", "HEAD"]:
+            return "HEAD" if detached else "aq/t1"
+        if args == ["status", "--porcelain"] or args == ["fetch", "origin"]:
+            return ""
+        if args in (
+            ["rev-parse", "refs/heads/aq/t1"],
+            ["rev-parse", "refs/remotes/origin/aq/t1"],
+            ["rev-parse", "HEAD"],
+        ):
+            return head
+        if args == ["switch", "--detach", head]:
+            detached = True
+            return ""
+        raise AssertionError(f"unexpected handoff git call: {args!r} in {cwd}")
+
+    return SimpleNamespace(
+        aget_current_branch=current_branch,
+        _arun_unlocked=run,
+    )
 
 
 class _StubAssignmentRouting:
@@ -900,7 +931,7 @@ class TestEndToEndOnFakeProvider:
             )
         return str(wd)
 
-    async def _enable_hierarchy_launch(self, db, tmp_path):
+    async def _enable_hierarchy_launch(self, db, tmp_path, *, materialized=True):
         await db.create_repo(
             RepoConfig(
                 id="repo",
@@ -925,9 +956,9 @@ class TestEndToEndOnFakeProvider:
                     base_sha="a" * 40,
                     creation_generation=0,
                     reserved=True,
-                    materialized=True,
+                    materialized=materialized,
                     created_at=time.time(),
-                    materialized_at=time.time(),
+                    materialized_at=time.time() if materialized else None,
                 )
             )
         ownership = BranchOwnership(db)
@@ -1545,6 +1576,25 @@ class TestEndToEndOnFakeProvider:
         assert owner["workspace_id"] == "ws1"
         assert (await db.get_session_for_task("t1")).state == "running"
 
+    async def test_hierarchy_pending_origin_never_reaches_assignment_or_started(
+        self, db, real_orch, provider, tmp_path, monkeypatch
+    ):
+        await self._setup(db, tmp_path, ready=True)
+        await self._enable_hierarchy_launch(db, tmp_path, materialized=False)
+
+        async def must_not_prepare(*_args, **_kwargs):
+            raise AssertionError("pending origin reached workspace preparation")
+
+        monkeypatch.setattr(real_orch, "_prepare_workspace", must_not_prepare)
+        await real_orch._execute_task(AssignAction("a1", "t1", "p1"))
+
+        task = await db.get_task("t1")
+        assert task.status is TaskStatus.READY
+        assert task.assigned_agent_id is None
+        assert (await db.get_agent("a1")).state is AgentState.IDLE
+        assert provider.starts == []
+        assert "task.started" not in real_orch.bus.types()
+
     async def test_hierarchy_transfer_winning_before_launch_prevents_provider_start(
         self, db, real_orch, provider, tmp_path
     ):
@@ -1638,12 +1688,19 @@ class TestEndToEndOnFakeProvider:
         assert (await db.get_session_for_task("t1")).state == "running"
         assert (await db.get_workspace("ws1")).locked_by_task_id == "t1"
 
-    async def test_hierarchy_failed_start_retains_stopped_session_binding(
-        self, db, real_orch, provider, tmp_path
+    async def test_hierarchy_failed_start_releases_with_fence_proof_for_retry(
+        self, db, real_orch, provider, tmp_path, monkeypatch
     ):
         wd = await self._setup(db, tmp_path)
-        ownership, _fence = await self._enable_hierarchy_launch(db, tmp_path)
+        ownership, fence = await self._enable_hierarchy_launch(db, tmp_path)
         provider.script_startup_death("s-t1")
+
+        async def confirmed_stopped(_handle):
+            return True
+
+        monkeypatch.setattr(provider, "confirm_stopped", confirmed_stopped)
+        real_orch.git = _handoff_git()
+        real_orch._git_mutex = lambda _path: asyncio.Lock()
         task = await db.get_task("t1")
 
         await real_orch._launch_session_for_task(
@@ -1659,8 +1716,48 @@ class TestEndToEndOnFakeProvider:
         )
         assert session.state == "stopped"
         assert session.end_reason == "startup_exit"
-        assert owner["session_id"] == session.id
-        assert owner["workspace_id"] == "ws1"
+        assert owner["handoff_state"] == "reserved"
+        assert owner["fence_token"] == fence.token + 1
+        assert owner["session_id"] is None
+        assert owner["workspace_id"] is None
+        assert owner["confirmed_workspace_id"] == "ws1"
+        assert (await db.get_workspace("ws1")).locked_by_task_id is None
+        reacquired = await ownership.acquire(
+            BranchKey(repository_id="repo", branch="aq/t1"), "t1", "worker"
+        )
+        assert reacquired.token == fence.token + 1
+
+    async def test_hierarchy_failed_start_unknown_stop_retains_lock_until_transfer_retry(
+        self, db, real_orch, provider, tmp_path, monkeypatch
+    ):
+        wd = await self._setup(db, tmp_path)
+        _ownership, fence = await self._enable_hierarchy_launch(db, tmp_path)
+        provider.script_startup_death("s-t1")
+
+        real_orch.git = _handoff_git()
+        real_orch._git_mutex = lambda _path: asyncio.Lock()
+        task = await db.get_task("t1")
+        await real_orch._launch_session_for_task(
+            AssignAction("a1", "t1", "p1"),
+            task,
+            await db.get_profile("claude-opus"),
+            wd,
+        )
+
+        target = BranchKey(repository_id="repo", branch="aq/t1")
+        unresolved = await BranchOwnership(db).get_owner(target)
+        assert unresolved["handoff_state"] == "handoff_pending"
+        assert (await db.get_workspace("ws1")).locked_by_task_id == "t1"
+
+        async def confirmed_stopped(_handle):
+            return True
+
+        monkeypatch.setattr(provider, "confirm_stopped", confirmed_stopped)
+        recovered = await BranchOwnership(
+            db, confirm_handoff=real_orch.aconfirm_integration_owner_handoff
+        ).transfer(fence, "collector", "collector")
+        assert recovered.owner_id == "collector"
+        assert (await db.get_workspace("ws1")).locked_by_task_id is None
 
     async def test_hierarchy_crash_after_process_launch_leaves_starting_identity(
         self, db, real_orch, provider, tmp_path, monkeypatch

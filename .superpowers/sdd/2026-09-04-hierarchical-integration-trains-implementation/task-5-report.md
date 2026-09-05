@@ -147,11 +147,70 @@ the earlier pre-merge planning base `0f4f0270`).
 
 ## Review concerns
 
-- The low-level service can be constructed without a workspace checkpoint verifier for
-  isolated unit use; the production command handler always injects the strict verifier.
-- A failed enabled provider start releases the generic workspace while retaining the
-  stopped session and attached ownership proof. Any later cleanup/confirmation should
-  treat that retained proof as authoritative and remain fenced.
-- Non-slot legacy checkout acquisition retains its existing checkout machinery; the
-  exact pinned reset is implemented at the slot/direct and pooled launch seams covered
-  by this task's enabled workflow tests.
+- A low-level service constructed without a workspace checkpoint verifier can still
+  perform filing/materialization operations, but checkpointing now fails closed.
+- Unknown provider-stop or Git-detach state deliberately retains the workspace lock and
+  `handoff_pending` owner. A later transfer retry repeats exact proof and can recover.
+
+## Review fix round 1 (base `131e56bd`)
+
+All five Important findings from `task-5-review.md` were addressed without adding Task 6
+delivery/review behavior:
+
+1. Enabled slots and non-slot CLONE/LINK workspaces now use one exact-origin preparation
+   helper. It holds the owner fence across clone/fetch/clean/checkout or slot reset,
+   creates the canonical `aq/<task_id>` branch at the pinned `base_sha`, verifies HEAD,
+   and skips legacy resume/default-branch cleanup. Transfer-before-preparation performs
+   no Git mutation.
+2. Failed startup and stale-STARTING recovery route through the existing transfer and
+   server-side handoff confirmer. Stop, exact clean/pushed checkout proof, detach, owner
+   release, and workspace unlock precede a fresh same-task reservation. Unknown stop or
+   detach keeps both lock and fence; a later transfer retry is recoverable. Non-slot
+   checkouts now receive the same exact detach proof as slots.
+3. The materialized-origin predicate is shared by pooled claims, the push scheduler
+   snapshot, pre-assignment execution, and the atomic assignment update. Pending tasks
+   cannot become ASSIGNED/IN_PROGRESS or emit `task.started`.
+4. `checkpoint_parent` refuses calls without a verifier; test fixtures that checkpoint
+   now inject an explicit verifier.
+5. `set_parent_bulk` rejects hierarchy/train projects, and `task_graph.creator.write_plan`
+   performs that guard before task insertion or ordinal mutation. Disabled behavior is
+   preserved.
+
+Focused RED evidence:
+
+- The first four-item review run failed exactly on missing scheduler eligibility,
+  enabled bulk-parent acceptance, and missing-verifier checkpoint acceptance.
+- The push-path regression then observed a pending-origin task transition to PAUSED via
+  workspace preparation rather than remain READY.
+- Non-slot preparation initially failed because the shared exact-origin helper did not
+  exist.
+- Startup/reconciler recovery initially left ownership attached or `handoff_pending`
+  without the new proof-and-release path.
+- The non-slot detached-handoff regression initially remained locked because only slots
+  had exact Git detach proof.
+
+Green verification:
+
+- `aq test tests/test_integration_hierarchy.py tests/test_scheduler.py tests/test_hierarchy_queries.py tests/test_hierarchy_graph_creator.py -x -k 'without_verifier or pending_origin_is_not_push or enabled_project_rejects'`
+  — **4 passed**.
+- `aq test tests/test_scheduler.py tests/test_session_commands.py -x -k 'hierarchy_pending_origin'`
+  — **2 passed**.
+- `aq test tests/test_workspace_branch_wait.py -x -k 'hierarchy_non_slot or hierarchy_slot_prep or hierarchy_transfer_winning'`
+  — **4 passed**.
+- `aq test tests/test_integration_workspace_handoff.py tests/test_session_commands.py tests/test_session_reconciler.py -x -k 'detached_non_slot_releases or failed_start_releases_with_fence or failed_start_unknown_stop or stale_hierarchy_starting_release'`
+  — **4 passed**.
+- `aq test tests/test_integration_workspace_handoff.py -x` — **10 passed**.
+- `aq test tests/test_integration_hierarchy.py tests/test_hierarchy_queries.py tests/test_hierarchy_graph_creator.py tests/test_scheduler.py tests/test_workspace_branch_wait.py tests/test_branch_isolated_workspace.py tests/test_session_commands.py tests/test_session_reconciler.py -x`
+  — **336 passed, 5 skipped**.
+- `aq test tests/test_claim_commands.py -x` — **57 passed**.
+- Final combined verification:
+  `aq test tests/test_integration_hierarchy.py tests/test_hierarchy_queries.py tests/test_hierarchy_graph_creator.py tests/test_scheduler.py tests/test_workspace_branch_wait.py tests/test_branch_isolated_workspace.py tests/test_integration_workspace_handoff.py tests/test_session_commands.py tests/test_session_reconciler.py tests/test_claim_commands.py -x`
+  — **403 passed, 5 skipped**.
+- `ruff check <all changed Python files>` — **All checks passed**.
+- `git diff --check` — clean.
+
+One attempted combined run also named `tests/test_claim_queries.py`, but collection stopped
+before tests because that pre-existing file imports removed `src.models.PlaybookRun`.
+The exact error was `ImportError: cannot import name 'PlaybookRun' from 'src.models'`.
+No unrelated playbook/model change was made; claim command and hierarchy claim coverage
+above remained green.

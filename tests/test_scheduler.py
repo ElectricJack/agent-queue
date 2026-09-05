@@ -35,6 +35,25 @@ def make_agent(id="a-1", name="claude-1", state=AgentState.IDLE, **kw):
 
 
 class TestScheduler:
+    def test_hierarchy_pending_origin_is_not_push_schedulable(self):
+        task = make_task(id="pending")
+        state = SchedulerState(
+            projects=[
+                make_project(
+                    hierarchical_integration_mode="hierarchy",
+                    integration_repository_id="repo",
+                )
+            ],
+            tasks=[task],
+            agents=[make_agent()],
+            project_token_usage={},
+            project_active_agent_counts={},
+            tasks_completed_in_window={},
+            hierarchy_runnable_task_ids=set(),
+        )
+
+        assert Scheduler.schedule(state) == []
+
     def test_route_aware_scheduler_skips_task_without_effective_route(self):
         state = SchedulerState(
             projects=[make_project()],

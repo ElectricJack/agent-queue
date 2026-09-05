@@ -387,6 +387,11 @@ async def write_plan(
     the ``(task_id, label)`` primary key).
     """
     async with db._engine.begin() as conn:
+        if plan.project_id is not None:
+            # The legacy graph writer inserts rows before linking them.  An
+            # enabled project must instead use atomic origin/checkpoint filing,
+            # so fail before even the first task insert or ordinal mutation.
+            await db.guard_hierarchy_bulk_write(plan.project_id, conn=conn)
         if plan.parent_row is not None:
             await _insert_task(conn, plan.parent_row)
             # ``_insert_task`` is a direct ``insert(tasks)`` that bypasses

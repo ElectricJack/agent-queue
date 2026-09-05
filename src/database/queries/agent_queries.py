@@ -6,6 +6,7 @@ import time
 
 from sqlalchemy import and_, delete, func, insert, or_, select, update
 
+from src.database.queries.hierarchy_queries import materialized_origin_when_hierarchical
 from src.database.tables import agents, events, sessions, task_results, tasks, workspaces
 from src.models import Agent, AgentState, TaskStatus
 
@@ -269,6 +270,7 @@ class AgentQueryMixin:
                         tasks.c.id == task_id,
                         tasks.c.status == TaskStatus.READY.value,
                         tasks.c.is_blocked == 0,
+                        materialized_origin_when_hierarchical(),
                         ~live_task,
                         ~busy_owner,
                     )

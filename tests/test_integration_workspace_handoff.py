@@ -441,10 +441,10 @@ async def test_detached_handoff_with_wrong_head_remains_busy(
     assert (await orchestrator.db.get_workspace("slot")).locked_by_task_id == "task"
 
 
-async def test_detached_non_slot_cannot_bypass_slot_proof(
+async def test_detached_non_slot_releases_only_after_exact_git_proof(
     orchestrator_factory, tmp_path, monkeypatch
 ):
-    """Accepting detached HEAD without the slot mutex proof would unlock unknown work."""
+    """A non-slot retry after detach must re-prove the exact clean pushed HEAD."""
     orchestrator = await _orchestrator(orchestrator_factory, tmp_path)
     async with orchestrator.db.immediate() as conn:
         await conn.execute(
@@ -465,6 +465,6 @@ async def test_detached_non_slot_cannot_bypass_slot_proof(
 
     confirmed = await orchestrator.aconfirm_integration_owner_handoff(_owner())
 
-    assert confirmed is False
-    assert events == ["validate-branch"]
-    assert (await orchestrator.db.get_workspace("slot")).locked_by_task_id == "task"
+    assert confirmed is True
+    assert events == ["validate-branch", "stop", "confirm", "clean-check", "fetch"]
+    assert (await orchestrator.db.get_workspace("slot")).locked_by_task_id is None
