@@ -160,7 +160,15 @@ def upgrade() -> None:
     op.create_index(
         "idx_integration_review_evidence_current",
         "integration_review_evidence",
-        ["source_task_id", "repository_id", "generation", "created_at"],
+        [
+            "source_task_id",
+            "repository_id",
+            "source_base",
+            "reviewed_head_sha",
+            "generation",
+            "created_at",
+            "id",
+        ],
     )
     _create_review_guards()
 

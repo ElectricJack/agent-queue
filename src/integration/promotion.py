@@ -97,6 +97,7 @@ class PromotionService:
 
     async def prepare(self, request: PromotionInput) -> PromotionValue:
         context = await self._validated_context(request)
+        await self.ownership.assert_current(request.fence)
         repository = await self._resolve_repository(request.fence.target.repository_id)
         if repository.repo.project_id != context["project_id"]:
             raise PromotionInvariantError("repository and task projects do not match")
@@ -108,11 +109,6 @@ class PromotionService:
                 repository.retained_git_dir,
                 context["source_branch"],
                 request.source_head,
-            )
-            await self._assert_remote_target(
-                repository.retained_git_dir,
-                request.fence.target.branch,
-                request.expected_target,
             )
             await self._assert_commit_inputs(repository.retained_git_dir, request)
             reviewed_tree = await self._tree_oid(repository.retained_git_dir, request.source_head)
@@ -176,6 +172,11 @@ class PromotionService:
                 return value
             if intent["state"] == "conflict":
                 raise PromotionConflict(value, intent.get("conflict_diagnostics") or {})
+            await self._assert_remote_target(
+                repository.retained_git_dir,
+                request.fence.target.branch,
+                request.expected_target,
+            )
 
             result = await self.git.arun_git_result(
                 [
@@ -589,7 +590,7 @@ class PromotionService:
 
     @staticmethod
     def _conflict_diagnostics(intent: dict, stdout: str, stderr: str) -> dict[str, Any]:
-        paths = sorted(
+        all_paths = sorted(
             {
                 line.split("\t", 1)[1].strip()
                 for line in stdout.splitlines()
@@ -599,22 +600,45 @@ class PromotionService:
         raw = (stdout + ("\n" if stdout and stderr else "") + stderr).encode(
             "utf-8", errors="replace"
         )
-        truncated = len(raw) > 60000
-        output = raw[:60000].decode("utf-8", errors="ignore")
-        if truncated:
-            output += "\n[truncated at 60000 UTF-8 bytes]"
         diagnostics = {
             "base": intent["source_base"],
             "source": intent["source_head"],
             "target": intent["expected_target"],
             "returncode": 1,
-            "paths": paths,
-            "output": output,
-            "truncated": truncated,
+            "paths": all_paths,
+            "output": raw.decode("utf-8", errors="ignore"),
+            "truncated": False,
         }
-        while len(json.dumps(diagnostics, sort_keys=True).encode("utf-8")) > _MAX_CONFLICT_BYTES:
-            diagnostics["output"] = diagnostics["output"][:-1024]
-            diagnostics["truncated"] = True
+        def serialized_size() -> int:
+            return len(json.dumps(diagnostics, sort_keys=True).encode("utf-8"))
+
+        if serialized_size() <= _MAX_CONFLICT_BYTES:
+            return diagnostics
+
+        marker = "[truncated at 65536 serialized UTF-8 bytes]"
+        diagnostics.update(paths=[], output=marker, truncated=True)
+
+        low, high = 0, len(all_paths)
+        while low < high:
+            middle = (low + high + 1) // 2
+            diagnostics["paths"] = all_paths[:middle]
+            if serialized_size() <= _MAX_CONFLICT_BYTES:
+                low = middle
+            else:
+                high = middle - 1
+        diagnostics["paths"] = all_paths[:low]
+
+        low, high = 0, len(raw)
+        while low < high:
+            middle = (low + high + 1) // 2
+            prefix = raw[:middle].decode("utf-8", errors="ignore")
+            diagnostics["output"] = f"{prefix}\n{marker}" if prefix else marker
+            if serialized_size() <= _MAX_CONFLICT_BYTES:
+                low = middle
+            else:
+                high = middle - 1
+        prefix = raw[:low].decode("utf-8", errors="ignore")
+        diagnostics["output"] = f"{prefix}\n{marker}" if prefix else marker
         return diagnostics
 
     async def _pin_recovery_ref(self, store: Path, ref: str, prepared_sha: str) -> None:

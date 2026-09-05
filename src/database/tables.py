@@ -1673,8 +1673,11 @@ integration_review_evidence = Table(
         "idx_integration_review_evidence_current",
         "source_task_id",
         "repository_id",
+        "source_base",
+        "reviewed_head_sha",
         "generation",
         "created_at",
+        "id",
     ),
 )
 

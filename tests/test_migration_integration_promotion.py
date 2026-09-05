@@ -16,6 +16,15 @@ pytestmark = [pytest.mark.perf, pytest.mark.migration]
 PRIOR = "f02a4a4a3010"
 REVISION = "b91e4d7a2c10"
 POSTGRES_DSN = ensure_worker_postgres_dsn()
+REVIEW_INDEX_COLUMNS = [
+    "source_task_id",
+    "repository_id",
+    "source_base",
+    "reviewed_head_sha",
+    "generation",
+    "created_at",
+    "id",
+]
 
 
 def _migrate(connection, revision: str, *, downgrade: bool = False) -> None:
@@ -36,6 +45,12 @@ async def test_sqlite_promotion_revision_upgrade_downgrade_upgrade(tmp_path):
             _migrate(conn, REVISION)
         with engine.connect() as conn:
             assert "integration_review_evidence" in inspect(conn).get_table_names()
+            review_index = next(
+                index
+                for index in inspect(conn).get_indexes("integration_review_evidence")
+                if index["name"] == "idx_integration_review_evidence_current"
+            )
+            assert review_index["column_names"] == REVIEW_INDEX_COLUMNS
             assert "authors" in {
                 column["name"]
                 for column in inspect(conn).get_columns("integration_promotion_intents")
@@ -76,6 +91,15 @@ async def test_postgres_promotion_revision_upgrade_downgrade_upgrade():
         async with engine.connect() as conn:
             tables = await conn.run_sync(lambda sync: set(inspect(sync).get_table_names()))
             assert "integration_review_evidence" in tables
+            review_indexes = await conn.run_sync(
+                lambda sync: inspect(sync).get_indexes("integration_review_evidence")
+            )
+            review_index = next(
+                index
+                for index in review_indexes
+                if index["name"] == "idx_integration_review_evidence_current"
+            )
+            assert review_index["column_names"] == REVIEW_INDEX_COLUMNS
         raw_dsn = dsn.replace("postgresql+asyncpg://", "postgresql://")
         evidence_conn = await asyncpg.connect(raw_dsn)
         try:

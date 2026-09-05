@@ -92,6 +92,8 @@ class IntegrationDeliveryQueriesMixin:
             select(integration_review_evidence)
             .where(integration_review_evidence.c.source_task_id == source_task_id)
             .where(integration_review_evidence.c.repository_id == repository_id)
+            .where(integration_review_evidence.c.source_base == source_base)
+            .where(integration_review_evidence.c.reviewed_head_sha == reviewed_head_sha)
             .where(integration_review_evidence.c.generation == current_generation)
             .order_by(
                 integration_review_evidence.c.generation.desc(),
@@ -105,11 +107,7 @@ class IntegrationDeliveryQueriesMixin:
         if row is None:
             return None
         result = dict(row)
-        if (
-            result["source_base"] != source_base
-            or result["reviewed_head_sha"] != reviewed_head_sha
-            or result["verdict"] != "approved"
-        ):
+        if result["verdict"] != "approved":
             return None
         return result
 

@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -15,10 +17,11 @@ from sqlalchemy.exc import DBAPIError, IntegrityError
 from src.database import Database
 from src.database.tables import (
     integration_outbox,
+    integration_promotion_intents,
     task_branch_origins,
     task_delivery_receipts,
 )
-from src.git.manager import GitManager
+from src.git.manager import GitError, GitManager
 from src.integration.models import BranchKey, PromotionInput
 from src.integration.ownership import BranchOwnership
 from src.models import Project, RepoConfig, RepoSourceType, Task
@@ -91,6 +94,34 @@ async def test_review_evidence_uses_latest_generation_and_fails_closed(db):
     )
     assert found and found["id"] == "approved"
 
+    unrelated = _review(evidence_id="newer-other-head", generation=1)
+    unrelated.update(reviewed_head_sha="d" * 40, created_at=2.0)
+    await db.append_integration_review_evidence(unrelated)
+    found = await db.get_applicable_integration_review_evidence(
+        source_task_id="child",
+        repository_id="repo",
+        source_base="a" * 40,
+        reviewed_head_sha="b" * 40,
+        current_generation=1,
+    )
+    assert found and found["id"] == "approved"
+
+    rejected_same_tuple = _review(
+        evidence_id="newer-same-tuple-rejection", generation=1, verdict="rejected"
+    )
+    rejected_same_tuple["created_at"] = 3.0
+    await db.append_integration_review_evidence(rejected_same_tuple)
+    assert (
+        await db.get_applicable_integration_review_evidence(
+            source_task_id="child",
+            repository_id="repo",
+            source_base="a" * 40,
+            reviewed_head_sha="b" * 40,
+            current_generation=1,
+        )
+        is None
+    )
+
     await db.append_integration_review_evidence(
         _review(evidence_id="rejected", generation=2, verdict="rejected")
     )
@@ -106,8 +137,8 @@ async def test_review_evidence_uses_latest_generation_and_fails_closed(db):
     )
 
 
-async def test_intent_reservation_reuses_domain_and_blocks_other_target_work(db):
-    values = {
+def _intent_values() -> dict:
+    return {
         "domain_key": "domain",
         "operation_key": "activation-1",
         "project_id": "project",
@@ -128,6 +159,10 @@ async def test_intent_reservation_reuses_domain_and_blocks_other_target_work(db)
         "commit_metadata": {"message": "message"},
         "created_at": 1.0,
     }
+
+
+async def test_intent_reservation_reuses_domain_and_blocks_other_target_work(db):
+    values = _intent_values()
     first = await db.reserve_integration_promotion_intent(values)
     again = await db.reserve_integration_promotion_intent(values | {"receipt_id": "other"})
     assert first["id"] == again["id"]
@@ -142,6 +177,29 @@ async def test_intent_reservation_reuses_domain_and_blocks_other_target_work(db)
                 "receipt_id": "receipt-2",
             }
         )
+
+
+async def test_concurrent_different_domains_reserve_only_one_target_intent(db):
+    first = _intent_values()
+    second = first | {
+        "id": "intent-2",
+        "domain_key": "different-domain",
+        "operation_key": "activation-2",
+        "receipt_id": "receipt-2",
+        "source_task_id": "other-child",
+    }
+
+    results = await asyncio.gather(
+        db.reserve_integration_promotion_intent(first),
+        db.reserve_integration_promotion_intent(second),
+        return_exceptions=True,
+    )
+
+    assert sum(isinstance(result, dict) for result in results) == 1
+    failures = [result for result in results if isinstance(result, Exception)]
+    assert len(failures) == 1
+    assert isinstance(failures[0], ValueError)
+    assert "unresolved promotion" in str(failures[0])
 
 
 def _git(args: list[str], cwd: Path | None = None) -> str:
@@ -273,6 +331,30 @@ async def test_clean_promotion_is_retained_attributed_pushed_and_reconciled(db, 
     async with db._engine.connect() as conn:
         assert await conn.scalar(select(func.count()).select_from(task_delivery_receipts)) == 1
         assert await conn.scalar(select(func.count()).select_from(integration_outbox)) == 2
+
+
+async def test_clean_promotion_preserves_independent_parent_changes(db, promotion_case):
+    from src.integration.promotion import PromotionService
+
+    case = promotion_case
+    work = case["work"]
+    _git(["switch", "-c", "parent-advanced", case["base"]], work)
+    (work / "parent.txt").write_text("parent-only\n")
+    _git(["add", "parent.txt"], work)
+    _git(["commit", "-m", "independent parent change"], work)
+    target = _git(["rev-parse", "HEAD"], work)
+    _git(["push", "origin", "HEAD:refs/heads/aq/parent"], work)
+
+    request = case["request"].model_copy(update={"expected_target": target})
+    service = PromotionService(db, data_dir=case["data_dir"], git_manager=GitManager())
+    prepared = await service.prepare(request)
+    await service.push(prepared.intent_id, case["fence"])
+
+    retained = next((case["data_dir"] / "integration-repositories").glob("*.git"))
+    assert _git(["show", "-s", "--format=%P", prepared.prepared_sha], retained) == target
+    assert _git(["show", f"{prepared.prepared_sha}:parent.txt"], retained) == "parent-only"
+    assert _git(["show", f"{prepared.prepared_sha}:child.txt"], retained) == "one\ntwo"
+    assert _git(["rev-list", "--count", f"{target}..{prepared.prepared_sha}"], retained) == "1"
 
 
 async def test_late_push_marker_cannot_regress_a_committed_intent(db, promotion_case):
@@ -420,6 +502,35 @@ async def test_conflict_records_inputs_and_never_creates_a_receipt(db, promotion
         assert await conn.scalar(select(func.count()).select_from(task_delivery_receipts)) == 0
 
 
+def test_conflict_diagnostics_terminates_and_bounds_many_paths():
+    script = """
+import json
+from src.integration.promotion import PromotionService
+intent = {"source_base": "a" * 40, "source_head": "b" * 40, "expected_target": "c" * 40}
+stdout = "".join(f"100644 100644 deadbeef deadbeef M\\t{'p' * 96}{index}\\n" for index in range(1200))
+diagnostics = PromotionService._conflict_diagnostics(intent, stdout, "conflict")
+print(json.dumps({
+    "size": len(json.dumps(diagnostics, sort_keys=True).encode("utf-8")),
+    "truncated": diagnostics["truncated"],
+    "path_count": len(diagnostics["paths"]),
+}))
+"""
+    try:
+        completed = subprocess.run(
+            [sys.executable, "-c", script],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=2,
+        )
+    except subprocess.TimeoutExpired:
+        pytest.fail("paths-heavy conflict diagnostics did not terminate")
+    result = json.loads(completed.stdout)
+    assert result["size"] <= 65536
+    assert result["truncated"] is True
+    assert result["path_count"] < 1200
+
+
 async def test_moved_source_is_rejected_even_when_old_review_is_approved(db, promotion_case):
     from src.integration.promotion import PromotionService, PromotionSourceMoved
 
@@ -538,6 +649,51 @@ async def test_review_evidence_rows_are_append_only(db):
                     integration_review_evidence.c.id == "immutable"
                 )
             )
+
+
+class AmbiguousPushOnceGitManager(GitManager):
+    def __init__(self):
+        super().__init__()
+        self.ambiguous = True
+
+    async def apush_expected_delivery(self, *args, **kwargs):
+        result = await super().apush_expected_delivery(*args, **kwargs)
+        if self.ambiguous:
+            self.ambiguous = False
+            raise GitError("simulated lost response after accepted push")
+        return result
+
+
+async def test_delivery_promote_replays_ambiguous_accepted_push_without_intent_id(
+    db, promotion_case, command_handler_factory
+):
+    from src.integration.promotion import PromotionService
+
+    handler = await command_handler_factory()
+    await handler.orchestrator.db.close()
+    handler.orchestrator.db = db
+    handler.orchestrator.promotion_service = PromotionService(
+        db,
+        data_dir=promotion_case["data_dir"],
+        git_manager=AmbiguousPushOnceGitManager(),
+    )
+    args = promotion_case["request"].model_dump(mode="json")
+
+    first = await handler.execute("delivery_promote", args)
+    async with db._engine.connect() as conn:
+        reserved_receipt = await conn.scalar(select(integration_promotion_intents.c.receipt_id))
+    replay = await handler.execute("delivery_promote", args)
+    again = await handler.execute("delivery_promote", args)
+
+    assert first["outcome"] == "runtime_error"
+    assert "intent_id" not in first
+    assert replay["outcome"] == "promoted"
+    assert again["outcome"] == "already_promoted"
+    assert replay["intent_id"] == again["intent_id"]
+    assert replay["receipt_id"] == again["receipt_id"] == reserved_receipt
+    async with db._engine.connect() as conn:
+        assert await conn.scalar(select(func.count()).select_from(task_delivery_receipts)) == 1
+        assert await conn.scalar(select(func.count()).select_from(integration_outbox)) == 2
 
 
 async def _seed_handler_delivery(handler) -> dict:
