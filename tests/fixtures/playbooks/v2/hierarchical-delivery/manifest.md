@@ -1,7 +1,7 @@
 ---
 playbook_id: hierarchical-delivery
-artifact_sha256: sha256:55b77437cb70efce3d0d44555f9d9fc2c7705262e18fb917ee5b262ce731f841
-source_sha256: sha256:300af45ccaf17d07e8ec014d2b19acb5f99c5ead16eafacb9724d046974a56b0
+artifact_sha256: sha256:b78b12e31efc1cc5338c00a13541dd2657abc99a3c08350e4e73ee30b506fdcb
+source_sha256: sha256:7046de82db414a94cb300ae6f2920e9e7f8501dca8394e6ca670b467ad33116c
 contract_fingerprint: sha256:1b9a053e0dfb874435d0b813bbd4771990287bef91525cecb38e5c5f98102770
 questions_resolved: []
 capabilities_granted:

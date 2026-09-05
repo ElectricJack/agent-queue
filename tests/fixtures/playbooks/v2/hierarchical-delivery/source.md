@@ -5,6 +5,8 @@ version: 1
 scope: system
 enabled: false
 triggers:
+  - task.completed
+  - task.failed
   - task.child_added
   - task.parent_checkpointed
   - delivery.ready
@@ -23,6 +25,18 @@ triggers:
 This disabled policy connects durable hierarchy lifecycle facts to deterministic
 integration commands. It never treats a repair-task close or a resolution push
 observation as delivery evidence, and it never supplies resolution Git object IDs.
+
+## Rules: child-terminal-readiness
+
+On `task.completed` or `task.failed` for a hydrated task whose
+`task.parent_task_id` is present, call `integration_delivery_readiness` with that
+immediate parent as `task_id` and bind `readiness`. Outcomes `ready` and `waiting`
+complete. On `failed`, inspect `on_failed_child`: `block` terminates failed while
+`ask` calls `gate_create` with stable failed-parent `await_id`, the event `project_id`,
+literal `gate_type` `human`, failed-child `title` and `question`, and the parent in
+`waiter_task_ids`. Gate outcomes `created`, `reused`, and `skipped` complete;
+`rejected`, `invariant_error`, and runtime failures fail. These are two artifact rules,
+`completed-child-readiness` and `failed-child-readiness`, because each trigger is exact.
 
 ## Rule: file-children
 

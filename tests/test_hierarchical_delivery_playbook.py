@@ -72,6 +72,12 @@ def test_reviewed_hierarchy_routes_lifecycle_without_invented_success():
     assert isinstance(
         artifact.steps["project-delivery-readiness--failed-policy"], DecisionStep
     )
+    assert by_rule["completed-child-readiness"].command == (
+        "integration_delivery_readiness"
+    )
+    assert by_rule["failed-child-readiness"].command == (
+        "integration_delivery_readiness"
+    )
 
 
 @pytest.mark.parametrize(

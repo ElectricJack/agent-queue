@@ -124,6 +124,10 @@ _TASK_SCHEMAS: dict[str, EventSchema] = {
                 "fields": {
                     "branch_name": {"type": "string", "description": "task branch"},
                     "pr_url": {"type": "string", "description": "task pull request"},
+                    "parent_task_id": {
+                        "type": "string",
+                        "description": "immediate structural parent",
+                    },
                 },
             },
         },
@@ -131,6 +135,27 @@ _TASK_SCHEMAS: dict[str, EventSchema] = {
     "task.failed": {
         "required": ["task_id", "project_id", "title", "status", "context"],
         "optional": ["error", "agent_id", "agent_type"],
+        "fields": {
+            "task_id": {"type": "string", "description": "task"},
+            "project_id": {"type": "string", "description": "project"},
+            "title": {"type": "string", "description": "title"},
+            "status": {"type": "string", "description": "task status"},
+            "context": {"type": "string", "description": "failure context"},
+            "error": {"type": "string", "description": "failure detail"},
+            "agent_id": {"type": "string", "description": "agent"},
+            "agent_type": {"type": "string", "description": "agent profile"},
+            "task": {
+                "type": "object",
+                "description": "task row",
+                "hydrated": True,
+                "fields": {
+                    "parent_task_id": {
+                        "type": "string",
+                        "description": "immediate structural parent",
+                    },
+                },
+            },
+        },
     },
     "task.paused": {
         "required": ["task_id", "project_id", "title", "reason"],
