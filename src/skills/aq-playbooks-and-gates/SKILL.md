@@ -58,13 +58,9 @@ When a gate does resolve, two things happen:
 ## Compile + install a playbook (compiler-as-agent path)
 
 Ordinary playbook markdown edits enqueue a compile task under the
-`playbook-compiler` profile. You don't compile inline any more:
-
-```bash
-aq playbook validate vault/system/playbooks/<name>.md   # parse + lint
-aq playbook install --playbook-id <playbook_id> \
-  --compiled-path <compiled_json_path>                  # atomic swap
-```
+`playbook-compiler` profile. You don't compile or install inline any more:
+save the source edit, then let that task validate, review, and activate the
+resulting artifact.
 
 For the `pipeline` kind (deterministic parse, no LLM), edits go
 straight to the parser — no task enqueued.
