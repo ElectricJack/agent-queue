@@ -59,6 +59,7 @@ projects = Table(
         server_default="disabled",
     ),
     Column("integration_repository_id", Text, nullable=True),
+    Column("hierarchical_integration_policy", JSON, nullable=True),
     Column("created_at", Float, nullable=False),
     CheckConstraint(
         "hierarchical_integration_mode IN ('disabled', 'observe', 'hierarchy', 'train')",
@@ -1591,6 +1592,8 @@ task_integration_checkpoints = Table(
     Column("last_transition_id", Text, nullable=True),
     Column("playbook_activation_id", Text, nullable=True),
     Column("branch_owner_id", Text, nullable=True),
+    Column("episode_id", Text, nullable=True),
+    Column("current_verification_id", Text, nullable=True),
     Column("updated_at", Float, nullable=False),
     CheckConstraint("generation >= 0", name="ck_task_integration_checkpoints_generation"),
     CheckConstraint("version >= 0", name="ck_task_integration_checkpoints_version"),
@@ -1766,6 +1769,7 @@ task_delivery_receipts = Table(
     Column("member_ordinal", Integer, nullable=True),
     Column("candidate_revision", Integer, nullable=True),
     Column("disposition", Text, nullable=False),
+    Column("disposition_revision", Integer, nullable=True),
     Column("created_at", Float, nullable=False),
     UniqueConstraint("domain_key", name="uq_task_delivery_receipts_domain_key"),
     CheckConstraint(
@@ -1928,6 +1932,11 @@ integration_repair_operations = Table(
     Column("policy_snapshot", JSON, nullable=False),
     Column("artifact_snapshot", JSON, nullable=False),
     Column("required_check_version", Text, nullable=False),
+    Column("verifier_task_id", Text, nullable=True),
+    Column("route_playbook_id", Text, nullable=True),
+    Column("route_scope", Text, nullable=True),
+    Column("route_scope_identifier", Text, nullable=True),
+    Column("route_activation_id", Text, nullable=True),
     Column("created_at", Float, nullable=False),
     Column("updated_at", Float, nullable=False),
     CheckConstraint("active_stage >= 0", name="ck_integration_repair_operations_active_stage"),
@@ -1961,6 +1970,40 @@ integration_repair_operations = Table(
         postgresql_where=text(
             "parent_task_id IS NOT NULL AND state IN ('active', 'escalated', 'human_required')"
         ),
+    ),
+    Index(
+        "uq_integration_repair_operations_parent_episode",
+        "parent_task_id",
+        "episode_id",
+        unique=True,
+    ),
+)
+
+integration_parent_episodes = Table(
+    "integration_parent_episodes",
+    metadata,
+    Column("id", Text, primary_key=True),
+    Column("parent_task_id", Text, nullable=False),
+    Column("repository_id", Text, nullable=False),
+    Column("generation", Integer, nullable=False),
+    Column("pre_collection_checkpoint_sha", Text, nullable=False),
+    Column("created_at", Float, nullable=False),
+    UniqueConstraint("parent_task_id", "id", name="uq_integration_parent_episodes_parent_id"),
+    CheckConstraint("generation >= 0", name="ck_integration_parent_episodes_generation"),
+)
+
+integration_child_dispositions = Table(
+    "integration_child_dispositions",
+    metadata,
+    Column("parent_task_id", Text, primary_key=True),
+    Column("child_task_id", Text, primary_key=True),
+    Column("revision", Integer, nullable=False, server_default="0"),
+    Column("disposition", Text, nullable=True),
+    Column("updated_at", Float, nullable=False),
+    CheckConstraint("revision >= 0", name="ck_integration_child_dispositions_revision"),
+    CheckConstraint(
+        "disposition IS NULL OR disposition IN ('noop', 'ineligible', 'skipped')",
+        name="ck_integration_child_dispositions_value",
     ),
 )
 
@@ -2026,6 +2069,65 @@ integration_check_evidence = Table(
         "conclusion IN ('success', 'failure', 'pending', 'cancelled', 'inconclusive')",
         name="ck_integration_check_evidence_conclusion",
     ),
+)
+
+integration_parent_verifications = Table(
+    "integration_parent_verifications",
+    metadata,
+    Column("id", Text, primary_key=True),
+    Column("operation_id", Text, nullable=False),
+    Column("parent_task_id", Text, nullable=False),
+    Column("episode_id", Text, nullable=False),
+    Column("generation", Integer, nullable=False),
+    Column("head_sha", Text, nullable=False),
+    Column("required_check_version", Text, nullable=False),
+    Column("created_at", Float, nullable=False),
+    UniqueConstraint(
+        "operation_id",
+        "generation",
+        "head_sha",
+        name="uq_integration_parent_verifications_tuple",
+    ),
+    CheckConstraint("generation >= 0", name="ck_integration_parent_verifications_generation"),
+)
+
+integration_parent_verification_evidence = Table(
+    "integration_parent_verification_evidence",
+    metadata,
+    Column(
+        "verification_id",
+        Text,
+        ForeignKey("integration_parent_verifications.id", ondelete="RESTRICT"),
+        primary_key=True,
+    ),
+    Column(
+        "evidence_id",
+        Text,
+        ForeignKey("integration_check_evidence.id", ondelete="RESTRICT"),
+        primary_key=True,
+    ),
+    UniqueConstraint(
+        "evidence_id", name="uq_integration_parent_verification_evidence_evidence"
+    ),
+)
+
+integration_operation_artifact_pins = Table(
+    "integration_operation_artifact_pins",
+    metadata,
+    Column("operation_id", Text, primary_key=True),
+    Column(
+        "artifact_sha256",
+        Text,
+        ForeignKey("playbook_artifacts.artifact_sha256", ondelete="RESTRICT"),
+        primary_key=True,
+    ),
+    ForeignKeyConstraint(
+        ["operation_id"],
+        ["integration_repair_operations.id"],
+        name="fk_integration_operation_artifact_pins_operation",
+        ondelete="RESTRICT",
+    ),
+    Index("idx_integration_operation_artifact_pins_sha", "artifact_sha256"),
 )
 
 project_integration_schedules = Table(

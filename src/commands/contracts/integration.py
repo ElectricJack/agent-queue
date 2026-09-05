@@ -111,6 +111,51 @@ class IntegrationCheckpointParentValue(CommandValue):
     task_id: str | None = None
     generation: int | None = None
     head_sha: str | None = None
+    episode_id: str | None = None
+    operation_id: str | None = None
+
+
+class IntegrationDeliveryReadinessArgs(CommandArgs):
+    task_id: str
+
+
+class IntegrationDeliveryReadinessValue(CommandValue):
+    task_id: str | None = None
+    episode_id: str | None = None
+    operation_id: str | None = None
+    generation: int | None = None
+    checkpoint_sha: str | None = None
+    head_sha: str | None = None
+    receipts: tuple[dict[str, Any], ...] = ()
+    blockers: tuple[dict[str, Any], ...] = ()
+    required_checks: dict[str, Any] | None = None
+
+
+class IntegrationParentVerifyArgs(CommandArgs):
+    task_id: str
+    generation: int
+    head_sha: str
+    evidence_ids: list[str]
+
+
+class IntegrationParentVerifyValue(CommandValue):
+    task_id: str | None = None
+    generation: int | None = None
+    head_sha: str | None = None
+    verification_id: str | None = None
+
+
+class IntegrationCompleteParentArgs(CommandArgs):
+    task_id: str
+    generation: int
+    head_sha: str
+
+
+class IntegrationCompleteParentValue(CommandValue):
+    task_id: str | None = None
+    generation: int | None = None
+    head_sha: str | None = None
+    operation_id: str | None = None
 
 
 class IntegrationMutateHierarchyArgs(CommandArgs):
@@ -320,6 +365,67 @@ INTEGRATION_CHECKPOINT_PARENT = CommandContract(
 )
 
 
+def _parent_contract(name, args_model, result_model, outcomes, *, side_effect):
+    return CommandContract(
+        execution=ExecutionContract(
+            name=name,
+            args_model=args_model,
+            result_model=result_model,
+            outcomes=tuple(
+                OutcomeSpec(
+                    name=outcome,
+                    classification=(
+                        OutcomeClass.SUCCESS
+                        if outcome in {"ready", "verified", "completed"}
+                        else OutcomeClass.FAILURE
+                    ),
+                )
+                for outcome in outcomes
+            ),
+            capability=name,
+            side_effect=side_effect,
+            idempotency=IdempotencySpec(mode="natural"),
+            retry_safe=True,
+            effects=(
+                ReadClause(subject=EffectSubject.DELIVERY_EVIDENCE)
+                if side_effect is SideEffectClass.READ
+                else UpdateClause(subject=EffectSubject.TASK)
+            ,),
+            sensitive_args=frozenset(
+                {"head_sha", "evidence_ids"} & set(args_model.model_fields)
+            ),
+            sensitive_result_fields=frozenset(
+                {"head_sha", "checkpoint_sha"} & set(result_model.model_fields)
+            ),
+            receipt_projection=tuple(result_model.model_fields),
+        ),
+        presentation=CommandPresentation(title=name.replace("_", " ").title(), summary=""),
+    )
+
+
+INTEGRATION_DELIVERY_READINESS = _parent_contract(
+    "integration_delivery_readiness",
+    IntegrationDeliveryReadinessArgs,
+    IntegrationDeliveryReadinessValue,
+    ("ready", "waiting", "failed", "invariant_error"),
+    side_effect=SideEffectClass.READ,
+)
+INTEGRATION_PARENT_VERIFY = _parent_contract(
+    "integration_parent_verify",
+    IntegrationParentVerifyArgs,
+    IntegrationParentVerifyValue,
+    ("verified", "stale_generation", "stale_head", "invalid_evidence"),
+    side_effect=SideEffectClass.UPDATE,
+)
+INTEGRATION_COMPLETE_PARENT = _parent_contract(
+    "integration_complete_parent",
+    IntegrationCompleteParentArgs,
+    IntegrationCompleteParentValue,
+    ("completed", "waiting", "stale_verification", "invariant_error"),
+    side_effect=SideEffectClass.UPDATE,
+)
+
+
 INTEGRATION_MUTATE_HIERARCHY = CommandContract(
     execution=ExecutionContract(
         name="integration_mutate_hierarchy",
@@ -524,6 +630,40 @@ async def _mutate_hierarchy_adapter(
     )
 
 
+async def _delivery_readiness_adapter(
+    args: IntegrationDeliveryReadinessArgs, ctx: CommandContext | None
+):
+    return await _hierarchy_adapter(
+        "integration_delivery_readiness",
+        args,
+        ctx,
+        IntegrationDeliveryReadinessValue,
+        {"ready", "waiting", "failed", "invariant_error"},
+    )
+
+
+async def _parent_verify_adapter(args: IntegrationParentVerifyArgs, ctx: CommandContext | None):
+    return await _hierarchy_adapter(
+        "integration_parent_verify",
+        args,
+        ctx,
+        IntegrationParentVerifyValue,
+        {"verified", "stale_generation", "stale_head", "invalid_evidence"},
+    )
+
+
+async def _complete_parent_adapter(
+    args: IntegrationCompleteParentArgs, ctx: CommandContext | None
+):
+    return await _hierarchy_adapter(
+        "integration_complete_parent",
+        args,
+        ctx,
+        IntegrationCompleteParentValue,
+        {"completed", "waiting", "stale_verification", "invariant_error"},
+    )
+
+
 def register_integration_contracts(registry: ContractRegistry) -> None:
     """Register contracts whose real handlers have landed.
 
@@ -543,6 +683,9 @@ def register_integration_contracts(registry: ContractRegistry) -> None:
         (INTEGRATION_FILE_CHILDREN, _file_children_adapter),
         (INTEGRATION_CHECKPOINT_PARENT, _checkpoint_parent_adapter),
         (INTEGRATION_MUTATE_HIERARCHY, _mutate_hierarchy_adapter),
+        (INTEGRATION_DELIVERY_READINESS, _delivery_readiness_adapter),
+        (INTEGRATION_PARENT_VERIFY, _parent_verify_adapter),
+        (INTEGRATION_COMPLETE_PARENT, _complete_parent_adapter),
         (DELIVERY_PROMOTE, _promote_adapter),
         (DELIVERY_RECEIPTS, _receipts_adapter),
         (INTEGRATION_RECONCILE_PROMOTION, _reconcile_adapter),

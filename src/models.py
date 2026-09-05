@@ -395,6 +395,7 @@ class Project:
     # from the direct/pull_request completion policy above.
     hierarchical_integration_mode: str = "disabled"
     integration_repository_id: str | None = None
+    hierarchical_integration_policy: dict | None = None
 
 
 @dataclass

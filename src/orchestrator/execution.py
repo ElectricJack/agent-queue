@@ -26,6 +26,7 @@ from src.models import (
     AgentResult,
     AgentState,
     PipelineContext,
+    PhaseResult,
     RepoConfig,
     TaskStatus,
     TaskType,
@@ -839,6 +840,7 @@ class ExecutionMixin:
         # unreadable workspace row is the *restrictive* default -- the flag
         # is withheld, not granted on a guess.
         source_type = None
+        ws_row = None
         try:
             ws_row = await self.db.get_workspace_for_task(task.id)
             source_type = ws_row.source_type if ws_row else None
@@ -904,7 +906,7 @@ class ExecutionMixin:
             from src.integration.ownership import BranchOwnership
 
             try:
-                _origin, integration_fence = await self._hierarchy_origin_and_fence(
+                _origin, integration_fence, integration_role = await self._hierarchy_origin_and_fence(
                     task, project
                 )
                 if ws_row is None:
@@ -921,6 +923,7 @@ class ExecutionMixin:
                         session_id,
                         ws_row.id,
                         agent_id=action.agent_id,
+                        expected_role=integration_role,
                         conn=conn,
                     )
             except Exception as exc:
@@ -966,7 +969,7 @@ class ExecutionMixin:
                 # across bounded provider startup, through publishing RUNNING.
                 # transfer() therefore cannot pass at any await in this span.
                 async with integration_ownership.mutation_exclusion(
-                    integration_fence, state="attached"
+                    integration_fence, state="attached", expected_role=integration_role
                 ) as conn:
                     await provider.start(spec)
                     await self.db.update_session(
@@ -1113,6 +1116,7 @@ class ExecutionMixin:
         expect_claim_epoch: int | None = None,
         pool: bool = False,
         session_live: bool = False,
+        review_evidence_snapshot: dict | None = None,
     ) -> dict:
         """Run the completion pipeline for a session-closed task.
 
@@ -1207,9 +1211,120 @@ class ExecutionMixin:
 
         pr_url = None
         completed_ok = True
+        managed_parent_suspended = False
+        managed_parent_completed = False
         if outcome == "pass":
             try:
-                pr_url, completed_ok = await self._run_completion_pipeline(ctx)
+                children = await self.db.get_children(task.id, limit=1)
+                checkpoint = await self.db.get_integration_checkpoint(task.id)
+                hierarchy_enabled = (
+                    getattr(project, "hierarchical_integration_mode", "disabled")
+                    in {"hierarchy", "train"}
+                )
+                managed_parent = bool(
+                    hierarchy_enabled
+                    and (children or checkpoint and checkpoint.get("episode_id") is not None)
+                )
+                hierarchy_managed = bool(hierarchy_enabled and checkpoint)
+                verifier_operation = await self.db.get_integration_verifier_operation(task.id)
+                if verifier_operation is not None:
+                    # A branchless verifier owns no source branch and must
+                    # never enter the legacy direct/main integration path.
+                    # It may close only after it has used the guarded parent
+                    # completion command successfully.
+                    result = await self._phase_verify(ctx)
+                    completed_ok = result not in (PhaseResult.STOP, PhaseResult.ERROR)
+                    parent = await self.db.get_task(verifier_operation["parent_task_id"])
+                    if completed_ok and (
+                        parent is None or parent.status is not TaskStatus.COMPLETED
+                    ):
+                        ctx.verification_retry_in_session = True
+                        ctx.verification_issues = [
+                            "Complete the verified parent integration before closing "
+                            "this verifier task."
+                        ]
+                        ctx.verification_feedback = ctx.verification_issues[0]
+                elif managed_parent or hierarchy_managed:
+                    # A managed parent is a source-branch producer, not a
+                    # legacy container merge.  Verify only the clean pushed
+                    # owned branch, then durably suspend its collection
+                    # episode.  Child promotion and aggregate verification
+                    # are separate fenced phases.
+                    result = await self._phase_verify(ctx)
+                    completed_ok = result not in (PhaseResult.STOP, PhaseResult.ERROR)
+                    if completed_ok:
+                        from src.integration.hierarchy import (
+                            HierarchyIntegration,
+                            verify_workspace_checkpoint,
+                        )
+
+                        if checkpoint is None:
+                            raise HierarchyError("invariant_error", "managed parent has no checkpoint")
+
+                        async def verify_checkpoint(task_row, repo_row, head):
+                            return await verify_workspace_checkpoint(
+                                self.db, self.git, task_row, repo_row, head
+                            )
+
+                        head = (
+                            await self.git._arun(["rev-parse", "HEAD"], cwd=workspace_path)
+                        ).strip().lower()
+                        hierarchy = HierarchyIntegration(
+                            self.db, checkpoint_verifier=verify_checkpoint
+                        )
+                        if managed_parent and checkpoint["episode_id"] is not None:
+                            # This is the later verifier leg, not the original
+                            # producer leg.  Aggregate evidence must already
+                            # pin this exact generation/head; otherwise keep
+                            # the live verifier attached so it can finish.
+                            from src.integration.parent_completion import ParentCompletion
+
+                            if (
+                                checkpoint["current_verification_id"] is None
+                                or checkpoint["verified_generation"]
+                                != checkpoint["generation"]
+                                or checkpoint["verified_sha"] != head
+                            ):
+                                ctx.verification_retry_in_session = True
+                                ctx.verification_issues = [
+                                    "Record successful aggregate verification for the current "
+                                    "parent generation and head before closing."
+                                ]
+                                ctx.verification_feedback = ctx.verification_issues[0]
+                            else:
+                                completion = await ParentCompletion(self.db).complete_parent(
+                                    task.id, int(checkpoint["generation"]), head
+                                )
+                                if completion["outcome"] == "completed":
+                                    managed_parent_completed = True
+                                else:
+                                    ctx.verification_retry_in_session = True
+                                    ctx.verification_issues = [
+                                        "Parent integration completion was refused: "
+                                        f"{completion['outcome']}."
+                                    ]
+                                    ctx.verification_feedback = ctx.verification_issues[0]
+                        elif managed_parent:
+                            await hierarchy.checkpoint_parent(
+                                task.id, head, int(checkpoint["generation"])
+                            )
+                            async with self.db.immediate() as conn:
+                                transition = await self.db._apply_transition(
+                                    conn,
+                                    task.id,
+                                    TaskStatus.PAUSED,
+                                    context="integration_parent_suspended",
+                                    assigned_agent_id=None,
+                                    expect_claim_epoch=expect_claim_epoch,
+                                    _manual_pause_control=True,
+                                )
+                            await self.db.log_blocked_flips(transition.flipped)
+                            managed_parent_suspended = True
+                            pr_url = None
+                        else:
+                            await hierarchy.checkpoint_leaf_completion(task.id, head)
+                else:
+                    pr_url, completed_ok = await self._run_completion_pipeline(ctx)
             except Exception:
                 logger.error(
                     "Task %s: completion pipeline raised during task close",
@@ -1246,7 +1361,10 @@ class ExecutionMixin:
         # branches are terminal and must not bump the counter.
         new_retry: int | None = None
         verification_reopened = outcome == "pass" and ctx.verification_reopened
-        if outcome == "pass" and completed_ok:
+        if managed_parent_suspended:
+            new_status = TaskStatus.PAUSED
+            context = "integration_parent_suspended"
+        elif outcome == "pass" and completed_ok:
             new_status = TaskStatus.COMPLETED
             context = "session_close"
         elif verification_reopened:
@@ -1286,10 +1404,33 @@ class ExecutionMixin:
         # it even when the agent never called ``aq task set --pr-url``.
         pr_kwargs = {"pr_url": pr_url} if pr_url else {}
         try:
-            if verification_reopened:
+            if managed_parent_suspended or managed_parent_completed:
+                # The suspension transition and episode reservation above
+                # or guarded parent completion are authoritative writes; do
+                # not run generic completion.
+                pass
+            elif verification_reopened:
                 # _reopen_with_verification_feedback performed the state
                 # transition and recorded its context inside this lock.
                 pass
+            elif review_evidence_snapshot is not None and new_status == TaskStatus.COMPLETED:
+                from src.integration.review_evidence import ReviewEvidenceProducer
+
+                async with self.db.immediate() as conn:
+                    transition = await ReviewEvidenceProducer(
+                        self.db, None
+                    ).complete_review_on(
+                        conn,
+                        task.id,
+                        review_evidence_snapshot,
+                        context=context,
+                        assigned_agent_id=None,
+                        expect_claim_epoch=expect_claim_epoch,
+                        **pr_kwargs,
+                    )
+                await self.db.log_blocked_flips(transition.flipped)
+                await self.db._notify_settled(transition.settled)
+                await self.db._notify_ready(transition.ready)
             elif new_retry is not None:
                 await self.db.transition_task(
                     task.id,
@@ -1459,6 +1600,12 @@ class ExecutionMixin:
         # Pool sessions skip this: they keep their agent-lock and token, and
         # ``_cmd_task_close`` releases the claim itself via ``db.release_claim``.
         if not pool:
+            if managed_parent_suspended:
+                # Stop/detach the worker while preserving its durable
+                # reserved fence so the collector transfer can be proven.
+                await self.arelease_integration_writer_for_retry(
+                    task, reason="integration_parent_suspended"
+                )
             await self.release_session_task_resources(
                 task.id, agent_id=task.assigned_agent_id, workspace_path=workspace_path,
                 expect_claim_epoch=task.claim_epoch,
@@ -1628,7 +1775,9 @@ class ExecutionMixin:
             current = await self.db.get_task(task_id)
             if current is not None:
                 if current.status == TaskStatus.PAUSED and current.resume_after is None:
-                    return
+                    checkpoint = await self.db.get_integration_checkpoint(task_id)
+                    if checkpoint is None or checkpoint.get("episode_id") is None:
+                        return
                 if expect_claim_epoch is not None and current.claim_epoch != expect_claim_epoch:
                     return
             await self._release_session_task_resources_locked(

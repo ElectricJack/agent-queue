@@ -802,8 +802,15 @@ class SessionCommandsMixin:
 
         # Container-close semantics (swarm-work-model §7).
         open_children = await self.db.open_children(task_id)
+        project = await self.db.get_project(task.project_id)
+        managed_parent_close = bool(
+            outcome == "pass"
+            and getattr(project, "hierarchical_integration_mode", "disabled")
+            in {"hierarchy", "train"}
+            and await self.db.get_children(task_id, limit=1)
+        )
         abandoned: list[str] = []
-        if open_children:
+        if open_children and not managed_parent_close:
             if not args.get("abandon_children"):
                 return {
                     "success": False,
@@ -905,6 +912,26 @@ class SessionCommandsMixin:
         # not revoke.
         stale = False
         retry_in_session = False
+        review_evidence_snapshot = None
+        if outcome == "pass" and task.profile_id in {"reviewer", "final-reviewer"}:
+            from src.database.queries.hierarchy_queries import HierarchyError
+            from src.integration.review_evidence import ReviewEvidenceProducer
+
+            try:
+                review_evidence_snapshot = await ReviewEvidenceProducer(
+                    self.db, self._integration_promotion_service()
+                ).snapshot(
+                    task,
+                    session,
+                    verdict="approved",
+                    summary=summary,
+                )
+            except HierarchyError as exc:
+                return {
+                    "success": False,
+                    "result": exc.code,
+                    "error": f"integration review evidence refused: {exc}",
+                }
         try:
             expect_claim_epoch = int(claim_epoch) if claim_epoch is not None else None
             result = await self.orchestrator.complete_session_task(
@@ -917,6 +944,7 @@ class SessionCommandsMixin:
                 expect_claim_epoch=expect_claim_epoch,
                 pool=is_pool,
                 session_live=session_live,
+                review_evidence_snapshot=review_evidence_snapshot,
             )
             retry_in_session = bool(result.get("verification_retry"))
         except StaleClaim as exc:

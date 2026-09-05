@@ -12,8 +12,11 @@ from sqlalchemy.exc import IntegrityError
 from src.database.tables import (
     integration_promotion_intents,
     integration_review_evidence,
+    integration_repair_operations,
+    projects,
     task_branch_origins,
     task_delivery_receipts,
+    task_integration_checkpoints,
 )
 from src.integration.outbox import enqueue_integration_event
 
@@ -77,6 +80,58 @@ class IntegrationDeliveryQueriesMixin:
         async with self.immediate() as conn:
             await conn.execute(insert(integration_review_evidence).values(**evidence))
         return dict(evidence)
+
+    async def get_active_integration_verifier_for_task(
+        self, verifier_task_id: str
+    ) -> dict | None:
+        statement = (
+            select(integration_repair_operations)
+            .where(integration_repair_operations.c.verifier_task_id == verifier_task_id)
+            .where(
+                integration_repair_operations.c.state.in_(
+                    ("active", "escalated", "human_required")
+                )
+            )
+        )
+        async with self._engine.connect() as conn:
+            row = (await conn.execute(statement)).mappings().one_or_none()
+        return dict(row) if row is not None else None
+
+    async def get_integration_verifier_operation(
+        self, verifier_task_id: str
+    ) -> dict | None:
+        """Return the verifier binding even after its parent operation completes.
+
+        A branchless verifier closes its own task only after completing the
+        parent operation.  Keeping this lookup independent of operation state
+        prevents that final close from falling through to the legacy Git
+        integration pipeline.
+        """
+        statement = (
+            select(integration_repair_operations)
+            .where(integration_repair_operations.c.verifier_task_id == verifier_task_id)
+            .order_by(integration_repair_operations.c.created_at.desc())
+            .limit(1)
+        )
+        async with self._engine.connect() as conn:
+            row = (await conn.execute(statement)).mappings().one_or_none()
+        return dict(row) if row is not None else None
+
+    async def get_active_parent_integration_operation(self, parent_task_id: str) -> dict | None:
+        statement = (
+            select(integration_repair_operations)
+            .where(integration_repair_operations.c.parent_task_id == parent_task_id)
+            .where(
+                integration_repair_operations.c.state.in_(
+                    ("active", "escalated", "human_required")
+                )
+            )
+            .order_by(integration_repair_operations.c.created_at.desc())
+            .limit(1)
+        )
+        async with self._engine.connect() as conn:
+            row = (await conn.execute(statement)).mappings().one_or_none()
+        return dict(row) if row is not None else None
 
     async def get_applicable_integration_review_evidence(
         self,
@@ -284,9 +339,43 @@ class IntegrationDeliveryQueriesMixin:
             elif {key: existing[key] for key in receipt} != receipt:
                 raise ValueError("delivery receipt identity changed")
 
+            hierarchy_mode = (
+                await conn.execute(
+                    select(projects.c.hierarchical_integration_mode).where(
+                        projects.c.id == intent["project_id"]
+                    )
+                )
+            ).scalar_one_or_none()
+            parent_episode = None
+            if intent["target_task_id"]:
+                parent_episode = (
+                    await conn.execute(
+                        select(task_integration_checkpoints.c.episode_id).where(
+                            task_integration_checkpoints.c.task_id == intent["target_task_id"]
+                        )
+                    )
+                ).scalar_one_or_none()
+            if (
+                intent["target_task_id"]
+                and parent_episode is not None
+                and hierarchy_mode in {"hierarchy", "train"}
+            ):
+                from src.integration.parent_completion import ParentCompletion
+
+                try:
+                    await ParentCompletion(self).mark_ready_on(
+                        conn, intent["target_task_id"]
+                    )
+                except Exception as exc:
+                    # Parent targets must have a coherent active episode.
+                    # Do not commit a receipt that cannot update its owning
+                    # readiness projection.
+                    raise ValueError(f"parent readiness projection failed: {exc}") from exc
+
             payload = {
                 "project_id": intent["project_id"],
-                "operation_id": intent["id"],
+                "operation_id": intent["fence_owner_id"],
+                "promotion_intent_id": intent["id"],
             }
             await enqueue_integration_event(
                 conn,

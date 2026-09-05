@@ -187,7 +187,7 @@ class WorkspaceMixin:
             "train",
         }:
             try:
-                integration_origin, integration_fence = (
+                integration_origin, integration_fence, _integration_role = (
                     await self._hierarchy_origin_and_fence(task, project)
                 )
             except (BranchBusy, StaleFence, ValueError) as exc:
@@ -522,28 +522,48 @@ class WorkspaceMixin:
 
         return workspace
 
-    async def _hierarchy_origin_and_fence(self, task: Task, project) -> tuple[dict, Fence]:
-        """Resolve the one materialized origin and current task-owner fence."""
+    async def _hierarchy_origin_and_fence(
+        self, task: Task, project
+    ) -> tuple[dict, Fence, str]:
+        """Resolve exact origin/target and the server-derived current role."""
         repository_id = getattr(project, "integration_repository_id", None)
         if not repository_id or task.repo_id != repository_id:
             raise ValueError("task is not bound to the designated repository")
-        origin = await self.db.get_task_branch_origin_for_promotion(task.id, repository_id)
+        subject_id = task.id
+        operation = await self.db.get_active_integration_verifier_for_task(task.id)
+        if operation is not None:
+            subject_id = operation["parent_task_id"]
+        subject = await self.db.get_task(subject_id)
+        if subject is None:
+            raise ValueError("integration owner subject does not exist")
+        origin = await self.db.get_task_branch_origin_for_promotion(subject_id, repository_id)
         if origin is None or not origin.get("reserved") or not origin.get("materialized"):
             raise ValueError("exact branch origin is not materialized")
-        branch = task.branch_name or ""
-        if branch != f"aq/{task.id}":
+        branch = subject.branch_name or ""
+        if branch != f"aq/{subject_id}" or task.branch_name != branch:
             raise ValueError("task branch does not match its canonical origin")
         target = BranchKey(repository_id=repository_id, branch=branch)
         ownership = BranchOwnership(self.db)
         owner = await ownership.get_owner(target)
+        role = str(owner["owner_role"]) if owner is not None else ""
+        expected_role = "verifier" if operation is not None or subject_id == task.id and role == "verifier" else "worker"
         if (
             owner is None
             or owner["owner_id"] != task.id
-            or owner["owner_role"] != "worker"
+            or role != expected_role
             or owner["handoff_state"] != "reserved"
         ):
             raise BranchBusy("canonical branch is not reserved by this task")
-        return origin, Fence(target=target, owner_id=task.id, token=int(owner["fence_token"]))
+        if role == "verifier":
+            checkpoint = await self.db.get_integration_checkpoint(subject_id)
+            if checkpoint is None or not checkpoint.get("episode_id"):
+                raise ValueError("verifier target has no active parent episode")
+            origin = dict(origin) | {"base_sha": checkpoint["checkpoint_sha"]}
+        return (
+            origin,
+            Fence(target=target, owner_id=task.id, token=int(owner["fence_token"])),
+            role,
+        )
 
     async def _prepare_exact_origin_workspace(
         self,
@@ -556,9 +576,13 @@ class WorkspaceMixin:
         """Prepare any enabled checkout at its pinned origin under one owner fence."""
         ws = attachment.workspace
         workspace = ws.workspace_path
-        branch = f"aq/{task.id}"
+        branch = fence.target.branch
         base_sha = str(origin["base_sha"])
-        async with BranchOwnership(self.db).mutation_exclusion(fence):
+        owner = await BranchOwnership(self.db).get_owner(fence.target)
+        role = owner["owner_role"] if owner else None
+        async with BranchOwnership(self.db).mutation_exclusion(
+            fence, expected_role=role
+        ):
             if ws.is_slot:
                 return await self._worktree_slots().reset_slot_for_task(
                     ws,

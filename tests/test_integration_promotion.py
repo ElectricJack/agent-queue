@@ -17,9 +17,12 @@ from sqlalchemy.exc import DBAPIError, IntegrityError
 from src.database import Database
 from src.database.tables import (
     integration_outbox,
+    integration_parent_episodes,
     integration_promotion_intents,
+    integration_repair_operations,
     task_branch_origins,
     task_delivery_receipts,
+    task_integration_checkpoints,
 )
 from src.git.manager import GitError, GitManager
 from src.integration.models import BranchKey, PromotionInput
@@ -50,6 +53,32 @@ async def db(tmp_path):
             branch_name="aq/parent",
         )
     )
+    async with database.immediate() as conn:
+        await conn.execute(
+            insert(integration_parent_episodes).values(
+                id="episode",
+                parent_task_id="parent",
+                repository_id="repo",
+                generation=0,
+                pre_collection_checkpoint_sha="a" * 40,
+                created_at=1.0,
+            )
+        )
+        await conn.execute(
+            insert(integration_repair_operations).values(
+                id="collector-op",
+                target_kind="parent",
+                parent_task_id="parent",
+                episode_id="episode",
+                active_stage=0,
+                state="active",
+                policy_snapshot={},
+                artifact_snapshot={},
+                required_check_version="test",
+                created_at=1.0,
+                updated_at=1.0,
+            )
+        )
     await database.create_task(
         Task(
             id="child",
@@ -61,6 +90,20 @@ async def db(tmp_path):
             branch_name="aq/child",
         )
     )
+    async with database.immediate() as conn:
+        await conn.execute(
+            insert(task_integration_checkpoints).values(
+                task_id="parent",
+                repository_id="repo",
+                branch="aq/parent",
+                checkpoint_sha="a" * 40,
+                generation=0,
+                episode_id="episode",
+                state="awaiting_children",
+                version=0,
+                updated_at=1.0,
+            )
+        )
     yield database
     await database.close()
 
@@ -272,7 +315,7 @@ async def promotion_case(db, tmp_path):
     )
     fence = await BranchOwnership(db).acquire(
         BranchKey(repository_id="repo", branch="aq/parent"),
-        "collector",
+        "collector-op",
         "collector",
     )
     request = PromotionInput(
@@ -331,6 +374,15 @@ async def test_clean_promotion_is_retained_attributed_pushed_and_reconciled(db, 
     async with db._engine.connect() as conn:
         assert await conn.scalar(select(func.count()).select_from(task_delivery_receipts)) == 1
         assert await conn.scalar(select(func.count()).select_from(integration_outbox)) == 2
+        delivery = (
+            await conn.execute(
+                select(integration_outbox).where(
+                    integration_outbox.c.event_type == "delivery.applied"
+                )
+            )
+        ).mappings().one()
+        assert delivery["payload"]["operation_id"] == case["fence"].owner_id
+        assert delivery["payload"]["promotion_intent_id"] == prepared.intent_id
 
 
 async def test_clean_promotion_preserves_independent_parent_changes(db, promotion_case):
@@ -753,6 +805,42 @@ async def test_completed_delivery_replay_ignores_old_fence_and_deleted_source_br
     assert _git(["ls-remote", "origin"], case["work"]) == refs_before
 
 
+async def test_actual_push_holds_collector_fence_against_transfer(db, promotion_case):
+    """A handoff cannot win between the last role check and remote mutation."""
+    from src.integration.promotion import PromotionService
+
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    async def hook(phase: str):
+        if phase == "before_push":
+            entered.set()
+            await release.wait()
+
+    case = promotion_case
+    service = PromotionService(
+        db,
+        data_dir=case["data_dir"],
+        git_manager=GitManager(),
+        crash_hook=hook,
+    )
+    prepared = await service.prepare(case["request"])
+    pushing = asyncio.create_task(service.push(prepared.intent_id, case["fence"]))
+    await entered.wait()
+    transferring = asyncio.create_task(
+        BranchOwnership(db).transfer(case["fence"], "next-owner", "collector")
+    )
+    await asyncio.sleep(0.05)
+    assert not transferring.done()
+
+    release.set()
+    promoted = await pushing
+    successor = await transferring
+
+    assert promoted.prepared_sha
+    assert successor.owner_id == "next-owner"
+
+
 async def _seed_handler_delivery(handler) -> dict:
     from src.integration.models import PromotionValue
 
@@ -774,6 +862,50 @@ async def _seed_handler_delivery(handler) -> dict:
             repo_id="repo",
             branch_name="aq/parent",
         )
+    )
+    async with handler.db.immediate() as conn:
+        await conn.execute(
+            insert(integration_parent_episodes).values(
+                id="episode",
+                parent_task_id="parent",
+                repository_id="repo",
+                generation=0,
+                pre_collection_checkpoint_sha="a" * 40,
+                created_at=1.0,
+            )
+        )
+        await conn.execute(
+            insert(integration_repair_operations).values(
+                id="collector-op",
+                target_kind="parent",
+                parent_task_id="parent",
+                episode_id="episode",
+                active_stage=0,
+                state="active",
+                policy_snapshot={},
+                artifact_snapshot={},
+                required_check_version="test",
+                created_at=1.0,
+                updated_at=1.0,
+            )
+        )
+        await conn.execute(
+            insert(task_integration_checkpoints).values(
+                task_id="parent",
+                repository_id="repo",
+                branch="aq/parent",
+                checkpoint_sha="a" * 40,
+                generation=0,
+                episode_id="episode",
+                state="awaiting_children",
+                version=0,
+                updated_at=1.0,
+            )
+        )
+    await BranchOwnership(handler.db).acquire(
+        BranchKey(repository_id="repo", branch="aq/parent"),
+        "collector-op",
+        "collector",
     )
     await handler.db.create_task(
         Task(
@@ -800,7 +932,7 @@ async def _seed_handler_delivery(handler) -> dict:
         "expected_target": "c" * 40,
         "fence": {
             "target": {"repository_id": "repo", "branch": "aq/parent"},
-            "owner_id": "collector",
+            "owner_id": "collector-op",
             "token": 1,
         },
     }

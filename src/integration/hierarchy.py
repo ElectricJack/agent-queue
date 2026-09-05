@@ -26,6 +26,7 @@ from src.database.tables import (
 from src.integration.models import BranchKey
 from src.integration.outbox import enqueue_integration_event
 from src.integration.ownership import BranchOwnership
+from src.integration.parent_completion import ParentCompletion
 from src.models import RepoConfig, Task, TaskStatus
 from src.task_names import child_task_id
 from src.task_names import fresh_root_id
@@ -131,6 +132,7 @@ class HierarchyIntegration:
         self.branch_materializer = branch_materializer
         self.checkpoint_verifier = checkpoint_verifier
         self.ownership = ownership or BranchOwnership(db)
+        self.parent_completion = ParentCompletion(db, clock=clock)
         self.clock = clock
 
     async def file_children(
@@ -202,6 +204,83 @@ class HierarchyIntegration:
                 origins.append(origin)
 
         return {"outcome": "filed", "generation": generation, "children": created, "origins": origins}
+
+    async def readiness(self, task_id: str) -> dict:
+        return await self.parent_completion.readiness(task_id)
+
+    async def record_disposition(self, child_task_id: str, **values) -> dict:
+        return await self.parent_completion.record_disposition(child_task_id, **values)
+
+    async def verify_parent(
+        self, task_id: str, generation: int, head_sha: str, evidence_ids: list[str]
+    ) -> dict:
+        if not _OID.fullmatch(head_sha):
+            return {"outcome": "stale_head", "task_id": task_id}
+        if self.checkpoint_verifier is None:
+            return {"outcome": "stale_head", "task_id": task_id}
+        async with self.db._engine.connect() as conn:
+            task = await self._task_row(conn, task_id)
+            _project, repo = await self._enabled_route(conn, task)
+        actual = self.checkpoint_verifier(task, repo, head_sha)
+        if inspect.isawaitable(actual):
+            actual = await actual
+        if actual != head_sha:
+            return {"outcome": "stale_head", "task_id": task_id}
+        return await self.parent_completion.verify_parent(
+            task_id, generation, head_sha, evidence_ids
+        )
+
+    async def complete_parent(self, task_id: str, generation: int, head_sha: str) -> dict:
+        return await self.parent_completion.complete_parent(task_id, generation, head_sha)
+
+    async def wake_verifier(self, task_id: str, fence) -> dict:
+        return await self.parent_completion.wake_verifier(task_id, fence)
+
+    async def checkpoint_leaf_completion(self, task_id: str, head_sha: str) -> dict:
+        """Advance only a leaf's live completion head after clean pushed proof.
+
+        The immutable branch origin remains the filing base.  Review and
+        promotion consume this live checkpoint as the finished source head.
+        """
+        if not _OID.fullmatch(head_sha) or self.checkpoint_verifier is None:
+            raise HierarchyError("dirty", "leaf completion head is not verifiable")
+        async with self.db._engine.connect() as read_conn:
+            task = await self._task_row(read_conn, task_id)
+            project, repo = await self._enabled_route(read_conn, task)
+        verified = self.checkpoint_verifier(task, repo, head_sha)
+        if inspect.isawaitable(verified):
+            verified = await verified
+        if verified != head_sha:
+            raise HierarchyError("dirty", "leaf checkpoint verifier returned another head")
+        async with self.db.immediate() as conn:
+            task = await self._task_row(conn, task_id)
+            project, repo = await self._enabled_route(conn, task)
+            await self.db.lock_hierarchy_project(conn, project["id"])
+            child = (
+                await conn.execute(select(tasks.c.id).where(tasks.c.parent_task_id == task_id).limit(1))
+            ).first()
+            if child is not None:
+                raise HierarchyError("invariant_error", "leaf completion has children")
+            checkpoint = await self._locked_checkpoint(conn, task_id)
+            if checkpoint.get("episode_id") is not None:
+                raise HierarchyError("invariant_error", "parent episode cannot close as a leaf")
+            await conn.execute(
+                update(task_integration_checkpoints)
+                .where(task_integration_checkpoints.c.task_id == task_id)
+                .where(task_integration_checkpoints.c.version == checkpoint["version"])
+                .values(
+                    checkpoint_sha=head_sha,
+                    state="working",
+                    version=task_integration_checkpoints.c.version + 1,
+                    updated_at=self.clock(),
+                )
+            )
+        return {
+            "outcome": "checkpointed",
+            "task_id": task_id,
+            "generation": int(checkpoint["generation"]),
+            "head_sha": head_sha,
+        }
 
     async def file_prepared_child_on(
         self,
@@ -389,6 +468,13 @@ class HierarchyIntegration:
                 raise HierarchyError(
                     "stale", f"expected generation {generation}, found {checkpoint['generation']}"
                 )
+            operation = await self.parent_completion.reserve_episode_on(
+                conn,
+                parent=task,
+                project=project,
+                checkpoint=checkpoint,
+                pre_collection_sha=head_sha,
+            )
             await conn.execute(
                 update(task_integration_checkpoints)
                 .where(task_integration_checkpoints.c.task_id == task_id)
@@ -398,11 +484,19 @@ class HierarchyIntegration:
                     state="awaiting_children",
                     verified_sha=None,
                     verified_generation=None,
+                    episode_id=operation["episode_id"],
                     version=task_integration_checkpoints.c.version + 1,
                     updated_at=self.clock(),
                 )
             )
-        return {"outcome": "checkpointed", "task_id": task_id, "generation": generation, "head_sha": head_sha}
+        return {
+            "outcome": "checkpointed",
+            "task_id": task_id,
+            "generation": generation,
+            "head_sha": head_sha,
+            "episode_id": operation["episode_id"],
+            "operation_id": operation["id"],
+        }
 
     async def materialize_origin(self, origin_id: str) -> dict:
         """Create a pending canonical ref only when absent or already exact.

@@ -17,6 +17,7 @@ from src.database.tables import (
     events,
     archived_tasks,
     gates,
+    integration_repair_operations,
     sessions,
     task_context,
     task_comments,
@@ -24,6 +25,7 @@ from src.database.tables import (
     task_criteria,
     task_dependencies,
     task_gates,
+    task_integration_checkpoints,
     task_labels,
     task_metadata,
     task_results,
@@ -48,6 +50,11 @@ from src.models import (
 from src.state_machine import is_valid_status_transition
 
 logger = logging.getLogger(__name__)
+
+# Only the conn-owned parent completion path imports and supplies this token.
+# Public ``force`` and context strings are deliberately not verification proof.
+_INTEGRATION_COMPLETION_TOKEN = object()
+_INTEGRATION_WAKE_TOKEN = object()
 
 
 #: ``UPDATE … RETURNING`` / ``INSERT … RETURNING`` landed in SQLite 3.35.
@@ -607,6 +614,28 @@ class TaskQueryMixin:
                 return None
             if await self._read_manual_pause(conn, task_id) is not None:
                 return None
+            managed_episode = (
+                await conn.execute(
+                    select(task_integration_checkpoints.c.task_id).where(
+                        task_integration_checkpoints.c.task_id == task_id,
+                        task_integration_checkpoints.c.episode_id.is_not(None),
+                    )
+                )
+            ).first()
+            if managed_episode:
+                return None
+            verifier_delegate = (
+                await conn.execute(
+                    select(integration_repair_operations.c.id).where(
+                        integration_repair_operations.c.verifier_task_id == task_id,
+                        integration_repair_operations.c.state.in_(
+                            ("active", "escalated", "human_required")
+                        ),
+                    )
+                )
+            ).first()
+            if verifier_delegate is not None:
+                return None
             result = await self._resume_locked(conn, task_id, None)
         await self.log_blocked_flips(result.flipped)
         await self._notify_ready(result.ready)
@@ -737,6 +766,8 @@ class TaskQueryMixin:
         returning: bool = False,
         assume_pre_state: tuple[TaskStatus, bool] | None = None,
         _manual_pause_control: bool = False,
+        _integration_completion_token=None,
+        _integration_wake_token=None,
         **kwargs,
     ) -> TransitionResult:
         """Update task status with state-machine validation, on a caller-owned connection.
@@ -897,6 +928,44 @@ class TaskQueryMixin:
                     ):
                         result.ready.append((tid, "unblocked"))
         else:
+            if current_status == TaskStatus.PAUSED and new_status == TaskStatus.READY:
+                managed_parent = (
+                    await conn.execute(
+                        select(task_integration_checkpoints.c.task_id).where(
+                            task_integration_checkpoints.c.task_id == task_id,
+                            task_integration_checkpoints.c.episode_id.is_not(None),
+                        )
+                    )
+                ).scalar_one_or_none()
+                if (
+                    managed_parent is not None
+                    and _integration_wake_token is not _INTEGRATION_WAKE_TOKEN
+                ):
+                    from src.database.queries.hierarchy_queries import HierarchyError
+
+                    raise HierarchyError(
+                        "integration_wake_required",
+                        "managed parent requires guarded verifier wake",
+                    )
+            if new_status == TaskStatus.COMPLETED:
+                managed_parent = (
+                    await conn.execute(
+                        select(task_integration_checkpoints.c.task_id).where(
+                            task_integration_checkpoints.c.task_id == task_id,
+                            task_integration_checkpoints.c.episode_id.is_not(None),
+                        )
+                    )
+                ).scalar_one_or_none()
+                if (
+                    managed_parent is not None
+                    and _integration_completion_token is not _INTEGRATION_COMPLETION_TOKEN
+                ):
+                    from src.database.queries.hierarchy_queries import HierarchyError
+
+                    raise HierarchyError(
+                        "integration_completion_required",
+                        "managed parent requires verified integration completion",
+                    )
             # Invariant 6 (spec §7): a container never reaches COMPLETED while
             # a child is still open.  Enforced HERE rather than only at the
             # close surfaces, because approval, execution and the workflow

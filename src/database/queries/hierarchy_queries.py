@@ -359,6 +359,21 @@ class HierarchyQueryMixin:
             "promoting",
             "cleanup_pending",
         )
+        # A mutation below a sealed root changes that member's frozen
+        # aggregate just as surely as mutating the member row itself.  Walk
+        # upward as well as downward so a descendant cannot evade sealing.
+        ancestor_seed = select(
+            tasks.c.id, tasks.c.parent_task_id, literal(0).label("depth")
+        ).where(tasks.c.id == task_id)
+        ancestors = ancestor_seed.cte("integration_mutation_ancestors", recursive=True)
+        parent = tasks.alias("integration_mutation_parent")
+        ancestors = ancestors.union_all(
+            select(parent.c.id, parent.c.parent_task_id, ancestors.c.depth + 1)
+            .join(ancestors, parent.c.id == ancestors.c.parent_task_id)
+            .where(ancestors.c.depth < MAX_STRUCTURAL_DEPTH)
+        )
+        ancestor_ids = [row[0] for row in (await conn.execute(select(ancestors.c.id))).all()]
+        sealed_scope = sorted(set(ids) | set(ancestor_ids))
         sealed = (
             await conn.execute(
                 select(integration_batch_members.c.task_id)
@@ -368,7 +383,7 @@ class HierarchyQueryMixin:
                         integration_batches.c.id == integration_batch_members.c.batch_id,
                     )
                 )
-                .where(integration_batch_members.c.task_id.in_(ids))
+                .where(integration_batch_members.c.task_id.in_(sealed_scope))
                 .where(integration_batches.c.lifecycle.in_(active_batch_states))
                 .limit(1)
             )
@@ -810,6 +825,20 @@ class HierarchyQueryMixin:
         if not pending or depth > MAX_STRUCTURAL_DEPTH:
             return result
 
+        from src.integration.parent_completion import ParentCompletion
+
+        for parent_id in sorted(pending):
+            has_episode = (
+                await conn.execute(
+                    select(task_integration_checkpoints.c.task_id).where(
+                        task_integration_checkpoints.c.task_id == parent_id,
+                        task_integration_checkpoints.c.episode_id.is_not(None),
+                    )
+                )
+            ).first()
+            if has_episode:
+                await ParentCompletion(self).mark_ready_on(conn, parent_id)
+
         child = tasks.alias("child")
         stmt = select(tasks.c.id).where(
             and_(
@@ -838,6 +867,11 @@ class HierarchyQueryMixin:
                             child.c.parent_task_id == tasks.c.id,
                             child.c.status != TaskStatus.COMPLETED.value,
                         )
+                    )
+                ),
+                ~exists(
+                    select(literal(1)).where(
+                        task_integration_checkpoints.c.task_id == tasks.c.id
                     )
                 ),
             )
@@ -901,6 +935,11 @@ class HierarchyQueryMixin:
                             child.c.parent_task_id == tasks.c.id,
                             child.c.status != TaskStatus.COMPLETED.value,
                         )
+                    )
+                ),
+                ~exists(
+                    select(literal(1)).where(
+                        task_integration_checkpoints.c.task_id == tasks.c.id
                     )
                 ),
             )

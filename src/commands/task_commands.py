@@ -3036,6 +3036,30 @@ class TaskCommandsMixin:
         if task.status == TaskStatus.IN_PROGRESS:
             return {"error": "Task is currently in progress. Stop it first."}
 
+        review_evidence_snapshot = None
+        caller_scope = self._current_scope or {}
+        if caller_scope.get("kind") == "session":
+            review_task_id = caller_scope.get("task_id")
+            session_id = caller_scope.get("session_id")
+            review_task = await self.db.get_task(review_task_id) if review_task_id else None
+            session = await self.db.get_session(session_id) if session_id else None
+            if review_task is not None and review_task.profile_id in REVIEW_PROFILE_IDS:
+                from src.database.queries.hierarchy_queries import HierarchyError
+                from src.integration.review_evidence import ReviewEvidenceProducer
+
+                try:
+                    review_evidence_snapshot = await ReviewEvidenceProducer(
+                        self.db, self._integration_promotion_service()
+                    ).snapshot(
+                        review_task,
+                        session,
+                        verdict="rejected",
+                        feedback=feedback,
+                        requested_subject_id=task_id,
+                    )
+                except HierarchyError as exc:
+                    return {"error": f"integration review evidence refused: {exc}"}
+
         old_status = task.status.value
 
         # Append feedback to the task description so the agent sees it
@@ -3046,15 +3070,31 @@ class TaskCommandsMixin:
         # ``integration_mode`` is a persisted column the transition does not
         # touch, so a reopened pull_request-mode task re-creates its PR on
         # the next completion.
-        await self.db.transition_task(
-            task_id,
-            TaskStatus.READY,
-            context="reopen_with_feedback",
-            description=updated_description,
-            retry_count=0,
-            assigned_agent_id=None,
-            pr_url=None,
-        )
+        transition_values = {
+            "context": "reopen_with_feedback",
+            "description": updated_description,
+            "retry_count": 0,
+            "assigned_agent_id": None,
+            "pr_url": None,
+        }
+        if review_evidence_snapshot is None:
+            await self.db.transition_task(task_id, TaskStatus.READY, **transition_values)
+        else:
+            from src.integration.review_evidence import ReviewEvidenceProducer
+
+            async with self.db.immediate() as conn:
+                transition = await ReviewEvidenceProducer(
+                    self.db, None
+                ).reject_and_reopen_on(
+                    conn,
+                    task_id,
+                    review_evidence_snapshot["reviewer_task_id"],
+                    review_evidence_snapshot,
+                    **transition_values,
+                )
+            await self.db.log_blocked_flips(transition.flipped)
+            await self.db._notify_settled(transition.settled)
+            await self.db._notify_ready(transition.ready)
 
         # Store feedback as a structured task_context entry so agents and
         # tooling can access individual reopen comments programmatically.

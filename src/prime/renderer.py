@@ -118,6 +118,9 @@ class PrimeRenderer:
             _sections.build_task_section(
                 task,
                 review_deliverables=await _sections.build_review_deliverable_summary(self.db, task),
+                integration_delivery=await _sections.build_integration_delivery_summary(
+                    self.db, task
+                ),
             ),
             await _sections.build_task_context_section(self.db, self.config, task),
             await _sections.build_workspaces_section(self.db, task, effective_work_dir),

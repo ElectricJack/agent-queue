@@ -6,13 +6,14 @@ import asyncio
 import subprocess
 
 import pytest
-from sqlalchemy import select, update
+from sqlalchemy import insert, select, update
 
 from src.database import Database
 from src.database.queries.hierarchy_queries import HierarchyError
 from src.database.tables import (
     task_delivery_receipts,
     integration_outbox,
+    playbook_artifacts,
     task_branch_origins,
     task_integration_checkpoints,
     tasks,
@@ -22,6 +23,14 @@ from src.integration.hierarchy import (
     HierarchyIntegration,
     materialize_exact_branch,
     verify_workspace_checkpoint,
+)
+from src.integration.models import (
+    ArtifactSnapshot,
+    HierarchicalIntegrationPolicy,
+    IntegrationBoundaryPolicy,
+    PlaybookRoute,
+    RepairPolicy,
+    RequiredCheckSet,
 )
 from src.models import Project, RepoConfig, RepoSourceType, Task, TaskStatus, Workspace
 
@@ -49,10 +58,50 @@ async def db(tmp_path):
             source_path=str(tmp_path),
         )
     )
+    artifact = ArtifactSnapshot(
+        playbook_id="hierarchical-delivery",
+        artifact_sha256="sha256:" + "a" * 64,
+        schema_generation=2,
+        contract_fingerprint="sha256:" + "b" * 64,
+        source_digest="sha256:" + "c" * 64,
+        compiler_build="test",
+        version=1,
+    )
+    boundary = IntegrationBoundaryPolicy(
+        required_checks=RequiredCheckSet(
+            version="test", names=("unit",), producer_id="forge-observer"
+        ),
+        repair=RepairPolicy(debug_intelligence_class="high"),
+        route=PlaybookRoute(
+            playbook_id="hierarchical-delivery",
+            scope="project",
+            scope_identifier="p",
+            artifact=artifact,
+        ),
+    )
+    async with database.immediate() as conn:
+        await conn.execute(
+            insert(playbook_artifacts).values(
+                **artifact.model_dump(),
+                scope="project",
+                scope_identifier="p",
+                profile_fingerprint="",
+                path="/tmp/hierarchy-artifact",
+                size_bytes=1,
+                validation="{}",
+                created_at=1.0,
+            )
+        )
     await database.update_project(
         "p",
         hierarchical_integration_mode="hierarchy",
         integration_repository_id="repo",
+        hierarchical_integration_policy=HierarchicalIntegrationPolicy(
+            parent=boundary,
+            root=boundary,
+            branchless_parent="verifier",
+            on_failed_child="block",
+        ).model_dump(mode="json"),
     )
     yield database
     await database.close()

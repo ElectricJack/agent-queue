@@ -12,6 +12,7 @@ from typing import Any
 from src.commands.principal import PrincipalKind, TRUSTED_LOCAL, current_principal
 from src.git.manager import GitError
 from src.git.manager import RemoteRefState
+from src.database.queries.hierarchy_queries import HierarchyError
 from src.integration.models import BranchKey, Fence
 from src.integration.ownership import BranchBusy, BranchOwnership, StaleFence
 from src.models import TaskStatus
@@ -103,6 +104,18 @@ class IntegrationCommandsMixin:
     ) -> bool:
         if role == "repair":
             return await self._integration_repair_task_matches_target(owner_id, target, project_id)
+        if role == "verifier":
+            task = await self.db.get_task(owner_id)
+            if task is None or task.project_id != project_id or task.repo_id != target.repository_id:
+                return False
+            operation = await self.db.get_active_integration_verifier_for_task(owner_id)
+            if operation is None:
+                operation = await self.db.get_active_parent_integration_operation(owner_id)
+                if operation is None or operation.get("verifier_task_id") is not None:
+                    return False
+            return await self._integration_operation_matches_target(
+                operation, target, project_id
+            )
         if role in _TASK_OWNER_ROLES:
             return await self._integration_task_matches_target(owner_id, target, project_id)
         if role == "collector":
@@ -186,11 +199,30 @@ class IntegrationCommandsMixin:
             token=current_token,
         )
         try:
+            if request.next_role == "verifier":
+                operation = await self.db.get_active_integration_verifier_for_task(
+                    request.next_owner_id
+                )
+                parent_id = operation["parent_task_id"] if operation else request.next_owner_id
+                readiness = await self._hierarchy_integration_service().readiness(parent_id)
+                if readiness["outcome"] != "ready":
+                    return _failure("busy", "parent delivery is not ready for verifier handoff")
             transferred = await ownership.transfer(fence, request.next_owner_id, request.next_role)
         except StaleFence as exc:
             return _failure("stale_owner", str(exc))
         except BranchBusy as exc:
             return _failure("busy", str(exc))
+        if request.next_role == "verifier":
+            operation = await self.db.get_active_integration_verifier_for_task(
+                request.next_owner_id
+            )
+            parent_id = operation["parent_task_id"] if operation else request.next_owner_id
+            try:
+                await self._hierarchy_integration_service().wake_verifier(
+                    parent_id, transferred
+                )
+            except HierarchyError as exc:
+                return _failure("human_required", str(exc))
         return {
             "success": True,
             "outcome": "transferred",
@@ -354,6 +386,82 @@ class IntegrationCommandsMixin:
             return _failure(outcome, str(exc))
         return {"success": True, **result}
 
+    async def _cmd_integration_delivery_readiness(self, args: dict) -> dict:
+        from pydantic import ValidationError
+
+        from src.commands.contracts.integration import IntegrationDeliveryReadinessArgs
+        from src.database.queries.hierarchy_queries import HierarchyError
+
+        try:
+            request = IntegrationDeliveryReadinessArgs.model_validate(args)
+        except ValidationError as exc:
+            return _failure("invariant_error", f"invalid readiness query: {exc}")
+        task = await self.db.get_task(request.task_id)
+        if task is None:
+            return _failure("invariant_error", "parent task not found")
+        if not await self._integration_delivery_authorized(
+            task.project_id, "integration_delivery_readiness", allow_session_read=True
+        ):
+            return _failure("unauthorized", "caller cannot read parent delivery state")
+        try:
+            result = await self._hierarchy_integration_service().readiness(request.task_id)
+        except HierarchyError as exc:
+            return _failure("invariant_error", str(exc))
+        return {"success": result["outcome"] == "ready", **result}
+
+    async def _cmd_integration_parent_verify(self, args: dict) -> dict:
+        from pydantic import ValidationError
+
+        from src.commands.contracts.integration import IntegrationParentVerifyArgs
+        from src.database.queries.hierarchy_queries import HierarchyError
+
+        try:
+            request = IntegrationParentVerifyArgs.model_validate(args)
+        except ValidationError as exc:
+            return _failure("invalid_evidence", f"invalid verification request: {exc}")
+        task = await self.db.get_task(request.task_id)
+        if task is None:
+            return _failure("stale_generation", "parent task not found")
+        if not await self._integration_delivery_authorized(
+            task.project_id, "integration_parent_verify"
+        ):
+            return _failure("unauthorized", "caller cannot verify this parent")
+        try:
+            result = await self._hierarchy_integration_service().verify_parent(
+                request.task_id,
+                request.generation,
+                request.head_sha,
+                request.evidence_ids,
+            )
+        except (HierarchyError, GitError) as exc:
+            return _failure("invalid_evidence", str(exc))
+        return {"success": result["outcome"] == "verified", **result}
+
+    async def _cmd_integration_complete_parent(self, args: dict) -> dict:
+        from pydantic import ValidationError
+
+        from src.commands.contracts.integration import IntegrationCompleteParentArgs
+        from src.database.queries.hierarchy_queries import HierarchyError
+
+        try:
+            request = IntegrationCompleteParentArgs.model_validate(args)
+        except ValidationError as exc:
+            return _failure("invariant_error", f"invalid parent completion: {exc}")
+        task = await self.db.get_task(request.task_id)
+        if task is None:
+            return _failure("invariant_error", "parent task not found")
+        if not await self._integration_delivery_authorized(
+            task.project_id, "integration_complete_parent"
+        ):
+            return _failure("unauthorized", "caller cannot complete this parent")
+        try:
+            result = await self._hierarchy_integration_service().complete_parent(
+                request.task_id, request.generation, request.head_sha
+            )
+        except HierarchyError as exc:
+            return _failure("invariant_error", str(exc))
+        return {"success": result["outcome"] == "completed", **result}
+
     async def _cmd_delivery_promote(self, args: dict) -> dict:
         from pydantic import ValidationError
 
@@ -391,6 +499,21 @@ class IntegrationCommandsMixin:
             existing = await self.db.get_integration_promotion_intent(prepared.intent_id)
             if existing is not None and existing["state"] == "committed":
                 return self._promotion_result("already_promoted", prepared)
+            owner = await BranchOwnership(self.db).get_owner(request.fence.target)
+            if (
+                owner is None
+                or owner["owner_id"] != request.fence.owner_id
+                or int(owner["fence_token"]) != request.fence.token
+                or owner["owner_role"] != "collector"
+                or owner["handoff_state"] != "reserved"
+                or not await self._integration_collector_matches_target(
+                    owner["owner_id"], request.fence.target, repository.project_id
+                )
+            ):
+                return _failure(
+                    "target_moved",
+                    "actual promotion requires the current persisted collector owner",
+                )
             promoted = await service.push(prepared.intent_id, request.fence)
         except PromotionConflict as exc:
             return self._promotion_result("conflict", exc.value, success=False, error=str(exc))

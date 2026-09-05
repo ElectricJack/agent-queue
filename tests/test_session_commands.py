@@ -18,8 +18,22 @@ import pytest
 from src.commands.handler import CommandHandler
 from src.config import AppConfig
 from src.database import Database
-from src.database.tables import task_branch_origins
-from src.integration.models import BranchKey
+from src.database.tables import (
+    integration_check_evidence,
+    playbook_artifacts,
+    task_branch_origins,
+    task_integration_checkpoints,
+)
+from src.integration.models import (
+    ArtifactSnapshot,
+    BranchKey,
+    Fence,
+    HierarchicalIntegrationPolicy,
+    IntegrationBoundaryPolicy,
+    PlaybookRoute,
+    RepairPolicy,
+    RequiredCheckSet,
+)
 from src.integration.ownership import BranchBusy, BranchOwnership
 from src.models import (
     Agent,
@@ -52,9 +66,8 @@ class _Bus:
         return [t for t, _ in self.events]
 
 
-def _handoff_git():
+def _handoff_git(head="a" * 40):
     detached = False
-    head = "a" * 40
 
     async def current_branch(_path, *, strict=False):
         return "HEAD" if detached else "aq/t1"
@@ -76,8 +89,13 @@ def _handoff_git():
             return ""
         raise AssertionError(f"unexpected handoff git call: {args!r} in {cwd}")
 
+    async def rev_parse(_path, _ref):
+        return head
+
     return SimpleNamespace(
         aget_current_branch=current_branch,
+        arev_parse=rev_parse,
+        _arun=run,
         _arun_unlocked=run,
     )
 
@@ -967,6 +985,58 @@ class TestEndToEndOnFakeProvider:
         )
         return ownership, fence
 
+    async def _install_hierarchy_policy(self, db):
+        artifact = ArtifactSnapshot(
+            playbook_id="hierarchical-delivery",
+            artifact_sha256="sha256:" + "a" * 64,
+            schema_generation=2,
+            contract_fingerprint="sha256:" + "b" * 64,
+            source_digest="sha256:" + "c" * 64,
+            compiler_build="test-build",
+            compiled_at="2026-09-05T00:00:00Z",
+            version=4,
+        )
+        route = PlaybookRoute(
+            playbook_id=artifact.playbook_id,
+            scope="project",
+            scope_identifier="p1",
+            activation_id="activation-audit-only",
+            artifact=artifact,
+        )
+        boundary = IntegrationBoundaryPolicy(
+            required_checks=RequiredCheckSet(
+                version="parent-v1", names=("unit",), producer_id="forge-observer"
+            ),
+            repair=RepairPolicy(debug_intelligence_class="deep-high"),
+            route=route,
+            primary_intelligence_class="medium",
+            primary_profile_id="claude-opus",
+            verifier_intelligence_class="high",
+            verifier_profile_id="claude-opus",
+        )
+        policy = HierarchicalIntegrationPolicy(
+            parent=boundary,
+            root=boundary,
+            branchless_parent="verifier",
+            on_failed_child="block",
+        )
+        async with db.immediate() as conn:
+            await conn.execute(
+                playbook_artifacts.insert().values(
+                    **artifact.model_dump(),
+                    scope="project",
+                    scope_identifier="p1",
+                    profile_fingerprint="",
+                    path="/tmp/artifact",
+                    size_bytes=1,
+                    validation="{}",
+                    created_at=1.0,
+                )
+            )
+        await db.update_project(
+            "p1", hierarchical_integration_policy=policy.model_dump(mode="json")
+        )
+
     async def _launch_via_execute_task(self, db, real_orch, monkeypatch, tmp_path):
         """Drive a launch through the *real* ``_execute_task`` entry point.
 
@@ -1626,6 +1696,292 @@ class TestEndToEndOnFakeProvider:
         assert current["handoff_state"] == "reserved"
         assert current["session_id"] is None
         assert current["workspace_id"] is None
+
+    async def test_hierarchy_launch_workspace_lookup_error_has_initialized_row(
+        self, db, real_orch, provider, tmp_path, monkeypatch
+    ):
+        wd = await self._setup(db, tmp_path)
+        await self._enable_hierarchy_launch(db, tmp_path)
+        original = db.get_workspace_for_task
+        calls = 0
+
+        async def fail_once(task_id):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                raise RuntimeError("workspace lookup unavailable")
+            return await original(task_id)
+
+        monkeypatch.setattr(db, "get_workspace_for_task", fail_once)
+        task = await db.get_task("t1")
+
+        await real_orch._launch_session_for_task(
+            AssignAction("a1", "t1", "p1"),
+            task,
+            await db.get_profile("claude-opus"),
+            wd,
+        )
+
+        assert provider.starts == []
+        assert (await db.get_task("t1")).status is TaskStatus.PAUSED
+
+    async def test_managed_leaf_close_advances_finished_head_without_legacy_integrate(
+        self, db, real_orch, real_handler, provider, tmp_path, monkeypatch
+    ):
+        from unittest.mock import AsyncMock
+
+        from src.models import PhaseResult
+
+        wd = await self._setup(db, tmp_path)
+        await self._enable_hierarchy_launch(db, tmp_path)
+        async with db.immediate() as conn:
+            await conn.execute(
+                task_integration_checkpoints.insert().values(
+                    task_id="t1",
+                    repository_id="repo",
+                    branch="aq/t1",
+                    checkpoint_sha="a" * 40,
+                    generation=0,
+                    state="working",
+                    version=0,
+                    updated_at=time.time(),
+                )
+            )
+        task = await db.get_task("t1")
+        await real_orch._launch_session_for_task(
+            AssignAction("a1", "t1", "p1"),
+            task,
+            await db.get_profile("claude-opus"),
+            wd,
+        )
+        session = await db.get_session_for_task("t1")
+        head = "b" * 40
+        real_orch.git = _handoff_git(head)
+        monkeypatch.setattr(
+            real_orch,
+            "_phase_verify",
+            AsyncMock(return_value=PhaseResult.CONTINUE),
+            raising=False,
+        )
+        monkeypatch.setattr(real_orch, "_phase_integrate", AsyncMock(), raising=False)
+        async def exact_checkpoint(_db, _git, _task, _repo, requested):
+            return requested
+
+        monkeypatch.setattr(
+            "src.integration.hierarchy.verify_workspace_checkpoint", exact_checkpoint
+        )
+        close = await real_handler.execute(
+            "task_close",
+            {
+                "task_id": "t1",
+                "session_id": session.id,
+                "outcome": "pass",
+                "work_outcome": "shipped",
+                "summary": "leaf complete",
+            },
+        )
+
+        assert close["success"] is True
+        assert close["status"] == "COMPLETED"
+        assert (await db.get_integration_checkpoint("t1"))["checkpoint_sha"] == head
+        origin = await db.get_task_branch_origin_for_promotion("t1", "repo")
+        assert origin["base_sha"] == "a" * 40
+        real_orch._phase_integrate.assert_not_awaited()
+
+    async def test_managed_parent_close_suspends_owned_branch_without_legacy_integrate(
+        self, db, real_orch, real_handler, provider, tmp_path, monkeypatch
+    ):
+        from unittest.mock import AsyncMock
+
+        from src.integration.hierarchy import HierarchyIntegration
+        from src.models import PhaseResult
+
+        wd = await self._setup(db, tmp_path)
+        await self._enable_hierarchy_launch(db, tmp_path)
+        await self._install_hierarchy_policy(db)
+        async with db.immediate() as conn:
+            await conn.execute(
+                task_integration_checkpoints.insert().values(
+                    task_id="t1",
+                    repository_id="repo",
+                    branch="aq/t1",
+                    checkpoint_sha="a" * 40,
+                    generation=0,
+                    state="working",
+                    version=0,
+                    updated_at=time.time(),
+                )
+            )
+        hierarchy = HierarchyIntegration(
+            db,
+            default_head_resolver=lambda _repo, _branch: "a" * 40,
+            checkpoint_verifier=lambda _task, _repo, head: head,
+        )
+        await hierarchy.file_children("t1", [{"title": "child"}], 0)
+        task = await db.get_task("t1")
+        await real_orch._launch_session_for_task(
+            AssignAction("a1", "t1", "p1"),
+            task,
+            await db.get_profile("claude-opus"),
+            wd,
+        )
+        session = await db.get_session_for_task("t1")
+        head = "b" * 40
+        real_orch.git = _handoff_git(head)
+        monkeypatch.setattr(
+            real_orch,
+            "_phase_verify",
+            AsyncMock(return_value=PhaseResult.CONTINUE),
+            raising=False,
+        )
+        monkeypatch.setattr(real_orch, "_phase_integrate", AsyncMock(), raising=False)
+
+        async def exact_checkpoint(_db, _git, _task, _repo, requested):
+            return requested
+
+        monkeypatch.setattr(
+            "src.integration.hierarchy.verify_workspace_checkpoint", exact_checkpoint
+        )
+        close = await real_handler.execute(
+            "task_close",
+            {
+                "task_id": "t1",
+                "session_id": session.id,
+                "outcome": "pass",
+                "work_outcome": "shipped",
+                "summary": "parent producer complete",
+            },
+        )
+
+        checkpoint = await db.get_integration_checkpoint("t1")
+        operation = await db.get_active_parent_integration_operation("t1")
+        assert close["success"] is True
+        assert close["status"] == "PAUSED"
+        assert checkpoint["checkpoint_sha"] == head
+        assert checkpoint["episode_id"] == operation["episode_id"]
+        assert operation["state"] == "active"
+        assert (await db.get_task_branch_origin_for_promotion("t1", "repo"))["base_sha"] == (
+            "a" * 40
+        )
+        real_orch._phase_integrate.assert_not_awaited()
+
+    async def test_collector_to_verifier_parent_launch_completes_through_guarded_path(
+        self, db, real_orch, real_handler, provider, tmp_path, monkeypatch
+    ):
+        from unittest.mock import AsyncMock
+
+        from sqlalchemy import insert
+
+        from src.integration.hierarchy import HierarchyIntegration
+        from src.models import PhaseResult
+
+        wd = await self._setup(db, tmp_path)
+        ownership, _ = await self._enable_hierarchy_launch(db, tmp_path)
+        await self._install_hierarchy_policy(db)
+        async with db.immediate() as conn:
+            await conn.execute(
+                task_integration_checkpoints.insert().values(
+                    task_id="t1",
+                    repository_id="repo",
+                    branch="aq/t1",
+                    checkpoint_sha="a" * 40,
+                    generation=0,
+                    state="working",
+                    version=0,
+                    updated_at=time.time(),
+                )
+            )
+        hierarchy = HierarchyIntegration(
+            db,
+            default_head_resolver=lambda _repo, _branch: "a" * 40,
+            checkpoint_verifier=lambda _task, _repo, head: head,
+        )
+        checkpointed = await hierarchy.checkpoint_parent("t1", "a" * 40, 0)
+        async with db.immediate() as conn:
+            await db._apply_transition(
+                conn,
+                "t1",
+                TaskStatus.PAUSED,
+                assigned_agent_id=None,
+                _manual_pause_control=True,
+            )
+        target = BranchKey(repository_id="repo", branch="aq/t1")
+        owner = await ownership.get_owner(target)
+        worker = Fence(target=target, owner_id="t1", token=owner["fence_token"])
+        collector = await ownership.transfer(
+            worker, checkpointed["operation_id"], "collector"
+        )
+        verifier = await ownership.transfer(collector, "t1", "verifier")
+        assert (await hierarchy.wake_verifier("t1", verifier))["outcome"] == "woken"
+        await db.transition_task("t1", TaskStatus.IN_PROGRESS, assigned_agent_id="a1")
+
+        task = await db.get_task("t1")
+        await real_orch._launch_session_for_task(
+            AssignAction("a1", "t1", "p1"),
+            task,
+            await db.get_profile("claude-opus"),
+            wd,
+        )
+        session = await db.get_session_for_task("t1")
+        attached = await ownership.get_owner(target)
+        assert attached["owner_role"] == "verifier"
+        assert attached["handoff_state"] == "attached"
+        assert attached["session_id"] == session.id
+
+        async with db.immediate() as conn:
+            await conn.execute(
+                insert(integration_check_evidence).values(
+                    id="check-unit",
+                    operation_id=checkpointed["operation_id"],
+                    parent_task_id="t1",
+                    parent_generation=0,
+                    parent_head_sha="a" * 40,
+                    producer_id="forge-observer",
+                    workflow_id="workflow",
+                    run_id="run",
+                    attempt=1,
+                    required_check_version="parent-v1",
+                    checks={"unit": "success"},
+                    conclusion="success",
+                    classification="conclusive",
+                    observed_at=2.0,
+                )
+            )
+        assert (
+            await hierarchy.verify_parent("t1", 0, "a" * 40, ["check-unit"])
+        )["outcome"] == "verified"
+        real_orch.git = _handoff_git()
+        monkeypatch.setattr(
+            real_orch,
+            "_phase_verify",
+            AsyncMock(return_value=PhaseResult.CONTINUE),
+            raising=False,
+        )
+        monkeypatch.setattr(real_orch, "_phase_integrate", AsyncMock(), raising=False)
+
+        async def exact_checkpoint(_db, _git, _task, _repo, requested):
+            return requested
+
+        monkeypatch.setattr(
+            "src.integration.hierarchy.verify_workspace_checkpoint", exact_checkpoint
+        )
+        close = await real_handler.execute(
+            "task_close",
+            {
+                "task_id": "t1",
+                "session_id": session.id,
+                "outcome": "pass",
+                "work_outcome": "shipped",
+                "summary": "verified parent complete",
+            },
+        )
+
+        assert close["success"] is True
+        assert close["status"] == "COMPLETED"
+        assert (await db.get_integration_operation(checkpointed["operation_id"]))[
+            "state"
+        ] == "completed"
+        real_orch._phase_integrate.assert_not_awaited()
 
     async def test_hierarchy_transfer_cannot_pass_provider_start_exclusion(
         self, db, real_orch, provider, tmp_path, monkeypatch

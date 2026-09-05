@@ -548,7 +548,7 @@ class ClaimCommandsMixin:
             if hierarchy_enabled:
                 from src.integration.ownership import BranchOwnership
 
-                origin, fence = await self.orchestrator._hierarchy_origin_and_fence(
+                origin, fence, owner_role = await self.orchestrator._hierarchy_origin_and_fence(
                     task, project
                 )
                 ownership = BranchOwnership(self.db)
@@ -557,10 +557,11 @@ class ClaimCommandsMixin:
                     session.id,
                     slot.id,
                     agent_id=row.agent_id,
+                    expected_role=owner_role,
                 )
                 hierarchy_attached = True
                 async with ownership.mutation_exclusion(
-                    fence, state="attached"
+                    fence, state="attached", expected_role=owner_role
                 ) as conn:
                     fresh = await prepare_and_activate(
                         conn=conn, base_branch=origin["base_sha"]

@@ -145,16 +145,24 @@ class BranchOwnership:
                 raise BranchBusy("branch handoff changed while confirmation ran")
             return await self._claim_released(conn, current, fence.target, next_owner_id, next_role)
 
-    async def assert_current(self, fence: Fence) -> None:
+    async def assert_current(self, fence: Fence, *, expected_role: str | None = None) -> None:
         """Raise unless *fence* remains the current write authority."""
         async with self._db.immediate() as conn:
             row = await self._locked_row(conn, fence.target)
             self._require_current(row, fence)
+            if expected_role is not None and row["owner_role"] != expected_role:
+                raise BranchBusy(f"branch ownership role must be {expected_role}")
             if row["handoff_state"] not in {"reserved", "attached"}:
                 raise BranchBusy("branch ownership is not write-authoritative")
 
     @asynccontextmanager
-    async def mutation_exclusion(self, fence: Fence, *, state: str = "reserved"):
+    async def mutation_exclusion(
+        self,
+        fence: Fence,
+        *,
+        state: str = "reserved",
+        expected_role: str | None = None,
+    ):
         """Hold the ownership row across one bounded external mutation.
 
         The row lock (and SQLite's immediate writer transaction) prevents a
@@ -165,6 +173,8 @@ class BranchOwnership:
         async with self._db.immediate() as conn:
             row = await self._locked_row(conn, fence.target)
             self._require_current(row, fence)
+            if expected_role is not None and row["owner_role"] != expected_role:
+                raise BranchBusy(f"branch ownership role must be {expected_role}")
             if row["handoff_state"] != state:
                 raise BranchBusy(
                     f"branch ownership must be {state} for this mutation"
@@ -178,6 +188,7 @@ class BranchOwnership:
         workspace_id: str,
         *,
         agent_id: str | None = None,
+        expected_role: str | None = None,
         conn=None,
     ) -> Fence:
         """CAS-bind a reserved task owner to its durable writer identity."""
@@ -185,18 +196,37 @@ class BranchOwnership:
             raise ValueError("branch attachment requires session and workspace ids")
         if conn is not None:
             return await self._attach_on(
-                conn, fence, session_id, workspace_id, agent_id=agent_id
+                conn,
+                fence,
+                session_id,
+                workspace_id,
+                agent_id=agent_id,
+                expected_role=expected_role,
             )
         async with self._db.immediate() as owned_conn:
             return await self._attach_on(
-                owned_conn, fence, session_id, workspace_id, agent_id=agent_id
+                owned_conn,
+                fence,
+                session_id,
+                workspace_id,
+                agent_id=agent_id,
+                expected_role=expected_role,
             )
 
     async def _attach_on(
-        self, conn, fence: Fence, session_id: str, workspace_id: str, *, agent_id: str | None
+        self,
+        conn,
+        fence: Fence,
+        session_id: str,
+        workspace_id: str,
+        *,
+        agent_id: str | None,
+        expected_role: str | None,
     ) -> Fence:
         row = await self._locked_row(conn, fence.target)
         self._require_current(row, fence)
+        if expected_role is not None and row["owner_role"] != expected_role:
+            raise BranchBusy(f"branch ownership role must be {expected_role}")
         if row["handoff_state"] == "attached":
             if row.get("session_id") == session_id and row.get("workspace_id") == workspace_id:
                 return fence

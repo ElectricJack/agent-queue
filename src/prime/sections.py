@@ -125,7 +125,9 @@ async def build_project_role_section(
 # ---------------------------------------------------------------------------
 
 
-def build_task_section(task: Any, *, review_deliverables: str = "") -> PrimeSection:
+def build_task_section(
+    task: Any, *, review_deliverables: str = "", integration_delivery: str = ""
+) -> PrimeSection:
     """Task id/title/status/description (design §5.2 #3).
 
     No dedicated acceptance-criteria query layer exists yet (``task_criteria``
@@ -154,7 +156,43 @@ def build_task_section(task: Any, *, review_deliverables: str = "") -> PrimeSect
         )
     if review_deliverables:
         lines.extend(["", review_deliverables])
+    if integration_delivery:
+        lines.extend(["", integration_delivery])
     return PrimeSection(key="task", title=SECTION_TITLES["task"], body="\n".join(lines).strip())
+
+
+async def build_integration_delivery_summary(db: Any, task: Any) -> str:
+    """Render the same receipt projection that gates parent verification."""
+    checkpoint = await db.get_integration_checkpoint(task.id)
+    if checkpoint is None or checkpoint.get("episode_id") is None:
+        return ""
+    from src.database.queries.hierarchy_queries import HierarchyError
+    from src.integration.parent_completion import ParentCompletion
+
+    try:
+        projection = await ParentCompletion(db).readiness(task.id)
+    except HierarchyError as exc:
+        return f"## Integration delivery\nBlocked: {exc}"
+    lines = [
+        "## Integration delivery",
+        f"Episode: `{projection['episode_id']}`",
+        f"Generation: {projection['generation']}",
+        f"Pre-collection head: `{projection['checkpoint_sha']}`",
+        f"Current aggregate head: `{projection['head_sha']}`",
+        f"Readiness: **{projection['outcome']}**",
+    ]
+    for receipt in projection["receipts"]:
+        detail = receipt["disposition"]
+        if receipt["disposition"] == "code":
+            detail += f" squash `{receipt['squash_sha']}`"
+        lines.append(f"- `{receipt['source_task_id']}`: {detail}")
+    for blocker in projection["blockers"]:
+        lines.append(f"- `{blocker['task_id']}`: waiting ({blocker['reason']})")
+    checks = projection["required_checks"]
+    lines.append(
+        "Required aggregate checks: " + ", ".join(f"`{name}`" for name in checks["names"])
+    )
+    return "\n".join(lines)
 
 
 async def build_review_deliverable_summary(db: Any, task: Any) -> str:

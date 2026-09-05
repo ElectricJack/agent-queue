@@ -10,7 +10,7 @@ from sqlalchemy import and_, insert, select, update
 
 from src.config import AppConfig, DiscordConfig
 from src.database import Database
-from src.database.tables import events, task_dependencies, tasks
+from src.database.tables import events, task_dependencies, task_integration_checkpoints, tasks
 from src.models import DepType, Project, SessionRecord, Task, TaskStatus
 from src.orchestrator import Orchestrator
 
@@ -90,6 +90,27 @@ class TestSettlement:
         await db.transition_task(kids[0], TaskStatus.COMPLETED)
         await db.transition_task(kids[1], TaskStatus.FAILED)
         assert (await db.get_task("p")).status == TaskStatus.IN_PROGRESS
+
+    async def test_integration_checkpointed_parent_never_legacy_settles(self, db):
+        kids = await family(db, n=1)
+        async with db.immediate() as conn:
+            await conn.execute(
+                insert(task_integration_checkpoints).values(
+                    task_id="p",
+                    repository_id="repo",
+                    branch="aq/p",
+                    generation=1,
+                    checkpoint_sha="a" * 40,
+                    state="awaiting_children",
+                    version=0,
+                    updated_at=1.0,
+                )
+            )
+
+        await db.transition_task(kids[0], TaskStatus.COMPLETED)
+
+        assert (await db.get_task("p")).status == TaskStatus.IN_PROGRESS
+        assert "p" not in await db.settle_candidates()
 
     async def test_settles_up_to_three_levels(self, db):
         await mktask(db, "g", status=TaskStatus.IN_PROGRESS)

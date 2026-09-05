@@ -77,6 +77,9 @@ def test_unimplemented_integration_operations_are_not_registered():
         "integration_transfer_owner",
         "integration_file_children",
         "integration_checkpoint_parent",
+        "integration_delivery_readiness",
+        "integration_parent_verify",
+        "integration_complete_parent",
         "integration_mutate_hierarchy",
         "delivery_promote",
         "delivery_receipts",
@@ -84,6 +87,21 @@ def test_unimplemented_integration_operations_are_not_registered():
     }
     assert registry.names() & DESIGN_INTEGRATION_COMMANDS == implemented
     assert not (registry.names() & (DESIGN_INTEGRATION_COMMANDS - implemented))
+
+
+def test_parent_completion_contracts_expose_prescribed_outcomes():
+    registry = ContractRegistry()
+    register_integration_contracts(registry)
+
+    assert {row.name for row in registry.require("integration_delivery_readiness").contract.execution.outcomes} == {
+        "ready", "waiting", "failed", "invariant_error"
+    }
+    assert {row.name for row in registry.require("integration_parent_verify").contract.execution.outcomes} == {
+        "verified", "stale_generation", "stale_head", "invalid_evidence"
+    }
+    assert {row.name for row in registry.require("integration_complete_parent").contract.execution.outcomes} == {
+        "completed", "waiting", "stale_verification", "invariant_error"
+    }
 
 
 def test_promotion_contracts_declare_retry_and_domain_identity():

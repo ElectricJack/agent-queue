@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from pydantic import BaseModel, ConfigDict, Field
+from typing import Literal
+
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class BranchKey(BaseModel):
@@ -56,3 +58,62 @@ class RepairPolicy(BaseModel):
     debug_attempts: int = Field(default=3, gt=0)
     debug_intelligence_class: str
     debug_profile_id: str | None = None
+
+
+class ArtifactSnapshot(BaseModel):
+    """The complete, versioned ``ArtifactRef`` wire identity."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    playbook_id: str
+    artifact_sha256: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
+    schema_generation: int = Field(gt=0)
+    contract_fingerprint: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
+    source_digest: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
+    compiler_build: str
+    compiled_at: str | None = None
+    version: int = Field(ge=0)
+
+
+class PlaybookRoute(BaseModel):
+    """Stable activation address plus the exact compiled artifact it resolved."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    playbook_id: str
+    scope: Literal["system", "project", "agent_type", "supervisor"]
+    scope_identifier: str
+    activation_id: str | None = None
+    artifact: ArtifactSnapshot
+
+    @model_validator(mode="after")
+    def artifact_matches_route(self) -> "PlaybookRoute":
+        if self.artifact.playbook_id != self.playbook_id:
+            raise ValueError("route artifact belongs to another playbook")
+        return self
+
+
+class IntegrationBoundaryPolicy(BaseModel):
+    """Frozen inputs for one parent or root integration boundary."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    required_checks: RequiredCheckSet
+    repair: RepairPolicy
+    route: PlaybookRoute
+    primary_intelligence_class: str | None = Field(default=None, min_length=1)
+    primary_profile_id: str | None = Field(default=None, min_length=1)
+    verifier_intelligence_class: str | None = Field(default=None, min_length=1)
+    verifier_profile_id: str | None = Field(default=None, min_length=1)
+
+
+class HierarchicalIntegrationPolicy(BaseModel):
+    """Validated project policy consumed when reserving an operation."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    version: Literal[1] = 1
+    parent: IntegrationBoundaryPolicy
+    root: IntegrationBoundaryPolicy
+    branchless_parent: Literal["skip", "declared", "verifier"]
+    on_failed_child: Literal["block", "ask"]

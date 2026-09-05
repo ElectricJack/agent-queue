@@ -57,6 +57,7 @@ class ProjectQueryMixin:
                     integration_mode=project.integration_mode,
                     hierarchical_integration_mode=project.hierarchical_integration_mode,
                     integration_repository_id=project.integration_repository_id,
+                    hierarchical_integration_policy=project.hierarchical_integration_policy,
                     created_at=time.time(),
                 )
             )
@@ -296,4 +297,5 @@ class ProjectQueryMixin:
                 row.get("hierarchical_integration_mode") or "disabled"
             ),
             integration_repository_id=row.get("integration_repository_id"),
+            hierarchical_integration_policy=row.get("hierarchical_integration_policy"),
         )

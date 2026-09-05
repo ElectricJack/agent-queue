@@ -278,20 +278,27 @@ class PromotionService:
                     return await self._finalize(intent, remote.oid)
                 raise PromotionTargetMoved("target branch moved from the prepared old tip")
 
-            await self.ownership.assert_current(fence)
-            await self._crash("before_push")
-            try:
-                await self.git.apush_expected_delivery(
-                    str(repository.retained_git_dir),
-                    intent["source_base"],
-                    intent["prepared_sha"],
-                    intent["target_branch"],
-                    intent["expected_target"],
-                    lock_held=True,
-                )
-            except GitError as exc:
-                raise PromotionRuntimeError(str(exc)) from exc
-            await self._crash("after_push")
+            # The ownership row stays locked only across the actual remote
+            # mutation.  A transfer therefore cannot pass after validation
+            # but before the lease-protected push.  Terminal/reconciliation
+            # replays above remain read-only and intentionally need no live
+            # collector fence.
+            async with self.ownership.mutation_exclusion(
+                fence, expected_role="collector"
+            ):
+                await self._crash("before_push")
+                try:
+                    await self.git.apush_expected_delivery(
+                        str(repository.retained_git_dir),
+                        intent["source_base"],
+                        intent["prepared_sha"],
+                        intent["target_branch"],
+                        intent["expected_target"],
+                        lock_held=True,
+                    )
+                except GitError as exc:
+                    raise PromotionRuntimeError(str(exc)) from exc
+                await self._crash("after_push")
 
         remote_evidence = {
             "kind": "exact_tip",

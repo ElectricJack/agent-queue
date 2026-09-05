@@ -16,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncConnection
 from sqlalchemy.exc import IntegrityError
 
 from src.database.tables import (
+    integration_operation_artifact_pins,
     integration_outbox_artifact_pins,
     playbook_activations,
     playbook_artifacts,
@@ -493,6 +494,9 @@ class PlaybookArtifactQueryMixin:
             pinned_by_outbox = select(
                 integration_outbox_artifact_pins.c.artifact_sha256
             )
+            pinned_by_operation = select(
+                integration_operation_artifact_pins.c.artifact_sha256
+            )
             candidate_query = (
                 select(
                     playbook_artifacts.c.artifact_sha256,
@@ -512,6 +516,9 @@ class PlaybookArtifactQueryMixin:
                     ),
                     playbook_artifacts.c.artifact_sha256.not_in(
                         pinned_by_outbox.scalar_subquery()
+                    ),
+                    playbook_artifacts.c.artifact_sha256.not_in(
+                        pinned_by_operation.scalar_subquery()
                     ),
                 )
                 .order_by(playbook_artifacts.c.created_at)
@@ -572,6 +579,12 @@ class PlaybookArtifactQueryMixin:
                     ~select(1)
                     .where(
                         integration_outbox_artifact_pins.c.artifact_sha256
+                        == artifact_sha256
+                    )
+                    .exists(),
+                    ~select(1)
+                    .where(
+                        integration_operation_artifact_pins.c.artifact_sha256
                         == artifact_sha256
                     )
                     .exists(),
