@@ -433,3 +433,5 @@ limited to repair dossier/subject binding, the shared Git proof helper, repair s
 and the existing filing/close/workspace handoff callers, plus the focused repair
 regression and this report. No Task 7b, Task 7c, or Task 9 behavior was added. No
 operator database, protected database environment, external push, or PR was touched.
+
+Round 2 implementation commit: `62d4c0aa fix(integration): complete repair debug dossier`.
