@@ -140,6 +140,10 @@ tasks = Table(
     Index("idx_tasks_parent", "parent_task_id"),
     # Pool work query (swarm-work-model §10): ready tasks for a profile.
     Index("idx_tasks_ready_by_profile", "project_id", "profile_id", "status", "is_blocked"),
+    # Status-only lists (``list_tasks(status=...)`` in the monitoring cycle,
+    # ``aq task list --status``) had no index leading with status and
+    # seq-scanned ``tasks`` as completed history grew.
+    Index("idx_tasks_status_project", "status", "project_id"),
 )
 
 task_criteria = Table(
@@ -241,7 +245,18 @@ task_layouts = Table(
     Column("agg_active", Integer, nullable=False, server_default="0"),
     CheckConstraint("variant IN ('all', 'active')", name="ck_task_layouts_variant"),
     CheckConstraint("kind IN ('card', 'container', 'stub')", name="ck_task_layouts_kind"),
-    Index("idx_task_layouts_path", "project_id", "variant", "path"),
+    # ``load_paths_by_prefixes`` / ``load_subtree_ids`` filter ``path LIKE
+    # '/a/b/%'``.  On PostgreSQL a plain btree under a non-C collation cannot
+    # serve a LIKE prefix, so the run recorded zero scans of this index;
+    # ``text_pattern_ops`` makes the prefix scan index-driven.  SQLite
+    # ignores the op class.
+    Index(
+        "idx_task_layouts_path",
+        "project_id",
+        "variant",
+        "path",
+        postgresql_ops={"path": "text_pattern_ops"},
+    ),
     Index("idx_task_layouts_depth", "project_id", "variant", "depth"),
     Index("idx_task_layouts_container", "project_id", "variant", "container_id"),
 )
