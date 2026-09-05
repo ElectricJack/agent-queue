@@ -3435,7 +3435,7 @@ class PlaybookEngine:
             return "skipped"
         if attempt.outcome in ENGINE_RESERVED_OUTCOMES:
             return "failure"
-        if attempt.lifecycle is RunLifecycle.FAILED:
+        if attempt.lifecycle in (RunLifecycle.FAILED, RunLifecycle.BLOCKED):
             return "failure"
         if self._declared_classification(attempt.step, attempt.outcome) is OutcomeClass.FAILURE:
             return "failure"

@@ -1500,7 +1500,7 @@ class TestDecisionAndTerminal:
     @pytest.mark.asyncio
     async def test_blocked_terminal_returns_and_emits_the_blocked_outcome(self):
         blocked = RunLifecycle.BLOCKED
-        engine, adapter, _runs, bus, _ref = build()
+        engine, adapter, runs, bus, _ref = build()
         artifact = load_artifact("two-rules-one-event.artifact.json")
         mutated = with_step(
             artifact,
@@ -1521,6 +1521,12 @@ class TestDecisionAndTerminal:
         assert finished[0]["run_id"] == outcome.run_id
         assert finished[0]["lifecycle"] == "blocked"
         assert finished[0]["outcome"] == "blocked"
+        terminal_receipt = next(
+            receipt
+            for receipt in runs.receipts
+            if receipt.step_id == "review-done" and receipt.receipt_kind == "step"
+        )
+        assert terminal_receipt.outcome == "failure"
 
 
 class TestModes:
