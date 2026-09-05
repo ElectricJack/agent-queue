@@ -10,6 +10,12 @@ API — rather than any onboarding behaviour.
 
 from __future__ import annotations
 
+import logging
+import os
+import shutil
+import stat
+from pathlib import Path
+
 import pytest
 
 from src.api.auth import LOCAL_SCOPE, RequestScope
@@ -45,6 +51,13 @@ SEVEN = {
     "onboard_project",
     "get_project_onboarding",
 }
+GITHUB_DISCOVERY_COMMANDS = {
+    "get_github_auth_status",
+    "list_github_owners",
+    "search_github_repositories",
+}
+STUB_COMMANDS = SEVEN - GITHUB_DISCOVERY_COMMANDS
+FAKE_GH = Path(__file__).parent / "fixtures" / "fake_gh" / "gh"
 
 
 def _error_code(exc_info) -> str:
@@ -294,13 +307,167 @@ VALID_ARGS = {
 }
 
 
-@pytest.mark.parametrize("command", sorted(SEVEN))
+@pytest.mark.parametrize("command", sorted(STUB_COMMANDS))
 async def test_each_command_dispatches_and_answers_not_implemented(command_handler_factory, command):
     handler = await command_handler_factory()
     result = await handler.execute(command, dict(VALID_ARGS[command]))
     assert result["success"] is False
     assert result["error_code"] == "not_implemented"
     assert command in result["error"]
+
+
+@pytest.fixture
+def fake_gh(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Stage the shared fake ``gh`` executable ahead of the daemon PATH."""
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    executable = bin_dir / "gh"
+    shutil.copy(FAKE_GH, executable)
+    executable.chmod(executable.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+    monkeypatch.setenv("PATH", str(bin_dir) + os.pathsep + os.environ.get("PATH", ""))
+    monkeypatch.delenv("FAKE_GH_STATE", raising=False)
+    monkeypatch.delenv("FAKE_GH_FAIL_STDERR", raising=False)
+    return executable
+
+
+async def test_github_auth_status_reports_an_authenticated_identity_not_credentials(
+    command_handler_factory, fake_gh: Path
+):
+    handler = await command_handler_factory()
+
+    result = await handler.execute("get_github_auth_status", {})
+
+    assert result == {
+        "success": True,
+        "installed": True,
+        "authenticated": True,
+        "host": "github.com",
+        "login": "octocat",
+    }
+    assert "gho_" not in repr(result)
+
+
+@pytest.mark.parametrize(
+    ("command", "args"),
+    [
+        ("get_github_auth_status", {}),
+        ("list_github_owners", {}),
+        ("search_github_repositories", {"query": "widgets"}),
+    ],
+)
+async def test_github_discovery_reports_auth_setup_when_unauthed(
+    command_handler_factory, fake_gh: Path, monkeypatch: pytest.MonkeyPatch, command: str, args: dict
+):
+    monkeypatch.setenv("FAKE_GH_STATE", "unauthed")
+    handler = await command_handler_factory()
+
+    result = await handler.execute(command, args)
+
+    assert result["success"] is False
+    assert result["error_code"] == "github_auth_required"
+    assert "gh auth login" in result["error"]
+
+
+@pytest.mark.parametrize(
+    ("command", "args"),
+    [
+        ("get_github_auth_status", {}),
+        ("list_github_owners", {}),
+        ("search_github_repositories", {"query": "widgets"}),
+    ],
+)
+async def test_github_discovery_reports_cli_setup_when_gh_is_missing(
+    command_handler_factory, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, command: str, args: dict
+):
+    empty_path = tmp_path / "empty-path"
+    empty_path.mkdir()
+    monkeypatch.setenv("PATH", str(empty_path))
+    handler = await command_handler_factory()
+
+    result = await handler.execute(command, args)
+
+    assert result["success"] is False
+    assert result["error_code"] == "github_cli_missing"
+    assert "gh auth login" in result["error"]
+
+
+async def test_github_owners_are_returned_from_the_daemon_host_session(
+    command_handler_factory, fake_gh: Path
+):
+    handler = await command_handler_factory()
+
+    result = await handler.execute("list_github_owners", {})
+
+    assert result == {
+        "success": True,
+        "owners": [
+            {"login": "octocat", "kind": "user"},
+            {"login": "acme-corp", "kind": "organization"},
+            {"login": "beta-labs", "kind": "organization"},
+        ],
+    }
+
+
+async def test_github_search_returns_paged_safe_repository_details(
+    command_handler_factory, fake_gh: Path
+):
+    handler = await command_handler_factory()
+
+    result = await handler.execute(
+        "search_github_repositories", {"query": "widgets", "limit": 2}
+    )
+
+    assert result["success"] is True
+    assert result["next_cursor"] == "CURSOR-PAGE-2"
+    assert result["repositories"][0] == {
+        "owner": "acme-corp",
+        "name": "widgets",
+        "full_name": "acme-corp/widgets",
+        "visibility": "private",
+        "clone_url_https": "https://github.com/acme-corp/widgets.git",
+        "clone_url_ssh": "git@github.com:acme-corp/widgets.git",
+        "default_branch": "main",
+    }
+
+    second_page = await handler.execute(
+        "search_github_repositories",
+        {"query": "widgets", "cursor": "CURSOR-PAGE-2", "limit": 2},
+    )
+    assert second_page["repositories"][0]["full_name"] == "beta-labs/empty-repo"
+    assert second_page["repositories"][0]["default_branch"] is None
+    assert second_page["next_cursor"] is None
+
+
+async def test_github_search_rejects_a_query_beyond_the_contract_bound(command_handler_factory):
+    handler = await command_handler_factory()
+
+    result = await handler.execute("search_github_repositories", {"query": "x" * 201})
+
+    assert result["success"] is False
+    assert result["error_code"] == "invalid_request"
+
+
+async def test_github_discovery_scrubs_credentialed_gh_stderr_from_response_and_logs(
+    command_handler_factory,
+    fake_gh: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+):
+    secret = "ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789ab"
+    monkeypatch.setenv(
+        "FAKE_GH_FAIL_STDERR",
+        f"fatal: https://alice:{secret}@github.com/acme/widgets.git GH_TOKEN={secret}",
+    )
+    handler = await command_handler_factory()
+
+    with caplog.at_level(logging.DEBUG):
+        result = await handler.execute("list_github_owners", {})
+
+    assert result["success"] is False
+    assert result["error_code"] == "github_cli_failed"
+    for surface in (repr(result), *(record.getMessage() for record in caplog.records)):
+        assert secret not in surface
+        assert "alice:" not in surface
 
 
 async def test_invalid_arguments_are_rejected_before_the_stub_answers(command_handler_factory):

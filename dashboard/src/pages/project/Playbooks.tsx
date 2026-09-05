@@ -1,13 +1,11 @@
-import { useState } from "react";
 import { Link, useLocation, useParams } from "react-router-dom";
-import { PauseIcon, PlayIcon, TrashIcon } from "@heroicons/react/24/outline";
+import { PauseIcon, PlayIcon } from "@heroicons/react/24/outline";
 import {
   usePlaybooks,
   useSetPlaybookEnabled,
   type PlaybookSummary,
 } from "../../api/hooks";
 import StatusBadge from "../../components/StatusBadge";
-import DeletePlaybookModal from "../../components/DeletePlaybookModal";
 
 export default function ProjectPlaybooks() {
   const { projectId = "" } = useParams();
@@ -33,7 +31,6 @@ export default function ProjectPlaybooks() {
 }
 
 function PlaybookTable({ rows, from }: { rows: PlaybookSummary[]; from: string }) {
-  const [deleteId, setDeleteId] = useState<string | null>(null);
   const setEnabled = useSetPlaybookEnabled();
 
   const togglePlaybook = (p: PlaybookSummary) => {
@@ -135,13 +132,6 @@ function PlaybookTable({ rows, from }: { rows: PlaybookSummary[]; from: string }
                         <PauseIcon className="h-3.5 w-3.5" />
                       )}
                     </button>
-                    <button
-                      onClick={() => setDeleteId(p.id)}
-                      title="Delete"
-                      className="rounded p-1 text-red-400 transition-colors hover:bg-red-500/20"
-                    >
-                      <TrashIcon className="h-3.5 w-3.5" />
-                    </button>
                   </div>
                 </td>
               </tr>
@@ -149,14 +139,6 @@ function PlaybookTable({ rows, from }: { rows: PlaybookSummary[]; from: string }
           })}
         </tbody>
       </table>
-      {deleteId && (
-        <DeletePlaybookModal
-          open={true}
-          onClose={() => setDeleteId(null)}
-          playbookId={deleteId}
-          returnTo={from}
-        />
-      )}
     </div>
   );
 }

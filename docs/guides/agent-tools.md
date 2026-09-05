@@ -133,7 +133,6 @@ Playbooks are DAG-based workflow automation authored as markdown and compiled to
 | Tool | What It Does | Parameters |
 |------|-------------|------------|
 | `list_playbooks` | List all playbooks with scope and trigger info | `scope` (optional: system/project/agent-type), `project_id` (optional) |
-| `compile_playbook` | Compile markdown playbook to executable JSON graph | `path` (required: vault path to `.md` file) |
 | `run_playbook` | Manually trigger a playbook run | `playbook_id` (required), `context` (optional: JSON object passed to first node) |
 | `list_playbook_runs` | List recent playbook runs | `playbook_id` (optional), `status` (optional), `limit` (int, default 10) |
 | `inspect_playbook_run` | Detailed run info: nodes visited, context, tokens | `run_id` (required) |

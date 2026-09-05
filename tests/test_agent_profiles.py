@@ -562,6 +562,34 @@ class TestProfileCommands:
         assert "test-reviewer" in profile_ids
         assert result["count"] == len(result["profiles"])
 
+    async def test_list_profiles_reports_lifecycle_and_pool_bounds(self, handler):
+        """The dashboard's create flows need lifecycle *before* a pool exists.
+
+        ``pool_status`` enumerates (active project x pool profile) pairs, so it
+        cannot answer "is this profile eligible to back a pool?" for a profile
+        no project has measured yet — and it reports nothing at all when no
+        project is active.  ``list_profiles`` is the profile-shaped answer.
+        """
+        await handler.execute(
+            "create_profile", {"id": "swarm-worker", "name": "Swarm worker"}
+        )
+        await handler.execute("create_profile", {"id": "push-worker", "name": "Push worker"})
+        await handler.orchestrator.db.update_profile(
+            "swarm-worker", lifecycle="pool", min_active=2, max_active=6
+        )
+
+        profiles = {p["id"]: p for p in (await handler.execute("list_profiles", {}))["profiles"]}
+        assert profiles["swarm-worker"]["lifecycle"] == "pool"
+        assert profiles["swarm-worker"]["min_active"] == 2
+        assert profiles["swarm-worker"]["max_active"] == 6
+        # A push worker reports the task lifecycle and no sizing bounds.
+        assert profiles["push-worker"]["lifecycle"] == "task"
+        assert profiles["push-worker"]["min_active"] is None
+        assert profiles["push-worker"]["max_active"] is None
+        # ``named`` is a third lifecycle (a durable, singleton worker) and must
+        # not be reported as a pool: only "pool" makes a profile pool-eligible.
+        assert profiles["supervisor"]["lifecycle"] == "named"
+
     def test_profile_mutation_tool_schemas_expose_autonomous_permission_opt_ins(self):
         from src.tools.definitions import _ALL_TOOL_DEFINITIONS
 

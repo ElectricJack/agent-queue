@@ -110,11 +110,7 @@ def _command_handler(row, *, resolve=True):
     """The command mixin over doubles — the boundary, not the storage."""
     handler = PlaybookV2CommandsMixin()
     handler.config = SimpleNamespace(
-        playbooks=PlaybooksConfig(
-            v2_api=True,
-            v2_storage_enabled=True,
-            v2_activation_writes=True,
-        )
+        playbooks=PlaybooksConfig(enabled=True)
     )
     handler.db = SimpleNamespace(
         get_pending_events=AsyncMock(return_value=[row]),
@@ -703,9 +699,7 @@ def _activation_handler(
     handler = _Handler(definition, ref, [[], [refreshed] if health_read_sees_row else []])
     handler.config = SimpleNamespace(
         playbooks=PlaybooksConfig(
-            v2_api=True,
-            v2_storage_enabled=True,
-            v2_activation_writes=True,
+            enabled=True,
             v2_pending_event_replay_on_activation=policy,
             v2_max_pending_events_per_playbook=quota,
         )
@@ -938,24 +932,6 @@ async def test_automatic_replay_skips_a_row_another_operator_holds():
     engine.dispatch_event.assert_not_awaited()
 
 
-async def test_blocked_activation_never_replays():
-    """No activation, no replay — and the response says which refusal it was."""
-    from src.commands.playbook_v2_commands import PENDING_EVENT_REPLAY_BLOCKED_REFUSAL
-
-    handler, engine, definition, ref = _activation_handler(
-        policy="automatic", held=[_held("event-1")]
-    )
-
-    # No ``acknowledge_diff`` — the executable-change blocker fires.
-    result = await handler._cmd_playbook_activate(
-        {"playbook_id": definition.id, "artifact_sha256": ref.artifact_sha256}
-    )
-
-    assert result["blocked"] is True
-    replay = result["pending_event_replay"]
-    assert replay["replayed"] is False
-    assert replay["refused_reason"] == PENDING_EVENT_REPLAY_BLOCKED_REFUSAL
-    engine.dispatch_event.assert_not_awaited()
 
 
 # -- 9c: the production caller for activation-aware config validation ---------
@@ -981,7 +957,7 @@ def _doctor_ctx(policy, healths):
         DoctorContext(
             config=SimpleNamespace(
                 playbooks=PlaybooksConfig(
-                    v2_storage_enabled=True,
+                    enabled=True,
                     v2_pending_event_replay_on_activation=policy,
                 )
             ),

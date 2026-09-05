@@ -153,27 +153,8 @@ class CancelPlaybookRunResponse(BaseModel):
     status: str
 
 
-class RecoverWorkflowResponse(BaseModel):
-    """Shape mirrors OrphanWorkflowRecovery.recover_workflow output."""
-
-    success: bool = False
-    workflow_id: str = ""
-    action: str | None = None
-    message: str | None = None
-    error: str | None = None
 
 
-class CompilePlaybookResponse(BaseModel):
-    compiled: bool = False
-    playbook_id: str = ""
-    version: int = 0
-    source_hash: str = ""
-    skipped: bool = False
-    retries_used: int = 0
-    node_count: int | None = None
-    triggers: list[str] | None = None
-    scope: str | None = None
-    errors: list[str] | None = None
 
 
 class ShowPlaybookGraphResponse(BaseModel):
@@ -380,18 +361,8 @@ class UpdatePlaybookSourceResponse(BaseModel):
     expected_source_hash: str | None = None
 
 
-class CreatePlaybookResponse(BaseModel):
-    created: bool = True
-    playbook_id: str
-    path: str
-    source_hash: str
 
 
-class DeletePlaybookResponse(BaseModel):
-    deleted: bool = True
-    playbook_id: str
-    archived_path: str | None = None
-    removed_from_registry: bool = False
 
 
 class SetPlaybookEnabledResponse(BaseModel):
@@ -403,40 +374,18 @@ class SetPlaybookEnabledResponse(BaseModel):
     errors: list[str] | None = None
 
 
-class PlaybookValidationError(BaseModel):
-    """One structured validation failure.
-
-    ``node`` is the compiled node the error belongs to, or None for a
-    whole-file problem (missing frontmatter, path outside the vault).
-    """
-
-    node: str | None = None
-    field: str | None = None
-    message: str = ""
 
 
-class PlaybookValidateResponse(BaseModel):
-    success: bool = True
-    errors: list[PlaybookValidationError] = []
-    #: True for a ``.md`` source: frontmatter checked, compile still owed.
-    requires_compile: bool = False
 
 
-class PlaybookInstallResponse(BaseModel):
-    success: bool = True
-    errors: list[PlaybookValidationError] = []
 
 
 RESPONSE_MODELS: dict[str, type[BaseModel]] = {
     "list_playbooks": ListPlaybooksResponse,
-    "playbook_validate": PlaybookValidateResponse,
-    "playbook_install": PlaybookInstallResponse,
     "list_playbook_runs": ListPlaybookRunsResponse,
     "inspect_playbook_run": InspectPlaybookRunResponse,
     "resume_playbook": ResumePlaybookResponse,
     "cancel_playbook_run": CancelPlaybookRunResponse,
-    "recover_workflow": RecoverWorkflowResponse,
-    "compile_playbook": CompilePlaybookResponse,
     "show_playbook_graph": ShowPlaybookGraphResponse,
     "run_playbook": RunPlaybookResponse,
     "dry_run_playbook": DryRunPlaybookResponse,
@@ -444,7 +393,5 @@ RESPONSE_MODELS: dict[str, type[BaseModel]] = {
     "playbook_graph_view": PlaybookGraphViewResponse,
     "get_playbook_source": GetPlaybookSourceResponse,
     "update_playbook_source": UpdatePlaybookSourceResponse,
-    "create_playbook": CreatePlaybookResponse,
-    "delete_playbook": DeletePlaybookResponse,
     "set_playbook_enabled": SetPlaybookEnabledResponse,
 }
