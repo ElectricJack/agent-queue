@@ -1478,20 +1478,10 @@ def ensure_default_playbooks(data_dir: str) -> dict:
     into the vault's system playbook directory.  These playbooks are compiled at
     first use by the :class:`~src.playbooks.compiler.PlaybookCompiler`.
 
-    Default playbooks (playbooks spec §12):
-
-    - ``task-outcome.md`` — consolidates post-action reflection, spec-drift
-      detection, and error-recovery monitoring into a single playbook triggered
-      on ``task.completed`` and ``task.failed``.
-    - ``system-health-check.md`` — checks for stuck tasks, blocked tasks with
-      no resolution path, and unresponsive agents every 30 minutes.
-      Triggered on ``timer.30m``.
-    - ``codebase-inspector.md`` — periodically inspects a random section of the
-      codebase for quality issues, security risks, and documentation gaps.
-      Triggered on ``timer.4h``.
-    - ``dependency-audit.md`` — runs dependency vulnerability checks
-      (pip-audit + check-outdated-deps) and creates tasks for critical issues.
-      Triggered on ``timer.24h``.
+    The bundled set includes the default review and assignment policies,
+    memory consolidation, and the disabled hierarchical-delivery policy.  The
+    directory is discovered mechanically so adding a reviewed source does not
+    require a second production inventory.
 
     The operation is **idempotent**: existing files in the vault are never
     overwritten, except for a byte-for-byte known legacy ``default-pipeline``

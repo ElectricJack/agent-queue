@@ -51,6 +51,7 @@ PROFILE_DEFAULTS = REPO_ROOT / "src" / "profiles" / "defaults"
 SHIPPED_SOURCES: dict[str, str] = {
     "default-pipeline": "src/prompts/default_playbooks/default-pipeline.md",
     "default-assignment-routing": "src/prompts/default_playbooks/default-assignment-routing.md",
+    "hierarchical-delivery": "src/prompts/default_playbooks/hierarchical-delivery.md",
     "memory-consolidation": "src/prompts/default_playbooks/memory-consolidation.md",
     "pr-merge-sweep": "src/prompts/project_playbooks/agent-queue/pr-merge-sweep.md",
 }

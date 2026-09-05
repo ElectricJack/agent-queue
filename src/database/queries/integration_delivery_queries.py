@@ -557,6 +557,11 @@ class IntegrationDeliveryQueriesMixin:
                     else intent["fence_owner_id"]
                 ),
                 "promotion_intent_id": intent["id"],
+                "receipt_id": intent["receipt_id"],
+                "source_task_id": intent["source_task_id"],
+                "target_task_id": intent["target_task_id"],
+                "repository_id": intent["repository_id"],
+                "target_branch": intent["target_branch"],
             }
             await enqueue_integration_event(
                 conn,

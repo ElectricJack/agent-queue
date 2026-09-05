@@ -36,6 +36,7 @@ REVIEWED_FIXTURES = Path("tests/fixtures/playbooks/v2")
 PLAYBOOK_IDS = (
     "default-pipeline",
     "default-assignment-routing",
+    "hierarchical-delivery",
     "memory-consolidation",
         "pr-merge-sweep",
 )
@@ -117,7 +118,7 @@ def _fail_when_artifact_lock_exits(db, monkeypatch, error: BaseException) -> Non
 
 
 @pytest.mark.asyncio
-async def test_imports_all_four_reviewed_fixtures_without_activating(db, tmp_path):
+async def test_imports_all_reviewed_fixtures_without_activating(db, tmp_path):
     """Dropping the upsert or accidentally activating makes this rehearsal fail."""
     handler = _Handler(tmp_path, db)
 

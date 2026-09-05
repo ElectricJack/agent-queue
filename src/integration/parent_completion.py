@@ -316,32 +316,55 @@ class ParentCompletion:
                     .values(verifier_task_id=verifier_id, updated_at=self.clock())
                 )
                 operation = dict(operation) | {"verifier_task_id": verifier_id}
-        await conn.execute(
+        owner = (
+            await conn.execute(
+                select(integration_branch_owners).where(
+                    integration_branch_owners.c.repository_id
+                    == checkpoint["repository_id"],
+                    integration_branch_owners.c.ref == checkpoint["branch"],
+                )
+            )
+        ).mappings().one_or_none()
+        if owner is None:
+            raise HierarchyError(
+                "invariant_error", "integration-ready parent has no branch owner"
+            )
+        next_owner_id = operation.get("verifier_task_id") or task_id
+        projected = await conn.execute(
             update(task_integration_checkpoints)
             .where(task_integration_checkpoints.c.task_id == task_id)
             .where(task_integration_checkpoints.c.episode_id == checkpoint["episode_id"])
+            .where(task_integration_checkpoints.c.state != "integration_ready")
             .values(state="integration_ready", updated_at=self.clock())
         )
-        await enqueue_integration_event(
-            conn,
-            event_id=f"parent-ready-{operation['id']}-{checkpoint['generation']}",
-            dedup_key=(
-                f"task.integration_ready:{operation['id']}:{checkpoint['generation']}"
-            ),
-            project_id=parent["project_id"],
-            event_type="task.integration_ready",
-            payload={
-                "project_id": parent["project_id"],
-                "operation_id": operation["id"],
-                "task_id": task_id,
-                "title": parent["title"],
-                "episode_id": checkpoint["episode_id"],
-                "generation": int(checkpoint["generation"]),
-                "head_sha": readiness["head_sha"],
-                "verifier_task_id": operation.get("verifier_task_id"),
-            },
-            available_at=self.clock(),
-        )
+        if projected.rowcount:
+            await enqueue_integration_event(
+                conn,
+                event_id=f"parent-ready-{operation['id']}-{checkpoint['generation']}",
+                dedup_key=(
+                    f"task.integration_ready:{operation['id']}:{checkpoint['generation']}"
+                ),
+                project_id=parent["project_id"],
+                event_type="task.integration_ready",
+                payload={
+                    "project_id": parent["project_id"],
+                    "operation_id": operation["id"],
+                    "task_id": task_id,
+                    "title": parent["title"],
+                    "episode_id": checkpoint["episode_id"],
+                    "generation": int(checkpoint["generation"]),
+                    "head_sha": readiness["head_sha"],
+                    "verifier_task_id": operation.get("verifier_task_id"),
+                    "target": {
+                        "repository_id": checkpoint["repository_id"],
+                        "branch": checkpoint["branch"],
+                    },
+                    "expected_token": int(owner["fence_token"]),
+                    "next_owner_id": next_owner_id,
+                    "next_role": "verifier",
+                },
+                available_at=self.clock(),
+            )
         return readiness | {"state": "integration_ready"}
 
     async def readiness_on(
@@ -549,6 +572,7 @@ class ParentCompletion:
             "receipts": sorted(selected, key=lambda row: row["source_task_id"]),
             "blockers": blockers,
             "required_checks": policy.parent.required_checks.model_dump(mode="json"),
+            "on_failed_child": policy.on_failed_child,
         }
 
     @staticmethod

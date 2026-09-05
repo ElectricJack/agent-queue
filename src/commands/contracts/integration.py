@@ -150,6 +150,7 @@ class IntegrationDeliveryReadinessValue(CommandValue):
     receipts: tuple[dict[str, Any], ...] = ()
     blockers: tuple[dict[str, Any], ...] = ()
     required_checks: dict[str, Any] | None = None
+    on_failed_child: Literal["block", "ask"] | None = None
 
 
 class IntegrationParentVerifyArgs(CommandArgs):

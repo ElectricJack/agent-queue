@@ -862,6 +862,14 @@ async def test_clean_promotion_is_retained_attributed_pushed_and_reconciled(db, 
         ).mappings().one()
         assert delivery["payload"]["operation_id"] == case["fence"].owner_id
         assert delivery["payload"]["promotion_intent_id"] == prepared.intent_id
+        expected_route = {
+            "receipt_id": prepared.receipt_id,
+            "source_task_id": case["request"].source_task_id,
+            "target_task_id": "parent",
+            "repository_id": case["request"].fence.target.repository_id,
+            "target_branch": case["request"].fence.target.branch,
+        }
+        assert expected_route.items() <= delivery["payload"].items()
 
 
 async def test_conflict_resolution_push_reconcile_writes_original_receipt_and_events(

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
+from typing import Literal
 
 import pytest
 
@@ -75,13 +76,24 @@ def test_hierarchy_event_payloads_expose_exact_typed_command_inputs():
             "expected_target": str,
             "fence": dict,
         },
-        "delivery.applied": {"promotion_intent_id": str},
+        "delivery.applied": {
+            "promotion_intent_id": str,
+            "receipt_id": str,
+            "source_task_id": str,
+            "target_task_id": str,
+            "repository_id": str,
+            "target_branch": str,
+        },
         "task.integration_ready": {
             "task_id": str,
             "episode_id": str,
             "generation": int,
             "head_sha": str,
             "verifier_task_id": (str, type(None)),
+            "target": dict,
+            "expected_token": int,
+            "next_owner_id": str,
+            "next_role": str,
         },
         "task.integration_verified": {
             "task_id": str,
@@ -91,6 +103,15 @@ def test_hierarchy_event_payloads_expose_exact_typed_command_inputs():
         },
         "integration.repair_exhausted": {"stage": int},
         "integration.repair_deadline_due": {"stage": int},
+        "integration.ci_completed": {
+            "task_id": str,
+            "generation": int,
+            "head_sha": str,
+            "evidence_id": str,
+            "evidence_ids": list,
+            "conclusion": str,
+            "target_kind": str,
+        },
         "integration.resolution_push_observed": {"promotion_intent_id": str},
         "integration.cleanup_pending": {"promotion_intent_id": str},
         "task.integration_configuration_blocked": {
@@ -267,6 +288,12 @@ def test_parent_completion_contracts_expose_prescribed_outcomes():
     assert {row.name for row in registry.require("integration_delivery_readiness").contract.execution.outcomes} == {
         "ready", "waiting", "failed", "invariant_error"
     }
+    readiness_model = registry.require(
+        "integration_delivery_readiness"
+    ).contract.execution.result_model
+    assert readiness_model.model_fields["on_failed_child"].annotation == (
+        Literal["block", "ask"] | None
+    )
     assert {row.name for row in registry.require("integration_parent_verify").contract.execution.outcomes} == {
         "verified", "stale_generation", "stale_head", "invalid_evidence"
     }

@@ -51,13 +51,13 @@ async def db(tmp_path):
     await database.close()
 
 
-async def _enable_project(db) -> dict:
+async def _enable_project(db, *, on_failed_child: str = "block") -> dict:
     artifact = _artifact()
     policy = HierarchicalIntegrationPolicy(
         parent=_boundary(),
         root=_boundary(),
         branchless_parent="verifier",
-        on_failed_child="block",
+        on_failed_child=on_failed_child,
     ).model_dump(mode="json")
     await db.create_repo(
         RepoConfig(id="repo", project_id="p", source_type=RepoSourceType.LINK)
@@ -112,8 +112,8 @@ async def _seed_parent_identity(db, *, generation: int = 0) -> None:
         )
 
 
-async def _parent_tree(db, *, children: int = 2):
-    await _enable_project(db)
+async def _parent_tree(db, *, children: int = 2, on_failed_child: str = "block"):
+    await _enable_project(db, on_failed_child=on_failed_child)
     await db.create_task(
         Task(
             id="parent",
@@ -546,6 +546,25 @@ async def test_terminal_children_require_complete_contiguous_receipt_chain(db):
     assert [row["source_task_id"] for row in ready["receipts"]] == children
 
 
+@pytest.mark.parametrize("policy", ["block", "ask"])
+async def test_failed_child_readiness_exposes_frozen_disposition_policy(db, policy):
+    hierarchy, _checkpointed, children = await _parent_tree(
+        db, children=1, on_failed_child=policy
+    )
+    async with db.immediate() as conn:
+        await conn.execute(
+            update(tasks).where(tasks.c.id == children[0]).values(status="FAILED")
+        )
+
+    readiness = await hierarchy.readiness("parent")
+
+    assert readiness["outcome"] == "failed"
+    assert readiness["on_failed_child"] == policy
+    assert readiness["blockers"] == [
+        {"task_id": children[0], "reason": "failed_child"}
+    ]
+
+
 async def test_arbitrary_resolution_json_cannot_satisfy_code_receipt_chain(db):
     hierarchy, _checkpointed, children = await _parent_tree(db, children=1)
     await _code_receipt(db, children[0], "a" * 40, "d" * 40)
@@ -931,6 +950,31 @@ async def test_branchless_parent_creates_exact_routed_verifier_delegate_before_h
     assert delegate.profile_id == "verifier"
     assert delegate.intelligence_class == "high"
 
+    async with db._engine.connect() as conn:
+        ready_event = (
+            await conn.execute(
+                select(integration_outbox).where(
+                    integration_outbox.c.event_type == "task.integration_ready"
+                )
+            )
+        ).mappings().one()
+    payload = dict(ready_event["payload"])
+    payload.pop("event_id")
+    assert payload == {
+        "project_id": "p",
+        "operation_id": checkpointed["operation_id"],
+        "task_id": "parent",
+        "title": "parent",
+        "episode_id": checkpointed["episode_id"],
+        "generation": 1,
+        "head_sha": "d" * 40,
+        "verifier_task_id": delegate.id,
+        "target": {"repository_id": "repo", "branch": "aq/parent"},
+        "expected_token": 1,
+        "next_owner_id": delegate.id,
+        "next_role": "verifier",
+    }
+
     target = BranchKey(repository_id="repo", branch="aq/parent")
     owner = await BranchOwnership(db).get_owner(target)
     worker = Fence(target=target, owner_id=owner["owner_id"], token=owner["fence_token"])
@@ -940,9 +984,61 @@ async def test_branchless_parent_creates_exact_routed_verifier_delegate_before_h
     verifier = await BranchOwnership(db).transfer(
         collector, delegate.id, "verifier"
     )
+    async with db.immediate() as conn:
+        replayed_projection = await hierarchy.parent_completion.mark_ready_on(
+            conn, "parent"
+        )
+    async with db._engine.connect() as conn:
+        ready_events = (
+            await conn.execute(
+                select(integration_outbox).where(
+                    integration_outbox.c.event_type == "task.integration_ready"
+                )
+            )
+        ).mappings().all()
+    assert replayed_projection["state"] == "integration_ready"
+    assert len(ready_events) == 1
+    assert ready_events[0]["payload"] == ready_event["payload"]
     assert (await hierarchy.wake_verifier("parent", verifier))["outcome"] == "woken"
     assert (await db.get_task("parent")).status is TaskStatus.PAUSED
     assert (await db.get_task(delegate.id)).status is TaskStatus.READY
+
+
+async def test_transfer_owner_replay_after_crash_still_wakes_verifier(
+    command_handler_factory,
+):
+    handler = await command_handler_factory()
+    db = handler.db
+    await db.create_project(Project(id="p", name="integration project"))
+    await db.create_profile(AgentProfile(id="verifier", name="Verifier", harness="claude"))
+    hierarchy, checkpointed, children = await _parent_tree(db, children=1)
+    await _code_receipt(db, children[0], "a" * 40, "d" * 40)
+    async with db.immediate() as conn:
+        await db._apply_transition(
+            conn, "parent", TaskStatus.PAUSED, _manual_pause_control=True
+        )
+        await hierarchy.parent_completion.mark_ready_on(conn, "parent")
+    operation = await db.get_integration_operation(checkpointed["operation_id"])
+    target = BranchKey(repository_id="repo", branch="aq/parent")
+    current = await BranchOwnership(db).get_owner(target)
+    crashed_transfer = await BranchOwnership(db).transfer(
+        Fence(target=target, owner_id=current["owner_id"], token=current["fence_token"]),
+        operation["verifier_task_id"],
+        "verifier",
+    )
+
+    result = await handler.execute(
+        "integration_transfer_owner",
+        {
+            "target": target.model_dump(mode="json"),
+            "expected_token": crashed_transfer.token - 1,
+            "next_owner_id": operation["verifier_task_id"],
+            "next_role": "verifier",
+        },
+    )
+
+    assert result["outcome"] == "transferred"
+    assert (await db.get_task(operation["verifier_task_id"])).status is TaskStatus.READY
 
 
 async def test_sealed_batch_member_protects_descendant_mutation(db):

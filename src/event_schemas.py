@@ -1160,6 +1160,11 @@ _INTEGRATION_PAYLOAD_FIELDS: dict[
             str,
             {"type": "string", "description": "immutable promotion intent"},
         ),
+        "receipt_id": (str, {"type": "string", "description": "delivery receipt"}),
+        "source_task_id": (str, {"type": "string", "description": "source child task"}),
+        "target_task_id": (str, {"type": "string", "description": "immediate parent task"}),
+        "repository_id": (str, {"type": "string", "description": "repository"}),
+        "target_branch": (str, {"type": "string", "description": "parent branch"}),
     },
     "task.integration_ready": {
         "task_id": (str, {"type": "string", "description": "parent task"}),
@@ -1169,6 +1174,29 @@ _INTEGRATION_PAYLOAD_FIELDS: dict[
         "verifier_task_id": (
             (str, type(None)),
             {"type": "string", "description": "aggregate verifier task"},
+        ),
+        "target": (
+            dict,
+            {
+                "type": "object",
+                "description": "parent integration branch",
+                "fields": {
+                    "repository_id": {"type": "string", "description": "repository"},
+                    "branch": {"type": "string", "description": "branch"},
+                },
+            },
+        ),
+        "expected_token": (
+            int,
+            {"type": "integer", "description": "current ownership fence token"},
+        ),
+        "next_owner_id": (
+            str,
+            {"type": "string", "description": "aggregate verifier owner"},
+        ),
+        "next_role": (
+            str,
+            {"type": "string", "description": "aggregate verifier role"},
         ),
     },
     "task.integration_verified": {
@@ -1185,6 +1213,22 @@ _INTEGRATION_PAYLOAD_FIELDS: dict[
     },
     "integration.repair_deadline_due": {
         "stage": (int, {"type": "integer", "description": "due repair stage"}),
+    },
+    "integration.ci_completed": {
+        "task_id": (str, {"type": "string", "description": "parent task"}),
+        "generation": (int, {"type": "integer", "description": "parent generation"}),
+        "head_sha": (str, {"type": "string", "description": "checked head"}),
+        "evidence_id": (str, {"type": "string", "description": "check evidence"}),
+        "evidence_ids": (
+            list,
+            {
+                "type": "array",
+                "description": "aggregate check evidence",
+                "item": {"type": "string", "description": "check evidence"},
+            },
+        ),
+        "conclusion": (str, {"type": "string", "description": "check conclusion"}),
+        "target_kind": (str, {"type": "string", "description": "integration target kind"}),
     },
     "integration.resolution_push_observed": {
         "promotion_intent_id": (

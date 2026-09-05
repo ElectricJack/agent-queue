@@ -185,32 +185,39 @@ class IntegrationCommandsMixin:
                     owner_id=request.next_owner_id,
                     token=current_token,
                 )
-                return {
-                    "success": True,
-                    "outcome": "transferred",
-                    "fence": fence.model_dump(mode="json"),
-                }
-            return _failure("stale_owner", "branch ownership fence is stale")
-
-        fence = Fence(
-            target=target,
-            owner_id=current["owner_id"],
-            token=current_token,
-        )
-        try:
-            if request.next_role == "verifier":
-                operation = await self.db.get_active_integration_verifier_for_task(
-                    request.next_owner_id
+                transferred = fence
+            else:
+                return _failure("stale_owner", "branch ownership fence is stale")
+        else:
+            fence = Fence(
+                target=target,
+                owner_id=current["owner_id"],
+                token=current_token,
+            )
+            try:
+                if request.next_role == "verifier":
+                    operation = await self.db.get_active_integration_verifier_for_task(
+                        request.next_owner_id
+                    )
+                    parent_id = (
+                        operation["parent_task_id"]
+                        if operation
+                        else request.next_owner_id
+                    )
+                    readiness = await self._hierarchy_integration_service().readiness(
+                        parent_id
+                    )
+                    if readiness["outcome"] != "ready":
+                        return _failure(
+                            "busy", "parent delivery is not ready for verifier handoff"
+                        )
+                transferred = await ownership.transfer(
+                    fence, request.next_owner_id, request.next_role
                 )
-                parent_id = operation["parent_task_id"] if operation else request.next_owner_id
-                readiness = await self._hierarchy_integration_service().readiness(parent_id)
-                if readiness["outcome"] != "ready":
-                    return _failure("busy", "parent delivery is not ready for verifier handoff")
-            transferred = await ownership.transfer(fence, request.next_owner_id, request.next_role)
-        except StaleFence as exc:
-            return _failure("stale_owner", str(exc))
-        except BranchBusy as exc:
-            return _failure("busy", str(exc))
+            except StaleFence as exc:
+                return _failure("stale_owner", str(exc))
+            except BranchBusy as exc:
+                return _failure("busy", str(exc))
         if request.next_role == "verifier":
             operation = await self.db.get_active_integration_verifier_for_task(
                 request.next_owner_id
