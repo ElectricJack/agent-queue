@@ -287,6 +287,7 @@ async def test_transfer_accepts_repair_task_bound_by_current_active_stage(
         ("aq/unrelated", "active", TaskStatus.IN_PROGRESS),
         ("aq/parent", "completed", TaskStatus.IN_PROGRESS),
         ("aq/parent", "active", TaskStatus.COMPLETED),
+        ("aq/parent", "active", TaskStatus.BLOCKED),
     ],
 )
 async def test_transfer_rejects_unrelated_or_terminal_repair_relationship(
@@ -351,6 +352,34 @@ async def test_transfer_rejects_unrelated_or_terminal_repair_relationship(
 
     result = await handler.execute(
         "integration_transfer_owner", _args("repair-task", "repair")
+    )
+
+    assert result["outcome"] == "human_required"
+    confirm.assert_not_awaited()
+
+
+async def test_transfer_rejects_blocked_repair_task_on_direct_target_branch(
+    command_handler_factory,
+):
+    """A direct branch match must not revive a terminal blocked repair task."""
+    handler = await command_handler_factory()
+    await _seed(handler)
+    await handler.db.create_task(
+        Task(
+            id="blocked-repair",
+            project_id="p",
+            repo_id="repo",
+            branch_name="aq/parent",
+            status=TaskStatus.BLOCKED,
+            title="Blocked repair",
+            description="",
+        )
+    )
+    confirm = AsyncMock(return_value=True)
+    handler.orchestrator.aconfirm_integration_owner_handoff = confirm
+
+    result = await handler.execute(
+        "integration_transfer_owner", _args("blocked-repair", "repair")
     )
 
     assert result["outcome"] == "human_required"

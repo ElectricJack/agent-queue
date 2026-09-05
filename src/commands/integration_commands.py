@@ -91,7 +91,8 @@ class IntegrationCommandsMixin:
             task is None
             or task.project_id != project_id
             or task.repo_id != target.repository_id
-            or task.status in {TaskStatus.COMPLETED, TaskStatus.FAILED}
+            or task.status
+            in {TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.BLOCKED}
         ):
             return False
         if task.branch_name == target.branch:
