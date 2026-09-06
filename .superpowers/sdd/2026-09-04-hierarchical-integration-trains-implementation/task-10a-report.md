@@ -351,3 +351,73 @@ The 11 gate warnings are inherited dependency warnings, unchanged by this fix:
   background driver was introduced.
 - No new concern remains within the three accepted review findings. Task 10b/10c handler and
   release/cleanup work remains intentionally out of scope.
+
+## Fix round 2 — release-owned promoted catch-up boundary
+
+### Provenance and scope
+
+- Logical fix base: `ccaedd0d`.
+- The shared branch advanced to documentation-only commit `f7e0594d` before the scoped edit; it was
+  preserved without reset, rebase, or revert.
+- Runtime/tests commit: `e2d01b70` (`fix(integration): retain promoted catchup until release`).
+- This supersedes fix round 1's overly narrow `cleanup_state='pending'` predicate. Request release,
+  not the independent cleanup aggregate, is now the sole boundary for an exact promoted batch.
+- No release implementation, schema, service, Task 10b/10c, or external-write behavior changed.
+
+### RED/GREEN evidence
+
+The focused test was expanded first across every Task 10c terminal cleanup aggregate
+(`pending`, `complete`, and `conflict`), both manual-first and periodic-first provenance, plus both
+release-before-cleanup terminal orderings:
+
+```text
+pytest -q \
+  tests/test_integration_schedule.py::test_promoted_before_release_preserves_first_catchup_for_all_cleanup_states \
+  tests/test_integration_schedule.py::test_release_before_cleanup_ends_old_batch_catchup_eligibility
+4 failed, 4 passed, 3 warnings in 1.97s
+```
+
+The four failures were the manual and periodic cases for `cleanup_state='complete'` and
+`cleanup_state='conflict'`; each coalesced onto the correct outstanding request but left the
+catch-up tuple NULL. Pending-cleanup and release-first cases passed, isolating the cleanup-state
+dependency.
+
+After including `lifecycle='promoted'` without inspecting cleanup state while retaining the exact
+project/request match:
+
+```text
+pytest -q \
+  tests/test_integration_schedule.py::test_promoted_before_release_preserves_first_catchup_for_all_cleanup_states \
+  tests/test_integration_schedule.py::test_release_before_cleanup_ends_old_batch_catchup_eligibility
+8 passed, 3 warnings in 1.99s
+
+pytest -q tests/test_integration_schedule.py
+15 passed, 3 warnings in 2.58s
+```
+
+The before-release cases prove the original request ID, trigger, timestamp, sequence, and first
+catch-up provenance remain stable for every cleanup state. The release-first cases simulate only
+Task 10c's schedule boundary and prove a later cleanup transition cannot revive the old request;
+the next manual trigger creates sequence 2 with its own identity and provenance.
+
+### Final checks and self-review
+
+```text
+ruff check src/integration/scheduler.py tests/test_integration_schedule.py
+All checks passed!
+
+python3 -m compileall -q src/integration/scheduler.py tests/test_integration_schedule.py
+exit 0
+
+git diff --check
+exit 0
+```
+
+The three warnings remain the inherited dependency deprecations already identified in fix round 1:
+`pkg_resources` API use, deprecated `declare_namespace('zope')`, and Python 3.13 removal of
+`audioop`. No suppression was added.
+
+Self-review confirms the query still requires the batch's exact `project_id` and
+`request_id == outstanding_request_id`; completed or conflicted cleanup cannot make an unrelated
+or released batch authoritative. Existing non-promoted active lifecycles are unchanged, and the
+release/cleanup orchestration remains wholly owned by Task 10c.
