@@ -289,6 +289,29 @@ describe("pools in the agent flock", () => {
     expect(screen.queryByRole("button", { name: "Open worker-standard-9f2a" })).not.toBeInTheDocument();
   });
 
+  it("lists every pool, idle ones included, on the agents page the idle link points at", async () => {
+    api.poolStatus.mockResolvedValue({ data: { success: true, pools: [
+      pool({ profile_id: "worker-busy", running_busy: 1 }),
+      pool({ profile_id: "worker-idle", running_busy: 0, running_idle: 2 }),
+    ] } });
+    renderAgents("/agents");
+
+    const directory = await screen.findByRole("region", { name: "Worker pools" }, SLOW);
+    expect(await within(directory).findByRole("button", { name: "Open pool worker-idle" }, SLOW)).toBeInTheDocument();
+    expect(within(directory).getByRole("button", { name: "Open pool worker-busy" })).toBeInTheDocument();
+    expect(within(directory).getByText("idle")).toBeInTheDocument();
+    expect(within(directory).getByText("busy")).toBeInTheDocument();
+  });
+
+  it("opens a pool window when a directory row is clicked", async () => {
+    api.poolStatus.mockResolvedValue({ data: { success: true, pools: [pool({ profile_id: "worker-idle", running_busy: 0 })] } });
+    renderAgents("/agents");
+
+    fireEvent.click(await screen.findByRole("button", { name: "Open pool worker-idle" }, SLOW));
+    expect(await screen.findByRole("region", { name: /worker-idle/ }, SLOW)).toBeInTheDocument();
+    expect(screen.queryByRole("region", { name: "Worker pools" })).not.toBeInTheDocument();
+  });
+
   it("shows the quarantine backoff when a launch has failed", async () => {
     api.poolStatus.mockResolvedValue({ data: { success: true, pools: [pool({ quarantined_until: Date.now() / 1000 + 30 })] } });
     renderAgents("/");
