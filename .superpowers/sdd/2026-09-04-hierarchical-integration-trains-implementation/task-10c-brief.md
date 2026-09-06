@@ -148,6 +148,14 @@ policy. Lost delete/PR responses
 are reconciled by authenticated read/lookup before retry. Backoff and terminal attempt count come
 from the batch's frozen `policy_snapshot.cleanup`, not current project configuration.
 
+Always reject deletion of the designated default branch, regardless of a malformed
+stored cleanup/source identity or matching expected SHA. Per-item execution is
+exclusively claimed with rowcount-checked CAS; concurrent services cannot both POST
+the same PR delivery comment. Use a stable receipt-bound comment marker and
+authenticated reconciliation after a lost response, with no blind duplicate POST
+while the prior write is unresolved. Reuse the reviewed durable claim patterns;
+provider writes never occur under a DB lock.
+
 A moved ref or foreign worktree is a visible terminal conflict, never force-deleted. Retryable
 provider failures preserve pending work with bounded backoff. Cleanup failure never changes
 promoted lifecycle/final-main/receipts, reruns CI, reopens promotion, reacquires the lease, or blocks
