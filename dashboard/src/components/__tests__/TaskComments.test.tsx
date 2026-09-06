@@ -9,13 +9,14 @@ import TaskDetailPane from "../../panes/task-detail";
 const fixtures = vi.hoisted(() => Object.fromEntries(["t1", "t2"].map((id) => [id, {
   id, project_id: "demo", title: `Task ${id}`, description: "Requirements", status: "IN_PROGRESS",
 }])));
-const api = vi.hoisted(() => ({ taskComment: vi.fn(), taskComments: vi.fn() }));
+const api = vi.hoisted(() => ({ taskComment: vi.fn(), taskComments: vi.fn(), taskCommentEdit: vi.fn(), taskCommentDelete: vi.fn() }));
 vi.mock("../../api/client", async (importOriginal) => ({
   ...await importOriginal<typeof import("../../api/client")>(), ...api,
 }));
 vi.mock("../../api/hooks", () => ({
   useTask: (id: string) => ({ data: fixtures[id] }),
   useProfiles: () => ({ data: [] }),
+  useIntelligenceClasses: () => ({ data: { success: true, classes: [] } }),
   useEditTask: () => ({}), useGates: () => ({ data: [] }),
   useResolveGate: () => ({}), useDeleteTask: () => ({}), useReopenWithFeedback: () => ({}),
   useTaskAttachments: () => ({ data: { success: true, attachments: [] } }),
@@ -175,5 +176,60 @@ describe("task comments", () => {
     api.taskComments.mockResolvedValue(page([comment("Worker added a finding")]));
     await act(async () => { await client.invalidateQueries({ queryKey: ["task", "t1"] }); });
     expect(await screen.findByText("Worker added a finding")).toBeInTheDocument();
+  });
+});
+
+describe("comment edit and delete", () => {
+  beforeEach(() => {
+    api.taskCommentEdit.mockReset().mockImplementation(async ({ body }) => ({
+      data: { success: true, comment: { ...comment("Verified the migration"), body: body.body } },
+    }));
+    api.taskCommentDelete.mockReset().mockResolvedValue({ data: { success: true, deleted: "c-Verified the migration", task_id: "t1" } });
+  });
+  it.each(["full", "drawer"] as const)("edits a comment in place in %s", async (surface) => {
+    mount(surface);
+    expect(await screen.findByText("Verified the migration")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Edit comment" }));
+    const box = screen.getByRole("textbox", { name: "Edit comment text" });
+    expect(box).toHaveValue("Verified the migration");
+    expect(screen.getByRole("button", { name: "Save comment" })).toBeDisabled();
+    fireEvent.change(box, { target: { value: "Verified the migration on postgres" } });
+    api.taskComments.mockResolvedValue(page([comment("Verified the migration on postgres")]));
+    fireEvent.click(screen.getByRole("button", { name: "Save comment" }));
+    await waitFor(() => expect(api.taskCommentEdit).toHaveBeenCalledWith({
+      body: { task_id: "t1", comment_id: "c-Verified the migration", body: "Verified the migration on postgres" }, throwOnError: true,
+    }));
+    expect(await screen.findByText("Verified the migration on postgres")).toBeInTheDocument();
+    expect(screen.queryByRole("textbox", { name: "Edit comment text" })).toBeNull();
+    expect(api.taskComment).not.toHaveBeenCalled();
+  });
+  it("keeps the edit draft and shows the error when saving fails, and cancels cleanly", async () => {
+    mount();
+    expect(await screen.findByText("Verified the migration")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Edit comment" }));
+    const box = screen.getByRole("textbox", { name: "Edit comment text" });
+    fireEvent.change(box, { target: { value: "Changed" } });
+    api.taskCommentEdit.mockRejectedValueOnce(new Error("out of scope: comments are append-only for agent sessions"));
+    fireEvent.click(screen.getByRole("button", { name: "Save comment" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("append-only");
+    expect(box).toHaveValue("Changed");
+    fireEvent.click(screen.getByRole("button", { name: "Cancel comment edit" }));
+    expect(screen.getByText("Verified the migration")).toBeInTheDocument();
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+  it("deletes only after confirmation", async () => {
+    mount();
+    expect(await screen.findByText("Verified the migration")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Delete comment" }));
+    expect(api.taskCommentDelete).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Cancel comment delete" }));
+    expect(screen.queryByRole("button", { name: "Confirm comment delete" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Delete comment" }));
+    api.taskComments.mockResolvedValue(page([], 0));
+    fireEvent.click(screen.getByRole("button", { name: "Confirm comment delete" }));
+    await waitFor(() => expect(api.taskCommentDelete).toHaveBeenCalledWith({
+      body: { task_id: "t1", comment_id: "c-Verified the migration" }, throwOnError: true,
+    }));
+    expect(await screen.findByText("No comments yet.")).toBeInTheDocument();
   });
 });

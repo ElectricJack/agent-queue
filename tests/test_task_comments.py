@@ -675,3 +675,78 @@ async def test_project_move_refuses_merging_archived_comment_identity(env, archi
     assert "error" in moved, moved
     assert (await env.db.get_task("peer")).project_id == before.project_id
     assert (await run(env, "task_comments", {"task_id": "peer"}))["comments"] == [old["comment"]]
+
+
+async def test_operator_can_edit_and_delete_comments_and_agents_cannot(env):
+    first = await run(env, "task_comment", {"task_id": "t", "body": "Human finding"})
+    worker = await run(
+        env, "task_comment", {"task_id": "t", "body": "Worker finding", "claim_epoch": 7},
+        scope=env.scope,
+    )
+    env.orch.bus.emit.reset_mock()
+    cid = worker["comment"]["id"]
+
+    for command in ("task_comment_edit", "task_comment_delete"):
+        refused = await run(
+            env, command, {"task_id": "t", "comment_id": cid, "body": "Rewritten"}, scope=env.scope
+        )
+        assert refused["error"].startswith("out of scope"), refused
+        supervisor = RequestScope(
+            kind="session", session_id="supervisor", project_id="p", elevated=True
+        )
+        refused = await run(
+            env, command, {"task_id": "t", "comment_id": cid, "body": "Rewritten"}, scope=supervisor
+        )
+        assert refused["error"].startswith("out of scope"), refused
+    assert not [c for c in env.orch.bus.emit.await_args_list if c.args[0] == "task.updated"]
+
+    edited = await run(
+        env, "task_comment_edit", {"task_id": "t", "comment_id": cid, "body": "Rewritten"}
+    )
+    assert edited["comment"] == {**worker["comment"], "body": "Rewritten"}
+    page = await run(env, "task_comments", {"task_id": "t"})
+    assert [c["body"] for c in page["comments"]] == ["Rewritten", "Human finding"]
+    assert page["comments"][0]["author_kind"] == "agent"
+
+    deleted = await run(env, "task_comment_delete", {"task_id": "t", "comment_id": cid})
+    assert deleted == {"deleted": cid, "task_id": "t"}
+    page = await run(env, "task_comments", {"task_id": "t"})
+    assert page == {"comments": [first["comment"]], "total": 1, "limit": 50, "offset": 0}
+
+    events = [
+        call.args for call in env.orch.bus.emit.await_args_list if call.args[0] == "task.updated"
+    ]
+    assert len(events) == 2
+    assert all(set(payload) <= {"task_id", "project_id", "seq"} for _, payload in events)
+
+
+@pytest.mark.parametrize(
+    "command,args",
+    [
+        ("task_comment_edit", {"task_id": "t", "comment_id": "missing", "body": "x"}),
+        ("task_comment_delete", {"task_id": "t", "comment_id": "missing"}),
+        ("task_comment_edit", {"task_id": "nope", "comment_id": "c", "body": "x"}),
+        ("task_comment_edit", {"task_id": "t", "body": "x"}),
+        ("task_comment_delete", {"comment_id": "c"}),
+        ("task_comment_edit", {"task_id": "t", "comment_id": "c", "body": ""}),
+        ("task_comment_edit", {"task_id": "t", "comment_id": "c", "body": "   "}),
+        ("task_comment_edit", {"task_id": "t", "comment_id": "c", "body": "x" * 16001}),
+        ("task_comment_edit", {"task_id": "t", "comment_id": "c"}),
+    ],
+)
+async def test_comment_mutation_validation(env, command, args):
+    result = await run(env, command, args)
+    assert "error" in result, result
+    assert (await run(env, "task_comments", {"task_id": "t"}))["total"] == 0
+
+
+async def test_comment_mutations_are_fenced_to_the_owning_task(env):
+    mine = await run(env, "task_comment", {"task_id": "t", "body": "On t"})
+    cid = mine["comment"]["id"]
+    # The comment id is real, but it belongs to another task in the project.
+    for command in ("task_comment_edit", "task_comment_delete"):
+        result = await run(
+            env, command, {"task_id": "peer", "comment_id": cid, "body": "Hijack"}
+        )
+        assert "not found" in result["error"], result
+    assert (await run(env, "task_comments", {"task_id": "t"}))["comments"][0]["body"] == "On t"

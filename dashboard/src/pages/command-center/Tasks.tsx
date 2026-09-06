@@ -5,6 +5,7 @@ import { useProjectGraphs } from "../../api/graph";
 import { useListNav } from "../../shell/hotkeys/useListNav";
 import { useTaskWorkspace } from "./TaskWorkspace";
 import { matchesTask } from "./taskFilters";
+import { CopyTaskIdButton } from "./CopyTaskIdButton";
 import { InlinePriority, InlineStatus, RowActions } from "./TaskRowActions";
 import { useTaskSelection } from "./useTaskSelection";
 
@@ -85,7 +86,10 @@ export default function CommandCenterTasks() {
                 className={`cursor-pointer focus:outline focus:outline-1 focus:outline-indigo-400 ${selectedTaskId === task.id ? "bg-indigo-500/15" : "hover:bg-gray-900/70"}`}>
                 <td className="min-w-48 max-w-md px-3 py-3">
                   <span className="line-clamp-2 font-medium text-indigo-300">{task.title || task.id}</span>
-                  <span className="mt-1 block font-mono text-[10px] text-gray-500">{task.id}</span>
+                  <span className="mt-1 flex items-center gap-1">
+                    <span className="font-mono text-[10px] text-gray-500">{task.id}</span>
+                    <CopyTaskIdButton taskId={task.id} />
+                  </span>
                 </td>
                 {!projectId && <td className="max-w-40 truncate px-3 py-3 text-xs text-gray-400" title={task.project_id}>{names.get(task.project_id ?? "") || task.project_id}</td>}
                 <td className="px-3 py-3"><InlineStatus task={task} /></td>

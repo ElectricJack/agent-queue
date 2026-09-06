@@ -1,73 +1,16 @@
-import { useRef, useState } from "react";
+import { useState } from "react";
 import { useParams, Link, useLocation } from "react-router-dom";
-import {
-  ArrowLeftIcon,
-  ArrowTopRightOnSquareIcon,
-  ExclamationTriangleIcon,
-  PencilIcon,
-} from "@heroicons/react/24/outline";
-import {
-  useEditTask,
-  useProfiles,
-  useTask,
-  type TaskRef,
-} from "../api/hooks";
+import { ArrowLeftIcon, ArrowTopRightOnSquareIcon } from "@heroicons/react/24/outline";
+import { useTask, type TaskRef } from "../api/hooks";
 import StatusBadge from "../components/StatusBadge";
 import TaskActions from "../components/TaskActions";
 import TaskComments from "../components/TaskComments";
 import TaskSessions from "../components/TaskSessions";
 import TaskAttention from "../components/TaskAttention";
 import TaskDescription from "../components/TaskDescription";
+import TaskFieldsEditor, { ReadField, type EditableTask } from "../components/TaskFieldsEditor";
 import TaskGraph, { TaskExplain } from "./task/TaskGraph";
 import { workspaceHref } from "../shell/projectNavigation";
-import { dedupeProfileOptions } from "./project/Config";
-
-interface FormState {
-  title: string;
-  status: string;
-  priority: string;
-  task_type: string;
-  profile_id: string;
-  max_retries: string;
-  integration_mode: string;
-  skip_verification: boolean;
-}
-
-const STATUS_OPTIONS = [
-  "PENDING",
-  "READY",
-  "IN_PROGRESS",
-  "WAITING_INPUT",
-  "COMPLETED",
-  "FAILED",
-  "BLOCKED",
-  "CANCELED",
-];
-
-interface TaskLike {
-  title?: string;
-  description?: string;
-  status?: string;
-  priority?: number;
-  task_type?: string | null;
-  profile_id?: string | null;
-  max_retries?: number;
-  integration_mode?: string | null;
-  skip_verification?: boolean;
-}
-
-function taskToForm(t: TaskLike | null | undefined): FormState {
-  return {
-    title: t?.title ?? "",
-    status: t?.status ?? "",
-    priority: t?.priority != null ? String(t.priority) : "",
-    task_type: t?.task_type ?? "",
-    profile_id: t?.profile_id ?? "",
-    max_retries: t?.max_retries != null ? String(t.max_retries) : "",
-    integration_mode: t?.integration_mode ?? "",
-    skip_verification: !!t?.skip_verification,
-  };
-}
 
 export default function TaskDetail() {
   const { taskId } = useParams<{ taskId: string }>();
@@ -77,13 +20,7 @@ export default function TaskDetail() {
 function TaskDetailContent({ taskId }: { taskId: string }) {
   const location = useLocation();
   const { data: task, isLoading } = useTask(taskId ?? "");
-  const { data: profiles } = useProfiles();
-  const editTask = useEditTask();
 
-  const [editing, setEditing] = useState(false);
-  const [form, setForm] = useState<FormState>(taskToForm(task));
-  const baseline = useRef<FormState>(taskToForm(task));
-  const [fatal, setFatal] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<"details" | "explain" | "graph">("details");
 
   if (isLoading) return <p className="p-6 text-sm text-gray-500">Loading...</p>;
@@ -91,51 +28,6 @@ function TaskDetailContent({ taskId }: { taskId: string }) {
 
   const from = (location.state as { from?: string } | null)?.from ?? workspaceHref(task.project_id, "tasks");
   const backLabel = labelForBack(from);
-  const agent = task.assigned_agent;
-  const profileOptions = dedupeProfileOptions(profiles ?? []);
-
-  const startEdit = () => {
-    baseline.current = taskToForm(task);
-    setForm(baseline.current);
-    setFatal(null);
-    setEditing(true);
-  };
-
-  const cancel = () => {
-    setForm(taskToForm(task));
-    setFatal(null);
-    setEditing(false);
-  };
-
-  const save = async () => {
-    setFatal(null);
-    try {
-      const body: Record<string, unknown> = { task_id: task.id };
-      if (form.title !== baseline.current.title) body.title = form.title;
-      if (form.status && form.status !== baseline.current.status && task.status !== "PAUSED") body.status = form.status;
-      const priorityNum = parseOptionalInt(form.priority);
-      if (priorityNum !== parseOptionalInt(baseline.current.priority)) body.priority = priorityNum;
-      if (form.task_type !== baseline.current.task_type) body.task_type = form.task_type || null;
-      if (form.profile_id !== baseline.current.profile_id)
-        body.profile_id = form.profile_id || null;
-      const retriesNum = parseOptionalInt(form.max_retries);
-      if (retriesNum !== parseOptionalInt(baseline.current.max_retries)) body.max_retries = retriesNum;
-      if (form.integration_mode !== baseline.current.integration_mode)
-        body.integration_mode = form.integration_mode || null;
-      if (form.skip_verification !== baseline.current.skip_verification)
-        body.skip_verification = form.skip_verification;
-
-      // No fields changed beyond task_id? Skip.
-      if (Object.keys(body).length === 1) {
-        setEditing(false);
-        return;
-      }
-      await editTask.mutateAsync(body as Parameters<typeof editTask.mutateAsync>[0]);
-      setEditing(false);
-    } catch (err) {
-      setFatal(err instanceof Error ? err.message : String(err));
-    }
-  };
 
   return (
     <div className="h-full overflow-y-auto p-6 space-y-6">
@@ -149,15 +41,7 @@ function TaskDetailContent({ taskId }: { taskId: string }) {
       {/* Header */}
       <div className="flex items-start justify-between gap-4">
         <div className="min-w-0 flex-1">
-          {editing ? (
-            <input
-              value={form.title}
-              onChange={(e) => setForm({ ...form, title: e.target.value })}
-              className="w-full rounded-md border border-gray-700 bg-gray-950 px-3 py-1.5 text-2xl font-bold text-gray-100 focus:border-indigo-500 focus:outline-none"
-            />
-          ) : (
-            <h1 className="text-2xl font-bold">{task.title}</h1>
-          )}
+          <h1 className="text-2xl font-bold">{task.title}</h1>
           <div className="mt-2 flex flex-wrap items-center gap-3">
             <StatusBadge status={task.status} />
             {task.project_id && (
@@ -180,19 +64,10 @@ function TaskDetailContent({ taskId }: { taskId: string }) {
             )}
           </div>
         </div>
-        {!editing && (
-          <button
-            type="button"
-            onClick={startEdit}
-            className="inline-flex shrink-0 items-center gap-1.5 rounded-md bg-indigo-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-indigo-500"
-          >
-            <PencilIcon className="h-4 w-4" /> Edit
-          </button>
-        )}
       </div>
 
       {/* Actions */}
-      {!editing && <TaskActions task={task} />}
+      <TaskActions task={task} />
 
       <TaskAttention task={task as typeof task & { needs_attention?: string | null }} />
 
@@ -232,121 +107,24 @@ function TaskDetailContent({ taskId }: { taskId: string }) {
       <TaskComments taskId={task.id} />
 
       {/* Metadata grid */}
-      <section>
-        <h2 className="mb-3 text-sm font-semibold uppercase text-gray-500">Details</h2>
-        <div className="grid grid-cols-1 gap-x-6 gap-y-3 rounded-lg border border-gray-800 bg-gray-900 p-4 text-sm sm:grid-cols-2">
-          <ReadField label="Agent" value={agent ?? "-"} />
-          <EditableSelect
-            label="Status"
-            editing={editing && task.status !== "PAUSED"}
-            value={editing ? form.status : task.status ?? "-"}
-            displayValue={task.status ?? "-"}
-            options={STATUS_OPTIONS}
-            onChange={(v) => setForm({ ...form, status: v })}
-            hint="Admin override — bypasses the state machine."
-          />
-          <EditableInput
-            label="Priority"
-            type="number"
-            editing={editing}
-            value={form.priority}
-            displayValue={task.priority != null ? String(task.priority) : "-"}
-            onChange={(v) => setForm({ ...form, priority: v })}
-          />
-          <EditableSelect
-            label="Profile"
-            editing={editing}
-            value={form.profile_id}
-            displayValue={task.profile_id ?? "default"}
-            options={["", ...profileOptions.map((p) => p.id)]}
-            optionLabel={(v) =>
-              v === "" ? "— inherit / none —" : profileOptions.find((p) => p.id === v)?.name ?? v
-            }
-            onChange={(v) => setForm({ ...form, profile_id: v })}
-          />
-          <EditableInput
-            label="Task type"
-            type="text"
-            editing={editing}
-            value={form.task_type}
-            displayValue={task.task_type ?? "-"}
-            onChange={(v) => setForm({ ...form, task_type: v })}
-          />
-          <EditableInput
-            label="Max retries"
-            type="number"
-            editing={editing}
-            value={form.max_retries}
-            displayValue={String(task.max_retries ?? "-")}
-            onChange={(v) => setForm({ ...form, max_retries: v })}
-          />
-          <ReadField
-            label="Retries used"
-            value={`${task.retry_count ?? 0} / ${task.max_retries ?? 3}`}
-          />
-          <EditableSelect
-            label="Integration mode"
-            editing={editing}
-            value={form.integration_mode}
-            displayValue={integrationModeDisplay(task)}
-            options={["", "pull_request", "direct"]}
-            optionLabel={(v) => (v === "" ? "— inherit policy —" : v)}
-            onChange={(v) => setForm({ ...form, integration_mode: v })}
-            hint="pull_request: push branch + open PR, review pipeline merges. direct: merge to default on completion. Inherit uses the project/system policy."
-          />
-          <EditableCheckbox
-            label="Skip verification"
-            editing={editing}
-            checked={form.skip_verification}
-            displayValue={task.skip_verification ? "Yes" : "No"}
-            onChange={(v) => setForm({ ...form, skip_verification: v })}
-          />
-          <ReadField label="Created" value={formatDate(task.created_at)} />
-          <ReadField label="Updated" value={formatDate(task.updated_at)} />
-          {task.parent_task_id && (
-            <div>
-              <span className="text-gray-500">Parent Task</span>
-              <p>
-                <Link
-                  to={`/tasks/${encodeURIComponent(task.parent_task_id)}`}
-                  state={{ from }}
-                  className="text-indigo-400 hover:underline"
-                >
-                  {task.parent_task_id}
-                </Link>
-              </p>
-            </div>
-          )}
-        </div>
-      </section>
-
-      {editing && (
-        <div className="space-y-3">
-          {fatal && (
-            <div className="flex items-start gap-2 rounded-lg border border-red-500/30 bg-red-500/10 p-3 text-sm text-red-300">
-              <ExclamationTriangleIcon className="mt-0.5 h-4 w-4 shrink-0" />
-              <span>{fatal}</span>
-            </div>
-          )}
-          <div className="flex items-center justify-end gap-2 border-t border-gray-800 pt-3">
-            <button
-              type="button"
-              onClick={cancel}
-              className="rounded-md bg-gray-800 px-3 py-1.5 text-sm text-gray-300 hover:bg-gray-700"
-            >
-              Cancel
-            </button>
-            <button
-              type="button"
-              onClick={save}
-              disabled={editTask.isPending}
-              className="rounded-md bg-indigo-600 px-4 py-1.5 text-sm font-medium text-white hover:bg-indigo-500 disabled:cursor-not-allowed disabled:bg-gray-700"
-            >
-              {editTask.isPending ? "Saving..." : "Save"}
-            </button>
+      <TaskFieldsEditor key={`fields-${task.id}`} task={task as EditableTask}>
+        <ReadField label="Created" value={formatDate(task.created_at)} />
+        <ReadField label="Updated" value={formatDate(task.updated_at)} />
+        {task.parent_task_id && (
+          <div>
+            <span className="text-gray-500">Parent Task</span>
+            <p>
+              <Link
+                to={`/tasks/${encodeURIComponent(task.parent_task_id)}`}
+                state={{ from }}
+                className="text-indigo-400 hover:underline"
+              >
+                {task.parent_task_id}
+              </Link>
+            </p>
           </div>
-        </div>
-      )}
+        )}
+      </TaskFieldsEditor>
 
       {/* PR link */}
       {task.pr_url && (
@@ -394,136 +172,6 @@ function labelForBack(from: string): string {
   return "Back";
 }
 
-function integrationModeDisplay(task: {
-  integration_mode?: string | null;
-  effective_integration_mode?: string | null;
-  integration_mode_source?: string | null;
-}): string {
-  const effective = task.effective_integration_mode ?? task.integration_mode ?? "pull_request";
-  const source = task.integration_mode_source ?? (task.integration_mode ? "task" : "default");
-  return source === "task" ? effective : `${effective} (from ${source} policy)`;
-}
-
-function ReadField({ label, value }: { label: string; value: string }) {
-  return (
-    <div>
-      <span className="text-gray-500">{label}</span>
-      <p className="text-gray-300">{value}</p>
-    </div>
-  );
-}
-
-function EditableInput({
-  label,
-  type,
-  editing,
-  value,
-  displayValue,
-  onChange,
-}: {
-  label: string;
-  type: "text" | "number";
-  editing: boolean;
-  value: string;
-  displayValue: string;
-  onChange: (v: string) => void;
-}) {
-  return (
-    <div>
-      <span className="text-gray-500">{label}</span>
-      {editing ? (
-        <input
-          type={type}
-          value={value}
-          onChange={(e) => onChange(e.target.value)}
-          className="mt-0.5 w-full rounded-md border border-gray-700 bg-gray-950 px-2 py-1 text-sm text-gray-200 focus:border-indigo-500 focus:outline-none"
-        />
-      ) : (
-        <p className="text-gray-300">{displayValue}</p>
-      )}
-    </div>
-  );
-}
-
-function EditableSelect({
-  label,
-  editing,
-  value,
-  displayValue,
-  options,
-  optionLabel,
-  onChange,
-  hint,
-}: {
-  label: string;
-  editing: boolean;
-  value: string;
-  displayValue: string;
-  options: string[];
-  optionLabel?: (v: string) => string;
-  onChange: (v: string) => void;
-  hint?: string;
-}) {
-  return (
-    <div>
-      <span className="text-gray-500">{label}</span>
-      {editing ? (
-        <>
-          <select
-            value={value}
-            onChange={(e) => onChange(e.target.value)}
-            className="mt-0.5 w-full rounded-md border border-gray-700 bg-gray-950 px-2 py-1 text-sm text-gray-200 focus:border-indigo-500 focus:outline-none"
-          >
-            {options.map((opt) => (
-              <option key={opt} value={opt}>
-                {optionLabel ? optionLabel(opt) : opt || "—"}
-              </option>
-            ))}
-          </select>
-          {hint && <p className="mt-1 text-xs text-gray-500">{hint}</p>}
-        </>
-      ) : (
-        <p className="text-gray-300">{displayValue}</p>
-      )}
-    </div>
-  );
-}
-
-function EditableCheckbox({
-  label,
-  editing,
-  checked,
-  displayValue,
-  onChange,
-}: {
-  label: string;
-  editing: boolean;
-  checked: boolean;
-  displayValue: string;
-  onChange: (v: boolean) => void;
-}) {
-  return (
-    <div>
-      <span className="text-gray-500">{label}</span>
-      {editing ? (
-        <p className="mt-0.5">
-          <label className="inline-flex items-center gap-2 text-sm text-gray-200">
-            <input
-              type="checkbox"
-              checked={checked}
-              onChange={(e) => onChange(e.target.checked)}
-              className="h-4 w-4 cursor-pointer rounded border-gray-700 bg-gray-900 accent-indigo-500"
-            />
-            <span>{checked ? "Yes" : "No"}</span>
-          </label>
-        </p>
-      ) : (
-        <p className="text-gray-300">{displayValue}</p>
-      )}
-    </div>
-  );
-}
-
 function TaskRefList({ title, items, from }: { title: string; items: TaskRef[]; from: string }) {
   return (
     <section>
@@ -557,11 +205,4 @@ function formatDate(value?: string | number | null): string {
   } catch {
     return String(value);
   }
-}
-
-function parseOptionalInt(v: string): number | null {
-  const t = v.trim();
-  if (!t) return null;
-  const n = parseInt(t, 10);
-  return Number.isFinite(n) ? n : null;
 }

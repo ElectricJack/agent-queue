@@ -991,6 +991,11 @@ from .task_close_request import TaskCloseRequest
 from .task_close_response_422 import TaskCloseResponse422
 from .task_comment import TaskComment
 from .task_comment_author_kind import TaskCommentAuthorKind
+from .task_comment_delete_request import TaskCommentDeleteRequest
+from .task_comment_delete_response import TaskCommentDeleteResponse
+from .task_comment_delete_response_422 import TaskCommentDeleteResponse422
+from .task_comment_edit_request import TaskCommentEditRequest
+from .task_comment_edit_response_422 import TaskCommentEditResponse422
 from .task_comment_request import TaskCommentRequest
 from .task_comment_response import TaskCommentResponse
 from .task_comment_response_422 import TaskCommentResponse422
@@ -2072,6 +2077,11 @@ __all__ = (
     "TaskCloseResponse422",
     "TaskComment",
     "TaskCommentAuthorKind",
+    "TaskCommentDeleteRequest",
+    "TaskCommentDeleteResponse",
+    "TaskCommentDeleteResponse422",
+    "TaskCommentEditRequest",
+    "TaskCommentEditResponse422",
     "TaskCommentRequest",
     "TaskCommentResponse",
     "TaskCommentResponse422",

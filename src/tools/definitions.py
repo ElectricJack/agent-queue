@@ -214,6 +214,8 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "task_set": "task",
     "task_comment": "task",
     "task_comments": "task",
+    "task_comment_edit": "task",
+    "task_comment_delete": "task",
     "task_close": "task",
     "task_heartbeat": "task",
     "task_claim": "task",
@@ -4489,6 +4491,31 @@ _ALL_TOOL_DEFINITIONS = [
                 "offset": {"type": "integer", "default": 0, "minimum": 0, "description": "Number of newest comments to skip."},
             },
             "required": ["task_id"],
+        },
+    },
+    {
+        "name": "task_comment_edit",
+        "description": "Replace the text of an existing task comment. Operator surfaces only: agent sessions are append-only. Author and timestamp are preserved.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "task_id": {"type": "string", "description": "Task id the comment belongs to."},
+                "comment_id": {"type": "string", "description": "Comment id to edit."},
+                "body": {"type": "string", "minLength": 1, "maxLength": 16000, "description": "Replacement comment text (not blank; at most 16000 characters)."},
+            },
+            "required": ["task_id", "comment_id", "body"],
+        },
+    },
+    {
+        "name": "task_comment_delete",
+        "description": "Delete one task comment. Operator surfaces only: agent sessions are append-only.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "task_id": {"type": "string", "description": "Task id the comment belongs to."},
+                "comment_id": {"type": "string", "description": "Comment id to delete."},
+            },
+            "required": ["task_id", "comment_id"],
         },
     },
     {

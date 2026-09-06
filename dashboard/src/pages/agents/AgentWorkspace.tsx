@@ -1,4 +1,4 @@
-import { PlusIcon, UsersIcon, XMarkIcon } from "@heroicons/react/24/outline";
+import { PlusIcon, XMarkIcon } from "@heroicons/react/24/outline";
 import { useAgentFlock } from "../../api/agents";
 import { selectionAddress, useAgentSelection } from "./useAgentSelection";
 import AgentWindow from "./AgentWindow";
@@ -6,6 +6,7 @@ import AddAgent from "./AddAgent";
 import AddPool from "./AddPool";
 import CreateChoice from "./CreateChoice";
 import PoolWindow from "./PoolWindow";
+import PoolDirectory, { PoolDirectoryHint } from "./PoolDirectory";
 import { usePoolFlock } from "./pools";
 
 export default function AgentWorkspace() {
@@ -46,10 +47,9 @@ export default function AgentWorkspace() {
         </div>
       )}
       {selectedIds.length === 0 ? (
-        <div className="flex flex-1 flex-col items-center justify-center gap-3 rounded-xl border border-dashed border-gray-800 p-8 text-center">
-          <UsersIcon className="h-10 w-10 text-gray-700" />
-          <p className="text-sm text-gray-400">Select an agent from the flock to open its live terminal and settings.</p>
-          <p className="text-xs text-gray-600">Closing a view never stops the agent.</p>
+        <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto">
+          <PoolDirectory entries={pools} onOpen={(key) => select(key)} />
+          <PoolDirectoryHint />
         </div>
       ) : (
         <div className={"grid min-h-0 flex-1 auto-rows-[minmax(20rem,1fr)] gap-3 overflow-y-auto lg:auto-rows-auto " + columns + " " + rows}>
