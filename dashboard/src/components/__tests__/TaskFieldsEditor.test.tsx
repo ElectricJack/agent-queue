@@ -48,7 +48,7 @@ function mount(surface: "full" | "drawer") {
       : <Routes><Route path="/tasks/:taskId" element={<TaskDetail />} /></Routes>}
   </MemoryRouter></QueryClientProvider>);
 }
-const select = (name: string) => screen.getByRole("combobox", { name });
+const select = (name: string) => screen.getByRole("combobox", { name }) as HTMLSelectElement;
 const input = (name: string) => screen.getByRole("spinbutton", { name });
 
 describe("task fields editor", () => {
