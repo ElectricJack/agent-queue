@@ -1,5 +1,9 @@
 # Task 12 requirements
 
+Read `task-12-copy-fixture-preflight.md` in this artifact directory for the exact
+current copy-table dependency inventory and the two legal-at-insert receipt fixture
+corrections. Refresh the inventory after Task11; the preflight is not the final schema.
+
 E2E safety preflight: main read docs/guides/e2e-swarm.md, e2e-common.sh, relevant
 e2e-env.sh, e2e-daemon.sh, and e2e/dbsetup.py. Scripts allow AQ_E2E_HOME/PORT/API_URL,
 E2E_PG_HOST/PORT/USER/PASSWORD/DB_NAME overrides. Use a fresh mktemp directory, free
