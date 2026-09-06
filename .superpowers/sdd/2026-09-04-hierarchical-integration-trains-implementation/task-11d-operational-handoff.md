@@ -17,3 +17,9 @@ Read-only controller inspection confirms `src/database/migrate_sqlite_to_pg.py` 
 ## Evidence
 
 Focused CLI transport/JSON/brief/errors and doctor read-only/no-fix tests, guide command parity, applicable project option tests. Use `aq test` for multiple files, one affected-area gate, no broad suite or skipped recovery gates. Tests may fake HTTP/adapters and use scratch DBs only. Ruff changed Python files; git diff --check. Report exact commands/output and downstream instructions in task-11d-report.md. No generated client edits unless public DTO/router surface actually changes.
+
+## Planned11c interfaces (verify against final reviewed report)
+
+`integration_status(project_id)`, `integration_flush(project_id)`, `integration_enable(project_id, mode, expected_generation, reason, waiver_id=None)`, `integration_waive_history(project_id, reason, blocker_digest)`, `integration_resume(operation_id)`, `integration_abort(operation_id, reason)`, `integration_retry_cleanup(batch_id)`.
+
+`edit_project` sensitive fields: `integration_repository_id`, `hierarchical_integration_policy`, `expected_integration_generation` (required when either sensitive field is supplied). Effective/desired/draining rollout fields remain rejected here. CLI should expose expected-generation explicitly or obtain it via status; never silently retry a stale mutation against a new generation. History waiver uses the exact status blocker digest. Preserve structured blockers in error envelopes where transport allows.
