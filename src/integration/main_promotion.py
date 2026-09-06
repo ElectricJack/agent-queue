@@ -434,8 +434,6 @@ class RootPromotionService:
                 intent_id=intent_id, receipt_ids=await self._receipt_ids(intent_id),
                 head_sha=intent["prepared_sha"],
             )
-        await self._mark_prewrite(intent, nonce, current_attestation)
-        await self._crash("after_prewrite_marker")
         if not await self._local_fast_forward(store, intent):
             return RootPromotionResult(
                 outcome="non_fast_forward", batch_id=batch_id, revision=revision,
@@ -443,6 +441,13 @@ class RootPromotionService:
                 head_sha=intent["prepared_sha"],
             )
         token = await self.app_client.installation_token()
+        if not await self._mark_prewrite(intent, nonce, current_attestation):
+            return RootPromotionResult(
+                outcome="wait", batch_id=batch_id, revision=revision,
+                intent_id=intent_id, receipt_ids=await self._receipt_ids(intent_id),
+                head_sha=intent["prepared_sha"],
+            )
+        await self._crash("after_prewrite_marker")
         try:
             await self.git.apush_oid_with_app_auth(
                 str(store),
@@ -530,9 +535,7 @@ class RootPromotionService:
 
     async def _mark_prewrite(
         self, intent: dict[str, Any], nonce: str, attestation: RootAttestationProof
-    ) -> None:
-        now = self.clock()
-        minimum = now + _TRANSPORT_SECONDS + _PREWRITE_MARGIN_SECONDS
+    ) -> bool:
         async with self.db.immediate() as conn:
             await self.db.lock_hierarchy_project(conn, intent["project_id"])
             locked = await self._snapshot_on(
@@ -541,14 +544,20 @@ class RootPromotionService:
                 intent["root_batch_id"],
                 int(intent["root_candidate_revision"]),
             )
+            now = self.clock()
+            minimum = now + _TRANSPORT_SECONDS + _PREWRITE_MARGIN_SECONDS
             if (
-                self._validate_snapshot(locked, int(intent["root_candidate_revision"]))
+                self._validate_snapshot(
+                    locked,
+                    int(intent["root_candidate_revision"]),
+                    minimum_lease_expires_at=minimum,
+                )
                 is not None
                 or not self._intent_matches_authority(intent, locked)
                 or not self._proof_matches_state(attestation, locked)
                 or float(locked["lease"]["expires_at"]) < minimum
             ):
-                raise RootPromotionInvariantError("root main authority changed")
+                return False
             changed = await conn.execute(
                 update(integration_candidate_ref_mutations)
                 .where(
@@ -563,8 +572,7 @@ class RootPromotionService:
                     updated_at=now,
                 )
             )
-            if changed.rowcount != 1:
-                raise RootPromotionInvariantError("root main execution claim changed")
+            return changed.rowcount == 1
 
     async def _mark_applied(self, intent: dict[str, Any], remote: str) -> None:
         async with self.db.immediate() as conn:
@@ -1079,7 +1087,13 @@ class RootPromotionService:
             "publication": publication,
         }
 
-    def _validate_snapshot(self, state: dict[str, Any], revision: int) -> str | None:
+    def _validate_snapshot(
+        self,
+        state: dict[str, Any],
+        revision: int,
+        *,
+        minimum_lease_expires_at: float | None = None,
+    ) -> str | None:
         project = state["project"]
         batch = state["batch"]
         candidate = state["revision"]
@@ -1119,6 +1133,8 @@ class RootPromotionService:
         lease = state["lease"]
         owner = state["owner"]
         publication = state["publication"]
+        if minimum_lease_expires_at is None:
+            minimum_lease_expires_at = self.clock() + _CLAIM_SECONDS
         if (
             batch["lifecycle"] not in {"testing", "promoting"}
             or operation is None
@@ -1130,7 +1146,7 @@ class RootPromotionService:
             or lease is None
             or lease["batch_id"] != batch["id"]
             or lease["repository_id"] != batch["repository_id"]
-            or float(lease["expires_at"]) < self.clock() + _CLAIM_SECONDS
+            or float(lease["expires_at"]) < minimum_lease_expires_at
             or owner is None
             or owner["owner_id"] != operation["id"]
             or owner["owner_role"] != "collector"

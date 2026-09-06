@@ -302,6 +302,29 @@ class InFlightPushGit(PushGit):
         return await super().apush_oid_with_app_auth(*args, **kwargs)
 
 
+class ClockAdvancingApp(FakeAppClient):
+    def __init__(self, clock, token_time):
+        super().__init__()
+        self.clock = clock
+        self.token_time = token_time
+
+    async def installation_token(self):
+        self.clock[0] = self.token_time
+        return await super().installation_token()
+
+
+class ClockAdvancingGit(PushGit):
+    def __init__(self, app, clock, ancestry_time):
+        super().__init__(app)
+        self.clock = clock
+        self.ancestry_time = ancestry_time
+
+    async def arun_git_result(self, args, **kwargs):
+        if args[:2] == ["merge-base", "--is-ancestor"]:
+            self.clock[0] = self.ancestry_time
+        return await super().arun_git_result(args, **kwargs)
+
+
 @pytest.mark.asyncio
 async def test_root_prepare_derives_exact_green_authority_and_reserves_all_members(prepared_db):
     db, data_dir = prepared_db
@@ -673,6 +696,108 @@ async def test_owned_unmarked_claim_renews_full_horizon_before_prewrite(prepared
         ).mappings().one()
     assert claim["prewrite_at"] == 30.0
     assert claim["expires_at"] >= 165.0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("limiting_horizon", ["claim", "lease"])
+async def test_prewrite_rechecks_horizon_after_ancestry_and_token_refresh(
+    prepared_db, limiting_horizon
+):
+    db, data_dir = prepared_db
+    now = [10.0]
+    app = ClockAdvancingApp(now, token_time=21.0)
+    git = ClockAdvancingGit(app, now, ancestry_time=15.0)
+    service = RootPromotionService(
+        db,
+        data_dir=data_dir,
+        git_manager=git,
+        app_client=app,
+        clock=lambda: now[0],
+    )
+    prepared = await service.prepare("batch", 0)
+    async with db.immediate() as conn:
+        if limiting_horizon == "claim":
+            await conn.execute(update(project_integration_leases).values(expires_at=1000.0))
+        else:
+            await conn.execute(
+                update(integration_candidate_ref_mutations).values(expires_at=1000.0)
+            )
+            await conn.execute(update(project_integration_leases).values(expires_at=145.0))
+
+    result = await service.reconcile(prepared.intent_id)
+
+    assert result.outcome == "wait"
+    assert git.pushes == [] and app.token_calls == 1
+    async with db._engine.connect() as conn:
+        claim = (
+            await conn.execute(select(integration_candidate_ref_mutations))
+        ).mappings().one()
+        intent = (
+            await conn.execute(select(integration_promotion_intents))
+        ).mappings().one()
+    assert claim["state"] == "reserved" and claim["prewrite_at"] is None
+    assert "dummy-installation-token" not in repr((claim, intent))
+
+
+@pytest.mark.asyncio
+async def test_prewrite_accepts_exact_post_refresh_push_horizon(prepared_db):
+    db, data_dir = prepared_db
+    now = [10.0]
+    app = ClockAdvancingApp(now, token_time=20.0)
+    git = ClockAdvancingGit(app, now, ancestry_time=15.0)
+    service = RootPromotionService(
+        db,
+        data_dir=data_dir,
+        git_manager=git,
+        app_client=app,
+        clock=lambda: now[0],
+    )
+    prepared = await service.prepare("batch", 0)
+    async with db.immediate() as conn:
+        await conn.execute(update(project_integration_leases).values(expires_at=145.0))
+
+    result = await service.reconcile(prepared.intent_id)
+
+    assert result.outcome == "promoted"
+    assert len(git.pushes) == 1 and app.token_calls == 1
+    async with db._engine.connect() as conn:
+        claim = (
+            await conn.execute(select(integration_candidate_ref_mutations))
+        ).mappings().one()
+    assert claim["prewrite_at"] == 20.0
+
+
+@pytest.mark.asyncio
+async def test_prewrite_horizon_is_measured_after_hierarchy_lock(prepared_db):
+    db, data_dir = prepared_db
+    now = [10.0]
+    app = ClockAdvancingApp(now, token_time=20.0)
+    git = ClockAdvancingGit(app, now, ancestry_time=15.0)
+    service = RootPromotionService(
+        db,
+        data_dir=data_dir,
+        git_manager=git,
+        app_client=app,
+        clock=lambda: now[0],
+    )
+    prepared = await service.prepare("batch", 0)
+    original_lock = db.lock_hierarchy_project
+
+    async def advancing_lock(conn, project_id):
+        await original_lock(conn, project_id)
+        if now[0] == 20.0:
+            now[0] = 21.0
+
+    db.lock_hierarchy_project = advancing_lock
+
+    result = await service.reconcile(prepared.intent_id)
+
+    assert result.outcome == "wait" and git.pushes == []
+    async with db._engine.connect() as conn:
+        claim = (
+            await conn.execute(select(integration_candidate_ref_mutations))
+        ).mappings().one()
+    assert claim["prewrite_at"] is None
 
 
 @pytest.mark.asyncio
