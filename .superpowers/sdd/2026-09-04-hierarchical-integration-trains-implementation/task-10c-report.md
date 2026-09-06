@@ -473,3 +473,137 @@ No new concern was found in the round-1 self-review. The controller-owned
 `progress.md` edit remains intentionally excluded from Task 10c runtime/report
 paths. Fix-round runtime and report commits remain pending controller exact-path
 commits; no index mutation was attempted in this inherited worker.
+
+---
+
+## Fix round 2 — remaining review findings
+
+Fix runtime base: `12c05e1b`; working HEAD began at documentation-only
+`bd32168b`. Controller review/progress paths remain excluded.
+
+### Rebuilt-conflict dispatch
+
+RED:
+
+```text
+aq test tests/test_root_integration_playbook.py::test_green_event_rebuild_conflict_dispatches_existing_stage_through_engine -x
+1 failed, 11 warnings in 2.95s: expected repair dispatch once, awaited 0 times
+```
+
+The real engine reached the green-event promotion rule, observed `base_moved`,
+ran the rebuilt candidate command, and terminated on rebuilt `conflict` without
+dispatching the already-started repair operation.
+
+GREEN:
+
+```text
+aq test tests/test_root_integration_playbook.py::test_green_event_rebuild_conflict_dispatches_existing_stage_through_engine tests/test_root_integration_playbook.py::test_candidate_result_routes_are_durable_and_server_derive_repair_stage tests/test_default_playbook_v2_artifacts.py::test_review_record_complete -x
+9 passed, 11 warnings in 2.67s
+```
+
+The rebuilt-conflict edge now invokes subject-only
+`integration_repair_dispatch(operation_id)` and derives stage authority in the
+existing command/service path. Only the root source, artifact, hash, and review
+manifest were rebuilt; its reviewed artifact is
+`sha256:a93c3c32e05bdff64f25279531b6eaf04aba01e8bbd48a8125230a1ca32fa160`.
+The engine regression was then tightened to seed the superseded root intent and
+`building` lifecycle: it proves the configured command invokes
+`CandidateService.rebuild(batch, revision, new_default_head)`, receives conflict,
+and dispatches the existing stage. The tightened node passed with 1 test and 11
+warnings in 2.79s.
+
+### Authoritative worktree absence
+
+RED:
+
+```text
+aq test tests/test_integration_cleanup.py::test_cleanup_does_not_infer_worktree_absence_from_failed_head_lookup -x
+1 failed, 11 warnings in 2.75s: replay returned complete, expected retryable
+```
+
+A failed removal left the retained directory in place; after claim expiry a
+failed best-effort HEAD read was incorrectly accepted as successful removal.
+
+GREEN:
+
+```text
+aq test tests/test_integration_cleanup.py::test_cleanup_reconciles_worktree_absent_after_remove_crash tests/test_integration_cleanup.py::test_cleanup_does_not_infer_worktree_absence_from_failed_head_lookup -x
+2 passed, 11 warnings in 2.92s
+```
+
+A prewritten removal replay now completes only when the exact filesystem entry
+is absent and the recorded base repository's authoritative worktree list no
+longer contains the normalized path. Existing paths, stale registrations, or
+unavailable Git inspection remain retryable. The positive crash replay removes
+an actual temporary directory and supplies an authoritative unregistered list.
+
+An intermediate test-only attempt to increase retry count by mutating the
+sealed batch snapshot was correctly rejected by the existing immutable-batch
+trigger (1 positive node passed, 1 setup error). The test fixture was corrected
+to freeze the desired attempt count at creation; this was harness correction,
+not semantic RED and caused no production change.
+
+### Partial-downgrade irreversible reservation guard
+
+RED:
+
+```text
+aq test -m migration tests/test_migration_integration_cleanup_hardening.py::test_sqlite_cleanup_hardening_migration_round_trip -x
+1 failed, 8 warnings in 1.96s: DID NOT RAISE on a10c5e1e4f02 -> a10c5e1e4f01
+```
+
+The test seeded a retryable worktree item with an immutable irreversible nonce
+and prewrite timestamp. The partial downgrade silently removed both columns.
+
+SQLite GREEN:
+
+```text
+aq test -m migration tests/test_migration_integration_cleanup_hardening.py::test_sqlite_cleanup_hardening_migration_round_trip -x
+1 passed, 8 warnings in 5.79s
+```
+
+Revision `a10c5e1e4f02` now refuses before any trigger, constraint, or column is
+dropped when either irreversible reservation field is present, and reports the
+exact `batch:kind:identity`. The same dual-dialect helper verifies the refusal
+leaves the marker intact, deletes only the seeded row to drain it, then safely
+downgrades to `a10c5e1e4f01` and upgrades back through `a10c5e1e4f03`.
+PostgreSQL execution is controller-owned on a unique disposable scratch DB.
+
+PostgreSQL GREEN (controller-run unique scratch DB):
+
+```text
+POSTGRES_TEST_DSN=postgresql+asyncpg://integration_test:integration_test@127.0.0.1:16833/integration_test aq test -m migration tests/test_migration_integration_cleanup_hardening.py::test_postgres_cleanup_hardening_migration_round_trip -x
+1 passed, 8 inherited warnings in 4.10s (test call 2.42s), exit 0; aq slot 0, -n 3
+```
+
+The test created and dropped only its unique `task10c_cleanup_hardening` scratch
+database. No operator or baseline database was migrated.
+
+### Round-2 final verification and self-review
+
+```text
+aq test tests/test_root_integration_playbook.py::test_green_event_rebuild_conflict_dispatches_existing_stage_through_engine tests/test_root_integration_playbook.py::test_candidate_result_routes_are_durable_and_server_derive_repair_stage 'tests/test_default_playbook_v2_artifacts.py::test_source_digest_matches[root-integration-train]' 'tests/test_default_playbook_v2_artifacts.py::test_source_matches_live_shipped_file[root-integration-train]' 'tests/test_default_playbook_v2_artifacts.py::test_review_record_complete[root-integration-train]' 'tests/test_default_playbook_v2_artifacts.py::test_every_command_resolves[root-integration-train]' tests/test_integration_cleanup.py::test_cleanup_reconciles_worktree_absent_after_remove_crash tests/test_integration_cleanup.py::test_cleanup_does_not_infer_worktree_absence_from_failed_head_lookup -x
+8 passed, 11 warnings in 3.24s
+
+ruff check migrations/versions/a10c5e1e4f02_cleanup_irreversible_prewrite.py scripts/rebuild-reviewed-playbook-artifacts.py src/integration/cleanup.py tests/test_integration_cleanup.py tests/test_migration_integration_cleanup_hardening.py tests/test_root_integration_playbook.py
+All checks passed!
+
+python3 scripts/rebuild-reviewed-playbook-artifacts.py --check root-integration-train
+exit 0; no DRIFT entry
+
+git diff --check
+exit 0
+```
+
+Round-2 self-review confirms: the rebuilt-conflict edge uses the already-started
+operation and the real command's server-derived stage, with no new authority;
+worktree replay requires both independent absence facts and cannot convert an
+unreadable existing checkout into success; and the partial downgrade guard runs
+before every destructive DDL statement and leaves seeded reservation bytes
+unchanged on refusal in both dialects. Draining the exact item remains the only
+way the tested partial downgrade proceeds. No existing release, claim, target,
+immutability, or full cleanup downgrade guard was weakened.
+
+No round-2 concern remains. No broad area gate was repeated, and no operator
+DB, live forge, activation, protected environment, network, or Git index/write
+operation was used.
