@@ -280,6 +280,19 @@ class IntegrationCommandsMixin:
             default_mode=self.config.integration.default_mode,
         )
 
+    def _integration_root_promotion_service(self):
+        service = getattr(self.orchestrator, "root_promotion_service", None)
+        if service is not None:
+            return service
+        from src.integration.main_promotion import RootPromotionService
+
+        return RootPromotionService(
+            self.db,
+            data_dir=self.config.data_dir,
+            git_manager=self.orchestrator.git,
+            app_client=getattr(self.orchestrator, "integration_app_client", None),
+        )
+
     async def _cmd_integration_schedule_due(self, args: dict) -> dict:
         from pydantic import ValidationError
 
@@ -328,6 +341,34 @@ class IntegrationCommandsMixin:
         return {
             "success": result["outcome"] in {"sealed", "empty"},
             **result,
+        }
+
+    async def _cmd_integration_promote_main(self, args: dict) -> dict:
+        from pydantic import ValidationError
+
+        from src.commands.contracts.integration import IntegrationPromoteMainArgs
+        from src.integration.main_promotion import RootPromotionInvariantError
+
+        try:
+            request = IntegrationPromoteMainArgs.model_validate(args)
+        except ValidationError as exc:
+            return _failure("runtime_error", f"invalid root promotion request: {exc}")
+        batch = await self.db.get_integration_batch(request.batch_id)
+        if batch is None:
+            return _failure("runtime_error", "integration batch does not exist")
+        if not await self._integration_delivery_authorized(
+            batch["project_id"], "integration_promote_main"
+        ):
+            return _failure("unauthorized", "caller cannot promote this root batch")
+        try:
+            result = await self._integration_root_promotion_service().promote(
+                request.batch_id, request.revision
+            )
+        except RootPromotionInvariantError as exc:
+            return _failure("runtime_error", str(exc))
+        return {
+            "success": result.outcome in {"promoted", "already_promoted"},
+            **result.model_dump(mode="json"),
         }
 
     def _hierarchy_integration_service(self):

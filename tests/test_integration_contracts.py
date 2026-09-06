@@ -194,6 +194,7 @@ def test_unimplemented_integration_operations_are_not_registered():
         "integration_reconcile_promotion",
         "integration_resolve_conflict",
         "integration_push_conflict_resolution",
+        "integration_promote_main",
         "integration_repair_start",
         "integration_repair_dispatch",
         "integration_record_repair",
@@ -360,10 +361,18 @@ def test_promotion_contracts_declare_retry_and_domain_identity():
         "stale",
     }
     assert set(push.args_model.model_fields) == {"intent_id", "fence"}
+    root = registry.require("integration_promote_main").contract.execution
+    assert root.idempotency.mode == "natural"
+    assert set(root.args_model.model_fields) == {"batch_id", "revision"}
+    assert {outcome.name for outcome in root.outcomes} == {
+        "promoted", "already_promoted", "base_moved", "ci_missing",
+        "non_fast_forward", "wait", "reconciliation_blocked", "stale",
+        "configuration_blocked",
+    }
 
 
 @pytest.mark.asyncio
-async def test_unimplemented_integration_operation_is_explicitly_rejected():
+async def test_root_promotion_command_is_registered_and_strictly_typed():
     handler = object.__new__(CommandHandler)
     handler.orchestrator = SimpleNamespace(plugin_registry=None)
     handler.config = SimpleNamespace(
@@ -372,4 +381,4 @@ async def test_unimplemented_integration_operation_is_explicitly_rejected():
         security=SimpleNamespace(capability_enforcement="off"),
     )
     result = await handler.execute("integration_promote_main", {})
-    assert result == {"error": "Unknown command: integration_promote_main"}
+    assert result["outcome"] == "runtime_error"

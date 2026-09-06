@@ -426,6 +426,8 @@ class IntegrationDeliveryQueriesMixin:
         """Insert receipt plus delivery/cleanup events in one transaction."""
         async with self.immediate() as conn:
             intent = await self._locked_intent(conn, intent_id)
+            if intent.get("intent_kind", "child") != "child":
+                raise ValueError("root intent requires the root-only finalizer")
             resolution = intent["resolution_head_sha"] is not None
             if not resolution and intent["prepared_sha"] is None:
                 raise ValueError("unprepared promotion cannot be finalized")

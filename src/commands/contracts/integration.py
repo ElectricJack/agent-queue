@@ -138,6 +138,19 @@ class IntegrationPushConflictResolutionArgs(CommandArgs):
     fence: Fence
 
 
+class IntegrationPromoteMainArgs(CommandArgs):
+    batch_id: str = Field(min_length=1)
+    revision: int = Field(ge=0)
+
+
+class IntegrationPromoteMainValue(CommandValue):
+    batch_id: str | None = None
+    revision: int | None = None
+    intent_id: str | None = None
+    receipt_ids: tuple[str, ...] = ()
+    head_sha: str | None = None
+
+
 class IntegrationFileChildrenArgs(CommandArgs):
     parent_id: str
     children: list[dict[str, Any]]
@@ -653,6 +666,50 @@ INTEGRATION_PUSH_CONFLICT_RESOLUTION = CommandContract(
 )
 
 
+INTEGRATION_PROMOTE_MAIN = CommandContract(
+    execution=ExecutionContract(
+        name="integration_promote_main",
+        args_model=IntegrationPromoteMainArgs,
+        result_model=IntegrationPromoteMainValue,
+        outcomes=tuple(
+            OutcomeSpec(
+                name=name,
+                classification=(
+                    OutcomeClass.SUCCESS
+                    if name in {"promoted", "already_promoted"}
+                    else OutcomeClass.FAILURE
+                ),
+            )
+            for name in (
+                "promoted",
+                "already_promoted",
+                "base_moved",
+                "ci_missing",
+                "non_fast_forward",
+                "wait",
+                "reconciliation_blocked",
+                "stale",
+                "configuration_blocked",
+            )
+        ),
+        capability="integration_promote_main",
+        side_effect=SideEffectClass.COMPOSITE,
+        idempotency=IdempotencySpec(mode="natural"),
+        retry_safe=True,
+        effects=(
+            UpdateClause(subject=EffectSubject.INTEGRATION_OPERATION),
+            UpdateClause(subject=EffectSubject.DELIVERY_EVIDENCE),
+        ),
+        sensitive_result_fields=frozenset({"head_sha"}),
+        receipt_projection=tuple(IntegrationPromoteMainValue.model_fields),
+    ),
+    presentation=CommandPresentation(
+        title="Promote exact root candidate",
+        summary="Reconcile and fast-forward main to the exact trusted green candidate.",
+    ),
+)
+
+
 INTEGRATION_FILE_CHILDREN = CommandContract(
     execution=ExecutionContract(
         name="integration_file_children",
@@ -942,6 +999,28 @@ async def _push_conflict_resolution_adapter(
     )
 
 
+async def _promote_main_adapter(
+    args: IntegrationPromoteMainArgs, ctx: CommandContext | None
+) -> CommandResult:
+    return await _hierarchy_adapter(
+        "integration_promote_main",
+        args,
+        ctx,
+        IntegrationPromoteMainValue,
+        {
+            "promoted",
+            "already_promoted",
+            "base_moved",
+            "ci_missing",
+            "non_fast_forward",
+            "wait",
+            "reconciliation_blocked",
+            "stale",
+            "configuration_blocked",
+        },
+    )
+
+
 async def _hierarchy_adapter(
     command: str,
     args: CommandArgs,
@@ -1151,6 +1230,7 @@ def register_integration_contracts(registry: ContractRegistry) -> None:
         (INTEGRATION_RECONCILE_PROMOTION, _reconcile_adapter),
         (INTEGRATION_RESOLVE_CONFLICT, _resolve_conflict_adapter),
         (INTEGRATION_PUSH_CONFLICT_RESOLUTION, _push_conflict_resolution_adapter),
+        (INTEGRATION_PROMOTE_MAIN, _promote_main_adapter),
         (INTEGRATION_REPAIR_START, _repair_start_adapter),
         (INTEGRATION_REPAIR_DISPATCH, _repair_dispatch_adapter),
         (INTEGRATION_RECORD_REPAIR, _record_repair_adapter),

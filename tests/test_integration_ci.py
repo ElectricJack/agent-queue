@@ -678,9 +678,25 @@ async def test_ci_service_binds_root_evidence_to_exact_batch_revision_and_candid
     )
 
     assert result["outcome"] == "green"
+    assert result["aggregate_evidence_id"].startswith("ci-aggregate-")
     assert stale["outcome"] == "stale_subject"
     async with ci_db._engine.connect() as conn:
         rows = (await conn.execute(select(integration_check_evidence))).mappings().all()
+        candidate = (
+            await conn.execute(
+                select(integration_candidate_revisions).where(
+                    integration_candidate_revisions.c.batch_id == "batch",
+                    integration_candidate_revisions.c.revision == 4,
+                )
+            )
+        ).mappings().one()
+        batch = (
+            await conn.execute(select(integration_batches).where(integration_batches.c.id == "batch"))
+        ).mappings().one()
+    assert candidate["state"] == "green"
+    assert candidate["ci_evidence_id"] == result["aggregate_evidence_id"]
+    assert batch["ci_evidence_id"] == result["aggregate_evidence_id"]
+    assert batch["tested_candidate_sha"] == SHA
     assert all(
         row["operation_id"] == "root-op"
         and row["batch_id"] == "batch"

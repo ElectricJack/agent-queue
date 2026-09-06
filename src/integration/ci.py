@@ -11,13 +11,14 @@ from typing import Any, Literal
 from urllib.parse import quote
 
 from pydantic import BaseModel, ConfigDict, Field, StrictInt, model_validator
-from sqlalchemy import insert, select
+from sqlalchemy import insert, select, update
 
 from src.database.tables import (
     integration_batches,
     integration_candidate_revisions,
     integration_check_evidence,
     integration_repair_operations,
+    integration_repair_stages,
     projects,
     task_integration_checkpoints,
     tasks,
@@ -375,10 +376,88 @@ class CIService:
             evidence_ids = await self._append_observation_on(
                 conn, subject, observation, trust=self.trust
             )
+            aggregate_evidence_id = None
+            if isinstance(observation, TrustedCIObservation):
+                aggregate_evidence_id = await self._project_candidate_green_on(
+                    conn, subject, observation
+                )
             return {
                 "outcome": "green" if isinstance(observation, TrustedCIObservation) else "red",
                 "evidence_ids": evidence_ids,
+                **(
+                    {"aggregate_evidence_id": aggregate_evidence_id}
+                    if aggregate_evidence_id is not None
+                    else {}
+                ),
             }
+
+    async def _project_candidate_green_on(
+        self,
+        conn: Any,
+        subject: CandidateCISubject,
+        observation: TrustedCIObservation,
+    ) -> str:
+        """Persist the one aggregate success identity consumed by promotion."""
+        payload = observation.payload
+        identity = {
+            "subject": subject.model_dump(),
+            "attestation": payload.external_id,
+            "workflows": sorted(observation.workflow_ids.items()),
+        }
+        digest = hashlib.sha256(
+            json.dumps(identity, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
+        aggregate_id = f"ci-aggregate-{digest}"
+        evidence = IntegrationCIEvidence(
+            id=aggregate_id,
+            operation_id=subject.operation_id,
+            batch_id=subject.batch_id,
+            candidate_revision=subject.revision,
+            producer_id=str(payload.ci_producer_app_id),
+            workflow_id="aggregate:" + digest,
+            run_id=payload.external_id,
+            attempt=0,
+            required_check_version=payload.required_check_set_version,
+            checks={check.name: "success" for check in payload.checks},
+            conclusion="success",
+            classification="conclusive",
+            observed_at=self.clock(),
+        )
+        aggregate_id = await self.adapter.append_on(conn, evidence)
+        revision_changed = await conn.execute(
+            update(integration_candidate_revisions)
+            .where(
+                integration_candidate_revisions.c.batch_id == subject.batch_id,
+                integration_candidate_revisions.c.revision == subject.revision,
+                integration_candidate_revisions.c.head_sha == subject.candidate_sha,
+                integration_candidate_revisions.c.state.in_(("built", "testing")),
+            )
+            .values(state="green", ci_evidence_id=aggregate_id, updated_at=self.clock())
+        )
+        batch_changed = await conn.execute(
+            update(integration_batches)
+            .where(
+                integration_batches.c.id == subject.batch_id,
+                integration_batches.c.current_revision == subject.revision,
+                integration_batches.c.lifecycle.in_(("testing", "repairing")),
+            )
+            .values(
+                tested_candidate_sha=subject.candidate_sha,
+                ci_evidence_id=aggregate_id,
+                updated_at=self.clock(),
+            )
+        )
+        if revision_changed.rowcount != 1 or batch_changed.rowcount != 1:
+            raise AttestationError("candidate changed before aggregate green projection")
+        await conn.execute(
+            update(integration_repair_stages)
+            .where(
+                integration_repair_stages.c.operation_id == subject.operation_id,
+                integration_repair_stages.c.state == "active",
+            )
+            .values(state="awaiting_completion")
+        )
+        return aggregate_id
 
     async def _lock_parent_subject_on(
         self, conn: Any, subject: ParentCISubject

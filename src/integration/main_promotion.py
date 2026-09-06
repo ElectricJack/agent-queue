@@ -1,0 +1,1112 @@
+"""Durable root-to-main intent preparation and exact tested-SHA promotion."""
+
+from __future__ import annotations
+
+import hashlib
+import inspect
+import time
+import uuid
+from collections.abc import Awaitable, Callable
+from pathlib import Path
+from typing import Any, Literal
+
+from pydantic import BaseModel, ConfigDict
+from sqlalchemy import func, insert, select, update
+from sqlalchemy.exc import IntegrityError
+
+from src.database.tables import (
+    integration_batch_members,
+    integration_batches,
+    integration_branch_owners,
+    integration_candidate_member_results,
+    integration_candidate_publications,
+    integration_candidate_ref_mutations,
+    integration_candidate_revisions,
+    integration_check_evidence,
+    integration_promotion_intents,
+    integration_repair_operations,
+    integration_repair_stages,
+    integration_root_intent_members,
+    integration_outbox,
+    project_integration_leases,
+    projects,
+    task_delivery_receipts,
+)
+from src.git.manager import GitManager, is_valid_git_oid
+
+
+_IDENTITY_NAMESPACE = uuid.UUID("2cfd2eea-e0e5-4397-b1c4-2dd6c40d64dd")
+_CLAIM_SECONDS = 135.0
+
+
+class RootPromotionResult(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid", strict=True)
+
+    outcome: Literal[
+        "prepared",
+        "promoted",
+        "already_promoted",
+        "base_moved",
+        "ci_missing",
+        "non_fast_forward",
+        "wait",
+        "reconciliation_blocked",
+        "stale",
+        "configuration_blocked",
+    ]
+    batch_id: str
+    revision: int
+    intent_id: str | None = None
+    receipt_ids: tuple[str, ...] = ()
+    head_sha: str | None = None
+
+
+class RootPromotionInvariantError(RuntimeError):
+    """Durable root promotion state is internally inconsistent."""
+
+
+RepositoryResolver = Callable[[str], Awaitable[Any] | Any]
+CrashHook = Callable[[str], Awaitable[None] | None]
+
+
+class RootPromotionService:
+    """Reserve all root receipts and the one fenced exact-main mutation."""
+
+    def __init__(
+        self,
+        db: Any,
+        *,
+        data_dir: str | Path,
+        git_manager: GitManager | None = None,
+        repository_resolver: RepositoryResolver | None = None,
+        app_client: Any | None = None,
+        crash_hook: CrashHook | None = None,
+        clock: Callable[[], float] = time.time,
+    ) -> None:
+        self.db = db
+        self.data_dir = Path(data_dir)
+        self.git = git_manager or GitManager()
+        self.repository_resolver = repository_resolver
+        self.app_client = app_client
+        self.crash_hook = crash_hook
+        self.clock = clock
+        self._owned_nonces: dict[str, str] = {}
+
+    async def prepare(self, batch_id: str, revision: int) -> RootPromotionResult:
+        identity = self._identity(batch_id, revision)
+        intent_id = identity["intent_id"]
+        existing = await self._intent(intent_id)
+        if existing is not None:
+            return await self._existing_result(existing, batch_id, revision)
+
+        project_id = await self._project_id(batch_id)
+        if project_id is None:
+            return RootPromotionResult(outcome="stale", batch_id=batch_id, revision=revision)
+        snapshot = await self._snapshot(project_id, batch_id, revision)
+        if snapshot["batch"]["lifecycle"] == "empty":
+            return RootPromotionResult(
+                outcome="already_promoted", batch_id=batch_id, revision=revision
+            )
+        failure = self._validate_snapshot(snapshot, revision)
+        if failure is not None:
+            return RootPromotionResult(outcome=failure, batch_id=batch_id, revision=revision)
+
+        repository = await self._repository(snapshot["batch"]["repository_id"])
+        recovery_ref = f"refs/aq/root-promotions/{intent_id}"
+        await self._pin_recovery(repository, recovery_ref, snapshot["revision"]["head_sha"])
+        await self._crash("after_recovery_pin")
+
+        now = self.clock()
+        async with self.db.immediate() as conn:
+            await self.db.lock_hierarchy_project(conn, project_id)
+            locked = await self._snapshot_on(conn, project_id, batch_id, revision)
+            failure = self._validate_snapshot(locked, revision)
+            if failure is not None:
+                return RootPromotionResult(
+                    outcome=failure, batch_id=batch_id, revision=revision
+                )
+            existing = await self._intent_on(conn, intent_id)
+            if existing is not None:
+                return await self._existing_result_on(conn, existing, batch_id, revision)
+            unresolved = (
+                await conn.execute(
+                    select(integration_promotion_intents.c.id).where(
+                        integration_promotion_intents.c.repository_id
+                        == locked["batch"]["repository_id"],
+                        integration_promotion_intents.c.target_branch
+                        == f"refs/heads/{repository.default_branch}",
+                        integration_promotion_intents.c.state.not_in(
+                            ("committed", "conflict", "superseded")
+                        ),
+                    )
+                )
+            ).scalar_one_or_none()
+            if unresolved is not None:
+                return RootPromotionResult(
+                    outcome="reconciliation_blocked",
+                    batch_id=batch_id,
+                    revision=revision,
+                )
+            receipt_ids = tuple(
+                self._receipt_id(batch_id, revision, int(member["ordinal"]))
+                for member in locked["members"]
+            )
+            if not receipt_ids:
+                raise RootPromotionInvariantError("nonempty root batch has no members")
+            intent_values = {
+                "id": intent_id,
+                "domain_key": identity["domain_key"],
+                "operation_key": locked["operation"]["id"],
+                "project_id": project_id,
+                "receipt_id": receipt_ids[0],
+                "source_task_id": None,
+                "target_task_id": None,
+                "source_head": locked["revision"]["head_sha"],
+                "source_base": locked["revision"]["construction_base_sha"],
+                "repository_id": locked["batch"]["repository_id"],
+                "origin_url": repository.url,
+                "target_branch": f"refs/heads/{repository.default_branch}",
+                "expected_target": locked["revision"]["construction_base_sha"],
+                "prepared_sha": locked["revision"]["head_sha"],
+                "recovery_ref": recovery_ref,
+                # Legacy child fence columns remain required; root code never
+                # treats them as a project-lease namespace.
+                "fence_owner_id": locked["owner"]["owner_id"],
+                "fence_token": locked["owner"]["fence_token"],
+                "state": "prepared",
+                "review_evidence": {
+                    "aggregate_ci_evidence_id": locked["evidence"]["id"],
+                    "member_review_evidence_ids": [
+                        member["review_evidence_id"] for member in locked["members"]
+                    ],
+                },
+                "authors": [],
+                "provenance": {
+                    "publication_idempotency_key": locked["publication"]["idempotency_key"],
+                    "publication_pr_number": locked["publication"]["pr_number"],
+                },
+                "commit_metadata": {},
+                "intent_kind": "root",
+                "root_batch_id": batch_id,
+                "root_candidate_revision": revision,
+                "project_lease_owner_id": locked["lease"]["owner_id"],
+                "project_lease_fence_token": locked["lease"]["fence_token"],
+                "branch_fence_owner_id": locked["owner"]["owner_id"],
+                "branch_fence_token": locked["owner"]["fence_token"],
+                "ci_evidence_id": locked["evidence"]["id"],
+                "created_at": now,
+                "updated_at": now,
+            }
+            try:
+                async with conn.begin_nested():
+                    await conn.execute(insert(integration_promotion_intents).values(**intent_values))
+                    for member, result, receipt_id in zip(
+                        locked["members"], locked["results"], receipt_ids, strict=True
+                    ):
+                        await conn.execute(
+                            insert(integration_root_intent_members).values(
+                                intent_id=intent_id,
+                                member_ordinal=member["ordinal"],
+                                receipt_id=receipt_id,
+                                batch_id=batch_id,
+                                candidate_revision=revision,
+                                source_task_id=member["task_id"],
+                                repository_id=member["repository_id"],
+                                reviewed_head_sha=member["reviewed_head_sha"],
+                                reviewed_tree_sha=member["reviewed_tree_sha"],
+                                generated_squash_sha=result["generated_squash_sha"],
+                                result_evidence=result["conflict_evidence"] or {},
+                                review_evidence_id=member["review_evidence_id"],
+                                created_at=now,
+                            )
+                        )
+                    mutation_nonce = str(uuid.uuid4())
+                    await conn.execute(
+                        insert(integration_candidate_ref_mutations).values(
+                            id=self._mutation_id(intent_id),
+                            batch_id=batch_id,
+                            revision=revision,
+                            purpose="root_main",
+                            repository_id=locked["batch"]["repository_id"],
+                            branch=locked["batch"]["integration_branch"],
+                            target_branch=f"refs/heads/{repository.default_branch}",
+                            expected_old_sha=locked["revision"]["construction_base_sha"],
+                            desired_sha=locked["revision"]["head_sha"],
+                            operation_id=locked["operation"]["id"],
+                            operation_episode_id=locked["operation"]["episode_id"],
+                            operation_stage=locked["operation"]["active_stage"],
+                            lease_owner_id=locked["lease"]["owner_id"],
+                            lease_fence_token=locked["lease"]["fence_token"],
+                            branch_owner_id=locked["owner"]["owner_id"],
+                            branch_owner_role=locked["owner"]["owner_role"],
+                            branch_fence_token=locked["owner"]["fence_token"],
+                            nonce=mutation_nonce,
+                            state="reserved",
+                            expires_at=now + _CLAIM_SECONDS,
+                            created_at=now,
+                            updated_at=now,
+                        )
+                    )
+                    promoted = await conn.execute(
+                        update(integration_batches)
+                        .where(
+                            integration_batches.c.id == batch_id,
+                            integration_batches.c.current_revision == revision,
+                            integration_batches.c.lifecycle == "testing",
+                        )
+                        .values(lifecycle="promoting", updated_at=now)
+                    )
+                    if promoted.rowcount != 1:
+                        raise RootPromotionInvariantError(
+                            "root batch did not enter promotion atomically"
+                        )
+            except IntegrityError:
+                canonical = await self._intent_on(conn, intent_id)
+                if canonical is None:
+                    raise RootPromotionInvariantError(
+                        "root promotion reservation raced without canonical state"
+                    ) from None
+                return await self._existing_result_on(
+                    conn, canonical, batch_id, revision
+                )
+        self._owned_nonces[intent_id] = mutation_nonce
+        await self._crash("after_reservation")
+        return RootPromotionResult(
+            outcome="prepared",
+            batch_id=batch_id,
+            revision=revision,
+            intent_id=intent_id,
+            receipt_ids=receipt_ids,
+            head_sha=snapshot["revision"]["head_sha"],
+        )
+
+    async def promote(self, batch_id: str, revision: int) -> RootPromotionResult:
+        prepared = await self.prepare(batch_id, revision)
+        if prepared.outcome != "prepared" or prepared.intent_id is None:
+            return prepared
+        return await self.reconcile(prepared.intent_id)
+
+    async def reconcile(self, intent_id: str) -> RootPromotionResult:
+        intent = await self._intent(intent_id)
+        if intent is None or intent.get("intent_kind") != "root":
+            raise RootPromotionInvariantError("root promotion intent does not exist")
+        batch_id = intent["root_batch_id"]
+        revision = int(intent["root_candidate_revision"])
+        if intent["state"] == "committed":
+            return await self._existing_result(intent, batch_id, revision)
+        if intent["state"] == "superseded":
+            return RootPromotionResult(
+                outcome="base_moved", batch_id=batch_id, revision=revision,
+                intent_id=intent_id, receipt_ids=await self._receipt_ids(intent_id),
+                head_sha=intent["prepared_sha"],
+            )
+        if self.app_client is None:
+            return RootPromotionResult(
+                outcome="configuration_blocked", batch_id=batch_id, revision=revision,
+                intent_id=intent_id, receipt_ids=await self._receipt_ids(intent_id),
+                head_sha=intent["prepared_sha"],
+            )
+        repository = await self._repository(intent["repository_id"])
+        binding = self.app_client.repository
+        expected_origin = f"https://github.com/{binding.full_name}.git"
+        if (
+            binding.forge_host != "github.com"
+            or repository.url != expected_origin
+        ):
+            raise RootPromotionInvariantError("root promotion App repository is not canonical")
+        remote = await self.app_client.exact_head_ref(
+            intent["target_branch"].removeprefix("refs/heads/")
+        )
+        if remote is None:
+            return await self._blocked(intent)
+        store = self._store(repository.id)
+        reachable = remote == intent["prepared_sha"]
+        if not reachable and remote != intent["expected_target"]:
+            ancestry = await self._is_ancestor(store, intent["prepared_sha"], remote)
+            if ancestry is None:
+                return await self._blocked(intent)
+            reachable = ancestry
+        if reachable:
+            await self._mark_applied(intent, remote)
+            return await self._finalize_root(intent_id, remote)
+
+        current = await self._is_current_revision(batch_id, revision)
+        mutation = await self._mutation(intent_id)
+        if mutation is None:
+            raise RootPromotionInvariantError("root main mutation claim is missing")
+        if not current:
+            if float(mutation["expires_at"]) > self.clock():
+                return RootPromotionResult(
+                    outcome="wait", batch_id=batch_id, revision=revision,
+                    intent_id=intent_id, receipt_ids=await self._receipt_ids(intent_id),
+                    head_sha=intent["prepared_sha"],
+                )
+            if mutation["prewrite_at"] is not None:
+                return await self._blocked(intent)
+            await self._supersede_unattempted(intent, mutation)
+            return RootPromotionResult(
+                outcome="base_moved", batch_id=batch_id, revision=revision,
+                intent_id=intent_id, receipt_ids=await self._receipt_ids(intent_id),
+                head_sha=intent["prepared_sha"],
+            )
+        if remote != intent["expected_target"]:
+            return RootPromotionResult(
+                outcome="base_moved", batch_id=batch_id, revision=revision,
+                intent_id=intent_id, receipt_ids=await self._receipt_ids(intent_id),
+                head_sha=intent["prepared_sha"],
+            )
+        nonce = await self._claim_execution(intent, mutation)
+        if nonce is None:
+            return RootPromotionResult(
+                outcome="wait", batch_id=batch_id, revision=revision,
+                intent_id=intent_id, receipt_ids=await self._receipt_ids(intent_id),
+                head_sha=intent["prepared_sha"],
+            )
+        await self._mark_prewrite(intent, nonce)
+        await self._crash("after_prewrite_marker")
+        if not await self._local_fast_forward(store, intent):
+            return RootPromotionResult(
+                outcome="non_fast_forward", batch_id=batch_id, revision=revision,
+                intent_id=intent_id, receipt_ids=await self._receipt_ids(intent_id),
+                head_sha=intent["prepared_sha"],
+            )
+        token = await self.app_client.installation_token()
+        try:
+            await self.git.apush_oid_with_app_auth(
+                str(store),
+                repository=self.app_client.repository,
+                token=token,
+                tip_oid=intent["prepared_sha"],
+                branch=intent["target_branch"].removeprefix("refs/heads/"),
+                expected_old_oid=intent["expected_target"],
+            )
+        except Exception:
+            observed = await self.app_client.exact_head_ref(
+                intent["target_branch"].removeprefix("refs/heads/")
+            )
+            if observed != intent["prepared_sha"]:
+                raise
+            remote = observed
+        else:
+            remote = intent["prepared_sha"]
+        await self._crash("after_external_push")
+        await self._mark_applied(intent, remote)
+        await self._crash("after_push_proof")
+        return await self._finalize_root(intent_id, remote)
+
+    async def _claim_execution(self, intent: dict[str, Any], mutation: dict[str, Any]) -> str | None:
+        project_id = intent["project_id"]
+        now = self.clock()
+        async with self.db.immediate() as conn:
+            await self.db.lock_hierarchy_project(conn, project_id)
+            locked = await self._snapshot_on(
+                conn, project_id, intent["root_batch_id"], int(intent["root_candidate_revision"])
+            )
+            if (
+                self._validate_snapshot(locked, int(intent["root_candidate_revision"]))
+                is not None
+                or not self._intent_matches_authority(intent, locked)
+            ):
+                return None
+            row = (
+                await conn.execute(
+                    select(integration_candidate_ref_mutations)
+                    .where(integration_candidate_ref_mutations.c.id == mutation["id"])
+                    .with_for_update()
+                )
+            ).mappings().one()
+            owned = self._owned_nonces.get(intent["id"])
+            if owned == row["nonce"] and float(row["expires_at"]) > now:
+                return owned
+            if float(row["expires_at"]) > now:
+                return None
+            nonce = str(uuid.uuid4())
+            changed = await conn.execute(
+                update(integration_candidate_ref_mutations)
+                .where(
+                    integration_candidate_ref_mutations.c.id == row["id"],
+                    integration_candidate_ref_mutations.c.state == "reserved",
+                    integration_candidate_ref_mutations.c.nonce == row["nonce"],
+                    integration_candidate_ref_mutations.c.expires_at == row["expires_at"],
+                    integration_candidate_ref_mutations.c.expires_at <= now,
+                )
+                .values(nonce=nonce, expires_at=now + _CLAIM_SECONDS, updated_at=now)
+            )
+            if changed.rowcount != 1:
+                return None
+            self._owned_nonces[intent["id"]] = nonce
+            return nonce
+
+    async def _mark_prewrite(self, intent: dict[str, Any], nonce: str) -> None:
+        async with self.db.immediate() as conn:
+            await self.db.lock_hierarchy_project(conn, intent["project_id"])
+            locked = await self._snapshot_on(
+                conn,
+                intent["project_id"],
+                intent["root_batch_id"],
+                int(intent["root_candidate_revision"]),
+            )
+            if (
+                self._validate_snapshot(locked, int(intent["root_candidate_revision"]))
+                is not None
+                or not self._intent_matches_authority(intent, locked)
+            ):
+                raise RootPromotionInvariantError("root main authority changed")
+            changed = await conn.execute(
+                update(integration_candidate_ref_mutations)
+                .where(
+                    integration_candidate_ref_mutations.c.id == self._mutation_id(intent["id"]),
+                    integration_candidate_ref_mutations.c.state == "reserved",
+                    integration_candidate_ref_mutations.c.nonce == nonce,
+                    integration_candidate_ref_mutations.c.expires_at > self.clock(),
+                )
+                .values(
+                    prewrite_at=func.coalesce(
+                        integration_candidate_ref_mutations.c.prewrite_at,
+                        self.clock(),
+                    ),
+                    updated_at=self.clock(),
+                )
+            )
+            if changed.rowcount != 1:
+                raise RootPromotionInvariantError("root main execution claim changed")
+
+    async def _mark_applied(self, intent: dict[str, Any], remote: str) -> None:
+        async with self.db.immediate() as conn:
+            await self.db.lock_hierarchy_project(conn, intent["project_id"])
+            row = (
+                await conn.execute(
+                    select(integration_candidate_ref_mutations)
+                    .where(integration_candidate_ref_mutations.c.id == self._mutation_id(intent["id"]))
+                    .with_for_update()
+                )
+            ).mappings().one()
+            if row["state"] == "applied":
+                if row["remote_sha"] != intent["prepared_sha"]:
+                    raise RootPromotionInvariantError("root main proof identity changed")
+                return
+            if row["state"] != "reserved":
+                raise RootPromotionInvariantError("root main write was not proven")
+            await conn.execute(
+                update(integration_candidate_ref_mutations)
+                .where(
+                    integration_candidate_ref_mutations.c.id == row["id"],
+                    integration_candidate_ref_mutations.c.state == "reserved",
+                )
+                .values(
+                    state="applied",
+                    remote_sha=intent["prepared_sha"],
+                    updated_at=self.clock(),
+                )
+            )
+            await conn.execute(
+                update(integration_promotion_intents)
+                .where(
+                    integration_promotion_intents.c.id == intent["id"],
+                    integration_promotion_intents.c.state.in_(("prepared", "pushed")),
+                )
+                .values(
+                    state="pushed",
+                    remote_evidence={"kind": "authenticated_main", "remote_sha": remote},
+                    updated_at=self.clock(),
+                )
+            )
+
+    async def _supersede_unattempted(
+        self, intent: dict[str, Any], mutation: dict[str, Any]
+    ) -> None:
+        now = self.clock()
+        async with self.db.immediate() as conn:
+            await self.db.lock_hierarchy_project(conn, intent["project_id"])
+            batch = (
+                await conn.execute(
+                    select(integration_batches)
+                    .where(integration_batches.c.id == intent["root_batch_id"])
+                    .with_for_update()
+                )
+            ).mappings().one()
+            locked_intent = await self._intent_on(conn, intent["id"])
+            row = (
+                await conn.execute(
+                    select(integration_candidate_ref_mutations)
+                    .where(integration_candidate_ref_mutations.c.id == mutation["id"])
+                    .with_for_update()
+                )
+            ).mappings().one()
+            if (
+                int(batch["current_revision"]) == int(intent["root_candidate_revision"])
+                or locked_intent["state"] != "prepared"
+                or row["state"] != "reserved"
+                or row["prewrite_at"] is not None
+                or row["nonce"] != mutation["nonce"]
+                or row["expires_at"] != mutation["expires_at"]
+                or float(row["expires_at"]) > now
+            ):
+                raise RootPromotionInvariantError("attempted root promotion cannot be superseded")
+            changed = await conn.execute(
+                update(integration_candidate_ref_mutations)
+                .where(
+                    integration_candidate_ref_mutations.c.id == row["id"],
+                    integration_candidate_ref_mutations.c.state == "reserved",
+                    integration_candidate_ref_mutations.c.nonce == row["nonce"],
+                    integration_candidate_ref_mutations.c.expires_at == row["expires_at"],
+                    integration_candidate_ref_mutations.c.expires_at <= now,
+                    integration_candidate_ref_mutations.c.prewrite_at.is_(None),
+                )
+                .values(state="superseded", updated_at=now)
+            )
+            superseded = await conn.execute(
+                update(integration_promotion_intents)
+                .where(
+                    integration_promotion_intents.c.id == intent["id"],
+                    integration_promotion_intents.c.state == "prepared",
+                )
+                .values(state="superseded", updated_at=now)
+            )
+            if changed.rowcount != 1 or superseded.rowcount != 1:
+                raise RootPromotionInvariantError(
+                    "attempted root promotion cannot be superseded"
+                )
+
+    @staticmethod
+    def _intent_matches_authority(intent: dict[str, Any], state: dict[str, Any]) -> bool:
+        lease = state["lease"]
+        owner = state["owner"]
+        operation = state["operation"]
+        return bool(
+            lease is not None
+            and owner is not None
+            and operation is not None
+            and intent["operation_key"] == operation["id"]
+            and intent["project_lease_owner_id"] == lease["owner_id"]
+            and int(intent["project_lease_fence_token"]) == int(lease["fence_token"])
+            and intent["branch_fence_owner_id"] == owner["owner_id"]
+            and int(intent["branch_fence_token"]) == int(owner["fence_token"])
+        )
+
+    async def _finalize_root(self, intent_id: str, remote: str) -> RootPromotionResult:
+        intent = await self._intent(intent_id)
+        if intent is None:
+            raise RootPromotionInvariantError("root promotion intent disappeared")
+        if intent["state"] == "committed":
+            return await self._existing_result(intent, intent["root_batch_id"], int(intent["root_candidate_revision"]))
+        async with self.db.immediate() as conn:
+            await self.db.lock_hierarchy_project(conn, intent["project_id"])
+            locked_intent = await self._intent_on(conn, intent_id)
+            reservations = (
+                await conn.execute(
+                    select(integration_root_intent_members)
+                    .where(integration_root_intent_members.c.intent_id == intent_id)
+                    .order_by(integration_root_intent_members.c.member_ordinal)
+                    .with_for_update()
+                )
+            ).mappings().all()
+            claim = (
+                await conn.execute(
+                    select(integration_candidate_ref_mutations)
+                    .where(integration_candidate_ref_mutations.c.id == self._mutation_id(intent_id))
+                    .with_for_update()
+                )
+            ).mappings().one()
+            if (
+                locked_intent["intent_kind"] != "root"
+                or locked_intent["state"] not in {"pushed", "committed"}
+                or claim["state"] != "applied"
+                or claim["remote_sha"] != locked_intent["prepared_sha"]
+                or not reservations
+                or [int(row["member_ordinal"]) for row in reservations]
+                != list(range(len(reservations)))
+                or locked_intent["receipt_id"] != reservations[0]["receipt_id"]
+            ):
+                raise RootPromotionInvariantError("root finalization proof is incomplete")
+            existing_receipts = {
+                row["id"]: row
+                for row in (
+                    await conn.execute(
+                        select(task_delivery_receipts).where(
+                            task_delivery_receipts.c.id.in_(
+                                [reservation["receipt_id"] for reservation in reservations]
+                            )
+                        )
+                    )
+                ).mappings().all()
+            }
+            now = self.clock()
+            for reservation in reservations:
+                receipt = {
+                    "id": reservation["receipt_id"],
+                    "domain_key": f"root:{reservation['batch_id']}:{reservation['candidate_revision']}:{reservation['member_ordinal']}",
+                    "source_task_id": reservation["source_task_id"],
+                    "target_task_id": None,
+                    "repository_id": reservation["repository_id"],
+                    "target_branch": locked_intent["target_branch"],
+                    "reviewed_head_sha": reservation["reviewed_head_sha"],
+                    "reviewed_tree_sha": reservation["reviewed_tree_sha"],
+                    "before_sha": locked_intent["expected_target"],
+                    "squash_sha": reservation["generated_squash_sha"],
+                    "after_sha": locked_intent["prepared_sha"],
+                    "review_evidence": {
+                        "review_evidence_id": reservation["review_evidence_id"],
+                        "candidate_result_evidence": reservation["result_evidence"],
+                    },
+                    "verification_evidence": {
+                        "ci_evidence_id": locked_intent["ci_evidence_id"]
+                    },
+                    "batch_id": reservation["batch_id"],
+                    "member_ordinal": reservation["member_ordinal"],
+                    "candidate_revision": reservation["candidate_revision"],
+                    "disposition": "code",
+                    "created_at": now,
+                }
+                existing = existing_receipts.get(reservation["receipt_id"])
+                if existing is None:
+                    await conn.execute(insert(task_delivery_receipts).values(**receipt))
+                elif any(existing[key] != value for key, value in receipt.items() if key != "created_at"):
+                    raise RootPromotionInvariantError("root receipt identity changed")
+                await self._crash(f"after_root_receipt:{reservation['member_ordinal']}")
+                await self._enqueue_on(
+                    conn,
+                    event_id=f"root-delivered-{reservation['receipt_id']}",
+                    event_type="integration.root_delivered",
+                    project_id=locked_intent["project_id"],
+                    payload={
+                        "batch_id": reservation["batch_id"],
+                        "revision": reservation["candidate_revision"],
+                        "member_ordinal": reservation["member_ordinal"],
+                        "receipt_id": reservation["receipt_id"],
+                    },
+                    now=now,
+                )
+            await conn.execute(
+                update(integration_candidate_revisions)
+                .where(
+                    integration_candidate_revisions.c.batch_id == locked_intent["root_batch_id"],
+                    integration_candidate_revisions.c.revision == locked_intent["root_candidate_revision"],
+                )
+                .values(state="promoted", updated_at=now)
+            )
+            await conn.execute(
+                update(integration_batches)
+                .where(integration_batches.c.id == locked_intent["root_batch_id"])
+                .values(lifecycle="cleanup_pending", final_main_sha=remote, cleanup_state="pending", updated_at=now)
+            )
+            await conn.execute(
+                update(integration_repair_stages)
+                .where(
+                    integration_repair_stages.c.operation_id == locked_intent["operation_key"],
+                    integration_repair_stages.c.state == "awaiting_completion",
+                )
+                .values(state="passed", completed_at=now)
+            )
+            await conn.execute(
+                update(integration_repair_operations)
+                .where(
+                    integration_repair_operations.c.id == locked_intent["operation_key"],
+                    integration_repair_operations.c.state.in_(("active", "escalated")),
+                )
+                .values(state="completed", updated_at=now)
+            )
+            for event_type in ("integration.batch_promoted", "integration.cleanup_requested"):
+                await self._enqueue_on(
+                    conn,
+                    event_id=f"{event_type}:{intent_id}",
+                    event_type=event_type,
+                    project_id=locked_intent["project_id"],
+                    payload={
+                        "batch_id": locked_intent["root_batch_id"],
+                        "revision": locked_intent["root_candidate_revision"],
+                        "intent_id": intent_id,
+                        "head_sha": remote,
+                    },
+                    now=now,
+                )
+            await conn.execute(
+                update(integration_promotion_intents)
+                .where(
+                    integration_promotion_intents.c.id == intent_id,
+                    integration_promotion_intents.c.state == "pushed",
+                )
+                .values(state="committed", committed_at=now, updated_at=now)
+            )
+        committed = await self._intent(intent_id)
+        return await self._existing_result(
+            committed, committed["root_batch_id"], int(committed["root_candidate_revision"])
+        )
+
+    @staticmethod
+    async def _enqueue_on(
+        conn: Any, *, event_id: str, event_type: str, project_id: str, payload: dict, now: float
+    ) -> None:
+        existing = (
+            await conn.execute(
+                select(integration_outbox.c.id).where(integration_outbox.c.id == event_id)
+            )
+        ).scalar_one_or_none()
+        if existing is None:
+            await conn.execute(
+                insert(integration_outbox).values(
+                    id=event_id, dedup_key=event_id, project_id=project_id,
+                    event_type=event_type, payload=payload, available_at=now,
+                    attempts=0, created_at=now,
+                )
+            )
+
+    async def _mutation(self, intent_id: str) -> dict[str, Any] | None:
+        async with self.db._engine.connect() as conn:
+            row = (
+                await conn.execute(
+                    select(integration_candidate_ref_mutations).where(
+                        integration_candidate_ref_mutations.c.id == self._mutation_id(intent_id)
+                    )
+                )
+            ).mappings().one_or_none()
+        return dict(row) if row is not None else None
+
+    async def _receipt_ids(self, intent_id: str) -> tuple[str, ...]:
+        async with self.db._engine.connect() as conn:
+            return tuple(
+                (
+                    await conn.execute(
+                        select(integration_root_intent_members.c.receipt_id)
+                        .where(integration_root_intent_members.c.intent_id == intent_id)
+                        .order_by(integration_root_intent_members.c.member_ordinal)
+                    )
+                ).scalars()
+            )
+
+    async def _blocked(self, intent: dict[str, Any]) -> RootPromotionResult:
+        return RootPromotionResult(
+            outcome="reconciliation_blocked", batch_id=intent["root_batch_id"],
+            revision=int(intent["root_candidate_revision"]), intent_id=intent["id"],
+            receipt_ids=await self._receipt_ids(intent["id"]), head_sha=intent["prepared_sha"],
+        )
+
+    async def _is_current_revision(self, batch_id: str, revision: int) -> bool:
+        async with self.db._engine.connect() as conn:
+            current = (
+                await conn.execute(
+                    select(integration_batches.c.current_revision).where(
+                        integration_batches.c.id == batch_id
+                    )
+                )
+            ).scalar_one_or_none()
+        return current == revision
+
+    async def _is_ancestor(self, store: Path, older: str, newer: str) -> bool | None:
+        result = await self.git.arun_git_result(
+            ["merge-base", "--is-ancestor", older, newer],
+            cwd=str(store), env={"LC_ALL": "C"},
+        )
+        if result.returncode == 0:
+            return True
+        if result.returncode == 1:
+            return False
+        return None
+
+    async def _local_fast_forward(self, store: Path, intent: dict[str, Any]) -> bool:
+        return bool(
+            await self._is_ancestor(
+                store, intent["expected_target"], intent["prepared_sha"]
+            )
+        )
+
+    def _store(self, repository_id: str) -> Path:
+        return self.data_dir / "integration-repositories" / (
+            hashlib.sha256(repository_id.encode()).hexdigest() + ".git"
+        )
+
+    async def _snapshot(self, project_id: str, batch_id: str, revision: int) -> dict[str, Any]:
+        async with self.db.immediate() as conn:
+            await self.db.lock_hierarchy_project(conn, project_id)
+            return await self._snapshot_on(conn, project_id, batch_id, revision)
+
+    async def _snapshot_on(
+        self, conn: Any, project_id: str, batch_id: str, revision: int
+    ) -> dict[str, Any]:
+        async def one(statement):
+            return (await conn.execute(statement)).mappings().one_or_none()
+
+        project = await one(select(projects).where(projects.c.id == project_id).with_for_update())
+        batch = await one(
+            select(integration_batches)
+            .where(integration_batches.c.id == batch_id)
+            .with_for_update()
+        )
+        candidate = await one(
+            select(integration_candidate_revisions)
+            .where(
+                integration_candidate_revisions.c.batch_id == batch_id,
+                integration_candidate_revisions.c.revision == revision,
+            )
+            .with_for_update()
+        )
+        operation = await one(
+            select(integration_repair_operations)
+            .where(
+                integration_repair_operations.c.batch_id == batch_id,
+                integration_repair_operations.c.episode_id == batch_id,
+            )
+            .with_for_update()
+        )
+        stage = None
+        if operation is not None:
+            stage = await one(
+                select(integration_repair_stages)
+                .where(
+                    integration_repair_stages.c.operation_id == operation["id"],
+                    integration_repair_stages.c.ordinal == operation["active_stage"],
+                )
+                .with_for_update()
+            )
+        lease = await one(
+            select(project_integration_leases)
+            .where(project_integration_leases.c.project_id == project_id)
+            .with_for_update()
+        )
+        owner = None
+        if batch is not None and batch["integration_branch"] is not None:
+            owner = await one(
+                select(integration_branch_owners)
+                .where(
+                    integration_branch_owners.c.repository_id == batch["repository_id"],
+                    integration_branch_owners.c.ref == batch["integration_branch"],
+                )
+                .with_for_update()
+            )
+        members = (
+            await conn.execute(
+                select(integration_batch_members)
+                .where(integration_batch_members.c.batch_id == batch_id)
+                .order_by(integration_batch_members.c.ordinal)
+            )
+        ).mappings().all()
+        results = (
+            await conn.execute(
+                select(integration_candidate_member_results)
+                .where(
+                    integration_candidate_member_results.c.batch_id == batch_id,
+                    integration_candidate_member_results.c.revision == revision,
+                )
+                .order_by(integration_candidate_member_results.c.member_ordinal)
+            )
+        ).mappings().all()
+        evidence = None
+        if candidate is not None and candidate["ci_evidence_id"]:
+            evidence = await one(
+                select(integration_check_evidence).where(
+                    integration_check_evidence.c.id == candidate["ci_evidence_id"]
+                )
+            )
+        publication = await one(
+            select(integration_candidate_publications).where(
+                integration_candidate_publications.c.batch_id == batch_id,
+                integration_candidate_publications.c.revision == revision,
+            )
+        )
+        return {
+            "project": project,
+            "batch": batch,
+            "revision": candidate,
+            "operation": operation,
+            "stage": stage,
+            "lease": lease,
+            "owner": owner,
+            "members": list(members),
+            "results": list(results),
+            "evidence": evidence,
+            "publication": publication,
+        }
+
+    def _validate_snapshot(self, state: dict[str, Any], revision: int) -> str | None:
+        project = state["project"]
+        batch = state["batch"]
+        candidate = state["revision"]
+        if project is None or batch is None:
+            return "stale"
+        if batch["lifecycle"] == "empty":
+            return None
+        evidence = state["evidence"]
+        required = batch["policy_snapshot"].get("root", {}).get("required_checks", {})
+        exact_checks = required.get("names") if isinstance(required, dict) else None
+        if (
+            project["hierarchical_integration_mode"] != "train"
+            or project["integration_repository_id"] != batch["repository_id"]
+            or batch["project_id"] != project["id"]
+            or int(batch["current_revision"]) != revision
+            or candidate is None
+            or candidate["state"] != "green"
+            or candidate["head_sha"] != batch["tested_candidate_sha"]
+            or candidate["ci_evidence_id"] != batch["ci_evidence_id"]
+            or evidence is None
+            or evidence["id"] != candidate["ci_evidence_id"]
+            or evidence["operation_id"]
+            != (state["operation"]["id"] if state["operation"] else None)
+            or evidence["batch_id"] != batch["id"]
+            or int(evidence["candidate_revision"]) != revision
+            or evidence["conclusion"] != "success"
+            or evidence["classification"] != "conclusive"
+            or evidence["required_check_version"] != required.get("version")
+            or evidence["producer_id"] != required.get("producer_id")
+            or not isinstance(exact_checks, list)
+            or list(evidence["checks"].keys()) != exact_checks
+            or any(value != "success" for value in evidence["checks"].values())
+        ):
+            return "ci_missing"
+        operation = state["operation"]
+        stage = state["stage"]
+        lease = state["lease"]
+        owner = state["owner"]
+        publication = state["publication"]
+        if (
+            batch["lifecycle"] not in {"testing", "promoting"}
+            or operation is None
+            or operation["target_kind"] != "batch"
+            or operation["episode_id"] != batch["id"]
+            or operation["state"] not in {"active", "escalated"}
+            or stage is None
+            or stage["state"] != "awaiting_completion"
+            or lease is None
+            or lease["batch_id"] != batch["id"]
+            or lease["repository_id"] != batch["repository_id"]
+            or float(lease["expires_at"]) < self.clock() + _CLAIM_SECONDS
+            or owner is None
+            or owner["owner_id"] != operation["id"]
+            or owner["owner_role"] != "collector"
+            or owner["handoff_state"] != "reserved"
+            or publication is None
+            or publication["state"] != "pr_published"
+            or publication["head_sha"] != candidate["head_sha"]
+            or publication["repository_id"] != batch["repository_id"]
+            or (
+                self.app_client is not None
+                and (
+                    publication["repository_numeric_id"]
+                    != self.app_client.repository.repository_id
+                    or publication["repository_full_name"]
+                    != self.app_client.repository.full_name
+                )
+            )
+        ):
+            return "wait"
+        ordinals = [int(member["ordinal"]) for member in state["members"]]
+        result_ordinals = [int(result["member_ordinal"]) for result in state["results"]]
+        if (
+            not ordinals
+            or ordinals != list(range(len(ordinals)))
+            or result_ordinals != ordinals
+            or any(result["result"] != "applied" for result in state["results"])
+            or any(not is_valid_git_oid(result["generated_squash_sha"]) for result in state["results"])
+            or not is_valid_git_oid(candidate["head_sha"])
+            or not is_valid_git_oid(candidate["construction_base_sha"])
+        ):
+            return "stale"
+        return None
+
+    async def _pin_recovery(self, repository: Any, ref: str, head_sha: str) -> None:
+        digest = hashlib.sha256(repository.id.encode()).hexdigest()
+        store = self.data_dir / "integration-repositories" / f"{digest}.git"
+        if not store.is_dir():
+            raise RootPromotionInvariantError("candidate recovery repository is unavailable")
+        result = await self.git.arun_git_result(
+            ["update-ref", ref, head_sha], cwd=str(store), env={"LC_ALL": "C"}
+        )
+        if result.returncode != 0:
+            raise RootPromotionInvariantError("candidate recovery ref could not be pinned")
+
+    async def _repository(self, repository_id: str) -> Any:
+        value = (
+            self.repository_resolver(repository_id)
+            if self.repository_resolver is not None
+            else self.db.get_repo(repository_id)
+        )
+        if inspect.isawaitable(value):
+            value = await value
+        if value is None or value.id != repository_id or not value.url:
+            raise RootPromotionInvariantError("promotion repository is unavailable")
+        return value
+
+    async def _project_id(self, batch_id: str) -> str | None:
+        async with self.db._engine.connect() as conn:
+            return (
+                await conn.execute(
+                    select(integration_batches.c.project_id).where(
+                        integration_batches.c.id == batch_id
+                    )
+                )
+            ).scalar_one_or_none()
+
+    async def _intent(self, intent_id: str) -> dict[str, Any] | None:
+        async with self.db._engine.connect() as conn:
+            row = await self._intent_on(conn, intent_id)
+        return dict(row) if row is not None else None
+
+    @staticmethod
+    async def _intent_on(conn: Any, intent_id: str) -> Any | None:
+        return (
+            await conn.execute(
+                select(integration_promotion_intents).where(
+                    integration_promotion_intents.c.id == intent_id
+                )
+            )
+        ).mappings().one_or_none()
+
+    async def _existing_result(
+        self, intent: dict[str, Any], batch_id: str, revision: int
+    ) -> RootPromotionResult:
+        async with self.db._engine.connect() as conn:
+            return await self._existing_result_on(conn, intent, batch_id, revision)
+
+    async def _existing_result_on(
+        self, conn: Any, intent: Any, batch_id: str, revision: int
+    ) -> RootPromotionResult:
+        if (
+            intent["intent_kind"] != "root"
+            or intent["root_batch_id"] != batch_id
+            or int(intent["root_candidate_revision"]) != revision
+        ):
+            raise RootPromotionInvariantError("root promotion identity changed")
+        receipt_ids = tuple(
+            (
+                await conn.execute(
+                    select(integration_root_intent_members.c.receipt_id)
+                    .where(integration_root_intent_members.c.intent_id == intent["id"])
+                    .order_by(integration_root_intent_members.c.member_ordinal)
+                )
+            ).scalars()
+        )
+        return RootPromotionResult(
+            outcome="promoted" if intent["state"] == "committed" else "prepared",
+            batch_id=batch_id,
+            revision=revision,
+            intent_id=intent["id"],
+            receipt_ids=receipt_ids,
+            head_sha=intent["prepared_sha"],
+        )
+
+    @staticmethod
+    def _identity(batch_id: str, revision: int) -> dict[str, str]:
+        domain_key = f"root:{batch_id}:{revision}"
+        return {
+            "domain_key": domain_key,
+            "intent_id": "root-intent-" + str(uuid.uuid5(_IDENTITY_NAMESPACE, domain_key)),
+        }
+
+    @staticmethod
+    def _receipt_id(batch_id: str, revision: int, ordinal: int) -> str:
+        return "receipt-" + str(
+            uuid.uuid5(_IDENTITY_NAMESPACE, f"root-receipt:{batch_id}:{revision}:{ordinal}")
+        )
+
+    @staticmethod
+    def _mutation_id(intent_id: str) -> str:
+        return str(uuid.uuid5(_IDENTITY_NAMESPACE, f"root-main:{intent_id}"))
+
+    async def _crash(self, phase: str) -> None:
+        if self.crash_hook is None:
+            return
+        value = self.crash_hook(phase)
+        if inspect.isawaitable(value):
+            await value
+
+
+__all__ = ["RootPromotionInvariantError", "RootPromotionResult", "RootPromotionService"]

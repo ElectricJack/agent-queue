@@ -1815,20 +1815,47 @@ integration_promotion_intents = Table(
     Column("committed_at", Float, nullable=True),
     Column("created_at", Float, nullable=False),
     Column("updated_at", Float, nullable=False),
+    Column("intent_kind", Text, nullable=False, server_default="child"),
+    Column("root_batch_id", Text, nullable=True),
+    Column("root_candidate_revision", Integer, nullable=True),
+    Column("project_lease_owner_id", Text, nullable=True),
+    Column("project_lease_fence_token", Integer, nullable=True),
+    Column("branch_fence_owner_id", Text, nullable=True),
+    Column("branch_fence_token", Integer, nullable=True),
+    Column("ci_evidence_id", Text, nullable=True),
     UniqueConstraint("domain_key", name="uq_integration_promotion_intents_domain_key"),
     Index(
         "uq_integration_promotion_intents_unresolved_target",
         "repository_id",
         "target_branch",
         unique=True,
-        sqlite_where=text("state NOT IN ('committed', 'conflict')"),
-        postgresql_where=text("state NOT IN ('committed', 'conflict')"),
+        sqlite_where=text("state NOT IN ('committed', 'conflict', 'superseded')"),
+        postgresql_where=text("state NOT IN ('committed', 'conflict', 'superseded')"),
     ),
     CheckConstraint("fence_token >= 0", name="ck_integration_promotion_intents_fence"),
     CheckConstraint(
         "state IN ('reserved', 'prepared', 'pushed', 'reconciled', 'committed', 'conflict', "
-        "'resolution_reserved')",
+        "'resolution_reserved', 'superseded')",
         name="ck_integration_promotion_intents_state",
+    ),
+    CheckConstraint(
+        "(intent_kind = 'child' AND root_batch_id IS NULL AND "
+        "root_candidate_revision IS NULL AND project_lease_owner_id IS NULL AND "
+        "project_lease_fence_token IS NULL AND branch_fence_owner_id IS NULL AND "
+        "branch_fence_token IS NULL AND ci_evidence_id IS NULL) OR "
+        "(intent_kind = 'root' AND root_batch_id IS NOT NULL AND "
+        "root_candidate_revision IS NOT NULL AND root_candidate_revision >= 0 AND "
+        "project_lease_owner_id IS NOT NULL AND project_lease_fence_token IS NOT NULL AND "
+        "project_lease_fence_token >= 0 AND branch_fence_owner_id IS NOT NULL AND "
+        "branch_fence_token IS NOT NULL AND branch_fence_token >= 0 AND "
+        "ci_evidence_id IS NOT NULL AND source_task_id IS NULL AND target_task_id IS NULL)",
+        name="ck_integration_promotion_intents_kind_binding",
+    ),
+    ForeignKeyConstraint(
+        ["root_batch_id", "root_candidate_revision"],
+        ["integration_candidate_revisions.batch_id", "integration_candidate_revisions.revision"],
+        name="fk_integration_promotion_intents_root_revision",
+        ondelete="RESTRICT",
     ),
     CheckConstraint(
         "(resolution_head_sha IS NULL AND resolution_tree_sha IS NULL AND "
@@ -1903,6 +1930,28 @@ task_delivery_receipts = Table(
     CheckConstraint(
         "candidate_revision IS NULL OR candidate_revision >= 0",
         name="ck_task_delivery_receipts_candidate_revision",
+    ),
+    CheckConstraint(
+        "(batch_id IS NULL AND member_ordinal IS NULL AND candidate_revision IS NULL) OR "
+        "(batch_id IS NOT NULL AND member_ordinal IS NOT NULL AND "
+        "candidate_revision IS NOT NULL)",
+        name="ck_task_delivery_receipts_root_tuple",
+    ),
+    ForeignKeyConstraint(
+        ["batch_id", "member_ordinal"],
+        ["integration_batch_members.batch_id", "integration_batch_members.ordinal"],
+        name="fk_task_delivery_receipts_root_member",
+        ondelete="RESTRICT",
+    ),
+    ForeignKeyConstraint(
+        ["batch_id", "candidate_revision", "member_ordinal"],
+        [
+            "integration_candidate_member_results.batch_id",
+            "integration_candidate_member_results.revision",
+            "integration_candidate_member_results.member_ordinal",
+        ],
+        name="fk_task_delivery_receipts_root_result",
+        ondelete="RESTRICT",
     ),
     CheckConstraint(
         "(parent_operation_id IS NULL AND parent_episode_id IS NULL) OR "
@@ -2230,6 +2279,7 @@ integration_candidate_ref_mutations = Table(
     Column("state", Text, nullable=False),
     Column("expires_at", Float, nullable=False),
     Column("remote_sha", Text, nullable=True),
+    Column("prewrite_at", Float, nullable=True),
     Column("created_at", Float, nullable=False),
     Column("updated_at", Float, nullable=False),
     CheckConstraint("revision >= 0", name="ck_integration_candidate_ref_mutations_revision"),
@@ -2238,7 +2288,8 @@ integration_candidate_ref_mutations = Table(
         name="ck_integration_candidate_ref_mutations_member",
     ),
     CheckConstraint(
-        "purpose IN ('candidate_final', 'candidate_partial', 'repair_resolution', 'repair_handoff')",
+        "purpose IN ('candidate_final', 'candidate_partial', 'repair_resolution', "
+        "'repair_handoff', 'root_main')",
         name="ck_integration_candidate_ref_mutations_purpose",
     ),
     CheckConstraint(
@@ -2249,12 +2300,13 @@ integration_candidate_ref_mutations = Table(
         name="ck_integration_candidate_ref_mutations_fences",
     ),
     CheckConstraint(
-        "state IN ('reserved', 'applied')",
+        "state IN ('reserved', 'applied', 'superseded')",
         name="ck_integration_candidate_ref_mutations_state",
     ),
     CheckConstraint(
         "(state = 'reserved' AND remote_sha IS NULL) OR "
-        "(state = 'applied' AND remote_sha = desired_sha)",
+        "(state = 'applied' AND remote_sha = desired_sha) OR "
+        "(state = 'superseded' AND purpose = 'root_main' AND remote_sha IS NULL)",
         name="ck_integration_candidate_ref_mutations_remote",
     ),
     ForeignKeyConstraint(
@@ -2267,6 +2319,44 @@ integration_candidate_ref_mutations = Table(
         ["resolution_id"],
         ["integration_candidate_resolutions.id"],
         name="fk_integration_candidate_ref_mutations_resolution",
+        ondelete="RESTRICT",
+    ),
+)
+
+integration_root_intent_members = Table(
+    "integration_root_intent_members",
+    metadata,
+    Column("intent_id", Text, primary_key=True),
+    Column("member_ordinal", Integer, primary_key=True),
+    Column("receipt_id", Text, nullable=False, unique=True),
+    Column("batch_id", Text, nullable=False),
+    Column("candidate_revision", Integer, nullable=False),
+    Column("source_task_id", Text, nullable=False),
+    Column("repository_id", Text, nullable=False),
+    Column("reviewed_head_sha", Text, nullable=False),
+    Column("reviewed_tree_sha", Text, nullable=False),
+    Column("generated_squash_sha", Text, nullable=False),
+    Column("result_evidence", JSON, nullable=False),
+    Column("review_evidence_id", Text, nullable=False),
+    Column("created_at", Float, nullable=False),
+    CheckConstraint("member_ordinal >= 0", name="ck_integration_root_intent_members_ordinal"),
+    CheckConstraint(
+        "candidate_revision >= 0", name="ck_integration_root_intent_members_revision"
+    ),
+    ForeignKeyConstraint(
+        ["intent_id"],
+        ["integration_promotion_intents.id"],
+        name="fk_integration_root_intent_members_intent",
+        ondelete="RESTRICT",
+    ),
+    ForeignKeyConstraint(
+        ["batch_id", "candidate_revision", "member_ordinal"],
+        [
+            "integration_candidate_member_results.batch_id",
+            "integration_candidate_member_results.revision",
+            "integration_candidate_member_results.member_ordinal",
+        ],
+        name="fk_integration_root_intent_members_result",
         ondelete="RESTRICT",
     ),
 )

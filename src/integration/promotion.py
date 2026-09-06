@@ -1055,6 +1055,8 @@ class PromotionService:
         return await self._is_ancestor(store, intent["prepared_sha"], remote_oid)
 
     async def _finalize(self, intent: dict, remote_oid: str) -> PromotionValue:
+        if intent.get("intent_kind", "child") != "child":
+            raise PromotionInvariantError("root intent requires the root-only finalizer")
         await self.db.finalize_integration_promotion(
             intent["id"],
             {"kind": "prepared_reachable", "remote_sha": remote_oid},
