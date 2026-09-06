@@ -18,8 +18,11 @@ from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from src.database.tables import (
     integration_batch_members,
     integration_batches,
+    integration_branch_owners,
     integration_candidate_publications,
+    integration_candidate_ref_mutations,
     integration_cleanup_items,
+    integration_promotion_intents,
     integration_repair_operations,
     integration_repair_stages,
     integration_root_intent_members,
@@ -33,7 +36,9 @@ from src.git.manager import GitError
 class CleanupMaterializationResult(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid", strict=True)
 
-    outcome: Literal["materialized", "already_materialized", "stale", "invariant_error"]
+    outcome: Literal[
+        "materialized", "already_materialized", "stale", "conflict", "invariant_error"
+    ]
     batch_id: str
     item_count: int = 0
 
@@ -94,12 +99,14 @@ class IntegrationCleanupService:
                     .limit(limit)
                 )
             ).mappings().all()
-        return [
+        results = [
             await self.execute(
                 row["batch_id"], row["kind"], row["identity"], now=observed_at
             )
             for row in rows
         ]
+        await self._reconcile_aggregate(batch_id, observed_at)
+        return results
 
     async def handle_item(self, row: dict[str, Any], now: float) -> CleanupExecutionResult:
         return await self.execute(row["batch_id"], row["kind"], row["identity"], now=now)
@@ -154,6 +161,7 @@ class IntegrationCleanupService:
                 attempts=int(row["attempts"]) + 1,
                 execution_nonce=nonce,
                 claim_expires_at=observed_at + 300.0,
+                updated_at=observed_at,
             )
         try:
             outcome, error = await self._perform(claimed_row)
@@ -208,6 +216,9 @@ class IntegrationCleanupService:
             if not await provider.has_comment_marker(
                 number=int(row["target_pr_number"]), marker=marker
             ):
+                reservation = await self._mark_irreversible_prewrite(row)
+                if reservation != "owner":
+                    return "retryable", "pull request comment publication is unresolved"
                 await provider.comment_pull_request(
                     number=int(row["target_pr_number"]),
                     marker=marker,
@@ -221,6 +232,53 @@ class IntegrationCleanupService:
                 number=int(row["target_pr_number"])
             )
         return "complete", None
+
+    async def _mark_irreversible_prewrite(self, row: dict[str, Any]) -> str:
+        """Freeze one claim before an ambiguous external write; marked writes never transfer."""
+        if row.get("irreversible_prewrite_at") is not None:
+            return "reconcile"
+        now = float(row["updated_at"])
+        async with self.db.immediate() as conn:
+            current = (
+                await conn.execute(
+                    select(integration_cleanup_items)
+                    .where(
+                        integration_cleanup_items.c.batch_id == row["batch_id"],
+                        integration_cleanup_items.c.kind == row["kind"],
+                        integration_cleanup_items.c.identity == row["identity"],
+                    )
+                    .with_for_update()
+                )
+            ).mappings().one_or_none()
+            if current is None or current["state"] not in {"pending", "retryable"}:
+                return "stale"
+            if current["irreversible_prewrite_at"] is not None:
+                return "reconcile"
+            if (
+                current["execution_nonce"] != row["execution_nonce"]
+                or current["claim_expires_at"] is None
+                or float(current["claim_expires_at"]) <= now
+            ):
+                return "stale"
+            marked = await conn.execute(
+                update(integration_cleanup_items)
+                .where(
+                    integration_cleanup_items.c.batch_id == row["batch_id"],
+                    integration_cleanup_items.c.kind == row["kind"],
+                    integration_cleanup_items.c.identity == row["identity"],
+                    integration_cleanup_items.c.execution_nonce == row["execution_nonce"],
+                    integration_cleanup_items.c.irreversible_prewrite_at.is_(None),
+                )
+                .values(
+                    irreversible_nonce=row["execution_nonce"],
+                    irreversible_prewrite_at=now,
+                )
+            )
+            if marked.rowcount != 1:
+                return "stale"
+        row["irreversible_nonce"] = row["execution_nonce"]
+        row["irreversible_prewrite_at"] = now
+        return "owner"
 
     async def _app_client(self, binding: GitHubRepositoryBinding):
         if self.app_client_factory is None:
@@ -236,6 +294,20 @@ class IntegrationCleanupService:
         short = self._short_head(row["target_ref"])
         if short == repository.default_branch:
             return "conflict", "default branch cleanup is forbidden"
+        if row["member_ordinal"] is not None:
+            async with self.db._engine.connect() as conn:
+                owner = (
+                    await conn.execute(
+                        select(integration_branch_owners).where(
+                            integration_branch_owners.c.repository_id
+                            == row["repository_id"],
+                            integration_branch_owners.c.ref == row["target_ref"],
+                            integration_branch_owners.c.handoff_state != "released",
+                        )
+                    )
+                ).mappings().one_or_none()
+            if owner is not None:
+                return "conflict", "source ref has an active branch owner"
         app = await self._app_client(binding)
         if app is None or self.git is None:
             return "retryable", "authenticated cleanup transport is unavailable"
@@ -268,6 +340,53 @@ class IntegrationCleanupService:
         if self.git is None:
             return "retryable", "local cleanup transport is unavailable"
         store = str(self.retained_store(row["repository_id"]))
+        async with self.db._engine.connect() as conn:
+            intent = (
+                await conn.execute(
+                    select(integration_promotion_intents).where(
+                        integration_promotion_intents.c.intent_kind == "root",
+                        integration_promotion_intents.c.root_batch_id == row["batch_id"],
+                        integration_promotion_intents.c.root_candidate_revision
+                        == row["revision"],
+                    )
+                )
+            ).mappings().one_or_none()
+            mutation = (
+                await conn.execute(
+                    select(integration_candidate_ref_mutations).where(
+                        integration_candidate_ref_mutations.c.batch_id == row["batch_id"],
+                        integration_candidate_ref_mutations.c.revision == row["revision"],
+                        integration_candidate_ref_mutations.c.purpose == "root_main",
+                    )
+                )
+            ).mappings().one_or_none()
+            owner = (
+                await conn.execute(
+                    select(integration_branch_owners).where(
+                        integration_branch_owners.c.repository_id == row["repository_id"],
+                        integration_branch_owners.c.ref == row["target_ref"],
+                    )
+                )
+            ).mappings().one_or_none()
+        if (
+            intent is None
+            or mutation is None
+            or intent["state"] != "committed"
+            or mutation["state"] != "applied"
+            or intent["branch_fence_owner_id"] != mutation["branch_owner_id"]
+            or int(intent["branch_fence_token"]) != int(mutation["branch_fence_token"])
+            or mutation["branch_owner_role"] != "collector"
+        ):
+            return "conflict", "recorded integration branch ownership is incomplete"
+        if owner is not None and (
+            owner["owner_id"] != intent["branch_fence_owner_id"]
+            or int(owner["fence_token"]) != int(intent["branch_fence_token"])
+            or owner["owner_role"] != "collector"
+        ):
+            return "conflict", "local ref has a foreign branch owner"
+        occupied = await self.git.aworktree_list(store)
+        if any(entry.get("branch") == short for entry in occupied):
+            return "conflict", "local ref is checked out in a worktree"
         current = await self.git.arev_parse(store, row["target_ref"])
         if current is None:
             return "complete", None
@@ -329,7 +448,7 @@ class IntegrationCleanupService:
             != "worktree"
             or retained is None
             or retained["operation_state"] != "completed"
-            or retained["stage_state"] != "passed"
+            or retained["stage_state"] not in {"passed", "failed", "expired"}
             or not isinstance(handoff, dict)
             or handoff.get("workspace_id") != row["identity"]
             or handoff.get("operation_id", retained["operation_id"])
@@ -339,11 +458,18 @@ class IntegrationCleanupService:
         ):
             return "conflict", "retained worktree ownership changed"
         current = await self.git.arev_parse(row["workspace_path"], "HEAD")
+        if current is None:
+            if row.get("irreversible_prewrite_at") is not None:
+                return "complete", None
+            return "conflict", "retained worktree disappeared without removal evidence"
         if current != row["expected_sha"]:
             return "conflict", "retained worktree head changed"
         base = await self.git.aworktree_base_path(row["workspace_path"])
         if base != base_path:
             return "conflict", "retained worktree is foreign"
+        reservation = await self._mark_irreversible_prewrite(row)
+        if reservation != "owner":
+            return "retryable", "worktree removal is unresolved"
         await self.git.aremove_worktree_exact(base, row["workspace_path"])
         return "complete", None
 
@@ -368,6 +494,15 @@ class IntegrationCleanupService:
             )
             values["next_attempt_at"] = now + delay
         async with self.db.immediate() as conn:
+            batch = (
+                await conn.execute(
+                    select(integration_batches.c.id)
+                    .where(integration_batches.c.id == row["batch_id"])
+                    .with_for_update()
+                )
+            ).scalar_one_or_none()
+            if batch is None:
+                return self._execution_result("stale", row)
             result = await conn.execute(
                 update(integration_cleanup_items)
                 .where(
@@ -397,6 +532,18 @@ class IntegrationCleanupService:
             await self._project_aggregate_on(conn, row["batch_id"], now)
         finalized = dict(row) | values
         return self._execution_result(outcome, finalized)
+
+    async def _reconcile_aggregate(self, batch_id, now):
+        async with self.db.immediate() as conn:
+            batch = (
+                await conn.execute(
+                    select(integration_batches.c.id)
+                    .where(integration_batches.c.id == batch_id)
+                    .with_for_update()
+                )
+            ).scalar_one_or_none()
+            if batch is not None:
+                await self._project_aggregate_on(conn, batch_id, now)
 
     async def _project_aggregate_on(self, conn, batch_id, now):
         rows = (
@@ -433,6 +580,10 @@ class IntegrationCleanupService:
             "max_attempts": int(cleanup.get("max_attempts", 5)),
             "retry_base_seconds": float(cleanup.get("retry_base_seconds", 30.0)),
             "retry_max_seconds": float(cleanup.get("retry_max_seconds", 3600.0)),
+            "successful_source_refs": cleanup.get("successful_source_refs", "delete"),
+            "failed_work_retention_seconds": int(
+                cleanup.get("failed_work_retention_seconds", 604800)
+            ),
         }
 
     @staticmethod
@@ -526,6 +677,21 @@ class IntegrationCleanupService:
                 return CleanupMaterializationResult(
                     outcome="invariant_error", batch_id=batch_id
                 )
+            if any(
+                row["source_ref"] is None or row["source_ref_retention"] is None
+                for row in members
+            ):
+                await conn.execute(
+                    update(integration_batches)
+                    .where(
+                        integration_batches.c.id == batch_id,
+                        integration_batches.c.cleanup_state == "pending",
+                    )
+                    .values(cleanup_state="conflict", updated_at=observed_at)
+                )
+                return CleanupMaterializationResult(
+                    outcome="conflict", batch_id=batch_id
+                )
             items = self._items(batch, publication, members, reservations, receipts, observed_at)
             items.extend(await self._worktree_items(conn, batch, publication, observed_at))
             insert_fn = pg_insert if conn.dialect.name == "postgresql" else sqlite_insert
@@ -594,6 +760,19 @@ class IntegrationCleanupService:
                         "expected_sha": member["reviewed_head_sha"],
                     }
                 )
+            if member["source_ref_retention"] == "delete":
+                source_ref = member["source_ref"]
+                items.append(
+                    common
+                    | {
+                        "kind": "remote_ref",
+                        "identity": source_ref,
+                        "domain_key": f"cleanup:{batch['id']}:remote_ref:{source_ref}",
+                        "member_ordinal": int(member["ordinal"]),
+                        "target_ref": source_ref,
+                        "expected_sha": member["reviewed_head_sha"],
+                    }
+                )
         audit_identity = f"{publication['repository_numeric_id']}#{publication['pr_number']}"
         items.append(
             common
@@ -623,11 +802,13 @@ class IntegrationCleanupService:
     async def _worktree_items(self, conn, batch, publication, now):
         rows = (
             await conn.execute(
-                select(
-                    workspaces.c.id.label("workspace_id"),
-                    workspaces.c.workspace_path,
-                    integration_repair_operations.c.id.label("operation_id"),
-                    integration_repair_stages.c.retained_handoff,
+                    select(
+                        workspaces.c.id.label("workspace_id"),
+                        workspaces.c.workspace_path,
+                        integration_repair_operations.c.id.label("operation_id"),
+                        integration_repair_stages.c.state.label("stage_state"),
+                        integration_repair_stages.c.completed_at,
+                        integration_repair_stages.c.retained_handoff,
                 )
                 .select_from(
                     integration_repair_operations
@@ -653,6 +834,8 @@ class IntegrationCleanupService:
             "next_attempt_at": now, "created_at": now, "updated_at": now,
         }
         items = []
+        cleanup = (batch["policy_snapshot"] or {}).get("cleanup", {})
+        failed_retention = int(cleanup.get("failed_work_retention_seconds", 604800))
         for row in rows:
             handoff = row["retained_handoff"] or {}
             if (
@@ -670,6 +853,12 @@ class IntegrationCleanupService:
                     "domain_key": f"cleanup:{batch['id']}:worktree:{row['workspace_id']}",
                     "workspace_path": row["workspace_path"],
                     "expected_sha": handoff["head_sha"],
+                    "next_attempt_at": (
+                        max(now, float(row["completed_at"]) + failed_retention)
+                        if row["stage_state"] in {"failed", "expired"}
+                        and row["completed_at"] is not None
+                        else now
+                    ),
                 }
             )
         return items

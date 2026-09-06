@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict
-from sqlalchemy import delete, select, update
+from sqlalchemy import delete, insert, select, update
 
 from src.database.tables import (
     integration_attestation_publications,
@@ -20,6 +20,7 @@ from src.database.tables import (
     integration_promotion_intents,
     integration_repair_operations,
     integration_repair_stages,
+    integration_release_results,
     integration_root_intent_members,
     project_integration_leases,
     project_integration_schedules,
@@ -89,6 +90,14 @@ class IntegrationReleaseService:
                 return IntegrationReleaseResult(
                     outcome="stale", project_id=project_id, batch_id=batch_id
                 )
+            release_result = await self._one_for_update(
+                conn,
+                select(integration_release_results).where(
+                    integration_release_results.c.batch_id == batch_id
+                ),
+            )
+            if release_result is not None:
+                return self._persisted_result(batch, release_result)
             if batch["lifecycle"] == "empty":
                 return IntegrationReleaseResult(
                     outcome="empty",
@@ -275,6 +284,16 @@ class IntegrationReleaseService:
             )
             if schedule_cas.rowcount != 1 or lease_cas.rowcount != 1:
                 raise _CASLost
+            await conn.execute(
+                insert(integration_release_results).values(
+                    batch_id=batch_id,
+                    project_id=project_id,
+                    request_id=batch["request_id"],
+                    operation_id=operation_id,
+                    catchup_request_id=catchup_request_id,
+                    released_at=now,
+                )
+            )
             if catchup_request_id is not None:
                 await enqueue_integration_event(
                     conn,
@@ -305,6 +324,13 @@ class IntegrationReleaseService:
                     )
                 )
             ).scalar_one_or_none()
+            release_result = (
+                await conn.execute(
+                    select(integration_release_results).where(
+                        integration_release_results.c.batch_id == batch_id
+                    )
+                )
+            ).mappings().one_or_none()
             schedule = (
                 await conn.execute(
                     select(project_integration_schedules).where(
@@ -316,6 +342,8 @@ class IntegrationReleaseService:
             return IntegrationReleaseResult(outcome="stale", batch_id=batch_id)
         if batch["lifecycle"] == "empty":
             return self._result("empty", batch, None)
+        if release_result is not None:
+            return self._persisted_result(batch, release_result)
         if schedule is None or schedule["outstanding_request_id"] == batch["request_id"]:
             return self._result("invariant_error", batch, operation_id)
         return self._result(
@@ -435,6 +463,27 @@ class IntegrationReleaseService:
             request_id=batch["request_id"],
             catchup_request_id=catchup_request_id,
             operation_id=operation_id,
+        )
+
+    @staticmethod
+    def _persisted_result(batch: Any, result: Any) -> IntegrationReleaseResult:
+        if (
+            result["project_id"] != batch["project_id"]
+            or result["request_id"] != batch["request_id"]
+        ):
+            return IntegrationReleaseResult(
+                outcome="invariant_error",
+                project_id=batch["project_id"],
+                batch_id=batch["id"],
+                request_id=batch["request_id"],
+            )
+        return IntegrationReleaseResult(
+            outcome="already_released",
+            project_id=result["project_id"],
+            batch_id=result["batch_id"],
+            request_id=result["request_id"],
+            catchup_request_id=result["catchup_request_id"],
+            operation_id=result["operation_id"],
         )
 
 

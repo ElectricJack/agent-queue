@@ -29,6 +29,8 @@ DESIGN_EVENTS = {
     "integration.sweep_due",
     "integration.sealed",
     "integration.ci_completed",
+    "integration.candidate_green",
+    "integration.candidate_red",
     "integration.repair_exhausted",
     "integration.repair_deadline_due",
     "integration.human_blocked",
@@ -67,6 +69,8 @@ def test_all_design_events_require_project_and_operation_identity():
                 "intent_id": "intent",
                 "head_sha": "a" * 40,
             }
+        if event_type in {"integration.candidate_green", "integration.candidate_red"}:
+            payload |= {"batch_id": "batch", "revision": 0, "head_sha": "a" * 40}
         assert not validate_event(
             event_type,
             payload,
@@ -128,6 +132,16 @@ def test_hierarchy_event_payloads_expose_exact_typed_command_inputs():
             "evidence_ids": list,
             "conclusion": str,
             "target_kind": str,
+        },
+        "integration.candidate_green": {
+            "batch_id": str,
+            "revision": int,
+            "head_sha": str,
+        },
+        "integration.candidate_red": {
+            "batch_id": str,
+            "revision": int,
+            "head_sha": str,
         },
         "integration.resolution_push_observed": {"promotion_intent_id": str},
         "integration.cleanup_pending": {"promotion_intent_id": str},

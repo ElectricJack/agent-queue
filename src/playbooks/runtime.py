@@ -39,6 +39,7 @@ class _IntegrationDestination:
 
 @dataclass(frozen=True, slots=True)
 class _FrozenOperationRoute:
+    activation_id: str | None
     playbook_id: str | None
     scope: str | None
     scope_identifier: str | None
@@ -47,6 +48,7 @@ class _FrozenOperationRoute:
     @classmethod
     def from_row(cls, row: dict[str, Any]) -> _FrozenOperationRoute:
         return cls(
+            activation_id=row.get("activation_id"),
             playbook_id=row.get("playbook_id"),
             scope=row.get("scope"),
             scope_identifier=row.get("scope_identifier"),
@@ -55,10 +57,16 @@ class _FrozenOperationRoute:
 
     def matches(self, destination: _IntegrationDestination) -> bool:
         return (
+            destination.activation_id,
             destination.playbook_id,
             destination.scope,
             destination.scope_identifier,
-        ) == (self.playbook_id, self.scope, self.scope_identifier)
+        ) == (
+            self.activation_id,
+            self.playbook_id,
+            self.scope,
+            self.scope_identifier,
+        )
 
 
 class V2PlaybookRuntime:
@@ -77,6 +85,7 @@ class V2PlaybookRuntime:
         self._routing_activation_refresh_lock = asyncio.Lock()
         self._triggers: tuple[str, ...] = ()
         self._integration_destinations: tuple[_IntegrationDestination, ...] = ()
+        self._integration_activation_addresses: tuple[_IntegrationDestination, ...] = ()
         self._unsubscribe = None
         self._tasks: set[asyncio.Task[Any]] = set()
         self._integration_tasks: dict[str, asyncio.Task[Any]] = {}
@@ -85,14 +94,30 @@ class V2PlaybookRuntime:
         self._integration_shutting_down = False
 
     async def refresh(self) -> None:
-        rows = await self._db.list_playbook_activations(enabled_only=True)
-        install_routing_activation_snapshot(self, rows, artifact_store=self._store)
+        rows = await self._db.list_playbook_activations(enabled_only=False)
+        enabled_rows = [row for row in rows if row.get("enabled") is True]
+        install_routing_activation_snapshot(self, enabled_rows, artifact_store=self._store)
         triggers: set[str] = set()
         integration_destinations: list[_IntegrationDestination] = []
+        activation_addresses: list[_IntegrationDestination] = []
         for row in rows:
-            if getattr(row.get("health"), "value", row.get("health")) != "ready":
-                continue
             sha = row.get("active_artifact_sha256")
+            if sha:
+                activation_addresses.append(
+                    _IntegrationDestination(
+                        activation_id=row["activation_id"],
+                        playbook_id=row["playbook_id"],
+                        scope=row["scope"],
+                        scope_identifier=row.get("scope_identifier") or "",
+                        artifact_sha256=sha,
+                        definition=None,
+                    )
+                )
+            if (
+                row.get("enabled") is not True
+                or getattr(row.get("health"), "value", row.get("health")) != "ready"
+            ):
+                continue
             if not sha:
                 continue
             try:
@@ -113,6 +138,7 @@ class V2PlaybookRuntime:
             )
         self._triggers = tuple(sorted(triggers))
         self._integration_destinations = tuple(integration_destinations)
+        self._integration_activation_addresses = tuple(activation_addresses)
         self._ensure_integration_reconciler()
         self._integration_wakeup.set()
 
@@ -285,6 +311,44 @@ class V2PlaybookRuntime:
                 selected.append(candidate)
                 if is_owner:
                     owner_admitted = True
+        if route is not None and not owner_admitted and route.artifact_sha256:
+            for destination in self._integration_activation_addresses:
+                if not route.matches(destination):
+                    continue
+                if (
+                    destination.scope == "project"
+                    and destination.scope_identifier != project_id
+                ):
+                    continue
+                if destination.scope == "agent_type" and (
+                    project_id is None or destination.scope_identifier != agent_type
+                ):
+                    continue
+                if destination.scope not in {"system", "project", "agent_type"}:
+                    continue
+                try:
+                    definition = self._store.load(route.artifact_sha256)
+                except Exception:
+                    logger.exception(
+                        "Could not load frozen integration artifact %s",
+                        route.artifact_sha256,
+                    )
+                    continue
+                frozen = _IntegrationDestination(
+                    activation_id=destination.activation_id,
+                    playbook_id=destination.playbook_id,
+                    scope=destination.scope,
+                    scope_identifier=destination.scope_identifier,
+                    artifact_sha256=route.artifact_sha256,
+                    definition=definition,
+                )
+                if any(
+                    self._engine._rule_selected(rule, event_type, hydrated)
+                    for rule in definition.rules
+                ):
+                    selected.append(frozen)
+                    owner_admitted = True
+                break
         return selected if owner_admitted else []
 
     def _ensure_integration_reconciler(self) -> None:

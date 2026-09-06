@@ -7,6 +7,8 @@ enabled: false
 triggers:
   - integration.sweep_due
   - integration.sealed
+  - integration.candidate_green
+  - integration.candidate_red
   - integration.repair_exhausted
   - integration.batch_promoted
   - integration.cleanup_requested
@@ -19,10 +21,9 @@ integration services. Commands receive subject identities only; repository,
 Git objects, leases, fences, policy, CI evidence, and cleanup targets are
 resolved from durable server-owned state.
 
-The reviewed graph names `request_id`, `revision`, `stage`, `starting_sha`, and
-`trigger_id`; binds results as `sealed`, `candidate`, and `rebuilt`; and uses
-the existing `integration_repair_start` and `integration_repair_dispatch`
-commands for the bounded repair route.
+The reviewed graph names `request_id`, `revision`, and `stage`; binds results as
+`sealed`, `candidate`, and `rebuilt`; and consumes the already-started bounded
+repair stage through `integration_repair_dispatch`.
 
 ## Rule: seal-due-frontier
 
@@ -35,11 +36,25 @@ without constructing a candidate.
 
 On `integration.sealed`, call `integration_build_candidate` with `batch_id` and
 bind its typed result. Empty completes. Built and replayed-built candidates call
-`integration_ci_evidence` with the same batch and the result revision. Green
-calls `integration_promote_main` for that exact batch and revision. Candidate
-conflict or red CI starts and dispatches the existing bounded primary repair.
+`integration_ci_evidence` with the same batch and the result revision. Pending
+CI ends the current run without repair. Authenticated green or terminal red CI
+durably emits an operation-bound continuation. Candidate conflict dispatches
+the existing server-derived primary repair stage.
 The build adapter applies the frozen `on_main_moved` policy: rebuild is the
 default; wait remains a typed non-success outcome. No caller SHA is accepted.
+
+## Rule: promote-green-candidate
+
+On `integration.candidate_green`, call `integration_promote_main` for the exact
+current batch and revision.
+A moved base rebuilds under the frozen batch policy and waits for the next
+durable candidate-result event.
+
+## Rule: repair-red-candidate
+
+On `integration.candidate_red`, dispatch the exact operation's current repair
+stage. The event's `batch_id`, `revision`, and `head_sha` carry routing identity,
+while the command resolves durable stage authority server-side.
 
 ## Rule: dispatch-debug
 

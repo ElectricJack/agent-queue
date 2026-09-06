@@ -1,1 +1,23 @@
-[]
+[
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'stage' could not be determined statically, so the check against unknown was silenced",
+    "rule_id": "dispatch-debug",
+    "severity": "info",
+    "step_id": "dispatch-debug--dispatch"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'stage' could not be determined statically, so the check against unknown was silenced",
+    "rule_id": "expire-repair-stage",
+    "severity": "info",
+    "step_id": "expire-repair-stage--expire"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'stage' could not be determined statically, so the check against unknown was silenced",
+    "rule_id": "promote-delivery",
+    "severity": "info",
+    "step_id": "promote-delivery--dispatch-primary"
+  }
+]

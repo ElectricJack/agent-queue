@@ -459,61 +459,42 @@ class IntegrationCommandsMixin:
                 **materialized.model_dump(mode="json"),
             }
         advanced = await service.advance(request.batch_id)
-        if not advanced:
-            if materialized.item_count == 0:
-                outcome = "complete"
-                completed = 0
-                conflicts = 0
-            else:
-                from sqlalchemy import func, select
+        from sqlalchemy import func, select
 
-                from src.database.tables import integration_cleanup_items
+        from src.database.tables import integration_cleanup_items
 
-                async with self.db._engine.connect() as conn:
-                    counts = dict(
-                        (
-                            await conn.execute(
-                                select(
-                                    integration_cleanup_items.c.state,
-                                    func.count().label("count"),
-                                )
-                                .where(
-                                    integration_cleanup_items.c.batch_id
-                                    == request.batch_id
-                                )
-                                .group_by(integration_cleanup_items.c.state)
-                            )
-                        ).all()
+        async with self.db._engine.connect() as conn:
+            counts = dict(
+                (
+                    await conn.execute(
+                        select(
+                            integration_cleanup_items.c.state,
+                            func.count().label("count"),
+                        )
+                        .where(
+                            integration_cleanup_items.c.batch_id == request.batch_id
+                        )
+                        .group_by(integration_cleanup_items.c.state)
                     )
-                completed = int(counts.get("complete", 0))
-                conflicts = int(counts.get("conflict", 0)) + int(
-                    counts.get("failed", 0)
-                )
-                terminal = completed + conflicts == materialized.item_count
-                outcome = "conflict" if terminal and conflicts else "already_complete" if terminal else "wait"
-            return {
-                "success": outcome in {"complete", "already_complete"},
-                "outcome": outcome,
-                "batch_id": request.batch_id,
-                "item_count": materialized.item_count,
-                "completed_count": completed,
-                "conflict_count": conflicts,
-            }
-        conflicts = sum(row.outcome in {"conflict", "failed"} for row in advanced)
-        completed = sum(row.outcome in {"complete", "already_complete"} for row in advanced)
-        outcome = (
-            "conflict"
-            if conflicts
-            else "retryable"
-            if any(row.outcome == "retryable" for row in advanced)
-            else "wait"
-            if any(row.outcome == "wait" for row in advanced)
-            else "complete"
-            if completed == len(advanced)
-            else "advanced"
-        )
+                ).all()
+            )
+        completed = int(counts.get("complete", 0))
+        conflicts = int(counts.get("conflict", 0)) + int(counts.get("failed", 0))
+        total = sum(int(value) for value in counts.values())
+        if total != materialized.item_count:
+            outcome = "invariant_error"
+        elif conflicts:
+            outcome = "conflict"
+        elif completed == materialized.item_count:
+            outcome = "complete" if advanced or materialized.item_count == 0 else "already_complete"
+        elif counts.get("retryable", 0):
+            outcome = "retryable"
+        elif advanced:
+            outcome = "advanced"
+        else:
+            outcome = "wait"
         return {
-            "success": outcome in {"advanced", "complete"},
+            "success": outcome in {"advanced", "complete", "already_complete"},
             "outcome": outcome,
             "batch_id": request.batch_id,
             "item_count": materialized.item_count,
@@ -648,9 +629,14 @@ class IntegrationCommandsMixin:
             return _failure("configuration_blocked", "trusted CI adapter is unavailable")
         result = await service.handle_candidate_ci(dict(row), 0.0)
         outcome = result.get("outcome")
+        public_outcome = "pending" if outcome == "not_green" else outcome
         return {
             "success": outcome in {"green", "published", "already_published"},
-            "outcome": "green" if outcome in {"published", "already_published"} else outcome,
+            "outcome": (
+                "green"
+                if outcome in {"published", "already_published"}
+                else public_outcome
+            ),
             "batch_id": request.batch_id,
             "revision": request.revision,
             "evidence_ids": tuple(result.get("evidence_ids") or ()),
@@ -841,13 +827,40 @@ class IntegrationCommandsMixin:
             request = IntegrationRepairDispatchArgs.model_validate(args)
         except ValidationError as exc:
             return _failure("stale", f"invalid repair dispatch: {exc}")
-        _operation, authorized = await self._repair_command_authorized(
+        operation, authorized = await self._repair_command_authorized(
             request.operation_id, "integration_repair_dispatch"
         )
-        if not authorized:
+        if not authorized or operation is None:
             return _failure("unauthorized", "repair dispatch authority is outside the operation")
+        if request.batch_id is not None:
+            from sqlalchemy import select
+
+            from src.database.tables import integration_candidate_revisions
+
+            batch = await self.db.get_integration_batch(request.batch_id)
+            async with self.db._engine.connect() as conn:
+                candidate = (
+                    await conn.execute(
+                        select(integration_candidate_revisions).where(
+                            integration_candidate_revisions.c.batch_id
+                            == request.batch_id,
+                            integration_candidate_revisions.c.revision
+                            == request.revision,
+                        )
+                    )
+                ).mappings().one_or_none()
+            if (
+                operation.get("target_kind") != "batch"
+                or operation.get("batch_id") != request.batch_id
+                or batch is None
+                or int(batch["current_revision"]) != request.revision
+                or candidate is None
+                or candidate["head_sha"] != request.head_sha
+            ):
+                return _failure("stale", "candidate repair subject is no longer current")
+        stage = int(operation["active_stage"]) if request.stage is None else request.stage
         result = await self._integration_repair_service().dispatch(
-            request.operation_id, request.stage
+            request.operation_id, stage
         )
         return {
             "success": result["outcome"]

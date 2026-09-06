@@ -69,6 +69,29 @@ def test_reviewed_root_routes_use_only_subject_commands():
     assert set(entries["cleanup-promoted"].inputs) == {"batch_id"}
 
 
+def test_candidate_result_routes_are_durable_and_server_derive_repair_stage():
+    artifact = _artifact()
+    rules = {rule.id: rule for rule in artifact.rules}
+    entries = {rule_id: artifact.steps[rule.entry_step] for rule_id, rule in rules.items()}
+
+    assert rules["promote-green-candidate"].trigger.event_type == "integration.candidate_green"
+    assert entries["promote-green-candidate"].command == "integration_promote_main"
+    assert set(entries["promote-green-candidate"].inputs) == {"batch_id", "revision"}
+    assert rules["repair-red-candidate"].trigger.event_type == "integration.candidate_red"
+    assert entries["repair-red-candidate"].command == "integration_repair_dispatch"
+    assert set(entries["repair-red-candidate"].inputs) == {
+        "operation_id",
+        "batch_id",
+        "revision",
+        "head_sha",
+    }
+
+    construct = entries["construct-and-test"]
+    conflict_step = artifact.steps[construct.transitions["conflict"]]
+    assert conflict_step.command == "integration_repair_dispatch"
+    assert set(conflict_step.inputs) == {"operation_id"}
+
+
 async def test_due_and_cleanup_events_run_real_executor_and_subject_handlers(
     command_handler_factory, monkeypatch
 ):
@@ -167,8 +190,7 @@ async def test_due_and_cleanup_events_run_real_executor_and_subject_handlers(
     )
     attestation = AsyncMock()
     attestation.handle_candidate_ci.return_value = {
-        "outcome": "green", "evidence_ids": ["evidence"],
-        "aggregate_evidence_id": "aggregate",
+        "outcome": "not_green", "evidence_ids": [],
     }
     promotion = AsyncMock()
     promotion.promote.return_value = RootPromotionResult(
@@ -233,6 +255,30 @@ async def test_due_and_cleanup_events_run_real_executor_and_subject_handlers(
             },
             principal,
         )
+        green = await engine.dispatch_event(
+            {
+                "event_type": "integration.candidate_green",
+                "event_id": "green-1",
+                "project_id": "p",
+                "operation_id": "root-op",
+                "batch_id": "build-batch",
+                "revision": 0,
+                "head_sha": "b" * 40,
+            },
+            principal,
+        )
+        red = await engine.dispatch_event(
+            {
+                "event_type": "integration.candidate_red",
+                "event_id": "red-1",
+                "project_id": "p",
+                "operation_id": "root-op",
+                "batch_id": "build-batch",
+                "revision": 0,
+                "head_sha": "b" * 40,
+            },
+            principal,
+        )
         released = await engine.dispatch_event(
             {
                 "event_type": "integration.batch_promoted", "event_id": "promoted-1",
@@ -254,6 +300,8 @@ async def test_due_and_cleanup_events_run_real_executor_and_subject_handlers(
     assert due.rules_selected == ("seal-due-frontier",)
     assert cleaned.rules_selected == ("cleanup-promoted",)
     assert built.rules_selected == ("construct-and-test",)
+    assert green.rules_selected == ("promote-green-candidate",)
+    assert red.rules_selected == ("repair-red-candidate",)
     assert released.rules_selected == ("release-promoted",)
     assert debug.rules_selected == ("dispatch-debug",)
     train.seal.assert_awaited_once_with("p", "request-1", 123.0)
@@ -266,7 +314,7 @@ async def test_due_and_cleanup_events_run_real_executor_and_subject_handlers(
     candidate.build.assert_awaited_once_with("build-batch")
     attestation.handle_candidate_ci.assert_awaited_once()
     promotion.promote.assert_awaited_once_with("build-batch", 0)
-    repair.dispatch.assert_awaited_once_with("root-op", 1)
+    assert repair.dispatch.await_args_list == [(("root-op", 1), {}), (("root-op", 1), {})]
     assert {snapshot.lifecycle.value for snapshot in runs.snapshots.values()} == {"completed"}
     await handler.db.close()
 

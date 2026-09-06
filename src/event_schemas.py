@@ -1093,6 +1093,8 @@ _INTEGRATION_SCHEMAS: dict[str, EventSchema] = {
         "integration.sweep_due",
         "integration.sealed",
         "integration.ci_completed",
+        "integration.candidate_green",
+        "integration.candidate_red",
         "integration.repair_exhausted",
         "integration.repair_deadline_due",
         "integration.human_blocked",
@@ -1249,6 +1251,16 @@ _INTEGRATION_PAYLOAD_FIELDS: dict[
         "conclusion": (str, {"type": "string", "description": "check conclusion"}),
         "target_kind": (str, {"type": "string", "description": "integration target kind"}),
     },
+    "integration.candidate_green": {
+        "batch_id": (str, {"type": "string", "description": "integration batch"}),
+        "revision": (int, {"type": "integer", "description": "candidate revision"}),
+        "head_sha": (str, {"type": "string", "description": "candidate head"}),
+    },
+    "integration.candidate_red": {
+        "batch_id": (str, {"type": "string", "description": "integration batch"}),
+        "revision": (int, {"type": "integer", "description": "candidate revision"}),
+        "head_sha": (str, {"type": "string", "description": "candidate head"}),
+    },
     "integration.resolution_push_observed": {
         "promotion_intent_id": (
             str,
@@ -1305,6 +1317,8 @@ _INTEGRATION_PAYLOAD_FIELDS: dict[
 }
 
 _INTEGRATION_REQUIRED_PAYLOAD_FIELDS = {
+    "integration.candidate_green": {"batch_id", "revision", "head_sha"},
+    "integration.candidate_red": {"batch_id", "revision", "head_sha"},
     "integration.resolution_push_observed": {"promotion_intent_id"},
     "integration.root_delivered": {
         "batch_id",

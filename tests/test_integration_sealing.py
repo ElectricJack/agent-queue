@@ -802,6 +802,8 @@ async def test_one_root_seal_freezes_review_and_real_unstarted_operation(db):
     assert batch["integration_branch"].startswith("refs/heads/aq/integration/")
     assert batch["policy_snapshot"] == policy
     assert member["task_id"] == "root"
+    assert member["source_ref"] == "refs/heads/aq/root"
+    assert member["source_ref_retention"] == "delete"
     assert member["review_evidence_id"] == review["id"]
     assert member["review_evidence"] == review
     assert operation["target_kind"] == "batch"
@@ -818,6 +820,41 @@ async def test_one_root_seal_freezes_review_and_real_unstarted_operation(db):
         "operation_id": first["operation_id"],
         "event_id": f"integration-sealed:{first['batch_id']}",
     }
+
+
+async def test_seal_freezes_source_ref_and_retention_from_authoritative_checkpoint(db):
+    from src.integration.scheduler import TrainService
+
+    await _enable_train(db)
+    policy = _policy()
+    policy["cleanup"] = {
+        "successful_source_refs": "retain",
+        "failed_work_retention_seconds": 1234,
+    }
+    await db.update_project("p", hierarchical_integration_policy=policy)
+    await _seed_leaf(db, "root", "b" * 40)
+    request = await _request(db)
+
+    sealed = await TrainService(db).seal("p", request["request_id"], 20.0)
+    await db.update_task("root", branch_name="mutated-after-seal")
+
+    async with db._engine.connect() as conn:
+        batch = (
+            await conn.execute(
+                select(integration_batches).where(integration_batches.c.id == sealed["batch_id"])
+            )
+        ).mappings().one()
+        member = (
+            await conn.execute(
+                select(integration_batch_members).where(
+                    integration_batch_members.c.batch_id == sealed["batch_id"]
+                )
+            )
+        ).mappings().one()
+
+    assert member["source_ref"] == "refs/heads/aq/root"
+    assert member["source_ref_retention"] == "retain"
+    assert batch["policy_snapshot"]["cleanup"]["failed_work_retention_seconds"] == 1234
 
 
 async def test_nonempty_seal_retains_first_request_for_manual_and_periodic_coalescing(db):

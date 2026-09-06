@@ -6,6 +6,7 @@ import pytest
 from alembic import command
 from alembic.config import Config
 from sqlalchemy import create_engine, inspect, text
+from sqlalchemy.exc import IntegrityError
 
 from src.database import Database
 from tests.pg_dsn import create_scratch_database, ensure_worker_postgres_dsn
@@ -76,6 +77,19 @@ def _exercise_round_trip(connection) -> None:
     assert "integration_cleanup_items" not in inspect(connection).get_table_names()
     _migrate(connection, REVISION)
     assert "integration_cleanup_items" in inspect(connection).get_table_names()
+    with pytest.raises(IntegrityError), connection.begin_nested():
+        connection.execute(
+            text(
+                "INSERT INTO integration_cleanup_items (batch_id, kind, identity, domain_key, "
+                "project_id, repository_id, repository_numeric_id, repository_full_name, "
+                "revision, target_pr_url, expected_sha, state, attempts, next_attempt_at, "
+                "created_at, updated_at) VALUES ('cleanup-batch', 'audit_pr', 'missing-number', "
+                "'cleanup:batch:audit:missing', 'cleanup-project', 'cleanup-repo', 99, "
+                "'acme/widgets', 0, 'https://github.com/acme/widgets/pull/9', :sha, "
+                "'pending', 0, 1, 1, 1)"
+            ),
+            {"sha": "a" * 40},
+        )
 
 
 async def test_sqlite_cleanup_migration_guarded_round_trip(tmp_path):

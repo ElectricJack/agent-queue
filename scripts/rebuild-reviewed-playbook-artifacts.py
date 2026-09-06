@@ -59,6 +59,7 @@ SHIPPED = {
     "memory-consolidation": "src/prompts/default_playbooks/memory-consolidation.md",
     "pr-merge-sweep": "src/prompts/project_playbooks/agent-queue/pr-merge-sweep.md",
     "ci-main-sentinel": "src/prompts/project_playbooks/agent-queue/ci-main-sentinel.md",
+    "hierarchical-delivery": "src/prompts/default_playbooks/hierarchical-delivery.md",
     "root-integration-train": "src/prompts/default_playbooks/root-integration-train.md",
 }
 SOURCES = SHIPPED
@@ -206,6 +207,8 @@ def semantic_body(playbook_id: str, source: PlaybookSource) -> dict[str, Any]:
         return _memory_consolidation_body(source)
     if playbook_id == "ci-main-sentinel":
         return _ci_main_sentinel_body(source)
+    if playbook_id == "hierarchical-delivery":
+        return _recorded_semantic_body(playbook_id)
     if playbook_id == "root-integration-train":
         return _root_integration_train_body(source)
     return {}
@@ -250,29 +253,37 @@ def _root_integration_train_body(source: PlaybookSource) -> dict[str, Any]:
 
     rule = "construct-and-test"
     done, failed = terminals(rule)
-    build, ci, promote = (f"{rule}--build", f"{rule}--ci", f"{rule}--promote")
-    repair, dispatch = f"{rule}--repair", f"{rule}--dispatch"
-    rebuild, ci2, promote2, repair2 = (
-        f"{rule}--rebuild", f"{rule}--ci-rebuilt", f"{rule}--promote-rebuilt",
-        f"{rule}--repair-rebuilt",
-    )
+    build, ci, dispatch = (f"{rule}--build", f"{rule}--ci", f"{rule}--dispatch")
     rules.append({"id": rule, "name": rule, "trigger": {"event_type": "integration.sealed"},
                   "entry_step": build, "source": ref(rule)})
     build_transitions = {name: failed for name in (
         "source_moved", "base_moved", "stale_revision", "wait", "human_required",
         "configuration_blocked", "runtime_error")}
     build_transitions.update({"empty": done, "built": ci, "already_built": ci,
-                              "conflict": repair})
+                              "conflict": dispatch})
     steps[build] = {"type": "command", "rule": rule, "title": "build", "source": ref(rule),
                     "command": "integration_build_candidate", "save_result_as": "candidate",
                     "inputs": {"batch_id": event("batch_id")}, "transitions": build_transitions}
     ci_transitions = {name: failed for name in (
         "full_suite_required", "stale_subject", "configuration_blocked", "runtime_error")}
-    ci_transitions.update({"green": promote, "red": repair, "not_green": repair})
+    ci_transitions.update({"green": done, "red": done, "pending": done})
     steps[ci] = {"type": "command", "rule": rule, "title": "ci", "source": ref(rule),
                  "command": "integration_ci_evidence", "inputs": {
                      "batch_id": event("batch_id"), "revision": bound("candidate", "revision")},
                  "transitions": ci_transitions}
+    steps[dispatch] = {"type": "command", "rule": rule, "title": "dispatch", "source": ref(rule),
+                       "command": "integration_repair_dispatch", "inputs": {
+                           "operation_id": event("operation_id")},
+                       "transitions": {name: (done if name in {"dispatched", "already_dispatched", "writer_reused"}
+                                              else failed) for name in (
+                           "dispatched", "already_dispatched", "writer_reused", "busy",
+                           "configuration_blocked", "stale", "human_required", "runtime_error")}}
+
+    rule = "promote-green-candidate"
+    done, failed = terminals(rule)
+    promote, rebuild, ci = (f"{rule}--promote", f"{rule}--rebuild", f"{rule}--ci")
+    rules.append({"id": rule, "name": rule, "trigger": {"event_type": "integration.candidate_green"},
+                  "entry_step": promote, "source": ref(rule)})
     promote_transitions = {name: failed for name in (
         "ci_missing", "non_fast_forward", "wait", "reconciliation_blocked", "stale",
         "configuration_blocked", "runtime_error")}
@@ -280,42 +291,35 @@ def _root_integration_train_body(source: PlaybookSource) -> dict[str, Any]:
                                 "base_moved": rebuild})
     steps[promote] = {"type": "command", "rule": rule, "title": "promote", "source": ref(rule),
                       "command": "integration_promote_main", "inputs": {
-                          "batch_id": event("batch_id"), "revision": bound("candidate", "revision")},
+                          "batch_id": event("batch_id"), "revision": event("revision")},
                       "transitions": promote_transitions}
-    rebuild_transitions = dict(build_transitions)
-    rebuild_transitions.update({"built": ci2, "already_built": ci2, "conflict": repair2})
+    rebuild_transitions = {name: failed for name in (
+        "source_moved", "base_moved", "stale_revision", "wait", "human_required",
+        "configuration_blocked", "runtime_error")}
+    rebuild_transitions.update({"empty": done, "built": ci, "already_built": ci,
+                                "conflict": failed})
     steps[rebuild] = {"type": "command", "rule": rule, "title": "rebuild", "source": ref(rule),
                       "command": "integration_build_candidate", "inputs": {"batch_id": event("batch_id")},
                       "save_result_as": "rebuilt", "transitions": rebuild_transitions}
-    steps[ci2] = {"type": "command", "rule": rule, "title": "ci-rebuilt", "source": ref(rule),
-                  "command": "integration_ci_evidence", "inputs": {
-                      "batch_id": event("batch_id"), "revision": bound("rebuilt", "revision")},
-                  "transitions": dict(ci_transitions) | {"green": promote2, "red": repair2,
-                                                          "not_green": repair2}}
-    steps[promote2] = {"type": "command", "rule": rule, "title": "promote-rebuilt",
-                       "source": ref(rule), "command": "integration_promote_main", "inputs": {
-                           "batch_id": event("batch_id"), "revision": bound("rebuilt", "revision")},
-                       "transitions": dict(promote_transitions) | {"base_moved": failed}}
-    steps[repair2] = {"type": "command", "rule": rule, "title": "repair-rebuilt",
-                      "source": ref(rule), "command": "integration_repair_start", "inputs": {
-                          "operation_id": event("operation_id"),
-                          "starting_sha": bound("rebuilt", "head_sha"),
-                          "trigger_id": event("operation_id")},
-                      "transitions": {"started": dispatch, "already_started": dispatch,
-                                      "stale": failed, "invariant_error": failed,
-                                      "runtime_error": failed}}
-    steps[repair] = {"type": "command", "rule": rule, "title": "repair", "source": ref(rule),
-                     "command": "integration_repair_start", "inputs": {
-                         "operation_id": event("operation_id"),
-                         "starting_sha": bound("candidate", "head_sha"),
-                         "trigger_id": event("operation_id")},
-                     "transitions": {"started": dispatch, "already_started": dispatch,
-                                     "stale": failed, "invariant_error": failed,
-                                     "runtime_error": failed}}
+    green_ci_transitions = {name: failed for name in (
+        "full_suite_required", "stale_subject", "configuration_blocked", "runtime_error")}
+    green_ci_transitions.update({"green": done, "red": done, "pending": done})
+    steps[ci] = {"type": "command", "rule": rule, "title": "ci-rebuilt", "source": ref(rule),
+                 "command": "integration_ci_evidence", "inputs": {
+                     "batch_id": event("batch_id"), "revision": bound("rebuilt", "revision")},
+                 "transitions": green_ci_transitions}
+
+    rule = "repair-red-candidate"
+    done, failed = terminals(rule)
+    dispatch = f"{rule}--dispatch"
+    rules.append({"id": rule, "name": rule, "trigger": {"event_type": "integration.candidate_red"},
+                  "entry_step": dispatch, "source": ref(rule)})
     steps[dispatch] = {"type": "command", "rule": rule, "title": "dispatch", "source": ref(rule),
                        "command": "integration_repair_dispatch", "inputs": {
                            "operation_id": event("operation_id"),
-                           "stage": {"type": "literal", "value": 0}},
+                           "batch_id": event("batch_id"),
+                           "revision": event("revision"),
+                           "head_sha": event("head_sha")},
                        "transitions": {name: (done if name in {"dispatched", "already_dispatched", "writer_reused"}
                                               else failed) for name in (
                            "dispatched", "already_dispatched", "writer_reused", "busy",

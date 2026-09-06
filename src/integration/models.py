@@ -119,13 +119,15 @@ class IntegrationBoundaryPolicy(BaseModel):
 
 
 class IntegrationCleanupPolicy(BaseModel):
-    """Frozen retry limits for post-promotion cleanup."""
+    """Frozen retention and retry limits for post-promotion cleanup."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     max_attempts: int = Field(default=5, gt=0)
     retry_base_seconds: float = Field(default=30.0, gt=0)
     retry_max_seconds: float = Field(default=3600.0, gt=0)
+    successful_source_refs: Literal["delete", "retain"] = "delete"
+    failed_work_retention_seconds: int = Field(default=604800, ge=0)
 
     @model_validator(mode="after")
     def ordered_backoff(self) -> "IntegrationCleanupPolicy":

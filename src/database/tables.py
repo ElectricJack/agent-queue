@@ -2065,6 +2065,9 @@ integration_batch_members = Table(
     Column("source_base_sha", Text, nullable=False),
     Column("reviewed_head_sha", Text, nullable=False),
     Column("reviewed_tree_sha", Text, nullable=False),
+    # Nullable only for batches sealed before source retention was persisted.
+    Column("source_ref", Text, nullable=True),
+    Column("source_ref_retention", Text, nullable=True),
     Column(
         "review_evidence_id",
         Text,
@@ -2085,6 +2088,12 @@ integration_batch_members = Table(
         unique=True,
     ),
     CheckConstraint("ordinal >= 0", name="ck_integration_batch_members_ordinal"),
+    CheckConstraint(
+        "(source_ref IS NULL AND source_ref_retention IS NULL) OR "
+        "(source_ref IS NOT NULL AND source_ref LIKE 'refs/heads/%' AND "
+        "source_ref_retention IN ('delete', 'retain'))",
+        name="ck_integration_batch_members_source_retention",
+    ),
 )
 
 integration_candidate_revisions = Table(
@@ -2749,6 +2758,8 @@ integration_cleanup_items = Table(
     Column("next_attempt_at", Float, nullable=False),
     Column("execution_nonce", Text, nullable=True),
     Column("claim_expires_at", Float, nullable=True),
+    Column("irreversible_nonce", Text, nullable=True),
+    Column("irreversible_prewrite_at", Float, nullable=True),
     Column("last_error", Text, nullable=True),
     Column("created_at", Float, nullable=False),
     Column("updated_at", Float, nullable=False),
@@ -2775,6 +2786,11 @@ integration_cleanup_items = Table(
         name="ck_integration_cleanup_items_claim",
     ),
     CheckConstraint(
+        "(irreversible_nonce IS NULL AND irreversible_prewrite_at IS NULL) OR "
+        "(irreversible_nonce IS NOT NULL AND irreversible_prewrite_at IS NOT NULL)",
+        name="ck_integration_cleanup_items_irreversible",
+    ),
+    CheckConstraint(
         "((state IN ('complete', 'conflict', 'failed')) AND terminal_at IS NOT NULL "
         "AND execution_nonce IS NULL AND claim_expires_at IS NULL) OR "
         "((state IN ('pending', 'retryable')) AND terminal_at IS NULL)",
@@ -2782,12 +2798,17 @@ integration_cleanup_items = Table(
     ),
     CheckConstraint(
         "(kind = 'source_pr' AND member_ordinal IS NOT NULL AND member_ordinal >= 0 "
-        "AND receipt_id IS NOT NULL AND target_pr_number > 0 AND target_pr_url IS NOT NULL "
+        "AND receipt_id IS NOT NULL AND target_pr_number IS NOT NULL "
+        "AND target_pr_number > 0 AND target_pr_url IS NOT NULL "
         "AND target_ref IS NULL AND workspace_path IS NULL) OR "
         "(kind = 'audit_pr' AND member_ordinal IS NULL AND receipt_id IS NULL "
-        "AND target_pr_number > 0 AND target_pr_url IS NOT NULL AND target_ref IS NULL "
+        "AND target_pr_number IS NOT NULL AND target_pr_number > 0 "
+        "AND target_pr_url IS NOT NULL AND target_ref IS NULL "
         "AND workspace_path IS NULL) OR "
-        "(kind IN ('remote_ref', 'local_ref') AND member_ordinal IS NULL "
+        "(kind = 'remote_ref' AND (member_ordinal IS NULL OR member_ordinal >= 0) "
+        "AND receipt_id IS NULL AND target_pr_number IS NULL AND target_pr_url IS NULL "
+        "AND target_ref IS NOT NULL AND workspace_path IS NULL) OR "
+        "(kind = 'local_ref' AND member_ordinal IS NULL "
         "AND receipt_id IS NULL AND target_pr_number IS NULL AND target_pr_url IS NULL "
         "AND target_ref IS NOT NULL AND workspace_path IS NULL) OR "
         "(kind = 'worktree' AND member_ordinal IS NULL AND receipt_id IS NULL "
@@ -3060,6 +3081,22 @@ project_integration_leases = Table(
     Column("expires_at", Float, nullable=False),
     CheckConstraint("fence_token >= 0", name="ck_project_integration_leases_fence"),
     CheckConstraint("expires_at >= heartbeat_at", name="ck_project_integration_leases_expiry"),
+)
+
+integration_release_results = Table(
+    "integration_release_results",
+    metadata,
+    Column(
+        "batch_id",
+        Text,
+        ForeignKey("integration_batches.id", ondelete="RESTRICT"),
+        primary_key=True,
+    ),
+    Column("project_id", Text, nullable=False),
+    Column("request_id", Text, nullable=False),
+    Column("operation_id", Text, nullable=False),
+    Column("catchup_request_id", Text, nullable=True),
+    Column("released_at", Float, nullable=False),
 )
 
 integration_outbox = Table(

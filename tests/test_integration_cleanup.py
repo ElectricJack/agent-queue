@@ -14,6 +14,7 @@ from src.database.tables import (
     integration_attestation_publications,
     integration_batch_members,
     integration_batches,
+    integration_branch_owners,
     integration_candidate_member_results,
     integration_candidate_publications,
     integration_candidate_ref_mutations,
@@ -31,12 +32,13 @@ from src.database.tables import (
     task_delivery_receipts,
     workspaces,
 )
-from src.integration.cleanup import IntegrationCleanupService
+from src.integration.cleanup import CleanupExecutionResult, IntegrationCleanupService
 from src.integration.release import IntegrationReleaseService
 from src.integration.scheduler import IntegrationScheduler
 from src.git.github_app import GitHubRepositoryBinding
 from src.models import Project, RepoConfig, RepoSourceType
 from src.profiles.capabilities import CapabilityPolicy
+from tests.pg_dsn import create_scratch_database, ensure_worker_postgres_dsn
 
 
 BASE = "a" * 40
@@ -45,6 +47,7 @@ SOURCE = "c" * 40
 TREE = "d" * 40
 SQUASH = "e" * 40
 BRANCH = "refs/heads/aq/integration/p-" + "1" * 32 + "/r-" + "2" * 32
+POSTGRES_DSN = ensure_worker_postgres_dsn()
 
 
 @pytest.fixture
@@ -88,6 +91,10 @@ async def release_db(tmp_path, request):
                         "max_attempts": 2,
                         "retry_base_seconds": 5.0,
                         "retry_max_seconds": 5.0,
+                        "successful_source_refs": (
+                            "retain" if "retains_source_ref" in request.node.name else "delete"
+                        ),
+                        "failed_work_retention_seconds": 604800,
                     }
                 },
                 artifact_snapshot={},
@@ -124,6 +131,18 @@ async def release_db(tmp_path, request):
                 reviewed_tree_sha=TREE,
                 review_evidence_id="review",
                 review_evidence={"approved": True},
+                source_ref=(
+                    None
+                    if "legacy_source_identity" in request.node.name
+                    else "refs/heads/aq/root"
+                ),
+                source_ref_retention=(
+                    None
+                    if "legacy_source_identity" in request.node.name
+                    else (
+                        "retain" if "retains_source_ref" in request.node.name else "delete"
+                    )
+                ),
             )
         )
         await conn.execute(
@@ -408,6 +427,50 @@ async def test_release_atomically_promotes_first_catchup_once(release_db):
     assert len(events) == 2
 
 
+async def test_release_replay_is_immutable_after_a_later_train_acquires_lease(
+    release_db,
+):
+    db, scheduler = release_db
+    await scheduler.mark_due(project_id="p", now=21.0, trigger="manual")
+    released = await IntegrationReleaseService(db).release("batch", 30.0)
+    assert released.outcome == "released"
+    assert released.catchup_request_id == "integration-sweep:p:2"
+    async with db.immediate() as conn:
+        await conn.execute(
+            insert(integration_batches).values(
+                id="later-batch",
+                project_id="p",
+                repository_id="repo",
+                request_id=released.catchup_request_id,
+                source_manifest_digest="sha256:" + "8" * 64,
+                base_sha=HEAD,
+                lifecycle="sealed",
+                current_revision=0,
+                integration_branch="refs/heads/aq/integration/later",
+                policy_snapshot={},
+                artifact_snapshot={},
+                cleanup_state="pending",
+                created_at=31.0,
+                updated_at=31.0,
+            )
+        )
+        await conn.execute(
+            insert(project_integration_leases).values(
+                project_id="p",
+                repository_id="repo",
+                batch_id="later-batch",
+                owner_id="later-owner",
+                fence_token=4,
+                heartbeat_at=31.0,
+                expires_at=1000.0,
+            )
+        )
+
+    replay = await IntegrationReleaseService(db).release("batch", 40.0)
+
+    assert replay == released.model_copy(update={"outcome": "already_released"})
+
+
 async def test_release_waits_for_unresolved_attestation_publication(release_db):
     db, _scheduler = release_db
     result = await IntegrationReleaseService(db).release("batch", 30.0)
@@ -425,7 +488,7 @@ async def test_cleanup_materializes_normalized_terminal_set_idempotently(release
     second = await service.materialize("batch", now=31.0)
     assert first == second
     assert first.outcome == "materialized"
-    assert first.item_count == 4
+    assert first.item_count == 5
     async with db._engine.connect() as conn:
         rows = (
             await conn.execute(
@@ -439,11 +502,50 @@ async def test_cleanup_materializes_normalized_terminal_set_idempotently(release
         "audit_pr",
         "local_ref",
         "remote_ref",
+        "remote_ref",
         "source_pr",
     ]
+    assert {row["target_ref"] for row in rows if row["kind"] == "remote_ref"} == {
+        BRANCH,
+        "refs/heads/aq/root",
+    }
     assert all(row["project_id"] == "p" for row in rows)
     assert all(row["repository_numeric_id"] == 99 for row in rows)
     assert all(row["repository_full_name"] == "acme/widgets" for row in rows)
+
+
+async def test_cleanup_retains_source_ref_from_frozen_policy(release_db):
+    db, _scheduler = release_db
+    result = await IntegrationCleanupService(db, data_dir="/daemon").materialize(
+        "batch", now=30.0
+    )
+    async with db._engine.connect() as conn:
+        refs = (
+            await conn.execute(
+                select(integration_cleanup_items.c.target_ref).where(
+                    integration_cleanup_items.c.batch_id == "batch",
+                    integration_cleanup_items.c.kind == "remote_ref",
+                )
+            )
+        ).scalars().all()
+    assert result.item_count == 4
+    assert refs == [BRANCH]
+
+
+async def test_cleanup_legacy_source_identity_is_visible_conflict(release_db):
+    db, _scheduler = release_db
+    result = await IntegrationCleanupService(db, data_dir="/daemon").materialize(
+        "batch", now=30.0
+    )
+    async with db._engine.connect() as conn:
+        batch = (
+            await conn.execute(
+                select(integration_batches).where(integration_batches.c.id == "batch")
+            )
+        ).mappings().one()
+    assert result.outcome == "conflict"
+    assert result.item_count == 0
+    assert batch["cleanup_state"] == "conflict"
 
 
 class CleanupApp:
@@ -477,6 +579,9 @@ class CleanupGit:
         assert self.local_refs[ref] == expected_old_oid
         self.local_refs.pop(ref)
 
+    async def aworktree_list(self, _store):
+        return []
+
 
 class CleanupForge:
     def __init__(self):
@@ -507,7 +612,12 @@ class CleanupForge:
 
 async def test_cleanup_executes_exact_refs_and_prs_once(release_db):
     db, _scheduler = release_db
-    app = CleanupApp({BRANCH.removeprefix("refs/heads/"): HEAD})
+    app = CleanupApp(
+        {
+            BRANCH.removeprefix("refs/heads/"): HEAD,
+            "aq/root": SOURCE,
+        }
+    )
     git = CleanupGit(app)
     forge = CleanupForge()
     service = IntegrationCleanupService(
@@ -521,25 +631,88 @@ async def test_cleanup_executes_exact_refs_and_prs_once(release_db):
     await service.materialize("batch", now=30.0)
     results = await service.advance("batch", now=30.0, limit=10)
     assert {result.outcome for result in results} == {"complete"}
-    assert len(git.remote_deletes) == 1
-    _, remote = git.remote_deletes[0]
-    assert remote == {
-        "repository": app.repository,
-        "token": "installation-token",
-        "branch": BRANCH.removeprefix("refs/heads/"),
-        "expected_old_oid": HEAD,
+    assert {remote[1]["branch"]: remote[1]["expected_old_oid"] for remote in git.remote_deletes} == {
+        BRANCH.removeprefix("refs/heads/"): HEAD,
+        "aq/root": SOURCE,
     }
+    assert all(remote[1]["repository"] == app.repository for remote in git.remote_deletes)
+    assert all(remote[1]["token"] == "installation-token" for remote in git.remote_deletes)
     assert git.local_refs == {}
     assert sorted(forge.closed) == [1, 9]
     assert len(forge.comments) == 1
 
     replay = await service.advance("batch", now=31.0, limit=10)
     assert replay == []
-    assert len(git.remote_deletes) == 1
+    assert len(git.remote_deletes) == 2
     assert len(forge.comments) == 1
     async with db._engine.connect() as conn:
         batch = (await conn.execute(select(integration_batches))).mappings().one()
     assert batch["cleanup_state"] == "complete"
+
+
+async def test_cleanup_never_reposts_after_ambiguous_pr_comment_prewrite(release_db):
+    db, _scheduler = release_db
+    forge = CleanupForge()
+
+    async def ambiguous_comment(*, number, marker, body):
+        forge.comments.append((number, marker, body))
+        raise OSError("provider response lost before marker became readable")
+
+    forge.comment_pull_request = ambiguous_comment
+    service = IntegrationCleanupService(
+        db,
+        data_dir="/daemon",
+        forge_provider=forge,
+        clock=lambda: 30.0,
+    )
+    await service.materialize("batch", now=30.0)
+
+    first = await service.execute("batch", "source_pr", "99#1", now=30.0)
+    second = await service.execute("batch", "source_pr", "99#1", now=400.0)
+
+    assert first.outcome == "retryable"
+    assert second.outcome in {"retryable", "failed"}
+    assert len(forge.comments) == 1
+
+
+async def test_expired_cleanup_claim_cannot_post_after_successor_prewrite(release_db):
+    db, _scheduler = release_db
+    forge = CleanupForge()
+    first_lookup = asyncio.Event()
+    release_first = asyncio.Event()
+    lookups = 0
+
+    async def paused_marker_lookup(*, number, marker):
+        nonlocal lookups
+        lookups += 1
+        if lookups == 1:
+            first_lookup.set()
+            await release_first.wait()
+        return False
+
+    forge.has_comment_marker = paused_marker_lookup
+    await IntegrationCleanupService(db, data_dir="/daemon").materialize(
+        "batch", now=30.0
+    )
+    old = IntegrationCleanupService(
+        db, data_dir="/daemon", forge_provider=forge, clock=lambda: 30.0
+    )
+    successor = IntegrationCleanupService(
+        db, data_dir="/daemon", forge_provider=forge, clock=lambda: 400.0
+    )
+    old_task = asyncio.create_task(
+        old.execute("batch", "source_pr", "99#1", now=30.0)
+    )
+    await asyncio.wait_for(first_lookup.wait(), timeout=1.0)
+    accepted = await successor.execute(
+        "batch", "source_pr", "99#1", now=400.0
+    )
+    release_first.set()
+    stale = await old_task
+
+    assert accepted.outcome == "complete"
+    assert stale.outcome == "already_complete"
+    assert len(forge.comments) == 1
 
 
 async def test_cleanup_advance_selects_the_requested_batch_not_the_global_first_page(
@@ -691,7 +864,7 @@ async def test_integration_cleanup_command_is_subject_only_and_project_scoped(
     assert invalid["outcome"] == "runtime_error"
     assert result == {
         "success": False,
-        "outcome": "wait",
+        "outcome": "invariant_error",
         "batch_id": "batch-command",
         "item_count": 4,
         "completed_count": 0,
@@ -700,6 +873,205 @@ async def test_integration_cleanup_command_is_subject_only_and_project_scoped(
     service.materialize.assert_awaited_once_with("batch-command")
     service.advance.assert_awaited_once_with("batch-command")
     await handler.db.close()
+
+
+async def test_cleanup_command_never_reports_complete_for_a_partial_page(
+    command_handler_factory,
+):
+    handler = await command_handler_factory()
+    await handler.db.create_project(Project(id="p", name="project"))
+    await handler.db.create_repo(
+        RepoConfig(id="repo", project_id="p", source_type=RepoSourceType.CLONE)
+    )
+    async with handler.db.immediate() as conn:
+        await conn.execute(
+            insert(integration_batches).values(
+                id="paged-batch",
+                project_id="p",
+                repository_id="repo",
+                request_id="paged-request",
+                source_manifest_digest="sha256:" + "9" * 64,
+                base_sha=BASE,
+                lifecycle="promoted",
+                current_revision=0,
+                integration_branch=BRANCH,
+                final_main_sha=HEAD,
+                policy_snapshot={},
+                artifact_snapshot={},
+                cleanup_state="pending",
+                created_at=1.0,
+                updated_at=1.0,
+            )
+        )
+        for index in range(101):
+            state = "complete" if index < 100 else "pending"
+            await conn.execute(
+                insert(integration_cleanup_items).values(
+                    batch_id="paged-batch",
+                    kind="local_ref",
+                    identity=f"refs/heads/cleanup-{index}",
+                    domain_key=f"cleanup:paged:{index}",
+                    project_id="p",
+                    repository_id="repo",
+                    repository_numeric_id=99,
+                    repository_full_name="acme/widgets",
+                    revision=0,
+                    target_ref=f"refs/heads/cleanup-{index}",
+                    expected_sha=HEAD,
+                    state=state,
+                    attempts=1 if state == "complete" else 0,
+                    next_attempt_at=1.0,
+                    created_at=1.0,
+                    updated_at=1.0,
+                    terminal_at=1.0 if state == "complete" else None,
+                )
+            )
+    service = AsyncMock()
+    service.materialize.return_value = type(
+        "Materialized", (), {"outcome": "already_materialized", "item_count": 101}
+    )()
+    service.advance.return_value = [
+        CleanupExecutionResult(
+            outcome="complete",
+            batch_id="paged-batch",
+            kind="local_ref",
+            identity=f"refs/heads/cleanup-{index}",
+            attempts=1,
+        )
+        for index in range(100)
+    ]
+    handler.orchestrator.integration_cleanup_service = service
+    principal = ExecutionPrincipal(
+        kind=PrincipalKind.PLAYBOOK,
+        policy=CapabilityPolicy.from_namespaces(aq_commands=["integration_cleanup"]),
+        project_id="p",
+    )
+
+    with principal_context(principal):
+        result = await handler.execute(
+            "integration_cleanup", {"batch_id": "paged-batch"}
+        )
+
+    assert result["outcome"] == "advanced"
+    assert result["completed_count"] == 100
+    assert result["conflict_count"] == 0
+    await handler.db.close()
+
+
+@pytest.mark.skipif(not POSTGRES_DSN, reason="POSTGRES_TEST_DSN not set")
+async def test_postgres_last_cleanup_items_serialize_aggregate_projection():
+    import asyncpg
+
+    from src.database.adapters.postgresql import PostgreSQLDatabaseAdapter
+
+    dsn = await create_scratch_database("task10c_cleanup_finalize")
+    db = PostgreSQLDatabaseAdapter(dsn, 0, 2)
+    await db.initialize()
+    try:
+        await db.create_project(Project(id="p", name="project"))
+        await db.create_repo(
+            RepoConfig(id="repo", project_id="p", source_type=RepoSourceType.CLONE)
+        )
+        async with db.immediate() as conn:
+            await conn.execute(
+                insert(integration_batches).values(
+                    id="batch",
+                    project_id="p",
+                    repository_id="repo",
+                    request_id="request",
+                    source_manifest_digest="sha256:" + "7" * 64,
+                    base_sha=BASE,
+                    lifecycle="promoted",
+                    current_revision=0,
+                    integration_branch=BRANCH,
+                    final_main_sha=HEAD,
+                    policy_snapshot={},
+                    artifact_snapshot={},
+                    cleanup_state="pending",
+                    created_at=1.0,
+                    updated_at=1.0,
+                )
+            )
+            for identity, nonce in (("one", "nonce-one"), ("two", "nonce-two")):
+                await conn.execute(
+                    insert(integration_cleanup_items).values(
+                        batch_id="batch",
+                        kind="local_ref",
+                        identity=identity,
+                        domain_key=f"cleanup:batch:{identity}",
+                        project_id="p",
+                        repository_id="repo",
+                        repository_numeric_id=99,
+                        repository_full_name="acme/widgets",
+                        revision=0,
+                        target_ref=f"refs/heads/{identity}",
+                        expected_sha=HEAD,
+                        state="pending",
+                        attempts=1,
+                        next_attempt_at=1.0,
+                        execution_nonce=nonce,
+                        claim_expires_at=300.0,
+                        created_at=1.0,
+                        updated_at=1.0,
+                    )
+                )
+
+        first_entered = asyncio.Event()
+        second_entered = asyncio.Event()
+        release_first = asyncio.Event()
+
+        class PausingProjection(IntegrationCleanupService):
+            entered = 0
+
+            async def _project_aggregate_on(self, conn, batch_id, now):
+                type(self).entered += 1
+                if type(self).entered == 1:
+                    first_entered.set()
+                    await release_first.wait()
+                else:
+                    second_entered.set()
+                await super()._project_aggregate_on(conn, batch_id, now)
+
+        service = PausingProjection(db, data_dir="/daemon")
+        rows = {}
+        async with db._engine.connect() as conn:
+            for row in (
+                await conn.execute(select(integration_cleanup_items))
+            ).mappings().all():
+                rows[row["identity"]] = dict(row)
+        first = asyncio.create_task(
+            service._finalize(rows["one"], "nonce-one", 10.0, "complete", None)
+        )
+        await asyncio.wait_for(first_entered.wait(), timeout=2.0)
+        second = asyncio.create_task(
+            service._finalize(rows["two"], "nonce-two", 10.0, "complete", None)
+        )
+        try:
+            await asyncio.wait_for(second_entered.wait(), timeout=0.25)
+            serialized = False
+        except TimeoutError:
+            serialized = True
+        finally:
+            release_first.set()
+        await asyncio.gather(first, second)
+        assert serialized is True
+        async with db._engine.connect() as conn:
+            cleanup_state = await conn.scalar(
+                select(integration_batches.c.cleanup_state).where(
+                    integration_batches.c.id == "batch"
+                )
+            )
+        assert cleanup_state == "complete"
+    finally:
+        await db.close()
+        prefix, _, name = dsn.rpartition("/")
+        admin = await asyncpg.connect(
+            prefix.replace("postgresql+asyncpg://", "postgresql://") + "/postgres"
+        )
+        try:
+            await admin.execute(f'DROP DATABASE IF EXISTS "{name}"')
+        finally:
+            await admin.close()
 
 
 async def test_cleanup_expired_takeover_fences_out_old_executor(release_db):
@@ -768,6 +1140,7 @@ async def test_cleanup_never_deletes_default_branch_even_with_matching_sha(relea
                 domain_key="cleanup:batch:remote_ref:main", project_id="p",
                 repository_id="repo", repository_numeric_id=99,
                 repository_full_name="acme/widgets", revision=0,
+                member_ordinal=0,
                 target_ref="refs/heads/main", expected_sha=HEAD, state="pending",
                 attempts=0, next_attempt_at=30.0, created_at=30.0, updated_at=30.0,
             )
@@ -779,6 +1152,139 @@ async def test_cleanup_never_deletes_default_branch_even_with_matching_sha(relea
     ).execute("batch", "remote_ref", "refs/heads/main", now=30.0)
     assert result.outcome == "conflict"
     assert git.remote_deletes == []
+
+
+@pytest.mark.parametrize("protection", ["moved", "foreign_owner"])
+async def test_cleanup_source_ref_requires_frozen_head_and_no_foreign_owner(
+    release_db, protection
+):
+    db, _scheduler = release_db
+    await IntegrationCleanupService(db, data_dir="/daemon").materialize(
+        "batch", now=30.0
+    )
+    if protection == "foreign_owner":
+        async with db.immediate() as conn:
+            await conn.execute(
+                insert(integration_branch_owners).values(
+                    id="foreign-source-owner",
+                    repository_id="repo",
+                    ref="refs/heads/aq/root",
+                    owner_id="unrelated-operation",
+                    owner_role="collector",
+                    fence_token=1,
+                    handoff_state="reserved",
+                    created_at=20.0,
+                    updated_at=20.0,
+                )
+            )
+    app = CleanupApp({"aq/root": "f" * 40 if protection == "moved" else SOURCE})
+    git = CleanupGit(app)
+
+    result = await IntegrationCleanupService(
+        db, data_dir="/daemon", git_manager=git, app_client_factory=lambda _: app
+    ).execute("batch", "remote_ref", "refs/heads/aq/root", now=30.0)
+
+    assert result.outcome == "conflict"
+    assert git.remote_deletes == []
+
+
+async def test_cleanup_delays_failed_retained_work_by_frozen_window(release_db):
+    db, _scheduler = release_db
+    async with db.immediate() as conn:
+        await conn.execute(
+            insert(workspaces).values(
+                id="base-workspace",
+                project_id="p",
+                workspace_path="/daemon/base",
+                source_type="clone",
+                created_at=1.0,
+            )
+        )
+        await conn.execute(
+            insert(workspaces).values(
+                id="failed-workspace",
+                project_id="p",
+                workspace_path="/daemon/failed",
+                source_type="worktree",
+                base_workspace_id="base-workspace",
+                created_at=1.0,
+            )
+        )
+        await conn.execute(
+            insert(integration_repair_stages).values(
+                operation_id="op",
+                ordinal=1,
+                policy={},
+                starting_sha=HEAD,
+                attempts=1,
+                state="failed",
+                completed_at=25.0,
+                retained_workspace_id="failed-workspace",
+                retained_handoff={
+                    "workspace_id": "failed-workspace",
+                    "operation_id": "op",
+                    "head_sha": HEAD,
+                },
+            )
+        )
+
+    result = await IntegrationCleanupService(db, data_dir="/daemon").materialize(
+        "batch", now=30.0
+    )
+    async with db._engine.connect() as conn:
+        item = (
+            await conn.execute(
+                select(integration_cleanup_items).where(
+                    integration_cleanup_items.c.batch_id == "batch",
+                    integration_cleanup_items.c.kind == "worktree",
+                )
+            )
+        ).mappings().one()
+
+    assert result.outcome == "materialized"
+    assert item["next_attempt_at"] == 25.0 + 604800
+
+
+@pytest.mark.parametrize("protection", ["checked_out", "foreign_owner"])
+async def test_cleanup_local_ref_requires_vacancy_and_recorded_owner(
+    release_db, protection
+):
+    db, _scheduler = release_db
+    await IntegrationCleanupService(db, data_dir="/daemon").materialize(
+        "batch", now=30.0
+    )
+    if protection == "foreign_owner":
+        async with db.immediate() as conn:
+            await conn.execute(
+                insert(integration_branch_owners).values(
+                    id="foreign-owner",
+                    repository_id="repo",
+                    ref=BRANCH,
+                    owner_id="foreign-operation",
+                    owner_role="collector",
+                    fence_token=99,
+                    handoff_state="reserved",
+                    created_at=20.0,
+                    updated_at=20.0,
+                )
+            )
+
+    class ProtectedGit(CleanupGit):
+        async def aworktree_list(self, _store):
+            return (
+                [{"path": "/foreign/worktree", "branch": BRANCH.removeprefix("refs/heads/")}]
+                if protection == "checked_out"
+                else []
+            )
+
+    app = CleanupApp()
+    git = ProtectedGit(app)
+    result = await IntegrationCleanupService(
+        db, data_dir="/daemon", git_manager=git
+    ).execute("batch", "local_ref", BRANCH, now=30.0)
+
+    assert result.outcome == "conflict"
+    assert git.local_refs == {BRANCH: HEAD}
 
 
 @pytest.mark.parametrize(
@@ -860,3 +1366,76 @@ async def test_cleanup_removes_only_recorded_owned_worktree(
         ).mappings().one()
     assert result.outcome == expected_outcome, stored["last_error"]
     assert git.removed == removed
+
+
+async def test_cleanup_reconciles_worktree_absent_after_remove_crash(release_db):
+    db, _scheduler = release_db
+    async with db.immediate() as conn:
+        await conn.execute(
+            insert(workspaces).values(
+                id="base-workspace",
+                project_id="p",
+                workspace_path="/daemon/base",
+                source_type="clone",
+                created_at=1.0,
+            )
+        )
+        await conn.execute(
+            insert(workspaces).values(
+                id="retained-workspace",
+                project_id="p",
+                workspace_path="/daemon/retained",
+                source_type="worktree",
+                base_workspace_id="base-workspace",
+                created_at=1.0,
+            )
+        )
+        await conn.execute(
+            update(integration_repair_stages)
+            .where(
+                integration_repair_stages.c.operation_id == "op",
+                integration_repair_stages.c.ordinal == 0,
+            )
+            .values(
+                retained_workspace_id="retained-workspace",
+                retained_handoff={
+                    "workspace_id": "retained-workspace",
+                    "operation_id": "op",
+                    "head_sha": HEAD,
+                },
+            )
+        )
+    await IntegrationCleanupService(db, data_dir="/daemon").materialize(
+        "batch", now=30.0
+    )
+
+    class CrashAfterRemove:
+        present = True
+        removes = 0
+
+        async def arev_parse(self, path, ref):
+            assert (path, ref) == ("/daemon/retained", "HEAD")
+            return HEAD if self.present else None
+
+        async def aworktree_base_path(self, path):
+            return "/daemon/base" if self.present else None
+
+        async def aremove_worktree_exact(self, base, path):
+            self.removes += 1
+            self.present = False
+            raise OSError("daemon crashed after git removed the worktree")
+
+    git = CrashAfterRemove()
+    service = IntegrationCleanupService(
+        db, data_dir="/daemon", git_manager=git, clock=lambda: 30.0
+    )
+    first = await service.execute(
+        "batch", "worktree", "retained-workspace", now=30.0
+    )
+    second = await service.execute(
+        "batch", "worktree", "retained-workspace", now=400.0
+    )
+
+    assert first.outcome == "retryable"
+    assert second.outcome == "complete"
+    assert git.removes == 1

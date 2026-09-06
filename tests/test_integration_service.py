@@ -134,6 +134,8 @@ def test_policy_uses_compatible_rebuild_and_cleanup_defaults():
         "max_attempts": 5,
         "retry_base_seconds": 30.0,
         "retry_max_seconds": 3600.0,
+        "successful_source_refs": "delete",
+        "failed_work_retention_seconds": 604800,
     }
     with pytest.raises(ValueError, match="retry_max_seconds"):
         HierarchicalIntegrationPolicy.model_validate(

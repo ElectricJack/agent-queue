@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import Field, field_validator
+from pydantic import Field, field_validator, model_validator
 
 from src.commands.contracts.models import (
     CommandArgs,
@@ -308,7 +308,21 @@ class IntegrationRepairStartValue(CommandValue):
 
 class IntegrationRepairDispatchArgs(CommandArgs):
     operation_id: str = Field(min_length=1)
-    stage: Literal[0, 1]
+    stage: Literal[0, 1] | None = None
+    batch_id: str | None = None
+    revision: int | None = Field(default=None, ge=0)
+    head_sha: str | None = None
+
+    @model_validator(mode="after")
+    def complete_candidate_subject(self):
+        values = (self.batch_id, self.revision, self.head_sha)
+        if any(value is not None for value in values) and not all(
+            value is not None for value in values
+        ):
+            raise ValueError("candidate subject must be supplied as a complete tuple")
+        if self.head_sha is not None and not is_valid_git_oid(self.head_sha):
+            raise ValueError("head_sha must be an exact lowercase Git OID")
+        return self
 
 
 class IntegrationRepairDispatchValue(CommandValue):
@@ -853,7 +867,7 @@ INTEGRATION_CI_EVIDENCE = _root_subject_contract(
     IntegrationCIEvidenceArgs,
     IntegrationCIEvidenceValue,
     (
-        "green", "red", "not_green", "full_suite_required", "stale_subject",
+        "green", "red", "pending", "full_suite_required", "stale_subject",
         "configuration_blocked",
     ),
     frozenset({"green"}),
@@ -1228,7 +1242,7 @@ async def _ci_evidence_adapter(
         ctx,
         IntegrationCIEvidenceValue,
         {
-            "green", "red", "not_green", "full_suite_required", "stale_subject",
+            "green", "red", "pending", "full_suite_required", "stale_subject",
             "configuration_blocked",
         },
     )

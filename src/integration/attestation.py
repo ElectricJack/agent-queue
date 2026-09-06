@@ -38,6 +38,7 @@ from src.integration.ci import (
     select_trusted_attestation,
 )
 from src.integration.main_promotion import RootAttestationProof, RootAttestationSubject
+from src.integration.outbox import enqueue_integration_event
 
 
 _MAX_TRUST_BYTES = 64 * 1024
@@ -212,6 +213,12 @@ class IntegrationAttestationService:
                     clock=self.clock,
                 ).observe_candidate(candidate)
                 if observed["outcome"] != "green":
+                    if observed["outcome"] == "red":
+                        await self._enqueue_candidate_result(
+                            candidate,
+                            "red",
+                            tuple(observed.get("evidence_ids") or ()),
+                        )
                     return observed
             root_subject = RootAttestationSubject(
                 repository_numeric_id=pending["repository_numeric_id"],
@@ -223,6 +230,8 @@ class IntegrationAttestationService:
                 required_check_version=pending["required_check_version"],
             )
             published = await self.publish(root_subject)
+            if published.outcome in {"published", "already_published"}:
+                await self._enqueue_candidate_result(candidate, "green", ())
             return {
                 "outcome": published.outcome,
                 **(
@@ -336,8 +345,12 @@ class IntegrationAttestationService:
         state = await self._locked_state(subject.batch_id, subject.revision)
         if state is None or not self._subject_matches(subject, state):
             return None
-        if state["candidate_state"] != "green" or state["batch_lifecycle"] not in (
+        if (
+            state["candidate_state"] != "green"
+            or state["stage_state"] != "awaiting_completion"
+            or state["batch_lifecycle"] not in (
             {"testing", "promoting"} if allow_promoting else {"testing"}
+            )
         ):
             return None
         return state
@@ -351,9 +364,155 @@ class IntegrationAttestationService:
             or state["candidate_sha"] != subject.candidate_sha
             or state["candidate_state"] not in {"built", "testing", "green"}
             or state["batch_lifecycle"] not in {"testing", "repairing"}
+            or (
+                state["stage_state"]
+                != ("awaiting_completion" if state["candidate_state"] == "green" else "active")
+            )
         ):
             return None
         return state
+
+    async def _enqueue_candidate_result(
+        self,
+        subject: CandidateCISubject,
+        outcome: Literal["green", "red"],
+        evidence_ids: tuple[str, ...],
+    ) -> bool:
+        """Emit one exact-current durable continuation from authoritative evidence."""
+        now = self.clock()
+        async with self.db.immediate() as conn:
+            initial = (
+                await conn.execute(
+                    select(integration_batches.c.project_id).where(
+                        integration_batches.c.id == subject.batch_id
+                    )
+                )
+            ).scalar_one_or_none()
+            if initial is None:
+                return False
+            await self.db.lock_hierarchy_project(conn, initial)
+
+            async def one(statement):
+                return (await conn.execute(statement.with_for_update())).mappings().one_or_none()
+
+            batch = await one(
+                select(integration_batches).where(integration_batches.c.id == subject.batch_id)
+            )
+            candidate = await one(
+                select(integration_candidate_revisions).where(
+                    integration_candidate_revisions.c.batch_id == subject.batch_id,
+                    integration_candidate_revisions.c.revision == subject.revision,
+                )
+            )
+            operation = await one(
+                select(integration_repair_operations).where(
+                    integration_repair_operations.c.id == subject.operation_id,
+                    integration_repair_operations.c.batch_id == subject.batch_id,
+                    integration_repair_operations.c.episode_id == subject.batch_id,
+                )
+            )
+            stage = None
+            if operation is not None:
+                stage = await one(
+                    select(integration_repair_stages).where(
+                        integration_repair_stages.c.operation_id == operation["id"],
+                        integration_repair_stages.c.ordinal == operation["active_stage"],
+                    )
+                )
+            if (
+                batch is None
+                or candidate is None
+                or operation is None
+                or stage is None
+                or batch["project_id"] != initial
+                or int(batch["current_revision"]) != subject.revision
+                or batch["lifecycle"] not in {"testing", "repairing"}
+                or operation["state"] not in {"active", "escalated"}
+                or candidate["head_sha"] != subject.candidate_sha
+            ):
+                return False
+
+            identities: tuple[str, ...]
+            if outcome == "green":
+                publication = await one(
+                    select(integration_attestation_publications).where(
+                        integration_attestation_publications.c.batch_id == subject.batch_id,
+                        integration_attestation_publications.c.revision == subject.revision,
+                    )
+                )
+                if (
+                    candidate["state"] != "green"
+                    or stage["state"] != "awaiting_completion"
+                    or candidate["ci_evidence_id"] is None
+                    or batch["ci_evidence_id"] != candidate["ci_evidence_id"]
+                    or batch["tested_candidate_sha"] != subject.candidate_sha
+                    or publication is None
+                    or publication["state"] != "published"
+                    or publication["head_sha"] != subject.candidate_sha
+                    or publication["check_run_id"] is None
+                ):
+                    return False
+                identities = (
+                    str(candidate["ci_evidence_id"]),
+                    str(publication["id"]),
+                    str(publication["check_run_id"]),
+                )
+            else:
+                if (
+                    candidate["state"] not in {"built", "testing"}
+                    or stage["state"] != "active"
+                    or not evidence_ids
+                ):
+                    return False
+                rows = (
+                    await conn.execute(
+                        select(integration_check_evidence).where(
+                            integration_check_evidence.c.id.in_(evidence_ids)
+                        )
+                    )
+                ).mappings().all()
+                if (
+                    len(rows) != len(set(evidence_ids))
+                    or any(
+                        row["operation_id"] != subject.operation_id
+                        or row["batch_id"] != subject.batch_id
+                        or int(row["candidate_revision"]) != subject.revision
+                        or row["classification"] != "conclusive"
+                        or row["conclusion"] not in {"failure", "cancelled"}
+                        for row in rows
+                    )
+                ):
+                    return False
+                identities = tuple(sorted(evidence_ids))
+
+            identity = json.dumps(
+                {
+                    "outcome": outcome,
+                    "operation_id": subject.operation_id,
+                    "batch_id": subject.batch_id,
+                    "revision": subject.revision,
+                    "head_sha": subject.candidate_sha,
+                    "evidence": identities,
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            event_id = "integration-candidate-" + hashlib.sha256(identity.encode()).hexdigest()
+            await enqueue_integration_event(
+                conn,
+                event_id=event_id,
+                dedup_key=event_id,
+                project_id=initial,
+                event_type=f"integration.candidate_{outcome}",
+                payload={
+                    "operation_id": subject.operation_id,
+                    "batch_id": subject.batch_id,
+                    "revision": subject.revision,
+                    "head_sha": subject.candidate_sha,
+                },
+                available_at=now,
+            )
+            return True
 
     @staticmethod
     def _publication_id(state: dict[str, Any]) -> str:
@@ -664,7 +823,7 @@ class IntegrationAttestationService:
                 or operation["target_kind"] != "batch"
                 or operation["state"] not in {"active", "escalated"}
                 or operation["id"] != stage["operation_id"]
-                or stage["state"] != "awaiting_completion"
+                or stage["state"] not in {"active", "awaiting_completion"}
                 or publication["state"] != "pr_published"
                 or publication["repository_id"] != batch["repository_id"]
                 or publication["head_sha"] != candidate["head_sha"]
@@ -700,6 +859,7 @@ class IntegrationAttestationService:
                 "revision": revision,
                 "batch_lifecycle": batch["lifecycle"],
                 "candidate_state": candidate["state"],
+                "stage_state": stage["state"],
                 "candidate_sha": candidate["head_sha"],
                 "operation_id": operation["id"],
                 "required_check_version": required["version"],

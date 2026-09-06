@@ -21,6 +21,7 @@ from src.database.tables import (
 from src.integration.models import HierarchicalIntegrationPolicy
 from src.integration.outbox import enqueue_integration_event
 from src.integration.repair import RepairService
+from src.git.manager import GitError, _validate_ref
 from src.models import resolve_integration_mode_with_source
 from src.playbooks.artifact_ref import ArtifactRef
 
@@ -321,6 +322,15 @@ class TrainService:
                 project_mode=project["integration_mode"],
             )
             policy_snapshot = policy.model_dump(mode="json")
+            for member in members:
+                member["source_ref"] = self._source_ref(member["source_branch"])
+                member["source_ref_retention"] = (
+                    "retain"
+                    if member["source_branch"] == member["default_branch"]
+                    else policy.cleanup.successful_source_refs
+                )
+            if len({member["source_ref"] for member in members}) != len(members):
+                raise ValueError("integration source refs must be unique within a batch")
             manifest_digest = self._manifest_digest(members)
             batch_id = (
                 request_batch["id"]
@@ -442,6 +452,8 @@ class TrainService:
                         source_base_sha=member["source_base"],
                         reviewed_head_sha=member["source_head"],
                         reviewed_tree_sha=review["reviewed_tree_sha"],
+                        source_ref=member["source_ref"],
+                        source_ref_retention=member["source_ref_retention"],
                         review_evidence_id=review["id"],
                         review_evidence=review,
                     )
@@ -598,6 +610,14 @@ class TrainService:
         )
 
     @staticmethod
+    def _source_ref(branch: str) -> str:
+        try:
+            _validate_ref(branch, field="integration source branch")
+        except GitError as exc:
+            raise ValueError("integration source branch identity is invalid") from exc
+        return f"refs/heads/{branch}"
+
+    @staticmethod
     def _manifest_digest(members: list[dict[str, Any]]) -> str:
         manifest = [
             {
@@ -607,6 +627,8 @@ class TrainService:
                 "reviewed_head_sha": member["source_head"],
                 "reviewed_tree_sha": member["review"]["reviewed_tree_sha"],
                 "review_evidence_id": member["review"]["id"],
+                "source_ref": member["source_ref"],
+                "source_ref_retention": member["source_ref_retention"],
             }
             for member in members
         ]

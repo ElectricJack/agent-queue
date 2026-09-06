@@ -2,13 +2,6 @@
   {
     "code": "type_unknown",
     "message": "the type of input 'stage' could not be determined statically, so the check against unknown was silenced",
-    "rule_id": "construct-and-test",
-    "severity": "info",
-    "step_id": "construct-and-test--dispatch"
-  },
-  {
-    "code": "type_unknown",
-    "message": "the type of input 'stage' could not be determined statically, so the check against unknown was silenced",
     "rule_id": "dispatch-debug",
     "severity": "info",
     "step_id": "dispatch-debug--dispatch"

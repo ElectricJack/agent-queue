@@ -143,6 +143,7 @@ class IntegrationTrainQueriesMixin:
                 tasks.c.id.label("task_id"),
                 tasks.c.pr_url,
                 tasks.c.integration_mode.label("task_integration_mode"),
+                checkpoint.c.branch.label("source_branch"),
                 projects.c.integration_mode.label("project_integration_mode"),
                 repository.c.id.label("repository_id"),
                 repository.c.default_branch,

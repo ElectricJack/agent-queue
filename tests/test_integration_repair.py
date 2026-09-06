@@ -1188,6 +1188,67 @@ async def test_dispatch_persists_paused_delegate_before_handoff_then_wakes_it(db
     assert origins == []
 
 
+async def test_repair_dispatch_command_derives_current_stage_with_real_service(
+    command_handler_factory,
+):
+    """Operation-bound events cannot choose or restart a repair stage."""
+    from src.integration.repair import RepairService
+
+    handler = await command_handler_factory()
+    await _configure_db(handler.db)
+    await _seed_parent_operation(handler.db)
+    async with handler.db.immediate() as conn:
+        await conn.execute(
+            insert(integration_branch_owners).values(
+                id="command-owner",
+                repository_id="repo",
+                ref="aq/parent",
+                owner_id="operation",
+                owner_role="collector",
+                fence_token=4,
+                handoff_state="attached",
+                session_id="old-session",
+                workspace_id="old-workspace",
+                created_at=1.0,
+                updated_at=1.0,
+            )
+        )
+    service = RepairService(
+        handler.db,
+        confirm_handoff=lambda _owner: True,
+        route_validator=lambda _intelligence_class, _profile_id: True,
+    )
+    await service.start("operation", STARTING_SHA, "failed-check", now=100.0)
+    handler.orchestrator.repair_service = service
+    principal = ExecutionPrincipal(
+        kind=PrincipalKind.PLAYBOOK,
+        policy=CapabilityPolicy.from_namespaces(
+            aq_commands=["integration_repair_dispatch"]
+        ),
+        project_id="p",
+    )
+
+    with principal_context(principal):
+        stale = await handler.execute(
+            "integration_repair_dispatch",
+            {
+                "operation_id": "operation",
+                "batch_id": "foreign-batch",
+                "revision": 0,
+                "head_sha": STARTING_SHA,
+            },
+        )
+        result = await handler.execute(
+            "integration_repair_dispatch", {"operation_id": "operation"}
+        )
+
+    assert stale["outcome"] == "stale"
+    assert result["outcome"] == "dispatched"
+    assert result["stage"] == 0
+    assert result["repair_task_id"] == "repair-operation-0"
+    await handler.db.close()
+
+
 async def test_primary_dispatch_reuses_only_exact_live_attached_verifier(
     command_handler_factory,
 ):

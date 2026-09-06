@@ -17,6 +17,7 @@ from src.database.tables import (
     integration_check_evidence,
     integration_repair_operations,
     integration_repair_stages,
+    integration_outbox,
 )
 from src.git.github_app import GitHubAppError, GitHubRepositoryBinding
 from src.integration.attestation import IntegrationAttestationService
@@ -256,6 +257,7 @@ class ProviderClient:
         self.repository = GitHubRepositoryBinding(303, "acme/widgets")
         self.records: list[dict] = []
         self.published = 0
+        self.workflow_offset = 0
 
     async def installation_token(self):
         return "dummy-installation-token"
@@ -264,16 +266,16 @@ class ProviderClient:
         if key == "workflow_runs":
             return [
                 {
-                    "id": 31,
-                    "workflow_id": 301,
+                    "id": 31 + self.workflow_offset,
+                    "workflow_id": 301 + self.workflow_offset,
                     "run_attempt": 2,
                     "check_suite_id": 21,
                     "head_sha": SHA,
                     "conclusion": "success",
                 },
                 {
-                    "id": 32,
-                    "workflow_id": 302,
+                    "id": 32 + self.workflow_offset,
+                    "workflow_id": 302 + self.workflow_offset,
                     "run_attempt": 1,
                     "check_suite_id": 22,
                     "head_sha": SHA,
@@ -308,6 +310,104 @@ class ProviderClient:
             "status": "completed",
             "conclusion": "success",
             "check_suite": {"id": suite_id},
+        }
+
+
+async def _reset_candidate_for_observation(db):
+    async with db.immediate() as conn:
+        await conn.execute(
+            update(integration_batches)
+            .where(integration_batches.c.id == "batch")
+            .values(tested_candidate_sha=None, ci_evidence_id=None)
+        )
+        await conn.execute(
+            update(integration_candidate_revisions)
+            .where(
+                integration_candidate_revisions.c.batch_id == "batch",
+                integration_candidate_revisions.c.revision == 0,
+            )
+            .values(state="built", ci_evidence_id=None)
+        )
+        await conn.execute(
+            update(integration_repair_stages)
+            .where(
+                integration_repair_stages.c.operation_id == "root-op",
+                integration_repair_stages.c.ordinal == 0,
+            )
+            .values(state="active")
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("provider_kind", "expected_outcome", "expected_event"),
+    [
+        ("pending", "not_green", None),
+        ("red", "red", "integration.candidate_red"),
+        ("green", "published", "integration.candidate_green"),
+    ],
+)
+async def test_candidate_observation_emits_only_durable_terminal_ci_continuations(
+    attestation_db, tmp_path, provider_kind, expected_outcome, expected_event
+):
+    await _reset_candidate_for_observation(attestation_db)
+    client = ProviderClient()
+    client.workflow_offset = 1000
+    if provider_kind == "pending":
+        original = client.paged_items
+
+        async def pending(path, *, key):
+            if key == "check_runs" and "check_name=" in path:
+                return []
+            return await original(path, key=key)
+
+        client.paged_items = pending
+    elif provider_kind == "red":
+        original = client.paged_items
+
+        async def red(path, *, key):
+            rows = await original(path, key=key)
+            if key == "check_runs" and "check_name=Tests%20%28default%29" in path:
+                rows[0] = {**rows[0], "conclusion": "failure"}
+            return rows
+
+        client.paged_items = red
+    service = IntegrationAttestationService(
+        attestation_db,
+        data_dir=tmp_path,
+        git_manager=ExactTreeGit(trust_document()),
+        app_client_factory=lambda binding: client,
+        clock=lambda: 10.0,
+    )
+    row = {
+        "operation_id": "root-op",
+        "batch_id": "batch",
+        "revision": 0,
+        "candidate_sha": SHA,
+    }
+
+    first = await service.handle_candidate_ci(row, 10.0)
+    second = await service.handle_candidate_ci(row, 10.0)
+
+    assert first["outcome"] == expected_outcome
+    if provider_kind == "pending":
+        assert second["outcome"] == "not_green"
+    async with attestation_db._engine.connect() as conn:
+        events = (await conn.execute(select(integration_outbox))).mappings().all()
+    if expected_event is None:
+        assert events == []
+    else:
+        assert len(events) == 1
+        assert events[0]["event_type"] == expected_event
+        assert {
+            key: events[0]["payload"][key]
+            for key in ("project_id", "operation_id", "batch_id", "revision", "head_sha")
+        } == {
+            "project_id": "p",
+            "operation_id": "root-op",
+            "batch_id": "batch",
+            "revision": 0,
+            "head_sha": SHA,
         }
 
 

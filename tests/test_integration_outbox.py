@@ -673,14 +673,14 @@ async def test_new_operation_event_uses_frozen_owner_and_current_sibling_artifac
     assert owner_new_sha not in {row["artifact_sha256"] for row in pending.values()}
 
 
-async def test_disabled_frozen_owner_keeps_new_event_pending_despite_sibling(
+async def test_disabled_frozen_owner_still_accepts_new_operation_event(
     db, tmp_path
 ):
     compiled = tmp_path / "compiled"
     owner_activation, owner_sha = await _activate(
         db, compiled, "hierarchical-delivery", "integration.sealed", source_digit="1"
     )
-    await _activate(
+    sibling_activation, sibling_sha = await _activate(
         db, compiled, "integration-observer", "integration.sealed", source_digit="3"
     )
     await _pin_operation_route(
@@ -704,13 +704,36 @@ async def test_disabled_frozen_owner_keeps_new_event_pending_despite_sibling(
     runtime = _runtime(db, compiled)
     await runtime.refresh()
 
-    assert not await runtime.accept_integration_event(
+    assert await runtime.accept_integration_event(
         "integration.sealed",
         {"project_id": "p", "operation_id": "operation-1"},
         "event-1",
     )
-    assert (await load_acceptance_state(db, "event-1")).manifest is None
-    assert await _pending_rows(db) == []
+    state = await load_acceptance_state(db, "event-1")
+    assert state.manifest == tuple(
+        sorted(
+            (
+                {
+                    "activation_id": owner_activation,
+                    "playbook_id": "hierarchical-delivery",
+                    "scope": "project",
+                    "scope_identifier": "p",
+                    "artifact_sha256": owner_sha,
+                },
+                {
+                    "activation_id": sibling_activation,
+                    "playbook_id": "integration-observer",
+                    "scope": "project",
+                    "scope_identifier": "p",
+                    "artifact_sha256": sibling_sha,
+                },
+            ),
+            key=lambda item: (item["activation_id"], item["artifact_sha256"]),
+        )
+    )
+    pending = {row["activation_id"]: row for row in await _pending_rows(db)}
+    assert pending[owner_activation]["artifact_sha256"] == owner_sha
+    assert pending[sibling_activation]["artifact_sha256"] == sibling_sha
     await runtime.shutdown()
 
 

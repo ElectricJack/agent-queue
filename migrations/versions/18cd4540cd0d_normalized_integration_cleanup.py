@@ -111,10 +111,12 @@ def upgrade() -> None:
         ),
         sa.CheckConstraint(
             "(kind = 'source_pr' AND member_ordinal IS NOT NULL AND member_ordinal >= 0 "
-            "AND receipt_id IS NOT NULL AND target_pr_number > 0 AND target_pr_url IS NOT NULL "
+            "AND receipt_id IS NOT NULL AND target_pr_number IS NOT NULL "
+            "AND target_pr_number > 0 AND target_pr_url IS NOT NULL "
             "AND target_ref IS NULL AND workspace_path IS NULL) OR "
             "(kind = 'audit_pr' AND member_ordinal IS NULL AND receipt_id IS NULL "
-            "AND target_pr_number > 0 AND target_pr_url IS NOT NULL AND target_ref IS NULL "
+            "AND target_pr_number IS NOT NULL AND target_pr_number > 0 "
+            "AND target_pr_url IS NOT NULL AND target_ref IS NULL "
             "AND workspace_path IS NULL) OR "
             "(kind IN ('remote_ref', 'local_ref') AND member_ordinal IS NULL "
             "AND receipt_id IS NULL AND target_pr_number IS NULL AND target_pr_url IS NULL "
