@@ -1,5 +1,9 @@
 # Task 11 requirements
 
+Read `task-11-recovery-interface-map.md` for current reusable symbols and missing
+seams. Its raw update_config logging finding is part of required credential
+redaction: rejected inline secrets must not be printed before validation.
+
 Read `pre-final-hierarchy-audit.md` in this directory, section 3, for the three
 exact production legacy merge entrypoints this phase must guard atomically at
 cutover. The command guard must run before forge/CI reads for every caller.
