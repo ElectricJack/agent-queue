@@ -66,6 +66,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import math
 import os
 import re
 import signal
@@ -2897,9 +2898,25 @@ class GitManager:
         tip_oid: str,
         branch: str,
         expected_old_oid: str,
+        authority_deadline: float | None = None,
     ) -> str:
         """Push one immutable OID through an isolated daemon-owned Git context."""
-        deadline = asyncio.get_running_loop().time() + APP_AUTH_PUSH_TIMEOUT_SECONDS
+        loop = asyncio.get_running_loop()
+        maximum_deadline = loop.time() + APP_AUTH_PUSH_TIMEOUT_SECONDS
+        if authority_deadline is None:
+            deadline = maximum_deadline
+        else:
+            if (
+                isinstance(authority_deadline, bool)
+                or not isinstance(authority_deadline, (int, float))
+                or not math.isfinite(authority_deadline)
+            ):
+                raise GitError("invalid authenticated Git authority deadline")
+            deadline = min(float(authority_deadline), maximum_deadline)
+        try:
+            self._remaining_app_push_budget(deadline)
+        except asyncio.TimeoutError as exc:
+            raise GitError("authenticated Git push authority deadline expired") from exc
         if not isinstance(token, str) or not token:
             raise GitError("invalid GitHub App credential")
         branch = _validate_ref(branch)

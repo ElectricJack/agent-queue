@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import inspect
 import time
@@ -444,7 +445,10 @@ class RootPromotionService:
                 head_sha=intent["prepared_sha"],
             )
         token = await self.app_client.installation_token()
-        if not await self._mark_prewrite(intent, nonce, current_attestation):
+        authority_deadline = await self._mark_prewrite(
+            intent, nonce, current_attestation
+        )
+        if authority_deadline is None:
             return RootPromotionResult(
                 outcome="wait", batch_id=batch_id, revision=revision,
                 intent_id=intent_id, receipt_ids=await self._receipt_ids(intent_id),
@@ -459,6 +463,7 @@ class RootPromotionService:
                 tip_oid=intent["prepared_sha"],
                 branch=intent["target_branch"].removeprefix("refs/heads/"),
                 expected_old_oid=intent["expected_target"],
+                authority_deadline=authority_deadline,
             )
         except Exception:
             observed = await self.app_client.exact_head_ref(
@@ -538,7 +543,8 @@ class RootPromotionService:
 
     async def _mark_prewrite(
         self, intent: dict[str, Any], nonce: str, attestation: RootAttestationProof
-    ) -> bool:
+    ) -> float | None:
+        authority_deadline: float | None = None
         async with self.db.immediate() as conn:
             await self.db.lock_hierarchy_project(conn, intent["project_id"])
             locked = await self._snapshot_on(
@@ -547,6 +553,7 @@ class RootPromotionService:
                 intent["root_batch_id"],
                 int(intent["root_candidate_revision"]),
             )
+            monotonic_started_at = asyncio.get_running_loop().time()
             now = self.clock()
             minimum = (
                 now
@@ -564,7 +571,7 @@ class RootPromotionService:
                 or not self._proof_matches_state(attestation, locked)
                 or float(locked["lease"]["expires_at"]) < minimum
             ):
-                return False
+                return None
             changed = await conn.execute(
                 update(integration_candidate_ref_mutations)
                 .where(
@@ -579,7 +586,11 @@ class RootPromotionService:
                     updated_at=now,
                 )
             )
-            return changed.rowcount == 1
+            if changed.rowcount == 1:
+                authority_deadline = (
+                    monotonic_started_at + APP_AUTH_PUSH_TIMEOUT_SECONDS
+                )
+        return authority_deadline
 
     async def _mark_applied(self, intent: dict[str, Any], remote: str) -> None:
         async with self.db.immediate() as conn:

@@ -12,6 +12,8 @@ from pathlib import Path
 import pytest
 from sqlalchemy import func, insert, select, update
 
+import src.git.manager as git_manager_module
+import src.integration.main_promotion as main_promotion_module
 from src.commands.integration_commands import IntegrationCommandsMixin
 from src.commands.principal import ExecutionPrincipal, PrincipalKind, principal_context
 from src.database import Database
@@ -43,7 +45,7 @@ from src.integration.models import BranchKey, Fence
 from src.integration.ownership import BranchBusy, BranchOwnership
 from src.integration.promotion import PromotionInvariantError, PromotionService
 from src.integration.repair import RepairService
-from src.git.manager import GitManager
+from src.git.manager import GitError, GitManager
 from src.models import Project, RepoConfig, RepoSourceType
 from src.profiles.capabilities import DENY_ALL
 
@@ -77,6 +79,28 @@ def _git(cwd: Path, *args: str) -> str:
     return subprocess.run(
         ["git", *args], cwd=cwd, check=True, capture_output=True, text=True
     ).stdout.strip()
+
+
+def _real_push_case(tmp_path: Path) -> tuple[Path, Path, str, str]:
+    checkout = tmp_path / "deadline-checkout"
+    target = tmp_path / "deadline-target.git"
+    checkout.mkdir()
+    _git(checkout, "init", "--initial-branch=main")
+    _git(checkout, "config", "user.name", "Deadline Test")
+    _git(checkout, "config", "user.email", "deadline@example.invalid")
+    (checkout / "value.txt").write_text("base")
+    _git(checkout, "add", "value.txt")
+    _git(checkout, "commit", "-m", "base")
+    base = _git(checkout, "rev-parse", "HEAD")
+    subprocess.run(
+        ["git", "init", "--bare", "--initial-branch=main", str(target)],
+        check=True,
+        capture_output=True,
+    )
+    _git(checkout, "push", str(target), f"{base}:refs/heads/main")
+    (checkout / "value.txt").write_text("candidate")
+    _git(checkout, "commit", "-am", "candidate")
+    return checkout, target, base, _git(checkout, "rev-parse", "HEAD")
 
 
 def _policy() -> dict:
@@ -323,6 +347,40 @@ class ClockAdvancingGit(PushGit):
         if args[:2] == ["merge-base", "--is-ancestor"]:
             self.clock[0] = self.ancestry_time
         return await super().arun_git_result(args, **kwargs)
+
+
+class RealDeadlinePushGit(PushGit):
+    """Route the root boundary through the real isolated App-auth transport."""
+
+    def __init__(self, app, checkout, target, base, tip):
+        super().__init__(app)
+        self.checkout = checkout
+        self.target = target
+        self.base = base
+        self.tip = tip
+        self.transport = GitManager()
+        isolated_push = self.transport._apush_oid_with_app_auth_to_url
+
+        async def local_isolated_push(checkout_path, **kwargs):
+            kwargs["destination_url"] = self.target.as_uri()
+            return await isolated_push(checkout_path, **kwargs)
+
+        self.transport._apush_oid_with_app_auth_to_url = local_isolated_push
+
+    async def apush_oid_with_app_auth(self, _store, **kwargs):
+        deadline = kwargs["authority_deadline"]
+        result = await self.transport.apush_oid_with_app_auth(
+            str(self.checkout),
+            repository=kwargs["repository"],
+            token=kwargs["token"],
+            tip_oid=self.tip,
+            branch=kwargs["branch"],
+            expected_old_oid=self.base,
+            authority_deadline=deadline,
+        )
+        self.pushes.append(kwargs)
+        self.app.remote = HEAD
+        return HEAD if result == self.tip else result
 
 
 @pytest.mark.asyncio
@@ -760,6 +818,7 @@ async def test_prewrite_accepts_exact_post_refresh_push_horizon(prepared_db):
 
     assert result.outcome == "promoted"
     assert len(git.pushes) == 1 and app.token_calls == 1
+    assert isinstance(git.pushes[0]["authority_deadline"], float)
     async with db._engine.connect() as conn:
         claim = (
             await conn.execute(select(integration_candidate_ref_mutations))
@@ -798,6 +857,97 @@ async def test_prewrite_horizon_is_measured_after_hierarchy_lock(prepared_db):
             await conn.execute(select(integration_candidate_ref_mutations))
         ).mappings().one()
     assert claim["prewrite_at"] is None
+
+
+@pytest.mark.asyncio
+async def test_prewrite_deadline_consumes_dispatch_delay_in_real_app_transport(
+    prepared_db, tmp_path, monkeypatch
+):
+    db, data_dir = prepared_db
+    checkout, target, real_base, real_tip = _real_push_case(tmp_path)
+    app = FakeAppClient()
+    git = RealDeadlinePushGit(app, checkout, target, real_base, real_tip)
+    original_import = git.transport._run_isolated_import_git
+
+    async def delayed_import(args, **kwargs):
+        await asyncio.sleep(0.02)
+        return await original_import(args, **kwargs)
+
+    monkeypatch.setattr(git.transport, "_run_isolated_import_git", delayed_import)
+    monkeypatch.setattr(main_promotion_module, "APP_AUTH_PUSH_TIMEOUT_SECONDS", 0.4)
+    monkeypatch.setattr(main_promotion_module, "APP_AUTH_PUSH_CLEANUP_MARGIN_SECONDS", 0.1)
+    monkeypatch.setattr(git_manager_module, "APP_AUTH_PUSH_TIMEOUT_SECONDS", 0.4)
+    monkeypatch.setattr(git_manager_module, "APP_AUTH_PUSH_CLEANUP_MARGIN_SECONDS", 0.1)
+    prewrite_seen_at = None
+
+    async def delayed_dispatch(phase):
+        nonlocal prewrite_seen_at
+        if phase == "after_prewrite_marker":
+            prewrite_seen_at = asyncio.get_running_loop().time()
+            await asyncio.sleep(0.1)
+
+    result = await RootPromotionService(
+        db,
+        data_dir=data_dir,
+        git_manager=git,
+        app_client=app,
+        crash_hook=delayed_dispatch,
+        clock=lambda: 10.0,
+    ).promote("batch", 0)
+
+    assert result.outcome == "promoted"
+    assert len(git.pushes) == 1
+    deadline = git.pushes[0]["authority_deadline"]
+    assert prewrite_seen_at is not None
+    assert 0 < deadline - prewrite_seen_at <= 0.4
+    assert _git(target, "rev-parse", "refs/heads/main") == real_tip
+
+
+@pytest.mark.asyncio
+async def test_exhausted_prewrite_deadline_never_starts_real_remote_child(
+    prepared_db, tmp_path, monkeypatch
+):
+    db, data_dir = prepared_db
+    checkout, target, real_base, real_tip = _real_push_case(tmp_path)
+    app = FakeAppClient()
+    git = RealDeadlinePushGit(app, checkout, target, real_base, real_tip)
+    remote_starts = 0
+    original_spawn = asyncio.create_subprocess_exec
+
+    async def recording_spawn(program, *args, **kwargs):
+        nonlocal remote_starts
+        if "push" in args:
+            remote_starts += 1
+        return await original_spawn(program, *args, **kwargs)
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", recording_spawn)
+    monkeypatch.setattr(main_promotion_module, "APP_AUTH_PUSH_TIMEOUT_SECONDS", 0.08)
+    monkeypatch.setattr(main_promotion_module, "APP_AUTH_PUSH_CLEANUP_MARGIN_SECONDS", 0.05)
+    monkeypatch.setattr(git_manager_module, "APP_AUTH_PUSH_TIMEOUT_SECONDS", 0.08)
+    monkeypatch.setattr(git_manager_module, "APP_AUTH_PUSH_CLEANUP_MARGIN_SECONDS", 0.05)
+
+    async def exhaust_before_dispatch(phase):
+        if phase == "after_prewrite_marker":
+            await asyncio.sleep(0.1)
+
+    with pytest.raises(GitError, match="authority deadline expired"):
+        await RootPromotionService(
+            db,
+            data_dir=data_dir,
+            git_manager=git,
+            app_client=app,
+            crash_hook=exhaust_before_dispatch,
+            clock=lambda: 10.0,
+        ).promote("batch", 0)
+
+    assert remote_starts == 0
+    assert git.pushes == []
+    assert _git(target, "rev-parse", "refs/heads/main") == real_base
+    async with db._engine.connect() as conn:
+        claim = (
+            await conn.execute(select(integration_candidate_ref_mutations))
+        ).mappings().one()
+    assert claim["state"] == "reserved" and claim["prewrite_at"] == 10.0
 
 
 @pytest.mark.asyncio

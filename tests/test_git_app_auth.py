@@ -13,7 +13,7 @@ import src.git.manager as manager_module
 from src.git.askpass_fd import MAX_REQUEST_BYTES, answer_prompt
 from src.git.askpass_broker import make_request_channel, serve_one_credential
 from src.git.github_app import GitHubRepositoryBinding
-from src.git.manager import GitError, GitManager
+from src.git.manager import APP_AUTH_PUSH_TIMEOUT_SECONDS, GitError, GitManager
 
 
 def _git(args: list[str], cwd: Path, *, env: dict[str, str] | None = None) -> str:
@@ -197,6 +197,86 @@ async def test_app_push_uses_frozen_repository_and_one_shot_fd_without_secret_le
     assert captured["destination_url"] == "https://github.com/acme/widgets.git"
     assert captured["branch"] == "main"
     assert captured["expected_old_oid"] == "b" * 40
+
+
+@pytest.mark.asyncio
+async def test_app_push_authority_deadline_can_only_tighten_public_transport_budget(
+    tmp_path, monkeypatch
+):
+    manager = GitManager()
+    captured_deadlines = []
+
+    async def fake_isolated_push(_checkout_path, **kwargs):
+        captured_deadlines.append(kwargs["_deadline"])
+        return kwargs["tip_oid"]
+
+    monkeypatch.setattr(manager, "_apush_oid_with_app_auth_to_url", fake_isolated_push)
+    loop = asyncio.get_running_loop()
+    inherited_deadline = loop.time() + 30.0
+    result = await manager.apush_oid_with_app_auth(
+        str(tmp_path),
+        repository=GitHubRepositoryBinding(303, "acme/widgets"),
+        token="deadline-token",
+        tip_oid="a" * 40,
+        branch="main",
+        expected_old_oid="b" * 40,
+        authority_deadline=inherited_deadline,
+    )
+    assert result == "a" * 40
+    assert captured_deadlines == [inherited_deadline]
+
+    entered_at = loop.time()
+    await manager.apush_oid_with_app_auth(
+        str(tmp_path),
+        repository=GitHubRepositoryBinding(303, "acme/widgets"),
+        token="deadline-token",
+        tip_oid="a" * 40,
+        branch="main",
+        expected_old_oid="b" * 40,
+        authority_deadline=entered_at + APP_AUTH_PUSH_TIMEOUT_SECONDS * 10,
+    )
+    assert captured_deadlines[-1] <= loop.time() + APP_AUTH_PUSH_TIMEOUT_SECONDS
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("deadline", [float("nan"), float("inf"), float("-inf")])
+async def test_app_push_rejects_nonfinite_authority_deadline(tmp_path, deadline):
+    with pytest.raises(GitError, match="authority deadline"):
+        await GitManager().apush_oid_with_app_auth(
+            str(tmp_path),
+            repository=GitHubRepositoryBinding(303, "acme/widgets"),
+            token="deadline-token",
+            tip_oid="a" * 40,
+            branch="main",
+            expected_old_oid="b" * 40,
+            authority_deadline=deadline,
+        )
+
+
+@pytest.mark.asyncio
+async def test_app_push_expired_authority_deadline_never_enters_transport(
+    tmp_path, monkeypatch
+):
+    manager = GitManager()
+    entered = False
+
+    async def forbidden_transport(*_args, **_kwargs):
+        nonlocal entered
+        entered = True
+        raise AssertionError("expired authority entered transport")
+
+    monkeypatch.setattr(manager, "_apush_oid_with_app_auth_to_url", forbidden_transport)
+    with pytest.raises(GitError, match="authority deadline expired"):
+        await manager.apush_oid_with_app_auth(
+            str(tmp_path),
+            repository=GitHubRepositoryBinding(303, "acme/widgets"),
+            token="deadline-token",
+            tip_oid="a" * 40,
+            branch="main",
+            expected_old_oid="b" * 40,
+            authority_deadline=asyncio.get_running_loop().time() - 1.0,
+        )
+    assert entered is False
 
 
 @pytest.mark.asyncio
