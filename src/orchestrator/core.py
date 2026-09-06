@@ -102,6 +102,7 @@ from src.tokens.budget import BudgetManager
 from src.vault_manager import VaultManager
 
 # Mixin imports — each provides one domain of methods
+from src.orchestrator.route_needed import RouteNeededMixin
 from src.orchestrator.workspace import WorkspaceMixin
 from src.orchestrator.execution import ExecutionMixin
 from src.orchestrator.monitoring import MonitoringMixin
@@ -185,6 +186,7 @@ class Orchestrator(
     SyncWorkflowMixin,
     PoolsMixin,
     LayoutStepMixin,
+    RouteNeededMixin,
 ):
     """Coordinates the full task lifecycle across multiple projects and agents.
 
@@ -242,9 +244,12 @@ class Orchestrator(
         self._agent_reconciler = AgentReconciler(
             self.db, worktrees_enabled=config.worktrees.enabled
         )
-        from src.orchestrator.assignment_routing import AssignmentRoutingCoordinator
+        from src.assignment_routing import ExplicitRouting
 
-        self.assignment_routing = AssignmentRoutingCoordinator(self)
+        # Routing policy is the ``default-assignment-routing`` playbook; the
+        # orchestrator only reads the class the playbook wrote onto the task.
+        self.assignment_routing = ExplicitRouting()
+        self._route_needed_emitted: dict[str, float] = {}
         # Live adapter instances keyed by agent_id.  Stored so we can call
         # adapter.stop() from admin commands (stop_task, timeout recovery).
         self._adapters: dict[str, object] = {}
@@ -474,6 +479,10 @@ class Orchestrator(
         self.integration_attestation_service = None
         self.integration_attestation_resolver = None
         self.integration_app_client_factory = None
+        self.integration_repository_binding_resolver = None
+        self.integration_release_service = None
+        self.integration_cleanup_service = None
+        self.root_promotion_service = None
         # Reference to the command handler, set by the bot after initialization.
         # Used to pass handler references to interactive Discord views (e.g.
         # Retry/Skip buttons on failed task notifications).
@@ -1458,6 +1467,9 @@ class Orchestrator(
         # outbox dispatch. Later Task 10 phases attach their narrow handlers
         # without adding another timer or orchestration authority.
         from src.integration.outbox import IntegrationOutbox
+        from src.integration.cleanup import IntegrationCleanupService
+        from src.integration.main_promotion import RootPromotionService
+        from src.integration.release import IntegrationReleaseService
         from src.integration.repair import RepairService
         from src.integration.scheduler import IntegrationScheduler
         from src.integration.service import IntegrationService
@@ -1476,18 +1488,54 @@ class Orchestrator(
         self.integration_scheduler = IntegrationScheduler(self.db)
         self.integration_outbox = IntegrationOutbox(self.db, accept_integration_event)
         github_app_config = self.config.integration.github_app
+        integration_app_clients = {}
 
         def integration_app_client(binding):
             if github_app_config is None:
                 return None
-            return GitHubAppClient(
+            cached = integration_app_clients.get(binding)
+            if cached is not None:
+                return cached
+            client = GitHubAppClient(
                 github_app_config,
                 binding,
                 key_provider=OwnerFilePrivateKeyProvider(),
             )
+            integration_app_clients[binding] = client
+            return client
+
+        async def resolve_integration_repository(repository):
+            if github_app_config is None:
+                return None
+            from urllib.parse import urlparse
+
+            parsed = urlparse(repository.url)
+            if (
+                parsed.scheme != "https"
+                or parsed.hostname != "github.com"
+                or parsed.username is not None
+                or parsed.password is not None
+                or parsed.port is not None
+                or parsed.params
+                or parsed.query
+                or parsed.fragment
+                or not parsed.path.endswith(".git")
+            ):
+                return None
+            full_name = parsed.path.removeprefix("/").removesuffix(".git")
+            client = await GitHubAppClient.bind_repository(
+                github_app_config,
+                full_name,
+                key_provider=OwnerFilePrivateKeyProvider(),
+            )
+            integration_app_clients[client.repository] = client
+            return client.repository
 
         self.integration_app_client_factory = (
             integration_app_client if github_app_config is not None else None
+        )
+        self.integration_repository_binding_resolver = (
+            resolve_integration_repository if github_app_config is not None else None
         )
 
         self.integration_attestation_service = IntegrationAttestationService(
@@ -1497,12 +1545,34 @@ class Orchestrator(
             app_client_factory=self.integration_app_client_factory,
         )
         self.integration_attestation_resolver = self.integration_attestation_service.resolve
+        self.integration_release_service = IntegrationReleaseService(self.db)
+        self.integration_cleanup_service = IntegrationCleanupService(
+            self.db,
+            data_dir=self.config.data_dir,
+            git_manager=self.git,
+            app_client_factory=self.integration_app_client_factory,
+        )
+        self.root_promotion_service = RootPromotionService(
+            self.db,
+            data_dir=self.config.data_dir,
+            git_manager=self.git,
+            app_client_factory=self.integration_app_client_factory,
+            attestation_resolver=self.integration_attestation_resolver,
+        )
+
+        async def reconcile_root_intent(row: dict[str, Any], _now: float):
+            if row.get("intent_kind") != "root":
+                return {"outcome": "declined"}
+            return await self.root_promotion_service.reconcile(row["id"])
+
         self.integration_service = IntegrationService(
             self.db,
             self.integration_scheduler,
             RepairService(self.db),
             self.integration_outbox,
             candidate_ci_handler=self.integration_attestation_service.handle_candidate_ci,
+            unresolved_intent_handler=reconcile_root_intent,
+            cleanup_handler=self.integration_cleanup_service.handle_item,
         )
         self.integration_service.start()
 
@@ -2286,12 +2356,13 @@ class Orchestrator(
             #    unblock dependents within the same cycle.
             await self._check_defined_tasks()
 
-            # 3a. Classify otherwise assignable work in one bounded LLM batch
-            # per project. Profile and agent selection remain deterministic.
+            # 3a. Tell the playbook layer about work that still lacks a class
+            # or a profile.  The orchestrator decides nothing here; the
+            # ``default-assignment-routing`` playbook answers the event.
             try:
-                await self.assignment_routing.reconcile()
+                await self._emit_route_needed_events()
             except Exception:
-                logger.error("Assignment routing reconciliation error", exc_info=True)
+                logger.error("route_needed emission error", exc_info=True)
 
             # 3b. Backstop sweep for container settlement (spec §7). Settlement
             #     itself is event-driven inside transition_task; this only

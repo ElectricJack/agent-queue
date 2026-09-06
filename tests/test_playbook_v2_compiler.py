@@ -8,7 +8,6 @@ from pathlib import Path
 from src.playbooks.authoring import PlaybookSource
 from src.playbooks.pipeline_lowering import (
     _value,
-    lower_assignment,
     lower_pipeline,
     shadow_compile,
 )
@@ -232,42 +231,6 @@ def test_foreach_bodies_reenter_the_foreach_node():
     for loop_id, loop in loops.items():
         body_step = body["steps"][loop["body_entry"]]
         assert set(body_step["transitions"].values()) == {loop_id}
-
-
-def test_default_assignment_lowers_to_one_ai_node():
-    expected = json.loads(
-        (LOWERING / "default-assignment-routing.expected.json").read_text()
-    )
-    body, diagnostics = lower_assignment(_bundled("default-assignment-routing.md"))
-    assert diagnostics == []
-    step_types = [step["type"] for step in body["steps"].values()]
-    assert {
-        "executable_step_count": step_types.count("llm"),
-        "rule_count": len(body["rules"]),
-        "step_count": len(body["steps"]),
-        "step_types": step_types,
-    } == expected
-
-    choose = body["steps"]["assignment-route--choose"]
-    assert choose["inputs"] == {
-        "tasks": {"type": "event_ref", "path": "tasks"},
-        "options": {"type": "event_ref", "path": "options"},
-        "options_hash": {"type": "event_ref", "path": "options_hash"},
-        "catalog_hash": {"type": "event_ref", "path": "catalog_hash"},
-    }
-    assert choose["save_result_as"] == "routing_result"
-    schema = choose["output_schema"]
-    assert schema["required"] == ["decisions"]
-    assert schema["additionalProperties"] is False
-    decision = schema["properties"]["decisions"]["items"]
-    assert decision["required"] == ["task_id", "intelligence_class", "reason"]
-    assert "input_hash" not in decision["properties"]
-    assert decision["additionalProperties"] is False
-    assert body["steps"]["assignment-route--done"]["result"] == {
-        "type": "binding_ref",
-        "binding": "routing_result",
-    }
-    assert body["steps"]["assignment-route--failed"]["outcome"] == "failed"
 
 
 def test_non_loop_output_reference_lowers_to_binding_ref():

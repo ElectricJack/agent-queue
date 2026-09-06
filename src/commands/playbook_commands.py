@@ -245,7 +245,7 @@ class PlaybookCommandsMixin:
         from src.playbooks.activation import profile_fingerprint
         from src.playbooks.authoring import PlaybookSource, SourceError
         from src.playbooks.definition import canonical_bytes, source_digest
-        from src.playbooks.pipeline_lowering import lower_assignment, lower_pipeline
+        from src.playbooks.pipeline_lowering import lower_pipeline
         from src.playbooks.proposal import propose
         from src.playbooks.run_state import PlaybookStorageError
 
@@ -340,8 +340,6 @@ class PlaybookCommandsMixin:
         kind = str(loaded.frontmatter.get("kind") or "")
         if kind == "pipeline":
             body, lowering_diagnostics = lower_pipeline(loaded, contracts=contracts)
-        elif kind == "assignment-routing":
-            body, lowering_diagnostics = lower_assignment(loaded)
         else:
             body, lowering_diagnostics = {}, []
         if not body:

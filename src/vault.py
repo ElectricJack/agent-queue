@@ -1471,6 +1471,27 @@ def ensure_default_templates(data_dir: str) -> dict:
     return result
 
 
+_RETIRED_PLAYBOOK_KINDS = frozenset({"assignment-routing"})
+
+
+def _retired_playbook_kind(path: str) -> bool:
+    """True when the file's frontmatter declares a playbook kind AQ no longer compiles."""
+    try:
+        with open(path, encoding="utf-8") as handle:
+            head = handle.read(4096)
+    except OSError:
+        return False
+    if not head.startswith("---"):
+        return False
+    for line in head.split("\n")[1:]:
+        if line.strip() == "---":
+            break
+        key, _sep, value = line.partition(":")
+        if key.strip() == "kind":
+            return value.strip().strip("\"'") in _RETIRED_PLAYBOOK_KINDS
+    return False
+
+
 def ensure_default_playbooks(data_dir: str) -> dict:
     """Install default playbook files into ``vault/system/playbooks/`` if absent.
 
@@ -1479,7 +1500,8 @@ def ensure_default_playbooks(data_dir: str) -> dict:
     first use by the :class:`~src.playbooks.compiler.PlaybookCompiler`.
 
     The bundled set includes the default review and assignment policies,
-    memory consolidation, and the disabled hierarchical-delivery policy.  The
+    memory consolidation, the disabled hierarchical-delivery policy, and the
+    disabled root integration train policy.  The
     directory is discovered mechanically so adding a reviewed source does not
     require a second production inventory.
 
@@ -1525,6 +1547,20 @@ def ensure_default_playbooks(data_dir: str) -> dict:
                         filename,
                     )
                     continue
+            if _retired_playbook_kind(dst_path):
+                # ``kind: assignment-routing`` has no compiler any more
+                # (assignment routing is an authored pipeline since
+                # 2026-09-06), so a vault copy of that shape can never run.
+                # Keep the operator's bytes beside it and ship the current
+                # source; a customised policy belongs in a project copy.
+                shutil.copy2(dst_path, dst_path + ".bak")
+                shutil.copy2(src_path, dst_path)
+                result["updated"].append(filename)
+                logger.info(
+                    "Replaced default playbook of a retired kind: %s (backup at %s.bak)",
+                    filename, filename,
+                )
+                continue
             result["skipped"].append(filename)
             logger.debug("Default playbook already exists, skipping: %s", filename)
             continue

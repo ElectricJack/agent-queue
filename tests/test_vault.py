@@ -1014,6 +1014,28 @@ def test_ensure_default_playbooks_upgrades_known_legacy_pipeline(tmp_path, monke
     assert pipeline_path.read_text(encoding="utf-8") == bundled
 
 
+def test_ensure_default_playbooks_replaces_retired_assignment_routing_kind(tmp_path):
+    """A vault copy with ``kind: assignment-routing`` cannot compile since the
+    2026-09-06 cutover; the shipped pipeline replaces it and the old bytes are
+    kept in a ``.bak`` beside it."""
+    from src.vault import ensure_default_playbooks
+
+    playbooks_dir = tmp_path / "vault" / "system" / "playbooks"
+    playbooks_dir.mkdir(parents=True)
+    legacy = "---\nid: default-assignment-routing\nkind: assignment-routing\nscope: system\n---\n# old\n"
+    (playbooks_dir / "default-assignment-routing.md").write_text(legacy)
+
+    result = ensure_default_playbooks(str(tmp_path))
+
+    assert "default-assignment-routing.md" in result["updated"]
+    new_source = (playbooks_dir / "default-assignment-routing.md").read_text()
+    assert "kind: pipeline" in new_source and "task.route_needed" in new_source
+    assert (playbooks_dir / "default-assignment-routing.md.bak").read_text() == legacy
+    # a customised pipeline copy is left alone
+    again = ensure_default_playbooks(str(tmp_path))
+    assert "default-assignment-routing.md" in again["skipped"]
+
+
 def test_ensure_default_playbooks_preserves_custom_default_pipeline(tmp_path):
     playbooks_dir = tmp_path / "vault" / "system" / "playbooks"
     playbooks_dir.mkdir(parents=True)

@@ -136,8 +136,9 @@ class TestFiling:
         """The gate a root filing is born with must not hide it from the router.
 
         A filing is DEFINED and blocked by its own routing gate; if the
-        assignment coordinator does not consider that shape, nothing ever
-        picks a class and nothing ever resolves the gate.
+        ``task.route_needed`` sweep does not consider that shape, the routing
+        playbook never hears about it, nothing picks a class and nothing
+        ever resolves the gate.
         """
         sid = await holding_session(db)
         root = await scoped(handler, sid)._cmd_create_task({
@@ -150,7 +151,7 @@ class TestFiling:
         })
         assert root["success"] and child["success"]
 
-        candidates = await handler.orchestrator.assignment_routing._eligible_candidates()
+        candidates = await handler.orchestrator._route_needed_candidates()
 
         assert {root["task_id"], child["task_id"]} <= {task.id for task in candidates}
 

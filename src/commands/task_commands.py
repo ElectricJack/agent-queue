@@ -3888,23 +3888,13 @@ class TaskCommandsMixin:
                     )
                 )
 
-        # 4. Assignment route state. The coordinator uses the same resolver
-        # as scheduling and pool claims, so this cannot disagree with actual
-        # eligibility after an edit or option-catalog change.
-        assignment_route = None
-        route_reason = None
-        coordinator = getattr(self.orchestrator, "assignment_routing", None)
-        if coordinator is not None:
-            try:
-                assignment_route, route_reason = await coordinator.explain(task)
-            except Exception as exc:
-                route_reason = Reason(
-                    code="assignment_playbook_unavailable",
-                    detail=f"could not inspect assignment route: {exc}",
-                    ref=task.project_id,
-                )
-            if route_reason is not None:
-                reasons.append(Reason(**route_reason))
+        # 4. Assignment route state.  The task row is the route: the
+        # ``default-assignment-routing`` playbook writes ``intelligence_class``
+        # and ``profile_id`` through ``task_route``; until it has, the cascade
+        # keeps emitting ``task.route_needed``.
+        assignment_route, route_reason = await self._assignment_route_state(task)
+        if route_reason is not None:
+            reasons.append(route_reason)
 
         # 5. Pool-routed work never reaches the push scheduler at all, so the
         # capacity reasons below (which describe *that* path) would answer a
@@ -3945,6 +3935,65 @@ class TaskCommandsMixin:
             "assignment_route": assignment_route,
         }
 
+    async def _assignment_route_state(self, task):
+        """Route audit detail plus one actionable reason, from the task row alone."""
+        from src.explain import Reason
+
+        explicit = (task.intelligence_class or "").strip()
+        reason_text = None
+        try:
+            async with self.db._engine.connect() as conn:
+                from sqlalchemy import select
+
+                from src.database.tables import task_metadata
+
+                row = (await conn.execute(
+                    select(task_metadata.c.value).where(
+                        task_metadata.c.task_id == task.id,
+                        task_metadata.c.key == "route_reason",
+                    )
+                )).fetchone()
+            if row is not None:
+                import json
+
+                reason_text = json.loads(row[0])
+        except Exception:  # pragma: no cover - diagnostics only
+            reason_text = None
+        detail = None
+        if explicit:
+            detail = {
+                "source": "explicit",
+                "intelligence_class": explicit,
+                "provider": None,
+                "reason": reason_text,
+                "playbook_id": None,
+                "playbook_version": None,
+                "playbook_run_id": None,
+                "freshness": "fresh",
+            }
+        if task.assigned_agent_id is not None or task.status not in (
+            TaskStatus.READY, TaskStatus.BLOCKED, TaskStatus.DEFINED
+        ):
+            return detail, None
+        if not explicit:
+            return None, Reason(
+                code="awaiting_intelligence_route",
+                detail=(
+                    "task has no intelligence class yet; the assignment routing playbook "
+                    "answers task.route_needed and writes one (check `aq playbook runs`)"
+                ),
+                ref=task.id,
+            )
+        return detail, Reason(
+            code="route_waiting_for_compatible_agent",
+            detail=(
+                f"route selects intelligence class '{explicit}'"
+                + (f" on profile '{task.profile_id}'" if task.profile_id else "")
+                + "; waiting for existing scheduling constraints"
+            ),
+            ref=task.profile_id or task.id,
+        )
+
     async def _pool_wait_reason(self, task):
         """``awaiting_pool_session`` for a task routed to a ``lifecycle: pool`` profile.
 
@@ -3982,48 +4031,23 @@ class TaskCommandsMixin:
         if profile_id not in pool_ids:
             return None
 
-        # A pool worker only claims its own fixed class.  A task whose route
-        # names a class no pool profile serves waits forever, and until the
-        # routing coordinator's backfill repins it the wrong pool looks idle.
-        routes = None
-        coordinator = getattr(orchestrator, "assignment_routing", None)
-        if coordinator is not None and hasattr(coordinator, "routes_for"):
-            try:
-                routes = await coordinator.routes_for([task])
-            except Exception:
-                routes = None
-        route = (routes or {}).get(task.id)
-        if route is not None:
+        # A pool worker only claims its own fixed class.  A task whose class
+        # the pool does not run waits until the routing playbook pins it to
+        # a profile that does — say so instead of pointing at the idle pool.
+        explicit = (task.intelligence_class or "").strip()
+        if explicit:
             profiles = {p.id: p for p in await self.db.list_profiles()}
             pool_profile = profiles.get(profile_id)
             fixed = (getattr(pool_profile, "default_class", "") or "").strip()
-            if fixed and fixed != route.intelligence_class:
-                from src.orchestrator.assignment_routing import pool_profile_for_route
-
-                serving = pool_profile_for_route(
-                    task.project_id, list(profiles.values()),
-                    route.intelligence_class, route.provider,
-                    getattr(orchestrator, "harness_registry", None),
-                )
-                if serving is None:
-                    return Reason(
-                        code="awaiting_pool_session",
-                        detail=(
-                            f"route selects class '{route.intelligence_class}' but no pool "
-                            f"profile serves it (project default pool '{profile_id}' runs "
-                            f"'{fixed}'); add a pool profile with default_class "
-                            f"'{route.intelligence_class}' or pin --profile-id"
-                        ),
-                        ref=profile_id,
-                    )
+            if fixed and fixed != explicit:
                 return Reason(
                     code="awaiting_pool_session",
                     detail=(
-                        f"route selects class '{route.intelligence_class}' but the task "
-                        f"counts against pool '{profile_id}' ('{fixed}'); the routing "
-                        f"coordinator will pin it to '{serving}' on its next pass"
+                        f"task class '{explicit}' is not what pool '{profile_id}' runs "
+                        f"('{fixed}'); the assignment routing playbook pins the task to a "
+                        "profile that serves its class when it answers task.route_needed"
                     ),
-                    ref=serving,
+                    ref=profile_id,
                 )
 
         if not getattr(self.config.swarm, "enabled", True):
@@ -4394,6 +4418,13 @@ class TaskCommandsMixin:
                 "success": False,
                 "error": "Task is running or claimed; stop the task before changing its routing.",
             }
+
+        reason = args.get("reason")
+        if reason:
+            async with self.db.immediate() as conn:
+                await self.db._upsert_meta(
+                    str(task_id), "route_reason", str(reason)[:400], conn=conn
+                )
 
         resolved: list[str] = []
         for gate in await self.db.get_gates_for_task(str(task_id)):

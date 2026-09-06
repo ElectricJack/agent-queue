@@ -13,9 +13,10 @@ semantic bodies, without an LLM:
 
 * ``default-pipeline`` — reads the semantic body from its reviewed artifact and
   remaps source references onto the current prose.
-* ``default-assignment-routing`` — lowered from its own live source, which has
-  no graph to remove; ``lower_assignment`` derives the single AI node from the
-  frontmatter and prose.
+* ``default-assignment-routing`` — a reviewer-authored deterministic graph
+  (``_default_assignment_routing_body``): read options, decide (LLM) when the
+  class is not explicit, write the route.  Spec:
+  ``docs/superpowers/specs/2026-09-06-assignment-routing-as-playbook.md``.
 
 ``memory-consolidation`` uses a deterministic, reviewer-authored semantic body
 that preserves the prose as the LLM prompt and adds the typed envelope:
@@ -42,12 +43,11 @@ from typing import Any
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
-from src.playbooks.authoring import PlaybookSource
-from src.playbooks.definition import canonical_bytes
-from src.playbooks.pipeline_lowering import lower_assignment
-from src.playbooks.profiles import shipped_profile_lookup
-from src.playbooks.proposal import propose
-from src.playbooks.validation import (
+from src.playbooks.authoring import PlaybookSource  # noqa: E402
+from src.playbooks.definition import canonical_bytes  # noqa: E402
+from src.playbooks.profiles import shipped_profile_lookup  # noqa: E402
+from src.playbooks.proposal import propose  # noqa: E402
+from src.playbooks.validation import (  # noqa: E402
     RegisteredEventLookup,
     RegistryContractLookup,
 )
@@ -59,6 +59,7 @@ SHIPPED = {
     "memory-consolidation": "src/prompts/default_playbooks/memory-consolidation.md",
     "pr-merge-sweep": "src/prompts/project_playbooks/agent-queue/pr-merge-sweep.md",
     "ci-main-sentinel": "src/prompts/project_playbooks/agent-queue/ci-main-sentinel.md",
+    "root-integration-train": "src/prompts/default_playbooks/root-integration-train.md",
 }
 SOURCES = SHIPPED
 
@@ -190,10 +191,7 @@ def semantic_body(playbook_id: str, source: PlaybookSource) -> dict[str, Any]:
         body = _recorded_semantic_body(playbook_id)
         return _remap_pipeline_refs(json.loads(json.dumps(body)), ProseIndex(source, source.vault_path))
     if playbook_id == "default-assignment-routing":
-        body, diagnostics = lower_assignment(source)
-        if diagnostics:
-            raise SystemExit(f"{playbook_id}: {diagnostics}")
-        return json.loads(json.dumps(body))
+        return _default_assignment_routing_body(source)
     if playbook_id == "pr-merge-sweep":
         body = _recorded_semantic_body(playbook_id)
         remapped = json.loads(json.dumps(body))
@@ -208,7 +206,290 @@ def semantic_body(playbook_id: str, source: PlaybookSource) -> dict[str, Any]:
         return _memory_consolidation_body(source)
     if playbook_id == "ci-main-sentinel":
         return _ci_main_sentinel_body(source)
+    if playbook_id == "root-integration-train":
+        return _root_integration_train_body(source)
     return {}
+
+
+def _root_integration_train_body(source: PlaybookSource) -> dict[str, Any]:
+    def event(path: str) -> dict[str, Any]:
+        return {"type": "event_ref", "path": path}
+
+    def bound(binding: str, path: str) -> dict[str, Any]:
+        return {"type": "binding_ref", "binding": binding, "path": path}
+
+    def ref(rule: str) -> dict[str, Any]:
+        return _source_ref_for_heading(source, f"## Rule: {rule}")
+
+    terminal_ref = _source_ref_for_heading(source, "## Failure handling")
+    rules: list[dict[str, Any]] = []
+    steps: dict[str, Any] = {}
+
+    def terminals(rule: str) -> tuple[str, str]:
+        done, failed = f"{rule}--done", f"{rule}--failed"
+        steps[done] = _terminal(rule, "completed", terminal_ref)
+        steps[failed] = _terminal(rule, "failed", terminal_ref)
+        return done, failed
+
+    rule = "seal-due-frontier"
+    done, failed = terminals(rule)
+    seal, release = f"{rule}--seal", f"{rule}--release-empty"
+    rules.append({"id": rule, "name": rule, "trigger": {"event_type": "integration.sweep_due"},
+                  "entry_step": seal, "source": ref(rule)})
+    steps[seal] = {"type": "command", "rule": rule, "title": "seal", "source": ref(rule),
+                   "command": "integration_seal", "save_result_as": "sealed",
+                   "inputs": {"project_id": event("project_id"), "request_id": event("operation_id")},
+                   "transitions": {"sealed": done, "empty": release, "busy": failed,
+                                   "runtime_error": failed}}
+    steps[release] = {"type": "command", "rule": rule, "title": "release-empty",
+                      "source": ref(rule), "command": "integration_release",
+                      "inputs": {"batch_id": bound("sealed", "batch_id")},
+                      "transitions": {name: (done if name in {"released", "already_released", "empty"} else failed)
+                                      for name in ("released", "already_released", "empty", "wait", "stale",
+                                                   "invariant_error", "runtime_error")}}
+
+    rule = "construct-and-test"
+    done, failed = terminals(rule)
+    build, ci, promote = (f"{rule}--build", f"{rule}--ci", f"{rule}--promote")
+    repair, dispatch = f"{rule}--repair", f"{rule}--dispatch"
+    rebuild, ci2, promote2, repair2 = (
+        f"{rule}--rebuild", f"{rule}--ci-rebuilt", f"{rule}--promote-rebuilt",
+        f"{rule}--repair-rebuilt",
+    )
+    rules.append({"id": rule, "name": rule, "trigger": {"event_type": "integration.sealed"},
+                  "entry_step": build, "source": ref(rule)})
+    build_transitions = {name: failed for name in (
+        "source_moved", "base_moved", "stale_revision", "wait", "human_required",
+        "configuration_blocked", "runtime_error")}
+    build_transitions.update({"empty": done, "built": ci, "already_built": ci,
+                              "conflict": repair})
+    steps[build] = {"type": "command", "rule": rule, "title": "build", "source": ref(rule),
+                    "command": "integration_build_candidate", "save_result_as": "candidate",
+                    "inputs": {"batch_id": event("batch_id")}, "transitions": build_transitions}
+    ci_transitions = {name: failed for name in (
+        "full_suite_required", "stale_subject", "configuration_blocked", "runtime_error")}
+    ci_transitions.update({"green": promote, "red": repair, "not_green": repair})
+    steps[ci] = {"type": "command", "rule": rule, "title": "ci", "source": ref(rule),
+                 "command": "integration_ci_evidence", "inputs": {
+                     "batch_id": event("batch_id"), "revision": bound("candidate", "revision")},
+                 "transitions": ci_transitions}
+    promote_transitions = {name: failed for name in (
+        "ci_missing", "non_fast_forward", "wait", "reconciliation_blocked", "stale",
+        "configuration_blocked", "runtime_error")}
+    promote_transitions.update({"promoted": done, "already_promoted": done,
+                                "base_moved": rebuild})
+    steps[promote] = {"type": "command", "rule": rule, "title": "promote", "source": ref(rule),
+                      "command": "integration_promote_main", "inputs": {
+                          "batch_id": event("batch_id"), "revision": bound("candidate", "revision")},
+                      "transitions": promote_transitions}
+    rebuild_transitions = dict(build_transitions)
+    rebuild_transitions.update({"built": ci2, "already_built": ci2, "conflict": repair2})
+    steps[rebuild] = {"type": "command", "rule": rule, "title": "rebuild", "source": ref(rule),
+                      "command": "integration_build_candidate", "inputs": {"batch_id": event("batch_id")},
+                      "save_result_as": "rebuilt", "transitions": rebuild_transitions}
+    steps[ci2] = {"type": "command", "rule": rule, "title": "ci-rebuilt", "source": ref(rule),
+                  "command": "integration_ci_evidence", "inputs": {
+                      "batch_id": event("batch_id"), "revision": bound("rebuilt", "revision")},
+                  "transitions": dict(ci_transitions) | {"green": promote2, "red": repair2,
+                                                          "not_green": repair2}}
+    steps[promote2] = {"type": "command", "rule": rule, "title": "promote-rebuilt",
+                       "source": ref(rule), "command": "integration_promote_main", "inputs": {
+                           "batch_id": event("batch_id"), "revision": bound("rebuilt", "revision")},
+                       "transitions": dict(promote_transitions) | {"base_moved": failed}}
+    steps[repair2] = {"type": "command", "rule": rule, "title": "repair-rebuilt",
+                      "source": ref(rule), "command": "integration_repair_start", "inputs": {
+                          "operation_id": event("operation_id"),
+                          "starting_sha": bound("rebuilt", "head_sha"),
+                          "trigger_id": event("operation_id")},
+                      "transitions": {"started": dispatch, "already_started": dispatch,
+                                      "stale": failed, "invariant_error": failed,
+                                      "runtime_error": failed}}
+    steps[repair] = {"type": "command", "rule": rule, "title": "repair", "source": ref(rule),
+                     "command": "integration_repair_start", "inputs": {
+                         "operation_id": event("operation_id"),
+                         "starting_sha": bound("candidate", "head_sha"),
+                         "trigger_id": event("operation_id")},
+                     "transitions": {"started": dispatch, "already_started": dispatch,
+                                     "stale": failed, "invariant_error": failed,
+                                     "runtime_error": failed}}
+    steps[dispatch] = {"type": "command", "rule": rule, "title": "dispatch", "source": ref(rule),
+                       "command": "integration_repair_dispatch", "inputs": {
+                           "operation_id": event("operation_id"),
+                           "stage": {"type": "literal", "value": 0}},
+                       "transitions": {name: (done if name in {"dispatched", "already_dispatched", "writer_reused"}
+                                              else failed) for name in (
+                           "dispatched", "already_dispatched", "writer_reused", "busy",
+                           "configuration_blocked", "stale", "human_required", "runtime_error")}}
+
+    rule = "dispatch-debug"
+    done, failed = terminals(rule)
+    entry = f"{rule}--dispatch"
+    rules.append({"id": rule, "name": rule, "trigger": {"event_type": "integration.repair_exhausted"},
+                  "entry_step": entry, "source": ref(rule)})
+    steps[entry] = {"type": "command", "rule": rule, "title": "dispatch", "source": ref(rule),
+                    "command": "integration_repair_dispatch", "inputs": {
+                        "operation_id": event("operation_id"),
+                        "stage": {"type": "literal", "value": 1}},
+                    "transitions": {name: (done if name in {"dispatched", "already_dispatched", "writer_reused"}
+                                           else failed) for name in (
+                        "dispatched", "already_dispatched", "writer_reused", "busy",
+                        "configuration_blocked", "stale", "human_required", "runtime_error")}}
+
+    for rule, event_type, command in (
+        ("release-promoted", "integration.batch_promoted", "integration_release"),
+        ("cleanup-promoted", "integration.cleanup_requested", "integration_cleanup"),
+    ):
+        done, failed = terminals(rule)
+        entry = f"{rule}--run"
+        rules.append({"id": rule, "name": rule, "trigger": {"event_type": event_type},
+                      "entry_step": entry, "source": ref(rule)})
+        successes = {"released", "already_released", "empty"} if command == "integration_release" else {
+            "materialized", "advanced", "complete", "already_complete"}
+        outcomes = (
+            ("released", "already_released", "empty", "wait", "stale", "invariant_error", "runtime_error")
+            if command == "integration_release"
+            else ("materialized", "advanced", "complete", "already_complete", "wait", "retryable",
+                  "conflict", "failed", "stale", "invariant_error", "runtime_error")
+        )
+        steps[entry] = {"type": "command", "rule": rule, "title": "run", "source": ref(rule),
+                        "command": command, "inputs": {"batch_id": event("batch_id")},
+                        "transitions": {name: (done if name in successes else failed) for name in outcomes}}
+    return {"rules": rules, "steps": steps}
+
+
+def _section(source: PlaybookSource, heading: str, until: str) -> str:
+    """The prose between *heading* and the next heading starting with *until*."""
+    lines = source.raw.splitlines()
+    start = next(i for i, line in enumerate(lines) if line.strip() == heading)
+    end = next(
+        (i for i in range(start + 1, len(lines)) if lines[i].startswith(until)), len(lines)
+    )
+    return "\n".join(lines[start : end]).strip()
+
+
+def _default_assignment_routing_body(source: PlaybookSource) -> dict[str, Any]:
+    """The reviewer-authored deterministic graph for ``default-assignment-routing``.
+
+    One rule on ``task.route_needed``: read the task's routing options, let
+    the LLM decide only when the class is not explicit, then write the route
+    with ``task_route``.  Every step carries the numbered prose line that
+    authorises it.  Spec:
+    ``docs/superpowers/specs/2026-09-06-assignment-routing-as-playbook.md``.
+    """
+    index = ProseIndex(source, source.vault_path)
+    rule = "route-task"
+    read = f"{rule}--read_options"
+    choose = f"{rule}--choose"
+    apply_explicit = f"{rule}--apply_explicit"
+    apply_decision = f"{rule}--apply_decision"
+    done = f"{rule}--done"
+    failed = f"{rule}--failed"
+    task_id = {"type": "event_ref", "path": "task_id"}
+
+    def routing(path: str) -> dict[str, Any]:
+        return {"type": "binding_ref", "binding": "routing", "path": path}
+
+    def decision(path: str) -> dict[str, Any]:
+        return {"type": "binding_ref", "binding": "decision", "path": path}
+
+    return {
+        "rules": [
+            {
+                "id": rule,
+                "name": rule,
+                "trigger": {"event_type": "task.route_needed"},
+                "entry_step": read,
+                "source": index.rule_ref(rule),
+            }
+        ],
+        "steps": {
+            read: {
+                "type": "command",
+                "rule": rule,
+                "title": "read_options",
+                "source": index.step_ref(rule, 1),
+                "command": "task_route_options",
+                "inputs": {"task_id": task_id},
+                "save_result_as": "routing",
+                "transitions": {
+                    "already_routed": done,
+                    "explicit": apply_explicit,
+                    "undecided": choose,
+                    "no_options": failed,
+                    "rejected": failed,
+                    "runtime_error": failed,
+                },
+            },
+            choose: {
+                "type": "llm",
+                "rule": rule,
+                "title": "choose",
+                "source": index.step_ref(rule, 2),
+                "profile_id": "playbook-compiler",
+                "prompt": {
+                    "type": "literal",
+                    "value": _section(source, "## Choosing a class", "## "),
+                },
+                "inputs": {
+                    "title": routing("title"),
+                    "description": routing("description"),
+                    "priority": routing("priority"),
+                    "task_type": routing("task_type"),
+                    "options": routing("options"),
+                },
+                "output_schema": {
+                    "type": "object",
+                    "properties": {
+                        "intelligence_class": {"type": "string"},
+                        "provider": {"type": ["string", "null"]},
+                        "profile_id": {"type": "string"},
+                        "reason": {"type": "string", "minLength": 1, "maxLength": 400},
+                    },
+                    "required": ["intelligence_class", "provider", "profile_id", "reason"],
+                    "additionalProperties": False,
+                },
+                "budget": {
+                    "max_calls": 1,
+                    "max_output_tokens": 4096,
+                    "max_total_tokens": 4096,
+                    "timeout_seconds": 300,
+                },
+                "tool_use": {"enabled": False, "aq_commands": [], "plugin_tools": []},
+                "save_result_as": "decision",
+                "transitions": _llm_transitions(apply_decision, failed),
+            },
+            apply_explicit: {
+                "type": "command",
+                "rule": rule,
+                "title": "apply_explicit",
+                "source": index.step_ref(rule, 3),
+                "command": "task_route",
+                "inputs": {
+                    "task_id": task_id,
+                    "profile_id": routing("explicit_profile_id"),
+                    "intelligence_class": routing("intelligence_class"),
+                    "reason": {"type": "literal", "value": "explicit intelligence class"},
+                },
+                "transitions": {"routed": done, "rejected": failed, "runtime_error": failed},
+            },
+            apply_decision: {
+                "type": "command",
+                "rule": rule,
+                "title": "apply_decision",
+                "source": index.step_ref(rule, 4),
+                "command": "task_route",
+                "inputs": {
+                    "task_id": task_id,
+                    "profile_id": decision("profile_id"),
+                    "intelligence_class": decision("intelligence_class"),
+                    "reason": decision("reason"),
+                },
+                "transitions": {"routed": done, "rejected": failed, "runtime_error": failed},
+            },
+            done: _terminal(rule, "completed", index.step_ref(rule, None)),
+            failed: _terminal(rule, "failed", index.step_ref(rule, None)),
+        },
+    }
 
 
 def _ci_main_sentinel_body(source: PlaybookSource) -> dict[str, Any]:

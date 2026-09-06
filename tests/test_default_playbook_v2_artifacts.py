@@ -55,6 +55,7 @@ SHIPPED_SOURCES: dict[str, str] = {
     "memory-consolidation": "src/prompts/default_playbooks/memory-consolidation.md",
     "pr-merge-sweep": "src/prompts/project_playbooks/agent-queue/pr-merge-sweep.md",
     "ci-main-sentinel": "src/prompts/project_playbooks/agent-queue/ci-main-sentinel.md",
+    "root-integration-train": "src/prompts/default_playbooks/root-integration-train.md",
 }
 
 PLAYBOOK_IDS = tuple(SHIPPED_SOURCES)
@@ -354,27 +355,64 @@ def test_pipeline_rule_set_unchanged() -> None:
     assert not rule_ids & SUPERSEDED_RULE_IDS
 
 
-def test_assignment_router_has_a_typed_input_and_result_contract() -> None:
+def test_assignment_router_is_an_authored_pipeline_over_route_commands() -> None:
+    """Spec 2026-09-06 §5: read options, decide only when not explicit, write the route."""
     definition = _artifact("default-assignment-routing")
-    step = definition.steps["assignment-route--choose"]
-    assert _inputs(step) == {
-        "tasks": {"type": "event_ref", "path": "tasks"},
-        "options": {"type": "event_ref", "path": "options"},
-        "options_hash": {"type": "event_ref", "path": "options_hash"},
-        "catalog_hash": {"type": "event_ref", "path": "catalog_hash"},
-    }
-    assert step.save_result_as == "routing_result"
-    assert step.output_schema["required"] == ["decisions"]
-    assert step.output_schema["additionalProperties"] is False
-    decision = step.output_schema["properties"]["decisions"]["items"]
-    assert "input_hash" not in decision["properties"]
-    terminal = definition.steps["assignment-route--done"]
-    assert terminal.model_dump(mode="json", exclude_none=True)["result"] == {
-        "type": "binding_ref",
-        "binding": "routing_result",
-    }
-    assert definition.steps["assignment-route--failed"].outcome == "failed"
+    assert definition.purpose == "routine"
+    (rule,) = definition.rules
+    assert rule.id == "route-task"
+    assert rule.trigger.event_type == "task.route_needed"
+    assert rule.entry_step == "route-task--read_options"
 
+    read = definition.steps["route-task--read_options"]
+    assert read.command == "task_route_options"
+    assert _inputs(read) == {"task_id": {"type": "event_ref", "path": "task_id"}}
+    assert read.save_result_as == "routing"
+    assert read.transitions == {
+        "already_routed": "route-task--done",
+        "explicit": "route-task--apply_explicit",
+        "undecided": "route-task--choose",
+        "no_options": "route-task--failed",
+        "rejected": "route-task--failed",
+        "runtime_error": "route-task--failed",
+    }
+
+    choose = definition.steps["route-task--choose"]
+    assert choose.type == "llm"
+    assert choose.profile_id == "playbook-compiler"
+    assert set(_inputs(choose)) == {"title", "description", "priority", "task_type", "options"}
+    assert all(v["type"] == "binding_ref" and v["binding"] == "routing" for v in _inputs(choose).values())
+    assert choose.save_result_as == "decision"
+    assert choose.output_schema["required"] == [
+        "intelligence_class", "provider", "profile_id", "reason",
+    ]
+    assert choose.output_schema["additionalProperties"] is False
+    assert choose.transitions == {
+        "completed": "route-task--apply_decision",
+        "runtime_error": "route-task--failed",
+    }
+
+    explicit = definition.steps["route-task--apply_explicit"]
+    assert explicit.command == "task_route"
+    assert _inputs(explicit)["profile_id"] == {
+        "type": "binding_ref", "binding": "routing", "path": "explicit_profile_id",
+    }
+    assert _inputs(explicit)["intelligence_class"] == {
+        "type": "binding_ref", "binding": "routing", "path": "intelligence_class",
+    }
+    decided = definition.steps["route-task--apply_decision"]
+    assert decided.command == "task_route"
+    assert {k: v["binding"] for k, v in _inputs(decided).items() if v["type"] == "binding_ref"} == {
+        "profile_id": "decision", "intelligence_class": "decision", "reason": "decision",
+    }
+    for step in (explicit, decided):
+        assert step.transitions == {
+            "routed": "route-task--done",
+            "rejected": "route-task--failed",
+            "runtime_error": "route-task--failed",
+        }
+    assert definition.steps["route-task--done"].outcome == "completed"
+    assert definition.steps["route-task--failed"].outcome == "failed"
 
 def test_review_dedup_key_matches_doctor() -> None:
     """The prose rewrite must not silently disarm `integration.unreviewed_prs`."""

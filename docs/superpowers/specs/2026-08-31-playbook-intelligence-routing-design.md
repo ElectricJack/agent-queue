@@ -1,3 +1,9 @@
+> **Superseded 2026-09-06.** The coordinator, the route table and the fixed
+> `assignment-routing` lowering described here were replaced by an authored
+> pipeline playbook over `task_route_options` / `task_route`; see
+> `2026-09-06-assignment-routing-as-playbook.md`. Item 6 below no longer holds:
+> the playbook now names the profile too, from the option rows it is given.
+
 # Playbook-owned intelligence routing
 
 Date: 2026-08-31
@@ -364,11 +370,7 @@ The implementation is complete only when tests demonstrate all of the following:
 5. Omitting provider leaves existing provider choice available; returning provider
    hard-filters scheduling and claiming.
 6. The playbook never chooses `profile_id` or a concrete agent. Existing scheduling
-   rules make that selection after routing. Under pools that selection is the
-   coordinator's deterministic backfill (`_backfill_pool_profiles`): once a
-   route is settled, an unpinned task whose project default is a pool that
-   does not run the routed class is pinned to the pool profile whose
-   `default_class` does, and a playbook route is re-stamped in the same pass.
+   rules make that selection after routing.
 7. A task edit during the LLM call makes the response stale without relying on edit
    hooks; the updated task is routed on a later pass.
 8. Invalid output, unavailable playbooks, and LLM failures wait and retry visibly;

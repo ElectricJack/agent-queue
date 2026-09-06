@@ -134,21 +134,10 @@ class TestExplainCommand:
         assert "awaiting_intelligence_route" in res["reason_codes"]
         assert res["assignment_route"] is None
 
-    async def test_precise_route_failure_suppresses_generic_scheduler_reason(
+    async def test_unrouted_task_reports_the_playbook_not_the_scheduler(
         self, handler, db
     ):
-        await mktask(db, "unavailable", status=TaskStatus.READY)
-        # No ready activation: the router cannot resolve an assignment artifact.
-        await db.set_playbook_activation(
-            playbook_id="default-assignment-routing",
-            scope="system",
-            scope_identifier="",
-            artifact_sha256="sha256:" + "a" * 64,
-            enabled=False,
-            activated_by="test",
-            health="disabled",
-            reasons="[]",
-        )
+        await mktask(db, "unrouted-2", status=TaskStatus.READY)
         state = make_state(
             projects=[Project(id=PROJECT_ID, name="Explain")],
             project_available_workspaces={PROJECT_ID: 1},
@@ -158,9 +147,11 @@ class TestExplainCommand:
         handler.orchestrator._last_scheduler_workspace_counts = {PROJECT_ID: 1}
         handler.orchestrator._last_scheduler_idle_by_project = {PROJECT_ID: 1}
 
-        res = await handler._cmd_explain_task({"task_id": "unavailable"})
+        res = await handler._cmd_explain_task({"task_id": "unrouted-2"})
 
-        assert res["reason_codes"] == ["assignment_playbook_unavailable"]
+        assert res["reason_codes"].count("awaiting_intelligence_route") == 1
+        [reason] = [r for r in res["reasons"] if r["code"] == "awaiting_intelligence_route"]
+        assert "task.route_needed" in reason["detail"]
 
     async def test_explicit_class_is_exposed_as_effective_assignment_route(
         self, handler, db

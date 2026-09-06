@@ -361,14 +361,10 @@ class ClaimCommandsMixin:
                 intelligence_classes=classes,
             ) is None
 
-        coordinator = getattr(self.orchestrator, "assignment_routing", None)
-        catalog_hash = (
-            coordinator.cached_options_hash(session.project_id) if coordinator else None
-        )
         return (
             live_class if live_class and matches(live_class) else None,
             session.llm_provider or None,
-            catalog_hash,
+            None,
         )
 
     async def _attempt_claim(self, session, want_id, cap, default_profile, *, routing=None) -> dict:

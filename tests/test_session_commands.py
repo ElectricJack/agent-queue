@@ -112,15 +112,14 @@ class _StubAssignmentRouting:
     """
 
     async def routes_for(self, tasks):
-        from src.orchestrator.assignment_routing import AssignmentDecision
+        from src.assignment_routing import EffectiveAssignmentRoute
 
         return {
-            t.id: AssignmentDecision(
+            t.id: EffectiveAssignmentRoute(
                 task_id=t.id,
-                input_hash="stub",
                 intelligence_class=t.intelligence_class,
                 provider=None,
-                reason="stub",
+                source="stub",
             )
             for t in tasks
         }

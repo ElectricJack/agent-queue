@@ -1,1 +1,23 @@
-[]
+[
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'task_id' could not be determined statically, so the check against string was silenced",
+    "rule_id": "route-task",
+    "severity": "info",
+    "step_id": "route-task--apply_decision"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'task_id' could not be determined statically, so the check against string was silenced",
+    "rule_id": "route-task",
+    "severity": "info",
+    "step_id": "route-task--apply_explicit"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'task_id' could not be determined statically, so the check against string was silenced",
+    "rule_id": "route-task",
+    "severity": "info",
+    "step_id": "route-task--read_options"
+  }
+]

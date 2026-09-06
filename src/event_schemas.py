@@ -93,6 +93,16 @@ _TASK_SCHEMAS: dict[str, EventSchema] = {
         "required": ["task_id", "project_id", "title"],
         "optional": ["agent_id"],
     },
+    # Emitted by the cascade for a task that lacks the fields a worker needs
+    # to pick it up (``intelligence_class`` / ``profile_id``).  The
+    # ``default-assignment-routing`` playbook subscribes; the orchestrator
+    # decides nothing.  Re-emitted per task at most every 120 s.
+    "task.route_needed": {
+        "required": ["task_id", "project_id", "title"],
+        "optional": [
+            "description", "priority", "task_type", "intelligence_class", "profile_id",
+        ],
+    },
     "task.completed": {
         "required": ["task_id", "project_id", "title"],
         # ``no_code``: set by the session close path when the task left no
@@ -219,40 +229,7 @@ _TASK_SCHEMAS: dict[str, EventSchema] = {
 # Assignment-routing events
 # ---------------------------------------------------------------------------
 
-_ASSIGNMENT_SCHEMAS: dict[str, EventSchema] = {
-    "assignment.route.requested": {
-        "required": [
-            "project_id",
-            "tasks",
-            "options",
-            "options_hash",
-            "catalog_hash",
-        ],
-        "optional": [],
-        "types": {
-            "project_id": str,
-            "tasks": list,
-            "options": list,
-            "options_hash": str,
-            "catalog_hash": str,
-        },
-        "fields": {
-            "project_id": {"type": "string", "description": "project"},
-            "tasks": {
-                "type": "array",
-                "description": "tasks awaiting routes",
-                "item": {"type": "object", "description": "task routing input"},
-            },
-            "options": {
-                "type": "array",
-                "description": "available routing options",
-                "item": {"type": "object", "description": "routing option"},
-            },
-            "options_hash": {"type": "string", "description": "routing-options hash"},
-            "catalog_hash": {"type": "string", "description": "catalog hash"},
-        },
-    }
-}
+_ASSIGNMENT_SCHEMAS: dict[str, EventSchema] = {}
 
 CONTRACTED_EVENT_TYPES: frozenset[str] = frozenset({
     "task.completed", "spec.approved", "proposal.ready", "gate.resolved"

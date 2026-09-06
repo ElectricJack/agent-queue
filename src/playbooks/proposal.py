@@ -122,11 +122,13 @@ def _diagnostic_from_error(error: Mapping[str, Any], source: PlaybookSource) -> 
 
 
 def _trusted_purpose(source: PlaybookSource) -> str:
-    return (
-        "assignment_routing"
-        if source.frontmatter.get("kind") == "assignment-routing"
-        else "routine"
-    )
+    """Every authored playbook is ``routine``; assignment routing is one too.
+
+    ``assignment_routing`` survives on the definition model for artifacts
+    compiled before the 2026-09-06 cutover and is never minted again.
+    """
+    del source
+    return "routine"
 
 
 def _snapshots(

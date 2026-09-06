@@ -335,11 +335,8 @@ class ProjectCommandsMixin:
                 )
                 if ref is None:
                     return {"error": f"Assignment playbook '{playbook_id}' has no ready V2 activation"}
-                definition = self._v2_engine().services.artifact_store.load(
-                    ref.artifact_sha256
-                )
-                if definition.purpose != "assignment_routing":
-                    return {"error": f"Playbook '{playbook_id}' is not assignment routing"}
+                # Any ready pipeline may serve as a project's assignment
+                # playbook; a routing policy is ordinary authored policy.
             updates["assignment_playbook_id"] = playbook_id
         if "repo_default_branch" in args:
             updates["repo_default_branch"] = args["repo_default_branch"]

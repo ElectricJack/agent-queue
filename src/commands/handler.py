@@ -46,6 +46,7 @@ from src.commands.system_commands import SystemCommandsMixin
 from src.commands.project_commands import ProjectCommandsMixin
 from src.commands.project_onboarding_commands import ProjectOnboardingCommandsMixin
 from src.commands.task_commands import TaskCommandsMixin
+from src.commands.routing_commands import RoutingCommandsMixin
 from src.commands.task_comment_commands import TaskCommentCommandsMixin
 from src.commands.agent_commands import AgentCommandsMixin
 from src.commands.profile_commands import ProfileCommandsMixin
@@ -328,6 +329,7 @@ class CommandHandler(
     ProjectCommandsMixin,
     ProjectOnboardingCommandsMixin,
     TaskCommandsMixin,
+    RoutingCommandsMixin,
     TaskCommentCommandsMixin,
     AgentCommandsMixin,
     ProfileCommandsMixin,

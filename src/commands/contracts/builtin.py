@@ -306,6 +306,25 @@ class TaskRouteArgs(CommandArgs):
     profile_id: str
     intelligence_class: str | None = None
     workspace_id: str | None = None
+    reason: str | None = None
+
+
+class TaskRouteOptionsArgs(CommandArgs):
+    task_id: str
+
+
+class TaskRouteOptionsValue(CommandValue):
+    task_id: str
+    project_id: str
+    title: str
+    description: str
+    priority: int
+    task_type: str
+    intelligence_class: str | None = None
+    profile_id: str | None = None
+    default_profile_id: str | None = None
+    explicit_profile_id: str | None = None
+    options: list[dict[str, Any]]
 
 
 class TaskRouteValue(CommandValue):
@@ -402,6 +421,9 @@ def _outcome_of(name: str, raw: dict[str, Any]) -> str:
         return state if state in {"green", "red", "pending", "unknown"} else "unknown"
     if name == "ensure_task":
         return "created" if raw.get("created") else "reused"
+    if name == "task_route_options":
+        outcome = str(raw.get("outcome") or "")
+        return outcome if outcome in _ROUTE_OPTION_OUTCOMES else "rejected"
     if name == "gate_create":
         if raw.get("skipped"):
             return "skipped"
@@ -455,6 +477,9 @@ def _adapter(name: str, value_type: type[CommandValue]):
         return CommandResult(outcome=outcome, value=value, summary=str(raw.get("error") or outcome))
 
     return invoke
+
+
+_ROUTE_OPTION_OUTCOMES = frozenset({"already_routed", "explicit", "undecided", "no_options"})
 
 
 def _outcomes(*successes: str) -> tuple[OutcomeSpec, ...]:
@@ -745,6 +770,28 @@ PRESENTATIONS: dict[str, CommandPresentation] = {
         },
         subject_labels={},
     ),
+    "task_route_options": CommandPresentation(
+        title="Read a task's routing options",
+        summary=(
+            "Report whether the task is routed, whether its class is explicit, and which "
+            "class, provider and profile combinations could execute it."
+        ),
+        arg_labels={"task_id": "Task"},
+        outcome_labels={
+            "already_routed": "Already routed",
+            "explicit": "Explicit class",
+            "undecided": "Needs a decision",
+            "no_options": "Nothing can run it",
+            "rejected": "Rejected",
+        },
+        result_labels={
+            "intelligence_class": "Intelligence class",
+            "profile_id": "Agent profile",
+            "explicit_profile_id": "Profile serving the class",
+            "options": "Routing options",
+        },
+        subject_labels={},
+    ),
     "task_route": CommandPresentation(
         title="Route a task to a profile",
         summary="Assign the agent profile that will run the task, and clear its routing gate.",
@@ -753,6 +800,7 @@ PRESENTATIONS: dict[str, CommandPresentation] = {
             "profile_id": "Agent profile",
             "intelligence_class": "Intelligence class",
             "workspace_id": "Workspace",
+            "reason": "Reason",
         },
         outcome_labels={"routed": "Routed", "rejected": "Rejected"},
         result_labels={"resolved_gate_ids": "Resolved gates"},
@@ -934,6 +982,11 @@ def register_builtin_contracts(registry: ContractRegistry) -> None:
             (CreateClause(subject=EffectSubject.TASK_GRAPH),),
             IdempotencySpec(mode="keyed", key_field="proposal_id"),
             False,
+        ),
+        (
+            "task_route_options", TaskRouteOptionsArgs, TaskRouteOptionsValue,
+            _outcomes("already_routed", "explicit", "undecided", "no_options"),
+            SideEffectClass.READ, (), IdempotencySpec(mode="natural"), True,
         ),
         (
             "task_route",
