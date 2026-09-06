@@ -172,7 +172,7 @@ pip install -e packages/aq-client
 pip install -e ".[dev,cli]"
 npm install
 
-pytest tests/
+aq test tests/
 npm test --workspace dashboard
 npm run typecheck
 npm run build
