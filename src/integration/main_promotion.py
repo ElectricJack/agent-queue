@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, StrictInt, ValidationError
-from sqlalchemy import insert, select, update
+from sqlalchemy import insert, or_, select, update
 from sqlalchemy.exc import IntegrityError
 
 from src.database.tables import (
@@ -27,12 +27,13 @@ from src.database.tables import (
     integration_promotion_intents,
     integration_repair_operations,
     integration_repair_stages,
+    integration_review_evidence,
     integration_root_intent_members,
-    integration_outbox,
     project_integration_leases,
     projects,
     task_delivery_receipts,
 )
+from src.integration.outbox import enqueue_integration_event
 from src.git.manager import (
     APP_AUTH_PUSH_CLEANUP_MARGIN_SECONDS,
     APP_AUTH_PUSH_TIMEOUT_SECONDS,
@@ -766,7 +767,113 @@ class RootPromotionService:
             return await self._existing_result(intent, intent["root_batch_id"], int(intent["root_candidate_revision"]))
         async with self.db.immediate() as conn:
             await self.db.lock_hierarchy_project(conn, intent["project_id"])
-            locked_intent = await self._intent_on(conn, intent_id)
+            project = (
+                await conn.execute(
+                    select(projects)
+                    .where(projects.c.id == intent["project_id"])
+                    .with_for_update()
+                )
+            ).mappings().one_or_none()
+            batch = (
+                await conn.execute(
+                    select(integration_batches)
+                    .where(integration_batches.c.id == intent["root_batch_id"])
+                    .with_for_update()
+                )
+            ).mappings().one_or_none()
+            candidate = (
+                await conn.execute(
+                    select(integration_candidate_revisions)
+                    .where(
+                        integration_candidate_revisions.c.batch_id
+                        == intent["root_batch_id"],
+                        integration_candidate_revisions.c.revision
+                        == intent["root_candidate_revision"],
+                    )
+                    .with_for_update()
+                )
+            ).mappings().one_or_none()
+            lease = (
+                await conn.execute(
+                    select(project_integration_leases)
+                    .where(project_integration_leases.c.project_id == intent["project_id"])
+                    .with_for_update()
+                )
+            ).mappings().one_or_none()
+            operation = (
+                await conn.execute(
+                    select(integration_repair_operations)
+                    .where(integration_repair_operations.c.id == intent["operation_key"])
+                    .with_for_update()
+                )
+            ).mappings().one_or_none()
+            stage = None
+            if operation is not None:
+                stage = (
+                    await conn.execute(
+                        select(integration_repair_stages)
+                        .where(
+                            integration_repair_stages.c.operation_id == operation["id"],
+                            integration_repair_stages.c.ordinal == operation["active_stage"],
+                        )
+                        .with_for_update()
+                    )
+                ).mappings().one_or_none()
+            owner = None
+            if batch is not None and batch["integration_branch"] is not None:
+                owner = (
+                    await conn.execute(
+                        select(integration_branch_owners)
+                        .where(
+                            integration_branch_owners.c.repository_id
+                            == batch["repository_id"],
+                            integration_branch_owners.c.ref == batch["integration_branch"],
+                        )
+                        .with_for_update()
+                    )
+                ).mappings().one_or_none()
+            locked_intent = (
+                await conn.execute(
+                    select(integration_promotion_intents)
+                    .where(integration_promotion_intents.c.id == intent_id)
+                    .with_for_update()
+                )
+            ).mappings().one_or_none()
+            if locked_intent is not None and locked_intent["state"] == "committed":
+                return await self._existing_result_on(
+                    conn,
+                    locked_intent,
+                    locked_intent["root_batch_id"],
+                    int(locked_intent["root_candidate_revision"]),
+                )
+            claim = (
+                await conn.execute(
+                    select(integration_candidate_ref_mutations)
+                    .where(integration_candidate_ref_mutations.c.id == self._mutation_id(intent_id))
+                    .with_for_update()
+                )
+            ).mappings().one_or_none()
+            members = (
+                await conn.execute(
+                    select(integration_batch_members)
+                    .where(integration_batch_members.c.batch_id == intent["root_batch_id"])
+                    .order_by(integration_batch_members.c.ordinal)
+                    .with_for_update()
+                )
+            ).mappings().all()
+            results = (
+                await conn.execute(
+                    select(integration_candidate_member_results)
+                    .where(
+                        integration_candidate_member_results.c.batch_id
+                        == intent["root_batch_id"],
+                        integration_candidate_member_results.c.revision
+                        == intent["root_candidate_revision"],
+                    )
+                    .order_by(integration_candidate_member_results.c.member_ordinal)
+                    .with_for_update()
+                )
+            ).mappings().all()
             reservations = (
                 await conn.execute(
                     select(integration_root_intent_members)
@@ -775,37 +882,155 @@ class RootPromotionService:
                     .with_for_update()
                 )
             ).mappings().all()
-            claim = (
+            review_ids = [member["review_evidence_id"] for member in members]
+            reviews = (
                 await conn.execute(
-                    select(integration_candidate_ref_mutations)
-                    .where(integration_candidate_ref_mutations.c.id == self._mutation_id(intent_id))
+                    select(integration_review_evidence)
+                    .where(integration_review_evidence.c.id.in_(review_ids))
+                    .order_by(integration_review_evidence.c.id)
                     .with_for_update()
                 )
-            ).mappings().one()
+            ).mappings().all()
+            receipt_ids = [reservation["receipt_id"] for reservation in reservations]
+            existing_receipt_rows = (
+                await conn.execute(
+                    select(task_delivery_receipts)
+                    .where(
+                        or_(
+                            task_delivery_receipts.c.id.in_(receipt_ids),
+                            (
+                                (task_delivery_receipts.c.batch_id == intent["root_batch_id"])
+                                & (
+                                    task_delivery_receipts.c.candidate_revision
+                                    == intent["root_candidate_revision"]
+                                )
+                            ),
+                        )
+                    )
+                    .order_by(task_delivery_receipts.c.member_ordinal)
+                    .with_for_update()
+                )
+            ).mappings().all()
+            evidence = None
+            if candidate is not None and candidate["ci_evidence_id"] is not None:
+                evidence = (
+                    await conn.execute(
+                        select(integration_check_evidence).where(
+                            integration_check_evidence.c.id == candidate["ci_evidence_id"]
+                        )
+                    )
+                ).mappings().one_or_none()
+
+            ordinal_count = len(members)
+            ordinals = list(range(ordinal_count))
+            reservation_ordinals = [int(row["member_ordinal"]) for row in reservations]
+            result_ordinals = [int(row["member_ordinal"]) for row in results]
+            review_by_id = {row["id"]: row for row in reviews}
             if (
-                locked_intent["intent_kind"] != "root"
-                or locked_intent["state"] not in {"pushed", "committed"}
+                project is None
+                or batch is None
+                or candidate is None
+                or lease is None
+                or operation is None
+                or stage is None
+                or owner is None
+                or locked_intent is None
+                or claim is None
+                or evidence is None
+                or locked_intent["intent_kind"] != "root"
+                or locked_intent["state"] != "pushed"
+                or locked_intent["project_id"] != project["id"]
+                or locked_intent["root_batch_id"] != batch["id"]
+                or int(locked_intent["root_candidate_revision"])
+                != int(candidate["revision"])
+                or locked_intent["operation_key"] != operation["id"]
+                or batch["project_id"] != project["id"]
+                or batch["repository_id"] != locked_intent["repository_id"]
+                or batch["lifecycle"] != "promoting"
+                or int(batch["current_revision"]) != int(candidate["revision"])
+                or batch["tested_candidate_sha"] != candidate["head_sha"]
+                or batch["ci_evidence_id"] != candidate["ci_evidence_id"]
+                or candidate["state"] != "green"
+                or candidate["head_sha"] != locked_intent["prepared_sha"]
+                or evidence["id"] != locked_intent["ci_evidence_id"]
+                or evidence["operation_id"] != operation["id"]
+                or evidence["batch_id"] != batch["id"]
+                or int(evidence["candidate_revision"]) != int(candidate["revision"])
+                or evidence["conclusion"] != "success"
+                or evidence["classification"] != "conclusive"
+                or operation["target_kind"] != "batch"
+                or operation["batch_id"] != batch["id"]
+                or operation["episode_id"] != batch["id"]
+                or operation["state"] not in {"active", "escalated"}
+                or stage["operation_id"] != operation["id"]
+                or int(stage["ordinal"]) != int(operation["active_stage"])
+                or stage["state"] != "awaiting_completion"
+                or lease["batch_id"] != batch["id"]
+                or lease["repository_id"] != batch["repository_id"]
+                or lease["owner_id"] != locked_intent["project_lease_owner_id"]
+                or int(lease["fence_token"])
+                != int(locked_intent["project_lease_fence_token"])
+                or owner["owner_id"] != operation["id"]
+                or owner["owner_id"] != locked_intent["branch_fence_owner_id"]
+                or owner["owner_role"] != "collector"
+                or owner["handoff_state"] != "reserved"
+                or int(owner["fence_token"]) != int(locked_intent["branch_fence_token"])
+                or claim["purpose"] != "root_main"
+                or claim["batch_id"] != batch["id"]
+                or int(claim["revision"]) != int(candidate["revision"])
+                or claim["operation_id"] != operation["id"]
                 or claim["state"] != "applied"
-                or claim["remote_sha"] != locked_intent["prepared_sha"]
-                or not reservations
-                or [int(row["member_ordinal"]) for row in reservations]
-                != list(range(len(reservations)))
+                or claim["desired_sha"] != candidate["head_sha"]
+                or claim["remote_sha"] != candidate["head_sha"]
+                or locked_intent["remote_evidence"]
+                != {"kind": "authenticated_main", "remote_sha": remote}
+                or not ordinal_count
+                or [int(row["ordinal"]) for row in members] != ordinals
+                or result_ordinals != ordinals
+                or reservation_ordinals != ordinals
+                or int(candidate["next_member_ordinal"]) != ordinal_count
+                or len(reviews) != ordinal_count
                 or locked_intent["receipt_id"] != reservations[0]["receipt_id"]
             ):
                 raise RootPromotionInvariantError("root finalization proof is incomplete")
-            existing_receipts = {
-                row["id"]: row
-                for row in (
-                    await conn.execute(
-                        select(task_delivery_receipts).where(
-                            task_delivery_receipts.c.id.in_(
-                                [reservation["receipt_id"] for reservation in reservations]
-                            )
-                        )
+
+            for ordinal, (member, result, reservation) in enumerate(
+                zip(members, results, reservations, strict=True)
+            ):
+                review = review_by_id.get(member["review_evidence_id"])
+                if (
+                    int(member["ordinal"]) != ordinal
+                    or int(result["member_ordinal"]) != ordinal
+                    or int(reservation["member_ordinal"]) != ordinal
+                    or reservation["intent_id"] != locked_intent["id"]
+                    or reservation["receipt_id"]
+                    != self._receipt_id(batch["id"], int(candidate["revision"]), ordinal)
+                    or reservation["batch_id"] != batch["id"]
+                    or int(reservation["candidate_revision"]) != int(candidate["revision"])
+                    or reservation["source_task_id"] != member["task_id"]
+                    or reservation["repository_id"] != member["repository_id"]
+                    or reservation["reviewed_head_sha"] != member["reviewed_head_sha"]
+                    or reservation["reviewed_tree_sha"] != member["reviewed_tree_sha"]
+                    or reservation["review_evidence_id"] != member["review_evidence_id"]
+                    or result["result"] != "applied"
+                    or result["input_head_sha"] != member["reviewed_head_sha"]
+                    or result["input_tree_sha"] != member["reviewed_tree_sha"]
+                    or reservation["generated_squash_sha"] != result["generated_squash_sha"]
+                    or reservation["result_evidence"] != (result["conflict_evidence"] or {})
+                    or review is None
+                    or review["source_task_id"] != member["task_id"]
+                    or review["repository_id"] != member["repository_id"]
+                    or review["reviewed_head_sha"] != member["reviewed_head_sha"]
+                    or review["reviewed_tree_sha"] != member["reviewed_tree_sha"]
+                    or review["verdict"] != "approved"
+                    or member["review_evidence"] != review["evidence"]
+                ):
+                    raise RootPromotionInvariantError(
+                        "root finalization requires the complete frozen member set"
                     )
-                ).mappings().all()
-            }
+
             now = self.clock()
+            expected_receipts: list[dict[str, Any]] = []
             for reservation in reservations:
                 receipt = {
                     "id": reservation["receipt_id"],
@@ -826,75 +1051,125 @@ class RootPromotionService:
                     "verification_evidence": {
                         "ci_evidence_id": locked_intent["ci_evidence_id"]
                     },
+                    "resolution_evidence": None,
                     "batch_id": reservation["batch_id"],
                     "member_ordinal": reservation["member_ordinal"],
                     "candidate_revision": reservation["candidate_revision"],
                     "disposition": "code",
-                    "created_at": now,
+                    "disposition_revision": None,
+                    "parent_operation_id": None,
+                    "parent_episode_id": None,
+                    "workspace_kind": None,
+                    "source_pr": None,
+                    "created_at": reservation["created_at"],
                 }
-                existing = existing_receipts.get(reservation["receipt_id"])
+                expected_receipts.append(receipt)
+            existing_receipts = {row["id"]: dict(row) for row in existing_receipt_rows}
+            if set(existing_receipts) - set(receipt_ids):
+                raise RootPromotionInvariantError(
+                    "root finalization requires the complete frozen member set"
+                )
+            for receipt in expected_receipts:
+                existing = existing_receipts.get(receipt["id"])
                 if existing is None:
                     await conn.execute(insert(task_delivery_receipts).values(**receipt))
-                elif any(existing[key] != value for key, value in receipt.items() if key != "created_at"):
+                elif existing != receipt:
                     raise RootPromotionInvariantError("root receipt identity changed")
-                await self._crash(f"after_root_receipt:{reservation['member_ordinal']}")
-                await self._enqueue_on(
+                await self._crash(f"after_root_receipt:{receipt['member_ordinal']}")
+                event_id = f"root-delivered-{receipt['id']}"
+                await enqueue_integration_event(
                     conn,
-                    event_id=f"root-delivered-{reservation['receipt_id']}",
+                    event_id=event_id,
+                    dedup_key=event_id,
                     event_type="integration.root_delivered",
                     project_id=locked_intent["project_id"],
                     payload={
-                        "batch_id": reservation["batch_id"],
-                        "revision": reservation["candidate_revision"],
-                        "member_ordinal": reservation["member_ordinal"],
-                        "receipt_id": reservation["receipt_id"],
+                        "operation_id": operation["id"],
+                        "batch_id": receipt["batch_id"],
+                        "revision": receipt["candidate_revision"],
+                        "member_ordinal": receipt["member_ordinal"],
+                        "receipt_id": receipt["id"],
                     },
-                    now=now,
+                    available_at=now,
                 )
-            await conn.execute(
+            promoted_candidate = await conn.execute(
                 update(integration_candidate_revisions)
                 .where(
                     integration_candidate_revisions.c.batch_id == locked_intent["root_batch_id"],
                     integration_candidate_revisions.c.revision == locked_intent["root_candidate_revision"],
+                    integration_candidate_revisions.c.state == "green",
+                    integration_candidate_revisions.c.head_sha == locked_intent["prepared_sha"],
+                    integration_candidate_revisions.c.ci_evidence_id
+                    == locked_intent["ci_evidence_id"],
                 )
                 .values(state="promoted", updated_at=now)
             )
-            await conn.execute(
+            promoted_batch = await conn.execute(
                 update(integration_batches)
-                .where(integration_batches.c.id == locked_intent["root_batch_id"])
-                .values(lifecycle="cleanup_pending", final_main_sha=remote, cleanup_state="pending", updated_at=now)
+                .where(
+                    integration_batches.c.id == locked_intent["root_batch_id"],
+                    integration_batches.c.lifecycle == "promoting",
+                    integration_batches.c.current_revision
+                    == locked_intent["root_candidate_revision"],
+                    integration_batches.c.tested_candidate_sha
+                    == locked_intent["prepared_sha"],
+                    integration_batches.c.ci_evidence_id == locked_intent["ci_evidence_id"],
+                    integration_batches.c.final_main_sha.is_(None),
+                )
+                .values(
+                    lifecycle="promoted",
+                    final_main_sha=remote,
+                    cleanup_state="pending",
+                    updated_at=now,
+                )
             )
-            await conn.execute(
+            passed_stage = await conn.execute(
                 update(integration_repair_stages)
                 .where(
                     integration_repair_stages.c.operation_id == locked_intent["operation_key"],
+                    integration_repair_stages.c.ordinal == operation["active_stage"],
                     integration_repair_stages.c.state == "awaiting_completion",
                 )
                 .values(state="passed", completed_at=now)
             )
-            await conn.execute(
+            completed_operation = await conn.execute(
                 update(integration_repair_operations)
                 .where(
                     integration_repair_operations.c.id == locked_intent["operation_key"],
+                    integration_repair_operations.c.batch_id == batch["id"],
+                    integration_repair_operations.c.episode_id == batch["id"],
                     integration_repair_operations.c.state.in_(("active", "escalated")),
                 )
                 .values(state="completed", updated_at=now)
             )
+            if any(
+                result.rowcount != 1
+                for result in (
+                    promoted_candidate,
+                    promoted_batch,
+                    passed_stage,
+                    completed_operation,
+                )
+            ):
+                raise RootPromotionInvariantError("root finalization terminal CAS failed")
             for event_type in ("integration.batch_promoted", "integration.cleanup_requested"):
-                await self._enqueue_on(
+                event_id = f"{event_type}:{intent_id}"
+                await enqueue_integration_event(
                     conn,
-                    event_id=f"{event_type}:{intent_id}",
+                    event_id=event_id,
+                    dedup_key=event_id,
                     event_type=event_type,
                     project_id=locked_intent["project_id"],
                     payload={
+                        "operation_id": operation["id"],
                         "batch_id": locked_intent["root_batch_id"],
                         "revision": locked_intent["root_candidate_revision"],
                         "intent_id": intent_id,
                         "head_sha": remote,
                     },
-                    now=now,
+                    available_at=now,
                 )
-            await conn.execute(
+            committed_intent = await conn.execute(
                 update(integration_promotion_intents)
                 .where(
                     integration_promotion_intents.c.id == intent_id,
@@ -902,28 +1177,12 @@ class RootPromotionService:
                 )
                 .values(state="committed", committed_at=now, updated_at=now)
             )
+            if committed_intent.rowcount != 1:
+                raise RootPromotionInvariantError("root finalization terminal CAS failed")
         committed = await self._intent(intent_id)
         return await self._existing_result(
             committed, committed["root_batch_id"], int(committed["root_candidate_revision"])
         )
-
-    @staticmethod
-    async def _enqueue_on(
-        conn: Any, *, event_id: str, event_type: str, project_id: str, payload: dict, now: float
-    ) -> None:
-        existing = (
-            await conn.execute(
-                select(integration_outbox.c.id).where(integration_outbox.c.id == event_id)
-            )
-        ).scalar_one_or_none()
-        if existing is None:
-            await conn.execute(
-                insert(integration_outbox).values(
-                    id=event_id, dedup_key=event_id, project_id=project_id,
-                    event_type=event_type, payload=payload, available_at=now,
-                    attempts=0, created_at=now,
-                )
-            )
 
     async def _mutation(self, intent_id: str) -> dict[str, Any] | None:
         async with self.db._engine.connect() as conn:

@@ -35,6 +35,9 @@ DESIGN_EVENTS = {
     "integration.promoted",
     "integration.resolution_push_observed",
     "integration.cleanup_pending",
+    "integration.root_delivered",
+    "integration.batch_promoted",
+    "integration.cleanup_requested",
     "task.integration_configuration_blocked",
     "integration.repair_delegate_closed",
 }
@@ -50,6 +53,20 @@ def test_all_design_events_require_project_and_operation_identity():
             payload |= {"task_id": "task", "title": "Task"}
         if event_type == "integration.resolution_push_observed":
             payload["promotion_intent_id"] = "intent"
+        if event_type == "integration.root_delivered":
+            payload |= {
+                "batch_id": "batch",
+                "revision": 0,
+                "member_ordinal": 0,
+                "receipt_id": "receipt",
+            }
+        if event_type in {"integration.batch_promoted", "integration.cleanup_requested"}:
+            payload |= {
+                "batch_id": "batch",
+                "revision": 0,
+                "intent_id": "intent",
+                "head_sha": "a" * 40,
+            }
         assert not validate_event(
             event_type,
             payload,
@@ -114,6 +131,24 @@ def test_hierarchy_event_payloads_expose_exact_typed_command_inputs():
         },
         "integration.resolution_push_observed": {"promotion_intent_id": str},
         "integration.cleanup_pending": {"promotion_intent_id": str},
+        "integration.root_delivered": {
+            "batch_id": str,
+            "revision": int,
+            "member_ordinal": int,
+            "receipt_id": str,
+        },
+        "integration.batch_promoted": {
+            "batch_id": str,
+            "revision": int,
+            "intent_id": str,
+            "head_sha": str,
+        },
+        "integration.cleanup_requested": {
+            "batch_id": str,
+            "revision": int,
+            "intent_id": str,
+            "head_sha": str,
+        },
         "task.integration_configuration_blocked": {
             "task_id": str,
             "reason": str,

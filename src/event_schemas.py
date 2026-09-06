@@ -1122,6 +1122,9 @@ _INTEGRATION_SCHEMAS: dict[str, EventSchema] = {
         "integration.promoted",
         "integration.resolution_push_observed",
         "integration.cleanup_pending",
+        "integration.root_delivered",
+        "integration.batch_promoted",
+        "integration.cleanup_requested",
         "integration.branch_materialization_pending",
         "task.integration_configuration_blocked",
         "integration.repair_delegate_closed",
@@ -1281,6 +1284,27 @@ _INTEGRATION_PAYLOAD_FIELDS: dict[
             {"type": "string", "description": "immutable promotion intent"},
         ),
     },
+    "integration.root_delivered": {
+        "batch_id": (str, {"type": "string", "description": "integration batch"}),
+        "revision": (int, {"type": "integer", "description": "candidate revision"}),
+        "member_ordinal": (
+            int,
+            {"type": "integer", "description": "sealed member ordinal"},
+        ),
+        "receipt_id": (str, {"type": "string", "description": "delivery receipt"}),
+    },
+    "integration.batch_promoted": {
+        "batch_id": (str, {"type": "string", "description": "integration batch"}),
+        "revision": (int, {"type": "integer", "description": "candidate revision"}),
+        "intent_id": (str, {"type": "string", "description": "root promotion intent"}),
+        "head_sha": (str, {"type": "string", "description": "authenticated main head"}),
+    },
+    "integration.cleanup_requested": {
+        "batch_id": (str, {"type": "string", "description": "integration batch"}),
+        "revision": (int, {"type": "integer", "description": "candidate revision"}),
+        "intent_id": (str, {"type": "string", "description": "root promotion intent"}),
+        "head_sha": (str, {"type": "string", "description": "authenticated main head"}),
+    },
     "task.integration_configuration_blocked": {
         "task_id": (str, {"type": "string", "description": "parent task"}),
         "reason": (str, {"type": "string", "description": "configuration failure"}),
@@ -1305,6 +1329,14 @@ _INTEGRATION_PAYLOAD_FIELDS: dict[
 
 _INTEGRATION_REQUIRED_PAYLOAD_FIELDS = {
     "integration.resolution_push_observed": {"promotion_intent_id"},
+    "integration.root_delivered": {
+        "batch_id",
+        "revision",
+        "member_ordinal",
+        "receipt_id",
+    },
+    "integration.batch_promoted": {"batch_id", "revision", "intent_id", "head_sha"},
+    "integration.cleanup_requested": {"batch_id", "revision", "intent_id", "head_sha"},
 }
 for _event_type, _payload_fields in _INTEGRATION_PAYLOAD_FIELDS.items():
     _schema = _INTEGRATION_SCHEMAS[_event_type]

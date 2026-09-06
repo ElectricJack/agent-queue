@@ -1762,6 +1762,15 @@ integration_review_evidence = Table(
     ),
     CheckConstraint("generation >= 0", name="ck_integration_review_evidence_generation"),
     Index(
+        "uq_integration_review_evidence_root_identity",
+        "id",
+        "source_task_id",
+        "repository_id",
+        "reviewed_head_sha",
+        "reviewed_tree_sha",
+        unique=True,
+    ),
+    Index(
         "idx_integration_review_evidence_current",
         "source_task_id",
         "repository_id",
@@ -1824,6 +1833,13 @@ integration_promotion_intents = Table(
     Column("branch_fence_token", Integer, nullable=True),
     Column("ci_evidence_id", Text, nullable=True),
     UniqueConstraint("domain_key", name="uq_integration_promotion_intents_domain_key"),
+    Index(
+        "uq_integration_promotion_intents_root_identity",
+        "id",
+        "root_batch_id",
+        "root_candidate_revision",
+        unique=True,
+    ),
     Index(
         "uq_integration_promotion_intents_unresolved_target",
         "repository_id",
@@ -1971,6 +1987,15 @@ task_delivery_receipts = Table(
         ondelete="RESTRICT",
     ),
     Index("idx_task_delivery_receipts_source", "source_task_id", "repository_id"),
+    Index(
+        "uq_task_delivery_receipts_root_tuple",
+        "batch_id",
+        "candidate_revision",
+        "member_ordinal",
+        unique=True,
+        sqlite_where=text("batch_id IS NOT NULL"),
+        postgresql_where=text("batch_id IS NOT NULL"),
+    ),
 )
 
 integration_batches = Table(
@@ -2048,6 +2073,17 @@ integration_batch_members = Table(
     ),
     Column("review_evidence", JSON, nullable=False),
     UniqueConstraint("batch_id", "task_id", name="uq_integration_batch_members_task"),
+    Index(
+        "uq_integration_batch_members_root_identity",
+        "batch_id",
+        "ordinal",
+        "task_id",
+        "repository_id",
+        "reviewed_head_sha",
+        "reviewed_tree_sha",
+        "review_evidence_id",
+        unique=True,
+    ),
     CheckConstraint("ordinal >= 0", name="ck_integration_batch_members_ordinal"),
 )
 
@@ -2102,6 +2138,16 @@ integration_candidate_member_results = Table(
     CheckConstraint(
         "result <> 'applied' OR generated_squash_sha IS NOT NULL",
         name="ck_integration_candidate_member_results_applied_sha",
+    ),
+    Index(
+        "uq_integration_candidate_results_root_identity",
+        "batch_id",
+        "revision",
+        "member_ordinal",
+        "input_head_sha",
+        "input_tree_sha",
+        "generated_squash_sha",
+        unique=True,
     ),
     ForeignKeyConstraint(
         ["batch_id", "revision"],
@@ -2344,19 +2390,73 @@ integration_root_intent_members = Table(
         "candidate_revision >= 0", name="ck_integration_root_intent_members_revision"
     ),
     ForeignKeyConstraint(
-        ["intent_id"],
-        ["integration_promotion_intents.id"],
-        name="fk_integration_root_intent_members_intent",
+        ["intent_id", "batch_id", "candidate_revision"],
+        [
+            "integration_promotion_intents.id",
+            "integration_promotion_intents.root_batch_id",
+            "integration_promotion_intents.root_candidate_revision",
+        ],
+        name="fk_integration_root_intent_members_exact_intent",
         ondelete="RESTRICT",
     ),
     ForeignKeyConstraint(
-        ["batch_id", "candidate_revision", "member_ordinal"],
+        [
+            "batch_id",
+            "member_ordinal",
+            "source_task_id",
+            "repository_id",
+            "reviewed_head_sha",
+            "reviewed_tree_sha",
+            "review_evidence_id",
+        ],
+        [
+            "integration_batch_members.batch_id",
+            "integration_batch_members.ordinal",
+            "integration_batch_members.task_id",
+            "integration_batch_members.repository_id",
+            "integration_batch_members.reviewed_head_sha",
+            "integration_batch_members.reviewed_tree_sha",
+            "integration_batch_members.review_evidence_id",
+        ],
+        name="fk_integration_root_intent_members_exact_member",
+        ondelete="RESTRICT",
+    ),
+    ForeignKeyConstraint(
+        [
+            "batch_id",
+            "candidate_revision",
+            "member_ordinal",
+            "reviewed_head_sha",
+            "reviewed_tree_sha",
+            "generated_squash_sha",
+        ],
         [
             "integration_candidate_member_results.batch_id",
             "integration_candidate_member_results.revision",
             "integration_candidate_member_results.member_ordinal",
+            "integration_candidate_member_results.input_head_sha",
+            "integration_candidate_member_results.input_tree_sha",
+            "integration_candidate_member_results.generated_squash_sha",
         ],
-        name="fk_integration_root_intent_members_result",
+        name="fk_integration_root_intent_members_exact_result",
+        ondelete="RESTRICT",
+    ),
+    ForeignKeyConstraint(
+        [
+            "review_evidence_id",
+            "source_task_id",
+            "repository_id",
+            "reviewed_head_sha",
+            "reviewed_tree_sha",
+        ],
+        [
+            "integration_review_evidence.id",
+            "integration_review_evidence.source_task_id",
+            "integration_review_evidence.repository_id",
+            "integration_review_evidence.reviewed_head_sha",
+            "integration_review_evidence.reviewed_tree_sha",
+        ],
+        name="fk_integration_root_intent_members_exact_review",
         ondelete="RESTRICT",
     ),
 )

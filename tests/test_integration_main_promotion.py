@@ -48,11 +48,13 @@ from src.integration.repair import RepairService
 from src.git.manager import GitError, GitManager
 from src.models import Project, RepoConfig, RepoSourceType
 from src.profiles.capabilities import DENY_ALL
+from tests.pg_dsn import create_scratch_database, ensure_worker_postgres_dsn
 
 
 BASE = "a" * 40
 HEAD = "b" * 40
 BRANCH = "refs/heads/aq/integration/p-" + "1" * 32 + "/r-" + "2" * 32
+POSTGRES_DSN = ensure_worker_postgres_dsn()
 
 
 class ExactAttestationResolver:
@@ -116,8 +118,18 @@ def _policy() -> dict:
 
 
 @pytest.fixture
-async def prepared_db(tmp_path):
-    database = Database(str(tmp_path / "main-promotion.db"))
+async def prepared_db(tmp_path, request):
+    backend = getattr(request, "param", "sqlite")
+    postgres_dsn = None
+    if backend == "postgres":
+        if not POSTGRES_DSN:
+            pytest.skip("POSTGRES_TEST_DSN not set")
+        from src.database.adapters.postgresql import PostgreSQLDatabaseAdapter
+
+        postgres_dsn = await create_scratch_database("root_finalizer_e9")
+        database = PostgreSQLDatabaseAdapter(postgres_dsn, 0, 1)
+    else:
+        database = Database(str(tmp_path / "main-promotion.db"))
     await database.initialize()
     await database.create_project(Project(id="p", name="project"))
     await database.create_repo(
@@ -238,6 +250,17 @@ async def prepared_db(tmp_path):
         )
     yield database, tmp_path
     await database.close()
+    if postgres_dsn is not None:
+        import asyncpg
+
+        prefix, _, name = postgres_dsn.rpartition("/")
+        admin = await asyncpg.connect(
+            prefix.replace("postgresql+asyncpg://", "postgresql://") + "/postgres"
+        )
+        try:
+            await admin.execute(f'DROP DATABASE IF EXISTS "{name}"')
+        finally:
+            await admin.close()
 
 
 class PinningGit:
@@ -694,8 +717,210 @@ async def test_exact_tested_sha_main_push_finalizes_every_member_without_post_ci
     async with db._engine.connect() as conn:
         intent = (await conn.execute(select(integration_promotion_intents))).mappings().one()
         mutation = (await conn.execute(select(integration_candidate_ref_mutations))).mappings().one()
+        batch = (await conn.execute(select(integration_batches))).mappings().one()
+        candidate = (await conn.execute(select(integration_candidate_revisions))).mappings().one()
+        operation = (await conn.execute(select(integration_repair_operations))).mappings().one()
+        stage = (await conn.execute(select(integration_repair_stages))).mappings().one()
+        receipts = (
+            await conn.execute(
+                select(task_delivery_receipts).order_by(task_delivery_receipts.c.member_ordinal)
+            )
+        ).mappings().all()
+        events = (
+            await conn.execute(select(integration_outbox).order_by(integration_outbox.c.id))
+        ).mappings().all()
     assert intent["state"] == "committed"
     assert mutation["state"] == "applied"
+    assert candidate["state"] == "promoted"
+    assert batch["lifecycle"] == "promoted"
+    assert batch["cleanup_state"] == "pending"
+    assert batch["final_main_sha"] == HEAD
+    assert operation["state"] == "completed" and stage["state"] == "passed"
+    assert [row["member_ordinal"] for row in receipts] == [0, 1]
+    assert [row["id"] for row in receipts] == list(result.receipt_ids)
+    assert [row["event_type"] for row in events] == [
+        "integration.batch_promoted",
+        "integration.cleanup_requested",
+        "integration.root_delivered",
+        "integration.root_delivered",
+    ]
+    for row in events:
+        assert row["payload"]["operation_id"] == "root-op"
+        assert row["payload"]["project_id"] == "p"
+        assert row["payload"]["event_id"] == row["id"]
+    before_replay = [dict(row) for row in events]
+
+    replay = await RootPromotionService(
+        db, data_dir=data_dir, git_manager=git, app_client=app, clock=lambda: 11.0
+    ).promote("batch", 0)
+    async with db._engine.connect() as conn:
+        after_replay = [
+            dict(row)
+            for row in (
+                await conn.execute(select(integration_outbox).order_by(integration_outbox.c.id))
+            ).mappings().all()
+        ]
+    assert replay == result
+    assert after_replay == before_replay
+    assert len(git.pushes) == 1 and app.token_calls == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("prepared_db", ["postgres"], indirect=True)
+async def test_postgres_root_finalization_replay_is_atomic_and_operation_bound(prepared_db):
+    db, data_dir = prepared_db
+    app = FakeAppClient()
+    git = PushGit(app)
+    service = RootPromotionService(
+        db, data_dir=data_dir, git_manager=git, app_client=app, clock=lambda: 10.0
+    )
+    first = await service.promote("batch", 0)
+    async with db._engine.connect() as conn:
+        receipts = [
+            dict(row)
+            for row in (
+                await conn.execute(
+                    select(task_delivery_receipts).order_by(
+                        task_delivery_receipts.c.member_ordinal
+                    )
+                )
+            ).mappings().all()
+        ]
+        events = [
+            dict(row)
+            for row in (
+                await conn.execute(select(integration_outbox).order_by(integration_outbox.c.id))
+            ).mappings().all()
+        ]
+        batch = (await conn.execute(select(integration_batches))).mappings().one()
+    replay = await RootPromotionService(
+        db, data_dir=data_dir, git_manager=git, app_client=app, clock=lambda: 11.0
+    ).promote("batch", 0)
+    async with db._engine.connect() as conn:
+        replay_receipts = [
+            dict(row)
+            for row in (
+                await conn.execute(
+                    select(task_delivery_receipts).order_by(
+                        task_delivery_receipts.c.member_ordinal
+                    )
+                )
+            ).mappings().all()
+        ]
+        replay_events = [
+            dict(row)
+            for row in (
+                await conn.execute(select(integration_outbox).order_by(integration_outbox.c.id))
+            ).mappings().all()
+        ]
+
+    assert replay == first and first.outcome == "promoted"
+    assert replay_receipts == receipts and len(receipts) == 2
+    assert replay_events == events and len(events) == 4
+    assert batch["lifecycle"] == "promoted" and batch["cleanup_state"] == "pending"
+    assert all(event["payload"]["operation_id"] == "root-op" for event in events)
+    assert len(git.pushes) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("corruption", ["missing", "result_evidence"])
+async def test_public_root_finalization_rejects_incomplete_frozen_member_set(
+    prepared_db, corruption
+):
+    db, data_dir = prepared_db
+    app = FakeAppClient()
+    git = PushGit(app)
+    service = RootPromotionService(
+        db, data_dir=data_dir, git_manager=git, app_client=app, clock=lambda: 10.0
+    )
+    prepared = await service.prepare("batch", 0)
+    async with db.immediate() as conn:
+        if corruption == "missing":
+            await conn.exec_driver_sql("DROP TRIGGER trg_integration_root_member_delete")
+            await conn.exec_driver_sql(
+                "DELETE FROM integration_root_intent_members WHERE member_ordinal = 1"
+            )
+        else:
+            await conn.exec_driver_sql("DROP TRIGGER trg_integration_root_member_update")
+            await conn.execute(
+                update(integration_root_intent_members)
+                .where(integration_root_intent_members.c.member_ordinal == 0)
+                .values(result_evidence={"drift": True})
+            )
+    app.remote = HEAD
+
+    with pytest.raises(RootPromotionInvariantError, match="root finalization"):
+        await service.reconcile(prepared.intent_id)
+
+    async with db._engine.connect() as conn:
+        assert await conn.scalar(select(func.count()).select_from(task_delivery_receipts)) == 0
+        assert await conn.scalar(select(func.count()).select_from(integration_outbox)) == 0
+        assert await conn.scalar(select(integration_batches.c.lifecycle)) == "promoting"
+        assert await conn.scalar(select(integration_candidate_revisions.c.state)) == "green"
+        assert await conn.scalar(select(integration_repair_operations.c.state)) == "active"
+        assert await conn.scalar(select(integration_repair_stages.c.state)) == "awaiting_completion"
+        assert await conn.scalar(select(integration_promotion_intents.c.state)) == "pushed"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("terminal", "trigger"),
+    [
+        (
+            "candidate",
+            "CREATE TRIGGER lose_root_candidate_cas BEFORE UPDATE ON "
+            "integration_candidate_revisions WHEN NEW.state = 'promoted' "
+            "BEGIN SELECT RAISE(IGNORE); END",
+        ),
+        (
+            "batch",
+            "CREATE TRIGGER lose_root_batch_cas BEFORE UPDATE ON integration_batches "
+            "WHEN NEW.lifecycle = 'promoted' BEGIN SELECT RAISE(IGNORE); END",
+        ),
+        (
+            "stage",
+            "CREATE TRIGGER lose_root_stage_cas BEFORE UPDATE ON integration_repair_stages "
+            "WHEN NEW.state = 'passed' BEGIN SELECT RAISE(IGNORE); END",
+        ),
+        (
+            "operation",
+            "CREATE TRIGGER lose_root_operation_cas BEFORE UPDATE ON "
+            "integration_repair_operations WHEN NEW.state = 'completed' "
+            "BEGIN SELECT RAISE(IGNORE); END",
+        ),
+        (
+            "intent",
+            "CREATE TRIGGER lose_root_intent_cas BEFORE UPDATE ON "
+            "integration_promotion_intents WHEN NEW.state = 'committed' "
+            "BEGIN SELECT RAISE(IGNORE); END",
+        ),
+    ],
+)
+async def test_public_root_finalization_rolls_back_every_lost_terminal_cas(
+    prepared_db, terminal, trigger
+):
+    db, data_dir = prepared_db
+    app = FakeAppClient()
+    git = PushGit(app)
+    service = RootPromotionService(
+        db, data_dir=data_dir, git_manager=git, app_client=app, clock=lambda: 10.0
+    )
+    prepared = await service.prepare("batch", 0)
+    async with db.immediate() as conn:
+        await conn.exec_driver_sql(trigger)
+    app.remote = HEAD
+
+    with pytest.raises(RootPromotionInvariantError, match="terminal CAS failed"):
+        await service.reconcile(prepared.intent_id)
+
+    async with db._engine.connect() as conn:
+        assert await conn.scalar(select(func.count()).select_from(task_delivery_receipts)) == 0
+        assert await conn.scalar(select(func.count()).select_from(integration_outbox)) == 0
+        assert await conn.scalar(select(integration_candidate_revisions.c.state)) == "green"
+        assert await conn.scalar(select(integration_batches.c.lifecycle)) == "promoting"
+        assert await conn.scalar(select(integration_repair_stages.c.state)) == "awaiting_completion"
+        assert await conn.scalar(select(integration_repair_operations.c.state)) == "active"
+        assert await conn.scalar(select(integration_promotion_intents.c.state)) == "pushed"
 
 
 @pytest.mark.asyncio
