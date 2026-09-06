@@ -127,8 +127,61 @@ async def test_missed_windows_and_manual_calls_coalesce_until_release(db):
     ("catchup_trigger", "catchup_at", "expected_next_due"),
     (("manual", 20.0, 300.0), ("periodic", 600.0, 900.0)),
 )
-async def test_promoted_pending_release_preserves_first_catchup(
-    db, catchup_trigger, catchup_at, expected_next_due
+@pytest.mark.parametrize("cleanup_state", ("pending", "complete", "conflict"))
+async def test_promoted_before_release_preserves_first_catchup_for_all_cleanup_states(
+    db, catchup_trigger, catchup_at, expected_next_due, cleanup_state
+):
+    scheduler = IntegrationScheduler(db)
+    await scheduler.configure(
+        project_id="p", now=0.0, enabled=True, interval_seconds=300
+    )
+    first = await scheduler.mark_due(project_id="p", now=10.0, trigger="manual")
+    async with db.immediate() as conn:
+        await conn.execute(
+            insert(integration_batches).values(
+                id="promoted-batch",
+                project_id="p",
+                repository_id="repo",
+                request_id=first["request_id"],
+                trigger=first["trigger"],
+                source_manifest_digest="manifest",
+                base_sha="a" * 40,
+                lifecycle="promoted",
+                current_revision=0,
+                integration_branch="refs/heads/aq/integration/promoted",
+                policy_snapshot={},
+                artifact_snapshot={},
+                cleanup_state=cleanup_state,
+                final_main_sha="b" * 40,
+                created_at=10.0,
+                updated_at=10.0,
+            )
+        )
+
+    caught_up = await scheduler.mark_due(
+        project_id="p", now=catchup_at, trigger=catchup_trigger
+    )
+    assert caught_up["outcome"] == "coalesced"
+    assert caught_up["request_id"] == first["request_id"]
+    assert caught_up["request_sequence"] == first["request_sequence"] == 1
+    assert caught_up["trigger"] == first["trigger"] == "manual"
+    assert caught_up["requested_at"] == first["requested_at"] == 10.0
+    assert caught_up["next_due_at"] == expected_next_due
+
+    later_trigger = "periodic" if catchup_trigger == "manual" else "manual"
+    later_at = 600.0 if later_trigger == "periodic" else catchup_at + 1.0
+    await scheduler.mark_due(project_id="p", now=later_at, trigger=later_trigger)
+    row = await _schedule_row(db)
+    assert row["catchup_trigger"] == catchup_trigger
+    assert row["catchup_requested_at"] == catchup_at
+    assert row["catchup_after_sequence"] == 1
+    async with db._engine.connect() as conn:
+        assert len((await conn.execute(select(integration_outbox))).all()) == 1
+
+
+@pytest.mark.parametrize("cleanup_after_release", ("complete", "conflict"))
+async def test_release_before_cleanup_ends_old_batch_catchup_eligibility(
+    db, cleanup_after_release
 ):
     scheduler = IntegrationScheduler(db)
     await scheduler.configure(
@@ -156,26 +209,37 @@ async def test_promoted_pending_release_preserves_first_catchup(
                 updated_at=10.0,
             )
         )
+        # Task 10c owns this atomic release. Simulate only its schedule boundary:
+        # after the outstanding request is cleared, later cleanup cannot revive it.
+        await conn.execute(
+            update(project_integration_schedules)
+            .where(project_integration_schedules.c.project_id == "p")
+            .values(
+                outstanding_request_id=None,
+                outstanding_trigger=None,
+                outstanding_requested_at=None,
+                last_completed_sweep_at=11.0,
+                updated_at=11.0,
+            )
+        )
+        await conn.execute(
+            update(integration_batches)
+            .where(integration_batches.c.id == "promoted-batch")
+            .values(cleanup_state=cleanup_after_release, updated_at=12.0)
+        )
 
-    caught_up = await scheduler.mark_due(
-        project_id="p", now=catchup_at, trigger=catchup_trigger
+    after_release = await scheduler.mark_due(
+        project_id="p", now=20.0, trigger="manual"
     )
-    assert caught_up["outcome"] == "coalesced"
-    assert caught_up["request_id"] == first["request_id"]
-    assert caught_up["request_sequence"] == first["request_sequence"] == 1
-    assert caught_up["trigger"] == first["trigger"] == "manual"
-    assert caught_up["requested_at"] == first["requested_at"] == 10.0
-    assert caught_up["next_due_at"] == expected_next_due
-
-    later_trigger = "periodic" if catchup_trigger == "manual" else "manual"
-    later_at = 600.0 if later_trigger == "periodic" else catchup_at + 1.0
-    await scheduler.mark_due(project_id="p", now=later_at, trigger=later_trigger)
+    assert after_release["outcome"] == "due"
+    assert after_release["request_id"] != first["request_id"]
+    assert after_release["request_sequence"] == 2
+    assert after_release["trigger"] == "manual"
+    assert after_release["requested_at"] == 20.0
     row = await _schedule_row(db)
-    assert row["catchup_trigger"] == catchup_trigger
-    assert row["catchup_requested_at"] == catchup_at
-    assert row["catchup_after_sequence"] == 1
-    async with db._engine.connect() as conn:
-        assert len((await conn.execute(select(integration_outbox))).all()) == 1
+    assert row["catchup_trigger"] is None
+    assert row["catchup_requested_at"] is None
+    assert row["catchup_after_sequence"] is None
 
 
 async def test_disabled_periodic_retains_state_but_manual_is_permitted(db):
