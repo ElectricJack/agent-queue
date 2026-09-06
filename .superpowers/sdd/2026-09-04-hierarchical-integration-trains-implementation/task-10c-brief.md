@@ -52,7 +52,7 @@ Modify only as required:
 - `src/git/github_app.py` and `src/git/manager.py` — isolated App-auth expected-old exact ref delete
   and owned-worktree cleanup only.
 - `src/commands/contracts/integration.py` and `src/commands/integration_commands.py` — strict
-  subject-only build/CI/rebuild/release command adapters.
+  subject-only build/CI/rebuild/release/cleanup command adapters.
 - `src/playbooks/definition.py` and exact integration event schema tests only if the reviewed
   Task 9b2 event registration needs the root playbook's additional routing facts.
 - `src/vault.py`, `tests/test_shipped_playbook_sources.py`, and
@@ -76,7 +76,16 @@ class IntegrationCIEvidenceArgs(CommandArgs):
 
 class IntegrationReleaseArgs(CommandArgs):
     batch_id: str = Field(min_length=1)
+
+class IntegrationCleanupArgs(CommandArgs):
+    batch_id: str = Field(min_length=1)
 ```
+
+`integration_cleanup` materializes and advances bounded normalized cleanup with typed
+CleanupService outcomes. It is the concrete V2 target for `integration.cleanup_requested`.
+Authorize the exact project/batch through the trusted service/integrator route even after the
+operation completes and the lease releases; ordinary workers cannot invoke it. Caller-supplied
+ref, SHA, owner, or deletion identity is forbidden. Cover the actual command and engine route.
 
 Commands carry durable subject identity only. The server derives project, repository, operation,
 current revision, candidate/default-branch SHA, lease, fence, claim, frozen policy/artifact, and CI
