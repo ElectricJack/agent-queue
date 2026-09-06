@@ -244,3 +244,9 @@ merge bypass/draining; doctor/CLI/session cutover; and worker-scope DB refusal.
 - Drain/abort/resume must include reviewed Task10b unresolved attestation publication
   reservations alongside existing Git mutation claims. Expiry is reconciliation
   authority, not permission to discard an ambiguous provider write.
+- Train preflight also verifies the hosted-workflow App/version variables introduced
+  by Task10b match the exact trust document and configured identities. Missing or
+  unreadable variables remain a visible blocker because they force redundant full
+  main CI. Document operator setup; enablement does not silently write forge
+  variables or install fabricated identities. Ordinary task PRs currently retain
+  full-CI fallback; state this limitation accurately in the guide.
