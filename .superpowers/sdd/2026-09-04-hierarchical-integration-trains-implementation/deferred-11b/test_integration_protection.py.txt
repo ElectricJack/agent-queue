@@ -1,0 +1,206 @@
+from __future__ import annotations
+
+import json
+
+import pytest
+
+from src.config import GitHubAppConfig
+from src.git.github_app import GitHubAppClient, GitHubRepositoryBinding, HttpResponse
+from src.integration.protection import (
+    HostedWorkflowTrust,
+    ProtectionInspector,
+    compare_production_and_scratch,
+    inspect_hosted_workflow_variables,
+)
+
+
+class ProtectionProvider:
+    def __init__(self, repository_id=303, full_name="acme/widgets"):
+        self.repository = GitHubRepositoryBinding(repository_id, full_name)
+        self.config = GitHubAppConfig("Iv1.positive", 101, 202, "/daemon/positive.pem")
+        self.classic = {
+            "required_pull_request_reviews": {"dismiss_stale_reviews": True},
+            "restrictions": {
+                "apps": [{"slug": "positive-app"}],
+                "users": [],
+                "teams": [],
+            },
+        }
+        self.rules = [
+            {
+                "type": "pull_request",
+                "ruleset_id": 55,
+                "ruleset_source_type": "Repository",
+                "ruleset_source": full_name,
+            }
+        ]
+        self.details = {
+            55: {
+                "id": 55,
+                "enforcement": "active",
+                "source_type": "Repository",
+                "bypass_actors": [
+                    {
+                        "actor_id": 101,
+                        "actor_type": "Integration",
+                        "bypass_mode": "always",
+                    }
+                ],
+                "rules": [{"type": "pull_request"}],
+            }
+        }
+        self.slugs = {"positive-app": 101}
+        self.variables = {
+            "AQ_INTEGRATION_ATTESTATION_APP_ID": "101",
+            "AQ_INTEGRATION_REQUIRED_CHECK_VERSION": "checks-v3",
+        }
+
+    async def classic_branch_protection(self, branch):
+        assert branch == "main"
+        return self.classic
+
+    async def effective_branch_rules(self, branch):
+        assert branch == "main"
+        return tuple(self.rules)
+
+    async def ruleset_details(self, ruleset_id):
+        return self.details[ruleset_id]
+
+    async def app_identity_for_slug(self, slug):
+        return self.slugs.get(slug)
+
+    async def hosted_workflow_variables(self):
+        return dict(self.variables)
+
+
+@pytest.mark.asyncio
+async def test_combines_classic_and_inherited_rulesets_with_numeric_positive_and_negative():
+    production = ProtectionProvider()
+    scratch = ProtectionProvider(404, "acme/scratch")
+    scratch.rules[0]["ruleset_source"] = "acme"
+    scratch.rules[0]["ruleset_source_type"] = "Organization"
+    scratch.details[55]["source_type"] = "Organization"
+
+    production_result = await ProtectionInspector(production).inspect(
+        branch="main", positive_app_id=101, negative_app_id=909
+    )
+    scratch_result = await ProtectionInspector(scratch).inspect(
+        branch="main", positive_app_id=101, negative_app_id=909
+    )
+
+    assert production_result.ready is True
+    assert production_result.facts.identity.app_id == 101
+    assert production_result.facts.identity.installation_id == 202
+    assert production_result.facts.classic.restricted_app_ids == (101,)
+    assert production_result.facts.rulesets[0].bypass_actors[0].actor_id == 101
+    assert production_result.facts.security_digest == scratch_result.facts.security_digest
+    assert production_result.facts.addressing_digest != scratch_result.facts.addressing_digest
+    assert compare_production_and_scratch(production_result, scratch_result).ready is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("damage", ["hidden", "broad", "pull-request-only", "classic-slug"])
+async def test_hidden_ambiguous_or_broad_protection_fails_closed(damage):
+    provider = ProtectionProvider()
+    if damage == "hidden":
+        provider.details[55].pop("bypass_actors")
+    elif damage == "broad":
+        provider.details[55]["bypass_actors"].append(
+            {"actor_id": 5, "actor_type": "RepositoryRole", "bypass_mode": "always"}
+        )
+    elif damage == "pull-request-only":
+        provider.details[55]["bypass_actors"][0]["bypass_mode"] = "pull_request"
+    else:
+        provider.slugs.clear()
+
+    result = await ProtectionInspector(provider).inspect(
+        branch="main", positive_app_id=101, negative_app_id=909
+    )
+
+    assert result.ready is False
+    assert result.blockers == ("protection_unverifiable",)
+
+
+@pytest.mark.asyncio
+async def test_hosted_variables_match_exact_trust_and_missing_is_blocked_without_write():
+    provider = ProtectionProvider()
+    expected = HostedWorkflowTrust(attestation_app_id=101, required_check_version="checks-v3")
+
+    matching = await inspect_hosted_workflow_variables(provider, expected)
+    provider.variables.pop("AQ_INTEGRATION_REQUIRED_CHECK_VERSION")
+    missing = await inspect_hosted_workflow_variables(provider, expected)
+
+    assert matching.ready is True
+    assert matching.facts.attestation_app_id == 101
+    assert matching.facts.required_check_version == "checks-v3"
+    assert missing.ready is False
+    assert missing.blockers == ("hosted_workflow_variables_unverifiable",)
+
+
+class StaticKey:
+    def read_private_key(self, _path):
+        return b"unused"
+
+
+class ScriptedTransport:
+    def __init__(self, responses):
+        self.responses = list(responses)
+        self.requests = []
+
+    async def request(self, method, url, *, headers, json_body=None, max_bytes):
+        self.requests.append((method, url, json_body))
+        return self.responses.pop(0)
+
+
+@pytest.mark.asyncio
+async def test_github_client_exposes_only_repository_bound_protection_rules_and_variables_reads():
+    responses = [
+        HttpResponse(200, {}, b'{"required_pull_request_reviews":{},"restrictions":{}}'),
+        HttpResponse(200, {}, b'[{"type":"pull_request","ruleset_id":55}]'),
+        HttpResponse(200, {}, b'{"id":55,"enforcement":"active","bypass_actors":[]}'),
+        HttpResponse(200, {}, b'{"id":101,"slug":"positive-app"}'),
+        HttpResponse(
+            200,
+            {},
+            json.dumps(
+                {
+                    "total_count": 2,
+                    "variables": [
+                        {"name": "AQ_INTEGRATION_ATTESTATION_APP_ID", "value": "101"},
+                        {"name": "AQ_INTEGRATION_REQUIRED_CHECK_VERSION", "value": "v1"},
+                    ],
+                }
+            ).encode(),
+        ),
+    ]
+    transport = ScriptedTransport(responses)
+    client = GitHubAppClient(
+        GitHubAppConfig("Iv1.positive", 101, 202, "/daemon/key.pem"),
+        GitHubRepositoryBinding(303, "acme/widgets"),
+        key_provider=StaticKey(),
+        transport=transport,
+        clock=lambda: 1_800_000_000.0,
+    )
+    client._token = "installation-secret"
+    client._token_expires_at = 1_800_001_000.0
+
+    assert await client.classic_branch_protection("main") == {
+        "required_pull_request_reviews": {},
+        "restrictions": {},
+    }
+    assert await client.effective_branch_rules("main") == (
+        {"type": "pull_request", "ruleset_id": 55},
+    )
+    assert (await client.ruleset_details(55))["id"] == 55
+    assert await client.app_identity_for_slug("positive-app") == 101
+    assert await client.hosted_workflow_variables() == {
+        "AQ_INTEGRATION_ATTESTATION_APP_ID": "101",
+        "AQ_INTEGRATION_REQUIRED_CHECK_VERSION": "v1",
+    }
+    assert [item[:2] for item in transport.requests] == [
+        ("GET", "https://api.github.com/repositories/303/branches/main/protection"),
+        ("GET", "https://api.github.com/repositories/303/rules/branches/main?per_page=100"),
+        ("GET", "https://api.github.com/repositories/303/rulesets/55?includes_parents=true"),
+        ("GET", "https://api.github.com/apps/positive-app"),
+        ("GET", "https://api.github.com/repositories/303/actions/variables?per_page=100"),
+    ]

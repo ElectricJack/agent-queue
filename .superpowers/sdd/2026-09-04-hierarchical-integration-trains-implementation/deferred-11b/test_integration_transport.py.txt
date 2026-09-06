@@ -1,0 +1,262 @@
+from __future__ import annotations
+
+import os
+from dataclasses import replace
+from pathlib import Path
+
+import pytest
+
+from src.git.askpass_broker import (
+    AcceptedTransportFingerprint,
+    TransportInspectionError,
+    WorkerAuthorityObservation,
+    WorkerLaunchPosture,
+    collect_worker_launch_postures,
+    inspect_installed_transport,
+)
+from src.git.github_app import GitHubRepositoryBinding
+from src.git.manager import GitError, GitManager
+from src.models import AgentProfile, Project, RepoSourceType, Workspace
+from src.sessions.harness_parser import Harness
+from src.sessions.harness_registry import HarnessRegistry
+from src.sessions.spec import SessionSpecBuilder
+
+
+class VerifiedAuthority:
+    def observe(self, posture, protected_paths):
+        assert posture.profile_id
+        assert protected_paths
+        return WorkerAuthorityObservation(
+            profile_id=posture.profile_id,
+            project_id=posture.project_id,
+            harness_id=posture.harness_id,
+            lifecycle=posture.lifecycle,
+            workspace_variant=posture.workspace_variant,
+            executable_digest=posture.executable_digest,
+            same_uid=False,
+            bypass_capable=False,
+            protected_paths_writable=False,
+            control_plane_isolated=True,
+            policy_verified=True,
+            policy_digest="sha256:" + "7" * 64,
+        )
+
+
+def _installed_tree(tmp_path: Path):
+    root = tmp_path / "installed"
+    exec_path = root / "libexec" / "git-core"
+    package = root / "package"
+    keys = root / "keys"
+    for directory in (exec_path, package, keys):
+        directory.mkdir(parents=True, exist_ok=True)
+        directory.chmod(0o755)
+    git = root / "bin" / "git"
+    interpreter = root / "bin" / "python3"
+    git.parent.mkdir(parents=True)
+    for path, body in ((git, b"git"), (interpreter, b"python")):
+        path.write_bytes(body)
+        path.chmod(0o755)
+    helper_final = exec_path / "git-remote-http"
+    helper_final.write_bytes(b"remote")
+    helper_final.chmod(0o755)
+    helper_link = exec_path / "git-remote-https"
+    helper_link.symlink_to(helper_final.name)
+    askpass = package / "askpass.py"
+    askpass.write_bytes(b"askpass")
+    askpass.chmod(0o755)
+    key = keys / "app.pem"
+    key.write_bytes(b"not-a-real-secret")
+    key.chmod(0o600)
+    return git, interpreter, exec_path, helper_link, helper_final, askpass, key
+
+
+def _posture(executable: Path) -> WorkerLaunchPosture:
+    return WorkerLaunchPosture(
+        profile_id="dormant-worker",
+        project_id="project",
+        harness_id="codex",
+        lifecycle="task",
+        workspace_variant="worktree",
+        executable_path=str(executable.resolve()),
+        executable_digest="sha256:" + "6" * 64,
+        effective_uid=os.geteuid(),
+        bypass_capable=True,
+    )
+
+
+def test_collects_dormant_profile_project_harness_overrides_and_workspace_variants(tmp_path):
+    registry = HarnessRegistry()
+    registry.upsert(
+        Harness(
+            id="codex",
+            command="codex",
+            permission_flag="--dangerously-bypass-approvals-and-sandbox",
+        )
+    )
+    registry.upsert(
+        Harness(
+            id="codex",
+            project_id="project",
+            command="codex-project",
+            args=("--full-auto",),
+            permission_flag="--dangerously-bypass-approvals-and-sandbox",
+        )
+    )
+    profile = AgentProfile(id="dormant", name="Dormant", harness="codex")
+    project = Project(id="project", name="Project")
+    workspaces = [
+        Workspace("clone", "project", str(tmp_path / "clone"), RepoSourceType.CLONE),
+        Workspace("tree", "project", str(tmp_path / "tree"), RepoSourceType.WORKTREE),
+    ]
+    executable = tmp_path / "codex-project"
+    executable.write_bytes(b"launcher")
+
+    postures = collect_worker_launch_postures(
+        profiles=(profile,),
+        projects=(project,),
+        workspaces=tuple(workspaces),
+        harness_registry=registry,
+        spec_builder=SessionSpecBuilder(type("Config", (), {"resources": None})()),
+        executable_resolver=lambda command: str(executable) if command == "codex-project" else None,
+    )
+
+    assert [(item.project_id, item.workspace_variant) for item in postures] == [
+        ("project", "clone"),
+        ("project", "worktree"),
+    ]
+    assert all(item.profile_id == "dormant" for item in postures)
+    assert all(item.harness_id == "codex" for item in postures)
+    assert all(item.bypass_capable for item in postures)
+    assert all(item.executable_digest.startswith("sha256:") for item in postures)
+
+
+def test_transport_inspector_binds_symlink_final_inode_ancestors_modes_keys_and_facilities(
+    tmp_path,
+):
+    git, interpreter, exec_path, helper_link, helper_final, askpass, key = _installed_tree(
+        tmp_path
+    )
+
+    result = inspect_installed_transport(
+        exec_path=exec_path,
+        askpass_path=askpass,
+        private_key_paths=(key,),
+        worker_postures=(_posture(interpreter),),
+        authority_inspector=VerifiedAuthority(),
+        git_path=git,
+        interpreter_path=interpreter,
+        expected_system_owner=os.geteuid(),
+        trusted_root=tmp_path / "installed",
+    )
+
+    assert result.ready is True
+    assert result.blockers == ()
+    assert result.facts.remote_helper_link.path == str(helper_link)
+    assert result.facts.remote_helper_link.kind == "symlink"
+    assert result.facts.remote_helper.path == str(helper_final.resolve())
+    assert result.facts.remote_helper.digest.startswith("sha256:")
+    assert result.facts.askpass.mode == 0o755
+    assert result.facts.private_keys[0].mode == 0o600
+    assert str(exec_path.resolve()) in {item.path for item in result.facts.directories}
+    assert result.facts.facilities == (
+        "proc_cmdline",
+        "proc_exe",
+        "proc_stat",
+        "scm_credentials",
+        "scm_rights",
+        "so_passcred",
+    )
+    assert result.fingerprint.startswith("sha256:")
+
+
+def test_default_same_uid_worker_and_open_operator_endpoint_fail_closed(tmp_path):
+    git, interpreter, exec_path, _link, _final, askpass, key = _installed_tree(tmp_path)
+
+    result = inspect_installed_transport(
+        exec_path=exec_path,
+        askpass_path=askpass,
+        private_key_paths=(key,),
+        worker_postures=(_posture(interpreter),),
+        git_path=git,
+        interpreter_path=interpreter,
+        expected_system_owner=os.geteuid(),
+        trusted_root=tmp_path / "installed",
+    )
+
+    assert result.ready is False
+    assert result.blockers == (
+        "askpass_worker_writable",
+        "worker_confinement_unverifiable",
+        "worker_control_plane_unconfined",
+    )
+    serialized = result.canonical_json()
+    assert "not-a-real-secret" not in serialized
+    assert "argv" not in serialized
+    assert "environment" not in serialized
+
+
+def test_transport_fingerprint_changes_for_mode_policy_and_private_key_identity(tmp_path):
+    git, interpreter, exec_path, _link, _final, askpass, key = _installed_tree(tmp_path)
+    kwargs = dict(
+        exec_path=exec_path,
+        askpass_path=askpass,
+        private_key_paths=(key,),
+        worker_postures=(_posture(interpreter),),
+        authority_inspector=VerifiedAuthority(),
+        git_path=git,
+        interpreter_path=interpreter,
+        expected_system_owner=os.geteuid(),
+        trusted_root=tmp_path / "installed",
+    )
+    initial = inspect_installed_transport(**kwargs)
+
+    key.chmod(0o640)
+    with pytest.raises(TransportInspectionError, match="private key"):
+        inspect_installed_transport(**kwargs)
+
+    key.chmod(0o600)
+    policy_changed = replace(
+        initial.facts.worker_authority[0], policy_digest="sha256:" + "8" * 64
+    )
+    assert initial.facts.with_worker_authority((policy_changed,)).fingerprint != initial.fingerprint
+
+
+@pytest.mark.asyncio
+async def test_git_manager_revalidates_frozen_transport_before_credentialed_mutation(
+    tmp_path, monkeypatch
+):
+    manager = GitManager()
+    expected = AcceptedTransportFingerprint("sha256:" + "1" * 64)
+    observed = ["sha256:" + "2" * 64]
+    manager.set_app_transport_revalidator(expected, lambda: observed[0])
+    called = False
+
+    async def forbidden(*_args, **_kwargs):
+        nonlocal called
+        called = True
+        return "a" * 40
+
+    monkeypatch.setattr(manager, "_apush_oid_with_app_auth_to_url", forbidden)
+    with pytest.raises(GitError, match="transport fingerprint changed"):
+        await manager.apush_oid_with_app_auth(
+            str(tmp_path),
+            repository=GitHubRepositoryBinding(303, "acme/widgets"),
+            token="secret-sentinel",
+            tip_oid="a" * 40,
+            branch="main",
+            expected_old_oid="b" * 40,
+        )
+    assert called is False
+
+    observed[0] = expected.value
+    assert (
+        await manager.apush_oid_with_app_auth(
+            str(tmp_path),
+            repository=GitHubRepositoryBinding(303, "acme/widgets"),
+            token="secret-sentinel",
+            tip_oid="a" * 40,
+            branch="main",
+            expected_old_oid="b" * 40,
+        )
+        == "a" * 40
+    )
