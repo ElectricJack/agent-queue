@@ -155,6 +155,9 @@ the same PR delivery comment. Use a stable receipt-bound comment marker and
 authenticated reconciliation after a lost response, with no blind duplicate POST
 while the prior write is unresolved. Reuse the reviewed durable claim patterns;
 provider writes never occur under a DB lock.
+Every post-I/O cleanup finalization CAS must match the exact execution nonce as
+well as item identity/state. Test a live old executor resuming after an expired
+takeover; it cannot overwrite the successor or report its own stale result.
 
 A moved ref or foreign worktree is a visible terminal conflict, never force-deleted. Retryable
 provider failures preserve pending work with bounded backoff. Cleanup failure never changes
