@@ -311,6 +311,14 @@ _CLI_CATEGORY_OVERRIDES: dict[str, str] = {
 # A command that needs arguments and appears in neither table is a bug, not a
 # no-argument command — ``_discover_all_commands`` logs a warning naming it.
 _FALLBACK_INPUT_SCHEMAS: dict[str, dict] = {
+    # -- assignment routing (read half; the playbook calls it by contract) --
+    "task_route_options": {
+        "type": "object",
+        "properties": {
+            "task_id": {"type": "string", "description": "Task id to report routing options for"},
+        },
+        "required": ["task_id"],
+    },
     # -- explain + ready frontier (work-graph WG-4) ------------------------
     "explain_task": {
         "type": "object",
