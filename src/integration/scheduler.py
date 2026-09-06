@@ -6,7 +6,7 @@ import hashlib
 import json
 from typing import Any, Literal
 
-from sqlalchemy import delete, insert, select, update
+from sqlalchemy import and_, delete, insert, or_, select, update
 
 from src.database.tables import (
     integration_batch_members,
@@ -104,17 +104,23 @@ class IntegrationScheduler:
                             integration_batches.c.project_id == project_id,
                             integration_batches.c.request_id
                             == schedule["outstanding_request_id"],
-                            integration_batches.c.lifecycle.in_(
-                                (
-                                    "sealing",
-                                    "sealed",
-                                    "building",
-                                    "testing",
-                                    "repairing",
-                                    "human_blocked",
-                                    "promoting",
-                                    "cleanup_pending",
-                                )
+                            or_(
+                                integration_batches.c.lifecycle.in_(
+                                    (
+                                        "sealing",
+                                        "sealed",
+                                        "building",
+                                        "testing",
+                                        "repairing",
+                                        "human_blocked",
+                                        "promoting",
+                                        "cleanup_pending",
+                                    )
+                                ),
+                                and_(
+                                    integration_batches.c.lifecycle == "promoted",
+                                    integration_batches.c.cleanup_state == "pending",
+                                ),
                             ),
                         )
                     )

@@ -47,55 +47,108 @@ class IntegrationService:
         self._tick_lock = asyncio.Lock()
         self._stop_event = asyncio.Event()
         self._task: asyncio.Task[None] | None = None
+        self._cursors: dict[str, tuple[Any, ...] | None] = {
+            "schedules": None,
+            "repair_stages": None,
+            "candidate_ci": None,
+            "intents": None,
+        }
 
     async def tick(self, now: float) -> None:
         if self._tick_lock.locked():
             return
         await self._tick_lock.acquire()
         try:
-            schedules = await self._db.due_integration_schedule_page(
-                now=now, after=None, limit=self._page_size
-            )
-            for row in schedules:
-                await self._isolated(
-                    "schedule",
-                    row,
-                    self._scheduler.mark_due,
-                    row["project_id"],
-                    now,
-                    "periodic",
-                )
-
-            stages = await self._db.due_integration_repair_stage_page(
-                now=now, after=None, limit=self._page_size
-            )
-            for row in stages:
-                await self._isolated(
-                    "repair deadline",
-                    row,
-                    self._repair.expire,
-                    row["operation_id"],
-                    int(row["stage"]),
-                    now=now,
-                )
-
-            candidates = await self._db.pending_candidate_ci_page(
-                after=None, limit=self._page_size
-            )
-            await self._run_optional("candidate CI", candidates, self._candidate_ci_handler, now)
-
-            intents = await self._db.unresolved_integration_intent_page(
-                after=None, limit=self._page_size
-            )
-            await self._run_optional(
-                "integration intent", intents, self._unresolved_intent_handler, now
-            )
+            await self._source("schedule", self._tick_schedules, now)
+            await self._source("repair deadline", self._tick_repair_stages, now)
+            await self._source("candidate CI", self._tick_candidate_ci, now)
+            await self._source("integration intent", self._tick_intents, now)
 
             # Task 10c adds the cleanup selector. The handler slot is intentionally
             # dormant here rather than manufacturing successful cleanup work.
-            await self._isolated("integration outbox", {}, self._outbox.dispatch_due, now)
+            await self._source("integration outbox", self._outbox.dispatch_due, now)
         finally:
             self._tick_lock.release()
+
+    async def _tick_schedules(self, now: float) -> None:
+        rows = await self._page(
+            "schedules",
+            self._db.due_integration_schedule_page,
+            lambda row: (row["next_due_at"], row["project_id"]),
+            now=now,
+        )
+        for row in rows:
+            await self._isolated(
+                "schedule",
+                row,
+                self._scheduler.mark_due,
+                row["project_id"],
+                now,
+                "periodic",
+            )
+
+    async def _tick_repair_stages(self, now: float) -> None:
+        rows = await self._page(
+            "repair_stages",
+            self._db.due_integration_repair_stage_page,
+            lambda row: (row["deadline_at"], row["operation_id"], row["stage"]),
+            now=now,
+        )
+        for row in rows:
+            await self._isolated(
+                "repair deadline",
+                row,
+                self._repair.expire,
+                row["operation_id"],
+                int(row["stage"]),
+                now=now,
+            )
+
+    async def _tick_candidate_ci(self, now: float) -> None:
+        rows = await self._page(
+            "candidate_ci",
+            self._db.pending_candidate_ci_page,
+            lambda row: (row["updated_at"], row["batch_id"], row["revision"]),
+        )
+        await self._run_optional("candidate CI", rows, self._candidate_ci_handler, now)
+
+    async def _tick_intents(self, now: float) -> None:
+        rows = await self._page(
+            "intents",
+            self._db.unresolved_integration_intent_page,
+            lambda row: (row["updated_at"], row["id"]),
+        )
+        await self._run_optional(
+            "integration intent", rows, self._unresolved_intent_handler, now
+        )
+
+    async def _page(
+        self,
+        source: str,
+        selector: Callable[..., Awaitable[list[dict[str, Any]]]],
+        cursor_for: Callable[[dict[str, Any]], tuple[Any, ...]],
+        **kwargs: Any,
+    ) -> list[dict[str, Any]]:
+        after = self._cursors[source]
+        rows = await selector(after=after, limit=self._page_size, **kwargs)
+        if not rows and after is not None:
+            self._cursors[source] = None
+            rows = await selector(after=None, limit=self._page_size, **kwargs)
+        if rows:
+            # Fairness state advances on what was scanned, before any handler can
+            # decline, fail, or leave the durable row intentionally untouched.
+            self._cursors[source] = cursor_for(rows[-1])
+        return rows
+
+    @staticmethod
+    async def _source(name: str, callback: Callable, *args, **kwargs) -> Any:
+        try:
+            return await callback(*args, **kwargs)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("integration %s source failed and remains retryable", name)
+            return None
 
     async def _run_optional(
         self,
@@ -138,7 +191,12 @@ class IntegrationService:
 
     async def _run(self) -> None:
         while not self._stop_event.is_set():
-            await self.tick(self._clock())
+            try:
+                await self.tick(self._clock())
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("unexpected integration reconciliation tick failure")
             try:
                 await asyncio.wait_for(
                     self._stop_event.wait(), timeout=self._interval_seconds

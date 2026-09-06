@@ -579,3 +579,114 @@ async def test_service_start_and_stop_owns_one_named_loop():
     await service.stop()
     assert service._task is None
     assert first_task.done()
+
+
+@pytest.mark.parametrize("handler_kind", ("missing", "declining"))
+async def test_tick_advances_persistent_source_cursor_and_wraps_fairly(handler_kind):
+    rows = [
+        {"batch_id": name, "revision": 0, "updated_at": 1.0}
+        for name in ("a", "b", "c", "d", "e")
+    ]
+
+    class PagingDB:
+        def __init__(self):
+            self.scanned = []
+
+        async def due_integration_schedule_page(self, **kwargs):
+            return []
+
+        async def due_integration_repair_stage_page(self, **kwargs):
+            return []
+
+        async def pending_candidate_ci_page(self, *, after, limit):
+            start = 0
+            if after is not None:
+                start = next(
+                    index + 1
+                    for index, row in enumerate(rows)
+                    if (row["updated_at"], row["batch_id"], row["revision"]) == after
+                )
+            page = rows[start : start + limit]
+            self.scanned.append([row["batch_id"] for row in page])
+            return page
+
+        async def unresolved_integration_intent_page(self, **kwargs):
+            return []
+
+    database = PagingDB()
+    handler = None if handler_kind == "missing" else AsyncMock(return_value=False)
+    service = IntegrationService(
+        database,
+        SimpleNamespace(mark_due=AsyncMock()),
+        SimpleNamespace(expire=AsyncMock()),
+        SimpleNamespace(dispatch_due=AsyncMock(return_value=0)),
+        candidate_ci_handler=handler,
+        page_size=2,
+    )
+
+    for now in (1.0, 2.0, 3.0, 4.0):
+        await service.tick(now)
+
+    assert database.scanned == [["a", "b"], ["c", "d"], ["e"], [], ["a", "b"]]
+    if handler is not None:
+        assert [call.args[0]["batch_id"] for call in handler.await_args_list] == [
+            "a",
+            "b",
+            "c",
+            "d",
+            "e",
+            "a",
+            "b",
+        ]
+
+
+async def test_selector_failure_isolates_source_and_background_loop_recovers_cleanly():
+    two_outbox_ticks = asyncio.Event()
+
+    class OneShotFailureDB:
+        def __init__(self):
+            self.schedule_calls = 0
+
+        async def due_integration_schedule_page(self, **kwargs):
+            self.schedule_calls += 1
+            if self.schedule_calls == 1:
+                raise RuntimeError("one-shot schedule selector failure")
+            return [{"project_id": "p", "next_due_at": 1.0}]
+
+        async def due_integration_repair_stage_page(self, **kwargs):
+            return [{"operation_id": "op", "stage": 0, "deadline_at": 1.0}]
+
+        async def pending_candidate_ci_page(self, **kwargs):
+            return []
+
+        async def unresolved_integration_intent_page(self, **kwargs):
+            return []
+
+    outbox_calls = 0
+
+    async def dispatch_due(now):
+        nonlocal outbox_calls
+        outbox_calls += 1
+        if outbox_calls == 2:
+            two_outbox_ticks.set()
+        return 0
+
+    scheduler = SimpleNamespace(mark_due=AsyncMock())
+    repair = SimpleNamespace(expire=AsyncMock())
+    service = IntegrationService(
+        OneShotFailureDB(),
+        scheduler,
+        repair,
+        SimpleNamespace(dispatch_due=AsyncMock(side_effect=dispatch_due)),
+        interval_seconds=0.01,
+    )
+
+    service.start()
+    await asyncio.wait_for(two_outbox_ticks.wait(), timeout=1.0)
+    await service.stop()
+
+    assert repair.expire.await_count == 2
+    assert scheduler.mark_due.await_count == 1
+    assert scheduler.mark_due.await_args.args[0] == "p"
+    assert scheduler.mark_due.await_args.args[2] == "periodic"
+    assert outbox_calls == 2
