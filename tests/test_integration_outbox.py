@@ -604,6 +604,35 @@ async def test_large_fanout_acceptance_resumes_in_bounded_pages(db, tmp_path):
     assert len(await _pending_rows(db)) == 65
 
 
+async def test_managed_project_does_not_admit_legacy_merge_sweep_destination(
+    db, tmp_path
+):
+    compiled = tmp_path / "compiled"
+    await _activate(db, compiled, "pr-merge-sweep", "integration.sealed")
+    async with db.immediate() as conn:
+        await db.set_integration_legacy_suppression_on(
+            conn,
+            project_id="p",
+            generation=0,
+            merge_sweep_suppressed=True,
+            final_review_route_suppressed=True,
+            legacy_gate_creation_suppressed=True,
+            policy_snapshot={},
+            now=NOW,
+        )
+    await _enqueue(db)
+    runtime = _runtime(db, compiled)
+    await runtime.refresh()
+
+    assert not await runtime.accept_integration_event(
+        "integration.sealed",
+        {"project_id": "p", "operation_id": "operation-1"},
+        "event-1",
+    )
+    assert await _pending_rows(db) == []
+    await runtime.shutdown()
+
+
 async def test_reactivation_does_not_replace_an_accepted_artifact(db, tmp_path):
     compiled = tmp_path / "compiled"
     _old_activation, old_sha = await _activate(

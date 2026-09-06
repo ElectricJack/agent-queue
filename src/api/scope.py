@@ -55,6 +55,7 @@ AGENT_COMMAND_SET: frozenset[str] = frozenset(
         # worker-filed tasks provenance-linked to it, moved to a parent the
         # filing path itself would have accepted.
         "reparent_task",
+        "integration_status",
     }
 )
 
@@ -83,6 +84,26 @@ PROJECT_ONBOARDING_COMMANDS: frozenset[str] = frozenset(
     }
 )
 PROJECT_ONBOARDING_SCOPE_ERROR = "out of scope: project onboarding requires global admin"
+LOCAL_INTEGRATION_CONTROLS = frozenset(
+    {
+        "integration_enable",
+        "integration_waive_history",
+        "integration_resume",
+        "integration_abort",
+        "integration_retry_cleanup",
+    }
+)
+INTEGRATION_ROLLOUT_FIELDS = frozenset(
+    {
+        "integration_repository_id",
+        "hierarchical_integration_policy",
+        "hierarchical_integration_mode",
+        "hierarchical_integration_desired_mode",
+        "hierarchical_integration_draining",
+        "hierarchical_integration_generation",
+        "expected_integration_generation",
+    }
+)
 
 
 def check_command_scope(command: str, args: dict, scope: RequestScope) -> str | None:
@@ -100,6 +121,10 @@ def check_command_scope(command: str, args: dict, scope: RequestScope) -> str | 
     """
     if scope.kind == "local":
         return None
+    if command in LOCAL_INTEGRATION_CONTROLS:
+        return "out of scope: integration control requires local operator"
+    if command == "edit_project" and INTEGRATION_ROLLOUT_FIELDS.intersection(args):
+        return "out of scope: integration configuration requires local operator"
     if command == "edit_intelligence_class" and not (
         scope.elevated and scope.project_id is None and scope.task_id is None
     ):

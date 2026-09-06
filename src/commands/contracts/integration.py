@@ -53,6 +53,13 @@ DESIGN_INTEGRATION_COMMANDS = frozenset(
         "integration_promote_main",
         "integration_release",
         "integration_cleanup",
+        "integration_status",
+        "integration_flush",
+        "integration_enable",
+        "integration_waive_history",
+        "integration_resume",
+        "integration_abort",
+        "integration_retry_cleanup",
     }
 )
 
@@ -61,6 +68,63 @@ class IntegrationScheduleDueArgs(CommandArgs):
     project_id: str = Field(min_length=1)
     now: float
     trigger: Literal["periodic", "manual"]
+
+
+class IntegrationStatusArgs(CommandArgs):
+    project_id: str = Field(min_length=1)
+
+
+class IntegrationEnableArgs(CommandArgs):
+    project_id: str = Field(min_length=1)
+    mode: Literal["disabled", "observe", "hierarchy", "train"]
+    expected_generation: int = Field(ge=0)
+    reason: str = Field(min_length=1)
+    waiver_id: str | None = Field(default=None, min_length=1)
+
+
+class IntegrationWaiveHistoryArgs(CommandArgs):
+    project_id: str = Field(min_length=1)
+    reason: str = Field(min_length=1)
+    blocker_digest: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
+
+
+class IntegrationOperationControlArgs(CommandArgs):
+    operation_id: str = Field(min_length=1)
+
+
+class IntegrationAbortArgs(IntegrationOperationControlArgs):
+    reason: str = Field(min_length=1)
+
+
+class IntegrationRetryCleanupArgs(CommandArgs):
+    batch_id: str = Field(min_length=1)
+
+
+class IntegrationOperationalValue(CommandValue):
+    project_id: str | None = None
+    operation_id: str | None = None
+    batch_id: str | None = None
+    effective_mode: str | None = None
+    desired_mode: str | None = None
+    mode: str | None = None
+    generation: int | None = None
+    draining: bool | None = None
+    ready: bool | None = None
+    rollout_ready: bool | None = None
+    blockers: tuple[dict[str, Any], ...] = ()
+    blocker_digest: str | None = None
+    certification: dict[str, Any] | None = None
+    waiver_id: str | None = None
+    request_id: str | None = None
+    request_sequence: int | None = None
+    trigger: str | None = None
+    requested_at: float | None = None
+    next_due_at: float | None = None
+    state: str | None = None
+    stage: int | None = None
+    deadline_at: float | None = None
+    reason: str | None = None
+    count: int | None = None
 
 
 class IntegrationScheduleDueValue(CommandValue):
@@ -369,6 +433,101 @@ class IntegrationRepairTimeoutValue(CommandValue):
         "wait",
         "awaiting_promotion",
     ] | None = None
+
+
+def _operational_contract(
+    name: str,
+    args_model: type[CommandArgs],
+    outcomes: tuple[str, ...],
+    *,
+    successes: frozenset[str],
+    side_effect: SideEffectClass,
+) -> CommandContract:
+    effects = (
+        (ReadClause(subject=EffectSubject.INTEGRATION_OPERATION),)
+        if side_effect is SideEffectClass.READ
+        else (UpdateClause(subject=EffectSubject.INTEGRATION_OPERATION),)
+    )
+    return CommandContract(
+        execution=ExecutionContract(
+            name=name,
+            args_model=args_model,
+            result_model=IntegrationOperationalValue,
+            outcomes=tuple(
+                OutcomeSpec(
+                    name=outcome,
+                    classification=(
+                        OutcomeClass.SUCCESS
+                        if outcome in successes
+                        else OutcomeClass.FAILURE
+                    ),
+                )
+                for outcome in outcomes
+            ),
+            capability=name,
+            side_effect=side_effect,
+            idempotency=IdempotencySpec(mode="natural"),
+            retry_safe=True,
+            effects=effects,
+            sensitive_args=frozenset({"reason"}) if "reason" in args_model.model_fields else frozenset(),
+            receipt_projection=tuple(IntegrationOperationalValue.model_fields),
+        ),
+        presentation=CommandPresentation(
+            title=name.replace("_", " ").title(),
+            summary="Authenticated hierarchical integration operational control.",
+        ),
+    )
+
+
+INTEGRATION_STATUS = _operational_contract(
+    "integration_status",
+    IntegrationStatusArgs,
+    ("status", "not_found"),
+    successes=frozenset({"status"}),
+    side_effect=SideEffectClass.READ,
+)
+INTEGRATION_FLUSH = _operational_contract(
+    "integration_flush",
+    IntegrationStatusArgs,
+    ("due", "not_due", "coalesced", "disabled", "draining", "eligibility", "not_found"),
+    successes=frozenset({"due", "not_due", "coalesced", "eligibility"}),
+    side_effect=SideEffectClass.COMPOSITE,
+)
+INTEGRATION_ENABLE = _operational_contract(
+    "integration_enable",
+    IntegrationEnableArgs,
+    ("enabled", "draining", "blocked", "stale", "not_found"),
+    successes=frozenset({"enabled", "draining"}),
+    side_effect=SideEffectClass.COMPOSITE,
+)
+INTEGRATION_WAIVE_HISTORY = _operational_contract(
+    "integration_waive_history",
+    IntegrationWaiveHistoryArgs,
+    ("waived", "stale", "not_waivable", "not_found"),
+    successes=frozenset({"waived"}),
+    side_effect=SideEffectClass.CREATE,
+)
+INTEGRATION_RESUME = _operational_contract(
+    "integration_resume",
+    IntegrationOperationControlArgs,
+    ("resumed", "ambiguous", "invalid_state", "not_found"),
+    successes=frozenset({"resumed"}),
+    side_effect=SideEffectClass.COMPOSITE,
+)
+INTEGRATION_ABORT = _operational_contract(
+    "integration_abort",
+    IntegrationAbortArgs,
+    ("aborted", "ambiguous", "invalid_state", "not_found"),
+    successes=frozenset({"aborted"}),
+    side_effect=SideEffectClass.COMPOSITE,
+)
+INTEGRATION_RETRY_CLEANUP = _operational_contract(
+    "integration_retry_cleanup",
+    IntegrationRetryCleanupArgs,
+    ("requeued", "ambiguous", "nothing_to_retry", "not_found"),
+    successes=frozenset({"requeued", "nothing_to_retry"}),
+    side_effect=SideEffectClass.UPDATE,
+)
 
 
 INTEGRATION_TRANSFER_OWNER = CommandContract(
@@ -1440,6 +1599,78 @@ async def _seal_adapter(args: IntegrationSealArgs, ctx: CommandContext | None):
     )
 
 
+async def _status_adapter(args: IntegrationStatusArgs, ctx: CommandContext | None):
+    return await _hierarchy_adapter(
+        "integration_status", args, ctx, IntegrationOperationalValue, {"status", "not_found"}
+    )
+
+
+async def _flush_adapter(args: IntegrationStatusArgs, ctx: CommandContext | None):
+    return await _hierarchy_adapter(
+        "integration_flush",
+        args,
+        ctx,
+        IntegrationOperationalValue,
+        {"due", "not_due", "coalesced", "disabled", "draining", "eligibility", "not_found"},
+    )
+
+
+async def _enable_adapter(args: IntegrationEnableArgs, ctx: CommandContext | None):
+    return await _hierarchy_adapter(
+        "integration_enable",
+        args,
+        ctx,
+        IntegrationOperationalValue,
+        {"enabled", "draining", "blocked", "stale", "not_found"},
+    )
+
+
+async def _waive_history_adapter(
+    args: IntegrationWaiveHistoryArgs, ctx: CommandContext | None
+):
+    return await _hierarchy_adapter(
+        "integration_waive_history",
+        args,
+        ctx,
+        IntegrationOperationalValue,
+        {"waived", "stale", "not_waivable", "not_found"},
+    )
+
+
+async def _resume_adapter(
+    args: IntegrationOperationControlArgs, ctx: CommandContext | None
+):
+    return await _hierarchy_adapter(
+        "integration_resume",
+        args,
+        ctx,
+        IntegrationOperationalValue,
+        {"resumed", "ambiguous", "invalid_state", "not_found"},
+    )
+
+
+async def _abort_adapter(args: IntegrationAbortArgs, ctx: CommandContext | None):
+    return await _hierarchy_adapter(
+        "integration_abort",
+        args,
+        ctx,
+        IntegrationOperationalValue,
+        {"aborted", "ambiguous", "invalid_state", "not_found"},
+    )
+
+
+async def _retry_cleanup_adapter(
+    args: IntegrationRetryCleanupArgs, ctx: CommandContext | None
+):
+    return await _hierarchy_adapter(
+        "integration_retry_cleanup",
+        args,
+        ctx,
+        IntegrationOperationalValue,
+        {"requeued", "ambiguous", "nothing_to_retry", "not_found"},
+    )
+
+
 def register_integration_contracts(registry: ContractRegistry) -> None:
     """Register contracts whose real handlers have landed.
 
@@ -1456,6 +1687,13 @@ def register_integration_contracts(registry: ContractRegistry) -> None:
             )
         )
     for contract, adapter in (
+        (INTEGRATION_STATUS, _status_adapter),
+        (INTEGRATION_FLUSH, _flush_adapter),
+        (INTEGRATION_ENABLE, _enable_adapter),
+        (INTEGRATION_WAIVE_HISTORY, _waive_history_adapter),
+        (INTEGRATION_RESUME, _resume_adapter),
+        (INTEGRATION_ABORT, _abort_adapter),
+        (INTEGRATION_RETRY_CLEANUP, _retry_cleanup_adapter),
         (INTEGRATION_SCHEDULE_DUE, _schedule_due_adapter),
         (INTEGRATION_SEAL, _seal_adapter),
         (INTEGRATION_FILE_CHILDREN, _file_children_adapter),

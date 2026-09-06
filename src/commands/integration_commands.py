@@ -271,6 +271,118 @@ class IntegrationCommandsMixin:
 
         return IntegrationScheduler(self.db)
 
+    def _integration_control_service(self):
+        service = getattr(self.orchestrator, "integration_control_service", None)
+        if service is not None:
+            return service
+        from src.integration.controls import IntegrationControlService
+
+        return IntegrationControlService(
+            self.db,
+            scheduler=self._integration_scheduler(),
+            cleanup_service=getattr(self.orchestrator, "integration_cleanup_service", None),
+        )
+
+    @staticmethod
+    def _integration_local_operator() -> tuple[bool, str]:
+        principal = current_principal() or TRUSTED_LOCAL
+        return principal.kind is PrincipalKind.LOCAL, principal.describe()
+
+    async def _cmd_integration_status(self, args: dict) -> dict:
+        project_id = str(args.get("project_id") or "")
+        if not project_id:
+            return _failure("not_found", "project_id is required")
+        principal = current_principal() or TRUSTED_LOCAL
+        if principal.kind is PrincipalKind.SESSION:
+            authorized = principal.project_id == project_id
+        elif principal.kind is PrincipalKind.PLAYBOOK:
+            authorized = bool(
+                not principal.unresolved
+                and principal.project_id == project_id
+                and principal.policy.allows("aq_commands", "integration_status")
+            )
+        else:
+            authorized = principal.kind in {PrincipalKind.LOCAL, PrincipalKind.SERVICE}
+        if not authorized:
+            return _failure("unauthorized", "integration status is outside the caller project")
+        return await self._integration_control_service().status(project_id)
+
+    async def _cmd_integration_flush(self, args: dict) -> dict:
+        project_id = str(args.get("project_id") or "")
+        if not project_id:
+            return _failure("not_found", "project_id is required")
+        if not await self._integration_delivery_authorized(project_id, "integration_flush"):
+            return _failure("unauthorized", "integration flush is outside the caller authority")
+        return await self._integration_control_service().flush(project_id)
+
+    async def _cmd_integration_enable(self, args: dict) -> dict:
+        authorized, operator_id = self._integration_local_operator()
+        if not authorized:
+            return _failure("unauthorized", "integration rollout controls require LOCAL operator authority")
+        try:
+            project_id = str(args["project_id"])
+            mode = str(args["mode"])
+            expected_generation = int(args["expected_generation"])
+            reason = str(args["reason"])
+        except (KeyError, TypeError, ValueError):
+            return _failure("blocked", "project_id, mode, expected_generation, and reason are required")
+        return await self._integration_control_service().enable(
+            project_id,
+            mode=mode,
+            expected_generation=expected_generation,
+            reason=reason,
+            operator_id=operator_id,
+            waiver_id=args.get("waiver_id"),
+        )
+
+    async def _cmd_integration_waive_history(self, args: dict) -> dict:
+        authorized, operator_id = self._integration_local_operator()
+        if not authorized:
+            return _failure("unauthorized", "integration rollout controls require LOCAL operator authority")
+        try:
+            return await self._integration_control_service().waive_history(
+                str(args["project_id"]),
+                reason=str(args["reason"]),
+                blocker_digest=str(args["blocker_digest"]),
+                operator_id=operator_id,
+            )
+        except KeyError:
+            return _failure("not_waivable", "project_id, reason, and blocker_digest are required")
+
+    async def _cmd_integration_resume(self, args: dict) -> dict:
+        authorized, _operator_id = self._integration_local_operator()
+        if not authorized:
+            return _failure(
+                "unauthorized", "integration recovery controls require LOCAL operator authority"
+            )
+        operation_id = str(args.get("operation_id") or "")
+        if not operation_id:
+            return _failure("not_found", "operation_id is required")
+        return await self._integration_control_service().resume(operation_id)
+
+    async def _cmd_integration_abort(self, args: dict) -> dict:
+        authorized, _operator_id = self._integration_local_operator()
+        if not authorized:
+            return _failure(
+                "unauthorized", "integration recovery controls require LOCAL operator authority"
+            )
+        operation_id = str(args.get("operation_id") or "")
+        reason = str(args.get("reason") or "")
+        if not operation_id or not reason.strip():
+            return _failure("invalid_state", "operation_id and reason are required")
+        return await self._integration_control_service().abort(operation_id, reason=reason)
+
+    async def _cmd_integration_retry_cleanup(self, args: dict) -> dict:
+        authorized, _operator_id = self._integration_local_operator()
+        if not authorized:
+            return _failure(
+                "unauthorized", "integration recovery controls require LOCAL operator authority"
+            )
+        batch_id = str(args.get("batch_id") or "")
+        if not batch_id:
+            return _failure("not_found", "batch_id is required")
+        return await self._integration_control_service().retry_cleanup(batch_id)
+
     def _integration_train_service(self):
         service = getattr(self.orchestrator, "integration_train_service", None)
         if service is not None:

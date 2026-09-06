@@ -521,6 +521,14 @@ class PlaybookEngine:
             admitted = frozenset(playbook_ids)
             refs = [ref for ref in refs if ref.playbook_id in admitted]
 
+        final_review_suppressed = False
+        project_id = hydrated.get("project_id")
+        suppression_reader = getattr(
+            self.activations, "legacy_final_review_suppressed", None
+        )
+        if isinstance(project_id, str) and callable(suppression_reader):
+            final_review_suppressed = await suppression_reader(project_id)
+
         selected: list[str] = []
         run_ids: list[str] = []
         deduplicated: list[str] = []
@@ -540,6 +548,12 @@ class PlaybookEngine:
                 await self._queue_pending(ref.playbook_id, hydrated)
                 continue
             for rule in artifact.rules:
+                if (
+                    final_review_suppressed
+                    and ref.playbook_id == "default-pipeline"
+                    and rule.id == "per-branch-final-review"
+                ):
+                    continue
                 if not self._rule_selected(rule, event_type, hydrated):
                     continue
                 selected.append(rule.id)

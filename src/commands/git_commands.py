@@ -67,6 +67,17 @@ class GitCommandsMixin:
                 "sha": None,
                 "error": f"unknown project: {project_id}",
             }
+        if project.hierarchical_integration_mode in {"hierarchy", "train"}:
+            return {
+                "success": False,
+                "outcome": "integration_managed",
+                "pr_url": pr_url,
+                "sha": None,
+                "error": (
+                    "ordinary pr_merge is disabled for hierarchy-managed projects; "
+                    "use the exact integration promotion protocol"
+                ),
+            }
 
         # ``gh pr merge`` used to run in ``get_project_workspace_path()`` —
         # the project's first workspace row, clones before links, which under

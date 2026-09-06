@@ -307,6 +307,39 @@ class ProjectCommandsMixin:
         project = await self.db.get_project(pid)
         if not project:
             return {"error": f"Project '{pid}' not found"}
+        rollout_fields = {
+            "hierarchical_integration_mode",
+            "hierarchical_integration_desired_mode",
+            "hierarchical_integration_draining",
+            "hierarchical_integration_generation",
+        }
+        if rollout_fields.intersection(args):
+            return {
+                "error": (
+                    "Rollout fields cannot be edited directly; use integration_enable "
+                    "with an explicit expected generation."
+                )
+            }
+        sensitive = {
+            key: args[key]
+            for key in ("integration_repository_id", "hierarchical_integration_policy")
+            if key in args
+        }
+        if sensitive:
+            from src.commands.principal import PrincipalKind, TRUSTED_LOCAL, current_principal
+
+            principal = current_principal() or TRUSTED_LOCAL
+            if principal.kind is not PrincipalKind.LOCAL:
+                return {"error": "Integration configuration requires LOCAL operator authority"}
+            if "expected_integration_generation" not in args:
+                return {"error": "expected_integration_generation is required"}
+            return await self._integration_control_service().configure(
+                pid,
+                updates=sensitive,
+                expected_generation=int(args["expected_integration_generation"]),
+                reason=str(args.get("reason") or "configure hierarchical integration"),
+                operator_id=principal.describe(),
+            )
         updates = {}
         if "name" in args:
             updates["name"] = args["name"]
@@ -580,6 +613,18 @@ class ProjectCommandsMixin:
         project = await self.db.get_project(pid)
         if not project:
             return {"error": f"Project '{pid}' not found"}
+        if (
+            project.hierarchical_integration_mode != "disabled"
+            or project.hierarchical_integration_desired_mode != "disabled"
+            or project.hierarchical_integration_draining
+            or await self._integration_control_service().has_active_work(pid)
+        ):
+            return {
+                "error": (
+                    "Cannot delete: hierarchical integration must be disabled and drained "
+                    "with no live rollout projection."
+                )
+            }
         tasks = await self.db.list_tasks(project_id=pid, status=TaskStatus.IN_PROGRESS)
         if tasks:
             return {

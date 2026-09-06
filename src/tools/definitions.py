@@ -809,7 +809,7 @@ _ALL_TOOL_DEFINITIONS = [
         "description": (
             "Edit a project's properties: name, credit_weight, max_concurrent_agents, "
             "budget_limit, discord_channel_id, default_profile_id, assignment_playbook_id, "
-            "or repo_default_branch. "
+            "repo_default_branch, or LOCAL-only hierarchical integration configuration. "
             "Use this to rename projects, adjust scheduling weight, set token budgets, "
             "link Discord channels, set a default agent profile, or change the default git branch."
         ),
@@ -848,6 +848,23 @@ _ALL_TOOL_DEFINITIONS = [
                 "repo_default_branch": {
                     "type": "string",
                     "description": "Default git branch for the project (e.g. main, dev, master)",
+                },
+                "integration_repository_id": {
+                    "type": ["string", "null"],
+                    "description": "LOCAL-only designated integration repository ID.",
+                },
+                "hierarchical_integration_policy": {
+                    "type": ["object", "null"],
+                    "description": "LOCAL-only complete typed hierarchical integration policy.",
+                },
+                "expected_integration_generation": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "description": "Required generation CAS for integration configuration.",
+                },
+                "reason": {
+                    "type": "string",
+                    "description": "Operator reason recorded for integration configuration.",
                 },
             },
             "required": ["project_id"],

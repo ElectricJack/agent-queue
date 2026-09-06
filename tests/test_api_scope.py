@@ -39,6 +39,7 @@ EXPECTED_AGENT_COMMANDS = {
     "formula_show",
     "subagent_event",
     "reparent_task",
+    "integration_status",
 }
 
 
@@ -55,6 +56,29 @@ class TestCheckCommandScope:
         assert msg is not None
         assert "out of scope" in msg
         assert "delete_project" in msg
+
+    def test_integration_controls_remain_local_even_for_elevated_session(self):
+        elevated = RequestScope(
+            kind="session", session_id="sup", project_id="p1", elevated=True
+        )
+        for command in (
+            "integration_enable",
+            "integration_waive_history",
+            "integration_resume",
+            "integration_abort",
+            "integration_retry_cleanup",
+        ):
+            assert "local operator" in check_command_scope(command, {}, elevated)
+        assert "local operator" in check_command_scope(
+            "edit_project", {"integration_repository_id": "repo"}, elevated
+        )
+
+    def test_integration_status_is_same_project_agent_read(self):
+        args = {"project_id": "p1"}
+        assert check_command_scope("integration_status", args, SESSION) is None
+        assert "project_id mismatch" in check_command_scope(
+            "integration_status", {"project_id": "p2"}, SESSION
+        )
 
     def test_task_id_mismatch_blocked(self):
         msg = check_command_scope("task_show", {"task_id": "other"}, SESSION)

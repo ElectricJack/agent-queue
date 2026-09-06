@@ -11,6 +11,7 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 IntegrationHandler = Callable[[dict[str, Any], float], Awaitable[Any]]
+DrainHandler = Callable[[float], Awaitable[Any]]
 
 
 class IntegrationService:
@@ -26,6 +27,7 @@ class IntegrationService:
         candidate_ci_handler: IntegrationHandler | None = None,
         unresolved_intent_handler: IntegrationHandler | None = None,
         cleanup_handler: IntegrationHandler | None = None,
+        drain_handler: DrainHandler | None = None,
         page_size: int = 100,
         interval_seconds: float = 5.0,
         clock: Callable[[], float] = time.time,
@@ -41,6 +43,7 @@ class IntegrationService:
         self._candidate_ci_handler = candidate_ci_handler
         self._unresolved_intent_handler = unresolved_intent_handler
         self._cleanup_handler = cleanup_handler
+        self._drain_handler = drain_handler
         self._page_size = page_size
         self._interval_seconds = interval_seconds
         self._clock = clock
@@ -66,6 +69,8 @@ class IntegrationService:
             await self._source("integration intent", self._tick_intents, now)
             if self._cleanup_handler is not None:
                 await self._source("integration cleanup", self._tick_cleanup, now)
+            if self._drain_handler is not None:
+                await self._source("integration drain", self._drain_handler, now)
             await self._source("integration outbox", self._outbox.dispatch_due, now)
         finally:
             self._tick_lock.release()

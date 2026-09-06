@@ -82,6 +82,9 @@ async def test_orchestrator_owns_single_integration_service_loop(orch):
     assert orch.integration_scheduler is not None
     assert orch.integration_outbox is not None
     assert orch.integration_attestation_service is not None
+    assert orch.integration_control_service is not None
+    assert service._drain_handler.__self__ is orch.integration_control_service
+    assert orch.integration_control_service.external_preflight is not None
     assert (
         service._candidate_ci_handler.__self__
         is orch.integration_attestation_service

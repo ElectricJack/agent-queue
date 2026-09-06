@@ -252,6 +252,13 @@ def test_unimplemented_integration_operations_are_not_registered():
         "integration_repair_dispatch",
         "integration_record_repair",
         "integration_repair_timeout",
+        "integration_status",
+        "integration_flush",
+        "integration_enable",
+        "integration_waive_history",
+        "integration_resume",
+        "integration_abort",
+        "integration_retry_cleanup",
     }
     assert registry.names() & DESIGN_INTEGRATION_COMMANDS == implemented
     assert not (registry.names() & (DESIGN_INTEGRATION_COMMANDS - implemented))

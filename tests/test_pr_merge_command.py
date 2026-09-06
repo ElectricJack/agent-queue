@@ -14,7 +14,7 @@ from src.commands.handler import CommandHandler
 from src.config import AppConfig, DiscordConfig
 from src.database import Database
 from src.git.manager import GitError
-from src.models import Project, RepoSourceType, Workspace
+from src.models import Project, RepoConfig, RepoSourceType, Workspace
 from src.orchestrator import Orchestrator
 
 # ---------------------------------------------------------------------------
@@ -1002,6 +1002,29 @@ async def test_cmd_pr_merge_rejects_unknown_project(handler):
     )
     assert result["success"] is False
     assert "project" in result["error"].lower()
+
+
+@pytest.mark.parametrize("mode", ["hierarchy", "train"])
+@pytest.mark.asyncio
+async def test_cmd_pr_merge_refuses_managed_project_before_forge_or_filesystem(
+    handler, mode
+):
+    await handler.db.create_repo(
+        RepoConfig(id="repo", project_id="p1", source_type=RepoSourceType.CLONE)
+    )
+    await handler.db.update_project(
+        "p1", integration_repository_id="repo", hierarchical_integration_mode=mode
+    )
+
+    result = await handler.execute(
+        "pr_merge",
+        {"project_id": "p1", "pr_url": "https://github.com/o/r/pull/1"},
+    )
+
+    assert result["success"] is False
+    assert result["outcome"] == "integration_managed"
+    handler.orchestrator.git.avalidate_pr_for_merge.assert_not_called()
+    handler.orchestrator.git.amerge_pr.assert_not_called()
 
 
 @pytest.mark.asyncio

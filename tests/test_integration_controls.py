@@ -57,9 +57,11 @@ async def test_project_control_state_is_typed_and_defaults_disabled(db):
     assert status["ready"] is False
     assert status["rollout_ready"] is False
     assert {item["code"] for item in status["blockers"]} == {
-        "preflight_evidence_unavailable",
+        "policy_invalid",
         "repository_not_designated",
+        "review_policy_invalid",
     }
+    assert status["certification"]["status"] == "not_performed"
 
 
 async def test_conn_owned_cas_appends_transition_and_reversible_suppression(db):
@@ -262,7 +264,7 @@ async def test_waiver_consumption_and_gate_applicability_are_append_only(db):
                 await conn.execute(table.delete())
 
 
-async def test_status_is_read_only_sorted_and_absent_preflight_is_blocking(db):
+async def test_status_is_read_only_sorted_and_functional_preflight_is_blocking(db):
     await db.update_project("p", integration_repository_id="repo")
     async with db.immediate() as conn:
         assert await db.cas_project_integration_control_on(
@@ -327,7 +329,8 @@ async def test_status_is_read_only_sorted_and_absent_preflight_is_blocking(db):
     assert status["ready"] is False
     codes = [item["code"] for item in status["blockers"]]
     assert codes == sorted(codes)
-    assert "preflight_evidence_unavailable" in codes
+    assert "policy_invalid" in codes
+    assert "preflight_evidence_unavailable" not in codes
 
 
 async def test_sqlite_status_snapshot_excludes_an_intervening_writer(db):

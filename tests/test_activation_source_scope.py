@@ -11,6 +11,7 @@ from __future__ import annotations
 import pytest
 
 from src.database import Database
+from src.models import Project
 from src.playbooks.artifact_ref import ArtifactRef
 from src.playbooks.services import DatabaseActivationSource, is_global_event
 
@@ -50,11 +51,50 @@ async def _activate(db, playbook_id: str, scope: str, identifier: str, digit: st
 
 @pytest.fixture
 async def activations(db):
+    await db.create_project(Project(id="agent-queue", name="agent queue"))
+    await db.create_project(Project(id="other-project", name="other"))
     await _activate(db, "default-pipeline", "system", "", "1")
     await _activate(db, "pr-merge-sweep", "project", "agent-queue", "2")
     await _activate(db, "other-sweep", "project", "other-project", "3")
     await _activate(db, "reviewer-hook", "agent_type", "reviewer", "4")
     return DatabaseActivationSource(db)
+
+
+async def test_suppressed_project_merge_sweep_stays_filtered_after_reenable(db, activations):
+    async with db.immediate() as conn:
+        await db.set_integration_legacy_suppression_on(
+            conn,
+            project_id="agent-queue",
+            generation=0,
+            merge_sweep_suppressed=True,
+            final_review_route_suppressed=True,
+            legacy_gate_creation_suppressed=True,
+            policy_snapshot={"source": "test"},
+            now=1.0,
+        )
+
+    event = {"tick_time": "2026-09-06T00:00:00+00:00", "interval": "30m"}
+    assert await _ids(activations, "timer.30m", event) == [
+        "default-pipeline",
+        "other-sweep",
+    ]
+
+    row = next(
+        item
+        for item in await db.list_playbook_activations(enabled_only=False)
+        if item["playbook_id"] == "pr-merge-sweep"
+    )
+    await db.set_playbook_activation(
+        playbook_id="pr-merge-sweep",
+        scope="project",
+        scope_identifier="agent-queue",
+        artifact_sha256=row["active_artifact_sha256"],
+        enabled=True,
+        activated_by="test-reenable",
+        health="ready",
+        reasons="[]",
+    )
+    assert "pr-merge-sweep" not in await _ids(activations, "timer.30m", event)
 
 
 async def _ids(source, event_type, event=None):

@@ -268,6 +268,16 @@ class IntegrationStatusService:
                 select(tasks.c.id).where(tasks.c.project_id == project_id).order_by(tasks.c.id),
             )
             parent_readiness = []
+            # Functional rollout readiness is derived from the same typed
+            # policy/artifact/activation rows the cutover revalidates.  The
+            # deferred security/probe certification is reported explicitly,
+            # never represented as a fabricated successful fact or a
+            # permanent operational blocker.
+            from src.integration.controls import IntegrationControlService, _blocker_digest
+
+            functional = await IntegrationControlService(
+                self.db
+            )._functional_preflight_on(conn, project_id)
             project_blockers = self._project_blockers(
                 project, batch, revision, repair, cleanup, now=self.clock()
             )
@@ -278,7 +288,7 @@ class IntegrationStatusService:
                 if task_projection and task_projection["blockers"]:
                     parent_readiness.append(task_projection)
 
-            blockers = list(project_blockers)
+            blockers = list(functional["blockers"]) + list(project_blockers)
             if ownership:
                 blockers.append(
                     _blocker(
@@ -318,6 +328,8 @@ class IntegrationStatusService:
                 "release": release,
                 "legacy_suppression": suppression,
                 "blockers": blockers,
+                "blocker_digest": _blocker_digest(blockers),
+                "certification": functional["certification"],
                 # ``ready`` is rollout/preflight eligibility, not ordinary
                 # task schedulability.  Keep the explicit alias so later CLI
                 # work can name that distinction without changing this wire
@@ -361,14 +373,6 @@ class IntegrationStatusService:
                     "repository_not_designated",
                     "task repository is not the project's designated integration repository",
                     row["repo_id"],
-                )
-            )
-        if integration_active:
-            blockers.append(
-                _blocker(
-                    "preflight_evidence_unavailable",
-                    "transport, protection, and probe evidence is not yet persisted",
-                    row["project_id"],
                 )
             )
         checkpoint = await self._one(
@@ -601,21 +605,6 @@ class IntegrationStatusService:
         now: float,
     ) -> list[dict[str, Any]]:
         blockers: list[dict[str, Any]] = []
-        if project["integration_repository_id"] is None:
-            blockers.append(
-                _blocker(
-                    "repository_not_designated",
-                    "project has no designated integration repository",
-                    project["id"],
-                )
-            )
-        blockers.append(
-            _blocker(
-                "preflight_evidence_unavailable",
-                "transport, protection, and probe evidence is not yet persisted",
-                project["id"],
-            )
-        )
         if batch is not None and (
             batch["lifecycle"] == "testing"
             or revision is None

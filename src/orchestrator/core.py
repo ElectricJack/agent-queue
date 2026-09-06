@@ -482,6 +482,7 @@ class Orchestrator(
         self.integration_repository_binding_resolver = None
         self.integration_release_service = None
         self.integration_cleanup_service = None
+        self.integration_control_service = None
         self.root_promotion_service = None
         # Reference to the command handler, set by the bot after initialization.
         # Used to pass handler references to interactive Discord views (e.g.
@@ -1474,6 +1475,10 @@ class Orchestrator(
         from src.integration.scheduler import IntegrationScheduler
         from src.integration.service import IntegrationService
         from src.integration.attestation import IntegrationAttestationService
+        from src.integration.controls import (
+            IntegrationControlService,
+            daemon_functional_preflight,
+        )
         from src.git.github_app import GitHubAppClient, OwnerFilePrivateKeyProvider
 
         async def accept_integration_event(
@@ -1559,6 +1564,14 @@ class Orchestrator(
             app_client_factory=self.integration_app_client_factory,
             attestation_resolver=self.integration_attestation_resolver,
         )
+        self.integration_control_service = IntegrationControlService(
+            self.db,
+            scheduler=self.integration_scheduler,
+            cleanup_service=self.integration_cleanup_service,
+            external_preflight=lambda project_id, repository_id: daemon_functional_preflight(
+                self, project_id, repository_id
+            ),
+        )
 
         async def reconcile_root_intent(row: dict[str, Any], _now: float):
             if row.get("intent_kind") != "root":
@@ -1573,6 +1586,7 @@ class Orchestrator(
             candidate_ci_handler=self.integration_attestation_service.handle_candidate_ci,
             unresolved_intent_handler=reconcile_root_intent,
             cleanup_handler=self.integration_cleanup_service.handle_item,
+            drain_handler=self.integration_control_service.reconcile_drains,
         )
         self.integration_service.start()
 

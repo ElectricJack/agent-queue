@@ -86,6 +86,7 @@ class V2PlaybookRuntime:
         self._triggers: tuple[str, ...] = ()
         self._integration_destinations: tuple[_IntegrationDestination, ...] = ()
         self._integration_activation_addresses: tuple[_IntegrationDestination, ...] = ()
+        self._merge_sweep_suppressed_projects: frozenset[str] = frozenset()
         self._unsubscribe = None
         self._tasks: set[asyncio.Task[Any]] = set()
         self._integration_tasks: dict[str, asyncio.Task[Any]] = {}
@@ -95,6 +96,15 @@ class V2PlaybookRuntime:
 
     async def refresh(self) -> None:
         rows = await self._db.list_playbook_activations(enabled_only=False)
+        list_suppressions = getattr(
+            self._db, "list_integration_legacy_suppressions", None
+        )
+        suppression_rows = await list_suppressions() if callable(list_suppressions) else []
+        self._merge_sweep_suppressed_projects = frozenset(
+            row["project_id"]
+            for row in suppression_rows
+            if row.get("merge_sweep_suppressed")
+        )
         enabled_rows = [row for row in rows if row.get("enabled") is True]
         install_routing_activation_snapshot(self, enabled_rows, artifact_store=self._store)
         triggers: set[str] = set()
@@ -285,6 +295,12 @@ class V2PlaybookRuntime:
 
             candidate = destination
             is_owner = route is not None and route.matches(destination)
+            if (
+                not is_owner
+                and destination.playbook_id == "pr-merge-sweep"
+                and project_id in self._merge_sweep_suppressed_projects
+            ):
+                continue
             if is_owner:
                 if not route.artifact_sha256:
                     continue

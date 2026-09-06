@@ -74,6 +74,34 @@ class IntegrationScheduler:
             raise ValueError("integration schedule trigger must be periodic or manual")
 
         async with self.db.immediate() as conn:
+            # The mode check belongs at this mutation boundary.  A command-
+            # layer check alone leaves timers, durable replay, and direct
+            # service callers able to create the first schedule/request while
+            # disabled, observing, hierarchy-only, or draining.
+            await self.db.lock_hierarchy_project(conn, project_id)
+            project = (
+                await conn.execute(
+                    select(
+                        projects.c.hierarchical_integration_mode,
+                        projects.c.hierarchical_integration_desired_mode,
+                        projects.c.hierarchical_integration_draining,
+                    ).where(projects.c.id == project_id)
+                )
+            ).mappings().one_or_none()
+            if (
+                project is None
+                or project["hierarchical_integration_mode"] != "train"
+                or project["hierarchical_integration_draining"]
+            ):
+                return {
+                    "outcome": "disabled",
+                    "project_id": project_id,
+                    "request_id": None,
+                    "trigger": None,
+                    "requested_at": None,
+                    "request_sequence": 0,
+                    "next_due_at": None,
+                }
             schedule = await self.db.lock_integration_schedule_on(
                 conn,
                 project_id=project_id,
@@ -236,6 +264,7 @@ class TrainService:
             if (
                 project is None
                 or project["hierarchical_integration_mode"] != "train"
+                or project["hierarchical_integration_draining"]
                 or not project["integration_repository_id"]
             ):
                 raise ValueError("project is not configured for integration trains")

@@ -13,6 +13,7 @@ from src.database.tables import (
     integration_batches,
     integration_outbox,
     project_integration_schedules,
+    projects,
 )
 from src.integration.scheduler import IntegrationScheduler
 from src.models import Project
@@ -25,6 +26,15 @@ async def db(tmp_path):
     database = Database(str(tmp_path / "integration-schedule.db"))
     await database.initialize()
     await database.create_project(Project(id="p", name="integration project"))
+    async with database.immediate() as conn:
+        await conn.execute(
+            update(projects)
+            .where(projects.c.id == "p")
+            .values(
+                hierarchical_integration_mode="train",
+                hierarchical_integration_desired_mode="train",
+            )
+        )
     yield database
     await database.close()
 
@@ -242,25 +252,23 @@ async def test_release_before_cleanup_ends_old_batch_catchup_eligibility(
     assert row["catchup_after_sequence"] is None
 
 
-async def test_disabled_periodic_retains_state_but_manual_is_permitted(db):
+async def test_disabled_periodic_and_manual_do_not_create_schedule(db):
     scheduler = IntegrationScheduler(db)
+    await db.update_project("p", hierarchical_integration_mode="disabled")
 
     disabled = await scheduler.mark_due(project_id="p", now=0.0, trigger="periodic")
     assert disabled["outcome"] == "disabled"
     assert disabled["request_id"] is None
-    assert disabled["next_due_at"] == 300.0
+    assert disabled["next_due_at"] is None
 
     manual = await scheduler.mark_due(project_id="p", now=10.0, trigger="manual")
-    assert manual["outcome"] == "due"
-    assert manual["trigger"] == "manual"
+    assert manual["outcome"] == "disabled"
     disabled_again = await scheduler.mark_due(
         project_id="p", now=600.0, trigger="periodic"
     )
     assert disabled_again["outcome"] == "disabled"
-    row = await _schedule_row(db)
-    assert row["next_due_at"] == 300.0
-    assert row["outstanding_request_id"] == manual["request_id"]
-    assert row["request_sequence"] == 1
+    async with db._engine.connect() as conn:
+        assert (await conn.execute(select(project_integration_schedules))).first() is None
 
 
 async def test_interval_edit_resets_boundary_and_preserves_first_request(db):
@@ -304,6 +312,15 @@ async def test_not_due_and_restart_duplicate_delivery_are_durable(tmp_path):
     first_db = Database(str(path))
     await first_db.initialize()
     await first_db.create_project(Project(id="p", name="integration project"))
+    async with first_db.immediate() as conn:
+        await conn.execute(
+            update(projects)
+            .where(projects.c.id == "p")
+            .values(
+                hierarchical_integration_mode="train",
+                hierarchical_integration_desired_mode="train",
+            )
+        )
     first_scheduler = IntegrationScheduler(first_db)
     await first_scheduler.configure(
         project_id="p", now=0.0, enabled=True, interval_seconds=300

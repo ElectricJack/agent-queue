@@ -56,6 +56,13 @@ class DatabaseActivationSource:
                 continue
             scope = row.get("scope")
             identifier = row.get("scope_identifier") or ""
+            # A global timer has no event project.  The activation address is
+            # therefore the only authoritative project identity for the
+            # per-project legacy merge sweep.
+            if scope == "project" and row.get("playbook_id") == "pr-merge-sweep":
+                suppression = await self._db.get_integration_legacy_suppression(identifier)
+                if suppression and suppression.get("merge_sweep_suppressed"):
+                    continue
             if scope == "project" and identifier != project_id and not global_event:
                 continue
             if scope == "agent_type" and (
@@ -72,6 +79,10 @@ class DatabaseActivationSource:
     async def artifact_by_sha(self, artifact_sha256: str) -> Any | None:
         """Resolve an immutable artifact independently of current activation."""
         return await self._db.get_playbook_artifact(artifact_sha256)
+
+    async def legacy_final_review_suppressed(self, project_id: str) -> bool:
+        suppression = await self._db.get_integration_legacy_suppression(project_id)
+        return bool(suppression and suppression.get("final_review_route_suppressed"))
 
     async def artifact_for(
         self, playbook_id: str, *, scope_identifier: str | None = None

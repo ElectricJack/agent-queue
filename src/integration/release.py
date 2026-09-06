@@ -246,7 +246,11 @@ class IntegrationReleaseService:
                 "last_completed_sweep_at": now,
                 "updated_at": now,
             }
-            if schedule["catchup_trigger"] is not None:
+            if (
+                schedule["catchup_trigger"] is not None
+                and not project["hierarchical_integration_draining"]
+                and project["hierarchical_integration_desired_mode"] == "train"
+            ):
                 if int(schedule["catchup_after_sequence"]) != sequence:
                     return self._result("invariant_error", batch, operation_id)
                 sequence += 1

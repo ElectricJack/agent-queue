@@ -386,6 +386,31 @@ class TestRulePerRunDispatch:
             assert runs.snapshots[run_id].dispatch_id == result.dispatch_id
 
     @pytest.mark.asyncio
+    async def test_managed_project_suppresses_only_legacy_final_review_rule(self):
+        engine, adapter, _runs, _bus, ref = build()
+        artifact = engine.services.artifact_store.load(ref.artifact_sha256)
+        final_rule = artifact.rules[0].model_copy(
+            update={"id": "per-branch-final-review"}
+        )
+        artifact = artifact.model_copy(
+            update={"id": "default-pipeline", "rules": [final_rule, artifact.rules[1]]}
+        )
+        engine.services.artifact_store.put(artifact)
+
+        class SuppressedActivations(StubActivations):
+            async def legacy_final_review_suppressed(self, project_id: str) -> bool:
+                return project_id == "project-alpha"
+
+        engine.activations = SuppressedActivations([artifact_ref_for(artifact)])
+        adapter.queue.append(listed())
+
+        payload = event("task-completed-code")
+        payload["project_id"] = "project-alpha"
+        result = await engine.dispatch_event(payload, TRUSTED_LOCAL)
+
+        assert result.rules_selected == ("sweep",)
+
+    @pytest.mark.asyncio
     async def test_a_rules_trigger_filter_can_reject(self):
         engine, adapter, _runs, _bus, _ref = build()
         adapter.queue.append(listed())
@@ -2634,4 +2659,3 @@ class TestCancellation:
         )
         assert resumed.lifecycle is RunLifecycle.CANCELLED
         assert [r.outcome for r in runs.receipts] == ["cancelled"]
-

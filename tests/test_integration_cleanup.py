@@ -29,6 +29,7 @@ from src.database.tables import (
     integration_root_intent_members,
     project_integration_leases,
     project_integration_schedules,
+    projects,
     task_delivery_receipts,
     workspaces,
 )
@@ -65,8 +66,16 @@ async def release_db(tmp_path, request):
         )
     )
     await db.update_project(
-        "p", hierarchical_integration_mode="train", integration_repository_id="repo"
+        "p",
+        hierarchical_integration_mode="train",
+        integration_repository_id="repo",
     )
+    async with db.immediate() as conn:
+        await conn.execute(
+            update(projects)
+            .where(projects.c.id == "p")
+            .values(hierarchical_integration_desired_mode="train")
+        )
     scheduler = IntegrationScheduler(db)
     await scheduler.configure(project_id="p", now=0.0, enabled=True, interval_seconds=300)
     due_request = await scheduler.mark_due(project_id="p", now=10.0, trigger="manual")
@@ -427,6 +436,42 @@ async def test_release_atomically_promotes_first_catchup_once(release_db):
     assert schedule["request_sequence"] == 2
     assert schedule["catchup_trigger"] is None
     assert len(events) == 2
+
+
+async def test_release_during_drain_discards_catchup_without_starting_new_train(
+    release_db,
+):
+    db, scheduler = release_db
+    original = await scheduler.mark_due(project_id="p", now=21.0, trigger="manual")
+    async with db.immediate() as conn:
+        await conn.execute(
+            update(projects)
+            .where(projects.c.id == "p")
+            .values(
+                hierarchical_integration_desired_mode="disabled",
+                hierarchical_integration_draining=True,
+            )
+        )
+
+    result = await IntegrationReleaseService(db).release("batch", 30.0)
+
+    assert result.outcome == "released"
+    assert result.request_id == original["request_id"]
+    assert result.catchup_request_id is None
+    async with db._engine.connect() as conn:
+        schedule = (
+            await conn.execute(select(project_integration_schedules))
+        ).mappings().one()
+        sweep_events = (
+            await conn.execute(
+                select(integration_outbox).where(
+                    integration_outbox.c.event_type == "integration.sweep_due"
+                )
+            )
+        ).mappings().all()
+    assert schedule["outstanding_request_id"] is None
+    assert schedule["catchup_trigger"] is None
+    assert len(sweep_events) == 1
 
 
 async def test_release_replay_is_immutable_after_a_later_train_acquires_lease(

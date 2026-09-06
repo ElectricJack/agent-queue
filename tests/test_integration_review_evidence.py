@@ -124,6 +124,7 @@ async def review_case(tmp_path):
             assigned_agent_id="agent",
             title="review",
             description="",
+            dedup_key="review:task:leaf",
             status=TaskStatus.IN_PROGRESS,
             claim_epoch=4,
         )
@@ -284,6 +285,76 @@ async def test_leaf_close_review_hook_and_delivery_promote_command_end_to_end(
     assert (await db.get_task("leaf")).status is TaskStatus.COMPLETED
     checkpoint = await db.get_integration_checkpoint("leaf")
     assert checkpoint["checkpoint_sha"] == case["head"]
+
+    # The managed task-completed event keeps the ordinary per-task review
+    # route while suppressing only the legacy per-branch final-review route.
+    from src.commands.contracts import CONTRACTS
+    from src.commands.contracts.builtin import set_handler_provider
+    from src.commands.principal import ExecutionPrincipal, PrincipalKind
+    from src.playbooks.definition import load_definition_json
+    from src.playbooks.engine import PlaybookEngine
+    from src.playbooks.executors.base import EngineServices
+    from src.profiles.capabilities import CapabilityPolicy
+    from tests.playbook_v2_engine_helpers import (
+        InMemoryArtifactStore,
+        RecordingRunRepository,
+        StubActivations,
+        artifact_ref_for,
+    )
+
+    artifact = load_definition_json(
+        Path("tests/fixtures/playbooks/v2/default-pipeline/artifact.json").read_text()
+    )
+
+    class ManagedActivations(StubActivations):
+        async def legacy_final_review_suppressed(self, project_id: str) -> bool:
+            return project_id == "p"
+
+    runs = RecordingRunRepository()
+    engine = PlaybookEngine(
+        services=EngineServices(
+            contracts=CONTRACTS,
+            clock=lambda: 4.0,
+            artifact_store=InMemoryArtifactStore({artifact.id: artifact}),
+            handler=handler,
+            db=db,
+        ),
+        runs=runs,
+        waits=runs,
+        activations=ManagedActivations([artifact_ref_for(artifact)]),
+    )
+    principal = ExecutionPrincipal(
+        kind=PrincipalKind.PLAYBOOK,
+        project_id="p",
+        policy=CapabilityPolicy.from_namespaces(
+            aq_commands=[
+                "ensure_task",
+                "add_dependency",
+                "get_downstream_tasks",
+                "gate_create",
+            ]
+        ),
+    )
+    set_handler_provider(lambda: handler)
+    try:
+        dispatched = await engine.dispatch_event(
+            {
+                "event_type": "task.completed",
+                "event_id": "completed-leaf",
+                "project_id": "p",
+                "task_id": "leaf",
+                "title": "leaf",
+                "task": {
+                    "branch_name": "aq/leaf",
+                    "pr_url": "https://github.com/acme/widgets/pull/1",
+                },
+            },
+            principal,
+        )
+    finally:
+        set_handler_provider(None)
+    assert dispatched.rules_selected == ("per-task-review",)
+    assert runs.snapshots[dispatched.run_ids[0]].lifecycle.value == "completed"
 
     review_close = await handler.execute(
         "task_close",
