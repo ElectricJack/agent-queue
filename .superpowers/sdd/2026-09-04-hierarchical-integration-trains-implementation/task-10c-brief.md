@@ -63,6 +63,11 @@ regression exposed by the root-route acceptance test and approved as a 10b corre
 
 ## Strict command surfaces
 
+The existing integration_seal command accepts omitted `now` and derives server
+time in its handler; preserve explicit trusted callers. The due artifact maps
+durable event operation_id to request_id and never fabricates a clock value.
+Test omitted-time execution through the real executor and unchanged authorization.
+
 Add and register only these missing design commands, using the existing `CommandResult` envelope,
 named outcomes, service authorization, and receipt projections:
 
