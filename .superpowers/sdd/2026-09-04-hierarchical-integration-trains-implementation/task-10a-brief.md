@@ -46,7 +46,8 @@ Modify only as required:
   cursor or retry projection. Its existing `dispatch_due(now) -> int` and durable artifact pin
   protocol are the authority.
 - `src/orchestrator/core.py` — construct/start the service after command and V2 playbook
-  initialization, tick it from the normal cycle, and stop it before database shutdown.
+  initialization and stop it before database shutdown. Its single background loop
+  drives ticks; do not also tick it from the orchestrator cycle.
 - Existing focused schedule, repair, outbox, orchestrator, and integration-policy tests when a
   compatibility assertion belongs with their current owner.
 
@@ -88,13 +89,14 @@ class IntegrationCleanupPolicy(BaseModel):
 
 class HierarchicalIntegrationPolicy(BaseModel):
     # existing fields remain unchanged
-    on_main_moved: Literal["rebuild", "wait"] = "wait"
+    on_main_moved: Literal["rebuild", "wait"] = "rebuild"
     cleanup: IntegrationCleanupPolicy = Field(default_factory=IntegrationCleanupPolicy)
 ```
 
 `ordered_backoff` requires `retry_max_seconds >= retry_base_seconds`. Add explicit compatibility
 defaults exactly as shown so old stored policies still parse; newly sealed batches must include the
-resolved values in `policy_snapshot`. `wait` is the fail-closed legacy default. Never reread
+resolved values in `policy_snapshot`. `rebuild` is the approved shipped default
+from design sections 7.5 and 10.1. Never reread
 mutable project policy for an active operation.
 
 ## Exact query and service interfaces
