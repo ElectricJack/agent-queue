@@ -27,6 +27,7 @@ import TaskComments from "../../components/TaskComments";
 import TaskSessions from "../../components/TaskSessions";
 import TaskAttention from "../../components/TaskAttention";
 import TaskDescription from "../../components/TaskDescription";
+import TaskFieldsEditor, { ReadField, type EditableTask } from "../../components/TaskFieldsEditor";
 import Modal from "../../components/Modal";
 import { useShellPaneStore } from "../store";
 import type { PaneViewProps } from "../types";
@@ -310,34 +311,14 @@ export default function TaskDetailPane({
 
       {task && <TaskComments taskId={args.taskId} />}
 
-      <section>
-        <h3 className="mb-1.5 text-xs font-semibold uppercase text-gray-500">Details</h3>
-        <div className="grid grid-cols-1 gap-x-4 gap-y-2 rounded-lg border border-gray-800 bg-gray-900 p-3 text-sm sm:grid-cols-2">
-          <MetaField label="Agent" value={task?.assigned_agent ?? "—"} />
-          <MetaField
-            label="Retries"
-            value={`${task?.retry_count ?? 0} / ${task?.max_retries ?? 3}`}
-          />
-          <MetaField
-            label="Integration"
-            value={
-              task?.effective_integration_mode
-                ? task.integration_mode_source === "task"
-                  ? task.effective_integration_mode
-                  : `${task.effective_integration_mode} (${task.integration_mode_source ?? "policy"})`
-                : task?.integration_mode ?? "policy"
-            }
-          />
-          <MetaField
-            label="Skip verification"
-            value={task?.skip_verification ? "Yes" : "No"}
-          />
-          <MetaField label="Branch" value={loose?.branch_name ?? "—"} mono />
-          <MetaField label="Created" value={formatDate(task?.created_at)} />
-          <MetaField label="Updated" value={formatDate(task?.updated_at)} />
-          {task?.parent_task_id && (
+      {task && (
+        <TaskFieldsEditor key={`fields-${task.id}`} task={task as EditableTask} compact>
+          <ReadField label="Branch" value={loose?.branch_name ?? "—"} mono />
+          <ReadField label="Created" value={formatDate(task.created_at)} />
+          <ReadField label="Updated" value={formatDate(task.updated_at)} />
+          {task.parent_task_id && (
             <div>
-              <span className="text-xs text-gray-500">Parent task</span>
+              <span className="text-gray-500">Parent task</span>
               <p className="mt-0.5">
                 <button
                   type="button"
@@ -349,8 +330,8 @@ export default function TaskDetailPane({
               </p>
             </div>
           )}
-        </div>
-      </section>
+        </TaskFieldsEditor>
+      )}
 
       {task?.pr_url && (
         <section>

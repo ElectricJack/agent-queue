@@ -189,6 +189,11 @@ class TaskCommentsResponse(BaseModel):
     offset: int
 
 
+class TaskCommentDeleteResponse(BaseModel):
+    deleted: str
+    task_id: str
+
+
 class EditTaskResponse(BaseModel):
     updated: str
     fields: list[str]
@@ -669,6 +674,8 @@ RESPONSE_MODELS: dict[str, type[BaseModel]] = {
     "task_set": TaskSetResponse,
     "task_comment": TaskCommentResponse,
     "task_comments": TaskCommentsResponse,
+    "task_comment_edit": TaskCommentResponse,
+    "task_comment_delete": TaskCommentDeleteResponse,
     "edit_task": EditTaskResponse,
     "delete_task": DeleteTaskResponse,
     "stop_task": StopTaskResponse,

@@ -12730,6 +12730,100 @@
         }
       }
     },
+    "/api/task/comment-delete": {
+      "post": {
+        "tags": [
+          "task"
+        ],
+        "summary": "Delete one task comment. Operator surfaces only: agent sessions are append-only.",
+        "description": "Delete one task comment. Operator surfaces only: agent sessions are append-only.",
+        "operationId": "task_comment_delete",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TaskCommentDeleteRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TaskCommentDeleteResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/task/comment-edit": {
+      "post": {
+        "tags": [
+          "task"
+        ],
+        "summary": "Replace the text of an existing task comment. Operator surfaces only: agent sessions are append-only. Author and timestamp are preserved.",
+        "description": "Replace the text of an existing task comment. Operator surfaces only: agent sessions are append-only. Author and timestamp are preserved.",
+        "operationId": "task_comment_edit",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TaskCommentEditRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TaskCommentResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/task/comments": {
       "post": {
         "tags": [
@@ -38753,6 +38847,70 @@
           "created_at"
         ],
         "title": "TaskComment"
+      },
+      "TaskCommentDeleteRequest": {
+        "properties": {
+          "task_id": {
+            "type": "string",
+            "title": "Task Id",
+            "description": "Task id the comment belongs to."
+          },
+          "comment_id": {
+            "type": "string",
+            "title": "Comment Id",
+            "description": "Comment id to delete."
+          }
+        },
+        "type": "object",
+        "required": [
+          "task_id",
+          "comment_id"
+        ],
+        "title": "TaskCommentDeleteRequest"
+      },
+      "TaskCommentDeleteResponse": {
+        "properties": {
+          "deleted": {
+            "type": "string",
+            "title": "Deleted"
+          },
+          "task_id": {
+            "type": "string",
+            "title": "Task Id"
+          }
+        },
+        "type": "object",
+        "required": [
+          "deleted",
+          "task_id"
+        ],
+        "title": "TaskCommentDeleteResponse"
+      },
+      "TaskCommentEditRequest": {
+        "properties": {
+          "task_id": {
+            "type": "string",
+            "title": "Task Id",
+            "description": "Task id the comment belongs to."
+          },
+          "comment_id": {
+            "type": "string",
+            "title": "Comment Id",
+            "description": "Comment id to edit."
+          },
+          "body": {
+            "type": "string",
+            "title": "Body",
+            "description": "Replacement comment text (not blank; at most 16000 characters)."
+          }
+        },
+        "type": "object",
+        "required": [
+          "task_id",
+          "comment_id",
+          "body"
+        ],
+        "title": "TaskCommentEditRequest"
       },
       "TaskCommentRequest": {
         "properties": {
