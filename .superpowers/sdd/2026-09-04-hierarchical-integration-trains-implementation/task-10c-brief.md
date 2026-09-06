@@ -101,7 +101,9 @@ reservations/receipts, schedule, then catch-up state. No provider/Git awaits occ
 
 Before any write, require exact authenticated final-main shipping; all member receipts; completed
 operation and committed root intent; terminal `lifecycle='promoted'`; and no unresolved candidate,
-repair, handoff, or root-main mutation. Then affected-row CAS deletes/releases the exact project
+repair, handoff, attestation publication, or root-main mutation. Consume the reviewed
+Task10b publication reservation rather than inventing another exclusion mechanism.
+Then affected-row CAS deletes/releases the exact project
 lease, clears the active schedule request only if it matches the batch request, and updates
 `last_completed_sweep_at`.
 

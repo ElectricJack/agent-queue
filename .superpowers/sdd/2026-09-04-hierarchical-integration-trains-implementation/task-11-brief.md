@@ -241,3 +241,6 @@ merge bypass/draining; doctor/CLI/session cutover; and worker-scope DB refusal.
 - Consume reviewed Task10 provider/blocker seams; implement only missing durable
   probe/control facts here. Build status/persistence/config first within this phase,
   then probe/cutover/CLI, followed by the independent phase review.
+- Drain/abort/resume must include reviewed Task10b unresolved attestation publication
+  reservations alongside existing Git mutation claims. Expiry is reconciliation
+  authority, not permission to discard an ambiguous provider write.
