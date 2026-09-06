@@ -134,6 +134,15 @@ cross-intent and receipt UPDATE/DELETE refusal immediately after downgrade to d4
 on both dialects, before re-upgrade. Reuse the existing parameterized migration
 fixture; no new runtime behavior is requested by this finding.
 
+Task10a discovered two failures in tests/test_integration_parent_completion.py
+where fixtures directly mutate append-only delivery receipts. Resolve these tests
+against the intended invariant (seed invalid data before guards or assert rejection,
+as appropriate); do not weaken production immutability. Task10a also observed a
+fresh-empty SQLite migration failure and switched its scoped U-D-U fixture to the
+established initialized-head pattern. Its cause was not retained/proven baseline;
+the final fresh-empty migration gate below must diagnose and resolve it with actual
+traceback/baseline evidence. See task-10a-report.md for exact commands.
+
 1. Close SQLite→PostgreSQL cutover first. The canonical adapter is
    `src/database/migrate_sqlite_to_pg.py`; make `scripts/migrate_sqlite_to_pg.py`
    delegate to it or explicitly deprecate the stale duplicate. Add the complete
