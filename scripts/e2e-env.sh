@@ -126,6 +126,7 @@ printf '%s\n' \
     "delete this directory.  Do not add anything here you want to keep." \
     > "$E2E_MARKER"
 mkdir -p "$AQ_E2E_HOME/workspaces"
+mkdir -p "$E2E_ONBOARDING_ROOT"
 mkdir -p "$E2E_VAULT/agent-types"
 mkdir -p "$E2E_VAULT/formulas"
 mkdir -p "$E2E_BIN"
@@ -220,6 +221,20 @@ if [ ! -d "$ws/.git" ]; then
     git clone -q "$E2E_OTHER_REPO" "$ws"
     git -C "$ws" config user.email e2e@example.com
     git -C "$ws" config user.name "AQ E2E"
+fi
+
+# A normal (non-bare) repository used by S8 to exercise link onboarding.
+# It deliberately lives under a dedicated configured project root rather
+# than under workspace_dir: onboarding authorizes operator-owned sources,
+# while workspace_dir contains AQ-managed execution copies.
+onboarding_link="$E2E_ONBOARDING_ROOT/linked-repository"
+if [ ! -d "$onboarding_link/.git" ]; then
+    mkdir -p "$onboarding_link"
+    git -C "$onboarding_link" init -q -b main
+    printf '%s\n' '# Linked onboarding fixture' > "$onboarding_link/README.md"
+    git -C "$onboarding_link" -c user.email=e2e@example.com -c user.name="AQ E2E" add README.md
+    git -C "$onboarding_link" -c user.email=e2e@example.com -c user.name="AQ E2E" \
+        commit -q -m "seed linked onboarding repository"
 fi
 
 # ---------------------------------------------------------------------------
@@ -376,6 +391,14 @@ cat > "$E2E_CONFIG" <<YAML
 data_dir: $AQ_E2E_HOME
 workspace_dir: $AQ_E2E_HOME/workspaces
 
+# S8 exercises the public onboarding CLI against this real daemon. The source
+# fixture and the newly initialized repository both stay in the disposable
+# e2e home and cannot reach operator-owned paths.
+project_roots:
+  - id: e2e-onboarding
+    label: E2E onboarding
+    path: $E2E_ONBOARDING_ROOT
+
 # No chat surface: this daemon is driven entirely by the CLI and the API.
 messaging_platform: none
 
@@ -516,6 +539,7 @@ Agent Queue swarm e2e environment
   provider      $AQ_E2E_SESSION_PROVIDER
   repo          $E2E_REPO  (project 'e2e')
   repo          $E2E_OTHER_REPO  (project 'other')
+  project root  $E2E_ONBOARDING_ROOT  (onboarding scenario)
   log           $E2E_LOG
 
 Next:  scripts/e2e-daemon.sh start  &&  scripts/e2e-smoke.sh

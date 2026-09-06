@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Tier 1 of the swarm functional-test kit — seven scenarios, no LLM.
+"""Tier 1 functional-test kit — eight scenarios, no LLM.
 
 Driven by ``scripts/e2e-smoke.sh`` against the daemon
 ``scripts/e2e-daemon.sh start`` put up.  Every assertion goes through a
@@ -23,6 +23,7 @@ Scenario map — see docs/guides/e2e-swarm.md for what each one proves:
     S5  fence + scope          cross-session and cross-project refusals
     S6  doctor                 the swarm checks, clean and then warning
     S7  Postgres race          two concurrent claims, exactly one winner
+    S8  project onboarding     link + init through the real CLI and daemon
 """
 
 from __future__ import annotations
@@ -135,6 +136,33 @@ def aq(
     if isinstance(payload, dict) and "schema_version" in payload:
         return payload.get("data") or {}
     return payload
+
+
+def aq_text(*args: str, timeout: float = 120.0) -> str:
+    """Run a human-mode CLI command and return its stdout.
+
+    A few hand-crafted commands intentionally render operator output instead
+    of the JSON envelope used by :func:`aq`.  S8 uses this helper so project
+    onboarding is exercised through the exact public CLI operators run, not
+    by calling the service or ``/api/execute`` directly.
+    """
+    env = dict(os.environ)
+    env["AQ_API_URL"] = API_URL
+    env.pop("AQ_API_TOKEN", None)
+    env.pop("AQ_SESSION_ID", None)
+    proc = subprocess.run(
+        [sys.executable, AQ_LAUNCHER, *args],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=timeout,
+    )
+    if proc.returncode != 0:
+        raise Failure(
+            f"aq {' '.join(args)} exited {proc.returncode}: "
+            f"{proc.stdout[:400]!r} / stderr {proc.stderr[:400]!r}"
+        )
+    return proc.stdout.strip()
 
 
 def api(command: str, args: dict | None = None, *, token: str | None = None) -> dict:
@@ -851,6 +879,117 @@ def s7_claim_race(state: dict) -> str:
     return f"outcomes {outcomes} — one winner, loser said {loser}"
 
 
+def _git_text(path: str, *args: str) -> str:
+    proc = subprocess.run(
+        ["git", "-C", path, *args],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    check(
+        proc.returncode == 0,
+        f"git -C {path} {' '.join(args)} failed: {proc.stderr.strip()}",
+    )
+    return proc.stdout.strip()
+
+
+def _onboarded_workspace(project_id: str, source_type: str, expected_path: str) -> dict:
+    rows = aq("project", "list-workspaces", "--project-id", project_id).get(
+        "workspaces", []
+    )
+    check(len(rows) == 1, f"{project_id} has {len(rows)} workspaces, expected exactly one")
+    workspace = rows[0]
+    check(workspace["kind_id"] == "project-repo", f"wrong kind: {workspace}")
+    check(workspace["source_type"] == source_type, f"wrong source type: {workspace}")
+    check(workspace["enabled"] is True, f"primary workspace is disabled: {workspace}")
+    check(
+        os.path.realpath(workspace["workspace_path"]) == os.path.realpath(expected_path),
+        f"workspace path differs from {expected_path}: {workspace}",
+    )
+    return workspace
+
+
+def s8_project_onboarding(state: dict) -> str:
+    """Link and initialize repositories through the real operator CLI."""
+    root = os.environ.get(
+        "E2E_ONBOARDING_ROOT",
+        os.path.join(os.environ.get("AQ_E2E_HOME", os.path.expanduser("~/.agent-queue-e2e")),
+                     "onboarding"),
+    )
+    linked = os.path.join(root, "linked-repository")
+    initialized = os.path.join(root, "initialized-repository")
+    check(os.path.isdir(os.path.join(linked, ".git")), f"missing linked fixture: {linked}")
+
+    linked_head = _git_text(linked, "rev-parse", "HEAD")
+    linked_status = _git_text(linked, "status", "--porcelain=v1", "--untracked-files=all")
+
+    link_output = aq_text(
+        "project", "onboard",
+        "--request-id", "e2e-link-onboarding-v1",
+        "--source-mode", "link",
+        "--root-id", "e2e-onboarding",
+        "--relative-path", "linked-repository",
+        "--project-name", "E2E Linked Project",
+        "--project-id", "e2e-onboard-link",
+    )
+    check("e2e-onboard-link" in link_output, f"link CLI output omitted project: {link_output}")
+
+    init_output = aq_text(
+        "project", "onboard",
+        "--request-id", "e2e-init-onboarding-v1",
+        "--source-mode", "init",
+        "--root-id", "e2e-onboarding",
+        "--relative-path", "initialized-repository",
+        "--project-name", "E2E Initialized Project",
+        "--project-id", "e2e-onboard-init",
+    )
+    check("e2e-onboard-init" in init_output, f"init CLI output omitted project: {init_output}")
+
+    projects = [
+        row
+        for row in aq("project", "list").get("projects", [])
+        if row["id"] in {"e2e-onboard-link", "e2e-onboard-init"}
+    ]
+    check(len(projects) == 2, f"onboarding projects were not registered exactly once: {projects}")
+    _onboarded_workspace("e2e-onboard-link", "link", linked)
+    _onboarded_workspace("e2e-onboard-init", "init", initialized)
+
+    check(_git_text(linked, "rev-parse", "HEAD") == linked_head, "link onboarding moved HEAD")
+    check(
+        _git_text(linked, "status", "--porcelain=v1", "--untracked-files=all")
+        == linked_status,
+        "link onboarding modified the repository",
+    )
+    check(
+        _git_text(initialized, "symbolic-ref", "HEAD") == "refs/heads/main",
+        "init onboarding did not default to main",
+    )
+    check(
+        _git_text(initialized, "log", "-1", "--format=%s") == "Initial commit",
+        "init onboarding did not create the default README commit",
+    )
+    readme = os.path.join(initialized, "README.md")
+    check(os.path.isfile(readme), "init onboarding did not create README.md")
+    with open(readme, encoding="utf-8") as handle:
+        check(handle.read() == "# E2E Initialized Project\n", "README content is not normalized")
+
+    vault = os.path.join(
+        os.environ.get("AQ_E2E_HOME", os.path.expanduser("~/.agent-queue-e2e")), "vault"
+    )
+    for project_id in ("e2e-onboard-link", "e2e-onboard-init"):
+        project_vault = os.path.join(vault, "projects", project_id)
+        for relative in ("memory/knowledge", "playbooks", "notes", "specs", "references"):
+            check(
+                os.path.isdir(os.path.join(project_vault, relative)),
+                f"{project_id} is missing vault/{relative}",
+            )
+
+    return (
+        "real CLI linked an unchanged repository and initialized main + README; "
+        "each project has one enabled project-repo workspace and standard vault storage"
+    )
+
+
 # ---------------------------------------------------------------------------
 # Runner
 # ---------------------------------------------------------------------------
@@ -875,6 +1014,7 @@ SCENARIOS: list[Scenario] = [
     Scenario("S5", "fence + scope", s5_fence_and_scope),
     Scenario("S6", "doctor", s6_doctor),
     Scenario("S7", "PostgreSQL claim race", s7_claim_race),
+    Scenario("S8", "project onboarding", s8_project_onboarding),
 ]
 
 

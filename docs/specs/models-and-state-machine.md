@@ -155,13 +155,14 @@ Determines how a task's output is validated before it is considered complete.
 
 ### RepoSourceType
 
-Describes how the system acquires the repository associated with a project.
+Describes how the system acquires a repository workspace.
 
 | Value | Meaning |
 |---|---|
 | `CLONE` | The system clones the repository from a remote URL. |
 | `LINK` | The system uses an existing local directory as the repository (no cloning). |
 | `INIT` | The system initializes a brand-new empty repository in a specified path. |
+| `WORKTREE` | The system creates a durable Git worktree slot from a base workspace. This is an execution workspace, not a project-onboarding source choice. |
 
 ---
 
@@ -175,9 +176,9 @@ Describes a source code repository attached to a project.
 |---|---|---|
 | `id` | `str` | Unique identifier for this repo record. |
 | `project_id` | `str` | The project this repo belongs to. |
-| `source_type` | `RepoSourceType` | How the repo was acquired (clone, link, or init). |
+| `source_type` | `RepoSourceType` | How the repo was acquired (clone, link, init, or worktree). |
 | `url` | `str` | Remote URL for cloned repos. Empty string if not applicable. |
-| `source_path` | `str` | Filesystem path used when source type is LINK. Empty string if not applicable. |
+| `source_path` | `str` | Filesystem path used for a local source. Empty string if not applicable. |
 | `default_branch` | `str` | The branch to check out by default. Defaults to `"main"`. |
 | `checkout_base_path` | `str` | The base directory where the system places agent working copies of this repo. |
 
@@ -201,7 +202,9 @@ Represents a software project managed by the system. Projects are the top-level 
 | `discord_channel_id` | `str \| None` | Optional Discord channel ID for project-specific notifications. When set, all task output for this project is routed to this channel instead of the default control channel. |
 | `repo_url` | `str` | Repository URL for the project. Empty string if not set. |
 | `repo_default_branch` | `str` | Default branch name for the project's repository. Defaults to `"main"`. |
-| `default_profile_id` | `str` | Default agent profile ID for tasks in this project. Empty string if not set. |
+| `default_profile_id` | `str \| None` | Default agent profile ID for tasks in this project. `None` if no profile resolved. |
+| `assignment_playbook_id` | `str \| None` | Assignment-routing playbook selected for the project. `None` uses the bundled default. |
+| `integration_mode` | `str \| None` | Project integration policy: `"direct"`, `"pull_request"`, or `None` to inherit `integration.default_mode`. |
 
 ---
 
@@ -341,12 +344,16 @@ former per-agent checkout model — agents now acquire workspace locks at task t
 | `id` | `str` | Unique workspace identifier. |
 | `project_id` | `str` | The project this workspace belongs to. |
 | `workspace_path` | `str` | Absolute filesystem path. |
-| `source_type` | `RepoSourceType` | How the workspace was set up (clone, link, or init). |
-| `name` | `str` | Human-readable workspace name. |
+| `source_type` | `RepoSourceType` | How the workspace was set up (clone, link, init, or worktree). |
+| `name` | `str \| None` | Human-readable workspace name. |
+| `kind_id` | `str \| None` | Soft reference to the project-scoped or system workspace kind. Onboarding registers `project-repo`. |
 | `locked_by_agent_id` | `str \| None` | Agent currently using this workspace. `None` when available. |
 | `locked_by_task_id` | `str \| None` | Task the workspace is locked for. `None` when available. |
 | `locked_at` | `float \| None` | Unix timestamp when the lock was acquired. |
-| `created_at` | `float` | Unix timestamp when the workspace was created. |
+| `lock_mode` | `WorkspaceMode \| None` | Lock mode used by the current holder. `None` when unlocked. |
+| `enabled` | `bool` | Whether acquisition may select the workspace. Defaults to `True`. |
+| `slot_index` | `int \| None` | Stable worktree slot ordinal; `None` for clones, links, and base rows. |
+| `base_workspace_id` | `str \| None` | Soft reference to the base workspace for a worktree slot. |
 
 ---
 
