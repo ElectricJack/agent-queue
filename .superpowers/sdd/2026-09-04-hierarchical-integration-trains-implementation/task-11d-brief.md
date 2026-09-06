@@ -33,7 +33,8 @@ rollback, no automatic feature enablement. Existing frozen operations finish saf
 
 Document deliberate release limits: GitHub.com only; unsupported/same-UID unconfined
 stock deployments stay disabled/observe until isolation is verifiable, no YAML claim
-can waive it; ordinary task PRs still full-CI fallback; main promotion is exact already-
+can waive it; worker access to tokenless privileged operator API must also be prevented;
+ordinary task PRs still full-CI fallback; main promotion is exact already-
 tested OID with no post-main audit; all nonempty batches ephemeral including singleton;
 successful integration branches deleted, failed forensic retention default604800s;
 configuration edits requiring disabled/drained state; integration credentials restart-

@@ -30,6 +30,14 @@ inspector verifies real launcher/kernel policy if available; the default recogni
 current unsupported/unconfined topology and fails closed. Do not invent a sandbox
 adapter or YAML claims. Fingerprint complete canonical posture/protected-path facts.
 
+Worker authority also includes the privileged control plane: current middleware maps
+missing Bearer to LOCAL_SCOPE unless require_session_token is enabled. Verified worker
+confinement must prove the worker cannot reach an unauthenticated operator endpoint,
+or that an actually enforced transport rejects anonymous worker requests. Otherwise
+worker_control_plane_unconfined blocks. Bind endpoint/auth/isolation facts into the
+fingerprint. Do not redesign auth or provision/toggle firewall, proxy or operator config;
+default current topology remains blocked and tests use typed fake observations.
+
 2. Accepted fingerprint must be frozen by the eventual cutover/probe consumers and
 revalidated before every credentialed integration mutation. Provide an explicit
 runtime seam usable by11c, with defaults that never claim safe enablement without
