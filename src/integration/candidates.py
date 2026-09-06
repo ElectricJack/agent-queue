@@ -8,6 +8,7 @@ import re
 import time
 import uuid
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal, Protocol
 
@@ -142,6 +143,20 @@ _MUTATION_PREPUSH_MARGIN_SECONDS = 5.0
 _MUTATION_CLAIM_SECONDS = _MUTATION_TRANSPORT_SECONDS + _MUTATION_SAFETY_MARGIN_SECONDS
 
 
+@dataclass(frozen=True)
+class _MutationObservation:
+    blocker_ids: tuple[str, ...] = ()
+    recoverable_ids: tuple[str, ...] = ()
+
+    @property
+    def blocks_build(self) -> bool:
+        return bool(self.blocker_ids)
+
+    @property
+    def has_unresolved(self) -> bool:
+        return bool(self.blocker_ids or self.recoverable_ids)
+
+
 class CandidateService:
     """Build every immutable member into one candidate revision."""
 
@@ -171,10 +186,10 @@ class CandidateService:
         self.clock = clock
 
     async def build(self, batch_id: str) -> CandidateBuildResult:
-        observed_mutation = False
-        if self.app_client is not None:
-            observed_mutation = await self._observe_unresolved_mutations(batch_id)
         state = await self._locked_state(batch_id)
+        observed_mutation = _MutationObservation()
+        if self.app_client is not None:
+            observed_mutation = await self._observe_unresolved_mutations(batch_id, state)
         batch = state["batch"]
         if batch["lifecycle"] == "empty":
             return CandidateBuildResult(
@@ -184,7 +199,7 @@ class CandidateService:
             return CandidateBuildResult(
                 outcome="wait", batch_id=batch_id, revision=int(batch["current_revision"])
             )
-        if observed_mutation:
+        if observed_mutation.blocks_build:
             return CandidateBuildResult(
                 outcome="wait", batch_id=batch_id, revision=int(batch["current_revision"])
             )
@@ -239,16 +254,16 @@ class CandidateService:
     ) -> CandidateBuildResult:
         if not is_valid_git_oid(new_base_sha):
             raise ValueError("candidate rebuild base must be an exact Git OID")
-        observed_mutation = False
-        if self.app_client is not None:
-            observed_mutation = await self._observe_unresolved_mutations(batch_id)
         state = await self._locked_state(batch_id)
+        observed_mutation = _MutationObservation()
+        if self.app_client is not None:
+            observed_mutation = await self._observe_unresolved_mutations(batch_id, state)
         batch = state["batch"]
         if state.get("authority_wait"):
             return CandidateBuildResult(
                 outcome="wait", batch_id=batch_id, revision=int(batch["current_revision"])
             )
-        if observed_mutation:
+        if observed_mutation.has_unresolved:
             return CandidateBuildResult(
                 outcome="wait",
                 batch_id=batch_id,
@@ -2193,7 +2208,9 @@ class CandidateService:
                     .values(state="applied", remote_sha=remote, updated_at=self.clock())
                 )
 
-    async def _observe_unresolved_mutations(self, batch_id: str) -> bool:
+    async def _observe_unresolved_mutations(
+        self, batch_id: str, state
+    ) -> _MutationObservation:
         async with self.db._engine.connect() as conn:
             rows = (
                 await conn.execute(
@@ -2203,12 +2220,147 @@ class CandidateService:
                     )
                 )
             ).mappings().all()
+        blockers: list[str] = []
+        recoverable: list[str] = []
         for row in rows:
-            remote = await self.app_client.exact_head_ref(
-                row["target_branch"].removeprefix("refs/heads/")
-            )
+            try:
+                remote = await self.app_client.exact_head_ref(
+                    row["target_branch"].removeprefix("refs/heads/")
+                )
+            except Exception:
+                blockers.append(row["id"])
+                continue
             await self._reconcile_observed_mutation(dict(row), remote)
-        return bool(rows)
+            if remote == row["desired_sha"]:
+                canonical = await self._mutation(row["id"])
+                if (
+                    canonical is not None
+                    and canonical["state"] == "applied"
+                    and canonical["remote_sha"] == remote
+                ):
+                    continue
+                blockers.append(row["id"])
+                continue
+            expected = remote == row["expected_old_sha"] or (
+                remote is None and row["expected_old_sha"] == "0" * 40
+            )
+            if (
+                expected
+                and float(row["expires_at"]) <= self.clock()
+                and await self._recoverable_build_mutation(state, dict(row))
+            ):
+                recoverable.append(row["id"])
+            else:
+                blockers.append(row["id"])
+        return _MutationObservation(
+            blocker_ids=tuple(blockers), recoverable_ids=tuple(recoverable)
+        )
+
+    async def _recoverable_build_mutation(self, state, row) -> bool:
+        if state.get("authority_wait") or row["purpose"] not in {
+            "candidate_partial",
+            "candidate_final",
+        }:
+            return False
+        now = self.clock()
+        async with self.db.immediate() as conn:
+            await self.db.lock_hierarchy_project(conn, state["project"]["id"])
+            try:
+                await self._validate_authority_on(
+                    conn, state, revision=int(row["revision"])
+                )
+            except CandidateStaleAuthority:
+                return False
+            canonical = (
+                await conn.execute(
+                    select(integration_candidate_ref_mutations)
+                    .where(integration_candidate_ref_mutations.c.id == row["id"])
+                    .with_for_update()
+                )
+            ).mappings().one_or_none()
+            current_lease_expires_at = (
+                await conn.execute(
+                    select(project_integration_leases.c.expires_at).where(
+                        project_integration_leases.c.project_id == state["project"]["id"]
+                    )
+                )
+            ).scalar_one()
+            if (
+                canonical is None
+                or canonical["state"] != "reserved"
+                or canonical["batch_id"] != state["batch"]["id"]
+                or int(canonical["revision"]) != int(row["revision"])
+                or canonical["purpose"] != row["purpose"]
+                or canonical["repository_id"] != state["batch"]["repository_id"]
+                or canonical["branch"] != state["fence"].target.branch
+                or canonical["target_branch"] != state["batch"]["integration_branch"]
+                or canonical["expected_old_sha"] != row["expected_old_sha"]
+                or canonical["desired_sha"] != row["desired_sha"]
+                or canonical["nonce"] != row["nonce"]
+                or float(canonical["expires_at"]) != float(row["expires_at"])
+                or float(canonical["expires_at"]) > now
+                or canonical["operation_id"] != state["operation"]["id"]
+                or canonical["operation_episode_id"] != state["operation"]["episode_id"]
+                or int(canonical["operation_stage"])
+                != int(state["operation"]["active_stage"])
+                or canonical["lease_owner_id"] != state["lease"]["owner_id"]
+                or int(canonical["lease_fence_token"])
+                != int(state["lease"]["fence_token"])
+                or canonical["branch_owner_id"] != state["fence"].owner_id
+                or canonical["branch_owner_role"] != "collector"
+                or int(canonical["branch_fence_token"]) != state["fence"].token
+                or float(current_lease_expires_at) < now + _MUTATION_CLAIM_SECONDS
+            ):
+                return False
+            revision = (
+                await conn.execute(
+                    select(integration_candidate_revisions).where(
+                        integration_candidate_revisions.c.batch_id == row["batch_id"],
+                        integration_candidate_revisions.c.revision == row["revision"],
+                    )
+                )
+            ).mappings().one_or_none()
+            if revision is None:
+                return False
+            if row["purpose"] == "candidate_final":
+                publication = (
+                    await conn.execute(
+                        select(integration_candidate_publications).where(
+                            integration_candidate_publications.c.batch_id == row["batch_id"],
+                            integration_candidate_publications.c.revision == row["revision"],
+                        )
+                    )
+                ).mappings().one_or_none()
+                return bool(
+                    row["member_ordinal"] is None
+                    and row["resolution_id"] is None
+                    and revision["state"] == "built"
+                    and publication is not None
+                    and publication["state"] == "reserved"
+                    and publication["expected_old_sha"] == row["expected_old_sha"]
+                    and publication["head_sha"] == row["desired_sha"]
+                )
+            ordinal = row["member_ordinal"]
+            if ordinal is None or row["resolution_id"] is not None:
+                return False
+            member = (
+                await conn.execute(
+                    select(integration_candidate_member_results).where(
+                        integration_candidate_member_results.c.batch_id == row["batch_id"],
+                        integration_candidate_member_results.c.revision == row["revision"],
+                        integration_candidate_member_results.c.member_ordinal == ordinal,
+                    )
+                )
+            ).mappings().one_or_none()
+            evidence = member["conflict_evidence"] if member is not None else None
+            return bool(
+                revision["state"] == "constructing"
+                and int(revision["next_member_ordinal"]) == int(ordinal)
+                and member is not None
+                and member["result"] == "conflict"
+                and evidence
+                and evidence.get("partial_head_sha") == row["desired_sha"]
+            )
 
     async def _accepted_parent_repair(self, revision, ordinal, store: Path):
         parent = revision.get("repair_parent_revision")
