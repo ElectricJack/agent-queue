@@ -340,7 +340,14 @@ All five Important findings in `task-11a-review.md` were addressed without addin
 RED:
 
 ```text
-aq test <7 focused config validation/editor/watcher nodes> -x
+aq test \
+  tests/test_config_validation.py::TestGitHubAppConfigValidation \
+  tests/test_config_validation.py::TestScratchProbeConfigValidation \
+  tests/test_config_editor.py::TestGetConfigCommand \
+  tests/test_config_editor.py::TestGetConfigSchemaCommand::test_returns_schema \
+  tests/test_config_editor.py::TestUpdateConfigCommand::test_rejected_nested_scratch_secret_never_reaches_logs_or_response \
+  tests/test_config_watcher.py::TestConfigWatcher::test_integration_credentials_require_restart_and_cached_state_is_not_swapped \
+  tests/test_config_watcher.py::TestConfigWatcher::test_environment_expanded_inline_key_is_rejected_without_leak_or_swap -x
 3 failed: unsafe client/path accepted; allowed scratch PEM returned by get_config;
 environment-expanded PEM accepted by watcher reload.
 
@@ -351,7 +358,14 @@ pytest -q tests/test_config_validation.py::TestGitHubAppConfigValidation::test_r
 GREEN:
 
 ```text
-aq test <the same 7 focused config validation/editor/watcher nodes> -x
+aq test \
+  tests/test_config_validation.py::TestGitHubAppConfigValidation \
+  tests/test_config_validation.py::TestScratchProbeConfigValidation \
+  tests/test_config_editor.py::TestGetConfigCommand \
+  tests/test_config_editor.py::TestGetConfigSchemaCommand::test_returns_schema \
+  tests/test_config_editor.py::TestUpdateConfigCommand::test_rejected_nested_scratch_secret_never_reaches_logs_or_response \
+  tests/test_config_watcher.py::TestConfigWatcher::test_integration_credentials_require_restart_and_cached_state_is_not_swapped \
+  tests/test_config_watcher.py::TestConfigWatcher::test_environment_expanded_inline_key_is_rejected_without_leak_or_swap -x
 23 passed, 9 inherited warnings in 2.23s
 
 pytest -q tests/test_config_validation.py::TestGitHubAppConfigValidation::test_rejects_unsafe_allowed_identity_and_reference_values -x
@@ -461,7 +475,13 @@ aq test -m "not slow and not tmux" \
   tests/test_integration_controls.py \
   tests/test_explain.py::TestExplainCommand::test_integration_reasons_append_without_replacing_ordinary_explanations \
   tests/test_explain.py::TestExplainCommand::test_disabled_project_does_not_add_integration_reasons \
-  <7 named status/parent applicability, budget, disposition, and rollover nodes> -x
+  tests/test_integration_parent_completion.py::test_status_uses_current_receipt_among_multiple_historical_deliveries \
+  tests/test_integration_parent_completion.py::test_status_rejects_receipt_not_applicable_to_current_parent_context \
+  tests/test_integration_parent_completion.py::test_status_blocks_failed_child_without_current_disposition_receipt \
+  tests/test_integration_parent_completion.py::test_status_uses_typed_limit_for_current_repair_stage \
+  tests/test_integration_parent_completion.py::test_parent_current_stage_remains_deadline_bound_while_awaiting_completion \
+  tests/test_integration_parent_completion.py::test_disposition_revision_supersedes_only_changed_child \
+  tests/test_integration_parent_completion.py::test_parent_completion_pins_exact_verification_for_rollover -x
 66 passed, 11 warnings in 5.69s
 ```
 
