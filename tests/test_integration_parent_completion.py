@@ -955,6 +955,13 @@ async def test_parent_completion_pins_exact_verification_for_rollover(db):
     assert completed["outcome"] == "completed"
     assert (await db.get_task("parent")).status is TaskStatus.COMPLETED
     assert (await db.get_integration_operation(checkpointed["operation_id"]))["state"] == "completed"
+    completed_status = await IntegrationStatusService(db).task_blockers("parent")
+    assert completed_status is not None
+    assert completed_status["parent_readiness"]["operation_id"] == checkpointed["operation_id"]
+    assert "missing_receipt" not in {
+        item["code"] for item in completed_status["blockers"]
+    }
+    assert completed_status["repair"] == []
     async with db._engine.connect() as conn:
         completion = (
             await conn.execute(select(integration_parent_operation_completions))

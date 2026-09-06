@@ -426,6 +426,15 @@ class IntegrationStatusService:
         if owners:
             blockers.append(_blocker("active_owner", "task branch has an active owner", owners[0]["id"]))
 
+        readiness_operation = None
+        if checkpoint is not None and checkpoint["episode_id"] is not None:
+            readiness_operation = await self._one(
+                conn,
+                select(integration_repair_operations).where(
+                    integration_repair_operations.c.parent_task_id == task_id,
+                    integration_repair_operations.c.episode_id == checkpoint["episode_id"],
+                ),
+            )
         operation_rows = await self._all(
             conn,
             select(integration_repair_operations).where(
@@ -441,13 +450,13 @@ class IntegrationStatusService:
         )
         child_status = {child["id"]: child["status"] for child in child_rows}
         parent_readiness = None
-        if checkpoint is not None and operation_rows:
+        if checkpoint is not None and readiness_operation is not None:
             parent_readiness = await ParentCompletion(self.db).readiness_on(
                 conn,
                 parent=dict(row),
                 project=dict(row),
                 checkpoint=checkpoint,
-                operation=operation_rows[0],
+                operation=readiness_operation,
             )
             for item in parent_readiness["blockers"]:
                 child_id = item["task_id"]

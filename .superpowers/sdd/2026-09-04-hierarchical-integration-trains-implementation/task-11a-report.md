@@ -499,3 +499,88 @@ Review-fix changed paths: `src/config.py`, `src/config_editor.py`,
 `tests/test_config_editor.py`, `tests/test_config_watcher.py`,
 `tests/test_integration_controls.py`, `tests/test_integration_parent_completion.py`, and
 this report. No schema/migration/query-control path changed.
+
+## Review fix round 2 — 2026-09-06
+
+The two Important findings in `task-11a-fix-1-review.md` were addressed without
+changing the rollout defaults, persistence schema, transport, or operator controls.
+
+### Modern GitHub App client IDs
+
+The closed client-ID validator and generated editor schema now accept both documented
+GitHub formats: the bounded dotted `Iv1.<identifier>` form and the modern `Iv` plus
+exactly 18 alphanumeric characters. The latter admits the supplied official example
+`Iv23f8doAlphaNumer1c`; path, repository, numeric, pre-/post-substitution, and generic
+secret rejection rules are unchanged.
+
+RED:
+
+```text
+aq test tests/test_config_validation.py::TestGitHubAppConfigValidation::test_loads_documented_client_id_formats_without_secret_material tests/test_config_validation.py::TestScratchProbeConfigValidation::test_loads_documented_negative_client_id_formats tests/test_config_editor.py::TestGetConfigSchemaCommand::test_returns_schema
+3 failed, 2 passed, 9 warnings in 2.27s
+```
+
+The modern ID was rejected independently by positive config loading, negative scratch
+config loading, and the generated editor schema. The dotted form passed.
+
+GREEN:
+
+```text
+aq test tests/test_config_validation.py::TestGitHubAppConfigValidation::test_loads_documented_client_id_formats_without_secret_material tests/test_config_validation.py::TestScratchProbeConfigValidation::test_loads_documented_negative_client_id_formats tests/test_config_editor.py::TestGetConfigSchemaCommand::test_returns_schema
+5 passed, 9 warnings in 2.19s
+```
+
+Self-review mutation check: removing the modern alternation fails three independent
+boundaries; replacing the closed alternatives with generic identity syntax makes the
+retained `inline-secret-token` config and editor-schema assertions fail.
+
+### Completed parent operation selection
+
+Task status now selects the readiness operation by the checkpoint's exact parent and
+episode identity, including completed history. The existing active/escalated/
+human-required query remains separate and continues to be the only input to repair
+projection and repair blockers.
+
+RED:
+
+```text
+pytest -q tests/test_integration_parent_completion.py::test_parent_completion_pins_exact_verification_for_rollover -x
+1 failed, 2 warnings in 0.91s
+```
+
+Immediately after real parent completion, `parent_readiness` was `None` because the
+completed operation had been excluded.
+
+GREEN:
+
+```text
+pytest -q tests/test_integration_parent_completion.py::test_parent_completion_pins_exact_verification_for_rollover -x
+1 passed, 2 warnings in 0.99s
+```
+
+The assertion is before task rollover and the next episode. It proves the completed
+operation remains the readiness authority, its valid receipt does not become a false
+`missing_receipt` blocker, and completed history remains absent from `repair`.
+Self-review mutation check: restoring the active filter for readiness makes
+`parent_readiness` null; feeding the episode operation into repair makes the explicit
+empty-repair assertion fail. Existing active-parent receipt and typed-stage cases cover
+the other side of the split.
+
+### Round 2 amended-area gate
+
+No migration, 66-test prior gate, or 296-test area gate was repeated. The one amended
+gate included both formats, hostile config sentinels, editor/schema boundaries,
+environment-expanded secret rejection, completed-parent status, and active-parent
+receipt and repair projections:
+
+```text
+aq test tests/test_config_validation.py::TestGitHubAppConfigValidation::test_loads_documented_client_id_formats_without_secret_material tests/test_config_validation.py::TestGitHubAppConfigValidation::test_load_rejects_nonmapping_or_unknown_inline_material tests/test_config_validation.py::TestGitHubAppConfigValidation::test_rejects_unsafe_allowed_identity_and_reference_values tests/test_config_validation.py::TestScratchProbeConfigValidation::test_loads_documented_negative_client_id_formats tests/test_config_validation.py::TestScratchProbeConfigValidation::test_rejects_unknown_or_inline_scratch_material_without_echoing_it tests/test_config_validation.py::TestScratchProbeConfigValidation::test_rejects_invalid_or_non_distinct_scratch_identity tests/test_config_editor.py::TestGetConfigSchemaCommand::test_returns_schema tests/test_config_editor.py::TestUpdateConfigCommand::test_inline_github_secret_edit_is_rejected_without_round_trip tests/test_config_editor.py::TestUpdateConfigCommand::test_rejected_nested_scratch_secret_never_reaches_logs_or_response tests/test_config_watcher.py::TestConfigWatcher::test_environment_expanded_inline_key_is_rejected_without_leak_or_swap tests/test_integration_parent_completion.py::test_status_uses_current_receipt_among_multiple_historical_deliveries tests/test_integration_parent_completion.py::test_status_uses_typed_limit_for_current_repair_stage tests/test_integration_parent_completion.py::test_parent_completion_pins_exact_verification_for_rollover
+41 passed, 9 warnings in 3.04s
+```
+
+Warnings are the same inherited categories already listed above: deprecated
+`pkg_resources`, setuptools' deprecated `zope` namespace declaration, and Discord's
+deprecated `audioop` import. Round 2 changed paths are `src/config.py`,
+`src/integration/status.py`, `tests/test_config_validation.py`,
+`tests/test_config_editor.py`, `tests/test_integration_parent_completion.py`, and this
+report.

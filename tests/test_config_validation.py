@@ -25,15 +25,20 @@ from src.config import (
 
 
 class TestGitHubAppConfigValidation:
-    def test_loads_optional_daemon_reference_without_secret_material(self, tmp_path):
+    @pytest.mark.parametrize(
+        "client_id", ["Iv1.ab1112223334445c", "Iv23f8doAlphaNumer1c"]
+    )
+    def test_loads_documented_client_id_formats_without_secret_material(
+        self, tmp_path, client_id
+    ):
         config_file = tmp_path / "config.yaml"
         config_file.write_text(
-            """
+            f"""
 messaging_platform: none
 database_path: queue.db
 integration:
   github_app:
-    client_id: Iv1.example
+    client_id: {client_id}
     app_id: 101
     installation_id: 202
     private_key_path: /run/secrets/aq-github-app.pem
@@ -43,7 +48,7 @@ integration:
         config = load_config(str(config_file))
 
         assert config.integration.github_app == GitHubAppConfig(
-            client_id="Iv1.example",
+            client_id=client_id,
             app_id=101,
             installation_id=202,
             private_key_path="/run/secrets/aq-github-app.pem",
@@ -160,10 +165,15 @@ integration:
 
 
 class TestScratchProbeConfigValidation:
-    def test_loads_closed_non_secret_negative_identity(self, tmp_path):
+    @pytest.mark.parametrize(
+        "negative_client_id", ["Iv1.ab1112223334445c", "Iv23f8doAlphaNumer1c"]
+    )
+    def test_loads_documented_negative_client_id_formats(
+        self, tmp_path, negative_client_id
+    ):
         config_file = tmp_path / "config.yaml"
         config_file.write_text(
-            """
+            f"""
 messaging_platform: none
 database_path: queue.db
 integration:
@@ -175,7 +185,7 @@ integration:
   scratch_probe:
     repository_id: 303
     repository_full_name: acme/agent-queue-probe
-    negative_client_id: Iv1.negative
+    negative_client_id: {negative_client_id}
     negative_app_id: 404
     negative_installation_id: 505
     negative_private_key_path: /run/secrets/negative.pem
@@ -187,7 +197,7 @@ integration:
         assert config.integration.scratch_probe == ScratchProbeConfig(
             repository_id=303,
             repository_full_name="acme/agent-queue-probe",
-            negative_client_id="Iv1.negative",
+            negative_client_id=negative_client_id,
             negative_app_id=404,
             negative_installation_id=505,
             negative_private_key_path="/run/secrets/negative.pem",

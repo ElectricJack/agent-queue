@@ -509,6 +509,8 @@ class TestGetConfigSchemaCommand:
     async def test_returns_schema(self, tmp_path):
         from unittest.mock import MagicMock
 
+        from jsonschema import Draft202012Validator
+
         from src.commands.handler import CommandHandler
         from src.config import AppConfig
 
@@ -537,4 +539,9 @@ class TestGetConfigSchemaCommand:
         assert scratch["repository_full_name"]["anyOf"]
         assert scratch["negative_client_id"]["anyOf"]
         assert scratch["negative_private_key_path"]["anyOf"]
+        documented_client_ids = ("Iv1.ab1112223334445c", "Iv23f8doAlphaNumer1c")
+        for identity_schema in (github["client_id"], scratch["negative_client_id"]):
+            validator = Draft202012Validator(identity_schema)
+            assert all(validator.is_valid(value) for value in documented_client_ids)
+            assert not validator.is_valid("inline-secret-token")
         assert isinstance(schema["properties"]["rate_limits"]["additionalProperties"], dict)
