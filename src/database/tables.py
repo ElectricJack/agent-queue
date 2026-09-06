@@ -22,6 +22,7 @@ from sqlalchemy import (
     Index,
     Integer,
     MetaData,
+    PrimaryKeyConstraint,
     Table,
     Text,
     UniqueConstraint,
@@ -60,10 +61,37 @@ projects = Table(
     ),
     Column("integration_repository_id", Text, nullable=True),
     Column("hierarchical_integration_policy", JSON, nullable=True),
+    Column(
+        "hierarchical_integration_desired_mode",
+        Text,
+        nullable=False,
+        server_default="disabled",
+    ),
+    Column(
+        "hierarchical_integration_draining",
+        Boolean,
+        nullable=False,
+        server_default=false(),
+    ),
+    Column(
+        "hierarchical_integration_generation",
+        Integer,
+        nullable=False,
+        server_default="0",
+    ),
     Column("created_at", Float, nullable=False),
     CheckConstraint(
         "hierarchical_integration_mode IN ('disabled', 'observe', 'hierarchy', 'train')",
         name="ck_projects_hierarchical_integration_mode",
+    ),
+    CheckConstraint(
+        "hierarchical_integration_desired_mode IN "
+        "('disabled', 'observe', 'hierarchy', 'train')",
+        name="ck_projects_hierarchical_integration_desired_mode",
+    ),
+    CheckConstraint(
+        "hierarchical_integration_generation >= 0",
+        name="ck_projects_hierarchical_integration_generation",
     ),
 )
 
@@ -3097,6 +3125,163 @@ integration_release_results = Table(
     Column("operation_id", Text, nullable=False),
     Column("catchup_request_id", Text, nullable=True),
     Column("released_at", Float, nullable=False),
+)
+
+# Task 11 rollout controls.  Waivers/transitions/consumptions/applicability
+# are evidence, not mutable state; dual-dialect migrations install database
+# triggers that reject UPDATE and DELETE.  Only the per-project suppression
+# projection is deliberately reversible.
+integration_history_waivers = Table(
+    "integration_history_waivers",
+    metadata,
+    Column("id", Text, nullable=False),
+    Column("project_id", Text, nullable=False),
+    Column("operator_id", Text, nullable=False),
+    Column("reason", Text, nullable=False),
+    Column("blocker_digest", Text, nullable=False),
+    Column("created_at", Float, nullable=False),
+    PrimaryKeyConstraint("id", name="pk_integration_history_waivers"),
+    ForeignKeyConstraint(
+        ["project_id"], ["projects.id"],
+        name="fk_integration_history_waivers_project", ondelete="RESTRICT",
+    ),
+    CheckConstraint("length(operator_id) > 0", name="ck_integration_history_waivers_operator"),
+    CheckConstraint("length(reason) > 0", name="ck_integration_history_waivers_reason"),
+    CheckConstraint(
+        "length(blocker_digest) = 71 AND blocker_digest LIKE 'sha256:%'",
+        name="ck_integration_history_waivers_blocker_digest",
+    ),
+)
+
+integration_rollout_transitions = Table(
+    "integration_rollout_transitions",
+    metadata,
+    Column("id", Text, nullable=False),
+    Column("project_id", Text, nullable=False),
+    Column("generation", Integer, nullable=False),
+    Column("old_effective_mode", Text, nullable=False),
+    Column("new_effective_mode", Text, nullable=False),
+    Column("old_desired_mode", Text, nullable=False),
+    Column("new_desired_mode", Text, nullable=False),
+    Column("draining", Boolean, nullable=False, server_default=false()),
+    Column("operator_id", Text, nullable=False),
+    Column("reason", Text, nullable=False),
+    Column("blocker_digest", Text, nullable=False),
+    Column("old_legacy_policy", JSON, nullable=False),
+    Column("new_legacy_policy", JSON, nullable=False),
+    Column("waiver_id", Text, nullable=True),
+    Column("created_at", Float, nullable=False),
+    PrimaryKeyConstraint("id", name="pk_integration_rollout_transitions"),
+    UniqueConstraint(
+        "project_id", "generation", name="uq_integration_rollout_transitions_generation"
+    ),
+    ForeignKeyConstraint(
+        ["project_id"], ["projects.id"],
+        name="fk_integration_rollout_transitions_project", ondelete="RESTRICT",
+    ),
+    ForeignKeyConstraint(
+        ["waiver_id"], ["integration_history_waivers.id"],
+        name="fk_integration_rollout_transitions_waiver", ondelete="RESTRICT",
+    ),
+    CheckConstraint("generation > 0", name="ck_integration_rollout_transitions_generation"),
+    CheckConstraint(
+        "old_effective_mode IN ('disabled', 'observe', 'hierarchy', 'train') AND "
+        "new_effective_mode IN ('disabled', 'observe', 'hierarchy', 'train') AND "
+        "old_desired_mode IN ('disabled', 'observe', 'hierarchy', 'train') AND "
+        "new_desired_mode IN ('disabled', 'observe', 'hierarchy', 'train')",
+        name="ck_integration_rollout_transitions_modes",
+    ),
+    CheckConstraint("length(operator_id) > 0", name="ck_integration_rollout_transitions_operator"),
+    CheckConstraint("length(reason) > 0", name="ck_integration_rollout_transitions_reason"),
+    CheckConstraint(
+        "length(blocker_digest) = 71 AND blocker_digest LIKE 'sha256:%'",
+        name="ck_integration_rollout_transitions_blocker_digest",
+    ),
+)
+
+integration_history_waiver_consumptions = Table(
+    "integration_history_waiver_consumptions",
+    metadata,
+    Column("waiver_id", Text, nullable=False),
+    Column("transition_id", Text, nullable=False),
+    Column("project_id", Text, nullable=False),
+    Column("blocker_digest", Text, nullable=False),
+    Column("consumed_by", Text, nullable=False),
+    Column("consumed_at", Float, nullable=False),
+    PrimaryKeyConstraint("waiver_id", name="pk_integration_history_waiver_consumptions"),
+    UniqueConstraint(
+        "transition_id", name="uq_integration_history_waiver_consumptions_transition"
+    ),
+    ForeignKeyConstraint(
+        ["waiver_id"], ["integration_history_waivers.id"],
+        name="fk_integration_history_waiver_consumptions_waiver", ondelete="RESTRICT",
+    ),
+    ForeignKeyConstraint(
+        ["transition_id"], ["integration_rollout_transitions.id"],
+        name="fk_integration_history_waiver_consumptions_transition", ondelete="RESTRICT",
+    ),
+    ForeignKeyConstraint(
+        ["project_id"], ["projects.id"],
+        name="fk_integration_history_waiver_consumptions_project", ondelete="RESTRICT",
+    ),
+    CheckConstraint("length(consumed_by) > 0", name="ck_integration_waiver_consumptions_actor"),
+    CheckConstraint(
+        "length(blocker_digest) = 71 AND blocker_digest LIKE 'sha256:%'",
+        name="ck_integration_waiver_consumptions_blocker_digest",
+    ),
+)
+
+integration_legacy_gate_applicability = Table(
+    "integration_legacy_gate_applicability",
+    metadata,
+    Column("project_id", Text, nullable=False),
+    Column("gate_id", Text, nullable=False),
+    Column("waiver_id", Text, nullable=False),
+    Column("transition_id", Text, nullable=False),
+    Column("blocker_digest", Text, nullable=False),
+    Column("applicable", Boolean, nullable=False),
+    Column("created_at", Float, nullable=False),
+    PrimaryKeyConstraint(
+        "project_id", "gate_id", name="pk_integration_legacy_gate_applicability"
+    ),
+    ForeignKeyConstraint(
+        ["project_id"], ["projects.id"],
+        name="fk_integration_legacy_gate_applicability_project", ondelete="RESTRICT",
+    ),
+    ForeignKeyConstraint(
+        ["gate_id"], ["gates.id"],
+        name="fk_integration_legacy_gate_applicability_gate", ondelete="RESTRICT",
+    ),
+    ForeignKeyConstraint(
+        ["waiver_id"], ["integration_history_waivers.id"],
+        name="fk_integration_legacy_gate_applicability_waiver", ondelete="RESTRICT",
+    ),
+    ForeignKeyConstraint(
+        ["transition_id"], ["integration_rollout_transitions.id"],
+        name="fk_integration_legacy_gate_applicability_transition", ondelete="RESTRICT",
+    ),
+    CheckConstraint(
+        "length(blocker_digest) = 71 AND blocker_digest LIKE 'sha256:%'",
+        name="ck_integration_legacy_gate_applicability_blocker_digest",
+    ),
+)
+
+integration_legacy_suppression = Table(
+    "integration_legacy_suppression",
+    metadata,
+    Column("project_id", Text, nullable=False),
+    Column("generation", Integer, nullable=False),
+    Column("merge_sweep_suppressed", Boolean, nullable=False, server_default=false()),
+    Column("final_review_route_suppressed", Boolean, nullable=False, server_default=false()),
+    Column("legacy_gate_creation_suppressed", Boolean, nullable=False, server_default=false()),
+    Column("policy_snapshot", JSON, nullable=False),
+    Column("updated_at", Float, nullable=False),
+    PrimaryKeyConstraint("project_id", name="pk_integration_legacy_suppression"),
+    ForeignKeyConstraint(
+        ["project_id"], ["projects.id"],
+        name="fk_integration_legacy_suppression_project", ondelete="RESTRICT",
+    ),
+    CheckConstraint("generation >= 0", name="ck_integration_legacy_suppression_generation"),
 )
 
 integration_outbox = Table(

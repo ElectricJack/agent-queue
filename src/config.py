@@ -1498,25 +1498,115 @@ _GITHUB_APP_CONFIG_KEYS = frozenset(
     {"client_id", "app_id", "installation_id", "private_key_path"}
 )
 
+_SCRATCH_PROBE_CONFIG_KEYS = frozenset(
+    {
+        "repository_id",
+        "repository_full_name",
+        "negative_client_id",
+        "negative_app_id",
+        "negative_installation_id",
+        "negative_private_key_path",
+    }
+)
+
+
+@dataclass(frozen=True)
+class ScratchProbeConfig:
+    """Non-secret identity for the operator-provisioned negative-control repo."""
+
+    repository_id: int
+    repository_full_name: str
+    negative_client_id: str
+    negative_app_id: int
+    negative_installation_id: int
+    negative_private_key_path: str
+
+    def validate(self, positive: GitHubAppConfig | None) -> list[ConfigError]:
+        errors: list[ConfigError] = []
+        for field_name in ("repository_id", "negative_app_id", "negative_installation_id"):
+            value = getattr(self, field_name)
+            if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+                errors.append(
+                    ConfigError(
+                        "integration",
+                        f"scratch_probe.{field_name}",
+                        "must be a positive integer",
+                    )
+                )
+        for field_name in ("negative_client_id", "negative_private_key_path"):
+            value = getattr(self, field_name)
+            if not isinstance(value, str) or not value.strip():
+                errors.append(
+                    ConfigError(
+                        "integration", f"scratch_probe.{field_name}", "must be non-empty"
+                    )
+                )
+        full_name = self.repository_full_name
+        if (
+            not isinstance(full_name, str)
+            or full_name.strip() != full_name
+            or full_name.count("/") != 1
+            or any(not component for component in full_name.split("/"))
+        ):
+            errors.append(
+                ConfigError(
+                    "integration",
+                    "scratch_probe.repository_full_name",
+                    "must be an exact owner/repository name",
+                )
+            )
+        if positive is None:
+            errors.append(
+                ConfigError(
+                    "integration",
+                    "scratch_probe",
+                    "requires integration.github_app as the positive identity",
+                )
+            )
+        else:
+            distinct = (
+                ("negative_client_id", "client_id"),
+                ("negative_app_id", "app_id"),
+                ("negative_installation_id", "installation_id"),
+                ("negative_private_key_path", "private_key_path"),
+            )
+            for negative_name, positive_name in distinct:
+                if getattr(self, negative_name) == getattr(positive, positive_name):
+                    errors.append(
+                        ConfigError(
+                            "integration",
+                            f"scratch_probe.{negative_name}",
+                            "must be distinct from integration.github_app",
+                        )
+                    )
+        return errors
+
 
 def validate_github_app_raw_config(raw: Mapping[str, object]) -> None:
-    """Reject inline or structurally ambiguous GitHub App credentials."""
+    """Reject inline or structurally ambiguous integration credentials.
+
+    Validation deliberately runs before environment substitution and never
+    includes rejected field names or values in its error.  An unknown field
+    could itself contain copied secret bytes.
+    """
     integration = raw.get("integration")
-    if not isinstance(integration, Mapping) or "github_app" not in integration:
+    if not isinstance(integration, Mapping):
         return
-    github_app = integration["github_app"]
-    if not isinstance(github_app, Mapping):
-        raise ConfigValidationError(
-            ["[integration] github_app: must be a mapping of non-secret references"]
-        )
-    unexpected = sorted(str(key) for key in github_app if key not in _GITHUB_APP_CONFIG_KEYS)
-    if unexpected:
-        raise ConfigValidationError(
-            [
-                "[integration] github_app: unsupported fields: "
-                + ", ".join(unexpected)
-            ]
-        )
+    for name, allowed in (
+        ("github_app", _GITHUB_APP_CONFIG_KEYS),
+        ("scratch_probe", _SCRATCH_PROBE_CONFIG_KEYS),
+    ):
+        if name not in integration:
+            continue
+        section = integration[name]
+        if not isinstance(section, Mapping):
+            raise ConfigValidationError(
+                [f"[integration] {name}: must be a mapping of non-secret references"]
+            )
+        if any(key not in allowed for key in section):
+            raise ConfigValidationError(
+                [f"[integration] {name}: contains unsupported credential fields"]
+            )
 
 
 @dataclass
@@ -1559,6 +1649,7 @@ class IntegrationConfig:
     #: is advisory.
     merge_required_checks: list[str] = field(default_factory=list)
     github_app: GitHubAppConfig | None = None
+    scratch_probe: ScratchProbeConfig | None = None
 
     def validate(self) -> list[ConfigError]:
         from src.git.ci_gate import MERGE_CI_POLICIES
@@ -1593,6 +1684,8 @@ class IntegrationConfig:
             )
         if self.github_app is not None:
             errors.extend(self.github_app.validate())
+        if self.scratch_probe is not None:
+            errors.extend(self.scratch_probe.validate(self.github_app))
         return errors
 
 
@@ -2259,7 +2352,6 @@ class AppConfig:
         # trust-and-ops §2).  Inert until their owning lane lands.
         updated.state_machine = fresh.state_machine
         updated.work_graph = fresh.work_graph
-        updated.integration = fresh.integration
         updated.swarm = fresh.swarm
         updated.resources = fresh.resources
         updated.pricing = fresh.pricing
@@ -2301,7 +2393,6 @@ HOT_RELOADABLE_SECTIONS = {
     # -- Framework-overhaul substrate sections (inert until their lane) ----
     "state_machine",
     "work_graph",
-    "integration",
     "swarm",
     "resources",
     "metrics",
@@ -2333,6 +2424,7 @@ RESTART_REQUIRED_SECTIONS = {
     "messages",
     "supervisor_agent",
     "api_auth",
+    "integration",
     # -- Sections that gate startup construction ---------------------------
     # Each of these is read once while the process is coming up: the engine
     # and pool (``database``), the event bus (``events``, ``validate_events``),
@@ -3179,6 +3271,19 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
                 installation_id=github_app_raw.get("installation_id"),
                 private_key_path=github_app_raw.get("private_key_path", ""),
             )
+        scratch_probe_raw = integ.get("scratch_probe")
+        scratch_probe = None
+        if isinstance(scratch_probe_raw, Mapping):
+            scratch_probe = ScratchProbeConfig(
+                repository_id=scratch_probe_raw.get("repository_id"),
+                repository_full_name=scratch_probe_raw.get("repository_full_name", ""),
+                negative_client_id=scratch_probe_raw.get("negative_client_id", ""),
+                negative_app_id=scratch_probe_raw.get("negative_app_id"),
+                negative_installation_id=scratch_probe_raw.get("negative_installation_id"),
+                negative_private_key_path=scratch_probe_raw.get(
+                    "negative_private_key_path", ""
+                ),
+            )
         config.integration = IntegrationConfig(
             default_mode=str(integ.get("default_mode", "pull_request")),
             merge_ci_policy=str(integ.get("merge_ci_policy", "warn")),
@@ -3191,6 +3296,7 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
                 list(raw_checks) if isinstance(raw_checks, list) else [raw_checks]
             ),
             github_app=github_app,
+            scratch_probe=scratch_probe,
         )
 
     if "swarm" in raw and isinstance(raw["swarm"], dict):

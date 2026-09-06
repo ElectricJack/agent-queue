@@ -396,6 +396,9 @@ class Project:
     hierarchical_integration_mode: str = "disabled"
     integration_repository_id: str | None = None
     hierarchical_integration_policy: dict | None = None
+    hierarchical_integration_desired_mode: str = "disabled"
+    hierarchical_integration_draining: bool = False
+    hierarchical_integration_generation: int = 0
 
 
 @dataclass

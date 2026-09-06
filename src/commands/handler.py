@@ -919,7 +919,14 @@ class CommandHandler(
             # terminal, never to general command logs or the activity feed.
             log_args = (
                 {"session_id": args.get("session_id"), "input": "<redacted>"}
-                if name == "session_input" else args
+                if name == "session_input"
+                else {
+                    "section": args.get("section"),
+                    "dry_run": bool(args.get("dry_run", False)),
+                    "data": "<redacted-config-data>",
+                }
+                if name == "update_config"
+                else args
             )
             if mutating:
                 logger.info("cmd %s args=%s", name, self._preview(log_args))

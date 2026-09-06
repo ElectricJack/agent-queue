@@ -11,6 +11,9 @@ docs/specs/implementation/work-graph.md §6.3.  Two sources of reasons:
   agent, workspace locked, budget exhausted, provider cooldown.  These
   come from :func:`build_capacity_reasons` reading the orchestrator's
   cached ``SchedulerState``.
+* **Integration reasons** (persistent read projections) are appended by the
+  command through :class:`src.integration.status.IntegrationStatusService`.
+  They never replace the ordinary work-graph or capacity explanation.
 
 Callers assemble both lists and return them from ``_cmd_explain_task``,
 graph reasons first (they are the persistent story) then capacity
@@ -42,7 +45,8 @@ class Reason(TypedDict):
     joining them: a ``lifecycle: pool`` profile's tasks never reach the push
     scheduler, so ``no_idle_agent`` would describe a queue this task is not
     in (see ``_cmd_explain_task._pool_wait_reason``). ``needs_attention``,
-    ``paused_backoff``, and ``paused_manually`` cover recovery states.
+    ``paused_backoff``, and ``paused_manually`` cover recovery states.  The
+    integration service contributes its own stable rollout blocker vocabulary.
     ``detail`` is a human string.
     ``ref`` names the specific entity (task id, gate id, workspace id,
     provider id) when one applies, else ``None``.

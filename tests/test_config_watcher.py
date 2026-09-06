@@ -291,6 +291,42 @@ class TestConfigWatcher:
         assert "workspace_dir" in restart_events[0]["changed_sections"]
 
     @pytest.mark.asyncio
+    async def test_integration_credentials_require_restart_and_cached_state_is_not_swapped(
+        self, config_dir, bus
+    ):
+        _tmp_path, config_path = config_dir
+        raw = yaml.safe_load(config_path.read_text())
+        raw["integration"] = {
+            "github_app": {
+                "client_id": "Iv1.positive",
+                "app_id": 101,
+                "installation_id": 202,
+                "private_key_path": "/run/secrets/positive.pem",
+            },
+            "scratch_probe": {
+                "repository_id": 303,
+                "repository_full_name": "acme/probe",
+                "negative_client_id": "Iv1.negative",
+                "negative_app_id": 404,
+                "negative_installation_id": 505,
+                "negative_private_key_path": "/run/secrets/negative.pem",
+            },
+        }
+        config_path.write_text(yaml.safe_dump(raw))
+        config = load_config(str(config_path))
+        watcher = ConfigWatcher(str(config_path), bus, config)
+        cached_integration = watcher.config.integration
+
+        raw["integration"]["scratch_probe"]["repository_id"] = 304
+        config_path.write_text(yaml.safe_dump(raw))
+        result = await watcher.reload()
+
+        assert result["restart_required"] == ["integration"]
+        assert result["applied"] == []
+        assert watcher.config.integration is cached_integration
+        assert watcher.config.integration.scratch_probe.repository_id == 303
+
+    @pytest.mark.asyncio
     async def test_reload_reports_previously_blind_section(self, config_dir, bus):
         """``database`` was missing from the hand-written diff list.
 

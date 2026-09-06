@@ -220,7 +220,7 @@ class SystemCommandsMixin:
         except ConfigValidationError:
             return {
                 "error": (
-                    "Configuration contains an invalid integration.github_app section; "
+                    "Configuration contains an invalid integration credential section; "
                     "edit the file directly."
                 )
             }

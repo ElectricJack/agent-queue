@@ -3928,6 +3928,19 @@ class TaskCommandsMixin:
                 capacity = [r for r in capacity if r["code"] not in _PUSH_ONLY_REASON_CODES]
             reasons.extend(capacity)
 
+        # Integration rollout reasons are an additive explanation layer.
+        # The service resolves task/project relationships server-side and
+        # reads one consistent snapshot; ordinary graph/capacity reasons stay
+        # first so enabling observation cannot hide why work is unscheduled.
+        from src.integration.status import IntegrationStatusService
+
+        integration = await IntegrationStatusService(self.db).task_blockers(str(task_id))
+        if integration is not None and integration["integration_active"]:
+            reasons.extend(
+                Reason(code=item["code"], detail=item["detail"], ref=item.get("ref"))
+                for item in integration["blockers"]
+            )
+
         return {
             "success": True,
             "reasons": reasons,

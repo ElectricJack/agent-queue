@@ -58,6 +58,13 @@ class ProjectQueryMixin:
                     hierarchical_integration_mode=project.hierarchical_integration_mode,
                     integration_repository_id=project.integration_repository_id,
                     hierarchical_integration_policy=project.hierarchical_integration_policy,
+                    hierarchical_integration_desired_mode=(
+                        project.hierarchical_integration_desired_mode
+                    ),
+                    hierarchical_integration_draining=project.hierarchical_integration_draining,
+                    hierarchical_integration_generation=(
+                        project.hierarchical_integration_generation
+                    ),
                     created_at=time.time(),
                 )
             )
@@ -85,6 +92,13 @@ class ProjectQueryMixin:
 
     async def update_project(self, project_id: str, **kwargs) -> None:
         """Update arbitrary project fields."""
+        control_fields = {
+            "hierarchical_integration_desired_mode",
+            "hierarchical_integration_draining",
+            "hierarchical_integration_generation",
+        }
+        if control_fields & kwargs.keys():
+            raise ValueError("integration rollout state requires the generation CAS helper")
         values = {}
         for key, value in kwargs.items():
             if isinstance(value, ProjectStatus):
@@ -298,4 +312,13 @@ class ProjectQueryMixin:
             ),
             integration_repository_id=row.get("integration_repository_id"),
             hierarchical_integration_policy=row.get("hierarchical_integration_policy"),
+            hierarchical_integration_desired_mode=(
+                row.get("hierarchical_integration_desired_mode") or "disabled"
+            ),
+            hierarchical_integration_draining=bool(
+                row.get("hierarchical_integration_draining", False)
+            ),
+            hierarchical_integration_generation=int(
+                row.get("hierarchical_integration_generation", 0)
+            ),
         )

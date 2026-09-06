@@ -34,6 +34,7 @@ from src.database.queries.event_queries import EventQueryMixin
 from src.database.queries.gate_queries import GateQueriesMixin
 from src.database.queries.hierarchy_queries import HierarchyQueryMixin
 from src.database.queries.integration_state_queries import IntegrationStateQueriesMixin
+from src.database.queries.integration_control_queries import IntegrationControlQueriesMixin
 from src.database.queries.integration_schedule_queries import IntegrationScheduleQueriesMixin
 from src.database.queries.integration_reconciliation_queries import (
     IntegrationReconciliationQueriesMixin,
@@ -70,6 +71,7 @@ logger = logging.getLogger(__name__)
 
 
 class SQLiteDatabaseAdapter(
+    IntegrationControlQueriesMixin,
     IntegrationTrainQueriesMixin,
     IntegrationDeliveryQueriesMixin,
     IntegrationReconciliationQueriesMixin,

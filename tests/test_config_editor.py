@@ -255,6 +255,26 @@ class TestGetConfigCommand:
         assert "error" in result
         assert sentinel not in repr(result)
 
+    @pytest.mark.asyncio
+    async def test_externally_modified_inline_scratch_secret_is_never_returned(
+        self, handler_with_config
+    ):
+        handler, cfg_path = handler_with_config
+        sentinel_key = "copied_private_material_sentinel"
+        sentinel_value = "externally-written-scratch-sentinel"
+        raw = yaml.safe_load(cfg_path.read_text())
+        raw["integration"] = {
+            "scratch_probe": {sentinel_key: sentinel_value},
+        }
+        cfg_path.write_text(yaml.safe_dump(raw))
+
+        result = await handler.execute("get_config", {})
+
+        serialized = repr(result)
+        assert "error" in result
+        assert sentinel_key not in serialized
+        assert sentinel_value not in serialized
+
 
 class TestUpdateConfigCommand:
     @pytest.fixture
@@ -361,6 +381,42 @@ class TestUpdateConfigCommand:
         watcher.reload.assert_not_called()
 
     @pytest.mark.asyncio
+    async def test_rejected_nested_scratch_secret_never_reaches_logs_or_response(
+        self, handler_with_config, caplog
+    ):
+        handler, cfg_path, watcher = handler_with_config
+        before = cfg_path.read_text()
+        sentinel_key = "secret_field_name_sentinel"
+        sentinel_value = "secret-field-value-sentinel"
+
+        with caplog.at_level("DEBUG"):
+            result = await handler.execute(
+                "update_config",
+                {
+                    "section": "integration",
+                    "data": {
+                        "scratch_probe": {
+                            "repository_id": 303,
+                            "repository_full_name": "acme/probe",
+                            "negative_client_id": "Iv1.negative",
+                            "negative_app_id": 404,
+                            "negative_installation_id": 505,
+                            "negative_private_key_path": "/run/secrets/negative.pem",
+                            sentinel_key: sentinel_value,
+                        }
+                    },
+                    "dry_run": True,
+                },
+            )
+
+        serialized = repr(result) + caplog.text
+        assert sentinel_key not in serialized
+        assert sentinel_value not in serialized
+        assert "<redacted-config-data>" in caplog.text
+        assert cfg_path.read_text() == before
+        watcher.reload.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_dry_run_does_not_write(self, handler_with_config):
         handler, cfg_path, watcher = handler_with_config
         before = cfg_path.read_text()
@@ -446,6 +502,8 @@ class TestGetConfigSchemaCommand:
         assert "scheduling" in schema["properties"]
         assert schema["properties"]["scheduling"]["x-reload"] == "hot"
         integration = schema["properties"]["integration"]
+        assert integration["x-reload"] == "restart"
         assert integration["additionalProperties"] is False
         assert integration["properties"]["github_app"]["additionalProperties"] is False
+        assert integration["properties"]["scratch_probe"]["additionalProperties"] is False
         assert isinstance(schema["properties"]["rate_limits"]["additionalProperties"], dict)

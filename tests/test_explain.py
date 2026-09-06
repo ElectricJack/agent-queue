@@ -200,6 +200,44 @@ class TestExplainCommand:
         res = await handler._cmd_explain_task({"task_id": "t"})
         assert any(r["code"] == "held" and r["ref"] == "hold:alice" for r in res["reasons"])
 
+    async def test_integration_reasons_append_without_replacing_ordinary_explanations(
+        self, handler, db
+    ):
+        await mktask(db, "integration-held", status=TaskStatus.READY)
+        await db.add_task_label("integration-held", "hold:operator")
+        async with db.immediate() as conn:
+            assert await db.cas_project_integration_control_on(
+                conn,
+                project_id=PROJECT_ID,
+                expected_generation=0,
+                effective_mode="disabled",
+                desired_mode="observe",
+                draining=False,
+            )
+
+        res = await handler._cmd_explain_task({"task_id": "integration-held"})
+
+        assert res["reason_codes"][0] == "held"
+        assert "repository_not_designated" in res["reason_codes"]
+        assert "preflight_evidence_unavailable" in res["reason_codes"]
+
+    async def test_disabled_project_does_not_add_integration_reasons(self, handler, db):
+        await mktask(db, "ordinary", status=TaskStatus.READY)
+        await mktask(
+            db,
+            "ordinary-child",
+            status=TaskStatus.READY,
+            parent_task_id="ordinary",
+        )
+
+        res = await handler._cmd_explain_task({"task_id": "ordinary"})
+
+        assert not {
+            "open_child",
+            "repository_not_designated",
+            "preflight_evidence_unavailable",
+        } & set(res["reason_codes"])
+
     async def test_cross_project_dep_names_the_other_project(self, handler, db):
         other = "proj-other"
         await db.create_project(Project(id=other, name="Other"))

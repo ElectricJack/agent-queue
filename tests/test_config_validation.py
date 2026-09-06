@@ -15,6 +15,7 @@ from src.config import (
     DiscordConfig,
     LLMLoggingConfig,
     GitHubAppConfig,
+    ScratchProbeConfig,
     McpServerConfig,
     MemoryConfig,
     PauseRetryConfig,
@@ -97,6 +98,108 @@ integration:
         errors = GitHubAppConfig(**values).validate()
 
         assert any(error.field == f"github_app.{field}" for error in errors)
+
+
+class TestScratchProbeConfigValidation:
+    def test_loads_closed_non_secret_negative_identity(self, tmp_path):
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text(
+            """
+messaging_platform: none
+database_path: queue.db
+integration:
+  github_app:
+    client_id: Iv1.positive
+    app_id: 101
+    installation_id: 202
+    private_key_path: /run/secrets/positive.pem
+  scratch_probe:
+    repository_id: 303
+    repository_full_name: acme/agent-queue-probe
+    negative_client_id: Iv1.negative
+    negative_app_id: 404
+    negative_installation_id: 505
+    negative_private_key_path: /run/secrets/negative.pem
+"""
+        )
+
+        config = load_config(str(config_file))
+
+        assert config.integration.scratch_probe == ScratchProbeConfig(
+            repository_id=303,
+            repository_full_name="acme/agent-queue-probe",
+            negative_client_id="Iv1.negative",
+            negative_app_id=404,
+            negative_installation_id=505,
+            negative_private_key_path="/run/secrets/negative.pem",
+        )
+        assert "private_key" not in vars(config.integration.scratch_probe)
+
+    @pytest.mark.parametrize("field", ["token", "private_key", "pem", "body", "auth", "mystery"])
+    def test_rejects_unknown_or_inline_scratch_material_without_echoing_it(
+        self, tmp_path, field
+    ):
+        sentinel = f"scratch-{field}-secret-sentinel"
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text(
+            yaml.safe_dump(
+                {
+                    "messaging_platform": "none",
+                    "database_path": "queue.db",
+                    "integration": {
+                        "scratch_probe": {
+                            "repository_id": 303,
+                            "repository_full_name": "acme/probe",
+                            "negative_client_id": "Iv1.negative",
+                            "negative_app_id": 404,
+                            "negative_installation_id": 505,
+                            "negative_private_key_path": "/run/secrets/negative.pem",
+                            field: sentinel,
+                        }
+                    },
+                }
+            )
+        )
+
+        with pytest.raises(ConfigValidationError) as caught:
+            load_config(str(config_file))
+
+        message = str(caught.value)
+        assert sentinel not in message
+        assert field not in message
+        assert "scratch_probe" in message
+
+    @pytest.mark.parametrize(
+        "overrides",
+        [
+            {"repository_id": 0},
+            {"repository_full_name": "acme"},
+            {"repository_full_name": "acme/probe/extra"},
+            {"negative_app_id": 101},
+            {"negative_installation_id": 202},
+            {"negative_client_id": "Iv1.positive"},
+        ],
+    )
+    def test_rejects_invalid_or_non_distinct_scratch_identity(self, overrides):
+        github = GitHubAppConfig(
+            client_id="Iv1.positive",
+            app_id=101,
+            installation_id=202,
+            private_key_path="/run/secrets/positive.pem",
+        )
+        values = {
+            "repository_id": 303,
+            "repository_full_name": "acme/probe",
+            "negative_client_id": "Iv1.negative",
+            "negative_app_id": 404,
+            "negative_installation_id": 505,
+            "negative_private_key_path": "/run/secrets/negative.pem",
+        }
+        values.update(overrides)
+
+        errors = ScratchProbeConfig(**values).validate(github)
+
+        assert errors
 
 
 # ── ConfigError dataclass ──────────────────────────────────────────────
