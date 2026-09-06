@@ -409,3 +409,60 @@ The 11 warnings are the previously documented `pkg_resources`, namespace-package
 `audioop` deprecations; no warning suppression or dependency work was included. Task11 still owns
 real App/check identity installation, workflow variables, branch-protection compatibility, live
 probe, and project activation.
+
+---
+
+## Fix round 2 — terminal publication nonce fence
+
+Fix base: `e9af1da5`; nearest preceding controller documentation head: `bac539c8`.
+Runtime/test commit: `3300488e`.
+
+The finalizer now requires the caller claim's exact `execution_nonce` both when validating a
+reserved row and in the `reserved -> published` affected-row CAS. A stale owner that resumes after
+an expired unmarked takeover therefore returns `stale` without a proof and cannot overwrite the
+successor's canonical check-run identity. Marked-expiry authenticated reconciliation is unchanged:
+marked reservations never rotate their nonce.
+
+The public regression drives two real `IntegrationAttestationService.publish()` calls. The old
+owner pauses after authenticating check run `7000`; its unmarked lease expires; a fresh service
+takes over and pauses after installing its prewrite marker; the old owner resumes; then the
+successor completes its one POST and freezes check run `7001`.
+
+RED against fix round 1:
+
+```text
+$ pytest -q tests/test_integration_attestation.py::test_expired_unmarked_takeover_fences_paused_old_finalizer -x
+1 failed, 2 warnings in 0.65s
+E AssertionError: assert 'already_published' == 'stale'
+```
+
+After the two nonce predicates, the first GREEN attempt reached all intended race assertions but
+exposed two assertions accidentally placed below the new test (`NameError: results is not defined`).
+Those pre-existing concurrency assertions were restored to their original test, then the exact
+race node was rerun:
+
+```text
+$ pytest -q tests/test_integration_attestation.py::test_expired_unmarked_takeover_fences_paused_old_finalizer -x
+1 passed, 2 warnings in 0.65s
+```
+
+Focused file verification:
+
+```text
+$ pytest -q tests/test_integration_attestation.py -x
+18 passed, 2 warnings in 3.29s
+
+$ ruff check src/integration/attestation.py tests/test_integration_attestation.py
+All checks passed!
+
+$ python3.12 -m py_compile src/integration/attestation.py tests/test_integration_attestation.py
+[exit 0]
+
+$ git diff --check
+[exit 0]
+```
+
+No schema, migration, workflow, provider selection, command wiring, Task10c/11, network, forge, or
+operator-database changes were made. Per the fix brief, the broader affected-area gate was not
+rerun because only the attestation implementation and its focused test file changed. The two known
+dependency warnings remain unchanged.
