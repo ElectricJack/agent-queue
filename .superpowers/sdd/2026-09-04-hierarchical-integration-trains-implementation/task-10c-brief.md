@@ -120,7 +120,7 @@ all receipts are durable.
 Create `integration_cleanup_items`, keyed by immutable `(batch_id, kind, identity)`, with:
 
 - exact `project_id`, canonical `repository_id`, numeric repository identity and `full_name`;
-- `kind: source_pr|audit_pr|remote_ref|worktree` and immutable target identity;
+- `kind: source_pr|audit_pr|remote_ref|local_ref|worktree` and immutable target identity;
 - exact expected SHA for every ref/worktree and batch/revision/receipt identity for comments;
 - `state: pending|retryable|complete|conflict|failed`, nonnegative `attempts`, `next_attempt_at`,
   `last_error`, `created_at`, `updated_at`, and optional terminal timestamp;
@@ -135,9 +135,14 @@ read equals `expected_sha`; worktree action detaches/removes only a daemon-owned
 whose recorded batch/revision/head all match. Use repository-bound App identity and never
 checkout-controlled `origin`.
 
-Extend `GitHubAppClient` with a repository-bound exact delete operation that accepts a short head
-and `expected_old_sha`. It authenticated-reads, returns canonical already-absent when missing,
-refuses a moved ref as `conflict`, and deletes only the observed exact SHA. Lost delete/PR responses
+Implement remote deletion through the existing isolated Git App transport using an atomic
+expected-old lease and an empty source refspec. An authenticated read followed by GitHub's
+unconditional REST delete is insufficient: the ref may move between those calls. Keep authenticated
+reads for reconciliation and identity checks, return canonical already-absent when missing, and
+refuse a moved ref as `conflict`. Local refs use Git's expected-old update-ref deletion in the
+recorded daemon-owned repository; never delete a checked-out or foreign-owned branch.
+Include both local and remote integration refs and eligible source refs under frozen retention
+policy. Lost delete/PR responses
 are reconciled by authenticated read/lookup before retry. Backoff and terminal attempt count come
 from the batch's frozen `policy_snapshot.cleanup`, not current project configuration.
 
