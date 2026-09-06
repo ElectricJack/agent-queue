@@ -1,5 +1,9 @@
 # Task 11 requirements
 
+Read `pre-final-hierarchy-audit.md` in this directory, section 3, for the three
+exact production legacy merge entrypoints this phase must guard atomically at
+cutover. The command guard must run before forge/CI reads for every caller.
+
 Task7b safety cutover prerequisite: managed repair writer commands require a server-issued
 session-instance-bound API token. Legacy NULL-bound tokens retain unrelated behavior but
 cannot author/push a conflict resolution or file under an active repair scope. Explain fresh
