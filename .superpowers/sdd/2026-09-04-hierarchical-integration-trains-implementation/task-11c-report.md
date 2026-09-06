@@ -128,8 +128,11 @@ returned `1 passed, 3 warnings in 1.09s`. The warnings are inherited
 
 Final static checks:
 
-- `python3 -m compileall -q` on the changed runtime modules -> exit 0.
-- `ruff check` on all changed source/test paths -> `All checks passed!`.
+- `python3 -m compileall -q src/integration/controls.py src/integration/recovery_controls.py src/commands/contracts/integration.py src/commands/integration_commands.py src/playbooks/runtime.py src/playbooks/engine.py src/orchestrator/core.py`
+  -> exit 0.
+- `ruff check src/api/scope.py src/commands/contracts/integration.py src/commands/git_commands.py src/commands/integration_commands.py src/commands/project_commands.py src/database/queries/integration_control_queries.py src/integration/controls.py src/integration/recovery_controls.py src/integration/release.py src/integration/scheduler.py src/integration/service.py src/integration/status.py src/orchestrator/core.py src/playbooks/engine.py src/playbooks/runtime.py src/playbooks/services.py src/tools/definitions.py tests/test_activation_source_scope.py tests/test_api_scope.py tests/test_integration_cleanup.py tests/test_integration_contracts.py tests/test_integration_controls.py tests/test_integration_operational_controls.py tests/test_integration_outbox.py tests/test_integration_review_evidence.py tests/test_integration_schedule.py tests/test_integration_service.py tests/test_orchestrator.py tests/test_pr_merge_command.py tests/test_v2_engine.py`
+  -> `All checks passed!`.
+- `git diff --check` -> exit 0.
 
 ## Concerns and deferred work
 
