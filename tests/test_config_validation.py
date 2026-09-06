@@ -99,6 +99,65 @@ integration:
 
         assert any(error.field == f"github_app.{field}" for error in errors)
 
+    @pytest.mark.parametrize(
+        "field,value",
+        [
+            ("client_id", "client id with spaces"),
+            ("client_id", "client\nidentity"),
+            ("client_id", "inline-secret-token"),
+            ("private_key_path", "-----BEGIN PRIVATE KEY-----\nsecret"),
+            ("private_key_path", "relative/key.pem"),
+            ("private_key_path", "/run/secrets/../key.pem"),
+        ],
+    )
+    def test_rejects_unsafe_allowed_identity_and_reference_values(
+        self, tmp_path, field, value
+    ):
+        raw = {
+            "messaging_platform": "none",
+            "database_path": "queue.db",
+            "integration": {
+                "github_app": {
+                    "client_id": "Iv1.example",
+                    "app_id": 101,
+                    "installation_id": 202,
+                    "private_key_path": "/run/secrets/key.pem",
+                    field: value,
+                }
+            },
+        }
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text(yaml.safe_dump(raw))
+
+        with pytest.raises(ConfigValidationError) as caught:
+            load_config(str(config_file))
+
+        assert value not in str(caught.value)
+
+    def test_rejects_unsafe_reference_after_environment_substitution(
+        self, tmp_path, monkeypatch
+    ):
+        sentinel = "-----BEGIN PRIVATE KEY-----\nexpanded-secret"
+        monkeypatch.setenv("AQ_TEST_APP_KEY_PATH", sentinel)
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text(
+            """
+messaging_platform: none
+database_path: queue.db
+integration:
+  github_app:
+    client_id: Iv1.example
+    app_id: 101
+    installation_id: 202
+    private_key_path: ${AQ_TEST_APP_KEY_PATH}
+"""
+        )
+
+        with pytest.raises(ConfigValidationError) as caught:
+            load_config(str(config_file))
+
+        assert sentinel not in str(caught.value)
+
 
 class TestScratchProbeConfigValidation:
     def test_loads_closed_non_secret_negative_identity(self, tmp_path):
@@ -178,6 +237,13 @@ integration:
             {"negative_app_id": 101},
             {"negative_installation_id": 202},
             {"negative_client_id": "Iv1.positive"},
+            {"negative_private_key_path": "/run/secrets/positive.pem"},
+            {"negative_client_id": "negative identity"},
+            {"negative_private_key_path": "-----BEGIN PRIVATE KEY-----\nsecret"},
+            {"negative_private_key_path": "/run/secrets/../negative.pem"},
+            {"repository_full_name": "acme widgets/probe"},
+            {"repository_full_name": "acme/probe?ref=secret"},
+            {"repository_full_name": "acme/probe\nother"},
         ],
     )
     def test_rejects_invalid_or_non_distinct_scratch_identity(self, overrides):
@@ -200,6 +266,37 @@ integration:
         errors = ScratchProbeConfig(**values).validate(github)
 
         assert errors
+
+    def test_rejects_unsafe_negative_reference_after_environment_substitution(
+        self, tmp_path, monkeypatch
+    ):
+        sentinel = "-----BEGIN PRIVATE KEY-----\nexpanded-negative-secret"
+        monkeypatch.setenv("AQ_TEST_NEGATIVE_KEY_PATH", sentinel)
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text(
+            """
+messaging_platform: none
+database_path: queue.db
+integration:
+  github_app:
+    client_id: Iv1.positive
+    app_id: 101
+    installation_id: 202
+    private_key_path: /run/secrets/positive.pem
+  scratch_probe:
+    repository_id: 303
+    repository_full_name: acme/probe
+    negative_client_id: Iv1.negative
+    negative_app_id: 404
+    negative_installation_id: 505
+    negative_private_key_path: ${AQ_TEST_NEGATIVE_KEY_PATH}
+"""
+        )
+
+        with pytest.raises(ConfigValidationError) as caught:
+            load_config(str(config_file))
+
+        assert sentinel not in str(caught.value)
 
 
 # ── ConfigError dataclass ──────────────────────────────────────────────

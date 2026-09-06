@@ -36,6 +36,7 @@ from src.integration.models import (
     RequiredCheckSet,
 )
 from src.integration.hierarchy import HierarchyIntegration
+from src.integration.status import IntegrationStatusService
 from src.database.queries.hierarchy_queries import HierarchyError
 from src.integration.models import BranchKey, Fence
 from src.integration.ownership import BranchOwnership
@@ -148,7 +149,9 @@ async def _parent_tree(db, *, children: int = 2, on_failed_child: str = "block")
     return hierarchy, checkpointed, child_ids
 
 
-async def _code_receipt(db, child_id: str, before_sha: str, after_sha: str) -> None:
+async def _code_receipt(
+    db, child_id: str, before_sha: str, after_sha: str, **overrides
+) -> None:
     async with db.immediate() as conn:
         checkpoint = (
             await conn.execute(
@@ -165,26 +168,26 @@ async def _code_receipt(db, child_id: str, before_sha: str, after_sha: str) -> N
                 )
             )
         ).mappings().one()
-        await conn.execute(
-            insert(task_delivery_receipts).values(
-                id=f"receipt-{child_id}",
-                domain_key=f"delivery-{child_id}",
-                source_task_id=child_id,
-                target_task_id="parent",
-                repository_id="repo",
-                target_branch="aq/parent",
-                reviewed_head_sha="b" * 40,
-                reviewed_tree_sha="c" * 40,
-                before_sha=before_sha,
-                squash_sha=after_sha,
-                after_sha=after_sha,
-                review_evidence={"id": f"review-{child_id}"},
-                parent_operation_id=operation["id"],
-                parent_episode_id=checkpoint["episode_id"],
-                disposition="code",
-                created_at=float(int(child_id.rsplit(".", 1)[1])),
-            )
-        )
+        values = {
+            "id": f"receipt-{child_id}",
+            "domain_key": f"delivery-{child_id}",
+            "source_task_id": child_id,
+            "target_task_id": "parent",
+            "repository_id": "repo",
+            "target_branch": "aq/parent",
+            "reviewed_head_sha": "b" * 40,
+            "reviewed_tree_sha": "c" * 40,
+            "before_sha": before_sha,
+            "squash_sha": after_sha,
+            "after_sha": after_sha,
+            "review_evidence": {"id": f"review-{child_id}"},
+            "parent_operation_id": operation["id"],
+            "parent_episode_id": checkpoint["episode_id"],
+            "disposition": "code",
+            "created_at": float(int(child_id.rsplit(".", 1)[1])),
+        }
+        values.update(overrides)
+        await conn.execute(insert(task_delivery_receipts).values(**values))
 
 
 def _artifact() -> ArtifactSnapshot:
@@ -547,6 +550,150 @@ async def test_terminal_children_require_complete_contiguous_receipt_chain(db):
     assert [row["source_task_id"] for row in ready["receipts"]] == children
 
 
+async def test_status_uses_current_receipt_among_multiple_historical_deliveries(db):
+    _hierarchy, checkpointed, children = await _parent_tree(db, children=1)
+    child_id = children[0]
+    async with db.immediate() as conn:
+        await conn.execute(
+            insert(task_delivery_receipts).values(
+                id="historic-receipt",
+                domain_key="historic-delivery",
+                source_task_id=child_id,
+                target_task_id="parent",
+                repository_id="repo",
+                target_branch="aq/parent",
+                reviewed_head_sha="1" * 40,
+                reviewed_tree_sha="2" * 40,
+                before_sha="a" * 40,
+                squash_sha="3" * 40,
+                after_sha="3" * 40,
+                review_evidence={"id": "historic-review"},
+                parent_operation_id=None,
+                parent_episode_id=None,
+                disposition="code",
+                created_at=0.0,
+            )
+        )
+    await _code_receipt(db, child_id, "a" * 40, "d" * 40)
+
+    projection = await IntegrationStatusService(db).task_blockers("parent")
+
+    assert projection is not None
+    assert projection["parent_readiness"]["operation_id"] == checkpointed["operation_id"]
+    assert "missing_receipt" not in {
+        blocker["code"] for blocker in projection["blockers"]
+    }
+
+
+@pytest.mark.parametrize(
+    "invalid_values",
+    [
+        {"reviewed_head_sha": "9" * 40},
+        {"repository_id": "wrong-repository"},
+        {"target_branch": "wrong-branch"},
+        {"parent_operation_id": None, "parent_episode_id": None},
+    ],
+)
+async def test_status_rejects_receipt_not_applicable_to_current_parent_context(
+    db, invalid_values
+):
+    _hierarchy, _checkpointed, children = await _parent_tree(db, children=1)
+    child_id = children[0]
+    await _code_receipt(db, child_id, "a" * 40, "d" * 40, **invalid_values)
+
+    projection = await IntegrationStatusService(db).task_blockers("parent")
+
+    assert projection is not None
+    assert "missing_receipt" in {
+        blocker["code"] for blocker in projection["blockers"]
+    }
+
+
+async def test_status_blocks_failed_child_without_current_disposition_receipt(db):
+    _hierarchy, _checkpointed, children = await _parent_tree(db, children=1)
+    async with db.immediate() as conn:
+        await conn.execute(
+            update(tasks).where(tasks.c.id == children[0]).values(status="FAILED")
+        )
+
+    projection = await IntegrationStatusService(db).task_blockers("parent")
+
+    assert projection is not None
+    blocker = next(item for item in projection["blockers"] if item["code"] == "missing_receipt")
+    assert blocker["cause"] == "failed_child"
+
+
+@pytest.mark.parametrize(
+    "ordinal,attempts,expected_limit",
+    [(0, 2, 2), (1, 1, 1)],
+)
+async def test_status_uses_typed_limit_for_current_repair_stage(
+    db, ordinal, attempts, expected_limit
+):
+    _hierarchy, checkpointed, _children = await _parent_tree(db, children=1)
+    policy = _boundary().repair.model_dump(mode="json")
+    policy["primary_attempts"] = 2
+    policy["debug_attempts"] = 1
+    async with db.immediate() as conn:
+        await conn.execute(
+            update(integration_repair_operations)
+            .where(integration_repair_operations.c.id == checkpointed["operation_id"])
+            .values(active_stage=ordinal)
+        )
+        await conn.execute(
+            insert(integration_repair_stages).values(
+                operation_id=checkpointed["operation_id"],
+                ordinal=ordinal,
+                policy=policy,
+                intelligence_class="medium",
+                profile_id="integrator",
+                starting_sha="a" * 40,
+                started_at=1.0,
+                deadline_at=100.0,
+                attempts=attempts,
+                state="active",
+            )
+        )
+
+    projection = await IntegrationStatusService(db, clock=lambda: 50.0).task_blockers(
+        "parent"
+    )
+
+    assert projection is not None
+    blocker = next(item for item in projection["blockers"] if item["code"] == "budget_exhausted")
+    assert blocker["cause"] == "attempts"
+    assert blocker["stage"] == ordinal
+    assert blocker["limit"] == expected_limit
+
+
+async def test_parent_current_stage_remains_deadline_bound_while_awaiting_completion(db):
+    _hierarchy, checkpointed, _children = await _parent_tree(db, children=1)
+    async with db.immediate() as conn:
+        await conn.execute(
+            insert(integration_repair_stages).values(
+                operation_id=checkpointed["operation_id"],
+                ordinal=0,
+                policy=_boundary().repair.model_dump(mode="json"),
+                intelligence_class="medium",
+                profile_id="integrator",
+                starting_sha="a" * 40,
+                started_at=1.0,
+                deadline_at=100.0,
+                attempts=1,
+                state="awaiting_completion",
+            )
+        )
+
+    projection = await IntegrationStatusService(db, clock=lambda: 101.0).task_blockers(
+        "parent"
+    )
+
+    assert projection is not None
+    blocker = next(item for item in projection["blockers"] if item["code"] == "budget_exhausted")
+    assert blocker["cause"] == "deadline"
+    assert blocker["deadline_at"] == 100.0
+
+
 @pytest.mark.parametrize("policy", ["block", "ask"])
 async def test_failed_child_readiness_exposes_frozen_disposition_policy(db, policy):
     hierarchy, _checkpointed, children = await _parent_tree(
@@ -688,6 +835,9 @@ async def test_disposition_revision_supersedes_only_changed_child(db):
     selected = {row["source_task_id"]: row for row in projection["receipts"]}
     assert selected[children[0]]["disposition"] == "skipped"
     assert selected[children[1]]["id"] == f"receipt-{children[1]}"
+    status = await IntegrationStatusService(db).task_blockers("parent")
+    assert status is not None
+    assert "missing_receipt" not in {item["code"] for item in status["blockers"]}
 
 
 async def test_parent_completion_pins_exact_verification_for_rollover(db):
@@ -854,6 +1004,9 @@ async def test_parent_completion_pins_exact_verification_for_rollover(db):
     assert carried["receipt_id"] == f"receipt-{children[0]}"
     assert carried["previous_verification_id"] == verified["verification_id"]
     assert carried["operation_id"] == next_episode["operation_id"]
+    status = await IntegrationStatusService(db).task_blockers("parent")
+    assert status is not None
+    assert "missing_receipt" not in {item["code"] for item in status["blockers"]}
 
 
 async def test_child_added_after_verification_makes_completion_stale(db):

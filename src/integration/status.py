@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+import time
 from contextlib import asynccontextmanager
-from typing import Any, AsyncIterator
+from typing import Any, AsyncIterator, Callable
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncConnection
@@ -24,10 +25,11 @@ from src.database.tables import (
     project_integration_leases,
     project_integration_schedules,
     projects,
-    task_delivery_receipts,
     task_integration_checkpoints,
     tasks,
 )
+from src.integration.parent_completion import ParentCompletion
+from src.integration.models import RepairPolicy
 
 
 ACTIVE_BATCH_STATES = (
@@ -60,8 +62,9 @@ def _sorted_blockers(values: list[dict[str, Any]]) -> list[dict[str, Any]]:
 class IntegrationStatusService:
     """Project/task integration projections with no provider I/O or writes."""
 
-    def __init__(self, db) -> None:
+    def __init__(self, db, *, clock: Callable[[], float] = time.time) -> None:
         self.db = db
+        self.clock = clock
 
     @asynccontextmanager
     async def _consistent_snapshot(self) -> AsyncIterator[AsyncConnection]:
@@ -70,13 +73,24 @@ class IntegrationStatusService:
             raise RuntimeError("database is not initialized")
         conn = await engine.connect()
         try:
-            if conn.dialect.name == "postgresql":
-                await conn.execution_options(isolation_level="REPEATABLE READ")
-            transaction = await conn.begin()
-            try:
-                yield conn
-            finally:
-                await transaction.rollback()
+            if conn.dialect.name == "sqlite":
+                # The sqlite3 driver's legacy transaction mode does not emit
+                # BEGIN for SELECTs.  Issue it ourselves so the first read
+                # establishes the WAL snapshot used by the whole projection.
+                await conn.execution_options(isolation_level="AUTOCOMMIT")
+                await conn.exec_driver_sql("BEGIN")
+                try:
+                    yield conn
+                finally:
+                    await conn.exec_driver_sql("ROLLBACK")
+            else:
+                if conn.dialect.name == "postgresql":
+                    await conn.execution_options(isolation_level="REPEATABLE READ")
+                transaction = await conn.begin()
+                try:
+                    yield conn
+                finally:
+                    await transaction.rollback()
         finally:
             await conn.close()
 
@@ -254,7 +268,9 @@ class IntegrationStatusService:
                 select(tasks.c.id).where(tasks.c.project_id == project_id).order_by(tasks.c.id),
             )
             parent_readiness = []
-            project_blockers = self._project_blockers(project, batch, revision, repair, cleanup)
+            project_blockers = self._project_blockers(
+                project, batch, revision, repair, cleanup, now=self.clock()
+            )
             for task_row in task_rows:
                 task_projection = await self._task_blockers_on(
                     conn, task_row["id"], expected_project_id=project_id
@@ -355,32 +371,6 @@ class IntegrationStatusService:
                     row["project_id"],
                 )
             )
-        child_rows = await self._all(
-            conn,
-            select(tasks.c.id, tasks.c.status).where(tasks.c.parent_task_id == task_id),
-        )
-        for child in child_rows:
-            if child["status"] not in TERMINAL_TASK_STATES:
-                blockers.append(
-                    _blocker("open_child", "child task is not terminal", child["id"])
-                )
-            elif child["status"] == "COMPLETED":
-                receipt = (
-                    await conn.execute(
-                        select(task_delivery_receipts.c.id).where(
-                            task_delivery_receipts.c.source_task_id == child["id"],
-                            task_delivery_receipts.c.target_task_id == task_id,
-                        )
-                    )
-                ).scalar_one_or_none()
-                if receipt is None:
-                    blockers.append(
-                        _blocker(
-                            "missing_receipt",
-                            "completed child has no delivery receipt",
-                            child["id"],
-                        )
-                    )
         checkpoint = await self._one(
             conn,
             select(task_integration_checkpoints).where(
@@ -445,22 +435,78 @@ class IntegrationStatusService:
                 ),
             ),
         )
+        child_rows = await self._all(
+            conn,
+            select(tasks.c.id, tasks.c.status).where(tasks.c.parent_task_id == task_id),
+        )
+        child_status = {child["id"]: child["status"] for child in child_rows}
+        parent_readiness = None
+        if checkpoint is not None and operation_rows:
+            parent_readiness = await ParentCompletion(self.db).readiness_on(
+                conn,
+                parent=dict(row),
+                project=dict(row),
+                checkpoint=checkpoint,
+                operation=operation_rows[0],
+            )
+            for item in parent_readiness["blockers"]:
+                child_id = item["task_id"]
+                cause = item["reason"]
+                if child_status.get(child_id) not in TERMINAL_TASK_STATES:
+                    blockers.append(
+                        _blocker("open_child", "child task is not terminal", child_id)
+                    )
+                elif cause == "origin_mismatch":
+                    blockers.append(
+                        _blocker(
+                            "repository_not_designated",
+                            "child origin does not match the current parent target",
+                            child_id,
+                            cause=cause,
+                        )
+                    )
+                elif cause == "receipt_chain":
+                    blockers.append(
+                        _blocker(
+                            "stale_head",
+                            "delivery receipt chain does not bind the current parent head",
+                            child_id,
+                            cause=cause,
+                        )
+                    )
+                else:
+                    blockers.append(
+                        _blocker(
+                            "missing_receipt",
+                            "child has no applicable current delivery receipt",
+                            child_id,
+                            cause=cause,
+                        )
+                    )
+        else:
+            for child in child_rows:
+                code = (
+                    "open_child"
+                    if child["status"] not in TERMINAL_TASK_STATES
+                    else "missing_receipt"
+                )
+                detail = (
+                    "child task is not terminal"
+                    if code == "open_child"
+                    else "no current parent collection exists for the terminal child"
+                )
+                blockers.append(_blocker(code, detail, child["id"]))
         repair = await self._repair_projection(conn, operation_rows)
         for item in repair:
             if item["state"] == "human_required":
                 blockers.append(_blocker("human_hold", "repair requires a human decision", item["id"]))
-            for stage in item["stages"]:
-                policy = stage.get("policy") or {}
-                limit = policy.get("attempts") or policy.get("max_attempts")
-                if limit is not None and stage["attempts"] >= int(limit):
-                    blockers.append(
-                        _blocker("budget_exhausted", "repair attempt budget is exhausted", item["id"])
-                    )
+        blockers.extend(self._repair_blockers(repair, now=self.clock()))
         return {
             "task_id": task_id,
             "project_id": row["project_id"],
             "integration_active": integration_active,
             "checkpoint": checkpoint,
+            "parent_readiness": parent_readiness,
             "repair": repair,
             "blockers": _sorted_blockers(blockers),
         }
@@ -542,6 +588,8 @@ class IntegrationStatusService:
         revision: dict[str, Any] | None,
         repair: list[dict[str, Any]],
         cleanup: list[dict[str, Any]],
+        *,
+        now: float,
     ) -> list[dict[str, Any]]:
         blockers: list[dict[str, Any]] = []
         if project["integration_repository_id"] is None:
@@ -572,22 +620,64 @@ class IntegrationStatusService:
                 blockers.append(
                     _blocker("human_hold", "integration repair awaits a human", operation["id"])
                 )
-            for stage in operation["stages"]:
-                policy = stage.get("policy") or {}
-                limit = policy.get("attempts") or policy.get("max_attempts")
-                if limit is not None and stage["attempts"] >= int(limit):
-                    blockers.append(
-                        _blocker(
-                            "budget_exhausted",
-                            "integration repair attempt budget is exhausted",
-                            operation["id"],
-                        )
-                    )
+        blockers.extend(IntegrationStatusService._repair_blockers(repair, now=now))
         conflict = next((item for item in cleanup if item["state"] == "conflict"), None)
         if conflict is not None:
             blockers.append(
                 _blocker("cleanup_conflict", "cleanup requires operator reconciliation", conflict["identity"])
             )
+        return blockers
+
+    @staticmethod
+    def _repair_blockers(
+        repair: list[dict[str, Any]], *, now: float
+    ) -> list[dict[str, Any]]:
+        blockers: list[dict[str, Any]] = []
+        for operation in repair:
+            current = next(
+                (
+                    stage
+                    for stage in operation["stages"]
+                    if int(stage["ordinal"]) == int(operation["active_stage"])
+                ),
+                None,
+            )
+            if current is None or current["state"] not in {"active", "awaiting_completion"}:
+                continue
+            policy = RepairPolicy.model_validate(current["policy"])
+            ordinal = int(current["ordinal"])
+            limit = policy.primary_attempts if ordinal == 0 else policy.debug_attempts
+            if current["state"] == "active" and int(current["attempts"]) >= limit:
+                blockers.append(
+                    _blocker(
+                        "budget_exhausted",
+                        "current repair stage has exhausted its attempt budget",
+                        operation["id"],
+                        cause="attempts",
+                        stage=ordinal,
+                        attempts=int(current["attempts"]),
+                        limit=limit,
+                    )
+                )
+            deadline_at = current["deadline_at"]
+            deadline_bound = (
+                current["state"] == "active" or operation["target_kind"] == "parent"
+            )
+            if (
+                deadline_bound
+                and deadline_at is not None
+                and now >= float(deadline_at)
+            ):
+                blockers.append(
+                    _blocker(
+                        "budget_exhausted",
+                        "current repair stage deadline is exhausted",
+                        operation["id"],
+                        cause="deadline",
+                        stage=ordinal,
+                        deadline_at=float(deadline_at),
+                    )
+                )
         return blockers
 
 

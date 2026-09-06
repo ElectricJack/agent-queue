@@ -1466,23 +1466,98 @@ class WorkGraphConfig:
         return errors
 
 
+_SAFE_IDENTITY_PATTERN = r"^Iv1\.[A-Za-z0-9_-]{1,64}$"
+_EXACT_REPOSITORY_PATTERN = (
+    r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?/[A-Za-z0-9._-]{1,100}$"
+)
+_SAFE_PATH_PATTERN = (
+    r"^/(?:[A-Za-z0-9._@%+=:,~-]+/)*[A-Za-z0-9._@%+=:,~-]+$"
+)
+_ENV_REFERENCE_PATTERN = r"^\$\{[A-Za-z_][A-Za-z0-9_]*\}$"
+_SAFE_IDENTITY_RE = re.compile(_SAFE_IDENTITY_PATTERN)
+_EXACT_REPOSITORY_RE = re.compile(_EXACT_REPOSITORY_PATTERN)
+_SAFE_PATH_RE = re.compile(_SAFE_PATH_PATTERN)
+_ENV_REFERENCE_RE = re.compile(_ENV_REFERENCE_PATTERN)
+_IDENTITY_SCHEMA = {
+    "anyOf": [
+        {"type": "string", "pattern": _SAFE_IDENTITY_PATTERN},
+        {"type": "string", "pattern": _ENV_REFERENCE_PATTERN},
+    ]
+}
+_REPOSITORY_SCHEMA = {
+    "anyOf": [
+        {"type": "string", "pattern": _EXACT_REPOSITORY_PATTERN},
+        {"type": "string", "pattern": _ENV_REFERENCE_PATTERN},
+    ]
+}
+_REFERENCE_SCHEMA = {
+    "anyOf": [
+        {"type": "string", "pattern": _SAFE_PATH_PATTERN},
+        {"type": "string", "pattern": _ENV_REFERENCE_PATTERN},
+    ]
+}
+
+
+def _is_positive_int(value: object) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and value > 0
+
+
+def _is_env_reference(value: object) -> bool:
+    return isinstance(value, str) and _ENV_REFERENCE_RE.fullmatch(value) is not None
+
+
+def _is_safe_identity(value: object) -> bool:
+    return isinstance(value, str) and _SAFE_IDENTITY_RE.fullmatch(value) is not None
+
+
+def _is_safe_identity_or_env(value: object) -> bool:
+    return _is_safe_identity(value) or _is_env_reference(value)
+
+
+def _is_exact_repository_name(value: object) -> bool:
+    if not isinstance(value, str) or _EXACT_REPOSITORY_RE.fullmatch(value) is None:
+        return False
+    _owner, repository = value.split("/", 1)
+    return repository not in {".", ".."}
+
+
+def _is_exact_repository_or_env(value: object) -> bool:
+    return _is_exact_repository_name(value) or _is_env_reference(value)
+
+
+def _is_safe_path_reference(value: object) -> bool:
+    if not isinstance(value, str) or _SAFE_PATH_RE.fullmatch(value) is None:
+        return False
+    return all(component not in {".", ".."} for component in value.split("/"))
+
+
+def _is_safe_path_or_env(value: object) -> bool:
+    return _is_safe_path_reference(value) or _is_env_reference(value)
+
+
 @dataclass(frozen=True)
 class GitHubAppConfig:
     """Non-secret daemon GitHub App identity and private-key reference."""
 
-    client_id: str
-    app_id: int
-    installation_id: int
-    private_key_path: str
+    client_id: str = field(metadata={"json_schema": _IDENTITY_SCHEMA})
+    app_id: int = field(metadata={"json_schema": {"minimum": 1}})
+    installation_id: int = field(metadata={"json_schema": {"minimum": 1}})
+    private_key_path: str = field(metadata={"json_schema": _REFERENCE_SCHEMA})
 
     def validate(self) -> list[ConfigError]:
         errors: list[ConfigError] = []
-        for field_name in ("client_id", "private_key_path"):
-            value = getattr(self, field_name)
-            if not isinstance(value, str) or not value.strip():
-                errors.append(
-                    ConfigError("integration", f"github_app.{field_name}", "must be non-empty")
+        if not _is_safe_identity(self.client_id):
+            errors.append(
+                ConfigError("integration", "github_app.client_id", "must be a safe identity")
+            )
+        if not _is_safe_path_reference(self.private_key_path):
+            errors.append(
+                ConfigError(
+                    "integration",
+                    "github_app.private_key_path",
+                    "must be an absolute private-key path reference",
                 )
+            )
         for field_name in ("app_id", "installation_id"):
             value = getattr(self, field_name)
             if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
@@ -1514,12 +1589,12 @@ _SCRATCH_PROBE_CONFIG_KEYS = frozenset(
 class ScratchProbeConfig:
     """Non-secret identity for the operator-provisioned negative-control repo."""
 
-    repository_id: int
-    repository_full_name: str
-    negative_client_id: str
-    negative_app_id: int
-    negative_installation_id: int
-    negative_private_key_path: str
+    repository_id: int = field(metadata={"json_schema": {"minimum": 1}})
+    repository_full_name: str = field(metadata={"json_schema": _REPOSITORY_SCHEMA})
+    negative_client_id: str = field(metadata={"json_schema": _IDENTITY_SCHEMA})
+    negative_app_id: int = field(metadata={"json_schema": {"minimum": 1}})
+    negative_installation_id: int = field(metadata={"json_schema": {"minimum": 1}})
+    negative_private_key_path: str = field(metadata={"json_schema": _REFERENCE_SCHEMA})
 
     def validate(self, positive: GitHubAppConfig | None) -> list[ConfigError]:
         errors: list[ConfigError] = []
@@ -1533,21 +1608,24 @@ class ScratchProbeConfig:
                         "must be a positive integer",
                     )
                 )
-        for field_name in ("negative_client_id", "negative_private_key_path"):
-            value = getattr(self, field_name)
-            if not isinstance(value, str) or not value.strip():
-                errors.append(
-                    ConfigError(
-                        "integration", f"scratch_probe.{field_name}", "must be non-empty"
-                    )
+        if not _is_safe_identity(self.negative_client_id):
+            errors.append(
+                ConfigError(
+                    "integration",
+                    "scratch_probe.negative_client_id",
+                    "must be a safe identity",
                 )
+            )
+        if not _is_safe_path_reference(self.negative_private_key_path):
+            errors.append(
+                ConfigError(
+                    "integration",
+                    "scratch_probe.negative_private_key_path",
+                    "must be an absolute private-key path reference",
+                )
+            )
         full_name = self.repository_full_name
-        if (
-            not isinstance(full_name, str)
-            or full_name.strip() != full_name
-            or full_name.count("/") != 1
-            or any(not component for component in full_name.split("/"))
-        ):
+        if not _is_exact_repository_name(full_name):
             errors.append(
                 ConfigError(
                     "integration",
@@ -1606,6 +1684,30 @@ def validate_github_app_raw_config(raw: Mapping[str, object]) -> None:
         if any(key not in allowed for key in section):
             raise ConfigValidationError(
                 [f"[integration] {name}: contains unsupported credential fields"]
+            )
+        validators = (
+            {
+                "client_id": _is_safe_identity_or_env,
+                "app_id": _is_positive_int,
+                "installation_id": _is_positive_int,
+                "private_key_path": _is_safe_path_or_env,
+            }
+            if name == "github_app"
+            else {
+                "repository_id": _is_positive_int,
+                "repository_full_name": _is_exact_repository_or_env,
+                "negative_client_id": _is_safe_identity_or_env,
+                "negative_app_id": _is_positive_int,
+                "negative_installation_id": _is_positive_int,
+                "negative_private_key_path": _is_safe_path_or_env,
+            }
+        )
+        if any(
+            key in section and not validator(section[key])
+            for key, validator in validators.items()
+        ):
+            raise ConfigValidationError(
+                [f"[integration] {name}: contains an unsafe identity or reference"]
             )
 
 
@@ -2904,6 +3006,7 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
 
     validate_github_app_raw_config(raw)
     raw = _process_values(raw)
+    validate_github_app_raw_config(raw)
 
     config = AppConfig()
     config._config_path = path

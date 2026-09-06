@@ -327,6 +327,36 @@ class TestConfigWatcher:
         assert watcher.config.integration.scratch_probe.repository_id == 303
 
     @pytest.mark.asyncio
+    async def test_environment_expanded_inline_key_is_rejected_without_leak_or_swap(
+        self, config_dir, bus, monkeypatch, caplog
+    ):
+        _tmp_path, config_path = config_dir
+        raw = yaml.safe_load(config_path.read_text())
+        raw["integration"] = {
+            "github_app": {
+                "client_id": "Iv1.positive",
+                "app_id": 101,
+                "installation_id": 202,
+                "private_key_path": "/run/secrets/positive.pem",
+            }
+        }
+        config_path.write_text(yaml.safe_dump(raw))
+        config = load_config(str(config_path))
+        watcher = ConfigWatcher(str(config_path), bus, config)
+        cached_integration = watcher.config.integration
+        sentinel = "-----BEGIN PRIVATE KEY-----\nwatcher-secret"
+        monkeypatch.setenv("AQ_TEST_WATCHER_KEY", sentinel)
+        raw["integration"]["github_app"]["private_key_path"] = "${AQ_TEST_WATCHER_KEY}"
+        config_path.write_text(yaml.safe_dump(raw))
+
+        with caplog.at_level("WARNING"):
+            result = await watcher.reload()
+
+        assert "error" in result
+        assert sentinel not in repr(result) + caplog.text
+        assert watcher.config.integration is cached_integration
+
+    @pytest.mark.asyncio
     async def test_reload_reports_previously_blind_section(self, config_dir, bus):
         """``database`` was missing from the hand-written diff list.
 

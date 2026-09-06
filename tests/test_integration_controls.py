@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import pytest
-from sqlalchemy import insert, select, text, update
+from sqlalchemy import event, insert, select, update
 from sqlalchemy.exc import IntegrityError
 
 from src.database import Database
@@ -11,9 +11,12 @@ from src.database.tables import (
     gates,
     integration_history_waivers,
     integration_legacy_gate_applicability,
+    integration_repair_operations,
+    integration_repair_stages,
     integration_batches,
     integration_release_results,
     integration_rollout_transitions,
+    project_integration_schedules,
 )
 from src.integration.status import IntegrationStatusService
 from src.models import Project, RepoConfig, RepoSourceType, Task, TaskStatus
@@ -299,34 +302,21 @@ async def test_status_is_read_only_sorted_and_absent_preflight_is_blocking(db):
             )
         )
     service = IntegrationStatusService(db)
-    async with db._engine.connect() as conn:
-        before = int(
-            (
-                await conn.execute(
-                    text(
-                        "SELECT total_changes()"
-                        if conn.dialect.name == "sqlite"
-                        else "SELECT 0"
-                    )
-                )
-            ).scalar_one()
-        )
+    statements = []
 
-    status = await service.status("p")
+    def reject_mutation(_conn, _cursor, statement, _parameters, _context, _executemany):
+        verb = statement.lstrip().split(None, 1)[0].upper()
+        if verb in {"INSERT", "UPDATE", "DELETE", "REPLACE"}:
+            raise AssertionError(f"status emitted mutating SQL: {verb}")
+        statements.append(verb)
 
-    async with db._engine.connect() as conn:
-        after = int(
-            (
-                await conn.execute(
-                    text(
-                        "SELECT total_changes()"
-                        if conn.dialect.name == "sqlite"
-                        else "SELECT 0"
-                    )
-                )
-            ).scalar_one()
-        )
-    assert after == before
+    event.listen(db._engine.sync_engine, "before_cursor_execute", reject_mutation)
+    try:
+        status = await service.status("p")
+    finally:
+        event.remove(db._engine.sync_engine, "before_cursor_execute", reject_mutation)
+
+    assert "SELECT" in statements
     assert status["effective_mode"] == "disabled"
     assert status["desired_mode"] == "observe"
     assert status["draining"] is False
@@ -338,6 +328,115 @@ async def test_status_is_read_only_sorted_and_absent_preflight_is_blocking(db):
     codes = [item["code"] for item in status["blockers"]]
     assert codes == sorted(codes)
     assert "preflight_evidence_unavailable" in codes
+
+
+async def test_sqlite_status_snapshot_excludes_an_intervening_writer(db):
+    class InterleavingStatusService(IntegrationStatusService):
+        wrote = False
+
+        async def _one(self, conn, statement):
+            if not self.wrote:
+                self.wrote = True
+                async with self.db.immediate() as writer:
+                    await writer.execute(
+                        insert(project_integration_schedules).values(
+                            project_id="p",
+                            enabled=False,
+                            interval_seconds=60,
+                            next_due_at=10.0,
+                            updated_at=10.0,
+                        )
+                    )
+            return await super()._one(conn, statement)
+
+    status = await InterleavingStatusService(db).status("p")
+
+    assert status is not None
+    assert status["schedule"] is None
+    async with db._engine.connect() as conn:
+        persisted = (
+            await conn.execute(
+                select(project_integration_schedules.c.project_id).where(
+                    project_integration_schedules.c.project_id == "p"
+                )
+            )
+        ).scalar_one()
+    assert persisted == "p"
+
+
+@pytest.mark.parametrize(
+    "stage_state,expected_deadline_blocker",
+    [("active", True), ("awaiting_completion", False)],
+)
+async def test_root_current_stage_deadline_preserves_green_awaiting_promotion(
+    db, stage_state, expected_deadline_blocker
+):
+    await db.update_project("p", integration_repository_id="repo")
+    policy = {
+        "primary_seconds": 30,
+        "primary_attempts": 2,
+        "debug_seconds": 60,
+        "debug_attempts": 1,
+        "debug_intelligence_class": "high",
+        "debug_profile_id": None,
+    }
+    async with db.immediate() as conn:
+        await conn.execute(
+            insert(integration_batches).values(
+                id="active-batch",
+                project_id="p",
+                repository_id="repo",
+                request_id="request-active",
+                trigger="manual",
+                source_manifest_digest="sha256:" + "d" * 64,
+                base_sha="1" * 40,
+                lifecycle="repairing",
+                integration_branch="aq/integration/active",
+                policy_snapshot={},
+                artifact_snapshot={},
+                cleanup_state="pending",
+                created_at=1.0,
+                updated_at=2.0,
+            )
+        )
+        await conn.execute(
+            insert(integration_repair_operations).values(
+                id="root-operation",
+                target_kind="batch",
+                batch_id="active-batch",
+                episode_id="active-batch",
+                active_stage=0,
+                state="active",
+                policy_snapshot={},
+                artifact_snapshot={},
+                required_check_version="root-v1",
+                created_at=1.0,
+                updated_at=2.0,
+            )
+        )
+        await conn.execute(
+            insert(integration_repair_stages).values(
+                operation_id="root-operation",
+                ordinal=0,
+                policy=policy,
+                intelligence_class="medium",
+                profile_id="integrator",
+                starting_sha="1" * 40,
+                started_at=1.0,
+                deadline_at=100.0,
+                attempts=1,
+                state=stage_state,
+            )
+        )
+
+    status = await IntegrationStatusService(db, clock=lambda: 101.0).status("p")
+
+    deadline_blockers = [
+        item
+        for item in status["blockers"]
+        if item["code"] == "budget_exhausted" and item.get("cause") == "deadline"
+    ]
+    assert bool(deadline_blockers) is expected_deadline_blocker
 
 
 async def test_task_blockers_validate_relationship_and_expose_hierarchy_reasons(db):

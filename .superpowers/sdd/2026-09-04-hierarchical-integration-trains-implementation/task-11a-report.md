@@ -317,3 +317,165 @@ cleanup irreversible markers.
 - Existing generic updates of the pre-existing effective mode remain source-compatible in
   this foundation.  The command/cutover authorization and legacy runtime guard belong to
   11c and must not treat that compatibility path as an enablement API.
+
+## Review fix round 1 — 2026-09-06
+
+All five Important findings in `task-11a-review.md` were addressed without adding any
+11b transport/probe implementation or 11c operator control.
+
+### 1. Allowed-field credential value closure
+
+- Known fields now have value-level contracts, not merely an allowlist of field names.
+  GitHub App client IDs use the exact `Iv1.<identifier>` shape; numeric identities are
+  positive non-boolean integers; key references are normalized absolute POSIX path
+  shapes with no empty, dot, or dot-dot components; and scratch repositories use bounded
+  GitHub owner/repository components with no whitespace, query string, or newline.
+- Raw validation permits a single `${ENV_NAME}` reference, validates once before
+  substitution, then validates the expanded value again. Errors remain generic and do
+  not reflect rejected values.
+- Dataclass metadata supplies the same minimum/pattern/`anyOf` constraints to the
+  generated closed schema. `get_config`, update validation, and watcher reload reject
+  an inline PEM placed in an otherwise allowed path field without serializing it.
+
+RED:
+
+```text
+aq test <7 focused config validation/editor/watcher nodes> -x
+3 failed: unsafe client/path accepted; allowed scratch PEM returned by get_config;
+environment-expanded PEM accepted by watcher reload.
+
+pytest -q tests/test_config_validation.py::TestGitHubAppConfigValidation::test_rejects_unsafe_allowed_identity_and_reference_values -x
+1 failed, 2 passed: arbitrary inline-secret-token still matched generic identity syntax.
+```
+
+GREEN:
+
+```text
+aq test <the same 7 focused config validation/editor/watcher nodes> -x
+23 passed, 9 inherited warnings in 2.23s
+
+pytest -q tests/test_config_validation.py::TestGitHubAppConfigValidation::test_rejects_unsafe_allowed_identity_and_reference_values -x
+6 passed, 2 inherited warnings in 0.21s
+```
+
+Self-review mutation checks: removing either pre- or post-substitution validation makes
+the environment PEM cases fail; widening client ID syntax makes the token-shaped case
+fail; weakening path/repository syntax fails literal PEM, relative/traversal path,
+space/query/newline repository cases; removing schema metadata or raw get validation
+fails editor boundary assertions.
+
+### 2. Real SQLite status snapshot
+
+`IntegrationStatusService` now puts SQLite connections in AUTOCOMMIT driver mode and
+issues explicit `BEGIN`/`ROLLBACK`. This compensates for sqlite3 legacy transaction
+behavior, where SQLAlchemy's logical `begin()` did not start a transaction for SELECTs.
+PostgreSQL retains its repeatable-read transaction.
+
+RED/GREEN:
+
+```text
+aq test -m "not slow and not tmux" tests/test_integration_controls.py::test_sqlite_status_snapshot_excludes_an_intervening_writer tests/test_integration_controls.py::test_status_is_read_only_sorted_and_absent_preflight_is_blocking -x
+RED: 1 failed — the status projection observed a schedule committed after its project read.
+GREEN: 2 passed, 8 inherited warnings in 1.77s — status excluded the intervening row,
+while a fresh connection proved the writer's schedule was durably committed.
+```
+
+Self-review verified the test uses the real file-backed NullPool/WAL engine and a separate
+`immediate()` writer, so it proves a database snapshot rather than an in-memory cache.
+
+### 3. Shared parent receipt applicability
+
+Status removed its source/target existence query and directly calls the established
+connection-owned `ParentCompletion.readiness_on(...)` inside the same status snapshot.
+Only the established reasons are translated to stable status codes:
+`receipt_missing`/`failed_child` to `missing_receipt`, `receipt_chain` to `stale_head`,
+`origin_mismatch` to `repository_not_designated`, and non-terminal children to
+`open_child`. The full established selector continues to own multiple receipt history,
+current head/repository/branch/operation/episode binding, disposition revision/evidence,
+carry-forward ancestry, and FAILED-child policy.
+
+RED/GREEN:
+
+```text
+aq test tests/test_integration_parent_completion.py::test_status_uses_current_receipt_among_multiple_historical_deliveries tests/test_integration_parent_completion.py::test_status_rejects_receipt_not_applicable_to_current_parent_context tests/test_integration_parent_completion.py::test_status_blocks_failed_child_without_current_disposition_receipt -x
+RED: MultipleResultsFound on legitimate historic + current receipt rows.
+GREEN: 6 passed, 8 inherited warnings in 3.19s.
+
+aq test tests/test_integration_parent_completion.py::test_disposition_revision_supersedes_only_changed_child tests/test_integration_parent_completion.py::test_parent_completion_pins_exact_verification_for_rollover -x
+2 passed, 8 inherited warnings in 2.68s.
+```
+
+Self-review checked that no receipt or gate mutability changed and no second applicability
+implementation remains in status. The focused cases cover multiple receipts, wrong head,
+repository, branch and current episode binding, FAILED children, revised disposition,
+and accepted carry-forward.
+
+### 4. Typed current-stage repair budgets and deadlines
+
+Status accepts an injectable read clock and validates each current stage's persisted
+policy with `RepairPolicy`. Ordinal zero uses `primary_attempts`; ordinal one uses
+`debug_attempts`. Only the operation's current active/awaiting-completion stage is
+evaluated. Attempt exhaustion applies while the stage is active. Deadline exhaustion
+applies to active stages and to parent final verification while awaiting completion.
+A root exact-green stage awaiting deterministic promotion is not reported expired merely
+because wall clock passed; if a candidate rebuild returns it to active, the original
+deadline immediately blocks, matching the existing RepairService ruling.
+
+RED/GREEN:
+
+```text
+aq test -m "not slow and not tmux" tests/test_integration_parent_completion.py::test_status_uses_typed_limit_for_current_repair_stage tests/test_integration_parent_completion.py::test_parent_current_stage_remains_deadline_bound_while_awaiting_completion tests/test_integration_controls.py::test_root_current_stage_deadline_preserves_green_awaiting_promotion -x
+RED: 2 failed — IntegrationStatusService had no clock/current typed policy behavior.
+GREEN: 5 passed, 8 inherited warnings in 2.85s.
+```
+
+Self-review checked primary/debug limits independently, current-stage selection, parent
+awaiting-completion deadline binding, root active overdue behavior, and the root
+awaiting-promotion exception.
+
+### 5. Meaningful no-mutation evidence
+
+The ineffective cross-connection SQLite `total_changes()` comparison was removed. The
+status test now installs a real engine statement observer that raises immediately on
+`INSERT`, `UPDATE`, `DELETE`, or `REPLACE`, proves SELECTs were issued, and exercises the
+full service. The separate intervening-writer test also proves status itself did not
+produce the durable schedule row.
+
+Self-review mutation check: adding any DML to the service makes the observer raise rather
+than comparing two fresh per-connection counters that always start at zero.
+
+### Amended-scope gate and warning disposition
+
+No migration test or prior 296-test area gate was repeated. The single review-fix gate
+covered only changed behavior and the narrow shared parent-readiness consumers:
+
+```text
+aq test -m "not slow and not tmux" \
+  tests/test_config_validation.py::TestGitHubAppConfigValidation \
+  tests/test_config_validation.py::TestScratchProbeConfigValidation \
+  tests/test_config_editor.py::TestGetConfigCommand \
+  tests/test_config_editor.py::TestGetConfigSchemaCommand::test_returns_schema \
+  tests/test_config_editor.py::TestUpdateConfigCommand::test_rejected_nested_scratch_secret_never_reaches_logs_or_response \
+  tests/test_config_watcher.py::TestConfigWatcher::test_integration_credentials_require_restart_and_cached_state_is_not_swapped \
+  tests/test_config_watcher.py::TestConfigWatcher::test_environment_expanded_inline_key_is_rejected_without_leak_or_swap \
+  tests/test_integration_controls.py \
+  tests/test_explain.py::TestExplainCommand::test_integration_reasons_append_without_replacing_ordinary_explanations \
+  tests/test_explain.py::TestExplainCommand::test_disabled_project_does_not_add_integration_reasons \
+  <7 named status/parent applicability, budget, disposition, and rollover nodes> -x
+66 passed, 11 warnings in 5.69s
+```
+
+All warnings are inherited dependency deprecations, not introduced warnings:
+
+- `src/_compat.py` imports the deprecated `pkg_resources` API (reported once per xdist
+  process).
+- system setuptools reports deprecated `pkg_resources.declare_namespace('zope')`
+  (reported once per xdist process).
+- Discord's installed `player.py` imports Python's deprecated `audioop` module (reported
+  once per xdist process for command-handler tests).
+
+Review-fix changed paths: `src/config.py`, `src/config_editor.py`,
+`src/integration/status.py`, `tests/test_config_validation.py`,
+`tests/test_config_editor.py`, `tests/test_config_watcher.py`,
+`tests/test_integration_controls.py`, `tests/test_integration_parent_completion.py`, and
+this report. No schema/migration/query-control path changed.

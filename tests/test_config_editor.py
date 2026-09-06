@@ -275,6 +275,28 @@ class TestGetConfigCommand:
         assert sentinel_key not in serialized
         assert sentinel_value not in serialized
 
+    @pytest.mark.asyncio
+    async def test_allowed_scratch_path_cannot_return_inline_pem(self, handler_with_config):
+        handler, cfg_path = handler_with_config
+        sentinel = "-----BEGIN PRIVATE KEY-----\nget-config-secret"
+        raw = yaml.safe_load(cfg_path.read_text())
+        raw["integration"] = {
+            "scratch_probe": {
+                "repository_id": 303,
+                "repository_full_name": "acme/probe",
+                "negative_client_id": "Iv1.negative",
+                "negative_app_id": 404,
+                "negative_installation_id": 505,
+                "negative_private_key_path": sentinel,
+            },
+        }
+        cfg_path.write_text(yaml.safe_dump(raw))
+
+        result = await handler.execute("get_config", {})
+
+        assert "error" in result
+        assert sentinel not in repr(result)
+
 
 class TestUpdateConfigCommand:
     @pytest.fixture
@@ -506,4 +528,13 @@ class TestGetConfigSchemaCommand:
         assert integration["additionalProperties"] is False
         assert integration["properties"]["github_app"]["additionalProperties"] is False
         assert integration["properties"]["scratch_probe"]["additionalProperties"] is False
+        github = integration["properties"]["github_app"]["properties"]
+        scratch = integration["properties"]["scratch_probe"]["properties"]
+        assert github["app_id"]["minimum"] == 1
+        assert github["installation_id"]["minimum"] == 1
+        assert github["private_key_path"]["anyOf"]
+        assert scratch["repository_id"]["minimum"] == 1
+        assert scratch["repository_full_name"]["anyOf"]
+        assert scratch["negative_client_id"]["anyOf"]
+        assert scratch["negative_private_key_path"]["anyOf"]
         assert isinstance(schema["properties"]["rate_limits"]["additionalProperties"], dict)

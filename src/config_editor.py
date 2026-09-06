@@ -229,6 +229,7 @@ def _dataclass_to_schema(cls: type) -> dict[str, Any]:
             continue
         tp = hints.get(f.name, f.type)
         prop = _type_to_schema(tp)
+        prop.update(f.metadata.get("json_schema", {}))
         default = _field_default(f)
         if default is not dataclasses.MISSING:
             prop["default"] = default
