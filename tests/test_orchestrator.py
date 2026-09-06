@@ -18,7 +18,7 @@ from src.models import (
     Workspace,
 )
 from src.runtimes.base import Runtime
-from src.config import AppConfig, AutoTaskConfig
+from src.config import AppConfig, AutoTaskConfig, GitHubAppConfig
 from src.intelligence_classes import IntelligenceClass
 from src.sessions.harness_parser import Harness
 from src.git.manager import GitManager
@@ -103,6 +103,44 @@ async def test_orchestrator_owns_single_integration_service_loop(orch):
         )
     finally:
         orch.playbook_manager = original_runtime
+
+
+async def test_configured_orchestrator_installs_repository_bound_candidate_transport(
+    tmp_path, monkeypatch
+):
+    from src.git.github_app import GitHubAppClient, GitHubRepositoryBinding
+
+    config = AppConfig(
+        database_path=str(tmp_path / "test.db"),
+        workspace_dir=str(tmp_path / "workspaces"),
+        data_dir=str(tmp_path / "data"),
+    )
+    config.integration.github_app = GitHubAppConfig(
+        client_id="Iv1.test",
+        app_id=101,
+        installation_id=202,
+        private_key_path="/daemon/key.pem",
+    )
+    binding = GitHubRepositoryBinding(303, "acme/widgets")
+    bound_client = MagicMock(repository=binding)
+    bind_repository = AsyncMock(return_value=bound_client)
+    monkeypatch.setattr(GitHubAppClient, "bind_repository", bind_repository)
+    orchestrator = Orchestrator(config, runtimes=MockAdapterFactory())
+    await orchestrator.initialize()
+    try:
+        repository = RepoConfig(
+            id="repo",
+            project_id="p",
+            source_type=RepoSourceType.CLONE,
+            url="https://github.com/acme/widgets.git",
+        )
+        resolved = await orchestrator.integration_repository_binding_resolver(repository)
+
+        assert resolved == binding
+        assert orchestrator.integration_app_client_factory(binding) is bound_client
+        bind_repository.assert_awaited_once()
+    finally:
+        await orchestrator.shutdown()
 
 
 @pytest.fixture

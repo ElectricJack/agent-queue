@@ -28,6 +28,8 @@ _PERMISSIONS = {
     "actions": "read",
     "contents": "write",
     "administration": "read",
+    "pull_requests": "write",
+    "issues": "write",
 }
 _FULL_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9-]*/[A-Za-z0-9._-]+")
 
@@ -152,6 +154,75 @@ class GitHubAppClient:
         self._token_expires_at = 0.0
         self._token_lock = asyncio.Lock()
 
+    @classmethod
+    async def bind_repository(
+        cls,
+        config: GitHubAppConfig,
+        full_name: str,
+        *,
+        key_provider: PrivateKeyProvider,
+        transport: HttpTransport | None = None,
+        clock=time.time,
+        max_response_bytes: int = MAX_RESPONSE_BYTES,
+    ) -> "GitHubAppClient":
+        """Resolve one configured repository name into a least-privilege client."""
+        if _FULL_NAME.fullmatch(full_name) is None:
+            raise ValueError("full_name must be owner/repository")
+        repository_name = full_name.split("/", 1)[1]
+        bootstrap = cls(
+            config,
+            GitHubRepositoryBinding(1, full_name),
+            key_provider=key_provider,
+            transport=transport,
+            clock=clock,
+            max_response_bytes=max_response_bytes,
+        )
+        app_jwt = bootstrap._app_jwt()
+        app = await bootstrap._raw_json("GET", "/app", credential=app_jwt)
+        if _strict_positive_int(app.get("id")) != config.app_id:
+            raise GitHubAppError("credentials", "authenticated App identity did not match")
+        token_body = await bootstrap._raw_json(
+            "POST",
+            f"/app/installations/{config.installation_id}/access_tokens",
+            credential=app_jwt,
+            json_body={"repositories": [repository_name], "permissions": _PERMISSIONS},
+            expected_statuses={201},
+        )
+        token = token_body.get("token")
+        repositories = token_body.get("repositories")
+        permissions = token_body.get("permissions")
+        if not isinstance(token, str) or not token:
+            raise GitHubAppError("credentials", "installation token response was malformed")
+        if not isinstance(repositories, list) or len(repositories) != 1:
+            raise GitHubAppError("permission", "installation repository selection did not match")
+        repository = repositories[0]
+        repository_id = (
+            _strict_positive_int(repository.get("id")) if isinstance(repository, dict) else None
+        )
+        if (
+            repository_id is None
+            or repository.get("name") != repository_name
+            or repository.get("full_name") != full_name
+        ):
+            raise GitHubAppError("credentials", "authenticated repository identity did not match")
+        if (
+            not isinstance(permissions, dict)
+            or any(permissions.get(name) != level for name, level in _PERMISSIONS.items())
+            or set(permissions) - (set(_PERMISSIONS) | {"metadata"})
+        ):
+            raise GitHubAppError("permission", "installation permissions did not match")
+        client = cls(
+            config,
+            GitHubRepositoryBinding(repository_id, full_name),
+            key_provider=key_provider,
+            transport=bootstrap.transport,
+            clock=clock,
+            max_response_bytes=max_response_bytes,
+        )
+        client._token = token
+        client._token_expires_at = _parse_timestamp(token_body.get("expires_at"))
+        return client
+
     @property
     def _base_headers(self) -> dict[str, str]:
         return {"Accept": ACCEPT, "X-GitHub-Api-Version": API_VERSION}
@@ -190,6 +261,169 @@ class GitHubAppClient:
         if re.fullmatch(r"[0-9a-f]{40}", oid) is None:
             raise GitHubAppError("conflict_or_invalid", "GitHub ref OID was malformed")
         return oid
+
+    async def exact_pull_request(self, *, number: int) -> dict[str, Any] | None:
+        """Read one PR through this exact repository installation binding."""
+        if isinstance(number, bool) or not isinstance(number, int) or number <= 0:
+            raise ValueError("pull request number must be positive")
+        try:
+            payload = await self.request_json(
+                "GET", f"/repositories/{self.repository.repository_id}/pulls/{number}"
+            )
+        except GitHubAppError as exc:
+            if exc.category == "not_found_or_hidden":
+                return None
+            raise
+        head = payload.get("head")
+        repo = head.get("repo") if isinstance(head, dict) else None
+        sha = head.get("sha") if isinstance(head, dict) else None
+        if (
+            not isinstance(repo, dict)
+            or _strict_positive_int(repo.get("id")) is None
+            or not isinstance(repo.get("full_name"), str)
+            or not isinstance(sha, str)
+            or re.fullmatch(r"[0-9a-f]{40}", sha) is None
+            or payload.get("number") != number
+            or payload.get("state") not in {"open", "closed"}
+        ):
+            raise GitHubAppError("conflict_or_invalid", "GitHub PR identity was malformed")
+        return {
+            "repository_numeric_id": repo["id"],
+            "repository_full_name": repo["full_name"],
+            "head_sha": sha,
+            "state": payload["state"],
+        }
+
+    async def has_comment_marker(self, *, number: int, marker: str) -> bool:
+        if not marker or "\n" in marker:
+            raise ValueError("comment marker must be one non-empty line")
+        path = f"/repositories/{self.repository.repository_id}/issues/{number}/comments?per_page=100"
+        for comment in await self.paged_list(path):
+            if marker in str(comment.get("body") or ""):
+                return True
+        return False
+
+    async def comment_pull_request(self, *, number: int, marker: str, body: str) -> None:
+        if marker not in body:
+            raise ValueError("delivery comment must contain its stable marker")
+        await self.request_json(
+            "POST",
+            f"/repositories/{self.repository.repository_id}/issues/{number}/comments",
+            json_body={"body": body},
+            expected_statuses={201},
+        )
+
+    async def close_pull_request(self, *, number: int) -> None:
+        payload = await self.request_json(
+            "PATCH",
+            f"/repositories/{self.repository.repository_id}/pulls/{number}",
+            json_body={"state": "closed"},
+        )
+        if payload.get("number") != number or payload.get("state") != "closed":
+            raise GitHubAppError("conflict_or_invalid", "GitHub PR close was not confirmed")
+
+    async def lookup_audit_pr(self, *, idempotency_key: str):
+        """Reconcile a candidate audit PR by its stable server-owned marker."""
+        marker = self._audit_marker(idempotency_key)
+        pulls = await self.paged_list(
+            f"/repositories/{self.repository.repository_id}/pulls?state=all&per_page=100"
+        )
+        matches = [pull for pull in pulls if marker in str(pull.get("body") or "")]
+        if not matches:
+            return None
+        if len(matches) != 1:
+            raise GitHubAppError("conflict_or_invalid", "audit PR marker was not unique")
+        return self._audit_pull_request(matches[0], idempotency_key)
+
+    async def create_audit_pr(
+        self,
+        *,
+        repository_id: str,
+        branch: str,
+        head_sha: str,
+        base_branch: str,
+        batch_id: str,
+        idempotency_key: str,
+        repository_numeric_id: int,
+        repository_full_name: str,
+    ):
+        """Create one exact repository-bound audit PR for CandidateService."""
+        if not repository_id or not batch_id:
+            raise ValueError("candidate audit identity must be non-empty")
+        if (
+            repository_numeric_id != self.repository.repository_id
+            or repository_full_name != self.repository.full_name
+        ):
+            raise GitHubAppError("credentials", "candidate repository binding did not match")
+        if (
+            not branch
+            or branch.startswith("refs/")
+            or not base_branch
+            or base_branch.startswith("refs/")
+            or re.fullmatch(r"[0-9a-f]{40}", head_sha) is None
+        ):
+            raise ValueError("candidate audit ref identity was malformed")
+        marker = self._audit_marker(idempotency_key)
+        payload = await self.request_json(
+            "POST",
+            f"/repositories/{self.repository.repository_id}/pulls",
+            json_body={
+                "title": f"Integration train {batch_id}",
+                "head": branch,
+                "base": base_branch,
+                "body": f"{marker}\nRoot integration batch `{batch_id}`.",
+            },
+            expected_statuses={201},
+        )
+        result = self._audit_pull_request(payload, idempotency_key)
+        if result.head_sha != head_sha:
+            raise GitHubAppError("conflict_or_invalid", "audit PR head did not match candidate")
+        return result
+
+    @staticmethod
+    def _audit_marker(idempotency_key: str) -> str:
+        if re.fullmatch(r"[0-9a-f]{64}", idempotency_key) is None:
+            raise ValueError("audit PR idempotency key must be a SHA-256 digest")
+        return f"<!-- aq-integration-audit:{idempotency_key} -->"
+
+    def _audit_pull_request(self, payload: dict[str, Any], idempotency_key: str):
+        from src.integration.candidates import AuditPullRequest
+
+        head = payload.get("head")
+        base = payload.get("base")
+        repository = head.get("repo") if isinstance(head, dict) else None
+        number = _strict_positive_int(payload.get("number"))
+        expected_url = (
+            f"https://github.com/{self.repository.full_name}/pull/{number}"
+            if number is not None
+            else None
+        )
+        if (
+            number is None
+            or payload.get("html_url") != expected_url
+            or not isinstance(head, dict)
+            or not isinstance(base, dict)
+            or not isinstance(repository, dict)
+            or _strict_positive_int(repository.get("id")) != self.repository.repository_id
+            or repository.get("full_name") != self.repository.full_name
+            or re.fullmatch(r"[0-9a-f]{40}", str(head.get("sha") or "")) is None
+            or not isinstance(head.get("ref"), str)
+            or not head["ref"]
+            or not isinstance(base.get("ref"), str)
+            or not base["ref"]
+            or self._audit_marker(idempotency_key) not in str(payload.get("body") or "")
+        ):
+            raise GitHubAppError("conflict_or_invalid", "GitHub audit PR identity was malformed")
+        return AuditPullRequest(
+            url=expected_url,
+            number=number,
+            head_sha=head["sha"],
+            head_branch=head["ref"],
+            base_branch=base["ref"],
+            repository_numeric_id=self.repository.repository_id,
+            repository_full_name=self.repository.full_name,
+            idempotency_key=idempotency_key,
+        )
 
     async def installation_token(self, *, force_refresh: bool = False) -> str:
         async with self._token_lock:
@@ -287,6 +521,28 @@ class GitHubAppClient:
             response = await self._authenticated_response("GET", next_url)
             payload = _decode_object(response.body)
             page = payload.get(key)
+            if not isinstance(page, list) or not all(isinstance(item, dict) for item in page):
+                raise GitHubAppError("conflict_or_invalid", "GitHub page was malformed")
+            items.extend(page)
+            next_url = _next_link(response.headers.get("Link") or response.headers.get("link"))
+            if next_url is None:
+                return items
+        raise GitHubAppError("transient", "GitHub pagination exceeded page limit")
+
+    async def paged_list(self, path: str, *, max_pages: int = 20) -> list[dict]:
+        next_url = urljoin(API_BASE, path)
+        items: list[dict[str, Any]] = []
+        for _ in range(max_pages):
+            parsed = urlparse(next_url)
+            if parsed.scheme != "https" or parsed.netloc != "api.github.com":
+                raise GitHubAppError("conflict_or_invalid", "pagination escaped GitHub API host")
+            response = await self._authenticated_response("GET", next_url)
+            try:
+                page = json.loads(response.body)
+            except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+                raise GitHubAppError(
+                    "conflict_or_invalid", "GitHub page was malformed"
+                ) from exc
             if not isinstance(page, list) or not all(isinstance(item, dict) for item in page):
                 raise GitHubAppError("conflict_or_invalid", "GitHub page was malformed")
             items.extend(page)

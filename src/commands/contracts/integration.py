@@ -52,6 +52,7 @@ DESIGN_INTEGRATION_COMMANDS = frozenset(
         "integration_push_conflict_resolution",
         "integration_promote_main",
         "integration_release",
+        "integration_cleanup",
     }
 )
 
@@ -74,7 +75,7 @@ class IntegrationScheduleDueValue(CommandValue):
 class IntegrationSealArgs(CommandArgs):
     project_id: str = Field(min_length=1)
     request_id: str = Field(min_length=1)
-    now: float
+    now: float | None = None
 
 
 class IntegrationSealValue(CommandValue):
@@ -149,6 +150,55 @@ class IntegrationPromoteMainValue(CommandValue):
     intent_id: str | None = None
     receipt_ids: tuple[str, ...] = ()
     head_sha: str | None = None
+
+
+class IntegrationBuildCandidateArgs(CommandArgs):
+    batch_id: str = Field(min_length=1)
+
+
+class IntegrationBuildCandidateValue(CommandValue):
+    batch_id: str | None = None
+    revision: int | None = None
+    operation_id: str | None = None
+    head_sha: str | None = None
+    branch: str | None = None
+    pr_url: str | None = None
+    member_ordinal: int | None = None
+
+
+class IntegrationCIEvidenceArgs(CommandArgs):
+    batch_id: str = Field(min_length=1)
+    revision: int = Field(ge=0)
+
+
+class IntegrationCIEvidenceValue(CommandValue):
+    batch_id: str | None = None
+    revision: int | None = None
+    evidence_ids: tuple[str, ...] = ()
+    aggregate_evidence_id: str | None = None
+
+
+class IntegrationReleaseArgs(CommandArgs):
+    batch_id: str = Field(min_length=1)
+
+
+class IntegrationReleaseValue(CommandValue):
+    project_id: str | None = None
+    batch_id: str | None = None
+    request_id: str | None = None
+    catchup_request_id: str | None = None
+    operation_id: str | None = None
+
+
+class IntegrationCleanupArgs(CommandArgs):
+    batch_id: str = Field(min_length=1)
+
+
+class IntegrationCleanupValue(CommandValue):
+    batch_id: str | None = None
+    item_count: int | None = None
+    completed_count: int | None = None
+    conflict_count: int | None = None
 
 
 class IntegrationFileChildrenArgs(CommandArgs):
@@ -710,6 +760,116 @@ INTEGRATION_PROMOTE_MAIN = CommandContract(
 )
 
 
+INTEGRATION_CLEANUP = CommandContract(
+    execution=ExecutionContract(
+        name="integration_cleanup",
+        args_model=IntegrationCleanupArgs,
+        result_model=IntegrationCleanupValue,
+        outcomes=tuple(
+            OutcomeSpec(
+                name=name,
+                classification=(
+                    OutcomeClass.SUCCESS
+                    if name in {"materialized", "advanced", "complete", "already_complete"}
+                    else OutcomeClass.FAILURE
+                ),
+            )
+            for name in (
+                "materialized",
+                "advanced",
+                "complete",
+                "already_complete",
+                "wait",
+                "retryable",
+                "conflict",
+                "failed",
+                "stale",
+                "invariant_error",
+            )
+        ),
+        capability="integration_cleanup",
+        side_effect=SideEffectClass.COMPOSITE,
+        idempotency=IdempotencySpec(mode="natural"),
+        retry_safe=True,
+        effects=(UpdateClause(subject=EffectSubject.INTEGRATION_OPERATION),),
+        receipt_projection=tuple(IntegrationCleanupValue.model_fields),
+    ),
+    presentation=CommandPresentation(
+        title="Advance integration cleanup",
+        summary="Materialize and advance bounded cleanup for one terminal root batch.",
+    ),
+)
+
+
+def _root_subject_contract(
+    name: str,
+    args_model: type[CommandArgs],
+    value_model: type[CommandValue],
+    outcomes: tuple[str, ...],
+    successes: frozenset[str],
+    title: str,
+) -> CommandContract:
+    return CommandContract(
+        execution=ExecutionContract(
+            name=name,
+            args_model=args_model,
+            result_model=value_model,
+            outcomes=tuple(
+                OutcomeSpec(
+                    name=outcome,
+                    classification=(
+                        OutcomeClass.SUCCESS
+                        if outcome in successes
+                        else OutcomeClass.FAILURE
+                    ),
+                )
+                for outcome in outcomes
+            ),
+            capability=name,
+            side_effect=SideEffectClass.COMPOSITE,
+            idempotency=IdempotencySpec(mode="natural"),
+            retry_safe=True,
+            effects=(UpdateClause(subject=EffectSubject.INTEGRATION_OPERATION),),
+            receipt_projection=tuple(value_model.model_fields),
+        ),
+        presentation=CommandPresentation(title=title, summary=title),
+    )
+
+
+INTEGRATION_BUILD_CANDIDATE = _root_subject_contract(
+    "integration_build_candidate",
+    IntegrationBuildCandidateArgs,
+    IntegrationBuildCandidateValue,
+    (
+        "empty", "built", "already_built", "conflict", "source_moved", "base_moved",
+        "stale_revision", "wait", "human_required", "configuration_blocked",
+    ),
+    frozenset({"empty", "built", "already_built"}),
+    "Build exact root candidate",
+)
+
+INTEGRATION_CI_EVIDENCE = _root_subject_contract(
+    "integration_ci_evidence",
+    IntegrationCIEvidenceArgs,
+    IntegrationCIEvidenceValue,
+    (
+        "green", "red", "not_green", "full_suite_required", "stale_subject",
+        "configuration_blocked",
+    ),
+    frozenset({"green"}),
+    "Observe exact root candidate CI",
+)
+
+INTEGRATION_RELEASE = _root_subject_contract(
+    "integration_release",
+    IntegrationReleaseArgs,
+    IntegrationReleaseValue,
+    ("released", "already_released", "empty", "wait", "stale", "invariant_error"),
+    frozenset({"released", "already_released", "empty"}),
+    "Release terminal root train",
+)
+
+
 INTEGRATION_FILE_CHILDREN = CommandContract(
     execution=ExecutionContract(
         name="integration_file_children",
@@ -1021,6 +1181,71 @@ async def _promote_main_adapter(
     )
 
 
+async def _cleanup_adapter(
+    args: IntegrationCleanupArgs, ctx: CommandContext | None
+) -> CommandResult:
+    return await _hierarchy_adapter(
+        "integration_cleanup",
+        args,
+        ctx,
+        IntegrationCleanupValue,
+        {
+            "materialized",
+            "advanced",
+            "complete",
+            "already_complete",
+            "wait",
+            "retryable",
+            "conflict",
+            "failed",
+            "stale",
+            "invariant_error",
+        },
+    )
+
+
+async def _build_candidate_adapter(
+    args: IntegrationBuildCandidateArgs, ctx: CommandContext | None
+) -> CommandResult:
+    return await _hierarchy_adapter(
+        "integration_build_candidate",
+        args,
+        ctx,
+        IntegrationBuildCandidateValue,
+        {
+            "empty", "built", "already_built", "conflict", "source_moved", "base_moved",
+            "stale_revision", "wait", "human_required", "configuration_blocked",
+        },
+    )
+
+
+async def _ci_evidence_adapter(
+    args: IntegrationCIEvidenceArgs, ctx: CommandContext | None
+) -> CommandResult:
+    return await _hierarchy_adapter(
+        "integration_ci_evidence",
+        args,
+        ctx,
+        IntegrationCIEvidenceValue,
+        {
+            "green", "red", "not_green", "full_suite_required", "stale_subject",
+            "configuration_blocked",
+        },
+    )
+
+
+async def _release_adapter(
+    args: IntegrationReleaseArgs, ctx: CommandContext | None
+) -> CommandResult:
+    return await _hierarchy_adapter(
+        "integration_release",
+        args,
+        ctx,
+        IntegrationReleaseValue,
+        {"released", "already_released", "empty", "wait", "stale", "invariant_error"},
+    )
+
+
 async def _hierarchy_adapter(
     command: str,
     args: CommandArgs,
@@ -1231,6 +1456,10 @@ def register_integration_contracts(registry: ContractRegistry) -> None:
         (INTEGRATION_RESOLVE_CONFLICT, _resolve_conflict_adapter),
         (INTEGRATION_PUSH_CONFLICT_RESOLUTION, _push_conflict_resolution_adapter),
         (INTEGRATION_PROMOTE_MAIN, _promote_main_adapter),
+        (INTEGRATION_CLEANUP, _cleanup_adapter),
+        (INTEGRATION_BUILD_CANDIDATE, _build_candidate_adapter),
+        (INTEGRATION_CI_EVIDENCE, _ci_evidence_adapter),
+        (INTEGRATION_RELEASE, _release_adapter),
         (INTEGRATION_REPAIR_START, _repair_start_adapter),
         (INTEGRATION_REPAIR_DISPATCH, _repair_dispatch_adapter),
         (INTEGRATION_RECORD_REPAIR, _record_repair_adapter),

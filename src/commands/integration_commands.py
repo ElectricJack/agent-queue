@@ -7,6 +7,8 @@ there are intentionally no optimistic success stubs.
 
 from __future__ import annotations
 
+import inspect
+import time
 from typing import Any
 
 from src.commands.principal import PrincipalKind, TRUSTED_LOCAL, current_principal
@@ -299,6 +301,62 @@ class IntegrationCommandsMixin:
             ),
         )
 
+    def _integration_cleanup_service(self):
+        service = getattr(self.orchestrator, "integration_cleanup_service", None)
+        if service is not None:
+            return service
+        from src.integration.cleanup import IntegrationCleanupService
+
+        return IntegrationCleanupService(
+            self.db,
+            data_dir=self.config.data_dir,
+            git_manager=self.orchestrator.git,
+            app_client_factory=getattr(
+                self.orchestrator, "integration_app_client_factory", None
+            ),
+            forge_provider=getattr(
+                self.orchestrator, "integration_cleanup_forge_provider", None
+            ),
+        )
+
+    async def _integration_candidate_service(self, batch: dict[str, Any]):
+        service = getattr(self.orchestrator, "integration_candidate_service", None)
+        if service is not None:
+            return service
+        from src.integration.candidates import CandidateService
+
+        app_client = None
+        binding_resolver = getattr(
+            self.orchestrator, "integration_repository_binding_resolver", None
+        )
+        app_client_factory = getattr(
+            self.orchestrator, "integration_app_client_factory", None
+        )
+        repository = await self.db.get_repo(batch["repository_id"])
+        if repository is not None and binding_resolver is not None and app_client_factory is not None:
+            binding = binding_resolver(repository)
+            if inspect.isawaitable(binding):
+                binding = await binding
+            if binding is not None:
+                app_client = app_client_factory(binding)
+                if inspect.isawaitable(app_client):
+                    app_client = await app_client
+        return CandidateService(
+            self.db,
+            data_dir=self.config.data_dir,
+            git_manager=self.orchestrator.git,
+            app_client=app_client,
+            forge_provider=app_client,
+        )
+
+    def _integration_release_service(self):
+        service = getattr(self.orchestrator, "integration_release_service", None)
+        if service is not None:
+            return service
+        from src.integration.release import IntegrationReleaseService
+
+        return IntegrationReleaseService(self.db)
+
     async def _cmd_integration_schedule_due(self, args: dict) -> dict:
         from pydantic import ValidationError
 
@@ -342,7 +400,7 @@ class IntegrationCommandsMixin:
         result = await self._integration_train_service().seal(
             request.project_id,
             request.request_id,
-            request.now,
+            request.now if request.now is not None else time.time(),
         )
         return {
             "success": result["outcome"] in {"sealed", "empty"},
@@ -374,6 +432,252 @@ class IntegrationCommandsMixin:
             return _failure("runtime_error", str(exc))
         return {
             "success": result.outcome in {"promoted", "already_promoted"},
+            **result.model_dump(mode="json"),
+        }
+
+    async def _cmd_integration_cleanup(self, args: dict) -> dict:
+        from pydantic import ValidationError
+
+        from src.commands.contracts.integration import IntegrationCleanupArgs
+
+        try:
+            request = IntegrationCleanupArgs.model_validate(args)
+        except ValidationError as exc:
+            return _failure("runtime_error", f"invalid integration cleanup request: {exc}")
+        batch = await self.db.get_integration_batch(request.batch_id)
+        if batch is None:
+            return _failure("stale", "integration batch does not exist")
+        if not await self._integration_delivery_authorized(
+            batch["project_id"], "integration_cleanup"
+        ):
+            return _failure("unauthorized", "caller cannot clean up this root batch")
+        service = self._integration_cleanup_service()
+        materialized = await service.materialize(request.batch_id)
+        if materialized.outcome not in {"materialized", "already_materialized"}:
+            return {
+                "success": False,
+                **materialized.model_dump(mode="json"),
+            }
+        advanced = await service.advance(request.batch_id)
+        if not advanced:
+            if materialized.item_count == 0:
+                outcome = "complete"
+                completed = 0
+                conflicts = 0
+            else:
+                from sqlalchemy import func, select
+
+                from src.database.tables import integration_cleanup_items
+
+                async with self.db._engine.connect() as conn:
+                    counts = dict(
+                        (
+                            await conn.execute(
+                                select(
+                                    integration_cleanup_items.c.state,
+                                    func.count().label("count"),
+                                )
+                                .where(
+                                    integration_cleanup_items.c.batch_id
+                                    == request.batch_id
+                                )
+                                .group_by(integration_cleanup_items.c.state)
+                            )
+                        ).all()
+                    )
+                completed = int(counts.get("complete", 0))
+                conflicts = int(counts.get("conflict", 0)) + int(
+                    counts.get("failed", 0)
+                )
+                terminal = completed + conflicts == materialized.item_count
+                outcome = "conflict" if terminal and conflicts else "already_complete" if terminal else "wait"
+            return {
+                "success": outcome in {"complete", "already_complete"},
+                "outcome": outcome,
+                "batch_id": request.batch_id,
+                "item_count": materialized.item_count,
+                "completed_count": completed,
+                "conflict_count": conflicts,
+            }
+        conflicts = sum(row.outcome in {"conflict", "failed"} for row in advanced)
+        completed = sum(row.outcome in {"complete", "already_complete"} for row in advanced)
+        outcome = (
+            "conflict"
+            if conflicts
+            else "retryable"
+            if any(row.outcome == "retryable" for row in advanced)
+            else "wait"
+            if any(row.outcome == "wait" for row in advanced)
+            else "complete"
+            if completed == len(advanced)
+            else "advanced"
+        )
+        return {
+            "success": outcome in {"advanced", "complete"},
+            "outcome": outcome,
+            "batch_id": request.batch_id,
+            "item_count": materialized.item_count,
+            "completed_count": completed,
+            "conflict_count": conflicts,
+        }
+
+    async def _cmd_integration_build_candidate(self, args: dict) -> dict:
+        from pydantic import ValidationError
+
+        from src.commands.contracts.integration import IntegrationBuildCandidateArgs
+
+        try:
+            request = IntegrationBuildCandidateArgs.model_validate(args)
+        except ValidationError as exc:
+            return _failure("runtime_error", f"invalid candidate build request: {exc}")
+        batch = await self.db.get_integration_batch(request.batch_id)
+        if batch is None:
+            return _failure("runtime_error", "integration batch does not exist")
+        if not await self._integration_delivery_authorized(
+            batch["project_id"], "integration_build_candidate"
+        ):
+            return _failure("unauthorized", "caller cannot build this root batch")
+        service = await self._integration_candidate_service(batch)
+        moved_main = False
+        if batch["lifecycle"] == "building":
+            from sqlalchemy import select
+
+            from src.database.tables import integration_promotion_intents
+
+            async with self.db._engine.connect() as conn:
+                moved_main = (
+                    await conn.execute(
+                        select(integration_promotion_intents.c.id).where(
+                            integration_promotion_intents.c.intent_kind == "root",
+                            integration_promotion_intents.c.root_batch_id == request.batch_id,
+                            integration_promotion_intents.c.root_candidate_revision
+                            == batch["current_revision"],
+                            integration_promotion_intents.c.state == "superseded",
+                        )
+                    )
+                ).scalar_one_or_none() is not None
+        if moved_main and batch["policy_snapshot"].get("on_main_moved", "rebuild") != "rebuild":
+            return {
+                "success": False,
+                "outcome": "base_moved",
+                "batch_id": request.batch_id,
+                "revision": int(batch["current_revision"]),
+            }
+        if moved_main and getattr(service, "app_client", None) is not None:
+            repository = await service._repository(batch["repository_id"])
+            new_base = await service.app_client.exact_head_ref(repository.default_branch)
+            result = (
+                await service.rebuild(
+                    request.batch_id, int(batch["current_revision"]), new_base
+                )
+                if new_base is not None
+                else await service.build(request.batch_id)
+            )
+        else:
+            result = await service.build(request.batch_id)
+        if (
+            result.outcome == "base_moved"
+            and batch["policy_snapshot"].get("on_main_moved", "rebuild") == "rebuild"
+            and getattr(service, "app_client", None) is not None
+        ):
+            repository = await service._repository(batch["repository_id"])
+            new_base = await service.app_client.exact_head_ref(repository.default_branch)
+            if new_base is not None:
+                result = await service.rebuild(
+                    request.batch_id, int(batch["current_revision"]), new_base
+                )
+        return {
+            "success": result.outcome in {"empty", "built", "already_built"},
+            **result.model_dump(mode="json"),
+        }
+
+    async def _cmd_integration_ci_evidence(self, args: dict) -> dict:
+        from pydantic import ValidationError
+        from sqlalchemy import select
+
+        from src.commands.contracts.integration import IntegrationCIEvidenceArgs
+        from src.database.tables import (
+            integration_batches,
+            integration_candidate_revisions,
+            integration_repair_operations,
+        )
+
+        try:
+            request = IntegrationCIEvidenceArgs.model_validate(args)
+        except ValidationError as exc:
+            return _failure("runtime_error", f"invalid candidate CI request: {exc}")
+        batch = await self.db.get_integration_batch(request.batch_id)
+        if batch is None:
+            return _failure("runtime_error", "integration batch does not exist")
+        if not await self._integration_delivery_authorized(
+            batch["project_id"], "integration_ci_evidence"
+        ):
+            return _failure("unauthorized", "caller cannot observe this root candidate")
+        async with self.db._engine.connect() as conn:
+            row = (
+                await conn.execute(
+                    select(
+                        integration_repair_operations.c.id.label("operation_id"),
+                        integration_candidate_revisions.c.batch_id,
+                        integration_candidate_revisions.c.revision,
+                        integration_candidate_revisions.c.head_sha.label("candidate_sha"),
+                    )
+                    .select_from(
+                        integration_candidate_revisions.join(
+                            integration_repair_operations,
+                            integration_repair_operations.c.batch_id
+                            == integration_candidate_revisions.c.batch_id,
+                        ).join(
+                            integration_batches,
+                            integration_batches.c.id
+                            == integration_candidate_revisions.c.batch_id,
+                        )
+                    )
+                    .where(
+                        integration_candidate_revisions.c.batch_id == request.batch_id,
+                        integration_candidate_revisions.c.revision == request.revision,
+                        integration_batches.c.id == request.batch_id,
+                        integration_batches.c.current_revision == request.revision,
+                    )
+                )
+            ).mappings().one_or_none()
+        if row is None or row["candidate_sha"] is None:
+            return _failure("stale_subject", "candidate revision is not current and built")
+        service = getattr(self.orchestrator, "integration_attestation_service", None)
+        if service is None:
+            return _failure("configuration_blocked", "trusted CI adapter is unavailable")
+        result = await service.handle_candidate_ci(dict(row), 0.0)
+        outcome = result.get("outcome")
+        return {
+            "success": outcome in {"green", "published", "already_published"},
+            "outcome": "green" if outcome in {"published", "already_published"} else outcome,
+            "batch_id": request.batch_id,
+            "revision": request.revision,
+            "evidence_ids": tuple(result.get("evidence_ids") or ()),
+            "aggregate_evidence_id": result.get("aggregate_evidence_id"),
+        }
+
+    async def _cmd_integration_release(self, args: dict) -> dict:
+        from pydantic import ValidationError
+
+        from src.commands.contracts.integration import IntegrationReleaseArgs
+
+        try:
+            request = IntegrationReleaseArgs.model_validate(args)
+        except ValidationError as exc:
+            return _failure("runtime_error", f"invalid integration release request: {exc}")
+        batch = await self.db.get_integration_batch(request.batch_id)
+        if batch is None:
+            return _failure("stale", "integration batch does not exist")
+        if not await self._integration_delivery_authorized(
+            batch["project_id"], "integration_release"
+        ):
+            return _failure("unauthorized", "caller cannot release this root batch")
+        result = await self._integration_release_service().release(
+            request.batch_id, time.time()
+        )
+        return {
+            "success": result.outcome in {"released", "already_released", "empty"},
             **result.model_dump(mode="json"),
         }
 

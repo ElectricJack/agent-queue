@@ -108,6 +108,10 @@ class DatabaseBackend(Protocol):
         self, *, after: tuple[float, str] | None, limit: int
     ) -> list[dict]: ...
 
+    async def pending_integration_cleanup_page(
+        self, *, now: float, after: tuple[float, str, str] | None, limit: int
+    ) -> list[dict]: ...
+
     # --- Project onboarding idempotency ---
 
     async def create_onboarding_request(

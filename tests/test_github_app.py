@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import datetime, timedelta, timezone
 
 import jwt
@@ -100,7 +101,8 @@ async def test_mints_narrow_installation_token_after_app_and_repository_binding(
                     '{"token":"installation-secret","expires_at":"%s",'
                     '"repositories":[{"id":303}],"permissions":'
                     '{"checks":"write","actions":"read","contents":"write",'
-                    '"administration":"read","metadata":"read"}}' % expires
+                    '"administration":"read","pull_requests":"write",'
+                    '"issues":"write","metadata":"read"}}' % expires
                 ).encode(),
             ),
             HttpResponse(200, {}, b'{"id":303,"full_name":"acme/widgets"}'),
@@ -130,11 +132,113 @@ async def test_mints_narrow_installation_token_after_app_and_repository_binding(
             "actions": "read",
             "contents": "write",
             "administration": "read",
+            "pull_requests": "write",
+            "issues": "write",
         },
     }
     for request in transport.requests:
         assert request[2]["Accept"] == "application/vnd.github+json"
         assert request[2]["X-GitHub-Api-Version"] == "2022-11-28"
+
+
+@pytest.mark.asyncio
+async def test_binds_repository_by_name_with_one_narrow_installation_token():
+    private, _public = _private_key()
+    expires = "2030-01-01T00:00:00Z"
+    permissions = {
+        "checks": "write",
+        "actions": "read",
+        "contents": "write",
+        "administration": "read",
+        "pull_requests": "write",
+        "issues": "write",
+    }
+    transport = ScriptedTransport(
+        [
+            HttpResponse(200, {}, b'{"id":101}'),
+            HttpResponse(
+                201,
+                {},
+                (
+                    '{"token":"installation-secret","expires_at":"%s",'
+                    '"repositories":[{"id":303,"name":"widgets",'
+                    '"full_name":"acme/widgets"}],"permissions":%s}'
+                    % (expires, json.dumps(permissions))
+                ).encode(),
+            ),
+        ]
+    )
+
+    client = await GitHubAppClient.bind_repository(
+        GitHubAppConfig("Iv1.client", 101, 202, "/daemon/key.pem"),
+        "acme/widgets",
+        key_provider=StaticKeyProvider(private),
+        transport=transport,
+        clock=lambda: 1_800_000_000.0,
+    )
+
+    assert client.repository == GitHubRepositoryBinding(303, "acme/widgets")
+    assert await client.installation_token() == "installation-secret"
+    assert transport.requests[1][3] == {
+        "repositories": ["widgets"],
+        "permissions": permissions,
+    }
+
+
+@pytest.mark.asyncio
+async def test_audit_pr_transport_reconciles_by_marker_and_creates_exact_bound_pr():
+    private, _public = _private_key()
+    head = "a" * 40
+    key = "b" * 64
+    payload = {
+        "html_url": "https://github.com/acme/widgets/pull/7",
+        "number": 7,
+        "state": "open",
+        "body": f"<!-- aq-integration-audit:{key} -->",
+        "head": {
+            "sha": head,
+            "ref": "aq/integration/batch",
+            "repo": {"id": 303, "full_name": "acme/widgets"},
+        },
+        "base": {"ref": "main"},
+    }
+    transport = ScriptedTransport(
+        [
+            HttpResponse(200, {}, json.dumps([payload]).encode()),
+            HttpResponse(201, {}, json.dumps(payload).encode()),
+        ]
+    )
+    client = GitHubAppClient(
+        GitHubAppConfig("Iv1.client", 101, 202, "/daemon/key.pem"),
+        GitHubRepositoryBinding(303, "acme/widgets"),
+        key_provider=StaticKeyProvider(private),
+        transport=transport,
+        clock=lambda: 1_800_000_000.0,
+    )
+    client._token = "installation-secret"
+    client._token_expires_at = 1_800_001_000.0
+
+    found = await client.lookup_audit_pr(idempotency_key=key)
+    created = await client.create_audit_pr(
+        repository_id="repo",
+        branch="aq/integration/batch",
+        head_sha=head,
+        base_branch="main",
+        batch_id="batch",
+        idempotency_key=key,
+        repository_numeric_id=303,
+        repository_full_name="acme/widgets",
+    )
+
+    assert found == created
+    assert found.idempotency_key == key
+    assert transport.requests[0][1].endswith("/repositories/303/pulls?state=all&per_page=100")
+    assert transport.requests[1][3] == {
+        "title": "Integration train batch",
+        "head": "aq/integration/batch",
+        "base": "main",
+        "body": f"<!-- aq-integration-audit:{key} -->\nRoot integration batch `batch`.",
+    }
 
 
 @pytest.mark.asyncio
@@ -148,7 +252,7 @@ async def test_authenticated_request_retries_one_401_with_a_fresh_token():
             f'{{"token":"{token}","expires_at":"{expires}",'
             '"repositories":[{"id":303}],"permissions":'
             '{"checks":"write","actions":"read","contents":"write",'
-            '"administration":"read"}}'
+            '"administration":"read","pull_requests":"write","issues":"write"}}'
         ).encode(),
     )
     transport = ScriptedTransport(
@@ -186,7 +290,8 @@ async def test_repository_identity_mismatch_fails_closed_without_response_body()
                 {},
                 b'{"token":"sensitive","expires_at":"2030-01-01T00:00:00Z",'
                 b'"repositories":[{"id":303}],"permissions":{"checks":"write",'
-                b'"actions":"read","contents":"write","administration":"read"}}',
+                b'"actions":"read","contents":"write","administration":"read",'
+                b'"pull_requests":"write","issues":"write"}}',
             ),
             HttpResponse(200, {}, b'{"id":303,"full_name":"attacker/redirected"}'),
         ]

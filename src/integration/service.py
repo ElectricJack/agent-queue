@@ -52,6 +52,7 @@ class IntegrationService:
             "repair_stages": None,
             "candidate_ci": None,
             "intents": None,
+            "cleanup": None,
         }
 
     async def tick(self, now: float) -> None:
@@ -63,9 +64,8 @@ class IntegrationService:
             await self._source("repair deadline", self._tick_repair_stages, now)
             await self._source("candidate CI", self._tick_candidate_ci, now)
             await self._source("integration intent", self._tick_intents, now)
-
-            # Task 10c adds the cleanup selector. The handler slot is intentionally
-            # dormant here rather than manufacturing successful cleanup work.
+            if self._cleanup_handler is not None:
+                await self._source("integration cleanup", self._tick_cleanup, now)
             await self._source("integration outbox", self._outbox.dispatch_due, now)
         finally:
             self._tick_lock.release()
@@ -121,6 +121,15 @@ class IntegrationService:
         await self._run_optional(
             "integration intent", rows, self._unresolved_intent_handler, now
         )
+
+    async def _tick_cleanup(self, now: float) -> None:
+        rows = await self._page(
+            "cleanup",
+            self._db.pending_integration_cleanup_page,
+            lambda row: (row["next_attempt_at"], row["batch_id"], row["domain_key"]),
+            now=now,
+        )
+        await self._run_optional("integration cleanup", rows, self._cleanup_handler, now)
 
     async def _page(
         self,

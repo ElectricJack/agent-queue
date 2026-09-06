@@ -169,6 +169,50 @@ async def test_privileged_push_ignores_worker_hooks_config_rewrites_helpers_and_
 
 
 @pytest.mark.asyncio
+async def test_isolated_app_delete_uses_exact_old_lease(tmp_path):
+    checkout, target, _, _base, tip = _git_push_case(tmp_path)
+    manager = GitManager()
+    _git(["push", str(target), f"{tip}:refs/heads/integration/test"], checkout)
+
+    result = await manager._apush_oid_with_app_auth_to_url(
+        str(checkout),
+        destination_url=target.as_uri(),
+        token="installation-token-sentinel",
+        tip_oid=None,
+        branch="integration/test",
+        expected_old_oid=tip,
+    )
+
+    assert result == tip
+    assert subprocess.run(
+        ["git", "show-ref", "--verify", "refs/heads/integration/test"],
+        cwd=target,
+        capture_output=True,
+    ).returncode != 0
+
+
+@pytest.mark.asyncio
+async def test_isolated_app_delete_refuses_moved_remote(tmp_path):
+    checkout, target, _, _base, tip = _git_push_case(tmp_path)
+
+    with pytest.raises(GitError, match="authenticated Git push failed"):
+        await GitManager()._apush_oid_with_app_auth_to_url(
+            str(checkout),
+            destination_url=target.as_uri(),
+            token="installation-token-sentinel",
+            tip_oid=None,
+            branch="main",
+            expected_old_oid=tip,
+        )
+
+    assert subprocess.run(
+        ["git", "show-ref", "--verify", "refs/heads/main"],
+        cwd=target,
+        capture_output=True,
+    ).returncode == 0
+
+
+@pytest.mark.asyncio
 async def test_app_push_uses_frozen_repository_and_one_shot_fd_without_secret_leak(
     tmp_path, monkeypatch
 ):

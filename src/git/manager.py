@@ -2131,6 +2131,10 @@ class GitManager:
         except GitError:
             await self._arun(["worktree", "remove", "--force", worktree_path], cwd=source_path)
 
+    async def aremove_worktree_exact(self, source_path: str, worktree_path: str) -> None:
+        """Remove a verified retained worktree without discarding dirty files."""
+        await self._arun(["worktree", "remove", worktree_path], cwd=source_path)
+
     # ── Worktree slots (worktree-execution spec §4) ───────────────────────
     #
     # The primitives WorktreeSlotManager composes.  Every ref-accepting
@@ -2934,6 +2938,53 @@ class GitManager:
             _deadline=deadline,
         )
 
+    async def adelete_ref_with_app_auth(
+        self,
+        checkout_path: str,
+        *,
+        repository: GitHubRepositoryBinding,
+        token: str,
+        branch: str,
+        expected_old_oid: str,
+        authority_deadline: float | None = None,
+    ) -> str:
+        """Delete one App-bound remote head under an exact expected-old lease."""
+        loop = asyncio.get_running_loop()
+        maximum_deadline = loop.time() + APP_AUTH_PUSH_TIMEOUT_SECONDS
+        deadline = maximum_deadline if authority_deadline is None else min(
+            float(authority_deadline), maximum_deadline
+        )
+        try:
+            self._remaining_app_push_budget(deadline)
+        except (asyncio.TimeoutError, TypeError, ValueError, OverflowError) as exc:
+            raise GitError("authenticated Git delete authority deadline expired") from exc
+        if not isinstance(token, str) or not token:
+            raise GitError("invalid GitHub App credential")
+        branch = _validate_ref(branch)
+        if not isinstance(expected_old_oid, str) or _OID_RE.fullmatch(expected_old_oid) is None:
+            raise GitError("invalid expected target OID")
+        await self._apush_oid_with_app_auth_to_url(
+            checkout_path,
+            destination_url=f"https://github.com/{repository.full_name}.git",
+            token=token,
+            tip_oid=None,
+            branch=branch,
+            expected_old_oid=expected_old_oid,
+            _deadline=deadline,
+        )
+        return expected_old_oid
+
+    async def adelete_local_ref_exact(
+        self, checkout_path: str, *, ref: str, expected_old_oid: str
+    ) -> None:
+        """Delete a daemon-owned local head only when its tip is unchanged."""
+        ref = _validate_ref(ref, field="ref")
+        if not ref.startswith("refs/heads/"):
+            raise GitError("cleanup ref must be a complete head ref")
+        if _OID_RE.fullmatch(expected_old_oid) is None:
+            raise GitError("invalid expected target OID")
+        await self._arun(["update-ref", "-d", ref, expected_old_oid], cwd=checkout_path)
+
     async def afetch_exact_oid_with_app_auth(
         self,
         destination_git_dir: str,
@@ -3245,7 +3296,7 @@ class GitManager:
         *,
         destination_url: str,
         token: str,
-        tip_oid: str,
+        tip_oid: str | None,
         branch: str,
         expected_old_oid: str,
         _deadline: float | None = None,
@@ -3262,9 +3313,13 @@ class GitManager:
         if not isinstance(token, str) or not token:
             raise GitError("invalid GitHub App credential")
         branch = _validate_ref(branch)
-        for label, oid in (("tip", tip_oid), ("expected target", expected_old_oid)):
+        for label, oid in (("expected target", expected_old_oid),):
             if not isinstance(oid, str) or _OID_RE.fullmatch(oid) is None:
                 raise GitError(f"invalid {label} OID")
+        if tip_oid is not None and (
+            not isinstance(tip_oid, str) or _OID_RE.fullmatch(tip_oid) is None
+        ):
+            raise GitError("invalid tip OID")
         if (
             not (
                 destination_url.startswith("https://github.com/")
@@ -3292,29 +3347,30 @@ class GitManager:
                 home=home,
                 deadline=_deadline,
             )
-            await self._run_isolated_import_git(
-                [
-                    "-c",
-                    "protocol.allow=never",
-                    "-c",
-                    "protocol.file.allow=always",
-                    f"--git-dir={repository}",
-                    "fetch",
-                    "--no-tags",
-                    "--force",
-                    str(checkout),
-                    f"{tip_oid}:refs/aq/imported",
-                ],
-                home=home,
-                deadline=_deadline,
-            )
-            imported = await self._run_isolated_import_git(
-                [f"--git-dir={repository}", "rev-parse", "refs/aq/imported^{commit}"],
-                home=home,
-                deadline=_deadline,
-            )
-            if imported.decode("ascii", errors="replace") != tip_oid:
-                raise GitError("authenticated Git push preparation failed")
+            if tip_oid is not None:
+                await self._run_isolated_import_git(
+                    [
+                        "-c",
+                        "protocol.allow=never",
+                        "-c",
+                        "protocol.file.allow=always",
+                        f"--git-dir={repository}",
+                        "fetch",
+                        "--no-tags",
+                        "--force",
+                        str(checkout),
+                        f"{tip_oid}:refs/aq/imported",
+                    ],
+                    home=home,
+                    deadline=_deadline,
+                )
+                imported = await self._run_isolated_import_git(
+                    [f"--git-dir={repository}", "rev-parse", "refs/aq/imported^{commit}"],
+                    home=home,
+                    deadline=_deadline,
+                )
+                if imported.decode("ascii", errors="replace") != tip_oid:
+                    raise GitError("authenticated Git push preparation failed")
 
             topology = await self._app_git_credential_topology(
                 home=home, deadline=_deadline
@@ -3370,7 +3426,11 @@ class GitManager:
                     "--no-verify",
                     destination_url,
                     f"--force-with-lease=refs/heads/{branch}:{expected_old_oid}",
-                    f"{tip_oid}:refs/heads/{branch}",
+                    (
+                        f"{tip_oid}:refs/heads/{branch}"
+                        if tip_oid is not None
+                        else f":refs/heads/{branch}"
+                    ),
                 ]
             )
             try:
@@ -3427,7 +3487,7 @@ class GitManager:
                 raise GitError("authenticated Git push failed")
             if destination_url.startswith("https://") and not broker_served:
                 raise GitError("authenticated Git push failed")
-        return tip_oid
+        return tip_oid or expected_old_oid
 
     async def alist_prs(
         self,

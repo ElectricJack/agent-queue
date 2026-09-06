@@ -9,6 +9,7 @@ from sqlalchemy import and_, or_, select
 from src.database.tables import (
     integration_batches,
     integration_candidate_revisions,
+    integration_cleanup_items,
     integration_promotion_intents,
     integration_repair_operations,
     integration_repair_stages,
@@ -171,6 +172,42 @@ class IntegrationReconciliationQueriesMixin:
                 or_(
                     updated_at > after[0],
                     and_(updated_at == after[0], intent_id > after[1]),
+                )
+            )
+        async with self._engine.connect() as conn:
+            rows = (await conn.execute(statement)).mappings().all()
+        return [dict(row) for row in rows]
+
+    async def pending_integration_cleanup_page(
+        self, *, now: float, after: tuple[float, str, str] | None, limit: int
+    ) -> list[dict[str, Any]]:
+        _require_limit(limit)
+        due_at = integration_cleanup_items.c.next_attempt_at
+        batch_id = integration_cleanup_items.c.batch_id
+        domain_key = integration_cleanup_items.c.domain_key
+        statement = (
+            select(integration_cleanup_items)
+            .where(
+                integration_cleanup_items.c.state.in_(("pending", "retryable")),
+                due_at <= now,
+                or_(
+                    integration_cleanup_items.c.execution_nonce.is_(None),
+                    integration_cleanup_items.c.claim_expires_at <= now,
+                ),
+            )
+            .order_by(due_at, batch_id, domain_key)
+            .limit(limit)
+        )
+        if after is not None:
+            statement = statement.where(
+                or_(
+                    due_at > after[0],
+                    and_(due_at == after[0], batch_id > after[1]),
+                    and_(
+                        due_at == after[0],
+                        batch_id == after[1],
+                        domain_key > after[2],
+                    ),
                 )
             )
         async with self._engine.connect() as conn:

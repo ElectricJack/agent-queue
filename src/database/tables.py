@@ -2725,6 +2725,102 @@ integration_attestation_publications = Table(
     ),
 )
 
+integration_cleanup_items = Table(
+    "integration_cleanup_items",
+    metadata,
+    Column("batch_id", Text, primary_key=True),
+    Column("kind", Text, primary_key=True),
+    Column("identity", Text, primary_key=True),
+    Column("domain_key", Text, nullable=False, unique=True),
+    Column("project_id", Text, nullable=False),
+    Column("repository_id", Text, nullable=False),
+    Column("repository_numeric_id", Integer, nullable=False),
+    Column("repository_full_name", Text, nullable=False),
+    Column("revision", Integer, nullable=False),
+    Column("member_ordinal", Integer, nullable=True),
+    Column("receipt_id", Text, nullable=True),
+    Column("target_ref", Text, nullable=True),
+    Column("target_pr_number", Integer, nullable=True),
+    Column("target_pr_url", Text, nullable=True),
+    Column("workspace_path", Text, nullable=True),
+    Column("expected_sha", Text, nullable=False),
+    Column("state", Text, nullable=False),
+    Column("attempts", Integer, nullable=False, server_default="0"),
+    Column("next_attempt_at", Float, nullable=False),
+    Column("execution_nonce", Text, nullable=True),
+    Column("claim_expires_at", Float, nullable=True),
+    Column("last_error", Text, nullable=True),
+    Column("created_at", Float, nullable=False),
+    Column("updated_at", Float, nullable=False),
+    Column("terminal_at", Float, nullable=True),
+    CheckConstraint(
+        "kind IN ('source_pr', 'audit_pr', 'remote_ref', 'local_ref', 'worktree')",
+        name="ck_integration_cleanup_items_kind",
+    ),
+    CheckConstraint(
+        "state IN ('pending', 'retryable', 'complete', 'conflict', 'failed')",
+        name="ck_integration_cleanup_items_state",
+    ),
+    CheckConstraint(
+        "revision >= 0 AND attempts >= 0 AND repository_numeric_id > 0",
+        name="ck_integration_cleanup_items_numbers",
+    ),
+    CheckConstraint(
+        "length(expected_sha) = 40 AND expected_sha = lower(expected_sha)",
+        name="ck_integration_cleanup_items_expected_sha",
+    ),
+    CheckConstraint(
+        "(execution_nonce IS NULL AND claim_expires_at IS NULL) OR "
+        "(execution_nonce IS NOT NULL AND claim_expires_at IS NOT NULL)",
+        name="ck_integration_cleanup_items_claim",
+    ),
+    CheckConstraint(
+        "((state IN ('complete', 'conflict', 'failed')) AND terminal_at IS NOT NULL "
+        "AND execution_nonce IS NULL AND claim_expires_at IS NULL) OR "
+        "((state IN ('pending', 'retryable')) AND terminal_at IS NULL)",
+        name="ck_integration_cleanup_items_terminal",
+    ),
+    CheckConstraint(
+        "(kind = 'source_pr' AND member_ordinal IS NOT NULL AND member_ordinal >= 0 "
+        "AND receipt_id IS NOT NULL AND target_pr_number > 0 AND target_pr_url IS NOT NULL "
+        "AND target_ref IS NULL AND workspace_path IS NULL) OR "
+        "(kind = 'audit_pr' AND member_ordinal IS NULL AND receipt_id IS NULL "
+        "AND target_pr_number > 0 AND target_pr_url IS NOT NULL AND target_ref IS NULL "
+        "AND workspace_path IS NULL) OR "
+        "(kind IN ('remote_ref', 'local_ref') AND member_ordinal IS NULL "
+        "AND receipt_id IS NULL AND target_pr_number IS NULL AND target_pr_url IS NULL "
+        "AND target_ref IS NOT NULL AND workspace_path IS NULL) OR "
+        "(kind = 'worktree' AND member_ordinal IS NULL AND receipt_id IS NULL "
+        "AND target_pr_number IS NULL AND target_pr_url IS NULL AND target_ref IS NULL "
+        "AND workspace_path IS NOT NULL)",
+        name="ck_integration_cleanup_items_target",
+    ),
+    ForeignKeyConstraint(
+        ["batch_id"], ["integration_batches.id"],
+        name="fk_integration_cleanup_items_batch", ondelete="RESTRICT",
+    ),
+    ForeignKeyConstraint(
+        ["project_id"], ["projects.id"],
+        name="fk_integration_cleanup_items_project", ondelete="RESTRICT",
+    ),
+    ForeignKeyConstraint(
+        ["repository_id"], ["repos.id"],
+        name="fk_integration_cleanup_items_repository", ondelete="RESTRICT",
+    ),
+    ForeignKeyConstraint(
+        ["receipt_id"], ["task_delivery_receipts.id"],
+        name="fk_integration_cleanup_items_receipt", ondelete="RESTRICT",
+    ),
+    Index(
+        "idx_integration_cleanup_items_due",
+        "next_attempt_at",
+        "batch_id",
+        "domain_key",
+        sqlite_where=text("state IN ('pending', 'retryable')"),
+        postgresql_where=text("state IN ('pending', 'retryable')"),
+    ),
+)
+
 integration_repair_stage_evidence = Table(
     "integration_repair_stage_evidence",
     metadata,
