@@ -250,3 +250,162 @@ Concerns carried forward: Task 11 must provide real reviewed App/check identitie
 installed askpass/Git topology and protection/probe prerequisites, install the exact trust
 document, and set the workflow App/version variables before enabling any project. Until then,
 all missing configuration fails closed and main continues through full CI.
+
+---
+
+## Fix round 1 — exact production attestation boundary
+
+Fix base: `cd045759`. Controller documentation advanced independently while the fix was in
+progress; the nearest preceding documentation head was `c6dabb13`. Those documentation commits
+were preserved without modification. Runtime/tests/migration commit: `abf25a45`.
+
+### Finding reconciliation
+
+- Fork-safe routing: duplicate PR suppression now requires the pull request head repository to
+  equal the workflow repository and the exact generated ref form
+  `aq/integration/p-<32 lowercase hex>/r-<32 lowercase hex>`. Ordinary and fork PRs retain the
+  full-CI fallback.
+- Shared-suite verification: required checks retain unique names and check-run IDs, while the
+  verifier compares the set of unique check-suite IDs to the workflow-attempt suite set. Multiple
+  distinct required checks in one suite are accepted.
+- Exclusive publication: `integration_attestation_publications` persists immutable subject,
+  evidence, payload digest, execution nonce, lease, prewrite ambiguity marker, and exact published
+  check-run ID. Project-hierarchy transactions reserve/revalidate/finalize; all GitHub/Git I/O is
+  outside database locks. A live competing claim waits, expired unmarked claims use a guarded CAS,
+  and a fresh successor may reconcile a marked claim only after expiry. Marked claims never POST
+  again. Main, rebuild, and repair-stage invalidation cannot cross a relevant unresolved claim.
+- Production command wiring: the daemon retains a repository-bound App client factory. The root
+  service derives the binding from frozen server-side attestation identity; configured command
+  execution reached exact repository `99/acme/widgets`, while missing configuration remained
+  `configuration_blocked` with no push.
+- Strict provenance: one `SelectedAttestation` supplies both the exact numeric record ID and its
+  canonical payload. Read, required-check, publication-reuse, and hosted paths reject bool, float,
+  string, missing, and nonpositive ordering IDs and reject malformed exact-name App IDs without
+  older fallback or hybrid provenance.
+
+### TDD evidence
+
+The focused RED boundaries observed during implementation were:
+
+- fork-looking routing initially had no behavioral decision interface; the new route test failed
+  until the same-repository/exact-ref decision was added;
+- the shared-suite fixture was rejected by the previous suite-cardinality rule;
+- a float exact-name App ID was accepted by the hosted verifier;
+- the strict selector returned only a payload and could not provide its selected record ID;
+- two fresh service instances passed the prior provider read-before-POST race and produced two
+  POSTs;
+- the configured production command path returned `configuration_blocked` because no App factory
+  reached root promotion;
+- the initial missing-factory test returned `wait` because its fixture used an expired real-time
+  lease; after pinning that fixture horizon it exercised and proved the intended fail-closed seam;
+- final protocol self-review produced this explicit RED against the first reservation version:
+
+```text
+$ pytest -q tests/test_integration_attestation.py::test_publish_crash_replays_existing_record_without_duplicate tests/test_integration_attestation.py::test_lost_publication_response_reconciles_without_duplicate tests/test_integration_attestation.py::test_marked_publication_freezes_execution_nonce -x
+1 failed, 2 warnings in 0.74s
+E AssertionError: assert 'already_published' == 'configuration_blocked'
+```
+
+That RED showed a fresh daemon could reconcile a marked publication before the lease expired.
+The GREEN version requires the fresh caller to wait, permits authenticated reconciliation after
+expiry, and freezes the marked execution nonce in both dialects:
+
+```text
+$ pytest -q tests/test_integration_attestation.py::test_publish_crash_replays_existing_record_without_duplicate tests/test_integration_attestation.py::test_lost_publication_response_reconciles_without_duplicate tests/test_integration_attestation.py::test_marked_publication_freezes_execution_nonce -x
+3 passed, 2 warnings in 4.76s
+```
+
+Additional recorded focused GREEN boundaries:
+
+```text
+$ pytest -q tests/test_integration_ci.py -k 'loose_numeric_app_identity or malformed_trusted_ordering_id' -x
+21 passed, 22 deselected, 2 warnings in 0.25s
+
+$ pytest -q tests/test_integration_attestation.py::test_live_publication_reservation_blocks_stage_expiry tests/test_integration_attestation.py::test_expired_marked_reservation_reconciles_but_never_reposts -x
+2 passed, 2 warnings in 0.79s
+
+$ pytest -q tests/test_integration_main_promotion.py::test_root_command_without_app_factory_remains_blocked -x
+1 passed, 3 warnings in 1.27s
+```
+
+The two-fresh-service publication regression observed exactly one provider POST; expired unmarked
+takeover, expired marked reconciliation/no-repost, configured exact binding, publication-before-
+main, main-blocked-by-publication, and later stale publication were also exercised by the focused
+tests in the final area gate.
+
+### Migration evidence
+
+Revision `f0a1b2c3d4e5` follows `ed46f4aec7be`. It creates the reservation table and portable
+constraints, adds SQLite/PostgreSQL durability triggers, and refuses downgrade while any durable
+publication row remains. The unpublished migration was amended after self-review to make the
+execution nonce immutable once `prewrite_at` is set.
+
+```text
+$ pytest -q tests/test_migration_attestation_publications.py::test_sqlite_attestation_publication_schema_round_trip -m migration -x
+1 passed, 2 warnings in 0.39s
+
+$ POSTGRES_TEST_DSN=postgresql+asyncpg://integration_test:integration_test@127.0.0.1:16833/task10b_f0_sol2 pytest -q tests/test_migration_attestation_publications.py::test_postgres_attestation_publication_schema_round_trip -m migration -x
+1 passed, 2 warnings in 2.81s
+
+$ python3.12 <scoped asyncpg cleanup script>
+dropped ['task10b_f0_sol2', 'task10b_f0_sol2_master']
+remaining []
+```
+
+The original `integration_test`, `postgres`, operator, and inherited worker databases were never
+migrated. The first pre-amendment unique scratch pair `task10b_f0_sol` was likewise dropped with no
+survivors.
+
+### Final verification
+
+An initial combined gate reported `315 passed, 1 skipped`; after the marked-lease/nonce self-review
+change, the same affected-area command was rerun once as the authoritative final result:
+
+```text
+$ aq test tests/test_integration_ci.py tests/test_integration_attestation.py tests/test_integration_workflow.py tests/test_github_app.py tests/test_session_spec.py tests/test_integration_main_promotion.py tests/test_integration_candidates.py tests/test_integration_repair.py -x
+aq test: slot 1 of 2, -n 3
+316 passed, 1 skipped, 11 warnings in 56.27s
+```
+
+Static verification:
+
+```text
+$ ruff check scripts/check-integration-attestation.py src/commands/integration_commands.py src/database/tables.py src/integration/attestation.py src/integration/candidates.py src/integration/ci.py src/integration/main_promotion.py src/integration/repair.py src/orchestrator/core.py migrations/versions/f0a1b2c3d4e5_attestation_publication_claims.py tests/test_integration_attestation.py tests/test_integration_ci.py tests/test_integration_main_promotion.py tests/test_integration_workflow.py tests/test_migration_attestation_publications.py
+All checks passed!
+
+$ python3.12 -m py_compile scripts/check-integration-attestation.py src/commands/integration_commands.py src/database/tables.py src/integration/attestation.py src/integration/candidates.py src/integration/ci.py src/integration/main_promotion.py src/integration/repair.py src/orchestrator/core.py migrations/versions/f0a1b2c3d4e5_attestation_publication_claims.py tests/test_integration_attestation.py tests/test_integration_ci.py tests/test_integration_main_promotion.py tests/test_integration_workflow.py tests/test_migration_attestation_publications.py
+[exit 0]
+
+$ python3.12 -m alembic heads
+f0a1b2c3d4e5 (head)
+
+$ python3.12 <workflow YAML parse assertion>
+workflow yaml parsed
+
+$ git diff --check
+[exit 0]
+```
+
+The bare `alembic heads` console launcher was also attempted once and could not execute because its
+installed shebang target was absent; `python3.12 -m alembic heads` is the successful authoritative
+read-only head check above.
+
+### Self-review, exclusions, and concerns
+
+- Publication uses short hierarchy-first transactions only around durable state. Trust import,
+  installation-token use, check/workflow reads, POST, and authenticated readback all occur after
+  the transaction closes, followed by locked exact-subject revalidation.
+- The prewrite marker is committed before POST. Marked ambiguity remains durable and blocks main;
+  a fresh process waits for expiry and can only reconcile authenticated provider records.
+- The root command never accepts a caller repository binding. The factory receives the frozen
+  numeric ID/full name and rejects any returned client with a different binding.
+- No new candidate-ref mutation protocol, post-main audit run, Task10c route/cleanup, Task11
+  activation/probe, live credential use, forge mutation, push, PR, or operator database write was
+  added.
+- Ordinary task PRs continue to run the full CI fallback; authenticated focused-check transport is
+  still absent and is not claimed here.
+
+The 11 warnings are the previously documented `pkg_resources`, namespace-package, and Discord
+`audioop` deprecations; no warning suppression or dependency work was included. Task11 still owns
+real App/check identity installation, workflow variables, branch-protection compatibility, live
+probe, and project activation.
