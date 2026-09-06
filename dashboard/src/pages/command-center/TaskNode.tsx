@@ -1,6 +1,7 @@
 import { memo } from "react";
 import { ChevronDownIcon, ChevronRightIcon, ExclamationTriangleIcon, MagnifyingGlassPlusIcon } from "@heroicons/react/24/outline";
 import { Handle, Position, type NodeProps, type Node } from "@xyflow/react";
+import { CopyTaskIdButton } from "./CopyTaskIdButton";
 import { NODE_HEIGHT, NODE_WIDTH, type TaskNodeData } from "./types";
 import { isTaskBlocked } from "./hierarchy";
 
@@ -38,8 +39,9 @@ interface CardProps {
   layoutScale?: number;
 }
 
-/** The task action and expansion action are sibling buttons, so every part
- *  of the card remains clickable without nested interactive elements. */
+/** The task action and expansion action are sibling elements at the card
+ *  level. The card's open action is a `role="button"` div (not a `<button>`)
+ *  so the copy-id button in its header can nest inside it validly. */
 export function TaskCard({ data, selected = false, fluid = false, layoutScale = 1 }: CardProps) {
   const { task, gates, hierarchy, onOpenTask, onToggleChildren, onFocus } = data;
   const blocked = isTaskBlocked(task);
@@ -61,8 +63,9 @@ export function TaskCard({ data, selected = false, fluid = false, layoutScale = 
       className={`relative flex flex-col rounded-md border text-xs shadow ${tone} ${urgent} ${hierarchy.contextOnly ? "border-dashed" : ""} ${selected ? "outline outline-2 outline-white" : ""}`}
       style={{ width: fluid ? "100%" : NODE_WIDTH * layoutScale, height: NODE_HEIGHT * layoutScale }}
     >
-      <button
-        type="button"
+      <div
+        role="button"
+        tabIndex={0}
         aria-label={`Open task ${task.title}`}
         aria-pressed={selected}
         data-task-id={task.id}
@@ -73,9 +76,19 @@ export function TaskCard({ data, selected = false, fluid = false, layoutScale = 
             onOpenTask(task.id, task);
           }
         }}
+        onKeyDown={(event) => {
+          if (event.key === "Enter" || event.key === " ") {
+            event.preventDefault();
+            event.stopPropagation();
+            onOpenTask?.(task.id, task);
+          }
+        }}
       >
         <span className="flex w-full items-center justify-between gap-1">
-          <span className="truncate font-mono text-[10px] opacity-70" title={task.id}>{task.id.slice(0, 8)}</span>
+          <span className="flex min-w-0 items-center gap-0.5">
+            <span className="truncate font-mono text-[10px] opacity-70" title={task.id}>{task.id.slice(0, 8)}</span>
+            <CopyTaskIdButton taskId={task.id} className="nodrag nopan opacity-70 hover:bg-white/10 hover:text-inherit hover:opacity-100" />
+          </span>
           <span className="flex shrink-0 items-center gap-1 text-[9px] tracking-wide" title={blocked ? `${task.status} · blocked by dependencies or gates` : task.status}>
             {task.status === "IN_PROGRESS" && <span aria-hidden className="h-2 w-2 animate-pulse rounded-full bg-indigo-300 motion-reduce:animate-none" />}
             {task.status.replace(/_/g, " ")}
@@ -110,7 +123,7 @@ export function TaskCard({ data, selected = false, fluid = false, layoutScale = 
             )}
           </span>
         )}
-      </button>
+      </div>
       {hierarchy.childCount > 0 && (
         <div className="flex shrink-0 items-stretch rounded-b-md border-t border-white/10">
           <button
