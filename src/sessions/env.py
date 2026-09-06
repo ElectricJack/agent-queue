@@ -93,6 +93,11 @@ DB_ISOLATION_KEYS: tuple[str, ...] = (
     "AGENT_QUEUE_DB",
 )
 
+# Integration App credentials are daemon-only.  A worker-controlled harness
+# or launch extension cannot opt them back into a child environment even
+# though other explicitly configured harness credentials remain supported.
+_DAEMON_ONLY_INTEGRATION_PREFIX = "AQ_INTEGRATION_GITHUB_APP_"
+
 
 def session_db_isolation(work_dir: str) -> dict[str, str]:
     """Env that keeps a session's database tooling off the production DB.
@@ -222,6 +227,10 @@ def build_session_env(
         explicit[STARTUP_PROMPT_DELIVERED] = "1"
     if extra_env:
         explicit.update({str(k): str(v) for k, v in extra_env.items()})
+
+    for key in tuple(explicit):
+        if key.startswith(_DAEMON_ONLY_INTEGRATION_PREFIX):
+            explicit.pop(key, None)
 
     # A daemon can itself be running inside an AQ session (notably in tests
     # and when a supervisor launches a named child).  Never inherit that

@@ -81,6 +81,15 @@ async def test_orchestrator_owns_single_integration_service_loop(orch):
     assert service._task.get_name() == "integration-reconciliation-service"
     assert orch.integration_scheduler is not None
     assert orch.integration_outbox is not None
+    assert orch.integration_attestation_service is not None
+    assert (
+        service._candidate_ci_handler.__self__
+        is orch.integration_attestation_service
+    )
+    assert (
+        orch.integration_attestation_resolver.__self__
+        is orch.integration_attestation_service
+    )
     original_runtime = orch.playbook_manager
     runtime = MagicMock()
     runtime.accept_integration_event = AsyncMock(return_value=True)

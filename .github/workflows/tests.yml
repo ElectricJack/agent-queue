@@ -14,8 +14,101 @@ permissions:
   contents: read
 
 jobs:
+  integration-attestation:
+    name: Integration attestation decision
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      checks: read
+    outputs:
+      skip_full_ci: ${{ steps.decision.outputs.skip_full_ci }}
+    steps:
+      - name: Checkout exact event revision
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Verify exact checkout
+        env:
+          EXPECTED_SHA: ${{ github.sha }}
+        run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+
+      - name: Read exact-name check runs
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        env:
+          GITHUB_API_URL: ${{ github.api_url }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_SHA: ${{ github.sha }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          python - <<'PY'
+          import json, os, re, urllib.parse, urllib.request
+          records = []
+          try:
+              name = urllib.parse.quote("Agent Queue Integration Attestation", safe="")
+              url = (f"{os.environ['GITHUB_API_URL']}/repos/{os.environ['GITHUB_REPOSITORY']}"
+                     f"/commits/{os.environ['GITHUB_SHA']}/check-runs"
+                     f"?check_name={name}&filter=all&per_page=100")
+              headers = {
+                  "Accept": "application/vnd.github+json",
+                  "Authorization": f"Bearer {os.environ['GITHUB_TOKEN']}",
+                  "X-GitHub-Api-Version": "2022-11-28",
+              }
+              for _ in range(10):
+                  request = urllib.request.Request(url, headers=headers)
+                  with urllib.request.urlopen(request, timeout=30) as response:
+                      body = response.read(2 * 1024 * 1024 + 1)
+                      if len(body) > 2 * 1024 * 1024:
+                          raise ValueError("response too large")
+                      value = json.loads(body)
+                      records.extend(value.get("check_runs", []))
+                      link = response.headers.get("Link", "")
+                  match = re.search(r'<([^>]+)>;\s*rel="next"', link)
+                  if match is None:
+                      break
+                  url = match.group(1)
+              else:
+                  raise ValueError("too many response pages")
+          except Exception:
+              records = []
+          with open("attestation-records.json", "w", encoding="utf-8") as output:
+              json.dump(records, output)
+          PY
+
+      - name: Use empty records outside main
+        if: github.event_name != 'push' || github.ref != 'refs/heads/main'
+        run: echo '[]' > attestation-records.json
+
+      - name: Decide without daemon credentials
+        id: decision
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          EVENT_REF: ${{ github.ref }}
+          REPOSITORY_ID: ${{ github.event.repository.id }}
+          CHECKOUT_SHA: ${{ github.sha }}
+          ATTESTATION_APP_ID: ${{ vars.AQ_INTEGRATION_ATTESTATION_APP_ID }}
+          REQUIRED_CHECK_VERSION: ${{ vars.AQ_INTEGRATION_REQUIRED_CHECK_VERSION }}
+        run: |
+          value=$(python scripts/check-integration-attestation.py \
+            --event-name "$EVENT_NAME" --ref "$EVENT_REF" \
+            --repository-id "$REPOSITORY_ID" --checkout-sha "$CHECKOUT_SHA" \
+            --integration-app-id "${ATTESTATION_APP_ID:-0}" \
+            --required-check-version "${REQUIRED_CHECK_VERSION:-unconfigured}" \
+            --trust-file .github/agent-queue-integration.json \
+            --records-file attestation-records.json)
+          echo "skip_full_ci=$value" >> "$GITHUB_OUTPUT"
+
   test:
     name: Tests (${{ matrix.suite.name }})
+    needs: integration-attestation
+    if: >-
+      always() &&
+      ((github.event_name == 'push' &&
+        startsWith(github.ref, 'refs/heads/aq/integration/')) ||
+       (needs.integration-attestation.outputs.skip_full_ci != 'true' &&
+        !(github.event_name == 'pull_request' &&
+          startsWith(github.event.pull_request.head.ref, 'aq/integration/'))))
     runs-on: ubuntu-latest
     timeout-minutes: 30
     strategy:
@@ -70,7 +163,14 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.sha }}
+
+      - name: Verify exact checkout
+        env:
+          EXPECTED_SHA: ${{ github.sha }}
+        run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
 
       - name: Set up Python
         uses: actions/setup-python@v5

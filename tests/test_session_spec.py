@@ -5,7 +5,7 @@ See docs/specs/implementation/session-runtime.md §3.4 and §8.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+from dataclasses import asdict, dataclass, replace
 
 import pytest
 
@@ -639,6 +639,31 @@ class TestEnvMarkers:
     def test_harness_env_is_merged(self, builder):
         harness = replace(CLAUDE, env=(("MY_FLAG", "1"),))
         assert _build(builder, harness=harness).env["MY_FLAG"] == "1"
+
+    def test_integration_app_credentials_never_enter_real_session_spec(
+        self, builder, monkeypatch, caplog
+    ):
+        private = "PRIVATE-KEY-SENTINEL"
+        token = "INSTALLATION-TOKEN-SENTINEL"
+        monkeypatch.setenv("AQ_INTEGRATION_GITHUB_APP_PRIVATE_KEY", private)
+        monkeypatch.setenv("AQ_INTEGRATION_GITHUB_APP_TOKEN", token)
+        harness = replace(
+            CLAUDE,
+            env=(
+                ("AQ_INTEGRATION_GITHUB_APP_PRIVATE_KEY", private),
+                ("AQ_INTEGRATION_GITHUB_APP_TOKEN", token),
+                ("GITHUB_TOKEN", "authorized-harness-token"),
+            ),
+        )
+
+        with caplog.at_level("DEBUG"):
+            spec = _build(builder, harness=harness)
+        serialized = repr(asdict(spec)) + caplog.text
+
+        assert spec.env["GITHUB_TOKEN"] == "authorized-harness-token"
+        assert private not in serialized
+        assert token not in serialized
+        assert all(not key.startswith("AQ_INTEGRATION_GITHUB_APP_") for key in spec.env)
 
     def test_claudecode_is_stripped(self):
         env = build_session_env(

@@ -124,7 +124,9 @@ class IntegrationReconciliationQueriesMixin:
             .where(
                 integration_batches.c.current_revision == revision,
                 integration_batches.c.lifecycle.in_(("testing", "repairing")),
-                integration_candidate_revisions.c.state.in_(("built", "testing")),
+                # A durable green aggregate still needs its exact candidate-tree
+                # attestation published (or replayed after a lost response).
+                integration_candidate_revisions.c.state.in_(("built", "testing", "green")),
                 integration_candidate_revisions.c.head_sha.is_not(None),
                 integration_repair_operations.c.target_kind == "batch",
                 integration_repair_operations.c.state.in_(("active", "escalated")),

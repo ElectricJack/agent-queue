@@ -471,6 +471,8 @@ class Orchestrator(
         self.integration_scheduler = None
         self.integration_outbox = None
         self.integration_service = None
+        self.integration_attestation_service = None
+        self.integration_attestation_resolver = None
         # Reference to the command handler, set by the bot after initialization.
         # Used to pass handler references to interactive Discord views (e.g.
         # Retry/Skip buttons on failed task notifications).
@@ -1458,6 +1460,8 @@ class Orchestrator(
         from src.integration.repair import RepairService
         from src.integration.scheduler import IntegrationScheduler
         from src.integration.service import IntegrationService
+        from src.integration.attestation import IntegrationAttestationService
+        from src.git.github_app import GitHubAppClient, OwnerFilePrivateKeyProvider
 
         async def accept_integration_event(
             event_type: str, payload: dict[str, Any], event_id: str
@@ -1470,11 +1474,30 @@ class Orchestrator(
 
         self.integration_scheduler = IntegrationScheduler(self.db)
         self.integration_outbox = IntegrationOutbox(self.db, accept_integration_event)
+        github_app_config = self.config.integration.github_app
+
+        def integration_app_client(binding):
+            if github_app_config is None:
+                return None
+            return GitHubAppClient(
+                github_app_config,
+                binding,
+                key_provider=OwnerFilePrivateKeyProvider(),
+            )
+
+        self.integration_attestation_service = IntegrationAttestationService(
+            self.db,
+            data_dir=self.config.data_dir,
+            git_manager=self.git,
+            app_client_factory=(integration_app_client if github_app_config is not None else None),
+        )
+        self.integration_attestation_resolver = self.integration_attestation_service.resolve
         self.integration_service = IntegrationService(
             self.db,
             self.integration_scheduler,
             RepairService(self.db),
             self.integration_outbox,
+            candidate_ci_handler=self.integration_attestation_service.handle_candidate_ci,
         )
         self.integration_service.start()
 
