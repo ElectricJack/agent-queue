@@ -468,6 +468,9 @@ class Orchestrator(
         self.timer_service = None  # TimerService | None — initialized in initialize()
         # V2PlaybookRuntime | None — built in initialize().
         self.playbook_manager = None
+        self.integration_scheduler = None
+        self.integration_outbox = None
+        self.integration_service = None
         # Reference to the command handler, set by the bot after initialization.
         # Used to pass handler references to interactive Discord views (e.g.
         # Retry/Skip buttons on failed task notifications).
@@ -1448,6 +1451,33 @@ class Orchestrator(
             self.workflow_stage_resume_handler = None
             logger.info("Playbooks V2 paused (playbooks.enabled=false)")
 
+        # One durable reconciliation loop owns integration scheduling and
+        # outbox dispatch. Later Task 10 phases attach their narrow handlers
+        # without adding another timer or orchestration authority.
+        from src.integration.outbox import IntegrationOutbox
+        from src.integration.repair import RepairService
+        from src.integration.scheduler import IntegrationScheduler
+        from src.integration.service import IntegrationService
+
+        async def accept_integration_event(
+            event_type: str, payload: dict[str, Any], event_id: str
+        ) -> bool:
+            if self.playbook_manager is None:
+                return False
+            return await self.playbook_manager.accept_integration_event(
+                event_type, payload, event_id
+            )
+
+        self.integration_scheduler = IntegrationScheduler(self.db)
+        self.integration_outbox = IntegrationOutbox(self.db, accept_integration_event)
+        self.integration_service = IntegrationService(
+            self.db,
+            self.integration_scheduler,
+            RepairService(self.db),
+            self.integration_outbox,
+        )
+        self.integration_service.start()
+
         # Register override file watcher handlers (memory-scoping spec §5).
         # Detects changes to per-project agent-type override files so they
         # can be re-indexed into agent context.  The handler callback is
@@ -2129,6 +2159,8 @@ class Orchestrator(
         # A layout publish is one transaction; let an in-flight step land
         # rather than cancelling it mid-write.  Marks are durable either way.
         await self.wait_for_layout_step()
+        if self.integration_service:
+            await self.integration_service.stop()
         if self.vault_watcher:
             try:
                 await self.vault_watcher.stop()

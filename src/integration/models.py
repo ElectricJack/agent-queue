@@ -118,6 +118,22 @@ class IntegrationBoundaryPolicy(BaseModel):
     verifier_profile_id: str | None = Field(default=None, min_length=1)
 
 
+class IntegrationCleanupPolicy(BaseModel):
+    """Frozen retry limits for post-promotion cleanup."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    max_attempts: int = Field(default=5, gt=0)
+    retry_base_seconds: float = Field(default=30.0, gt=0)
+    retry_max_seconds: float = Field(default=3600.0, gt=0)
+
+    @model_validator(mode="after")
+    def ordered_backoff(self) -> "IntegrationCleanupPolicy":
+        if self.retry_max_seconds < self.retry_base_seconds:
+            raise ValueError("retry_max_seconds must be at least retry_base_seconds")
+        return self
+
+
 class HierarchicalIntegrationPolicy(BaseModel):
     """Validated project policy consumed when reserving an operation."""
 
@@ -128,3 +144,5 @@ class HierarchicalIntegrationPolicy(BaseModel):
     root: IntegrationBoundaryPolicy
     branchless_parent: Literal["skip", "declared", "verifier"]
     on_failed_child: Literal["block", "ask"]
+    on_main_moved: Literal["rebuild", "wait"] = "rebuild"
+    cleanup: IntegrationCleanupPolicy = Field(default_factory=IntegrationCleanupPolicy)

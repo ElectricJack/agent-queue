@@ -88,6 +88,26 @@ class DatabaseBackend(Protocol):
         """Gracefully shut down the database connection."""
         ...
 
+    async def due_integration_schedule_page(
+        self, *, now: float, after: tuple[float, str] | None, limit: int
+    ) -> list[dict]: ...
+
+    async def due_integration_repair_stage_page(
+        self,
+        *,
+        now: float,
+        after: tuple[float, str, int] | None,
+        limit: int,
+    ) -> list[dict]: ...
+
+    async def pending_candidate_ci_page(
+        self, *, after: tuple[float, str, int] | None, limit: int
+    ) -> list[dict]: ...
+
+    async def unresolved_integration_intent_page(
+        self, *, after: tuple[float, str] | None, limit: int
+    ) -> list[dict]: ...
+
     # --- Project onboarding idempotency ---
 
     async def create_onboarding_request(

@@ -98,6 +98,42 @@ class IntegrationScheduler:
                 )
 
             if schedule["outstanding_request_id"] is not None:
+                active_batch = (
+                    await conn.execute(
+                        select(integration_batches.c.id).where(
+                            integration_batches.c.project_id == project_id,
+                            integration_batches.c.request_id
+                            == schedule["outstanding_request_id"],
+                            integration_batches.c.lifecycle.in_(
+                                (
+                                    "sealing",
+                                    "sealed",
+                                    "building",
+                                    "testing",
+                                    "repairing",
+                                    "human_blocked",
+                                    "promoting",
+                                    "cleanup_pending",
+                                )
+                            ),
+                        )
+                    )
+                ).scalar_one_or_none()
+                if (
+                    active_batch is not None
+                    and schedule["catchup_trigger"] is None
+                    and (trigger == "manual" or periodic_due)
+                ):
+                    schedule = await self.db.update_integration_schedule_on(
+                        conn,
+                        project_id=project_id,
+                        values={
+                            "catchup_trigger": trigger,
+                            "catchup_requested_at": now,
+                            "catchup_after_sequence": int(schedule["request_sequence"]),
+                            "updated_at": now,
+                        },
+                    )
                 return self._result("coalesced", project_id, schedule)
             if trigger == "periodic" and not periodic_due:
                 return self._result("not_due", project_id, schedule)
@@ -536,6 +572,9 @@ class TrainService:
                 outstanding_request_id=None,
                 outstanding_trigger=None,
                 outstanding_requested_at=None,
+                catchup_trigger=None,
+                catchup_requested_at=None,
+                catchup_after_sequence=None,
                 last_completed_sweep_at=now,
                 updated_at=now,
             )

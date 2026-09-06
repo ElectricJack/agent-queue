@@ -74,6 +74,28 @@ async def _drain_running_tasks(orch: Orchestrator) -> None:
         orch._running_tasks.clear()
 
 
+async def test_orchestrator_owns_single_integration_service_loop(orch):
+    service = orch.integration_service
+    assert service is not None
+    assert service._task is not None
+    assert service._task.get_name() == "integration-reconciliation-service"
+    assert orch.integration_scheduler is not None
+    assert orch.integration_outbox is not None
+    original_runtime = orch.playbook_manager
+    runtime = MagicMock()
+    runtime.accept_integration_event = AsyncMock(return_value=True)
+    orch.playbook_manager = runtime
+    try:
+        assert await orch.integration_outbox._accept_event(
+            "integration.sweep_due", {"project_id": "p"}, "event-1"
+        )
+        runtime.accept_integration_event.assert_awaited_once_with(
+            "integration.sweep_due", {"project_id": "p"}, "event-1"
+        )
+    finally:
+        orch.playbook_manager = original_runtime
+
+
 @pytest.fixture
 async def orch(tmp_path):
     config = AppConfig(

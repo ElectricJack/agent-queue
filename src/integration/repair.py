@@ -843,45 +843,18 @@ class RepairService:
             await self.db._notify_ready(transition.ready)
         return result
 
-    async def due_stages(self, *, now: float | None = None) -> list[dict[str, Any]]:
-        """Return every current durable stage whose absolute deadline is due."""
+    async def due_stages(
+        self,
+        *,
+        now: float | None = None,
+        after: tuple[float, str, int] | None = None,
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        """Return one bounded page of current stages whose deadline is due."""
         observed_at = self.clock() if now is None else now
-        statement = (
-            select(
-                integration_repair_stages.c.operation_id,
-                integration_repair_stages.c.ordinal,
-                integration_repair_stages.c.deadline_at,
-                integration_repair_stages.c.deadline_event_id,
-            )
-            .join(
-                integration_repair_operations,
-                integration_repair_operations.c.id
-                == integration_repair_stages.c.operation_id,
-            )
-            .where(
-                integration_repair_operations.c.active_stage
-                == integration_repair_stages.c.ordinal,
-                integration_repair_operations.c.state.in_(("active", "escalated")),
-                integration_repair_stages.c.state.in_(("active", "awaiting_completion")),
-                integration_repair_stages.c.deadline_at.is_not(None),
-                integration_repair_stages.c.deadline_at <= observed_at,
-            )
-            .order_by(
-                integration_repair_stages.c.deadline_at,
-                integration_repair_stages.c.operation_id,
-            )
+        return await self.db.due_integration_repair_stage_page(
+            now=observed_at, after=after, limit=limit
         )
-        async with self.db._engine.connect() as conn:
-            rows = (await conn.execute(statement)).mappings().all()
-        return [
-            {
-                "operation_id": row["operation_id"],
-                "stage": int(row["ordinal"]),
-                "deadline_at": float(row["deadline_at"]),
-                "deadline_event_id": row["deadline_event_id"],
-            }
-            for row in rows
-        ]
 
     async def bind_current_batch_subject_on(
         self, conn, operation_id: str, *, now: float | None = None

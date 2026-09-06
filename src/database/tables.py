@@ -2875,6 +2875,9 @@ project_integration_schedules = Table(
     Column("outstanding_request_id", Text, nullable=True),
     Column("outstanding_trigger", Text, nullable=True),
     Column("outstanding_requested_at", Float, nullable=True),
+    Column("catchup_trigger", Text, nullable=True),
+    Column("catchup_requested_at", Float, nullable=True),
+    Column("catchup_after_sequence", Integer, nullable=True),
     Column("last_completed_sweep_at", Float, nullable=True),
     Column("updated_at", Float, nullable=False),
     CheckConstraint("interval_seconds > 0", name="ck_project_integration_schedules_interval"),
@@ -2885,6 +2888,13 @@ project_integration_schedules = Table(
         "(outstanding_request_id IS NOT NULL AND outstanding_trigger IS NOT NULL "
         "AND outstanding_requested_at IS NOT NULL)",
         name="ck_project_integration_schedules_outstanding_request",
+    ),
+    CheckConstraint(
+        "(catchup_trigger IS NULL AND catchup_requested_at IS NULL AND "
+        "catchup_after_sequence IS NULL) OR "
+        "(catchup_trigger IN ('periodic', 'manual') AND catchup_requested_at IS NOT NULL "
+        "AND catchup_after_sequence IS NOT NULL AND catchup_after_sequence >= 0)",
+        name="ck_project_integration_schedules_catchup",
     ),
 )
 

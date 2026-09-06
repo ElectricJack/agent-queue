@@ -90,6 +90,11 @@ async def test_missed_windows_and_manual_calls_coalesce_until_release(db):
         assert repeated["requested_at"] == 3600.0
         assert repeated["request_sequence"] == 1
 
+    row = await _schedule_row(db)
+    assert row["catchup_trigger"] == "manual"
+    assert row["catchup_requested_at"] == 3601.0
+    assert row["catchup_after_sequence"] == 1
+
     async with db._engine.connect() as conn:
         assert len((await conn.execute(select(integration_outbox))).all()) == 1
 
