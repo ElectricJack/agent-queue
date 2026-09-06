@@ -10,8 +10,8 @@ from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict
-from sqlalchemy import func, insert, select, update
+from pydantic import BaseModel, ConfigDict, Field, StrictInt, ValidationError
+from sqlalchemy import insert, select, update
 from sqlalchemy.exc import IntegrityError
 
 from src.database.tables import (
@@ -36,6 +36,8 @@ from src.git.manager import GitManager, is_valid_git_oid
 
 
 _IDENTITY_NAMESPACE = uuid.UUID("2cfd2eea-e0e5-4397-b1c4-2dd6c40d64dd")
+_TRANSPORT_SECONDS = 120.0
+_PREWRITE_MARGIN_SECONDS = 5.0
 _CLAIM_SECONDS = 135.0
 
 
@@ -65,8 +67,38 @@ class RootPromotionInvariantError(RuntimeError):
     """Durable root promotion state is internally inconsistent."""
 
 
+class RootAttestationSubject(BaseModel):
+    """Exact server-derived root candidate identity requiring attestation."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid", strict=True)
+
+    repository_numeric_id: StrictInt = Field(gt=0)
+    repository_full_name: str = Field(min_length=1)
+    operation_id: str = Field(min_length=1)
+    batch_id: str = Field(min_length=1)
+    revision: StrictInt = Field(ge=0)
+    candidate_sha: str = Field(pattern=r"^[0-9a-f]{40}$")
+    required_check_version: str = Field(min_length=1)
+
+
+class RootAttestationProof(RootAttestationSubject):
+    """Authenticated publication/readback identity supplied by Task10."""
+
+    check_run_id: StrictInt = Field(gt=0)
+    external_id: str = Field(pattern=r"^aq-attestation-v1:[0-9a-f]{64}$")
+
+    def subject(self) -> RootAttestationSubject:
+        fields = RootAttestationSubject.model_fields
+        return RootAttestationSubject.model_validate(
+            {name: getattr(self, name) for name in fields}
+        )
+
+
 RepositoryResolver = Callable[[str], Awaitable[Any] | Any]
 CrashHook = Callable[[str], Awaitable[None] | None]
+AttestationResolver = Callable[
+    [RootAttestationSubject], Awaitable[RootAttestationProof | None] | RootAttestationProof | None
+]
 
 
 class RootPromotionService:
@@ -80,6 +112,7 @@ class RootPromotionService:
         git_manager: GitManager | None = None,
         repository_resolver: RepositoryResolver | None = None,
         app_client: Any | None = None,
+        attestation_resolver: AttestationResolver | None = None,
         crash_hook: CrashHook | None = None,
         clock: Callable[[], float] = time.time,
     ) -> None:
@@ -88,6 +121,7 @@ class RootPromotionService:
         self.git = git_manager or GitManager()
         self.repository_resolver = repository_resolver
         self.app_client = app_client
+        self.attestation_resolver = attestation_resolver
         self.crash_hook = crash_hook
         self.clock = clock
         self._owned_nonces: dict[str, str] = {}
@@ -110,6 +144,12 @@ class RootPromotionService:
         failure = self._validate_snapshot(snapshot, revision)
         if failure is not None:
             return RootPromotionResult(outcome=failure, batch_id=batch_id, revision=revision)
+        attestation_subject = self._attestation_subject(snapshot)
+        attestation = await self._resolve_attestation(attestation_subject)
+        if attestation is None:
+            return RootPromotionResult(
+                outcome="configuration_blocked", batch_id=batch_id, revision=revision
+            )
 
         repository = await self._repository(snapshot["batch"]["repository_id"])
         recovery_ref = f"refs/aq/root-promotions/{intent_id}"
@@ -121,9 +161,11 @@ class RootPromotionService:
             await self.db.lock_hierarchy_project(conn, project_id)
             locked = await self._snapshot_on(conn, project_id, batch_id, revision)
             failure = self._validate_snapshot(locked, revision)
-            if failure is not None:
+            if failure is not None or not self._proof_matches_state(attestation, locked):
                 return RootPromotionResult(
-                    outcome=failure, batch_id=batch_id, revision=revision
+                    outcome=failure or "configuration_blocked",
+                    batch_id=batch_id,
+                    revision=revision,
                 )
             existing = await self._intent_on(conn, intent_id)
             if existing is not None:
@@ -184,6 +226,7 @@ class RootPromotionService:
                 "provenance": {
                     "publication_idempotency_key": locked["publication"]["idempotency_key"],
                     "publication_pr_number": locked["publication"]["pr_number"],
+                    "attestation": attestation.model_dump(mode="json"),
                 },
                 "commit_metadata": {},
                 "intent_kind": "root",
@@ -306,12 +349,21 @@ class RootPromotionService:
                 intent_id=intent_id, receipt_ids=await self._receipt_ids(intent_id),
                 head_sha=intent["prepared_sha"],
             )
+        attestation = self._frozen_attestation(intent)
+        if attestation is None:
+            return RootPromotionResult(
+                outcome="configuration_blocked", batch_id=batch_id, revision=revision,
+                intent_id=intent_id, receipt_ids=await self._receipt_ids(intent_id),
+                head_sha=intent["prepared_sha"],
+            )
         repository = await self._repository(intent["repository_id"])
         binding = self.app_client.repository
         expected_origin = f"https://github.com/{binding.full_name}.git"
         if (
             binding.forge_host != "github.com"
             or repository.url != expected_origin
+            or attestation.repository_numeric_id != binding.repository_id
+            or attestation.repository_full_name != binding.full_name
         ):
             raise RootPromotionInvariantError("root promotion App repository is not canonical")
         remote = await self.app_client.exact_head_ref(
@@ -322,6 +374,10 @@ class RootPromotionService:
         store = self._store(repository.id)
         reachable = remote == intent["prepared_sha"]
         if not reachable and remote != intent["expected_target"]:
+            try:
+                await self._import_observed_main(store, intent, remote)
+            except Exception:
+                return await self._blocked(intent)
             ancestry = await self._is_ancestor(store, intent["prepared_sha"], remote)
             if ancestry is None:
                 return await self._blocked(intent)
@@ -334,6 +390,8 @@ class RootPromotionService:
         mutation = await self._mutation(intent_id)
         if mutation is None:
             raise RootPromotionInvariantError("root main mutation claim is missing")
+        if mutation["prewrite_at"] is not None:
+            return await self._blocked(intent)
         if not current:
             if float(mutation["expires_at"]) > self.clock():
                 return RootPromotionResult(
@@ -350,8 +408,22 @@ class RootPromotionService:
                 head_sha=intent["prepared_sha"],
             )
         if remote != intent["expected_target"]:
+            if float(mutation["expires_at"]) > self.clock():
+                return RootPromotionResult(
+                    outcome="wait", batch_id=batch_id, revision=revision,
+                    intent_id=intent_id, receipt_ids=await self._receipt_ids(intent_id),
+                    head_sha=intent["prepared_sha"],
+                )
+            await self._supersede_unattempted(intent, mutation, current_moved=True)
             return RootPromotionResult(
                 outcome="base_moved", batch_id=batch_id, revision=revision,
+                intent_id=intent_id, receipt_ids=await self._receipt_ids(intent_id),
+                head_sha=intent["prepared_sha"],
+            )
+        current_attestation = await self._resolve_attestation(attestation.subject())
+        if current_attestation != attestation:
+            return RootPromotionResult(
+                outcome="configuration_blocked", batch_id=batch_id, revision=revision,
                 intent_id=intent_id, receipt_ids=await self._receipt_ids(intent_id),
                 head_sha=intent["prepared_sha"],
             )
@@ -362,7 +434,7 @@ class RootPromotionService:
                 intent_id=intent_id, receipt_ids=await self._receipt_ids(intent_id),
                 head_sha=intent["prepared_sha"],
             )
-        await self._mark_prewrite(intent, nonce)
+        await self._mark_prewrite(intent, nonce, current_attestation)
         await self._crash("after_prewrite_marker")
         if not await self._local_fast_forward(store, intent):
             return RootPromotionResult(
@@ -415,8 +487,26 @@ class RootPromotionService:
                     .with_for_update()
                 )
             ).mappings().one()
+            if row["prewrite_at"] is not None:
+                return None
             owned = self._owned_nonces.get(intent["id"])
             if owned == row["nonce"] and float(row["expires_at"]) > now:
+                minimum = now + _CLAIM_SECONDS
+                if float(row["expires_at"]) < minimum:
+                    renewed = await conn.execute(
+                        update(integration_candidate_ref_mutations)
+                        .where(
+                            integration_candidate_ref_mutations.c.id == row["id"],
+                            integration_candidate_ref_mutations.c.state == "reserved",
+                            integration_candidate_ref_mutations.c.nonce == owned,
+                            integration_candidate_ref_mutations.c.expires_at
+                            == row["expires_at"],
+                            integration_candidate_ref_mutations.c.prewrite_at.is_(None),
+                        )
+                        .values(expires_at=minimum, updated_at=now)
+                    )
+                    if renewed.rowcount != 1:
+                        return None
                 return owned
             if float(row["expires_at"]) > now:
                 return None
@@ -429,6 +519,7 @@ class RootPromotionService:
                     integration_candidate_ref_mutations.c.nonce == row["nonce"],
                     integration_candidate_ref_mutations.c.expires_at == row["expires_at"],
                     integration_candidate_ref_mutations.c.expires_at <= now,
+                    integration_candidate_ref_mutations.c.prewrite_at.is_(None),
                 )
                 .values(nonce=nonce, expires_at=now + _CLAIM_SECONDS, updated_at=now)
             )
@@ -437,7 +528,11 @@ class RootPromotionService:
             self._owned_nonces[intent["id"]] = nonce
             return nonce
 
-    async def _mark_prewrite(self, intent: dict[str, Any], nonce: str) -> None:
+    async def _mark_prewrite(
+        self, intent: dict[str, Any], nonce: str, attestation: RootAttestationProof
+    ) -> None:
+        now = self.clock()
+        minimum = now + _TRANSPORT_SECONDS + _PREWRITE_MARGIN_SECONDS
         async with self.db.immediate() as conn:
             await self.db.lock_hierarchy_project(conn, intent["project_id"])
             locked = await self._snapshot_on(
@@ -450,6 +545,8 @@ class RootPromotionService:
                 self._validate_snapshot(locked, int(intent["root_candidate_revision"]))
                 is not None
                 or not self._intent_matches_authority(intent, locked)
+                or not self._proof_matches_state(attestation, locked)
+                or float(locked["lease"]["expires_at"]) < minimum
             ):
                 raise RootPromotionInvariantError("root main authority changed")
             changed = await conn.execute(
@@ -458,14 +555,12 @@ class RootPromotionService:
                     integration_candidate_ref_mutations.c.id == self._mutation_id(intent["id"]),
                     integration_candidate_ref_mutations.c.state == "reserved",
                     integration_candidate_ref_mutations.c.nonce == nonce,
-                    integration_candidate_ref_mutations.c.expires_at > self.clock(),
+                    integration_candidate_ref_mutations.c.expires_at >= minimum,
+                    integration_candidate_ref_mutations.c.prewrite_at.is_(None),
                 )
                 .values(
-                    prewrite_at=func.coalesce(
-                        integration_candidate_ref_mutations.c.prewrite_at,
-                        self.clock(),
-                    ),
-                    updated_at=self.clock(),
+                    prewrite_at=now,
+                    updated_at=now,
                 )
             )
             if changed.rowcount != 1:
@@ -474,6 +569,7 @@ class RootPromotionService:
     async def _mark_applied(self, intent: dict[str, Any], remote: str) -> None:
         async with self.db.immediate() as conn:
             await self.db.lock_hierarchy_project(conn, intent["project_id"])
+            locked_intent = await self._intent_on(conn, intent["id"])
             row = (
                 await conn.execute(
                     select(integration_candidate_ref_mutations)
@@ -481,24 +577,35 @@ class RootPromotionService:
                     .with_for_update()
                 )
             ).mappings().one()
+            if (
+                locked_intent is None
+                or locked_intent["intent_kind"] != "root"
+                or locked_intent["state"] not in {"prepared", "pushed"}
+                or locked_intent["prepared_sha"] != intent["prepared_sha"]
+                or row["purpose"] != "root_main"
+                or row["batch_id"] != intent["root_batch_id"]
+                or int(row["revision"]) != int(intent["root_candidate_revision"])
+                or row["desired_sha"] != intent["prepared_sha"]
+            ):
+                raise RootPromotionInvariantError("root main proof identity changed")
             if row["state"] == "applied":
                 if row["remote_sha"] != intent["prepared_sha"]:
                     raise RootPromotionInvariantError("root main proof identity changed")
-                return
-            if row["state"] != "reserved":
+            elif row["state"] != "reserved":
                 raise RootPromotionInvariantError("root main write was not proven")
-            await conn.execute(
-                update(integration_candidate_ref_mutations)
-                .where(
-                    integration_candidate_ref_mutations.c.id == row["id"],
-                    integration_candidate_ref_mutations.c.state == "reserved",
+            else:
+                await conn.execute(
+                    update(integration_candidate_ref_mutations)
+                    .where(
+                        integration_candidate_ref_mutations.c.id == row["id"],
+                        integration_candidate_ref_mutations.c.state == "reserved",
+                    )
+                    .values(
+                        state="applied",
+                        remote_sha=intent["prepared_sha"],
+                        updated_at=self.clock(),
+                    )
                 )
-                .values(
-                    state="applied",
-                    remote_sha=intent["prepared_sha"],
-                    updated_at=self.clock(),
-                )
-            )
             await conn.execute(
                 update(integration_promotion_intents)
                 .where(
@@ -513,18 +620,39 @@ class RootPromotionService:
             )
 
     async def _supersede_unattempted(
-        self, intent: dict[str, Any], mutation: dict[str, Any]
+        self,
+        intent: dict[str, Any],
+        mutation: dict[str, Any],
+        *,
+        current_moved: bool = False,
     ) -> None:
         now = self.clock()
         async with self.db.immediate() as conn:
             await self.db.lock_hierarchy_project(conn, intent["project_id"])
-            batch = (
-                await conn.execute(
-                    select(integration_batches)
-                    .where(integration_batches.c.id == intent["root_batch_id"])
-                    .with_for_update()
+            if current_moved:
+                locked = await self._snapshot_on(
+                    conn,
+                    intent["project_id"],
+                    intent["root_batch_id"],
+                    int(intent["root_candidate_revision"]),
                 )
-            ).mappings().one()
+                batch = locked["batch"]
+                authority_changed = (
+                    self._validate_snapshot(
+                        locked, int(intent["root_candidate_revision"])
+                    )
+                    is not None
+                    or not self._intent_matches_authority(intent, locked)
+                )
+            else:
+                batch = (
+                    await conn.execute(
+                        select(integration_batches)
+                        .where(integration_batches.c.id == intent["root_batch_id"])
+                        .with_for_update()
+                    )
+                ).mappings().one()
+                authority_changed = False
             locked_intent = await self._intent_on(conn, intent["id"])
             row = (
                 await conn.execute(
@@ -534,7 +662,12 @@ class RootPromotionService:
                 )
             ).mappings().one()
             if (
-                int(batch["current_revision"]) == int(intent["root_candidate_revision"])
+                (
+                    int(batch["current_revision"])
+                    == int(intent["root_candidate_revision"])
+                )
+                != current_moved
+                or authority_changed
                 or locked_intent["state"] != "prepared"
                 or row["state"] != "reserved"
                 or row["prewrite_at"] is not None
@@ -567,6 +700,21 @@ class RootPromotionService:
                 raise RootPromotionInvariantError(
                     "attempted root promotion cannot be superseded"
                 )
+            if current_moved:
+                lifecycle = await conn.execute(
+                    update(integration_batches)
+                    .where(
+                        integration_batches.c.id == intent["root_batch_id"],
+                        integration_batches.c.current_revision
+                        == intent["root_candidate_revision"],
+                        integration_batches.c.lifecycle == "promoting",
+                    )
+                    .values(lifecycle="building", updated_at=now)
+                )
+                if lifecycle.rowcount != 1:
+                    raise RootPromotionInvariantError(
+                        "moved-main batch could not re-enter candidate building"
+                    )
 
     @staticmethod
     def _intent_matches_authority(intent: dict[str, Any], state: dict[str, Any]) -> bool:
@@ -810,6 +958,20 @@ class RootPromotionService:
             )
         )
 
+    async def _import_observed_main(
+        self, store: Path, intent: dict[str, Any], remote: str
+    ) -> None:
+        token = await self.app_client.installation_token()
+        imported = await self.git.afetch_exact_oid_with_app_auth(
+            str(store),
+            repository=self.app_client.repository,
+            token=token,
+            oid=remote,
+            destination_ref=f"refs/aq/root-main-observed/{intent['id']}",
+        )
+        if imported != remote:
+            raise RootPromotionInvariantError("authenticated main import changed identity")
+
     def _store(self, repository_id: str) -> Path:
         return self.data_dir / "integration-repositories" / (
             hashlib.sha256(repository_id.encode()).hexdigest() + ".git"
@@ -1002,6 +1164,54 @@ class RootPromotionService:
             return "stale"
         return None
 
+    @staticmethod
+    def _attestation_subject(state: dict[str, Any]) -> RootAttestationSubject:
+        publication = state["publication"]
+        operation = state["operation"]
+        candidate = state["revision"]
+        evidence = state["evidence"]
+        return RootAttestationSubject(
+            repository_numeric_id=publication["repository_numeric_id"],
+            repository_full_name=publication["repository_full_name"],
+            operation_id=operation["id"],
+            batch_id=state["batch"]["id"],
+            revision=int(candidate["revision"]),
+            candidate_sha=candidate["head_sha"],
+            required_check_version=evidence["required_check_version"],
+        )
+
+    def _proof_matches_state(
+        self, proof: RootAttestationProof, state: dict[str, Any]
+    ) -> bool:
+        try:
+            return proof.subject() == self._attestation_subject(state)
+        except (TypeError, ValidationError):
+            return False
+
+    async def _resolve_attestation(
+        self, subject: RootAttestationSubject
+    ) -> RootAttestationProof | None:
+        if self.attestation_resolver is None:
+            return None
+        try:
+            proof = self.attestation_resolver(subject)
+            if inspect.isawaitable(proof):
+                proof = await proof
+        except Exception:
+            return None
+        if not isinstance(proof, RootAttestationProof) or proof.subject() != subject:
+            return None
+        return proof
+
+    @staticmethod
+    def _frozen_attestation(intent: dict[str, Any]) -> RootAttestationProof | None:
+        try:
+            return RootAttestationProof.model_validate(
+                intent["provenance"]["attestation"]
+            )
+        except (KeyError, TypeError, ValidationError):
+            return None
+
     async def _pin_recovery(self, repository: Any, ref: str, head_sha: str) -> None:
         digest = hashlib.sha256(repository.id.encode()).hexdigest()
         store = self.data_dir / "integration-repositories" / f"{digest}.git"
@@ -1109,4 +1319,10 @@ class RootPromotionService:
             await value
 
 
-__all__ = ["RootPromotionInvariantError", "RootPromotionResult", "RootPromotionService"]
+__all__ = [
+    "RootAttestationProof",
+    "RootAttestationSubject",
+    "RootPromotionInvariantError",
+    "RootPromotionResult",
+    "RootPromotionService",
+]

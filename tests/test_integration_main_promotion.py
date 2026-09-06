@@ -33,7 +33,12 @@ from src.database.tables import (
     project_integration_leases,
     task_delivery_receipts,
 )
-from src.integration.main_promotion import RootPromotionInvariantError, RootPromotionService
+from src.integration.main_promotion import (
+    RootAttestationProof,
+    RootPromotionInvariantError,
+    RootPromotionService as _RootPromotionService,
+)
+from src.integration.candidates import CandidateBuildResult, CandidateService
 from src.integration.models import BranchKey, Fence
 from src.integration.ownership import BranchBusy, BranchOwnership
 from src.integration.promotion import PromotionInvariantError, PromotionService
@@ -46,6 +51,26 @@ from src.profiles.capabilities import DENY_ALL
 BASE = "a" * 40
 HEAD = "b" * 40
 BRANCH = "refs/heads/aq/integration/p-" + "1" * 32 + "/r-" + "2" * 32
+
+
+class ExactAttestationResolver:
+    def __init__(self):
+        self.override = {}
+        self.calls = 0
+
+    async def __call__(self, subject):
+        self.calls += 1
+        return RootAttestationProof(
+            **(subject.model_dump() | self.override),
+            check_run_id=7001,
+            external_id="aq-attestation-v1:" + "9" * 64,
+        )
+
+
+class RootPromotionService(_RootPromotionService):
+    def __init__(self, *args, **kwargs):
+        kwargs.setdefault("attestation_resolver", ExactAttestationResolver())
+        super().__init__(*args, **kwargs)
 
 
 def _git(cwd: Path, *args: str) -> str:
@@ -162,7 +187,7 @@ async def prepared_db(tmp_path):
             insert(integration_repair_stages).values(
                 operation_id="root-op", ordinal=0, intelligence_class="primary",
                 policy={"seconds": 60, "attempts": 2}, starting_sha=BASE, attempts=0,
-                deadline_event_id="deadline", state="awaiting_completion",
+                deadline_at=500.0, deadline_event_id="deadline", state="awaiting_completion",
             )
         )
         await conn.execute(
@@ -207,8 +232,9 @@ class PinningGit:
 
 
 class FakeAppClient:
-    def __init__(self, remote=BASE):
+    def __init__(self, remote=BASE, *, descendant_of_head=False):
         self.remote = remote
+        self.descendant_of_head = descendant_of_head
         self.reads = 0
         self.token_calls = 0
         self.repository = SimpleNamespace(
@@ -234,11 +260,22 @@ class PushGit(PinningGit):
     async def arun_git_result(self, args, **_kwargs):
         if args[:2] == ["merge-base", "--is-ancestor"]:
             return SimpleNamespace(
-                returncode=0 if (args[2], args[3]) in {(BASE, HEAD), (HEAD, self.app.remote)} else 1,
+                returncode=0
+                if (args[2], args[3]) == (BASE, HEAD)
+                or (
+                    self.app.descendant_of_head
+                    and (args[2], args[3]) == (HEAD, self.app.remote)
+                )
+                else 1,
                 stdout="",
                 stderr="",
             )
+        if args[:2] == ["cat-file", "-e"]:
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
         return await super().arun_git_result(args, **_kwargs)
+
+    async def afetch_exact_oid_with_app_auth(self, _store, **kwargs):
+        return kwargs["oid"]
 
     async def apush_oid_with_app_auth(self, _store, **kwargs):
         assert kwargs["tip_oid"] == HEAD
@@ -249,6 +286,20 @@ class PushGit(PinningGit):
             raise RuntimeError("expected old changed")
         self.pushes.append(kwargs)
         self.app.remote = HEAD
+
+
+class InFlightPushGit(PushGit):
+    def __init__(self, app):
+        super().__init__(app)
+        self.entered = asyncio.Event()
+        self.release = asyncio.Event()
+        self.attempts = 0
+
+    async def apush_oid_with_app_auth(self, *args, **kwargs):
+        self.attempts += 1
+        self.entered.set()
+        await self.release.wait()
+        return await super().apush_oid_with_app_auth(*args, **kwargs)
 
 
 @pytest.mark.asyncio
@@ -389,6 +440,117 @@ async def test_root_prepare_rejects_stale_green_and_crossed_authority(prepared_d
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "override",
+    [
+        None,
+        {"required_check_version": "stale-checks"},
+        {"repository_numeric_id": 100},
+        {"repository_full_name": "other/widgets"},
+        {"candidate_sha": "c" * 40},
+        {"revision": 1},
+    ],
+    ids=("missing", "stale", "repository-id", "repository-name", "sha", "revision"),
+)
+async def test_root_prepare_requires_exact_server_attestation_before_claim(
+    prepared_db, override
+):
+    db, data_dir = prepared_db
+    app = FakeAppClient()
+    git = PushGit(app)
+    resolver = None
+    if override is not None:
+        resolver = ExactAttestationResolver()
+        resolver.override = override
+    result = await _RootPromotionService(
+        db,
+        data_dir=data_dir,
+        git_manager=git,
+        app_client=app,
+        attestation_resolver=resolver,
+        clock=lambda: 10.0,
+    ).promote("batch", 0)
+    assert result.outcome == "configuration_blocked"
+    assert git.pins == [] and git.pushes == [] and app.reads == 0
+    async with db._engine.connect() as conn:
+        assert await conn.scalar(
+            select(func.count()).select_from(integration_promotion_intents)
+        ) == 0
+        assert await conn.scalar(
+            select(func.count()).select_from(integration_candidate_ref_mutations)
+        ) == 0
+
+
+@pytest.mark.asyncio
+async def test_attestation_is_frozen_and_revalidated_before_prewrite(prepared_db):
+    db, data_dir = prepared_db
+    app = FakeAppClient()
+    git = PushGit(app)
+    resolver = ExactAttestationResolver()
+    service = _RootPromotionService(
+        db,
+        data_dir=data_dir,
+        git_manager=git,
+        app_client=app,
+        attestation_resolver=resolver,
+        clock=lambda: 10.0,
+    )
+    prepared = await service.prepare("batch", 0)
+    assert prepared.outcome == "prepared"
+    resolver.override = {"candidate_sha": "c" * 40}
+
+    blocked = await service.reconcile(prepared.intent_id)
+    assert blocked.outcome == "configuration_blocked"
+    assert git.pushes == [] and app.reads == 1
+    async with db._engine.connect() as conn:
+        intent = (
+            await conn.execute(select(integration_promotion_intents))
+        ).mappings().one()
+        mutation = (
+            await conn.execute(select(integration_candidate_ref_mutations))
+        ).mappings().one()
+    assert intent["provenance"]["attestation"]["candidate_sha"] == HEAD
+    assert mutation["prewrite_at"] is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mismatch", [False, True], ids=("missing", "mismatched"))
+async def test_root_command_cannot_bypass_attestation_proof(prepared_db, mismatch):
+    db, data_dir = prepared_db
+    app = FakeAppClient()
+    git = PushGit(app)
+    resolver = None
+    if mismatch:
+        resolver = ExactAttestationResolver()
+        resolver.override = {"operation_id": "another-operation"}
+    root = _RootPromotionService(
+        db,
+        data_dir=data_dir,
+        git_manager=git,
+        app_client=app,
+        attestation_resolver=resolver,
+        clock=lambda: 10.0,
+    )
+
+    class Handler(IntegrationCommandsMixin):
+        pass
+
+    handler = Handler()
+    handler.db = db
+    handler.orchestrator = SimpleNamespace(root_promotion_service=root)
+    with principal_context(ExecutionPrincipal.service("root-playbook")):
+        result = await handler._cmd_integration_promote_main(
+            {"batch_id": "batch", "revision": 0}
+        )
+    assert result["outcome"] == "configuration_blocked"
+    assert git.pushes == [] and app.reads == 0
+    async with db._engine.connect() as conn:
+        assert await conn.scalar(
+            select(func.count()).select_from(integration_candidate_ref_mutations)
+        ) == 0
+
+
+@pytest.mark.asyncio
 async def test_root_prepare_empty_replays_without_durable_side_effects(tmp_path):
     db = Database(str(tmp_path / "empty.db"))
     await db.initialize()
@@ -456,37 +618,61 @@ async def test_exact_tested_sha_main_push_finalizes_every_member_without_post_ci
 
 
 @pytest.mark.asyncio
-async def test_crash_before_and_after_main_push_reconciles_without_blind_repeat(prepared_db):
+async def test_expired_inflight_prewrite_is_blocked_until_remote_proves_result(prepared_db):
+    db, data_dir = prepared_db
+    app = FakeAppClient()
+    git = InFlightPushGit(app)
+    first_task = asyncio.create_task(
+        RootPromotionService(
+            db, data_dir=data_dir, git_manager=git, app_client=app, clock=lambda: 10.0
+        ).promote("batch", 0)
+    )
+    await asyncio.wait_for(git.entered.wait(), timeout=1.0)
+    second_task = asyncio.create_task(
+        RootPromotionService(
+            db, data_dir=data_dir, git_manager=git, app_client=app, clock=lambda: 146.0
+        ).promote("batch", 0)
+    )
+    try:
+        done, _pending = await asyncio.wait({second_task}, timeout=0.25)
+        assert second_task in done
+        blocked = second_task.result()
+        assert blocked.outcome == "reconciliation_blocked"
+        assert git.attempts == 1
+    finally:
+        git.release.set()
+        await asyncio.gather(first_task, second_task, return_exceptions=True)
+
+    recovered = await first_task
+    assert recovered.outcome == "promoted"
+    assert len(git.pushes) == 1
+
+
+@pytest.mark.asyncio
+async def test_owned_unmarked_claim_renews_full_horizon_before_prewrite(prepared_db):
     db, data_dir = prepared_db
     app = FakeAppClient()
     git = PushGit(app)
-    phases: list[str] = []
-
-    async def crash_before(phase):
-        phases.append(phase)
-        if phase == "after_prewrite_marker":
-            raise RuntimeError("crash before push")
-
-    first = RootPromotionService(
-        db, data_dir=data_dir, git_manager=git, app_client=app,
-        crash_hook=crash_before, clock=lambda: 10.0,
+    now = [10.0]
+    service = RootPromotionService(
+        db,
+        data_dir=data_dir,
+        git_manager=git,
+        app_client=app,
+        clock=lambda: now[0],
     )
-    with pytest.raises(RuntimeError, match="crash before push"):
-        await first.promote("batch", 0)
-    assert not git.pushes
+    prepared = await service.prepare("batch", 0)
+    assert prepared.outcome == "prepared"
+    now[0] = 30.0
 
-    waiting = await RootPromotionService(
-        db, data_dir=data_dir, git_manager=git, app_client=app, clock=lambda: 11.0
-    ).promote("batch", 0)
-    assert waiting.outcome == "wait"
-
-    async with db.immediate() as conn:
-        await conn.execute(update(project_integration_leases).values(expires_at=2000.0))
-    recovered = await RootPromotionService(
-        db, data_dir=data_dir, git_manager=git, app_client=app, clock=lambda: 146.0
-    ).promote("batch", 0)
-    assert recovered.outcome == "promoted"
-    assert len(git.pushes) == 1
+    result = await service.reconcile(prepared.intent_id)
+    assert result.outcome == "promoted"
+    async with db._engine.connect() as conn:
+        claim = (
+            await conn.execute(select(integration_candidate_ref_mutations))
+        ).mappings().one()
+    assert claim["prewrite_at"] == 30.0
+    assert claim["expires_at"] >= 165.0
 
 
 @pytest.mark.asyncio
@@ -539,6 +725,124 @@ async def test_lost_push_response_reconciles_applied_without_second_push(prepare
 
 
 @pytest.mark.asyncio
+async def test_post_main_recovery_uses_frozen_proof_without_attestation_observation(prepared_db):
+    db, data_dir = prepared_db
+    app = FakeAppClient()
+    git = PushGit(app)
+    resolver = ExactAttestationResolver()
+
+    async def crash_after(phase):
+        if phase == "after_external_push":
+            raise RuntimeError("lost response")
+
+    with pytest.raises(RuntimeError, match="lost response"):
+        await _RootPromotionService(
+            db,
+            data_dir=data_dir,
+            git_manager=git,
+            app_client=app,
+            attestation_resolver=resolver,
+            crash_hook=crash_after,
+            clock=lambda: 10.0,
+        ).promote("batch", 0)
+    calls_before_recovery = resolver.calls
+
+    async def forbidden_after_main(_subject):
+        raise AssertionError("post-main attestation observation")
+
+    recovered = await _RootPromotionService(
+        db,
+        data_dir=data_dir,
+        git_manager=git,
+        app_client=app,
+        attestation_resolver=forbidden_after_main,
+        clock=lambda: 11.0,
+    ).promote("batch", 0)
+    assert recovered.outcome == "promoted"
+    assert resolver.calls == calls_before_recovery
+    assert len(git.pushes) == 1
+
+
+@pytest.mark.asyncio
+async def test_candidate_service_cannot_consume_root_claim_after_main_push(prepared_db):
+    db, data_dir = prepared_db
+    app = FakeAppClient()
+    git = PushGit(app)
+
+    async def crash_after_push(phase):
+        if phase == "after_external_push":
+            raise RuntimeError("root stopped before proof")
+
+    with pytest.raises(RuntimeError, match="root stopped before proof"):
+        await RootPromotionService(
+            db,
+            data_dir=data_dir,
+            git_manager=git,
+            app_client=app,
+            crash_hook=crash_after_push,
+            clock=lambda: 10.0,
+        ).promote("batch", 0)
+    assert len(git.pushes) == 1
+
+    candidate = CandidateService(
+        db,
+        data_dir=data_dir,
+        git_manager=git,
+        app_client=app,
+        forge_provider=object(),
+        clock=lambda: 11.0,
+    )
+    built = await candidate.build("batch")
+    rebuilt = await candidate.rebuild("batch", 0, HEAD)
+    assert built.outcome == "wait"
+    assert rebuilt.outcome == "wait"
+    async with db._engine.connect() as conn:
+        mutation = (
+            await conn.execute(select(integration_candidate_ref_mutations))
+        ).mappings().one()
+        intent = (
+            await conn.execute(select(integration_promotion_intents))
+        ).mappings().one()
+    assert mutation["purpose"] == "root_main" and mutation["state"] == "reserved"
+    assert intent["state"] == "prepared"
+
+    recovered = await RootPromotionService(
+        db,
+        data_dir=data_dir,
+        git_manager=git,
+        app_client=app,
+        clock=lambda: 12.0,
+    ).promote("batch", 0)
+    assert recovered.outcome == "promoted"
+    assert len(recovered.receipt_ids) == 2
+    assert len(git.pushes) == 1
+
+
+@pytest.mark.asyncio
+async def test_root_reconcile_repairs_applied_claim_with_prepared_intent(prepared_db):
+    db, data_dir = prepared_db
+    app = FakeAppClient(HEAD)
+    git = PushGit(app)
+    prepared = await RootPromotionService(
+        db, data_dir=data_dir, git_manager=git, app_client=app, clock=lambda: 10.0
+    ).prepare("batch", 0)
+    async with db.immediate() as conn:
+        await conn.execute(
+            update(integration_candidate_ref_mutations).values(
+                state="applied", remote_sha=HEAD, updated_at=11.0
+            )
+        )
+
+    recovered = await RootPromotionService(
+        db, data_dir=data_dir, git_manager=git, app_client=app, clock=lambda: 12.0
+    ).reconcile(prepared.intent_id)
+    assert recovered.outcome == "promoted"
+    assert len(recovered.receipt_ids) == 2 and git.pushes == []
+    async with db._engine.connect() as conn:
+        assert await conn.scalar(select(integration_promotion_intents.c.state)) == "committed"
+
+
+@pytest.mark.asyncio
 async def test_obsolete_unattempted_intent_supersedes_but_ambiguous_write_blocks(prepared_db):
     db, data_dir = prepared_db
     app = FakeAppClient()
@@ -556,6 +860,76 @@ async def test_obsolete_unattempted_intent_supersedes_but_ambiguous_write_blocks
     async with db._engine.connect() as conn:
         assert await conn.scalar(select(integration_promotion_intents.c.state)) == "superseded"
         assert await conn.scalar(select(integration_candidate_ref_mutations.c.state)) == "superseded"
+
+
+@pytest.mark.asyncio
+async def test_current_moved_main_expires_then_public_rebuild_creates_next_revision(prepared_db):
+    db, data_dir = prepared_db
+    moved = "d" * 40
+    app = FakeAppClient(moved)
+    git = PushGit(app)
+    first = RootPromotionService(
+        db, data_dir=data_dir, git_manager=git, app_client=app, clock=lambda: 10.0
+    )
+    waiting = await first.promote("batch", 0)
+    assert waiting.outcome == "wait"
+
+    released = await RootPromotionService(
+        db, data_dir=data_dir, git_manager=git, app_client=app, clock=lambda: 146.0
+    ).reconcile(waiting.intent_id)
+    assert released.outcome == "base_moved"
+
+    class RebuildProbe(CandidateService):
+        async def build(self, batch_id):
+            async with self.db._engine.connect() as conn:
+                revision = await conn.scalar(
+                    select(integration_batches.c.current_revision).where(
+                        integration_batches.c.id == batch_id
+                    )
+                )
+            return CandidateBuildResult(
+                outcome="built", batch_id=batch_id, revision=int(revision)
+            )
+
+    rebuilt = await RebuildProbe(
+        db,
+        data_dir=data_dir,
+        git_manager=git,
+        app_client=app,
+        forge_provider=object(),
+        clock=lambda: 146.0,
+    ).rebuild("batch", 0, moved)
+    assert rebuilt.outcome == "built" and rebuilt.revision == 1
+    async with db._engine.connect() as conn:
+        revisions = (
+            await conn.execute(
+                select(
+                    integration_candidate_revisions.c.revision,
+                    integration_candidate_revisions.c.state,
+                ).order_by(integration_candidate_revisions.c.revision)
+            )
+        ).all()
+        members = (
+            await conn.execute(
+                select(
+                    integration_batch_members.c.ordinal,
+                    integration_batch_members.c.task_id,
+                    integration_batch_members.c.review_evidence_id,
+                ).order_by(integration_batch_members.c.ordinal)
+            )
+        ).all()
+        stage = (
+            await conn.execute(select(integration_repair_stages))
+        ).mappings().one()
+    assert revisions == [(0, "superseded"), (1, "constructing")]
+    assert members == [(0, "root-0", "review-0"), (1, "root-1", "review-1")]
+    assert stage["attempts"] == 0 and stage["deadline_at"] == 500.0
+    assert stage["current_subject"] == {
+        "kind": "batch",
+        "revision": 1,
+        "candidate_sha": moved,
+    }
+    assert not git.pushes
 
 
 @pytest.mark.asyncio
@@ -631,7 +1005,7 @@ async def test_obsolete_crash_during_write_is_ambiguous_not_superseded(prepared_
 async def test_authenticated_descendant_main_finalizes_original_without_push(prepared_db):
     db, data_dir = prepared_db
     descendant = "d" * 40
-    app = FakeAppClient(descendant)
+    app = FakeAppClient(descendant, descendant_of_head=True)
     git = PushGit(app)
     service = RootPromotionService(
         db, data_dir=data_dir, git_manager=git, app_client=app, clock=lambda: 10.0
@@ -642,6 +1016,92 @@ async def test_authenticated_descendant_main_finalizes_original_without_push(pre
     assert not git.pushes and result.head_sha == HEAD
     async with db._engine.connect() as conn:
         assert await conn.scalar(select(integration_batches.c.final_main_sha)) == descendant
+
+
+@pytest.mark.asyncio
+async def test_authenticated_descendant_is_imported_before_real_ancestry_proof(prepared_db):
+    db, data_dir = prepared_db
+    store = data_dir / "integration-repositories" / f"{hashlib.sha256(b'repo').hexdigest()}.git"
+    empty_tree = _git(store, "mktree")
+    commit_env = {
+        **os.environ,
+        "GIT_AUTHOR_NAME": "Test",
+        "GIT_AUTHOR_EMAIL": "test@example.invalid",
+        "GIT_COMMITTER_NAME": "Test",
+        "GIT_COMMITTER_EMAIL": "test@example.invalid",
+    }
+
+    def commit(message, *parents):
+        args = ["git", "commit-tree", empty_tree]
+        for parent in parents:
+            args.extend(["-p", parent])
+        return subprocess.run(
+            [*args, "-m", message],
+            cwd=store,
+            env=commit_env,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+
+    base = commit("base")
+    head = commit("candidate", base)
+    _git(store, "update-ref", "refs/heads/main", head)
+    origin = data_dir / "origin.git"
+    _git(data_dir, "clone", "--bare", str(store), str(origin))
+    descendant = subprocess.run(
+        ["git", "commit-tree", empty_tree, "-p", head, "-m", "descendant"],
+        cwd=origin,
+        env=commit_env,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    _git(origin, "update-ref", "refs/heads/main", descendant)
+    assert subprocess.run(
+        ["git", "cat-file", "-e", f"{descendant}^{{commit}}"], cwd=store
+    ).returncode != 0
+
+    async with db.immediate() as conn:
+        # Rebind the generic fixture to the real object graph before the root
+        # intent exists; publication immutability itself is covered elsewhere.
+        await conn.exec_driver_sql("DROP TRIGGER trg_candidate_publication_identity")
+        await conn.execute(
+            update(integration_candidate_revisions).values(
+                construction_base_sha=base, head_sha=head
+            )
+        )
+        await conn.execute(
+            update(integration_batches).values(tested_candidate_sha=head)
+        )
+        await conn.execute(
+            update(integration_candidate_publications).values(head_sha=head)
+        )
+
+    class LocalExactFetchGit(GitManager):
+        async def afetch_exact_oid_with_app_auth(self, destination_git_dir, **kwargs):
+            return await self._afetch_exact_oid_with_app_auth_to_url(
+                destination_git_dir,
+                destination_url=origin.as_uri(),
+                token=kwargs["token"],
+                oid=kwargs["oid"],
+                destination_ref=kwargs["destination_ref"],
+            )
+
+    app = FakeAppClient(descendant)
+    result = await RootPromotionService(
+        db,
+        data_dir=data_dir,
+        git_manager=LocalExactFetchGit(),
+        app_client=app,
+        clock=lambda: 10.0,
+    ).promote("batch", 0)
+    assert result.outcome == "promoted"
+    assert _git(
+        store,
+        "rev-parse",
+        f"refs/aq/root-main-observed/{result.intent_id}^{{commit}}",
+    ) == descendant
 
 
 @pytest.mark.asyncio

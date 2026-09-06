@@ -36,6 +36,11 @@ from src.integration.ownership import BranchBusy, BranchOwnership, StaleFence
 from src.integration.repair import RepairService
 
 
+_CANDIDATE_MUTATION_PURPOSES = frozenset(
+    {"candidate_partial", "candidate_final", "repair_resolution", "repair_handoff"}
+)
+
+
 class CandidateBuildResult(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid", strict=True)
 
@@ -2176,6 +2181,8 @@ class CandidateService:
         return dict(row) if row else None
 
     async def _reconcile_observed_mutation(self, row, remote) -> None:
+        if row["purpose"] not in _CANDIDATE_MUTATION_PURPOSES:
+            return
         async with self.db._engine.connect() as read_conn:
             project_id = (
                 await read_conn.execute(
@@ -2216,13 +2223,28 @@ class CandidateService:
                 await conn.execute(
                     select(integration_candidate_ref_mutations).where(
                         integration_candidate_ref_mutations.c.batch_id == batch_id,
-                        integration_candidate_ref_mutations.c.state == "reserved",
+                        (
+                            integration_candidate_ref_mutations.c.state == "reserved"
+                        )
+                        | (
+                            (
+                                integration_candidate_ref_mutations.c.purpose
+                                == "root_main"
+                            )
+                            & (
+                                integration_candidate_ref_mutations.c.state
+                                == "applied"
+                            )
+                        ),
                     )
                 )
             ).mappings().all()
         blockers: list[str] = []
         recoverable: list[str] = []
         for row in rows:
+            if row["purpose"] not in _CANDIDATE_MUTATION_PURPOSES:
+                blockers.append(row["id"])
+                continue
             try:
                 remote = await self.app_client.exact_head_ref(
                     row["target_branch"].removeprefix("refs/heads/")
