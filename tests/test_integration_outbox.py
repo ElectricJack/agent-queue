@@ -27,7 +27,8 @@ from src.integration.outbox import (
     freeze_destination_manifest,
     load_acceptance_state,
 )
-from src.models import Project
+from src.integration.controls import IntegrationControlService
+from src.models import Project, RepoConfig, RepoSourceType
 from src.playbooks.artifact_store import ArtifactStore
 from src.playbooks.definition import PlaybookDefinition
 from src.playbooks.runtime import V2PlaybookRuntime
@@ -623,6 +624,100 @@ async def test_managed_project_does_not_admit_legacy_merge_sweep_destination(
     await _enqueue(db)
     runtime = _runtime(db, compiled)
     await runtime.refresh()
+
+    assert not await runtime.accept_integration_event(
+        "integration.sealed",
+        {"project_id": "p", "operation_id": "operation-1"},
+        "event-1",
+    )
+    assert await _pending_rows(db) == []
+    await runtime.shutdown()
+
+
+async def test_running_runtime_reads_cutover_suppression_before_acceptance(db, tmp_path):
+    compiled = tmp_path / "compiled"
+    activation_id, artifact_sha = await _activate(
+        db, compiled, "pr-merge-sweep", "integration.sealed"
+    )
+    runtime = _runtime(db, compiled)
+    await runtime.refresh()
+    runtime._schedule_integration_pending = lambda _rows: None
+
+    await db.create_repo(
+        RepoConfig(
+            id="repo",
+            project_id="p",
+            source_type=RepoSourceType.CLONE,
+            url="https://github.com/acme/widgets.git",
+            default_branch="main",
+        )
+    )
+    async with db._engine.connect() as conn:
+        artifact = (
+            await conn.execute(
+                select(playbook_artifacts).where(
+                    playbook_artifacts.c.artifact_sha256 == artifact_sha
+                )
+            )
+        ).mappings().one()
+    route_artifact = {
+        key: artifact[key]
+        for key in (
+            "playbook_id",
+            "artifact_sha256",
+            "schema_generation",
+            "contract_fingerprint",
+            "source_digest",
+            "compiler_build",
+            "compiled_at",
+            "version",
+        )
+    }
+    boundary = {
+        "required_checks": {
+            "version": "checks-v1",
+            "names": ["Tests (default)"],
+            "producer_id": "1234",
+        },
+        "repair": {
+            "debug_intelligence_class": "deep",
+            "debug_profile_id": "debugger",
+        },
+        "route": {
+            "playbook_id": "pr-merge-sweep",
+            "scope": "project",
+            "scope_identifier": "p",
+            "activation_id": activation_id,
+            "artifact": route_artifact,
+        },
+        "primary_intelligence_class": "standard",
+        "primary_profile_id": "worker",
+    }
+    await db.update_project(
+        "p",
+        integration_repository_id="repo",
+        hierarchical_integration_policy={
+            "version": 1,
+            "parent": boundary,
+            "root": boundary,
+            "branchless_parent": "skip",
+            "on_failed_child": "block",
+            "on_main_moved": "rebuild",
+            "cleanup": {},
+        },
+        integration_mode="pull_request",
+    )
+    enabled = await IntegrationControlService(
+        db, external_preflight=lambda _project, _repository: ()
+    ).enable(
+        "p",
+        mode="hierarchy",
+        expected_generation=0,
+        reason="cut over",
+        operator_id="operator:local",
+    )
+    assert enabled["outcome"] == "enabled"
+    await _enqueue(db)
 
     assert not await runtime.accept_integration_event(
         "integration.sealed",

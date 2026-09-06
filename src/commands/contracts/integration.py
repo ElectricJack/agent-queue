@@ -114,6 +114,20 @@ class IntegrationOperationalValue(CommandValue):
     blockers: tuple[dict[str, Any], ...] = ()
     blocker_digest: str | None = None
     certification: dict[str, Any] | None = None
+    repository_id: str | None = None
+    schedule: dict[str, Any] | None = None
+    active_batch: dict[str, Any] | None = None
+    members: tuple[dict[str, Any], ...] = ()
+    parent_readiness: tuple[dict[str, Any], ...] = ()
+    ownership: tuple[dict[str, Any], ...] = ()
+    lease: dict[str, Any] | None = None
+    repair: tuple[dict[str, Any], ...] = ()
+    ci_evidence: tuple[dict[str, Any], ...] = ()
+    promotion: tuple[dict[str, Any], ...] = ()
+    reconciliation: dict[str, Any] | None = None
+    cleanup_pending: tuple[dict[str, Any], ...] = ()
+    release: dict[str, Any] | None = None
+    legacy_suppression: dict[str, Any] | None = None
     waiver_id: str | None = None
     request_id: str | None = None
     request_sequence: int | None = None
@@ -496,8 +510,8 @@ INTEGRATION_FLUSH = _operational_contract(
 INTEGRATION_ENABLE = _operational_contract(
     "integration_enable",
     IntegrationEnableArgs,
-    ("enabled", "draining", "blocked", "stale", "not_found"),
-    successes=frozenset({"enabled", "draining"}),
+    ("enabled", "disabled", "draining", "blocked", "stale", "not_found"),
+    successes=frozenset({"enabled", "disabled", "draining"}),
     side_effect=SideEffectClass.COMPOSITE,
 )
 INTEGRATION_WAIVE_HISTORY = _operational_contract(
@@ -1621,7 +1635,7 @@ async def _enable_adapter(args: IntegrationEnableArgs, ctx: CommandContext | Non
         args,
         ctx,
         IntegrationOperationalValue,
-        {"enabled", "draining", "blocked", "stale", "not_found"},
+        {"enabled", "disabled", "draining", "blocked", "stale", "not_found"},
     )
 
 

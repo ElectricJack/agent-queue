@@ -86,7 +86,6 @@ class V2PlaybookRuntime:
         self._triggers: tuple[str, ...] = ()
         self._integration_destinations: tuple[_IntegrationDestination, ...] = ()
         self._integration_activation_addresses: tuple[_IntegrationDestination, ...] = ()
-        self._merge_sweep_suppressed_projects: frozenset[str] = frozenset()
         self._unsubscribe = None
         self._tasks: set[asyncio.Task[Any]] = set()
         self._integration_tasks: dict[str, asyncio.Task[Any]] = {}
@@ -96,15 +95,6 @@ class V2PlaybookRuntime:
 
     async def refresh(self) -> None:
         rows = await self._db.list_playbook_activations(enabled_only=False)
-        list_suppressions = getattr(
-            self._db, "list_integration_legacy_suppressions", None
-        )
-        suppression_rows = await list_suppressions() if callable(list_suppressions) else []
-        self._merge_sweep_suppressed_projects = frozenset(
-            row["project_id"]
-            for row in suppression_rows
-            if row.get("merge_sweep_suppressed")
-        )
         enabled_rows = [row for row in rows if row.get("enabled") is True]
         install_routing_activation_snapshot(self, enabled_rows, artifact_store=self._store)
         triggers: set[str] = set()
@@ -203,8 +193,20 @@ class V2PlaybookRuntime:
                     operation_id
                 )
             route = _FrozenOperationRoute.from_row(route_row) if route_row else None
+            suppression = None
+            project_id = hydrated.get("project_id")
+            get_suppression = getattr(
+                self._db, "get_integration_legacy_suppression", None
+            )
+            if isinstance(project_id, str) and callable(get_suppression):
+                suppression = await get_suppression(project_id)
             destinations = self._select_integration_destinations(
-                event_type, hydrated, route
+                event_type,
+                hydrated,
+                route,
+                merge_sweep_suppressed=bool(
+                    suppression and suppression.get("merge_sweep_suppressed")
+                ),
             )
             if not destinations:
                 return False
@@ -266,6 +268,8 @@ class V2PlaybookRuntime:
         event_type: str,
         hydrated: dict[str, Any],
         route: _FrozenOperationRoute | None,
+        *,
+        merge_sweep_suppressed: bool,
     ) -> list[_IntegrationDestination]:
         """Select current consumers while pinning the operation's owner.
 
@@ -298,7 +302,7 @@ class V2PlaybookRuntime:
             if (
                 not is_owner
                 and destination.playbook_id == "pr-merge-sweep"
-                and project_id in self._merge_sweep_suppressed_projects
+                and merge_sweep_suppressed
             ):
                 continue
             if is_owner:

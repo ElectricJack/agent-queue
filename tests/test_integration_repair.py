@@ -41,6 +41,7 @@ from src.integration.models import (
     RepairPolicy,
     RequiredCheckSet,
 )
+from src.integration.controls import IntegrationControlService
 from src.integration.ownership import BranchOwnership
 from src.git.manager import GitManager, RemoteRefResult, RemoteRefState
 from src.models import (
@@ -53,6 +54,7 @@ from src.models import (
     SessionRecord,
     Task,
     TaskStatus,
+    Workspace,
 )
 from src.scheduler import AssignAction
 from src.profiles.capabilities import CapabilityPolicy
@@ -1186,6 +1188,135 @@ async def test_dispatch_persists_paused_delegate_before_handoff_then_wakes_it(db
             )
         ).all()
     assert origins == []
+
+
+async def test_resumed_event_redispatches_established_repair_delegate(db):
+    """A safely reserved delegate remains the exact writer after human resume."""
+    from src.integration.repair import RepairService
+
+    await _seed_parent_operation(db)
+    await _add_parent_evidence(
+        db, "failed-check-2", run_id="run-2", conclusion="failure"
+    )
+    await _add_parent_evidence(
+        db, "debug-failed", run_id="run-debug", conclusion="failure"
+    )
+    async with db.immediate() as conn:
+        await conn.execute(
+            insert(integration_branch_owners).values(
+                id="resume-owner",
+                repository_id="repo",
+                ref="aq/parent",
+                owner_id="operation",
+                owner_role="collector",
+                fence_token=4,
+                handoff_state="attached",
+                session_id="old-session",
+                workspace_id="old-workspace",
+                created_at=1.0,
+                updated_at=1.0,
+            )
+        )
+    repair = RepairService(
+        db,
+        confirm_handoff=lambda _owner: True,
+        route_validator=lambda _intelligence_class, _profile_id: True,
+    )
+    await repair.start("operation", STARTING_SHA, "failed-check", now=100.0)
+    await repair.record_result("operation", "failed-check", now=101.0)
+    await repair.record_result("operation", "failed-check-2", now=102.0)
+    established = await repair.dispatch("operation", 1)
+    human = await repair.record_result("operation", "debug-failed", now=103.0)
+
+    resumed = await IntegrationControlService(db, clock=lambda: 200.0).resume(
+        "operation"
+    )
+    async with db._engine.connect() as conn:
+        resumed_event = (
+            await conn.execute(
+                select(integration_outbox)
+                .where(
+                    integration_outbox.c.event_type == "integration.repair_exhausted",
+                    integration_outbox.c.available_at == 200.0,
+                )
+            )
+        ).mappings().one()
+    writer = await repair.dispatch(resumed_event["payload"]["operation_id"], 1)
+
+    assert established["outcome"] == "dispatched"
+    assert human["outcome"] == "human_required"
+    assert resumed["outcome"] == "resumed"
+    assert resumed_event["project_id"] == "p"
+    assert writer == established | {"outcome": "already_dispatched"}
+    assert (await db.get_task(established["repair_task_id"])).status is TaskStatus.READY
+
+    await db.create_workspace(
+        Workspace(
+            id="resumed-live-workspace",
+            project_id="p",
+            workspace_path="/tmp/resumed-live",
+            source_type=RepoSourceType.LINK,
+            locked_by_task_id=established["repair_task_id"],
+            enabled=True,
+        )
+    )
+    await db.create_session(
+        SessionRecord(
+            id="resumed-live-session",
+            task_id=established["repair_task_id"],
+            project_id="p",
+            profile_id="debugger",
+            harness="fake",
+            provider="fake",
+            name="resumed-live",
+            lifecycle="task",
+            state="running",
+            work_dir="/tmp/resumed-live",
+            epoch="epoch",
+            instance_token="resumed-live-token",
+            started_at=201.0,
+        )
+    )
+    async with db.immediate() as conn:
+        await conn.execute(
+            update(tasks)
+            .where(tasks.c.id == established["repair_task_id"])
+            .values(status=TaskStatus.IN_PROGRESS.value)
+        )
+        await conn.execute(
+            update(integration_branch_owners)
+            .where(integration_branch_owners.c.id == "resume-owner")
+            .values(
+                handoff_state="attached",
+                session_id="resumed-live-session",
+                workspace_id="resumed-live-workspace",
+            )
+        )
+        await conn.execute(
+            update(integration_repair_operations)
+            .where(integration_repair_operations.c.id == "operation")
+            .values(state="human_required")
+        )
+        await conn.execute(
+            update(integration_repair_stages)
+            .where(
+                integration_repair_stages.c.operation_id == "operation",
+                integration_repair_stages.c.ordinal == 1,
+            )
+            .values(state="failed", completed_at=201.0)
+        )
+
+    live_writer = await IntegrationControlService(db, clock=lambda: 202.0).resume(
+        "operation"
+    )
+    assert live_writer["outcome"] == "ambiguous"
+    assert live_writer["blockers"] == [
+        {
+            "code": "ambiguous_external_write",
+            "detail": "operation has unresolved external mutation evidence",
+            "ref": "writer",
+        }
+    ]
 
 
 async def test_repair_dispatch_command_derives_current_stage_with_real_service(

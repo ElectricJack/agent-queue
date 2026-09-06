@@ -24,6 +24,9 @@ from src.database.tables import (
     integration_batches,
     integration_branch_owners,
     integration_cleanup_items,
+    integration_history_waiver_consumptions,
+    integration_history_waivers,
+    integration_legacy_gate_applicability,
     integration_legacy_suppression,
     integration_promotion_intents,
     integration_repair_operations,
@@ -36,6 +39,7 @@ from src.database.tables import (
     tasks,
 )
 from src.integration.models import HierarchicalIntegrationPolicy
+from src.integration.preflight import daemon_functional_preflight
 from src.integration.scheduler import IntegrationScheduler
 
 
@@ -299,18 +303,17 @@ class IntegrationControlService:
                             ref,
                         )
                     )
-                required_profiles = (
+                required_profiles = [
                     boundary.primary_profile_id,
                     boundary.repair.debug_profile_id,
-                    boundary.verifier_profile_id if policy.branchless_parent == "verifier" else None,
-                )
-                required_classes = (
+                ]
+                required_classes = [
                     boundary.primary_intelligence_class,
                     boundary.repair.debug_intelligence_class,
-                    boundary.verifier_intelligence_class
-                    if policy.branchless_parent == "verifier"
-                    else None,
-                )
+                ]
+                if policy.branchless_parent == "verifier":
+                    required_profiles.append(boundary.verifier_profile_id)
+                    required_classes.append(boundary.verifier_intelligence_class)
                 if any(value is None for value in required_profiles):
                     blockers.append(
                         _blocker(
@@ -334,6 +337,14 @@ class IntegrationControlService:
                     gates.c.project_id == project_id,
                     gates.c.gate_type == "pr-merged",
                     gates.c.status == "open",
+                    ~select(integration_legacy_gate_applicability.c.gate_id)
+                    .where(
+                        integration_legacy_gate_applicability.c.project_id
+                        == project_id,
+                        integration_legacy_gate_applicability.c.gate_id == gates.c.id,
+                        integration_legacy_gate_applicability.c.applicable.is_(False),
+                    )
+                    .exists(),
                 )
             )
         ).scalars().all()
@@ -426,6 +437,52 @@ class IntegrationControlService:
                 )
             ).mappings().one()
             active = await self._has_active_work_on(conn, project_id)
+            if (
+                mode == "observe"
+                and current["hierarchical_integration_mode"] in {"hierarchy", "train"}
+                and active
+            ):
+                blockers = _sorted_blockers(
+                    list(observed["blockers"])
+                    + [
+                        _blocker(
+                            "active_integration_work",
+                            "managed integration work must drain before observe mode",
+                            project_id,
+                        )
+                    ]
+                )
+                return {
+                    "outcome": "blocked",
+                    "project_id": project_id,
+                    "effective_mode": current["hierarchical_integration_mode"],
+                    "desired_mode": current["hierarchical_integration_desired_mode"],
+                    "draining": bool(current["hierarchical_integration_draining"]),
+                    "generation": int(current["hierarchical_integration_generation"]),
+                    "blockers": blockers,
+                    "blocker_digest": _blocker_digest(blockers),
+                    "certification": observed["certification"],
+                }
+            if waiver_id is not None:
+                waiver = (
+                    await conn.execute(
+                        select(integration_history_waivers.c.id)
+                        .outerjoin(
+                            integration_history_waiver_consumptions,
+                            integration_history_waiver_consumptions.c.waiver_id
+                            == integration_history_waivers.c.id,
+                        )
+                        .where(
+                            integration_history_waivers.c.id == waiver_id,
+                            integration_history_waivers.c.project_id == project_id,
+                            integration_history_waivers.c.blocker_digest
+                            == observed["blocker_digest"],
+                            integration_history_waiver_consumptions.c.waiver_id.is_(None),
+                        )
+                    )
+                ).scalar_one_or_none()
+                if waiver is None:
+                    raise ValueError("history waiver is stale or already consumed")
             new_effective = mode
             new_desired = mode
             draining = False
@@ -911,69 +968,6 @@ class IntegrationControlService:
             and parsed.path.count("/") == 2
             and parsed.path.endswith(".git")
         )
-
-
-async def daemon_functional_preflight(orchestrator: Any, project_id: str, repository_id: str):
-    """Check the actual daemon dependencies used by candidate/promotion/cleanup paths."""
-    blockers = []
-    if getattr(orchestrator, "integration_app_client_factory", None) is None:
-        blockers.append("provider_not_wired")
-    if getattr(orchestrator, "integration_repository_binding_resolver", None) is None:
-        blockers.append("repository_binding_not_wired")
-    if getattr(orchestrator, "playbook_manager", None) is None:
-        blockers.append("playbook_runtime_not_wired")
-    if getattr(orchestrator, "integration_attestation_service", None) is None:
-        blockers.append("attestation_not_wired")
-    if getattr(orchestrator, "root_promotion_service", None) is None:
-        blockers.append("promotion_not_wired")
-    if getattr(orchestrator, "integration_cleanup_service", None) is None:
-        blockers.append("cleanup_not_wired")
-    if getattr(orchestrator, "git", None) is None:
-        blockers.append("git_transport_not_wired")
-
-    project = await orchestrator.db.get_project(project_id)
-    repository = await orchestrator.db.get_repo(repository_id)
-    resolver = getattr(orchestrator, "integration_repository_binding_resolver", None)
-    if project is None or repository is None or repository.project_id != project_id:
-        blockers.append("repository_mismatch")
-    elif resolver is not None:
-        try:
-            binding = resolver(repository)
-            if inspect.isawaitable(binding):
-                binding = await binding
-            if binding is None:
-                blockers.append("repository_binding_failed")
-        except Exception:
-            blockers.append("repository_binding_failed")
-
-    classes = getattr(orchestrator, "intelligence_classes", None)
-    policy = None
-    try:
-        policy = HierarchicalIntegrationPolicy.model_validate(
-            project.hierarchical_integration_policy if project is not None else None
-        )
-    except (ValidationError, TypeError):
-        pass
-    if policy is not None:
-        class_ids = set(classes) if classes is not None else set()
-        profile_ids = {profile.id for profile in await orchestrator.db.list_profiles()}
-        for boundary in (policy.parent, policy.root):
-            required_classes = {
-                boundary.primary_intelligence_class,
-                boundary.repair.debug_intelligence_class,
-            }
-            required_profiles = {
-                boundary.primary_profile_id,
-                boundary.repair.debug_profile_id,
-            }
-            if policy.branchless_parent == "verifier":
-                required_classes.add(boundary.verifier_intelligence_class)
-                required_profiles.add(boundary.verifier_profile_id)
-            if None in required_classes or not required_classes.issubset(class_ids):
-                blockers.append("intelligence_route_unavailable")
-            if None in required_profiles or not required_profiles.issubset(profile_ids):
-                blockers.append("profile_route_unavailable")
-    return tuple(dict.fromkeys(blockers))
 
 
 __all__ = ["IntegrationControlService", "daemon_functional_preflight"]

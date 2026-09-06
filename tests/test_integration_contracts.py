@@ -8,6 +8,7 @@ from typing import Literal
 import pytest
 
 from src.commands.contracts.builtin import register_builtin_contracts
+from src.commands.contracts.builtin import set_handler_provider
 from src.commands.contracts.integration import (
     DESIGN_INTEGRATION_COMMANDS,
     register_integration_contracts,
@@ -15,7 +16,14 @@ from src.commands.contracts.integration import (
 from src.commands.contracts.models import EffectSubject
 from src.commands.contracts.registry import ContractRegistry
 from src.commands.handler import CommandHandler
+from src.database.tables import (
+    integration_batches,
+    integration_cleanup_items,
+    project_integration_schedules,
+)
 from src.event_schemas import EVENT_SCHEMAS, validate_event
+from src.integration.controls import IntegrationControlService
+from src.models import Project, RepoConfig, RepoSourceType
 from src.playbooks.explanation import can_render
 
 
@@ -442,3 +450,114 @@ async def test_root_promotion_command_is_registered_and_strictly_typed():
     )
     result = await handler.execute("integration_promote_main", {})
     assert result["outcome"] == "runtime_error"
+
+
+@pytest.mark.asyncio
+async def test_operational_adapters_preserve_real_outcomes_blockers_and_status_details(
+    command_handler_factory,
+):
+    handler = await command_handler_factory()
+    await handler.db.create_project(Project(id="p", name="project"))
+    await handler.db.create_project(Project(id="idle", name="idle project"))
+    await handler.db.create_repo(
+        RepoConfig(
+            id="repo",
+            project_id="p",
+            source_type=RepoSourceType.CLONE,
+            url="https://github.com/acme/widgets.git",
+            default_branch="main",
+        )
+    )
+    async with handler.db.immediate() as conn:
+        await conn.execute(
+            project_integration_schedules.insert().values(
+                project_id="p",
+                enabled=False,
+                interval_seconds=300,
+                next_due_at=400.0,
+                updated_at=100.0,
+            )
+        )
+        await conn.execute(
+            integration_batches.insert().values(
+                id="cleanup-batch",
+                project_id="p",
+                repository_id="repo",
+                request_id="cleanup-request",
+                trigger="manual",
+                source_manifest_digest="sha256:" + "d" * 64,
+                base_sha="a" * 40,
+                lifecycle="promoted",
+                integration_branch="refs/heads/aq/integration/cleanup",
+                final_main_sha="b" * 40,
+                policy_snapshot={},
+                artifact_snapshot={},
+                cleanup_state="conflict",
+                created_at=100.0,
+                updated_at=100.0,
+            )
+        )
+        await conn.execute(
+            integration_cleanup_items.insert().values(
+                batch_id="cleanup-batch",
+                kind="remote_ref",
+                identity="ambiguous",
+                domain_key="cleanup:ambiguous",
+                project_id="p",
+                repository_id="repo",
+                repository_numeric_id=303,
+                repository_full_name="acme/widgets",
+                revision=0,
+                target_ref="refs/heads/aq/integration/ambiguous",
+                expected_sha="b" * 40,
+                state="retryable",
+                attempts=1,
+                next_attempt_at=999.0,
+                irreversible_nonce="posted",
+                irreversible_prewrite_at=99.0,
+                created_at=90.0,
+                updated_at=99.0,
+            )
+        )
+    handler.orchestrator.integration_control_service = IntegrationControlService(
+        handler.db, clock=lambda: 100.0
+    )
+    registry = ContractRegistry()
+    register_integration_contracts(registry)
+    set_handler_provider(lambda: handler)
+    try:
+        status_registration = registry.require("integration_status")
+        status = await status_registration.invoke(
+            status_registration.contract.execution.args_model(project_id="p"), None
+        )
+        enable_registration = registry.require("integration_enable")
+        disabled = await enable_registration.invoke(
+            enable_registration.contract.execution.args_model(
+                project_id="idle",
+                mode="disabled",
+                expected_generation=0,
+                reason="remain disabled",
+            ),
+            None,
+        )
+        retry_registration = registry.require("integration_retry_cleanup")
+        ambiguous = await retry_registration.invoke(
+            retry_registration.contract.execution.args_model(batch_id="cleanup-batch"),
+            None,
+        )
+    finally:
+        set_handler_provider(None)
+
+    assert status.outcome == "status"
+    assert status.value.schedule["next_due_at"] == 400.0
+    assert status.value.cleanup_pending[0]["identity"] == "ambiguous"
+    assert disabled.outcome == "disabled"
+    assert ambiguous.outcome == "ambiguous"
+    assert ambiguous.value.blockers == (
+        {
+            "code": "cleanup_irreversible",
+            "detail": "cleanup item has an unresolved irreversible write marker",
+            "ref": "cleanup:ambiguous",
+        },
+    )
+    await handler.db.close()

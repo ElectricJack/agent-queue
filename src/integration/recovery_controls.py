@@ -7,7 +7,7 @@ from collections.abc import Callable
 from typing import Any
 from uuid import uuid4
 
-from sqlalchemy import select, update
+from sqlalchemy import and_, select, update
 
 from src.database.tables import (
     integration_attestation_publications,
@@ -42,7 +42,9 @@ class IntegrationRecoveryControls:
             project_id = await self._project_id_on(conn, operation)
             if operation["state"] != "human_required":
                 return self._state_result("invalid_state", operation, project_id)
-            blockers = await self._ambiguous_writes_on(conn, operation)
+            blockers = await self._ambiguous_writes_on(
+                conn, operation, allow_reserved_delegate=True
+            )
             if blockers:
                 return self._ambiguous_result(operation, project_id, blockers)
             stage = await self._locked_stage_on(conn, operation)
@@ -178,7 +180,16 @@ class IntegrationRecoveryControls:
                     "outcome": "ambiguous",
                     "batch_id": batch_id,
                     "project_id": batch["project_id"],
-                    "blockers": sorted(ambiguous),
+                    "blockers": [
+                        {
+                            "code": "cleanup_irreversible",
+                            "detail": (
+                                "cleanup item has an unresolved irreversible write marker"
+                            ),
+                            "ref": identity,
+                        }
+                        for identity in sorted(ambiguous)
+                    ],
                 }
             if not rows:
                 return {
@@ -247,9 +258,48 @@ class IntegrationRecoveryControls:
 
     @staticmethod
     async def _ambiguous_writes_on(
-        conn: Any, operation: dict[str, Any]
+        conn: Any,
+        operation: dict[str, Any],
+        *,
+        allow_reserved_delegate: bool = False,
     ) -> list[str]:
         operation_id = operation["id"]
+        writer = select(integration_branch_owners.c.id).where(
+            (
+                integration_branch_owners.c.owner_id.in_(
+                    select(integration_repair_stages.c.repair_task_id).where(
+                        integration_repair_stages.c.operation_id == operation_id,
+                        integration_repair_stages.c.repair_task_id.is_not(None),
+                    )
+                )
+            )
+            | (
+                integration_branch_owners.c.owner_id.in_(
+                    select(integration_candidate_ref_mutations.c.branch_owner_id).where(
+                        integration_candidate_ref_mutations.c.operation_id
+                        == operation_id
+                    )
+                )
+            ),
+            integration_branch_owners.c.handoff_state != "released",
+        )
+        if allow_reserved_delegate:
+            exact_delegate = select(
+                integration_repair_stages.c.repair_task_id
+            ).where(
+                integration_repair_stages.c.operation_id == operation_id,
+                integration_repair_stages.c.ordinal == operation["active_stage"],
+                integration_repair_stages.c.writer_kind == "repair_delegate",
+            )
+            writer = writer.where(
+                ~and_(
+                    integration_branch_owners.c.owner_id.in_(exact_delegate),
+                    integration_branch_owners.c.owner_role == "repair",
+                    integration_branch_owners.c.handoff_state == "reserved",
+                    integration_branch_owners.c.session_id.is_(None),
+                    integration_branch_owners.c.workspace_id.is_(None),
+                )
+            )
         statements = {
             "ref_mutation": select(integration_candidate_ref_mutations.c.id).where(
                 integration_candidate_ref_mutations.c.operation_id == operation_id,
@@ -275,25 +325,7 @@ class IntegrationRecoveryControls:
                     ("committed", "conflict", "superseded")
                 ),
             ),
-            "writer": select(integration_branch_owners.c.id).where(
-                (
-                    integration_branch_owners.c.owner_id.in_(
-                        select(integration_repair_stages.c.repair_task_id).where(
-                            integration_repair_stages.c.operation_id == operation_id,
-                            integration_repair_stages.c.repair_task_id.is_not(None),
-                        )
-                    )
-                )
-                | (
-                    integration_branch_owners.c.owner_id.in_(
-                        select(integration_candidate_ref_mutations.c.branch_owner_id).where(
-                            integration_candidate_ref_mutations.c.operation_id
-                            == operation_id
-                        )
-                    )
-                ),
-                integration_branch_owners.c.handoff_state != "released",
-            ),
+            "writer": writer,
         }
         if operation["batch_id"] is not None:
             statements["candidate_publication"] = select(
@@ -354,5 +386,12 @@ class IntegrationRecoveryControls:
             "operation_id": operation["id"],
             "project_id": project_id,
             "state": operation["state"],
-            "blockers": blockers,
+            "blockers": [
+                {
+                    "code": "ambiguous_external_write",
+                    "detail": "operation has unresolved external mutation evidence",
+                    "ref": blocker,
+                }
+                for blocker in blockers
+            ],
         }
