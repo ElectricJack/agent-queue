@@ -1,11 +1,11 @@
-"""Append-only task comments and atomic, fenced description updates."""
+"""Task comments (agent-append-only, operator-editable) and fenced description updates."""
 
 from __future__ import annotations
 
 import time
 import uuid
 
-from sqlalchemy import func, insert, select, update
+from sqlalchemy import delete, func, insert, select, update
 
 from src.database.tables import archived_tasks, sessions, task_comments, tasks
 
@@ -117,6 +117,61 @@ class TaskCommentQueriesMixin:
             )).scalar_one()
             await conn.execute(insert(task_comments).values(**comment, project_id=project_id))
         return comment
+
+    async def _locked_comment(self, conn, comment_id: str, task_id: str, project_id: str):
+        """Lock ``task_id`` and return the comment row it owns, or ``None``."""
+        # The task-row UPDATE serialises with add/delete/archive, exactly as
+        # add_task_comment does; the project fence keeps a recycled task id
+        # from reaching another project's history.
+        await self._write_task_findings(conn, task_id, {}, fence={"project_id": project_id})
+        result = await conn.execute(
+            select(*(c for c in task_comments.c if c.name != "project_id")).where(
+                task_comments.c.id == comment_id,
+                task_comments.c.task_id == task_id,
+                task_comments.c.project_id == project_id,
+            )
+        )
+        row = result.mappings().first()
+        return dict(row) if row else None
+
+    async def update_task_comment(
+        self, comment_id: str, body: str, *, task_id: str, project_id: str
+    ) -> dict | None:
+        """Replace a comment's body in place; author and timestamp are kept.
+
+        Returns the updated comment, or ``None`` when ``comment_id`` is not a
+        comment of ``task_id`` within ``project_id``.
+        """
+        if not isinstance(body, str) or not body.strip() or len(body) > MAX_COMMENT_BODY:
+            raise ValueError(
+                f"body must contain 1 to {MAX_COMMENT_BODY} characters and not be blank"
+            )
+        async with self._engine.begin() as conn:
+            comment = await self._locked_comment(conn, comment_id, task_id, project_id)
+            if comment is None:
+                return None
+            await conn.execute(
+                update(task_comments)
+                .where(task_comments.c.id == comment_id, task_comments.c.task_id == task_id)
+                .values(body=body)
+            )
+            comment["body"] = body
+            return comment
+
+    async def delete_task_comment(
+        self, comment_id: str, *, task_id: str, project_id: str
+    ) -> dict | None:
+        """Remove one comment; returns the deleted comment or ``None`` if absent."""
+        async with self._engine.begin() as conn:
+            comment = await self._locked_comment(conn, comment_id, task_id, project_id)
+            if comment is None:
+                return None
+            await conn.execute(
+                delete(task_comments).where(
+                    task_comments.c.id == comment_id, task_comments.c.task_id == task_id
+                )
+            )
+            return comment
 
     async def list_task_comments(
         self,

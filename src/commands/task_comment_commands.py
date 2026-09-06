@@ -1,4 +1,4 @@
-"""Task findings permissions and authored append-only comments."""
+"""Task findings permissions and authored comments (append-only for agents)."""
 
 from __future__ import annotations
 
@@ -153,6 +153,60 @@ class TaskCommentCommandsMixin:
             return self._task_findings_conflict(error)
         await self._emit_task_findings_updated(task)
         return {"comment": comment}
+
+    async def _comment_mutation_target(self, args: dict) -> tuple[object | None, dict | None]:
+        """Resolve the task behind an edit/delete, refusing every agent caller.
+
+        Comments are append-only for agents (a worker's findings are part of
+        the task's audit trail); only the operator surfaces — the dashboard
+        and the local CLI, which run without a session scope — may rewrite
+        history.
+        """
+        task_id, comment_id = args.get("task_id"), args.get("comment_id")
+        if not task_id or not comment_id:
+            return None, {"error": "task_id and comment_id are required"}
+        scope = self._current_scope or {}
+        if scope.get("kind") == "session":
+            return None, {"error": "out of scope: comments are append-only for agent sessions"}
+        task = await self.db.get_task(task_id)
+        if task is None:
+            return None, {"error": f"Task '{task_id}' not found"}
+        return task, None
+
+    async def _cmd_task_comment_edit(self, args: dict) -> dict:
+        body = args.get("body")
+        if not isinstance(body, str) or not body.strip() or len(body) > MAX_COMMENT_BODY:
+            return {
+                "error": f"body must contain 1 to {MAX_COMMENT_BODY} characters and not be blank"
+            }
+        task, error = await self._comment_mutation_target(args)
+        if error:
+            return error
+        try:
+            comment = await self.db.update_task_comment(
+                args["comment_id"], body, task_id=task.id, project_id=task.project_id
+            )
+        except TaskFindingsConflict as error:
+            return self._task_findings_conflict(error)
+        if comment is None:
+            return {"error": f"Comment '{args['comment_id']}' not found on task '{task.id}'"}
+        await self._emit_task_findings_updated(task)
+        return {"comment": comment}
+
+    async def _cmd_task_comment_delete(self, args: dict) -> dict:
+        task, error = await self._comment_mutation_target(args)
+        if error:
+            return error
+        try:
+            comment = await self.db.delete_task_comment(
+                args["comment_id"], task_id=task.id, project_id=task.project_id
+            )
+        except TaskFindingsConflict as error:
+            return self._task_findings_conflict(error)
+        if comment is None:
+            return {"error": f"Comment '{args['comment_id']}' not found on task '{task.id}'"}
+        await self._emit_task_findings_updated(task)
+        return {"deleted": comment["id"], "task_id": task.id}
 
     async def _cmd_task_comments(self, args: dict) -> dict:
         task_id = args.get("task_id")
