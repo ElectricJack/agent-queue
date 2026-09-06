@@ -48,7 +48,8 @@ default; wait remains a typed non-success outcome. No caller SHA is accepted.
 On `integration.candidate_green`, call `integration_promote_main` for the exact
 current batch and revision.
 A moved base rebuilds under the frozen batch policy and waits for the next
-durable candidate-result event.
+durable candidate-result event. If that rebuild conflicts before the repair
+deadline, dispatch the exact operation's existing server-derived primary stage.
 
 ## Rule: repair-red-candidate
 

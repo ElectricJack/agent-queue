@@ -71,6 +71,18 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    reservation = op.get_bind().execute(
+        sa.text(
+            "SELECT batch_id || ':' || kind || ':' || identity "
+            "FROM integration_cleanup_items "
+            "WHERE irreversible_nonce IS NOT NULL "
+            "OR irreversible_prewrite_at IS NOT NULL LIMIT 1"
+        )
+    ).scalar_one_or_none()
+    if reservation is not None:
+        raise RuntimeError(
+            f"drain irreversible cleanup reservation {reservation} before downgrade"
+        )
     if op.get_bind().dialect.name == "postgresql":
         op.execute(
             "DROP TRIGGER IF EXISTS trg_integration_cleanup_irreversible_guard "

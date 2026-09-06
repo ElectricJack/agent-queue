@@ -1,7 +1,7 @@
 ---
 playbook_id: root-integration-train
-artifact_sha256: sha256:facd77e38272ef61c31027cde4e0b66e84412f9703a806b53bde0fede51b9644
-source_sha256: sha256:91f2a47fd934467c1392f3234385008e9c764db275362c037c31c40e1ad87d4b
+artifact_sha256: sha256:a93c3c32e05bdff64f25279531b6eaf04aba01e8bbd48a8125230a1ca32fa160
+source_sha256: sha256:ec7ccbab0f601d847c59d118f4fac426f5c33951a007f731a5b2935f4eed9c1b
 contract_fingerprint: sha256:7b6380af1d3d88ba850d53910ba311774cfe2b802e8eb3fafe2a624bd4b74b9e
 questions_resolved: []
 capabilities_granted:

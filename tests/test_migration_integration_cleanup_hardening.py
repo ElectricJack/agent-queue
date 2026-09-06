@@ -42,6 +42,7 @@ def _exercise_upgrade_downgrade_upgrade(connection) -> None:
     assert {"source_ref", "source_ref_retention"} <= {
         column["name"] for column in inspect(connection).get_columns("integration_batch_members")
     }
+
     assert (
         "ck_integration_batch_members_source_retention"
         in _check_names(connection, "integration_batch_members")
@@ -84,6 +85,46 @@ def _exercise_upgrade_downgrade_upgrade(connection) -> None:
             {"sha": "a" * 40},
         )
 
+    _migrate(connection, PRIOR, downgrade=True)
+    connection.execute(
+        text(
+            "INSERT INTO integration_cleanup_items (batch_id, kind, identity, domain_key, "
+            "project_id, repository_id, repository_numeric_id, repository_full_name, revision, "
+            "workspace_path, expected_sha, state, attempts, next_attempt_at, irreversible_nonce, "
+            "irreversible_prewrite_at, created_at, updated_at) VALUES ('hardening-batch', "
+            "'worktree', 'retained-workspace', 'cleanup:hardening:worktree:retained', "
+            "'hardening-project', 'hardening-repo', 99, 'acme/widgets', 0, '/daemon/retained', "
+            ":sha, 'retryable', 1, 1, 'irreversible-owner', 2, 1, 2)"
+        ),
+        {"sha": "a" * 40},
+    )
+    with pytest.raises(
+        RuntimeError,
+        match=(
+            "drain irreversible cleanup reservation "
+            "hardening-batch:worktree:retained-workspace before downgrade"
+        ),
+    ):
+        _migrate(connection, "a10c5e1e4f01", downgrade=True)
+    marked = connection.execute(
+        text(
+            "SELECT irreversible_nonce, irreversible_prewrite_at "
+            "FROM integration_cleanup_items WHERE batch_id = 'hardening-batch'"
+        )
+    ).one()
+    assert tuple(marked) == ("irreversible-owner", 2.0)
+
+    connection.execute(
+        text("DELETE FROM integration_cleanup_items WHERE batch_id = 'hardening-batch'")
+    )
+    _migrate(connection, "a10c5e1e4f01", downgrade=True)
+    assert "irreversible_nonce" not in {
+        column["name"] for column in inspect(connection).get_columns("integration_cleanup_items")
+    }
+    _migrate(connection, REVISION)
+    assert "irreversible_nonce" in {
+        column["name"] for column in inspect(connection).get_columns("integration_cleanup_items")
+    }
     _migrate(connection, PRIOR, downgrade=True)
     assert "source_ref" not in {
         column["name"] for column in inspect(connection).get_columns("integration_batch_members")

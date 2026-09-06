@@ -281,7 +281,12 @@ def _root_integration_train_body(source: PlaybookSource) -> dict[str, Any]:
 
     rule = "promote-green-candidate"
     done, failed = terminals(rule)
-    promote, rebuild, ci = (f"{rule}--promote", f"{rule}--rebuild", f"{rule}--ci")
+    promote, rebuild, ci, dispatch = (
+        f"{rule}--promote",
+        f"{rule}--rebuild",
+        f"{rule}--ci",
+        f"{rule}--dispatch",
+    )
     rules.append({"id": rule, "name": rule, "trigger": {"event_type": "integration.candidate_green"},
                   "entry_step": promote, "source": ref(rule)})
     promote_transitions = {name: failed for name in (
@@ -297,7 +302,7 @@ def _root_integration_train_body(source: PlaybookSource) -> dict[str, Any]:
         "source_moved", "base_moved", "stale_revision", "wait", "human_required",
         "configuration_blocked", "runtime_error")}
     rebuild_transitions.update({"empty": done, "built": ci, "already_built": ci,
-                                "conflict": failed})
+                                "conflict": dispatch})
     steps[rebuild] = {"type": "command", "rule": rule, "title": "rebuild", "source": ref(rule),
                       "command": "integration_build_candidate", "inputs": {"batch_id": event("batch_id")},
                       "save_result_as": "rebuilt", "transitions": rebuild_transitions}
@@ -308,6 +313,31 @@ def _root_integration_train_body(source: PlaybookSource) -> dict[str, Any]:
                  "command": "integration_ci_evidence", "inputs": {
                      "batch_id": event("batch_id"), "revision": bound("rebuilt", "revision")},
                  "transitions": green_ci_transitions}
+    steps[dispatch] = {
+        "type": "command",
+        "rule": rule,
+        "title": "dispatch-rebuilt-conflict",
+        "source": ref(rule),
+        "command": "integration_repair_dispatch",
+        "inputs": {"operation_id": event("operation_id")},
+        "transitions": {
+            name: (
+                done
+                if name in {"dispatched", "already_dispatched", "writer_reused"}
+                else failed
+            )
+            for name in (
+                "dispatched",
+                "already_dispatched",
+                "writer_reused",
+                "busy",
+                "configuration_blocked",
+                "stale",
+                "human_required",
+                "runtime_error",
+            )
+        },
+    }
 
     rule = "repair-red-candidate"
     done, failed = terminals(rule)

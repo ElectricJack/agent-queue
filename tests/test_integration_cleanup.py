@@ -88,7 +88,9 @@ async def release_db(tmp_path, request):
                 final_main_sha=None,
                 policy_snapshot={
                     "cleanup": {
-                        "max_attempts": 2,
+                        "max_attempts": (
+                            3 if "failed_head_lookup" in request.node.name else 2
+                        ),
                         "retry_base_seconds": 5.0,
                         "retry_max_seconds": 5.0,
                         "successful_source_refs": (
@@ -1368,14 +1370,18 @@ async def test_cleanup_removes_only_recorded_owned_worktree(
     assert git.removed == removed
 
 
-async def test_cleanup_reconciles_worktree_absent_after_remove_crash(release_db):
+async def test_cleanup_reconciles_worktree_absent_after_remove_crash(release_db, tmp_path):
     db, _scheduler = release_db
+    base_path = tmp_path / "base"
+    retained_path = tmp_path / "retained"
+    base_path.mkdir()
+    retained_path.mkdir()
     async with db.immediate() as conn:
         await conn.execute(
             insert(workspaces).values(
                 id="base-workspace",
                 project_id="p",
-                workspace_path="/daemon/base",
+                workspace_path=str(base_path),
                 source_type="clone",
                 created_at=1.0,
             )
@@ -1384,7 +1390,7 @@ async def test_cleanup_reconciles_worktree_absent_after_remove_crash(release_db)
             insert(workspaces).values(
                 id="retained-workspace",
                 project_id="p",
-                workspace_path="/daemon/retained",
+                workspace_path=str(retained_path),
                 source_type="worktree",
                 base_workspace_id="base-workspace",
                 created_at=1.0,
@@ -1414,15 +1420,21 @@ async def test_cleanup_reconciles_worktree_absent_after_remove_crash(release_db)
         removes = 0
 
         async def arev_parse(self, path, ref):
-            assert (path, ref) == ("/daemon/retained", "HEAD")
+            assert (path, ref) == (str(retained_path), "HEAD")
             return HEAD if self.present else None
 
         async def aworktree_base_path(self, path):
-            return "/daemon/base" if self.present else None
+            return str(base_path) if self.present else None
+
+        async def aworktree_list(self, base):
+            assert base == str(base_path)
+            return [{"path": str(base_path)}]
 
         async def aremove_worktree_exact(self, base, path):
+            assert (base, path) == (str(base_path), str(retained_path))
             self.removes += 1
             self.present = False
+            retained_path.rmdir()
             raise OSError("daemon crashed after git removed the worktree")
 
     git = CrashAfterRemove()
@@ -1438,4 +1450,86 @@ async def test_cleanup_reconciles_worktree_absent_after_remove_crash(release_db)
 
     assert first.outcome == "retryable"
     assert second.outcome == "complete"
+    assert git.removes == 1
+
+
+async def test_cleanup_does_not_infer_worktree_absence_from_failed_head_lookup(
+    release_db, tmp_path
+):
+    db, _scheduler = release_db
+    base_path = tmp_path / "base"
+    retained_path = tmp_path / "retained"
+    base_path.mkdir()
+    retained_path.mkdir()
+    async with db.immediate() as conn:
+        await conn.execute(
+            insert(workspaces).values(
+                id="base-workspace",
+                project_id="p",
+                workspace_path=str(base_path),
+                source_type="clone",
+                created_at=1.0,
+            )
+        )
+        await conn.execute(
+            insert(workspaces).values(
+                id="retained-workspace",
+                project_id="p",
+                workspace_path=str(retained_path),
+                source_type="worktree",
+                base_workspace_id="base-workspace",
+                created_at=1.0,
+            )
+        )
+        await conn.execute(
+            update(integration_repair_stages)
+            .where(
+                integration_repair_stages.c.operation_id == "op",
+                integration_repair_stages.c.ordinal == 0,
+            )
+            .values(
+                retained_workspace_id="retained-workspace",
+                retained_handoff={
+                    "workspace_id": "retained-workspace",
+                    "operation_id": "op",
+                    "head_sha": HEAD,
+                },
+            )
+        )
+    await IntegrationCleanupService(db, data_dir=tmp_path).materialize(
+        "batch", now=30.0
+    )
+
+    class FailedRemoveAndHead:
+        head_reads = 0
+        removes = 0
+
+        async def arev_parse(self, path, ref):
+            assert (path, ref) == (str(retained_path), "HEAD")
+            self.head_reads += 1
+            return HEAD if self.head_reads == 1 else None
+
+        async def aworktree_base_path(self, path):
+            assert path == str(retained_path)
+            return str(base_path)
+
+        async def aremove_worktree_exact(self, base, path):
+            assert (base, path) == (str(base_path), str(retained_path))
+            self.removes += 1
+            raise OSError("worktree removal failed before deleting the directory")
+
+    git = FailedRemoveAndHead()
+    service = IntegrationCleanupService(
+        db, data_dir=tmp_path, git_manager=git, clock=lambda: 30.0
+    )
+    first = await service.execute(
+        "batch", "worktree", "retained-workspace", now=30.0
+    )
+    replay = await service.execute(
+        "batch", "worktree", "retained-workspace", now=400.0
+    )
+
+    assert first.outcome == "retryable"
+    assert retained_path.is_dir()
+    assert replay.outcome == "retryable"
     assert git.removes == 1

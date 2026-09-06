@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import inspect
+import os
 import time
 import uuid
 from pathlib import Path
@@ -460,6 +461,17 @@ class IntegrationCleanupService:
         current = await self.git.arev_parse(row["workspace_path"], "HEAD")
         if current is None:
             if row.get("irreversible_prewrite_at") is not None:
+                retained_path = Path(row["workspace_path"])
+                if os.path.lexists(retained_path):
+                    return "retryable", "retained worktree HEAD is temporarily unreadable"
+                target_identity = retained_path.resolve(strict=False)
+                registrations = await self.git.aworktree_list(base_path)
+                if any(
+                    entry.get("path") is not None
+                    and Path(entry["path"]).resolve(strict=False) == target_identity
+                    for entry in registrations
+                ):
+                    return "retryable", "retained worktree remains registered in its base"
                 return "complete", None
             return "conflict", "retained worktree disappeared without removal evidence"
         if current != row["expected_sha"]:

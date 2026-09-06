@@ -14,6 +14,7 @@ from src.commands.principal import ExecutionPrincipal, PrincipalKind
 from src.database.tables import (
     integration_batches,
     integration_candidate_revisions,
+    integration_promotion_intents,
     integration_repair_operations,
     integration_repair_stages,
 )
@@ -315,6 +316,192 @@ async def test_due_and_cleanup_events_run_real_executor_and_subject_handlers(
     attestation.handle_candidate_ci.assert_awaited_once()
     promotion.promote.assert_awaited_once_with("build-batch", 0)
     assert repair.dispatch.await_args_list == [(("root-op", 1), {}), (("root-op", 1), {})]
+    assert {snapshot.lifecycle.value for snapshot in runs.snapshots.values()} == {"completed"}
+    await handler.db.close()
+
+
+async def test_green_event_rebuild_conflict_dispatches_existing_stage_through_engine(
+    command_handler_factory, monkeypatch
+):
+    handler = await command_handler_factory()
+    await handler.db.create_project(Project(id="p", name="project"))
+    await handler.db.create_repo(
+        RepoConfig(
+            id="repo",
+            project_id="p",
+            source_type=RepoSourceType.CLONE,
+            url="https://github.com/acme/widgets.git",
+            default_branch="main",
+        )
+    )
+    async with handler.db.immediate() as conn:
+        await conn.execute(
+            insert(integration_batches),
+            {
+                "id": "build-batch",
+                "project_id": "p",
+                "repository_id": "repo",
+                "request_id": "request-2",
+                "source_manifest_digest": "digest-build",
+                "base_sha": "a" * 40,
+                "lifecycle": "building",
+                "current_revision": 0,
+                "integration_branch": "refs/heads/aq/integration/build",
+                "policy_snapshot": {},
+                "artifact_snapshot": {},
+                "cleanup_state": "pending",
+                "created_at": 1.0,
+                "updated_at": 1.0,
+            },
+        )
+        await conn.execute(
+            insert(integration_candidate_revisions).values(
+                batch_id="build-batch",
+                revision=0,
+                construction_base_sha="a" * 40,
+                next_member_ordinal=1,
+                head_sha="b" * 40,
+                state="green",
+                created_at=1.0,
+                updated_at=1.0,
+            )
+        )
+        await conn.execute(
+            insert(integration_repair_operations).values(
+                id="root-op",
+                target_kind="batch",
+                batch_id="build-batch",
+                episode_id="build-batch",
+                active_stage=0,
+                state="active",
+                policy_snapshot={},
+                artifact_snapshot={},
+                required_check_version="checks-v1",
+                created_at=1.0,
+                updated_at=1.0,
+            )
+        )
+        await conn.execute(
+            insert(integration_repair_stages).values(
+                operation_id="root-op",
+                ordinal=0,
+                policy={},
+                starting_sha="a" * 40,
+                attempts=0,
+                state="active",
+            )
+        )
+        await conn.execute(
+            insert(integration_promotion_intents).values(
+                id="superseded-intent",
+                domain_key="root:build-batch:0",
+                operation_key="root-op",
+                project_id="p",
+                receipt_id="superseded-receipt",
+                source_head="b" * 40,
+                source_base="a" * 40,
+                repository_id="repo",
+                target_branch="refs/heads/main",
+                expected_target="a" * 40,
+                fence_owner_id="root-op",
+                fence_token=0,
+                state="superseded",
+                intent_kind="root",
+                root_batch_id="build-batch",
+                root_candidate_revision=0,
+                project_lease_owner_id="root-op",
+                project_lease_fence_token=0,
+                branch_fence_owner_id="root-op",
+                branch_fence_token=0,
+                ci_evidence_id="ci",
+                created_at=1.0,
+                updated_at=1.0,
+            )
+        )
+
+    promotion = AsyncMock()
+    promotion.promote.return_value = RootPromotionResult(
+        outcome="base_moved",
+        batch_id="build-batch",
+        revision=0,
+        intent_id="intent",
+        head_sha="b" * 40,
+    )
+    candidate = AsyncMock()
+    candidate.app_client = SimpleNamespace(
+        exact_head_ref=AsyncMock(return_value="d" * 40)
+    )
+    candidate._repository = AsyncMock(
+        return_value=RepoConfig(
+            id="repo",
+            project_id="p",
+            source_type=RepoSourceType.CLONE,
+            default_branch="main",
+        )
+    )
+    candidate.rebuild.return_value = CandidateBuildResult(
+        outcome="conflict",
+        batch_id="build-batch",
+        revision=1,
+        operation_id="root-op",
+        head_sha="c" * 40,
+        branch="refs/heads/aq/integration/build",
+    )
+    repair = AsyncMock()
+    repair.dispatch.return_value = {"outcome": "dispatched", "stage": 0}
+    handler.orchestrator.root_promotion_service = promotion
+    handler.orchestrator.integration_candidate_service = candidate
+    handler.orchestrator.repair_service = repair
+    monkeypatch.setattr("src.commands.integration_commands.time.time", lambda: 123.0)
+
+    artifact = _artifact()
+    ref = artifact_ref_for(artifact)
+    runs = RecordingRunRepository()
+    engine = PlaybookEngine(
+        services=EngineServices(
+            contracts=CONTRACTS,
+            clock=lambda: 123.0,
+            artifact_store=InMemoryArtifactStore({artifact.id: artifact}),
+            handler=handler,
+            db=handler.db,
+        ),
+        runs=runs,
+        waits=runs,
+        activations=StubActivations([ref]),
+    )
+    principal = ExecutionPrincipal(
+        kind=PrincipalKind.PLAYBOOK,
+        project_id="p",
+        policy=CapabilityPolicy.from_namespaces(
+            aq_commands=[
+                "integration_promote_main",
+                "integration_build_candidate",
+                "integration_repair_dispatch",
+            ]
+        ),
+    )
+    set_handler_provider(lambda: handler)
+    try:
+        result = await engine.dispatch_event(
+            {
+                "event_type": "integration.candidate_green",
+                "event_id": "green-rebuild-conflict",
+                "project_id": "p",
+                "operation_id": "root-op",
+                "batch_id": "build-batch",
+                "revision": 0,
+                "head_sha": "b" * 40,
+            },
+            principal,
+        )
+    finally:
+        set_handler_provider(None)
+
+    assert result.rules_selected == ("promote-green-candidate",)
+    promotion.promote.assert_awaited_once_with("build-batch", 0)
+    candidate.rebuild.assert_awaited_once_with("build-batch", 0, "d" * 40)
+    candidate.build.assert_not_awaited()
+    repair.dispatch.assert_awaited_once_with("root-op", 0)
     assert {snapshot.lifecycle.value for snapshot in runs.snapshots.values()} == {"completed"}
     await handler.db.close()
 
