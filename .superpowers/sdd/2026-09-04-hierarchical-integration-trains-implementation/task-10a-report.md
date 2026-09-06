@@ -238,3 +238,116 @@ green.
   Task 10b/10c; selected rows are retained and warnings are bounded by page size.
 - The two stale receipt-mutation tests noted above are inherited from the reviewed Task 9b2
   append-only change and are not a Task 10a runtime regression.
+
+## Fix round 1 — scheduler catch-up and service liveness
+
+### Provenance and review scope
+
+- Logical fix base: `6c4cc883`.
+- While the four scoped files were uncommitted, the shared branch advanced to documentation-only
+  commit `f29ea277` (`docs: record service liveness review fixes`). It was preserved without reset,
+  rebase, or revert, and the fix was committed on top of it.
+- Runtime/tests commit: `33460757` (`fix(integration): preserve reconciliation progress`).
+- No schema, migration, Task 10b/10c, provider, Git, or external-write behavior changed.
+
+### TDD evidence
+
+The post-promotion catch-up regression was added first and failed for both trigger orderings:
+
+```text
+pytest -q tests/test_integration_schedule.py::test_promoted_pending_release_preserves_first_catchup
+2 failed, 3 warnings
+```
+
+Both failures showed the persisted catch-up tuple remaining NULL after a manual-first or
+periodic-first trigger against the actual terminal representation
+`lifecycle='promoted', cleanup_state='pending'`.
+
+The service fairness and failure-resilience regressions were then added and failed before the
+runtime edit:
+
+```text
+pytest -q \
+  tests/test_integration_service.py::test_tick_advances_persistent_source_cursor_and_wraps_fairly \
+  tests/test_integration_service.py::test_selector_failure_isolates_source_and_background_loop_recovers_cleanly
+3 failed, 2 warnings
+```
+
+The missing and declining handler cases repeatedly selected `['a', 'b']`, starving later rows;
+the one-shot selector exception terminated the named service task, prevented recovery, and was
+re-raised by `stop()`.
+
+Focused GREEN evidence:
+
+```text
+pytest -q tests/test_integration_schedule.py::test_promoted_pending_release_preserves_first_catchup
+2 passed, 3 warnings in 1.23s
+
+pytest -q \
+  tests/test_integration_service.py::test_tick_advances_persistent_source_cursor_and_wraps_fairly \
+  tests/test_integration_service.py::test_selector_failure_isolates_source_and_background_loop_recovers_cleanly
+3 passed, 2 warnings in 0.34s
+
+pytest -q tests/test_integration_schedule.py
+9 passed, 3 warnings in 1.90s
+
+pytest -q tests/test_integration_service.py
+12 passed, 2 warnings in 1.28s
+```
+
+### Fix details and acceptance
+
+- `IntegrationScheduler.mark_due` now treats a nonempty promoted batch with pending cleanup as
+  active for first-catch-up capture. Manual-first and periodic-first production scheduler tests
+  prove the original request ID, trigger, timestamp, and sequence remain unchanged; the first
+  catch-up tuple is retained; later triggers cannot replace it; and only one sweep event exists.
+- `IntegrationService` maintains an independent keyset cursor per source. It advances each cursor
+  from the last selected row before handlers run, so missing, declining, or failing handlers
+  cannot starve rows beyond the first page. An exhausted page wraps to the beginning without
+  treating the in-memory cursor as a durable correctness queue.
+- Selection and processing are isolated per source, so a source exception does not prevent later
+  sources or outbox dispatch in the same tick. The outer loop logs and retries unexpected
+  non-cancellation failures; `CancelledError` still propagates and deterministic `stop()` remains
+  clean. The production loop regression proves a one-shot selector failure, later-source progress,
+  a subsequent healthy tick, and clean shutdown.
+
+### Final affected-area gate and checks
+
+```text
+aq test tests/test_integration_schedule.py tests/test_integration_service.py \
+  tests/test_integration_outbox.py tests/test_integration_repair.py tests/test_orchestrator.py -x
+141 passed, 11 warnings in 46.77s
+
+ruff check src/integration/scheduler.py src/integration/service.py \
+  tests/test_integration_schedule.py tests/test_integration_service.py
+All checks passed!
+
+python3 -m compileall -q src/integration/scheduler.py src/integration/service.py \
+  tests/test_integration_schedule.py tests/test_integration_service.py
+exit 0
+
+git diff --check
+exit 0
+```
+
+The 11 gate warnings are inherited dependency warnings, unchanged by this fix:
+
+- `DeprecationWarning` at `src/_compat.py:111`: `pkg_resources is deprecated as an API`
+  (reported once per worker/import context).
+- `DeprecationWarning` from `pkg_resources/__init__.py:2871`: deprecated
+  `pkg_resources.declare_namespace('zope')`; PEP 420 native namespace packages are preferred
+  (reported once per worker/import context).
+- `DeprecationWarning` from `discord/player.py:29`: `audioop` is deprecated and slated for removal
+  in Python 3.13 (reported once per worker/import context).
+
+### Fix-round self-review and concerns
+
+- Cursor movement happens before item handling and remains source-local; selector failure leaves
+  that source's prior cursor intact for retry. Cross-process correctness still lives in the
+  durable selectors and domain authorities.
+- The promoted catch-up condition is deliberately limited to `cleanup_state='pending'`; released
+  batches do not capture into the old outstanding request.
+- Cancellation is never swallowed by either isolation layer. No additional service loop or
+  background driver was introduced.
+- No new concern remains within the three accepted review findings. Task 10b/10c handler and
+  release/cleanup work remains intentionally out of scope.
