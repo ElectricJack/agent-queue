@@ -5,6 +5,11 @@ import TaskActions from "../TaskActions";
 
 const mockNavigate = vi.fn();
 const mockDelete = vi.fn();
+const mockSendChatMessage = vi.fn();
+
+vi.mock("../../api/chat", () => ({
+  sendChatMessage: (...args: unknown[]) => mockSendChatMessage(...args),
+}));
 
 vi.mock("react-router-dom", () => ({
   useLocation: () => ({ pathname: "/command-center/graph", search: "?q=needle", state: null }),
@@ -74,6 +79,45 @@ describe("TaskActions deletion", () => {
       expect.objectContaining({ onSuccess: expect.any(Function) }),
     );
     expect(onDeleted).toHaveBeenCalledOnce();
+    expect(mockNavigate).not.toHaveBeenCalled();
+  });
+});
+
+describe("TaskActions ask-supervisor", () => {
+  const blocked = { ...(task as object), status: "BLOCKED" } as never;
+
+  it("asks the global supervisor why a blocked task is stuck and switches to its terminal", async () => {
+    mockNavigate.mockReset();
+    mockSendChatMessage.mockReset();
+    mockSendChatMessage.mockResolvedValue({ message_id: "m1" });
+
+    render(<TaskActions task={blocked} />);
+    await userEvent.click(screen.getByRole("button", { name: "Ask supervisor why" }));
+
+    expect(mockSendChatMessage).toHaveBeenCalledWith(
+      "",
+      expect.stringContaining("task/with space"),
+      { sessionAddress: "supervisor-global", threadId: "dashboard:global" },
+    );
+    expect(mockNavigate).toHaveBeenCalledWith("/agents?agent=supervisor-global", {
+      state: { agentSelection: "replace" },
+    });
+  });
+
+  it("is not offered for a task that is not blocked", () => {
+    render(<TaskActions task={task} />);
+    expect(screen.queryByRole("button", { name: "Ask supervisor why" })).toBeNull();
+  });
+
+  it("reports a failure to reach the supervisor and stays put", async () => {
+    mockNavigate.mockReset();
+    mockSendChatMessage.mockReset();
+    mockSendChatMessage.mockRejectedValue(new Error("supervisor session unavailable"));
+
+    render(<TaskActions task={blocked} />);
+    await userEvent.click(screen.getByRole("button", { name: "Ask supervisor why" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("supervisor session unavailable");
     expect(mockNavigate).not.toHaveBeenCalled();
   });
 });
