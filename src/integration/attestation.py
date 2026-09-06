@@ -500,12 +500,16 @@ class IntegrationAttestationService:
                     row["check_run_id"] == proof.check_run_id
                     and row["external_id"] == proof.external_id
                 )
+            if row["execution_nonce"] != claim["execution_nonce"]:
+                return False
             prewrite_at = row["prewrite_at"] if row["prewrite_at"] is not None else now
             result = await conn.execute(
                 update(integration_attestation_publications)
                 .where(
                     integration_attestation_publications.c.id == row["id"],
                     integration_attestation_publications.c.state == "reserved",
+                    integration_attestation_publications.c.execution_nonce
+                    == claim["execution_nonce"],
                 )
                 .values(
                     state="published",

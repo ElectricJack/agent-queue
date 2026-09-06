@@ -627,6 +627,86 @@ async def test_two_fresh_services_reserve_one_provider_publication(attestation_d
 
 
 @pytest.mark.asyncio
+async def test_expired_unmarked_takeover_fences_paused_old_finalizer(
+    attestation_db, tmp_path
+):
+    now = [10.0]
+    old_ready = asyncio.Event()
+    release_old = asyncio.Event()
+    successor_prewrite = asyncio.Event()
+    release_successor = asyncio.Event()
+    payload = attestation_payload()
+    old_client = ProviderClient()
+    old_client.records.append(
+        {
+            "id": 7000,
+            "name": ATTESTATION_CHECK_NAME,
+            "app": {"id": 101},
+            "head_sha": SHA,
+            "status": "completed",
+            "conclusion": "success",
+            "external_id": payload.external_id,
+            "output": {"text": payload.canonical_bytes().decode("ascii")},
+        }
+    )
+    old = IntegrationAttestationService(
+        attestation_db,
+        data_dir=tmp_path,
+        git_manager=ExactTreeGit(trust_document()),
+        app_client_factory=lambda binding: old_client,
+        clock=lambda: now[0],
+    )
+    finish = old._finish_publication
+
+    async def pause_old_finalizer(*args, **kwargs):
+        old_ready.set()
+        await release_old.wait()
+        return await finish(*args, **kwargs)
+
+    old._finish_publication = pause_old_finalizer
+    old_task = asyncio.create_task(old.publish(subject()))
+    await asyncio.wait_for(old_ready.wait(), timeout=1.0)
+
+    now[0] = 311.0
+    successor_client = ProviderClient()
+    post = successor_client.request_json
+
+    async def pause_successor_post(*args, **kwargs):
+        successor_prewrite.set()
+        await release_successor.wait()
+        return await post(*args, **kwargs)
+
+    successor_client.request_json = pause_successor_post
+    successor = IntegrationAttestationService(
+        attestation_db,
+        data_dir=tmp_path,
+        git_manager=ExactTreeGit(trust_document()),
+        app_client_factory=lambda binding: successor_client,
+        clock=lambda: now[0],
+    )
+    successor_task = asyncio.create_task(successor.publish(subject()))
+    await asyncio.wait_for(successor_prewrite.wait(), timeout=1.0)
+
+    release_old.set()
+    old_result = await asyncio.wait_for(old_task, timeout=1.0)
+    release_successor.set()
+    successor_result = await asyncio.wait_for(successor_task, timeout=1.0)
+
+    assert old_result.outcome == "stale"
+    assert old_result.proof is None
+    assert successor_result.outcome == "published"
+    assert successor_result.proof is not None
+    assert successor_result.proof.check_run_id == 7001
+    assert successor_client.published == 1
+    async with attestation_db._engine.connect() as conn:
+        canonical = (
+            await conn.execute(select(integration_attestation_publications))
+        ).mappings().one()
+    assert canonical["state"] == "published"
+    assert canonical["check_run_id"] == 7001
+
+
+@pytest.mark.asyncio
 async def test_expired_unmarked_reservation_can_be_taken_over(attestation_db, tmp_path):
     now = [10.0]
     client = ProviderClient()
