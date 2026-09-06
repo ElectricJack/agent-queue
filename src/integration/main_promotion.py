@@ -32,12 +32,15 @@ from src.database.tables import (
     projects,
     task_delivery_receipts,
 )
-from src.git.manager import GitManager, is_valid_git_oid
+from src.git.manager import (
+    APP_AUTH_PUSH_CLEANUP_MARGIN_SECONDS,
+    APP_AUTH_PUSH_TIMEOUT_SECONDS,
+    GitManager,
+    is_valid_git_oid,
+)
 
 
 _IDENTITY_NAMESPACE = uuid.UUID("2cfd2eea-e0e5-4397-b1c4-2dd6c40d64dd")
-_TRANSPORT_SECONDS = 120.0
-_PREWRITE_MARGIN_SECONDS = 5.0
 _CLAIM_SECONDS = 135.0
 
 
@@ -545,7 +548,11 @@ class RootPromotionService:
                 int(intent["root_candidate_revision"]),
             )
             now = self.clock()
-            minimum = now + _TRANSPORT_SECONDS + _PREWRITE_MARGIN_SECONDS
+            minimum = (
+                now
+                + APP_AUTH_PUSH_TIMEOUT_SECONDS
+                + APP_AUTH_PUSH_CLEANUP_MARGIN_SECONDS
+            )
             if (
                 self._validate_snapshot(
                     locked,

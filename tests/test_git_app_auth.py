@@ -9,6 +9,7 @@ from pathlib import Path
 
 import pytest
 
+import src.git.manager as manager_module
 from src.git.askpass_fd import MAX_REQUEST_BYTES, answer_prompt
 from src.git.askpass_broker import make_request_channel, serve_one_credential
 from src.git.github_app import GitHubRepositoryBinding
@@ -282,8 +283,6 @@ def _assert_no_broker_tasks() -> None:
 
 
 def _recording_zeroize(monkeypatch):
-    import src.git.manager as manager_module
-
     observed = []
     real_zeroize = manager_module.zeroize
 
@@ -293,6 +292,95 @@ def _recording_zeroize(monkeypatch):
 
     monkeypatch.setattr(manager_module, "zeroize", record)
     return observed
+
+
+@pytest.mark.asyncio
+async def test_app_push_aggregate_budget_exhaustion_during_prep_never_starts_remote(
+    tmp_path, monkeypatch
+):
+    checkout, _target, _trap, base, tip = _git_push_case(tmp_path)
+    remote_started = tmp_path / "remote-started"
+    remote_git = tmp_path / "remote-git"
+    remote_git.write_text(f"#!/bin/sh\ntouch {remote_started}\nexit 0\n")
+    remote_git.chmod(0o700)
+    manager = GitManager()
+    manager._APP_GIT_EXECUTABLE = str(remote_git)
+    manager._GIT_TIMEOUT = 0.12
+    monkeypatch.setattr(manager_module, "APP_AUTH_PUSH_TIMEOUT_SECONDS", 0.12, raising=False)
+    monkeypatch.setattr(manager_module, "APP_AUTH_PUSH_CLEANUP_MARGIN_SECONDS", 0.5, raising=False)
+    original_import = manager._run_isolated_import_git
+
+    async def delayed_import(args, **kwargs):
+        await asyncio.sleep(0.04)
+        return await original_import(args, **kwargs)
+
+    monkeypatch.setattr(manager, "_run_isolated_import_git", delayed_import)
+    observed = _recording_zeroize(monkeypatch)
+    open_fds_before = _open_fd_count()
+    started_at = asyncio.get_running_loop().time()
+
+    with pytest.raises(GitError):
+        await asyncio.wait_for(
+            manager.apush_oid_with_app_auth(
+                str(checkout),
+                repository=GitHubRepositoryBinding(303, "acme/widgets"),
+                token="aggregate-exhaustion-token",
+                tip_oid=tip,
+                branch="main",
+                expected_old_oid=base,
+            ),
+            timeout=1.0,
+        )
+
+    assert asyncio.get_running_loop().time() - started_at < 0.75
+    assert not remote_started.exists()
+    assert observed == [b""]
+    assert _open_fd_count() == open_fds_before
+    _assert_no_broker_tasks()
+
+
+@pytest.mark.asyncio
+async def test_app_push_partial_prep_leaves_one_remaining_budget_for_remote(
+    tmp_path, monkeypatch
+):
+    checkout, target, _trap, base, tip = _git_push_case(tmp_path)
+    manager = GitManager()
+    manager._GIT_TIMEOUT = 0.75
+    monkeypatch.setattr(manager_module, "APP_AUTH_PUSH_TIMEOUT_SECONDS", 0.75, raising=False)
+    monkeypatch.setattr(manager_module, "APP_AUTH_PUSH_CLEANUP_MARGIN_SECONDS", 0.5, raising=False)
+    original_import = manager._run_isolated_import_git
+    original_spawn = asyncio.create_subprocess_exec
+    remote_starts = 0
+
+    async def delayed_import(args, **kwargs):
+        await asyncio.sleep(0.03)
+        return await original_import(args, **kwargs)
+
+    async def counting_spawn(program, *args, **kwargs):
+        nonlocal remote_starts
+        if "push" in args:
+            remote_starts += 1
+        return await original_spawn(program, *args, **kwargs)
+
+    monkeypatch.setattr(manager, "_run_isolated_import_git", delayed_import)
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", counting_spawn)
+    started_at = asyncio.get_running_loop().time()
+
+    result = await asyncio.wait_for(
+        manager._apush_oid_with_app_auth_to_url(
+            str(checkout),
+            destination_url=target.as_uri(),
+            token="partial-budget-token",
+            tip_oid=tip,
+            branch="main",
+            expected_old_oid=base,
+        ),
+        timeout=1.25,
+    )
+
+    assert result == tip and remote_starts == 1
+    assert _git(["rev-parse", "refs/heads/main"], target) == tip
+    assert asyncio.get_running_loop().time() - started_at < 0.75
 
 
 @pytest.mark.asyncio
@@ -325,8 +413,9 @@ async def test_cancellation_during_source_import_zeroizes_dummy_credential(tmp_p
     observed = _recording_zeroize(monkeypatch)
     manager = GitManager()
 
-    async def block_import(_args, *, home):
+    async def block_import(_args, *, home, deadline=None):
         assert home.is_dir()
+        assert deadline is not None
         entered.set()
         await asyncio.Future()
 
@@ -385,7 +474,9 @@ async def test_oversized_broker_request_setup_closes_and_zeroizes():
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("cancel", [False, True], ids=["timeout", "cancellation"])
-async def test_app_push_timeout_or_cancellation_kills_entire_process_group(tmp_path, cancel):
+async def test_app_push_timeout_or_cancellation_kills_entire_process_group(
+    tmp_path, monkeypatch, cancel
+):
     checkout, target, _, base, tip = _git_push_case(tmp_path)
     pid_file = tmp_path / "privileged-pids"
     hanging_git = tmp_path / "hanging-git"
@@ -399,7 +490,9 @@ async def test_app_push_timeout_or_cancellation_kills_entire_process_group(tmp_p
     hanging_git.chmod(0o700)
     manager = GitManager()
     manager._APP_GIT_EXECUTABLE = str(hanging_git)
-    manager._GIT_TIMEOUT = 0.2 if not cancel else 30
+    timeout = 0.2 if not cancel else 30
+    manager._GIT_TIMEOUT = timeout
+    monkeypatch.setattr(manager_module, "APP_AUTH_PUSH_TIMEOUT_SECONDS", timeout)
     open_fds_before = _open_fd_count()
     task = asyncio.create_task(
         manager._apush_oid_with_app_auth_to_url(

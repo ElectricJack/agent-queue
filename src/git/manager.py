@@ -94,6 +94,13 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+# Root-promotion authority must cover this aggregate operation plus cleanup.
+# Keep these exported so the authority holder derives its horizon from the
+# transport contract instead of maintaining an independent timeout literal.
+APP_AUTH_PUSH_TIMEOUT_SECONDS = 120.0
+APP_AUTH_PUSH_CLEANUP_MARGIN_SECONDS = 5.0
+
+
 @contextmanager
 def _zeroized_credential(buffer: bytearray):
     try:
@@ -2892,6 +2899,7 @@ class GitManager:
         expected_old_oid: str,
     ) -> str:
         """Push one immutable OID through an isolated daemon-owned Git context."""
+        deadline = asyncio.get_running_loop().time() + APP_AUTH_PUSH_TIMEOUT_SECONDS
         if not isinstance(token, str) or not token:
             raise GitError("invalid GitHub App credential")
         branch = _validate_ref(branch)
@@ -2906,6 +2914,7 @@ class GitManager:
             tip_oid=tip_oid,
             branch=branch,
             expected_old_oid=expected_old_oid,
+            _deadline=deadline,
         )
 
     async def afetch_exact_oid_with_app_auth(
@@ -3097,22 +3106,35 @@ class GitManager:
     @staticmethod
     async def _kill_app_git_group(process: asyncio.subprocess.Process) -> None:
         """Terminate and reap the isolated privileged process group."""
-        if process.returncode is None:
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + APP_AUTH_PUSH_CLEANUP_MARGIN_SECONDS
+        try:
+            if process.returncode is None:
+                try:
+                    os.killpg(process.pid, signal.SIGTERM)
+                except ProcessLookupError:
+                    pass
+                try:
+                    await asyncio.wait_for(
+                        asyncio.shield(process.wait()),
+                        timeout=min(0.25, max(0.0, deadline - loop.time())),
+                    )
+                except asyncio.TimeoutError:
+                    pass
+        finally:
+            # The leader can exit before a transport descendant.  Address the
+            # original process-group id once more even after the leader is reaped.
             try:
-                os.killpg(process.pid, signal.SIGTERM)
+                os.killpg(process.pid, signal.SIGKILL)
             except ProcessLookupError:
                 pass
-            try:
-                await asyncio.wait_for(asyncio.shield(process.wait()), timeout=0.25)
-            except asyncio.TimeoutError:
-                pass
-        # The leader can exit before a transport descendant.  Address the
-        # original process-group id once more even after the leader is reaped.
+        remaining = deadline - loop.time()
+        if remaining <= 0:
+            raise GitError("authenticated Git cleanup exceeded its safety margin")
         try:
-            os.killpg(process.pid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
-        await asyncio.shield(process.wait())
+            await asyncio.wait_for(asyncio.shield(process.wait()), timeout=remaining)
+        except asyncio.TimeoutError as exc:
+            raise GitError("authenticated Git cleanup exceeded its safety margin") from exc
 
     @staticmethod
     async def _settle_app_credential_broker(task: asyncio.Task[bool]) -> bool:
@@ -3141,38 +3163,62 @@ class GitManager:
         args: list[str],
         *,
         home: Path,
+        deadline: float | None = None,
     ) -> bytes:
         """Run a credential-free Git import/verification command safely."""
+        process: asyncio.subprocess.Process | None = None
         try:
-            process = await asyncio.create_subprocess_exec(
-                "/usr/bin/git",
-                *args,
-                cwd=str(home),
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.DEVNULL,
-                env=self._app_git_environment(home),
-                start_new_session=True,
+            timeout = (
+                asyncio.timeout(self._GIT_TIMEOUT)
+                if deadline is None
+                else asyncio.timeout_at(deadline)
             )
-            try:
-                stdout, _ = await asyncio.wait_for(process.communicate(), timeout=self._GIT_TIMEOUT)
-            except BaseException:
+            async with timeout:
+                if deadline is not None:
+                    self._remaining_app_push_budget(deadline)
+                process = await asyncio.create_subprocess_exec(
+                    "/usr/bin/git",
+                    *args,
+                    cwd=str(home),
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.DEVNULL,
+                    env=self._app_git_environment(home),
+                    start_new_session=True,
+                )
+                stdout, _ = await process.communicate()
+        except BaseException as exc:
+            if process is not None:
                 await self._kill_app_git_group(process)
-                raise
-        except (FileNotFoundError, asyncio.TimeoutError) as exc:
-            raise GitError("authenticated Git push preparation failed") from exc
+            if isinstance(exc, (FileNotFoundError, asyncio.TimeoutError)):
+                raise GitError("authenticated Git push preparation failed") from exc
+            raise
         if process.returncode != 0:
             raise GitError("authenticated Git push preparation failed")
         return stdout.strip()
 
-    async def _app_git_credential_topology(self, *, home: Path) -> GitCredentialTopology:
+    @staticmethod
+    def _remaining_app_push_budget(deadline: float) -> float:
+        remaining = deadline - asyncio.get_running_loop().time()
+        if remaining <= 0:
+            raise asyncio.TimeoutError
+        return remaining
+
+    async def _app_git_credential_topology(
+        self, *, home: Path, deadline: float | None = None
+    ) -> GitCredentialTopology:
         """Pin the supported root-owned Git transport and packaged askpass."""
         try:
-            raw_exec_path = await self._run_isolated_import_git(["--exec-path"], home=home)
+            raw_exec_path = await self._run_isolated_import_git(
+                ["--exec-path"], home=home, deadline=deadline
+            )
             exec_path = Path(raw_exec_path.decode("ascii"))
-            return pin_git_credential_topology(
+            topology = pin_git_credential_topology(
                 exec_path=exec_path,
                 askpass_path=Path(answer_prompt.__code__.co_filename),
             )
+            if deadline is not None:
+                self._remaining_app_push_budget(deadline)
+            return topology
         except (OSError, UnicodeDecodeError, ValueError) as exc:
             raise GitError("authenticated Git credential topology is unavailable") from exc
 
@@ -3185,6 +3231,7 @@ class GitManager:
         tip_oid: str,
         branch: str,
         expected_old_oid: str,
+        _deadline: float | None = None,
     ) -> str:
         """Stage an exact graph, then push it without consulting worker Git state.
 
@@ -3193,6 +3240,8 @@ class GitManager:
         containment tests; :meth:`apush_oid_with_app_auth` always constructs a
         literal validated GitHub.com URL from the frozen repository binding.
         """
+        if _deadline is None:
+            _deadline = asyncio.get_running_loop().time() + APP_AUTH_PUSH_TIMEOUT_SECONDS
         if not isinstance(token, str) or not token:
             raise GitError("invalid GitHub App credential")
         branch = _validate_ref(branch)
@@ -3222,7 +3271,9 @@ class GitManager:
             home.mkdir(mode=0o700)
             repository = root / "repository.git"
             await self._run_isolated_import_git(
-                ["init", "--bare", "--template=", str(repository)], home=home
+                ["init", "--bare", "--template=", str(repository)],
+                home=home,
+                deadline=_deadline,
             )
             await self._run_isolated_import_git(
                 [
@@ -3238,15 +3289,19 @@ class GitManager:
                     f"{tip_oid}:refs/aq/imported",
                 ],
                 home=home,
+                deadline=_deadline,
             )
             imported = await self._run_isolated_import_git(
                 [f"--git-dir={repository}", "rev-parse", "refs/aq/imported^{commit}"],
                 home=home,
+                deadline=_deadline,
             )
             if imported.decode("ascii", errors="replace") != tip_oid:
                 raise GitError("authenticated Git push preparation failed")
 
-            topology = await self._app_git_credential_topology(home=home)
+            topology = await self._app_git_credential_topology(
+                home=home, deadline=_deadline
+            )
 
             authority = "https://x-access-token@github.com"
             prompt = f"Password for '{authority}': "
@@ -3255,7 +3310,9 @@ class GitManager:
             broker_task: asyncio.Task[bool] | None = None
             process: asyncio.subprocess.Process | None = None
             try:
+                self._remaining_app_push_budget(_deadline)
                 broker_channel, request_channel = make_request_channel()
+                self._remaining_app_push_budget(_deadline)
             except OSError as exc:
                 zeroize(token_buffer)
                 raise GitError("authenticated Git credential broker is unavailable") from exc
@@ -3300,36 +3357,41 @@ class GitManager:
                 ]
             )
             try:
-                process = await asyncio.create_subprocess_exec(
-                    self._APP_GIT_EXECUTABLE,
-                    *arguments,
-                    cwd=str(home),
-                    stdin=asyncio.subprocess.DEVNULL,
-                    stdout=asyncio.subprocess.DEVNULL,
-                    stderr=asyncio.subprocess.DEVNULL,
-                    env=environment,
-                    pass_fds=(request_fd,),
-                    start_new_session=True,
-                )
-                request_channel.close()
-                request_channel = None
-                broker_task = asyncio.create_task(
-                    serve_one_credential(
-                        broker_channel,
-                        token_buffer,
-                        git_pid=process.pid,
-                        topology=topology,
-                        authority=authority,
-                        repository=destination_url,
-                        prompt=prompt,
-                        timeout=min(float(self._GIT_TIMEOUT), self._APP_CREDENTIAL_BROKER_TIMEOUT),
+                self._remaining_app_push_budget(_deadline)
+                async with asyncio.timeout_at(_deadline):
+                    process = await asyncio.create_subprocess_exec(
+                        self._APP_GIT_EXECUTABLE,
+                        *arguments,
+                        cwd=str(home),
+                        stdin=asyncio.subprocess.DEVNULL,
+                        stdout=asyncio.subprocess.DEVNULL,
+                        stderr=asyncio.subprocess.DEVNULL,
+                        env=environment,
+                        pass_fds=(request_fd,),
+                        start_new_session=True,
                     )
-                )
-                broker_channel = None
-                await asyncio.wait_for(process.wait(), timeout=self._GIT_TIMEOUT)
-                await self._kill_app_git_group(process)
-                broker_served = await self._settle_app_credential_broker(broker_task)
-                broker_task = None
+                    request_channel.close()
+                    request_channel = None
+                    broker_task = asyncio.create_task(
+                        serve_one_credential(
+                            broker_channel,
+                            token_buffer,
+                            git_pid=process.pid,
+                            topology=topology,
+                            authority=authority,
+                            repository=destination_url,
+                            prompt=prompt,
+                            timeout=min(
+                                self._remaining_app_push_budget(_deadline),
+                                self._APP_CREDENTIAL_BROKER_TIMEOUT,
+                            ),
+                        )
+                    )
+                    broker_channel = None
+                    await process.wait()
+                    await self._kill_app_git_group(process)
+                    broker_served = await self._settle_app_credential_broker(broker_task)
+                    broker_task = None
             except BaseException as exc:
                 if process is not None:
                     await self._kill_app_git_group(process)
