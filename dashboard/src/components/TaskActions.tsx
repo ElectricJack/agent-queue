@@ -9,6 +9,7 @@ import {
   TrashIcon,
   ChatBubbleLeftIcon,
   ArrowUturnLeftIcon,
+  QuestionMarkCircleIcon,
 } from "@heroicons/react/24/outline";
 import type { Task } from "../api/hooks";
 import {
@@ -21,6 +22,7 @@ import {
   useDeleteTask,
   useProvideInput,
 } from "../api/hooks";
+import { sendChatMessage } from "../api/chat";
 import Modal from "./Modal";
 import TaskAgentTerminalButton from "./TaskAgentTerminalButton";
 import { workspaceHref } from "../shell/projectNavigation";
@@ -33,6 +35,10 @@ interface TaskActionsProps {
 }
 
 type ModalType = "reopen" | "answer" | "delete" | null;
+
+/** The supervisor session the agents page can render a terminal for. */
+const SUPERVISOR_SESSION = "supervisor-global";
+const SUPERVISOR_THREAD = "dashboard:global";
 
 export default function TaskActions({ task, returnTo, onDeleted, onOpenTerminal }: TaskActionsProps) {
   const navigate = useNavigate();
@@ -49,12 +55,34 @@ export default function TaskActions({ task, returnTo, onDeleted, onOpenTerminal 
   const deleteTask = useDeleteTask();
   const provideInput = useProvideInput();
 
+  // "Why is this blocked?" — ask the global supervisor in its own chat thread
+  // (the same session the agents page renders a terminal for), then switch the
+  // view to that terminal so the answer is watched where it is produced.
+  const [asking, setAsking] = useState(false);
+  const [askError, setAskError] = useState<Error | null>(null);
+  const askSupervisor = async () => {
+    setAsking(true);
+    setAskError(null);
+    try {
+      await sendChatMessage("", `Why is task ${task.id} ("${task.title}") blocked?`, {
+        sessionAddress: SUPERVISOR_SESSION,
+        threadId: SUPERVISOR_THREAD,
+      });
+      navigate(`/agents?agent=${SUPERVISOR_SESSION}`, { state: { agentSelection: "replace" } });
+    } catch (err) {
+      setAskError(err instanceof Error ? err : new Error(String(err)));
+    } finally {
+      setAsking(false);
+    }
+  };
+
   const isPending =
     pauseTask.isPending || resumeTask.isPending ||
     stopTask.isPending ||
     restartTask.isPending ||
     skipTask.isPending ||
     reopenWithFeedback.isPending ||
+    asking ||
     deleteTask.isPending ||
     provideInput.isPending;
 
@@ -122,6 +150,13 @@ export default function TaskActions({ task, returnTo, onDeleted, onOpenTerminal 
       show: ["COMPLETED", "FAILED", "BLOCKED"].includes(s),
     },
     {
+      label: asking ? "Asking…" : "Ask supervisor why",
+      icon: <QuestionMarkCircleIcon className="h-3.5 w-3.5" />,
+      onClick: () => { void askSupervisor(); },
+      variant: "secondary",
+      show: s === "BLOCKED",
+    },
+    {
       label: "Skip",
       icon: <ForwardIcon className="h-3.5 w-3.5" />,
       onClick: () => skipTask.mutate({ task_id: task.id }),
@@ -178,8 +213,8 @@ export default function TaskActions({ task, returnTo, onDeleted, onOpenTerminal 
             </button>
           ))}
         </div>
-        {(pauseTask.error || resumeTask.error) && <p role="alert" className="mt-2 text-sm text-red-300">
-          {(pauseTask.error || resumeTask.error)?.message}
+        {(pauseTask.error || resumeTask.error || askError) && <p role="alert" className="mt-2 text-sm text-red-300">
+          {(pauseTask.error || resumeTask.error || askError)?.message}
         </p>}
       </section>
 
