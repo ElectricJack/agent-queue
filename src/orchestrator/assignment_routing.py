@@ -190,6 +190,41 @@ def task_assignment_options(
     )
 
 
+def pool_profile_for_route(
+    project_id: str,
+    profiles,
+    intelligence_class: str,
+    provider: str | None,
+    harness_registry=None,
+    *,
+    prefer_provider: str | None = None,
+) -> str | None:
+    """Pick the ``lifecycle: pool`` profile whose fixed class serves a route.
+
+    Pool workers claim work by ``profile_id`` and only take tasks whose
+    effective class equals their own, so a routed task with no profile can
+    only ever be claimed when the project default pool happens to run the
+    routed class.  This is the deterministic class → profile step the
+    routing spec leaves to "existing scheduling rules": among pool profiles
+    whose ``default_class`` is the routed class, honour a provider pin,
+    then prefer the default pool's provider, then the lowest id.
+    """
+
+    candidates = []
+    for profile in _effective_profiles(project_id, profiles):
+        if getattr(profile, "lifecycle", "task") != "pool" or not getattr(profile, "harness", ""):
+            continue
+        if (getattr(profile, "default_class", "") or "").strip() != intelligence_class:
+            continue
+        profile_prov = profile_provider(profile, harness_registry, project_id)
+        if provider and profile_prov != provider:
+            continue
+        candidates.append((profile_prov != (prefer_provider or ""), profile.id))
+    if not candidates:
+        return None
+    return min(candidates)[1]
+
+
 def _catalog_hash(
     project_id: str,
     options: Sequence[AssignmentOption],
@@ -703,7 +738,107 @@ class AssignmentRoutingCoordinator:
                                 catalog_hash,
                             )
                         )
+                await self._backfill_pool_profiles(
+                    project, tasks, resolved, profiles, catalog_hash
+                )
         return resolved
+
+    async def _backfill_pool_profiles(
+        self, project, tasks, resolved, profiles, catalog_hash: str
+    ) -> None:
+        """Give every routed, unpinned task the pool profile that runs its class.
+
+        Routing only decides the intelligence class.  Under pools nothing
+        else turned that class into a claimable task: an unpinned task counts
+        as demand for the project's *default* pool and is then refused by
+        every worker in it, because a pool worker only claims its own fixed
+        class.  So once a route is settled — explicit or playbook — and the
+        project default is a pool that does not serve it, pin the task to
+        the pool that does.  The task's ``updated_at`` and input hash move
+        with the pin, so a playbook route is re-stamped in the same pass
+        rather than being thrown away and re-asked for.
+        """
+        pending = [
+            task for task in tasks
+            if task.id in resolved
+            and not task.profile_id
+            and task.assigned_agent_id is None
+            and task.status in _ACTIVE_ROUTE_STATUSES
+        ]
+        if not pending:
+            return
+        pool_profiles = {
+            profile.id: profile
+            for profile in _effective_profiles(project.id, profiles)
+            if getattr(profile, "lifecycle", "task") == "pool"
+        }
+        if not pool_profiles:
+            return
+        resolver = getattr(self.owner, "_effective_default_profile_id", None)
+        default_id = (
+            await resolver(project) if resolver is not None else project.default_profile_id
+        )
+        default_pool = pool_profiles.get(default_id or "")
+        if default_pool is None:
+            return  # push scheduling already picks a worker by class
+        registry = getattr(self.owner, "harness_registry", None)
+        default_class = (getattr(default_pool, "default_class", "") or "").strip()
+        default_provider = profile_provider(default_pool, registry, project.id)
+        repinned: dict[str, str] = {}
+        for task in pending:
+            route = resolved[task.id]
+            if default_class == route.intelligence_class and (
+                not route.provider or route.provider == default_provider
+            ):
+                continue
+            chosen = pool_profile_for_route(
+                project.id, profiles, route.intelligence_class, route.provider,
+                registry, prefer_provider=default_provider,
+            )
+            if chosen is None:
+                logger.warning(
+                    "task %s routes to class %s but no pool profile serves it",
+                    task.id, route.intelligence_class,
+                )
+                continue
+            if await self.db.update_task_routing(
+                task.id, profile_id=chosen, intelligence_class=None,
+                preferred_workspace_id=None,
+            ):
+                repinned[task.id] = chosen
+                logger.info(
+                    "task %s pinned to pool profile %s for class %s",
+                    task.id, chosen, route.intelligence_class,
+                )
+        if not repinned:
+            return
+        saved_rows = {
+            row.task_id: row
+            for row in await self.db.list_task_assignment_routes(sorted(repinned))
+        }
+        if not saved_rows:
+            return
+        async with self.db.immediate() as conn:
+            rows = (
+                await conn.execute(
+                    select(tasks_table)
+                    .where(tasks_table.c.id.in_(sorted(saved_rows)))
+                    .with_for_update()
+                )
+            ).mappings().fetchall()
+            restamped: list[TaskAssignmentRoute] = []
+            for row in rows:
+                task = self.db._row_to_task(row)
+                saved = saved_rows[task.id]
+                if task.profile_id != repinned[task.id]:
+                    continue
+                restamped.append(replace(
+                    saved,
+                    input_hash=assignment_input_hash(task),
+                    task_updated_at=task.updated_at,
+                    options_hash=catalog_hash,
+                ))
+            await self.db.upsert_task_assignment_routes(restamped, conn=conn)
 
     async def routes_for(self, tasks: Sequence[Task]) -> dict[str, EffectiveAssignmentRoute]:
         by_project: dict[str, list[Task]] = defaultdict(list)

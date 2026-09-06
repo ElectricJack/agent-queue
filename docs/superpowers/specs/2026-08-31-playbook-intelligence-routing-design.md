@@ -364,7 +364,11 @@ The implementation is complete only when tests demonstrate all of the following:
 5. Omitting provider leaves existing provider choice available; returning provider
    hard-filters scheduling and claiming.
 6. The playbook never chooses `profile_id` or a concrete agent. Existing scheduling
-   rules make that selection after routing.
+   rules make that selection after routing. Under pools that selection is the
+   coordinator's deterministic backfill (`_backfill_pool_profiles`): once a
+   route is settled, an unpinned task whose project default is a pool that
+   does not run the routed class is pinned to the pool profile whose
+   `default_class` does, and a playbook route is re-stamped in the same pass.
 7. A task edit during the LLM call makes the response stale without relying on edit
    hooks; the updated task is routed on a later pass.
 8. Invalid output, unavailable playbooks, and LLM failures wait and retry visibly;

@@ -3982,6 +3982,50 @@ class TaskCommandsMixin:
         if profile_id not in pool_ids:
             return None
 
+        # A pool worker only claims its own fixed class.  A task whose route
+        # names a class no pool profile serves waits forever, and until the
+        # routing coordinator's backfill repins it the wrong pool looks idle.
+        routes = None
+        coordinator = getattr(orchestrator, "assignment_routing", None)
+        if coordinator is not None and hasattr(coordinator, "routes_for"):
+            try:
+                routes = await coordinator.routes_for([task])
+            except Exception:
+                routes = None
+        route = (routes or {}).get(task.id)
+        if route is not None:
+            profiles = {p.id: p for p in await self.db.list_profiles()}
+            pool_profile = profiles.get(profile_id)
+            fixed = (getattr(pool_profile, "default_class", "") or "").strip()
+            if fixed and fixed != route.intelligence_class:
+                from src.orchestrator.assignment_routing import pool_profile_for_route
+
+                serving = pool_profile_for_route(
+                    task.project_id, list(profiles.values()),
+                    route.intelligence_class, route.provider,
+                    getattr(orchestrator, "harness_registry", None),
+                )
+                if serving is None:
+                    return Reason(
+                        code="awaiting_pool_session",
+                        detail=(
+                            f"route selects class '{route.intelligence_class}' but no pool "
+                            f"profile serves it (project default pool '{profile_id}' runs "
+                            f"'{fixed}'); add a pool profile with default_class "
+                            f"'{route.intelligence_class}' or pin --profile-id"
+                        ),
+                        ref=profile_id,
+                    )
+                return Reason(
+                    code="awaiting_pool_session",
+                    detail=(
+                        f"route selects class '{route.intelligence_class}' but the task "
+                        f"counts against pool '{profile_id}' ('{fixed}'); the routing "
+                        f"coordinator will pin it to '{serving}' on its next pass"
+                    ),
+                    ref=serving,
+                )
+
         if not getattr(self.config.swarm, "enabled", True):
             # The same condition ``pools.disabled`` reports: both push gates
             # are lifecycle-only while ``_reconcile_pools`` is flag-gated, so
