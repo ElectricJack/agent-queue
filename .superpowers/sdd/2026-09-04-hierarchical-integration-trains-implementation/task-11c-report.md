@@ -51,6 +51,9 @@ production mutation, and migration-copy work were not performed.
   playbook runtime, attestation, promotion, cleanup, Git transport, profile, and
   intelligence-class functional checks to the control service and installs drain
   reconciliation in the sole integration loop.
+- [x] The exact-repository GitHub App installation token requests and validates
+  repository `variables:read`, allowing functional preflight to read the two pinned
+  hosted workflow variables through the production client.
 - [x] Typed command contracts and generic adapters are registered for every
   operational command; structured blockers survive the generic result envelope.
 
@@ -227,3 +230,51 @@ the stricter behavior and does not use this resume-only exception.
 
 The warnings are inherited `pkg_resources`/namespace and Python `audioop`
 deprecations. No prior 362-test affected-area gate or broader suite was repeated.
+
+## Scoped review fix round 2
+
+The remaining Important finding in `task-11c-fix-1-review.md` was resolved by adding
+repository `variables:read` to the GitHub App client's exact installation-token
+permission request and existing exact response validation. Repository selection stays
+pinned to the configured numeric repository; no live permission or provider mutation
+was added. A permission-aware fake transport now exercises functional preflight
+through a real `GitHubAppClient`: it denies hosted-variable endpoints unless the
+minted token requested `variables:read`. A separate negative regression proves the
+client rejects a minted token response that omits the permission before making the
+repository identity request.
+
+The Task 11d operator handoff now requires the GitHub App installation's repository
+**Variables: read** permission and makes clear that the CLI does not grant it.
+
+### Exact RED evidence
+
+- `pytest -q tests/test_integration_operational_controls.py::test_daemon_functional_preflight_mints_token_with_variables_read`
+  -> `1 failed, 3 warnings in 1.35s`; the real client minted without
+  `variables:read`, the permission-aware transport returned 403 for hosted-variable
+  reads, and preflight returned `hosted_workflow_variables_unavailable`.
+- `pytest -q tests/test_github_app.py::test_rejects_installation_token_without_variables_read_permission`
+  -> `1 failed, 2 warnings in 0.55s`; the incomplete token was accepted and the
+  expected `GitHubAppError` was not raised.
+- `pytest -q tests/test_github_app.py::test_mints_narrow_installation_token_after_app_and_repository_binding tests/test_github_app.py::test_binds_repository_by_name_with_one_narrow_installation_token tests/test_github_app.py::test_authenticated_request_retries_one_401_with_a_fresh_token tests/test_github_app.py::test_repository_identity_mismatch_fails_closed_without_response_body`
+  -> `4 failed, 2 warnings in 0.77s` until the pinned token-response fixtures were
+  updated to include the newly required permission.
+
+### Exact GREEN milestones
+
+- Final focused gate:
+  `aq test tests/test_github_app.py tests/test_integration_operational_controls.py::test_daemon_functional_preflight_reads_artifact_trust_and_workflow_variables tests/test_integration_operational_controls.py::test_daemon_functional_preflight_mints_token_with_variables_read`
+  -> `13 passed, 11 warnings in 3.83s`.
+- `pytest -q tests/test_github_app.py` -> `11 passed, 3 warnings in 1.44s`.
+- `pytest -q tests/test_integration_operational_controls.py::test_daemon_functional_preflight_reads_artifact_trust_and_workflow_variables tests/test_integration_operational_controls.py::test_daemon_functional_preflight_mints_token_with_variables_read`
+  -> `2 passed, 3 warnings in 1.50s`.
+- `pytest -q tests/test_integration_operational_controls.py::test_daemon_functional_preflight_mints_token_with_variables_read`
+  -> `1 passed, 3 warnings in 1.34s`.
+- `pytest -q tests/test_github_app.py::test_rejects_installation_token_without_variables_read_permission`
+  -> `1 passed, 2 warnings in 0.53s`.
+- `pytest -q tests/test_github_app.py::test_mints_narrow_installation_token_after_app_and_repository_binding tests/test_github_app.py::test_binds_repository_by_name_with_one_narrow_installation_token tests/test_github_app.py::test_authenticated_request_retries_one_401_with_a_fresh_token tests/test_github_app.py::test_repository_identity_mismatch_fails_closed_without_response_body`
+  -> `4 passed, 2 warnings in 0.75s`.
+- `ruff check src/git/github_app.py tests/test_github_app.py tests/test_integration_operational_controls.py && python3.12 -m compileall -q src/git/github_app.py && git diff --check`
+  -> `All checks passed!`, exit 0.
+
+The warnings are inherited `pkg_resources`/namespace and Python `audioop`
+deprecations. No prior affected-area gate or broader suite was repeated.

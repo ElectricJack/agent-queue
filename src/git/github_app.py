@@ -30,6 +30,7 @@ _PERMISSIONS = {
     "administration": "read",
     "pull_requests": "write",
     "issues": "write",
+    "variables": "read",
 }
 _FULL_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9-]*/[A-Za-z0-9._-]+")
 

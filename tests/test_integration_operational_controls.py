@@ -25,7 +25,8 @@ from src.database.tables import (
     integration_rollout_transitions,
     project_integration_schedules,
 )
-from src.git.github_app import GitHubRepositoryBinding
+from src.config import GitHubAppConfig
+from src.git.github_app import GitHubAppClient, GitHubRepositoryBinding, HttpResponse
 from src.integration.controls import IntegrationControlService, daemon_functional_preflight
 from src.integration.models import (
     ArtifactSnapshot,
@@ -504,6 +505,109 @@ async def test_daemon_functional_preflight_reads_artifact_trust_and_workflow_var
     assert "route_artifact_unavailable" in blockers
     assert "trust_manifest_mismatch" in blockers
     assert "hosted_workflow_variables_mismatch" in blockers
+
+
+async def test_daemon_functional_preflight_mints_token_with_variables_read(
+    db, monkeypatch
+):
+    trust = {
+        "schema": "aq.integration-trust.v1",
+        "canonical_repository_id": "repo",
+        "repository_id": 303,
+        "full_name": "acme/widgets",
+        "ci_producer_app_id": 1234,
+        "attestation_app_id": 101,
+        "attestation_name": "Agent Queue Integration Attestation",
+        "required_checks": {"version": "checks-v1", "names": ["Tests (default)"]},
+    }
+
+    class PermissionAwareTransport:
+        def __init__(self):
+            self.token_permissions = None
+
+        async def request(self, method, url, *, headers, json_body=None, max_bytes):
+            if url.endswith("/app"):
+                return HttpResponse(200, {}, b'{"id":101}')
+            if url.endswith("/app/installations/202/access_tokens"):
+                self.token_permissions = json_body["permissions"]
+                body = {
+                    "token": "installation-secret",
+                    "expires_at": "2030-01-01T00:00:00Z",
+                    "repositories": [{"id": 303}],
+                    "permissions": self.token_permissions,
+                }
+                return HttpResponse(201, {}, json.dumps(body).encode())
+            if url.endswith("/repositories/303"):
+                return HttpResponse(
+                    200, {}, b'{"id":303,"full_name":"acme/widgets"}'
+                )
+            if "/contents/" in url:
+                body = {
+                    "encoding": "base64",
+                    "content": base64.b64encode(json.dumps(trust).encode()).decode(),
+                }
+                return HttpResponse(200, {}, json.dumps(body).encode())
+            if "/actions/variables/" in url:
+                if (self.token_permissions or {}).get("variables") != "read":
+                    return HttpResponse(403, {}, b'{"message":"forbidden"}')
+                name = url.rsplit("/", 1)[-1]
+                value = (
+                    "101"
+                    if name == "AQ_INTEGRATION_ATTESTATION_APP_ID"
+                    else "checks-v1"
+                )
+                return HttpResponse(
+                    200, {}, json.dumps({"name": name, "value": value}).encode()
+                )
+            raise AssertionError(f"unexpected GitHub request: {method} {url}")
+
+    transport = PermissionAwareTransport()
+    binding = GitHubRepositoryBinding(303, "acme/widgets")
+    client = GitHubAppClient(
+        GitHubAppConfig("Iv1.client", 101, 202, "/daemon/key.pem"),
+        binding,
+        key_provider=SimpleNamespace(read_private_key=lambda _path: b"unused"),
+        transport=transport,
+        clock=lambda: 1_800_000_000.0,
+    )
+    monkeypatch.setattr(client, "_app_jwt", lambda: "app-jwt")
+    loaded = SimpleNamespace(
+        id="hierarchical-delivery",
+        schema_version=2,
+        source_hash="sha256:" + "3" * 64,
+        version=1,
+        contract_fingerprint=lambda: "sha256:" + "2" * 64,
+    )
+    orchestrator = SimpleNamespace(
+        db=db,
+        integration_app_client_factory=lambda _binding: client,
+        integration_repository_binding_resolver=lambda _repository: binding,
+        playbook_manager=SimpleNamespace(
+            _store=SimpleNamespace(load=lambda _sha: loaded)
+        ),
+        integration_attestation_service=object(),
+        root_promotion_service=object(),
+        integration_cleanup_service=object(),
+        git=object(),
+        intelligence_classes={"standard": object(), "deep": object()},
+    )
+    db.list_profiles = AsyncMock(
+        return_value=[
+            SimpleNamespace(id=value)
+            for value in ("worker", "debugger", "verifier")
+        ]
+    )
+
+    assert await daemon_functional_preflight(orchestrator, "p", "repo") == ()
+    assert transport.token_permissions == {
+        "checks": "write",
+        "actions": "read",
+        "contents": "write",
+        "administration": "read",
+        "pull_requests": "write",
+        "issues": "write",
+        "variables": "read",
+    }
 
 
 async def test_status_reports_functional_readiness_and_deferred_certification(db):

@@ -8,6 +8,12 @@ Read operational-scope-override.md first, then task-11d-brief.md, then the revie
 - Project repository/policy configuration options must reach the guarded11c edit_project fields; inspect existing `project set` generic transport and add only missing options. Rollout modes go exclusively through enable, including disabled/drain requests.
 - Doctor read-only operational checks consume11c status/preflight state, expose disabled/desired/effective/draining, functional config/schema blockers, stuck human-required operation/cleanup when relevant. No `probe`, no new credential/protection inspection/certification, no automatic fixes or migrations. Keep existing unreviewed_prs check.
 - Guide exact actual command/options and configuration shapes; no pseudocommands. Include schema check then operator-only upgrade outside workers, daemon restart, policy/artifact/class/profile bindings, observe/hierarchy/train, periodic sealed all-eligible-root sweeps, recursive children-first integration and parent verification, no overlapping train per project, ephemeral singleton branches, tested exact-OID main promotion/no post-main audit, cleanup, human escalation/controls and safe disable/drain rollback. Credentials/config changes requiring restart and project changes requiring disabled/drained state need explicit instructions.
+- The operator-managed GitHub App installation must grant repository **Variables:
+  read**. The daemon requests this narrowly scoped permission on its exact-repository
+  installation token so functional preflight can read
+  `AQ_INTEGRATION_ATTESTATION_APP_ID` and
+  `AQ_INTEGRATION_REQUIRED_CHECK_VERSION`; the CLI does not grant or mutate App
+  permissions.
 - Clearly disclose security certification/probes and broad recovery verification are deferred. Existing runtime authentication/CI/OID/irreversible-write protections remain enforced. No actual production deployment or enablement is part of this task.
 
 ## Database backend change limitation

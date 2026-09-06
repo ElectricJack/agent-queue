@@ -102,7 +102,8 @@ async def test_mints_narrow_installation_token_after_app_and_repository_binding(
                     '"repositories":[{"id":303}],"permissions":'
                     '{"checks":"write","actions":"read","contents":"write",'
                     '"administration":"read","pull_requests":"write",'
-                    '"issues":"write","metadata":"read"}}' % expires
+                    '"issues":"write","variables":"read","metadata":"read"}}'
+                    % expires
                 ).encode(),
             ),
             HttpResponse(200, {}, b'{"id":303,"full_name":"acme/widgets"}'),
@@ -134,11 +135,45 @@ async def test_mints_narrow_installation_token_after_app_and_repository_binding(
             "administration": "read",
             "pull_requests": "write",
             "issues": "write",
+            "variables": "read",
         },
     }
     for request in transport.requests:
         assert request[2]["Accept"] == "application/vnd.github+json"
         assert request[2]["X-GitHub-Api-Version"] == "2022-11-28"
+
+
+@pytest.mark.asyncio
+async def test_rejects_installation_token_without_variables_read_permission():
+    private, _public = _private_key()
+    transport = ScriptedTransport(
+        [
+            HttpResponse(200, {}, b'{"id":101}'),
+            HttpResponse(
+                201,
+                {},
+                b'{"token":"installation-secret",'
+                b'"expires_at":"2030-01-01T00:00:00Z",'
+                b'"repositories":[{"id":303}],"permissions":{"checks":"write",'
+                b'"actions":"read","contents":"write","administration":"read",'
+                b'"pull_requests":"write","issues":"write"}}',
+            ),
+            HttpResponse(200, {}, b'{"id":303,"full_name":"acme/widgets"}'),
+        ]
+    )
+    client = GitHubAppClient(
+        GitHubAppConfig("Iv1.client", 101, 202, "/daemon/key.pem"),
+        GitHubRepositoryBinding(303, "acme/widgets"),
+        key_provider=StaticKeyProvider(private),
+        transport=transport,
+        clock=lambda: 1_800_000_000.0,
+    )
+
+    with pytest.raises(GitHubAppError) as caught:
+        await client.installation_token()
+
+    assert caught.value.category == "permission"
+    assert len(transport.requests) == 2
 
 
 @pytest.mark.asyncio
@@ -152,6 +187,7 @@ async def test_binds_repository_by_name_with_one_narrow_installation_token():
         "administration": "read",
         "pull_requests": "write",
         "issues": "write",
+        "variables": "read",
     }
     transport = ScriptedTransport(
         [
@@ -252,7 +288,8 @@ async def test_authenticated_request_retries_one_401_with_a_fresh_token():
             f'{{"token":"{token}","expires_at":"{expires}",'
             '"repositories":[{"id":303}],"permissions":'
             '{"checks":"write","actions":"read","contents":"write",'
-            '"administration":"read","pull_requests":"write","issues":"write"}}'
+            '"administration":"read","pull_requests":"write","issues":"write",'
+            '"variables":"read"}}'
         ).encode(),
     )
     transport = ScriptedTransport(
@@ -291,7 +328,7 @@ async def test_repository_identity_mismatch_fails_closed_without_response_body()
                 b'{"token":"sensitive","expires_at":"2030-01-01T00:00:00Z",'
                 b'"repositories":[{"id":303}],"permissions":{"checks":"write",'
                 b'"actions":"read","contents":"write","administration":"read",'
-                b'"pull_requests":"write","issues":"write"}}',
+                b'"pull_requests":"write","issues":"write","variables":"read"}}',
             ),
             HttpResponse(200, {}, b'{"id":303,"full_name":"attacker/redirected"}'),
         ]
