@@ -19,6 +19,7 @@ from sqlalchemy.exc import IntegrityError
 from src.commands.principal import PrincipalKind, current_principal, matches_session_instance
 from src.database.tables import (
     integration_batch_members,
+    integration_attestation_publications,
     integration_batches,
     integration_branch_owners,
     integration_candidate_member_results,
@@ -347,6 +348,26 @@ class CandidateService:
                 )
             ).scalar_one_or_none()
             if unresolved is not None:
+                return CandidateBuildResult(
+                    outcome="wait",
+                    batch_id=batch_id,
+                    revision=expected_revision,
+                    operation_id=state["operation"]["id"],
+                )
+            unresolved_attestation = (
+                await conn.execute(
+                    select(integration_attestation_publications.c.id).where(
+                        integration_attestation_publications.c.batch_id == batch_id,
+                        integration_attestation_publications.c.revision == expected_revision,
+                        integration_attestation_publications.c.state == "reserved",
+                        (
+                            integration_attestation_publications.c.prewrite_at.is_not(None)
+                            | (integration_attestation_publications.c.expires_at > now)
+                        ),
+                    )
+                )
+            ).scalar_one_or_none()
+            if unresolved_attestation is not None:
                 return CandidateBuildResult(
                     outcome="wait",
                     batch_id=batch_id,
@@ -2648,18 +2669,32 @@ class CandidateService:
         return dict(row) if row else None
 
     async def _has_live_mutation(self, batch_id: str, revision: int) -> bool:
+        observed_at = self.clock()
         async with self.db._engine.connect() as conn:
-            value = (
+            mutation = (
                 await conn.execute(
                     select(integration_candidate_ref_mutations.c.id).where(
                         integration_candidate_ref_mutations.c.batch_id == batch_id,
                         integration_candidate_ref_mutations.c.revision == revision,
                         integration_candidate_ref_mutations.c.state == "reserved",
-                        integration_candidate_ref_mutations.c.expires_at > self.clock(),
+                        integration_candidate_ref_mutations.c.expires_at > observed_at,
                     )
                 )
             ).scalar_one_or_none()
-        return value is not None
+            publication = (
+                await conn.execute(
+                    select(integration_attestation_publications.c.id).where(
+                        integration_attestation_publications.c.batch_id == batch_id,
+                        integration_attestation_publications.c.revision == revision,
+                        integration_attestation_publications.c.state == "reserved",
+                        (
+                            integration_attestation_publications.c.prewrite_at.is_not(None)
+                            | (integration_attestation_publications.c.expires_at > observed_at)
+                        ),
+                    )
+                )
+            ).scalar_one_or_none()
+        return mutation is not None or publication is not None
 
     async def _repository(self, repository_id):
         value = (

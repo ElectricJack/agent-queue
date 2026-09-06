@@ -141,27 +141,35 @@ class AttestationPayload(BaseModel):
         return "aq-attestation-v1:" + hashlib.sha256(self.canonical_bytes()).hexdigest()
 
 
+@dataclass(frozen=True)
+class SelectedAttestation:
+    record_id: int
+    payload: AttestationPayload
+
+
 def select_trusted_attestation(
     records: list[dict[str, Any]],
     trust: IntegrationTrustManifest,
     *,
     expected_head_sha: str,
-) -> AttestationPayload:
+) -> SelectedAttestation:
     trusted: list[tuple[int, dict[str, Any]]] = []
     for record in records:
         app = record.get("app")
-        if (
-            record.get("name") == trust.attestation_name
-            and isinstance(app, dict)
-            and _strict_int(app.get("id")) == trust.attestation_app_id
-        ):
-            record_id = _strict_int(record.get("id"))
-            if record_id is None or record_id <= 0:
-                raise AttestationError("trusted attestation ordering identity is malformed")
-            trusted.append((record_id, record))
+        if record.get("name") != trust.attestation_name:
+            continue
+        app_id = _strict_int(app.get("id")) if isinstance(app, dict) else None
+        if app_id is None or app_id <= 0:
+            raise AttestationError("exact-name attestation App identity is malformed")
+        if app_id != trust.attestation_app_id:
+            continue
+        record_id = _strict_int(record.get("id"))
+        if record_id is None or record_id <= 0:
+            raise AttestationError("trusted attestation ordering identity is malformed")
+        trusted.append((record_id, record))
     if not trusted:
         raise AttestationError("trusted attestation is missing")
-    _, newest = max(trusted, key=lambda item: item[0])
+    selected_id, newest = max(trusted, key=lambda item: item[0])
     try:
         if (
             newest.get("status") != "completed"
@@ -186,7 +194,7 @@ def select_trusted_attestation(
             or any(check.producer_app_id != trust.ci_producer_app_id for check in payload.checks)
         ):
             raise AttestationError("newest trusted attestation identity does not match")
-        return payload
+        return SelectedAttestation(record_id=selected_id, payload=payload)
     except AttestationError:
         raise
     except Exception as exc:
@@ -752,17 +760,21 @@ class AuthenticatedGitHubObserver:
             candidates: list[tuple[int, dict[str, Any]]] = []
             for record in records:
                 app = record.get("app")
-                if (
-                    record.get("name") == name
-                    and isinstance(app, dict)
-                    and _strict_int(app.get("id")) == trust.ci_producer_app_id
-                ):
-                    record_id = _strict_int(record.get("id"))
-                    if record_id is None or record_id <= 0:
-                        raise AttestationError(
-                            f"required check ordering identity is malformed: {name}"
-                        )
-                    candidates.append((record_id, record))
+                if record.get("name") != name:
+                    continue
+                app_id = _strict_int(app.get("id")) if isinstance(app, dict) else None
+                if app_id is None or app_id <= 0:
+                    raise AttestationError(
+                        f"required check App identity is malformed: {name}"
+                    )
+                if app_id != trust.ci_producer_app_id:
+                    continue
+                record_id = _strict_int(record.get("id"))
+                if record_id is None or record_id <= 0:
+                    raise AttestationError(
+                        f"required check ordering identity is malformed: {name}"
+                    )
+                candidates.append((record_id, record))
             if not candidates:
                 raise AttestationError(f"required check is missing: {name}")
             _, newest = max(candidates, key=lambda item: item[0])
@@ -870,17 +882,19 @@ class AuthenticatedGitHubObserver:
         trusted_existing: list[tuple[int, dict[str, Any]]] = []
         for record in existing:
             app = record.get("app")
-            if (
-                record.get("name") == trust.attestation_name
-                and isinstance(app, dict)
-                and _strict_int(app.get("id")) == trust.attestation_app_id
-            ):
-                record_id = _strict_int(record.get("id"))
-                if record_id is None or record_id <= 0:
-                    raise AttestationError(
-                        "trusted attestation ordering identity is malformed"
-                    )
-                trusted_existing.append((record_id, record))
+            if record.get("name") != trust.attestation_name:
+                continue
+            app_id = _strict_int(app.get("id")) if isinstance(app, dict) else None
+            if app_id is None or app_id <= 0:
+                raise AttestationError("trusted attestation App identity is malformed")
+            if app_id != trust.attestation_app_id:
+                continue
+            record_id = _strict_int(record.get("id"))
+            if record_id is None or record_id <= 0:
+                raise AttestationError(
+                    "trusted attestation ordering identity is malformed"
+                )
+            trusted_existing.append((record_id, record))
         if trusted_existing:
             _, newest = max(trusted_existing, key=lambda item: item[0])
             output = newest.get("output")

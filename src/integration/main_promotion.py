@@ -17,6 +17,7 @@ from sqlalchemy.exc import IntegrityError
 
 from src.database.tables import (
     integration_batch_members,
+    integration_attestation_publications,
     integration_batches,
     integration_branch_owners,
     integration_candidate_member_results,
@@ -40,6 +41,7 @@ from src.git.manager import (
     GitManager,
     is_valid_git_oid,
 )
+from src.git.github_app import GitHubRepositoryBinding
 
 
 _IDENTITY_NAMESPACE = uuid.UUID("2cfd2eea-e0e5-4397-b1c4-2dd6c40d64dd")
@@ -104,6 +106,7 @@ CrashHook = Callable[[str], Awaitable[None] | None]
 AttestationResolver = Callable[
     [RootAttestationSubject], Awaitable[RootAttestationProof | None] | RootAttestationProof | None
 ]
+AppClientFactory = Callable[[GitHubRepositoryBinding], Awaitable[Any] | Any]
 
 
 class RootPromotionService:
@@ -117,6 +120,7 @@ class RootPromotionService:
         git_manager: GitManager | None = None,
         repository_resolver: RepositoryResolver | None = None,
         app_client: Any | None = None,
+        app_client_factory: AppClientFactory | None = None,
         attestation_resolver: AttestationResolver | None = None,
         crash_hook: CrashHook | None = None,
         clock: Callable[[], float] = time.time,
@@ -126,6 +130,7 @@ class RootPromotionService:
         self.git = git_manager or GitManager()
         self.repository_resolver = repository_resolver
         self.app_client = app_client
+        self.app_client_factory = app_client_factory
         self.attestation_resolver = attestation_resolver
         self.crash_hook = crash_hook
         self.clock = clock
@@ -175,6 +180,21 @@ class RootPromotionService:
             existing = await self._intent_on(conn, intent_id)
             if existing is not None:
                 return await self._existing_result_on(conn, existing, batch_id, revision)
+            unresolved_attestation = (
+                await conn.execute(
+                    select(integration_attestation_publications.c.id).where(
+                        integration_attestation_publications.c.batch_id == batch_id,
+                        integration_attestation_publications.c.revision == revision,
+                        integration_attestation_publications.c.state == "reserved",
+                    )
+                )
+            ).scalar_one_or_none()
+            if unresolved_attestation is not None:
+                return RootPromotionResult(
+                    outcome="reconciliation_blocked",
+                    batch_id=batch_id,
+                    revision=revision,
+                )
             unresolved = (
                 await conn.execute(
                     select(integration_promotion_intents.c.id).where(
@@ -348,14 +368,32 @@ class RootPromotionService:
                 intent_id=intent_id, receipt_ids=await self._receipt_ids(intent_id),
                 head_sha=intent["prepared_sha"],
             )
-        if self.app_client is None:
+        attestation = self._frozen_attestation(intent)
+        if attestation is None:
             return RootPromotionResult(
                 outcome="configuration_blocked", batch_id=batch_id, revision=revision,
                 intent_id=intent_id, receipt_ids=await self._receipt_ids(intent_id),
                 head_sha=intent["prepared_sha"],
             )
-        attestation = self._frozen_attestation(intent)
-        if attestation is None:
+        if self.app_client is None and self.app_client_factory is not None:
+            try:
+                binding = GitHubRepositoryBinding(
+                    attestation.repository_numeric_id,
+                    attestation.repository_full_name,
+                )
+                client = self.app_client_factory(binding)
+                if inspect.isawaitable(client):
+                    client = await client
+                if client is None or client.repository != binding:
+                    raise ValueError("root promotion App binding changed")
+                self.app_client = client
+            except Exception:
+                return RootPromotionResult(
+                    outcome="configuration_blocked", batch_id=batch_id, revision=revision,
+                    intent_id=intent_id, receipt_ids=await self._receipt_ids(intent_id),
+                    head_sha=intent["prepared_sha"],
+                )
+        if self.app_client is None:
             return RootPromotionResult(
                 outcome="configuration_blocked", batch_id=batch_id, revision=revision,
                 intent_id=intent_id, receipt_ids=await self._receipt_ids(intent_id),

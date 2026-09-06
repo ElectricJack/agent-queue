@@ -97,8 +97,52 @@ def _run(tmp_path: Path, *, trust=None, records=None, **changes) -> str:
     return subprocess.run(command, check=True, text=True, capture_output=True).stdout.strip()
 
 
+def _matching_pr(*, head_repository: str, head_ref: str) -> str:
+    return subprocess.run(
+        [
+            sys.executable,
+            str(SCRIPT),
+            "--matching-integration-pr",
+            "--event-name", "pull_request",
+            "--repository-full-name", "acme/widgets",
+            "--head-repository-full-name", head_repository,
+            "--head-ref", head_ref,
+        ],
+        check=True,
+        text=True,
+        capture_output=True,
+    ).stdout.strip()
+
+
 def test_workflow_decision_accepts_only_exact_main_attestation(tmp_path):
     assert _run(tmp_path) == "true"
+
+
+def test_workflow_decision_accepts_distinct_checks_sharing_one_suite(tmp_path):
+    trust = _trust()
+    trust["required_checks"]["names"] = ["Tests (default)", "Tests (postgres-integration)"]
+    payload = _payload().model_dump(mode="json", by_alias=True)
+    payload["checks"].append(
+        {
+            "name": "Tests (postgres-integration)",
+            "check_run_id": 12,
+            "check_suite_id": 21,
+            "producer_app_id": 404,
+            "head_sha": SHA,
+            "conclusion": "success",
+        }
+    )
+    canonical = json.dumps(
+        payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True
+    )
+    external_id = "aq-attestation-v1:" + __import__("hashlib").sha256(
+        canonical.encode("ascii")
+    ).hexdigest()
+    record = _record()
+    record["external_id"] = external_id
+    record["output"] = {"text": canonical}
+
+    assert _run(tmp_path, trust=trust, records=[record]) == "true"
 
 
 @pytest.mark.parametrize(
@@ -123,10 +167,18 @@ def test_workflow_decision_fails_closed_for_identity_mismatch(tmp_path, changes)
         [_record(conclusion="neutral")],
         [_record(), _record(8, conclusion="neutral")],
         [_record(record_id=True)],
+        [_record(record_id=7.0)],
     ],
 )
 def test_workflow_decision_fails_closed_without_newest_valid_record(tmp_path, records):
     assert _run(tmp_path, records=records) == "false"
+
+
+@pytest.mark.parametrize("malformed_app_id", [101.0, True])
+def test_workflow_decision_rejects_loose_numeric_app_identity(tmp_path, malformed_app_id):
+    malformed = _record(8)
+    malformed["app"] = {"id": malformed_app_id}
+    assert _run(tmp_path, records=[_record(), malformed]) == "false"
 
 
 def test_workflow_decision_fails_closed_for_malformed_or_duplicate_json(tmp_path):
@@ -161,3 +213,12 @@ def test_workflow_routes_integration_push_once_and_preserves_exact_check_names()
     assert "git rev-parse HEAD" in workflow
     for name in ("default", "migration-and-slow", "postgres-integration"):
         assert f"name: {name}" in workflow
+
+
+def test_duplicate_pr_suppression_requires_same_repository_and_exact_generated_ref():
+    exact = "aq/integration/p-" + "5" * 32 + "/r-" + "6" * 32
+    assert _matching_pr(head_repository="acme/widgets", head_ref=exact) == "true"
+    assert _matching_pr(head_repository="fork/widgets", head_ref=exact) == "false"
+    assert _matching_pr(
+        head_repository="acme/widgets", head_ref="aq/integration/untrusted"
+    ) == "false"

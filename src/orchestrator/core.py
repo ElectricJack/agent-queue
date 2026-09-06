@@ -473,6 +473,7 @@ class Orchestrator(
         self.integration_service = None
         self.integration_attestation_service = None
         self.integration_attestation_resolver = None
+        self.integration_app_client_factory = None
         # Reference to the command handler, set by the bot after initialization.
         # Used to pass handler references to interactive Discord views (e.g.
         # Retry/Skip buttons on failed task notifications).
@@ -1485,11 +1486,15 @@ class Orchestrator(
                 key_provider=OwnerFilePrivateKeyProvider(),
             )
 
+        self.integration_app_client_factory = (
+            integration_app_client if github_app_config is not None else None
+        )
+
         self.integration_attestation_service = IntegrationAttestationService(
             self.db,
             data_dir=self.config.data_dir,
             git_manager=self.git,
-            app_client_factory=(integration_app_client if github_app_config is not None else None),
+            app_client_factory=self.integration_app_client_factory,
         )
         self.integration_attestation_resolver = self.integration_attestation_service.resolve
         self.integration_service = IntegrationService(

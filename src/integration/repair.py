@@ -12,6 +12,7 @@ from sqlalchemy import insert, select, update
 from src.database.tables import (
     agents,
     integration_batches,
+    integration_attestation_publications,
     integration_branch_owners,
     integration_candidate_revisions,
     integration_candidate_ref_mutations,
@@ -805,6 +806,20 @@ class RepairService:
                 )
             ).scalar_one_or_none()
             if live_mutation is not None:
+                return self._timeout_value("not_due", "wait", operation_id, stage)
+            live_attestation = (
+                await conn.execute(
+                    select(integration_attestation_publications.c.id).where(
+                        integration_attestation_publications.c.operation_id == operation_id,
+                        integration_attestation_publications.c.state == "reserved",
+                        (
+                            integration_attestation_publications.c.prewrite_at.is_not(None)
+                            | (integration_attestation_publications.c.expires_at > observed_at)
+                        ),
+                    )
+                )
+            ).scalar_one_or_none()
+            if live_attestation is not None:
                 return self._timeout_value("not_due", "wait", operation_id, stage)
             if (
                 operation["target_kind"] == "batch"

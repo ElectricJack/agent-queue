@@ -1,14 +1,17 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from types import SimpleNamespace
 
 import pytest
 from sqlalchemy import insert, select, update
+from sqlalchemy.exc import DBAPIError
 
 from src.database import Database
 from src.database.tables import (
     integration_batches,
+    integration_attestation_publications,
     integration_candidate_publications,
     integration_candidate_revisions,
     integration_check_evidence,
@@ -19,6 +22,7 @@ from src.git.github_app import GitHubAppError, GitHubRepositoryBinding
 from src.integration.attestation import IntegrationAttestationService
 from src.integration.ci import ATTESTATION_CHECK_NAME, AttestationPayload
 from src.integration.main_promotion import RootAttestationSubject
+from src.integration.repair import RepairService
 from src.models import Project, RepoConfig, RepoSourceType
 
 
@@ -393,10 +397,11 @@ async def test_publish_revalidates_subject_after_provider_io(attestation_db, tmp
 @pytest.mark.asyncio
 async def test_publish_crash_replays_existing_record_without_duplicate(attestation_db, tmp_path):
     client = ProviderClient()
+    now = [10.0]
 
     async def crash(phase):
-        assert phase == "after_attestation_publication"
-        raise RuntimeError("simulated daemon loss")
+        if phase == "after_attestation_publication":
+            raise RuntimeError("simulated daemon loss")
 
     first = IntegrationAttestationService(
         attestation_db,
@@ -404,6 +409,7 @@ async def test_publish_crash_replays_existing_record_without_duplicate(attestati
         git_manager=ExactTreeGit(trust_document()),
         app_client_factory=lambda binding: client,
         crash_hook=crash,
+        clock=lambda: now[0],
     )
     with pytest.raises(RuntimeError, match="simulated daemon loss"):
         await first.publish(subject())
@@ -413,7 +419,10 @@ async def test_publish_crash_replays_existing_record_without_duplicate(attestati
         data_dir=tmp_path,
         git_manager=ExactTreeGit(trust_document()),
         app_client_factory=lambda binding: client,
+        clock=lambda: now[0],
     )
+    assert (await restarted.publish(subject())).outcome == "configuration_blocked"
+    now[0] = 311.0
     replay = await restarted.publish(subject())
 
     assert replay.outcome == "already_published"
@@ -425,6 +434,7 @@ async def test_publish_crash_replays_existing_record_without_duplicate(attestati
 @pytest.mark.asyncio
 async def test_lost_publication_response_reconciles_without_duplicate(attestation_db, tmp_path):
     client = ProviderClient()
+    now = [10.0]
     original = client.request_json
 
     async def publish_then_lose_response(*args, **kwargs):
@@ -437,6 +447,7 @@ async def test_lost_publication_response_reconciles_without_duplicate(attestatio
         data_dir=tmp_path,
         git_manager=ExactTreeGit(trust_document()),
         app_client_factory=lambda binding: client,
+        clock=lambda: now[0],
     )
     assert (await first.publish(subject())).outcome == "configuration_blocked"
 
@@ -446,11 +457,41 @@ async def test_lost_publication_response_reconciles_without_duplicate(attestatio
         data_dir=tmp_path,
         git_manager=ExactTreeGit(trust_document()),
         app_client_factory=lambda binding: client,
+        clock=lambda: now[0],
     )
+    assert (await restarted.publish(subject())).outcome == "configuration_blocked"
+    now[0] = 311.0
     result = await restarted.publish(subject())
     assert result.outcome == "already_published"
     assert result.proof is not None
     assert client.published == 1
+
+
+@pytest.mark.asyncio
+async def test_marked_publication_freezes_execution_nonce(attestation_db, tmp_path):
+    client = ProviderClient()
+
+    async def lose_response(*args, **kwargs):
+        await ProviderClient.request_json(client, *args, **kwargs)
+        raise GitHubAppError("transient", "response lost")
+
+    client.request_json = lose_response
+    service = IntegrationAttestationService(
+        attestation_db,
+        data_dir=tmp_path,
+        git_manager=ExactTreeGit(trust_document()),
+        app_client_factory=lambda binding: client,
+        clock=lambda: 10.0,
+    )
+    assert (await service.publish(subject())).outcome == "configuration_blocked"
+
+    with pytest.raises(DBAPIError, match="immutable"):
+        async with attestation_db.immediate() as conn:
+            await conn.execute(
+                update(integration_attestation_publications).values(
+                    execution_nonce="replacement-nonce"
+                )
+            )
 
 
 @pytest.mark.asyncio
@@ -541,3 +582,149 @@ async def test_green_candidate_remains_retryable_until_main_promotion(attestatio
         )
 
     assert await attestation_db.pending_candidate_ci_page(after=None, limit=10) == []
+
+
+@pytest.mark.asyncio
+async def test_two_fresh_services_reserve_one_provider_publication(attestation_db, tmp_path):
+    class RacingProvider(ProviderClient):
+        def __init__(self):
+            super().__init__()
+            self.entered = 0
+            self.both_entered = asyncio.Event()
+
+        async def request_json(self, method, path, *, json_body, expected_statuses):
+            self.entered += 1
+            if self.entered == 2:
+                self.both_entered.set()
+            try:
+                await asyncio.wait_for(self.both_entered.wait(), timeout=0.5)
+            except TimeoutError:
+                pass
+            return await super().request_json(
+                method, path, json_body=json_body, expected_statuses=expected_statuses
+            )
+
+    client = RacingProvider()
+
+    def fresh():
+        return IntegrationAttestationService(
+            attestation_db,
+            data_dir=tmp_path,
+            git_manager=ExactTreeGit(trust_document()),
+            app_client_factory=lambda binding: client,
+            clock=lambda: 10.0,
+        )
+
+    results = await asyncio.gather(fresh().publish(subject()), fresh().publish(subject()))
+
+    assert client.published == 1
+    assert sum(result.proof is not None for result in results) == 1
+    assert {result.outcome for result in results} <= {
+        "published",
+        "already_published",
+        "configuration_blocked",
+    }
+
+
+@pytest.mark.asyncio
+async def test_expired_unmarked_reservation_can_be_taken_over(attestation_db, tmp_path):
+    now = [10.0]
+    client = ProviderClient()
+
+    async def crash(phase):
+        if phase == "after_publication_reservation":
+            raise RuntimeError("lost before provider write")
+
+    first = IntegrationAttestationService(
+        attestation_db,
+        data_dir=tmp_path,
+        git_manager=ExactTreeGit(trust_document()),
+        app_client_factory=lambda binding: client,
+        crash_hook=crash,
+        clock=lambda: now[0],
+    )
+    with pytest.raises(RuntimeError, match="lost before provider write"):
+        await first.publish(subject())
+    now[0] = 311.0
+    successor = IntegrationAttestationService(
+        attestation_db,
+        data_dir=tmp_path,
+        git_manager=ExactTreeGit(trust_document()),
+        app_client_factory=lambda binding: client,
+        clock=lambda: now[0],
+    )
+
+    result = await successor.publish(subject())
+    assert result.outcome == "published"
+    assert client.published == 1
+
+
+@pytest.mark.asyncio
+async def test_expired_marked_reservation_reconciles_but_never_reposts(attestation_db, tmp_path):
+    now = [10.0]
+
+    class LostBeforeProviderRecord(ProviderClient):
+        def __init__(self):
+            super().__init__()
+            self.posts = 0
+
+        async def request_json(self, method, path, *, json_body, expected_statuses):
+            self.posts += 1
+            raise GitHubAppError("transient", "ambiguous provider response")
+
+    client = LostBeforeProviderRecord()
+    first = IntegrationAttestationService(
+        attestation_db,
+        data_dir=tmp_path,
+        git_manager=ExactTreeGit(trust_document()),
+        app_client_factory=lambda binding: client,
+        clock=lambda: now[0],
+    )
+    assert (await first.publish(subject())).outcome == "configuration_blocked"
+    now[0] = 311.0
+    successor = IntegrationAttestationService(
+        attestation_db,
+        data_dir=tmp_path,
+        git_manager=ExactTreeGit(trust_document()),
+        app_client_factory=lambda binding: client,
+        clock=lambda: now[0],
+    )
+
+    assert (await successor.publish(subject())).outcome == "configuration_blocked"
+    assert client.posts == 1
+    async with attestation_db._engine.connect() as conn:
+        claim = (
+            await conn.execute(select(integration_attestation_publications))
+        ).mappings().one()
+    assert claim["state"] == "reserved" and claim["prewrite_at"] == 10.0
+
+
+@pytest.mark.asyncio
+async def test_live_publication_reservation_blocks_stage_expiry(attestation_db, tmp_path):
+    reserved = asyncio.Event()
+    release = asyncio.Event()
+
+    async def pause_after_reservation(phase):
+        if phase == "after_publication_reservation":
+            reserved.set()
+            await release.wait()
+
+    publisher = IntegrationAttestationService(
+        attestation_db,
+        data_dir=tmp_path,
+        git_manager=ExactTreeGit(trust_document()),
+        app_client_factory=lambda binding: ProviderClient(),
+        clock=lambda: 900.0,
+        crash_hook=pause_after_reservation,
+    )
+    task = asyncio.create_task(publisher.publish(subject()))
+    await asyncio.wait_for(reserved.wait(), timeout=1.0)
+
+    result = await RepairService(attestation_db, clock=lambda: 1001.0).expire(
+        "root-op", 0, now=1001.0
+    )
+
+    assert result["outcome"] == "not_due"
+    assert result["action"] == "wait"
+    release.set()
+    assert (await asyncio.wait_for(task, timeout=1.0)).outcome == "published"

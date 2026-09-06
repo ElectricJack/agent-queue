@@ -291,6 +291,9 @@ class IntegrationCommandsMixin:
             data_dir=self.config.data_dir,
             git_manager=self.orchestrator.git,
             app_client=getattr(self.orchestrator, "integration_app_client", None),
+            app_client_factory=getattr(
+                self.orchestrator, "integration_app_client_factory", None
+            ),
             attestation_resolver=getattr(
                 self.orchestrator, "integration_attestation_resolver", None
             ),

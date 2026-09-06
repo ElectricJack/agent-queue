@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import os
 import subprocess
 from types import SimpleNamespace
@@ -40,12 +41,15 @@ from src.integration.main_promotion import (
     RootPromotionInvariantError,
     RootPromotionService as _RootPromotionService,
 )
+from src.integration.attestation import IntegrationAttestationService
+from src.integration.ci import ATTESTATION_CHECK_NAME, AttestationPayload
 from src.integration.candidates import CandidateBuildResult, CandidateService
 from src.integration.models import BranchKey, Fence
 from src.integration.ownership import BranchBusy, BranchOwnership
 from src.integration.promotion import PromotionInvariantError, PromotionService
 from src.integration.repair import RepairService
 from src.git.manager import GitError, GitManager
+from src.git.github_app import GitHubRepositoryBinding
 from src.models import Project, RepoConfig, RepoSourceType
 from src.profiles.capabilities import DENY_ALL
 from tests.pg_dsn import create_scratch_database, ensure_worker_postgres_dsn
@@ -207,7 +211,8 @@ async def prepared_db(tmp_path, request):
         await conn.execute(
             insert(integration_check_evidence).values(
                 id="ci-green", operation_id="root-op", batch_id="batch", candidate_revision=0,
-                producer_id="404", workflow_id="aggregate:1", run_id="attestation:1", attempt=0,
+                producer_id="404", workflow_id="aggregate:1",
+                run_id=_root_attestation_payload().external_id, attempt=0,
                 required_check_version="checks-v1", checks={"unit": "success", "postgres": "success"},
                 conclusion="success", classification="conclusive", observed_at=3.0,
             )
@@ -347,6 +352,83 @@ class InFlightPushGit(PushGit):
         self.entered.set()
         await self.release.wait()
         return await super().apush_oid_with_app_auth(*args, **kwargs)
+
+
+def _root_attestation_payload() -> AttestationPayload:
+    return AttestationPayload.model_validate(
+        {
+            "schema": "aq.integration-attestation.v1",
+            "canonical_repository_id": "repo",
+            "repository_id": 99,
+            "ci_producer_app_id": 404,
+            "attestation_app_id": 101,
+            "head_sha": HEAD,
+            "required_check_set_version": "checks-v1",
+            "checks": [
+                {"name": name, "check_run_id": 11 + index, "check_suite_id": 21 + index,
+                 "producer_app_id": 404, "head_sha": HEAD, "conclusion": "success"}
+                for index, name in enumerate(("unit", "postgres"))
+            ],
+            "workflow_runs": [
+                {"workflow_run_id": 31 + index, "run_attempt": 1,
+                 "check_suite_id": 21 + index, "head_sha": HEAD, "conclusion": "success"}
+                for index in range(2)
+            ],
+        }
+    )
+
+
+class RootAttestationProvider:
+    def __init__(self):
+        self.config = SimpleNamespace(app_id=101)
+        self.repository = GitHubRepositoryBinding(99, "acme/widgets")
+        self.records = []
+        self.posts = 0
+
+    async def installation_token(self):
+        return "dummy-installation-token"
+
+    async def paged_items(self, path, *, key):
+        if key == "workflow_runs":
+            return [
+                {"id": 31 + index, "workflow_id": 301 + index, "run_attempt": 1,
+                 "check_suite_id": 21 + index, "head_sha": HEAD,
+                 "conclusion": "success"}
+                for index in range(2)
+            ]
+        for index, name in enumerate(("unit", "postgres")):
+            if f"check_name={name}" in path:
+                return [{"id": 11 + index, "name": name, "app": {"id": 404},
+                         "head_sha": HEAD, "status": "completed", "conclusion": "success",
+                         "check_suite": {"id": 21 + index}}]
+        return list(self.records)
+
+    async def request_json(self, method, path, *, json_body, expected_statuses):
+        self.posts += 1
+        self.records.append({"id": 7001, "app": {"id": 101}, **json_body})
+        return {"id": 7001}
+
+
+class RootTrustGit:
+    async def afetch_exact_oid_with_app_auth(self, _store, **kwargs):
+        return kwargs["oid"]
+
+    async def arun_git_result(self, args, **_kwargs):
+        trust = {
+            "schema": "aq.integration-trust.v1",
+            "canonical_repository_id": "repo",
+            "repository_id": 99,
+            "full_name": "acme/widgets",
+            "ci_producer_app_id": 404,
+            "attestation_app_id": 101,
+            "attestation_name": ATTESTATION_CHECK_NAME,
+            "required_checks": {"version": "checks-v1", "names": ["unit", "postgres"]},
+        }
+        return SimpleNamespace(
+            returncode=0,
+            stdout=json.dumps(trust, sort_keys=True, separators=(",", ":")),
+            stderr="",
+        )
 
 
 class ClockAdvancingApp(FakeAppClient):
@@ -652,6 +734,138 @@ async def test_root_command_cannot_bypass_attestation_proof(prepared_db, mismatc
         assert await conn.scalar(
             select(func.count()).select_from(integration_candidate_ref_mutations)
         ) == 0
+
+
+@pytest.mark.asyncio
+async def test_root_command_constructs_exact_repository_bound_app_client(prepared_db):
+    db, data_dir = prepared_db
+    app = FakeAppClient()
+    git = PushGit(app)
+    bindings = []
+
+    def factory(binding):
+        bindings.append(binding)
+        app.repository = binding
+        return app
+
+    class Handler(IntegrationCommandsMixin):
+        pass
+
+    handler = Handler()
+    handler.db = db
+    handler.config = SimpleNamespace(data_dir=data_dir)
+    handler.orchestrator = SimpleNamespace(
+        git=git,
+        integration_app_client_factory=factory,
+        integration_attestation_resolver=ExactAttestationResolver(),
+    )
+    async with db.immediate() as conn:
+        await conn.execute(update(project_integration_leases).values(expires_at=9_999_999_999.0))
+        await conn.execute(update(integration_repair_stages).values(deadline_at=9_999_999_999.0))
+
+    with principal_context(ExecutionPrincipal.service("root-playbook")):
+        result = await handler._cmd_integration_promote_main(
+            {"batch_id": "batch", "revision": 0}
+        )
+
+    assert result["outcome"] == "promoted"
+    assert bindings == [GitHubRepositoryBinding(99, "acme/widgets")]
+    assert len(git.pushes) == 1
+
+
+@pytest.mark.asyncio
+async def test_root_command_without_app_factory_remains_blocked(prepared_db):
+    db, data_dir = prepared_db
+    app = FakeAppClient()
+    git = PushGit(app)
+
+    class Handler(IntegrationCommandsMixin):
+        pass
+
+    handler = Handler()
+    handler.db = db
+    handler.config = SimpleNamespace(data_dir=data_dir)
+    handler.orchestrator = SimpleNamespace(
+        git=git,
+        integration_attestation_resolver=ExactAttestationResolver(),
+    )
+    async with db.immediate() as conn:
+        await conn.execute(update(project_integration_leases).values(expires_at=9_999_999_999.0))
+        await conn.execute(update(integration_repair_stages).values(deadline_at=9_999_999_999.0))
+
+    with principal_context(ExecutionPrincipal.service("root-playbook")):
+        result = await handler._cmd_integration_promote_main(
+            {"batch_id": "batch", "revision": 0}
+        )
+
+    assert result["outcome"] == "configuration_blocked"
+    assert git.pushes == []
+
+
+@pytest.mark.asyncio
+async def test_publication_and_main_are_ordered_in_both_directions(prepared_db):
+    db, data_dir = prepared_db
+    provider = RootAttestationProvider()
+    reserved = asyncio.Event()
+    release = asyncio.Event()
+
+    async def pause_after_reservation(phase):
+        if phase == "after_publication_reservation":
+            reserved.set()
+            await release.wait()
+
+    publication = IntegrationAttestationService(
+        db,
+        data_dir=data_dir,
+        git_manager=RootTrustGit(),
+        app_client_factory=lambda binding: provider,
+        crash_hook=pause_after_reservation,
+        clock=lambda: 10.0,
+    )
+    publish_task = asyncio.create_task(
+        publication.publish(
+            RootAttestationProof(
+                repository_numeric_id=99,
+                repository_full_name="acme/widgets",
+                operation_id="root-op",
+                batch_id="batch",
+                revision=0,
+                candidate_sha=HEAD,
+                required_check_version="checks-v1",
+                check_run_id=1,
+                external_id="aq-attestation-v1:" + "1" * 64,
+            ).subject()
+        )
+    )
+    await asyncio.wait_for(reserved.wait(), timeout=1)
+    root_app = FakeAppClient()
+    root = _RootPromotionService(
+        db,
+        data_dir=data_dir,
+        git_manager=PushGit(root_app),
+        app_client=root_app,
+        attestation_resolver=publication.resolve,
+        clock=lambda: 10.0,
+    )
+
+    blocked = await root.prepare("batch", 0)
+    assert blocked.outcome == "configuration_blocked"
+    release.set()
+    published = await publish_task
+    assert published.outcome == "published"
+    assert provider.posts == 1
+
+    prepared = await root.prepare("batch", 0)
+    assert prepared.outcome == "prepared"
+    after_main_started = await IntegrationAttestationService(
+        db,
+        data_dir=data_dir,
+        git_manager=RootTrustGit(),
+        app_client_factory=lambda binding: provider,
+        clock=lambda: 10.0,
+    ).publish(published.subject)
+    assert after_main_started.outcome == "stale"
+    assert provider.posts == 1
 
 
 @pytest.mark.asyncio

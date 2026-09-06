@@ -2671,6 +2671,60 @@ integration_check_evidence = Table(
     ),
 )
 
+integration_attestation_publications = Table(
+    "integration_attestation_publications",
+    metadata,
+    Column("id", Text, primary_key=True),
+    Column("project_id", Text, nullable=False),
+    Column("batch_id", Text, nullable=False),
+    Column("revision", Integer, nullable=False),
+    Column("operation_id", Text, nullable=False),
+    Column("head_sha", Text, nullable=False),
+    Column("ci_evidence_id", Text, nullable=False),
+    Column("external_id", Text, nullable=False),
+    Column("execution_nonce", Text, nullable=False),
+    Column("state", Text, nullable=False),
+    Column("prewrite_at", Float, nullable=True),
+    Column("check_run_id", Integer, nullable=True),
+    Column("expires_at", Float, nullable=False),
+    Column("created_at", Float, nullable=False),
+    Column("updated_at", Float, nullable=False),
+    UniqueConstraint(
+        "batch_id", "revision", name="uq_integration_attestation_publications_subject"
+    ),
+    UniqueConstraint(
+        "external_id", name="uq_integration_attestation_publications_external"
+    ),
+    CheckConstraint("revision >= 0", name="ck_integration_attestation_publications_revision"),
+    CheckConstraint(
+        "state IN ('reserved', 'published')",
+        name="ck_integration_attestation_publications_state",
+    ),
+    CheckConstraint(
+        "(state = 'reserved' AND check_run_id IS NULL) OR "
+        "(state = 'published' AND prewrite_at IS NOT NULL AND check_run_id > 0)",
+        name="ck_integration_attestation_publications_result",
+    ),
+    ForeignKeyConstraint(
+        ["batch_id", "revision"],
+        ["integration_candidate_revisions.batch_id", "integration_candidate_revisions.revision"],
+        name="fk_integration_attestation_publications_revision",
+        ondelete="RESTRICT",
+    ),
+    ForeignKeyConstraint(
+        ["project_id"], ["projects.id"],
+        name="fk_integration_attestation_publications_project", ondelete="RESTRICT",
+    ),
+    ForeignKeyConstraint(
+        ["operation_id"], ["integration_repair_operations.id"],
+        name="fk_integration_attestation_publications_operation", ondelete="RESTRICT",
+    ),
+    ForeignKeyConstraint(
+        ["ci_evidence_id"], ["integration_check_evidence.id"],
+        name="fk_integration_attestation_publications_evidence", ondelete="RESTRICT",
+    ),
+)
+
 integration_repair_stage_evidence = Table(
     "integration_repair_stage_evidence",
     metadata,

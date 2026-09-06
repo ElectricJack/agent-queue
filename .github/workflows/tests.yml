@@ -22,6 +22,7 @@ jobs:
       checks: read
     outputs:
       skip_full_ci: ${{ steps.decision.outputs.skip_full_ci }}
+      suppress_duplicate_pr: ${{ steps.decision.outputs.suppress_duplicate_pr }}
     steps:
       - name: Checkout exact event revision
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
@@ -89,6 +90,9 @@ jobs:
           CHECKOUT_SHA: ${{ github.sha }}
           ATTESTATION_APP_ID: ${{ vars.AQ_INTEGRATION_ATTESTATION_APP_ID }}
           REQUIRED_CHECK_VERSION: ${{ vars.AQ_INTEGRATION_REQUIRED_CHECK_VERSION }}
+          REPOSITORY_FULL_NAME: ${{ github.repository }}
+          HEAD_REPOSITORY_FULL_NAME: ${{ github.event.pull_request.head.repo.full_name }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
         run: |
           value=$(python scripts/check-integration-attestation.py \
             --event-name "$EVENT_NAME" --ref "$EVENT_REF" \
@@ -98,6 +102,12 @@ jobs:
             --trust-file .github/agent-queue-integration.json \
             --records-file attestation-records.json)
           echo "skip_full_ci=$value" >> "$GITHUB_OUTPUT"
+          duplicate=$(python scripts/check-integration-attestation.py \
+            --matching-integration-pr --event-name "$EVENT_NAME" \
+            --repository-full-name "$REPOSITORY_FULL_NAME" \
+            --head-repository-full-name "$HEAD_REPOSITORY_FULL_NAME" \
+            --head-ref "$HEAD_REF")
+          echo "suppress_duplicate_pr=$duplicate" >> "$GITHUB_OUTPUT"
 
   test:
     name: Tests (${{ matrix.suite.name }})
@@ -107,8 +117,7 @@ jobs:
       ((github.event_name == 'push' &&
         startsWith(github.ref, 'refs/heads/aq/integration/')) ||
        (needs.integration-attestation.outputs.skip_full_ci != 'true' &&
-        !(github.event_name == 'pull_request' &&
-          startsWith(github.event.pull_request.head.ref, 'aq/integration/'))))
+        needs.integration-attestation.outputs.suppress_duplicate_pr != 'true'))
     runs-on: ubuntu-latest
     timeout-minutes: 30
     strategy:

@@ -111,7 +111,12 @@ def malformed_record_id(record: dict, kind: str) -> dict:
     if kind == "missing":
         changed.pop("id", None)
     else:
-        changed["id"] = {"bool": True, "string": "90", "nonpositive": 0}[kind]
+        changed["id"] = {
+            "bool": True,
+            "float": 90.0,
+            "string": "90",
+            "nonpositive": 0,
+        }[kind]
     return changed
 
 
@@ -152,11 +157,12 @@ def test_newest_exact_name_trusted_app_record_wins_and_invalid_newest_fails_clos
         )
 
     selected = select_trusted_attestation([older], trust(), expected_head_sha=SHA)
-    assert selected.external_id.startswith("aq-attestation-v1:")
-    assert selected.checks[0].name == "unit"
+    assert selected.record_id == 50
+    assert selected.payload.external_id.startswith("aq-attestation-v1:")
+    assert selected.payload.checks[0].name == "unit"
 
 
-@pytest.mark.parametrize("kind", ["missing", "bool", "string", "nonpositive"])
+@pytest.mark.parametrize("kind", ["missing", "bool", "float", "string", "nonpositive"])
 def test_attestation_read_rejects_any_malformed_trusted_ordering_id(kind):
     payload = canonical(payload_dict())
     older = check_record(50, payload)
@@ -164,6 +170,21 @@ def test_attestation_read_rejects_any_malformed_trusted_ordering_id(kind):
 
     with pytest.raises(AttestationError, match="ordering identity"):
         select_trusted_attestation([older, malformed], trust(), expected_head_sha=SHA)
+
+
+@pytest.mark.parametrize("malformed_app_id", [101.0, True])
+def test_attestation_selection_rejects_loose_numeric_app_identity(malformed_app_id):
+    trusted = trust()
+    if malformed_app_id is True:
+        data = trusted.model_dump(mode="json", by_alias=True)
+        data["attestation_app_id"] = 1
+        trusted = IntegrationTrustManifest.model_validate(data)
+    valid = check_record(50, canonical(payload_dict()))
+    valid["app"] = {"id": trusted.attestation_app_id}
+    malformed = dict(valid, id=90, app={"id": malformed_app_id})
+
+    with pytest.raises(AttestationError, match="App identity"):
+        select_trusted_attestation([valid, malformed], trusted, expected_head_sha=SHA)
 
 
 class FakeGitHubClient:
@@ -224,7 +245,7 @@ async def test_authenticated_observer_rejects_partial_required_matrix():
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("kind", ["missing", "bool", "string", "nonpositive"])
+@pytest.mark.parametrize("kind", ["missing", "bool", "float", "string", "nonpositive"])
 async def test_required_check_rejects_any_malformed_trusted_ordering_id(kind):
     valid = {
         "id": 11,
@@ -239,6 +260,25 @@ async def test_required_check_rejects_any_malformed_trusted_ordering_id(kind):
     client = FakeGitHubClient({"unit": [valid, malformed], "postgres": []}, [])
 
     with pytest.raises(AttestationError, match="ordering identity"):
+        await AuthenticatedGitHubObserver(client).observe(trust(), SHA)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("malformed_app_id", [404.0, True])
+async def test_required_check_rejects_loose_numeric_app_identity(malformed_app_id):
+    valid = {
+        "id": 11,
+        "name": "unit",
+        "head_sha": SHA,
+        "status": "completed",
+        "conclusion": "success",
+        "app": {"id": 404},
+        "check_suite": {"id": 21},
+    }
+    malformed = {**valid, "id": 12, "app": {"id": malformed_app_id}}
+    client = FakeGitHubClient({"unit": [valid, malformed], "postgres": []}, [])
+
+    with pytest.raises(AttestationError, match="App identity"):
         await AuthenticatedGitHubObserver(client).observe(trust(), SHA)
 
 
@@ -291,7 +331,7 @@ async def test_publish_attestation_reuses_byte_identical_trusted_record():
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("kind", ["missing", "bool", "string", "nonpositive"])
+@pytest.mark.parametrize("kind", ["missing", "bool", "float", "string", "nonpositive"])
 async def test_publish_rejects_any_malformed_trusted_ordering_id(kind):
     payload = AttestationPayload.model_validate(payload_dict())
     older = check_record(71, payload.canonical_bytes())
@@ -299,6 +339,22 @@ async def test_publish_rejects_any_malformed_trusted_ordering_id(kind):
     client = FakeGitHubClient({"attestation": [older, malformed]}, [])
 
     with pytest.raises(AttestationError, match="ordering identity"):
+        await AuthenticatedGitHubObserver(client).publish(trust(), payload)
+    assert client.published == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("malformed_app_id", [101.0, True])
+async def test_publish_rejects_loose_numeric_app_identity(malformed_app_id):
+    payload = AttestationPayload.model_validate(payload_dict())
+    valid = check_record(71, payload.canonical_bytes())
+    malformed = {
+        **check_record(90, payload.canonical_bytes()),
+        "app": {"id": malformed_app_id},
+    }
+    client = FakeGitHubClient({"attestation": [valid, malformed]}, [])
+
+    with pytest.raises(AttestationError, match="App identity"):
         await AuthenticatedGitHubObserver(client).publish(trust(), payload)
     assert client.published == []
 

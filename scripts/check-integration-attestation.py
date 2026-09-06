@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import re
 from pathlib import Path
 from typing import Any
 
@@ -95,6 +96,7 @@ def _valid_payload(payload: object, trust: dict[str, Any], head_sha: str) -> boo
     if not isinstance(checks, list) or not checks or not isinstance(workflows, list) or not workflows:
         return False
     names: list[str] = []
+    check_ids: list[int] = []
     suites: list[int] = []
     for check in checks:
         if not isinstance(check, dict) or set(check) != {
@@ -111,6 +113,7 @@ def _valid_payload(payload: object, trust: dict[str, Any], head_sha: str) -> boo
         ):
             return False
         names.append(check["name"])
+        check_ids.append(check["check_run_id"])
         suites.append(check["check_suite_id"])
     workflow_suites: list[int] = []
     for workflow in workflows:
@@ -133,7 +136,7 @@ def _valid_payload(payload: object, trust: dict[str, Any], head_sha: str) -> boo
         and payload.get("required_check_set_version") == trust["required_checks"]["version"]
         and names == trust["required_checks"]["names"]
         and len(names) == len(set(names))
-        and len(suites) == len(set(suites))
+        and len(check_ids) == len(set(check_ids))
         and set(suites) == set(workflow_suites)
         and len(workflow_suites) == len(set(workflow_suites))
     )
@@ -159,15 +162,15 @@ def decide(args: argparse.Namespace) -> bool:
         if not isinstance(record, dict):
             continue
         app = record.get("app")
-        if (
-            record.get("name") == ATTESTATION_NAME
-            and isinstance(app, dict)
-            and _positive_int(app.get("id"))
-            and app.get("id") == app_id
-        ):
-            if not _positive_int(record.get("id")):
-                return False
-            trusted.append((record["id"], record))
+        if record.get("name") != ATTESTATION_NAME:
+            continue
+        if not isinstance(app, dict) or not _positive_int(app.get("id")):
+            return False
+        if app.get("id") != app_id:
+            continue
+        if not _positive_int(record.get("id")):
+            return False
+        trusted.append((record["id"], record))
     if not trusted:
         return False
     record = max(trusted, key=lambda item: item[0])[1]
@@ -189,14 +192,28 @@ def decide(args: argparse.Namespace) -> bool:
 
 def main() -> None:
     parser = argparse.ArgumentParser()
+    parser.add_argument("--matching-integration-pr", action="store_true")
     for name in (
         "event-name", "ref", "repository-id", "checkout-sha", "integration-app-id",
         "required-check-version", "trust-file", "records-file",
     ):
-        parser.add_argument(f"--{name}", required=True)
+        parser.add_argument(f"--{name}")
+    for name in ("repository-full-name", "head-repository-full-name", "head-ref"):
+        parser.add_argument(f"--{name}")
     args = parser.parse_args()
     try:
-        result = decide(args)
+        if args.matching_integration_pr:
+            result = bool(
+                args.event_name == "pull_request"
+                and args.repository_full_name
+                and args.head_repository_full_name == args.repository_full_name
+                and isinstance(args.head_ref, str)
+                and re.fullmatch(
+                    r"aq/integration/p-[0-9a-f]{32}/r-[0-9a-f]{32}", args.head_ref
+                )
+            )
+        else:
+            result = decide(args)
     except Exception:
         result = False
     print("true" if result else "false")
