@@ -9,7 +9,7 @@ from dataclasses import replace
 from pathlib import Path
 
 import pytest
-from sqlalchemy import func, insert, select, update
+from sqlalchemy import delete, func, insert, select, update
 
 from src.database import Database
 from src.database.tables import (
@@ -1273,12 +1273,16 @@ async def test_expired_writer_observes_without_starting_push(db, tmp_path):
     async with db._engine.connect() as conn:
         remaining = (
             await conn.execute(
-                select(integration_candidate_ref_mutations.c.id).where(
+                select(
+                    integration_candidate_ref_mutations.c.id,
+                    integration_candidate_ref_mutations.c.state,
+                ).where(
                     integration_candidate_ref_mutations.c.state == "reserved"
                 )
             )
-        ).scalar_one_or_none()
-    assert remaining is None
+        ).one_or_none()
+    assert remaining is not None
+    assert remaining.state == "reserved"
 
 
 async def test_remote_success_after_lease_expiry_is_observation_reconciled(db, tmp_path):
@@ -1325,6 +1329,189 @@ async def test_remote_success_after_lease_expiry_is_observation_reconciled(db, t
     ).build("batch")
     assert fresh.outcome == "wait"
     assert fresh_git.pushes == []
+
+
+@pytest.mark.parametrize("expire_authority", (False, True))
+async def test_lost_force_with_lease_response_reconciles_without_second_push(
+    db, tmp_path, expire_authority
+):
+    from src.git.github_app import GitHubRepositoryBinding
+    from src.integration.candidates import CandidateService
+
+    origin, _work, base, members = _make_origin(tmp_path)
+    await db.update_repo("repo", url=str(origin))
+    await _seed_batch(db, members=members[:1], base_sha=base)
+    now = {"value": 100.0}
+
+    class LostResponseGit(_LocalPushGit):
+        async def apush_oid_with_app_auth(self, checkout_path, **kwargs):
+            await super().apush_oid_with_app_auth(checkout_path, **kwargs)
+            if expire_authority:
+                now["value"] = 1001.0
+            raise RuntimeError("transport lost the successful push response")
+
+    app = _AppClient(origin)
+    app.repository = GitHubRepositoryBinding(repository_id=9, full_name="example/repo")
+    git = LostResponseGit(origin)
+    forge_backing = {"result": None, "calls": []}
+    result = await CandidateService(
+        db,
+        data_dir=tmp_path / "data",
+        git_manager=git,
+        forge_provider=_AuditForge(forge_backing),
+        app_client=app,
+        clock=lambda: now["value"],
+    ).build("batch")
+
+    assert result.outcome == ("wait" if expire_authority else "built")
+    assert len(git.pushes) == 1
+    async with db._engine.connect() as conn:
+        states = (
+            await conn.execute(select(integration_candidate_ref_mutations.c.state))
+        ).scalars().all()
+    assert states and set(states) == {"applied"}
+
+    replay_git = _LocalPushGit(origin)
+    replay = await CandidateService(
+        db,
+        data_dir=tmp_path / "data",
+        git_manager=replay_git,
+        forge_provider=_AuditForge(forge_backing),
+        app_client=app,
+        clock=lambda: now["value"],
+    ).build("batch")
+    assert replay.outcome == ("wait" if expire_authority else "already_built")
+    assert replay_git.pushes == []
+
+
+@pytest.mark.parametrize(
+    "claim_case", ("expired_expected", "live_expected", "expired_unexpected")
+)
+async def test_mutation_claim_executor_takeover_is_exclusive(db, tmp_path, claim_case):
+    from src.git.github_app import GitHubRepositoryBinding
+    from src.integration.candidates import CandidateService
+
+    origin, _work, base, members = _make_origin(tmp_path)
+    await db.update_repo("repo", url=str(origin))
+    await _seed_batch(db, members=members[:1], base_sha=base)
+    initial_app = _AppClient(origin)
+    initial_app.repository = GitHubRepositoryBinding(
+        repository_id=9, full_name="example/repo"
+    )
+    initial = CandidateService(
+        db,
+        data_dir=tmp_path / "data",
+        git_manager=_LocalPushGit(origin),
+        forge_provider=_AuditForge(),
+        app_client=initial_app,
+        clock=lambda: 100.0,
+    )
+    built = await initial.build("batch")
+    state = await initial._locked_state("batch")
+    store = await initial._ensure_store(await initial._repository("repo"))
+    expected_old = built.head_sha if claim_case != "expired_unexpected" else "e" * 40
+    expires_at = 300.0 if claim_case == "live_expected" else 99.0
+    mutation_id = initial._mutation_id(
+        purpose="candidate_partial",
+        batch_id="batch",
+        revision=0,
+        ordinal=0,
+        resolution_id=None,
+    )
+    identity = initial._mutation_identity(
+        state,
+        revision=0,
+        purpose="candidate_partial",
+        target_branch=built.branch,
+        expected_old_sha=expected_old,
+        desired_sha=base,
+        member_ordinal=0,
+        resolution_id=None,
+        expected_role="collector",
+    )
+    async with db.immediate() as conn:
+        await conn.execute(
+            insert(integration_candidate_ref_mutations).values(
+                id=mutation_id,
+                **identity,
+                nonce="existing-executor",
+                state="reserved",
+                expires_at=expires_at,
+                created_at=1.0,
+                updated_at=1.0,
+            )
+        )
+
+    class ReadBarrierApp(_AppClient):
+        def __init__(self, origin, branch):
+            super().__init__(origin)
+            self.branch = branch.removeprefix("refs/heads/")
+            self.readers = 0
+            self.both_reading = asyncio.Event()
+
+        async def exact_head_ref(self, branch):
+            value = await super().exact_head_ref(branch)
+            if branch == self.branch:
+                self.readers += 1
+                if self.readers == 2:
+                    self.both_reading.set()
+                await self.both_reading.wait()
+            return value
+
+    app = ReadBarrierApp(origin, built.branch)
+    app.repository = initial_app.repository
+    git = _LocalPushGit(origin)
+    services = [
+        CandidateService(
+            db,
+            data_dir=tmp_path / "data",
+            git_manager=git,
+            forge_provider=_AuditForge(),
+            app_client=app,
+            clock=lambda: 100.0,
+        )
+        for _ in range(2)
+    ]
+    states = [await candidate._locked_state("batch") for candidate in services]
+    results = await asyncio.wait_for(
+        asyncio.gather(
+            *(
+                candidate._mutate_ref(
+                    candidate_state,
+                    revision=0,
+                    purpose="candidate_partial",
+                    target_branch=built.branch,
+                    expected_old_sha=expected_old,
+                    desired_sha=base,
+                    store=store,
+                    member_ordinal=0,
+                )
+                for candidate, candidate_state in zip(services, states, strict=True)
+            )
+        ),
+        timeout=10.0,
+    )
+
+    async with db._engine.connect() as conn:
+        claim = (
+            await conn.execute(
+                select(integration_candidate_ref_mutations).where(
+                    integration_candidate_ref_mutations.c.id == mutation_id
+                )
+            )
+        ).mappings().one()
+    if claim_case == "expired_expected":
+        assert results.count(True) == 1
+        assert len(git.pushes) == 1
+        assert claim["state"] == "applied"
+        assert claim["nonce"] != "existing-executor"
+        assert _git(origin, "rev-parse", built.branch) == base
+    else:
+        assert results == [False, False]
+        assert git.pushes == []
+        assert claim["state"] == "reserved"
+        assert claim["nonce"] == "existing-executor"
+        assert _git(origin, "rev-parse", built.branch) == built.head_sha
 
 
 async def test_mutation_remains_authorized_beyond_old_sixty_second_window(db, tmp_path):
@@ -1570,6 +1757,7 @@ async def test_direct_caller_repair_lineage_is_not_authoritative(db, tmp_path):
         ("exact", "accepted", 0, "after_handoff_transfer"),
         ("exact", "accepted", 0, "after_handoff_push"),
         ("exact", "accepted", 0, "before_repair_acceptance"),
+        ("exact", "accepted", 0, "overlap"),
         ("exact", "accepted", 1, None),
         ("reserved", "stale", 0, None),
         ("extra", "stale", 0, None),
@@ -1820,7 +2008,81 @@ async def test_instance_bound_repair_reservation_push_and_accept_once(
             )
         assert await service.push_repair(reservation_id, repair_fence) == reservation_id
     await db.update_session(session_id, state="stopped")
-    if handoff_crash:
+    if handoff_crash == "overlap":
+        service.crash_hook = _CrashOnce("after_handoff_reservation")
+        with pytest.raises(RuntimeError, match="crash at after_handoff_reservation"):
+            await service.accept_repair(reservation_id)
+        async with db.immediate() as conn:
+            await conn.execute(
+                delete(integration_candidate_ref_mutations).where(
+                    integration_candidate_ref_mutations.c.batch_id == "batch",
+                    integration_candidate_ref_mutations.c.revision == 0,
+                    integration_candidate_ref_mutations.c.purpose == "repair_handoff",
+                )
+            )
+
+        class HandoffReadBarrierApp(_AppClient):
+            def __init__(self, origin, branch):
+                super().__init__(origin)
+                self.branch = branch.removeprefix("refs/heads/")
+                self.readers = 0
+                self.both_reading = asyncio.Event()
+                self.active = False
+
+            async def exact_head_ref(self, branch):
+                value = await super().exact_head_ref(branch)
+                if self.active and branch == self.branch:
+                    self.readers += 1
+                    if self.readers == 2:
+                        self.both_reading.set()
+                    await self.both_reading.wait()
+                return value
+
+        overlap_app = HandoffReadBarrierApp(origin, conflict.branch)
+        overlap_app.repository = app.repository
+        overlap_git = _LocalPushGit(origin)
+        both_reserved = asyncio.Event()
+        reservation_count = 0
+
+        async def overlap_after_reservation(point):
+            nonlocal reservation_count
+            if point != "after_handoff_reservation":
+                return
+            reservation_count += 1
+            if reservation_count == 2:
+                overlap_app.active = True
+                both_reserved.set()
+            await both_reserved.wait()
+
+        services = [
+            CandidateService(
+                db,
+                data_dir=tmp_path / "data",
+                git_manager=overlap_git,
+                forge_provider=_AuditForge(),
+                app_client=overlap_app,
+                repair_service=repair,
+                branch_ownership=ownership,
+                clock=lambda: 100.0,
+                crash_hook=overlap_after_reservation,
+            )
+            for _ in range(2)
+        ]
+        results = await asyncio.wait_for(
+            asyncio.gather(
+                *(candidate.accept_repair(reservation_id) for candidate in services),
+                return_exceptions=True,
+            ),
+            timeout=10.0,
+        )
+        assert not [result for result in results if isinstance(result, BaseException)]
+        assert len(overlap_git.pushes) == 1
+        assert sum(result.outcome == "accepted" for result in results) == 1
+        assert all(result.outcome in {"accepted", "wait", "already_accepted"} for result in results)
+        service = services[0]
+        accepted = next(result for result in results if result.outcome == "accepted")
+        replay = await service.accept_repair(reservation_id)
+    elif handoff_crash:
         service.crash_hook = _CrashOnce(handoff_crash)
         with pytest.raises(RuntimeError, match=f"crash at {handoff_crash}"):
             await service.accept_repair(reservation_id)
@@ -1848,6 +2110,18 @@ async def test_instance_bound_repair_reservation_push_and_accept_once(
                     )
                 ).scalar_one()
             assert handoff_claim == "reserved"
+        if handoff_crash in {"after_handoff_reservation", "after_handoff_transfer"}:
+            async with db.immediate() as conn:
+                await conn.execute(
+                    update(integration_candidate_ref_mutations)
+                    .where(
+                        integration_candidate_ref_mutations.c.batch_id == "batch",
+                        integration_candidate_ref_mutations.c.revision == 0,
+                        integration_candidate_ref_mutations.c.purpose == "repair_handoff",
+                        integration_candidate_ref_mutations.c.state == "reserved",
+                    )
+                    .values(expires_at=99.0)
+                )
         service = CandidateService(
             db,
             data_dir=tmp_path / "data",
@@ -1858,8 +2132,11 @@ async def test_instance_bound_repair_reservation_push_and_accept_once(
             branch_ownership=ownership,
             clock=lambda: 100.0,
         )
-    accepted = await service.accept_repair(reservation_id)
-    replay = await service.accept_repair(reservation_id)
+        accepted = await service.accept_repair(reservation_id)
+        replay = await service.accept_repair(reservation_id)
+    else:
+        accepted = await service.accept_repair(reservation_id)
+        replay = await service.accept_repair(reservation_id)
     assert accepted.outcome == expected
     assert replay.outcome == ("already_accepted" if expected == "accepted" else "stale")
     if repair_change == "exact" and stage == 0:

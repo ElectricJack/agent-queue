@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any, Literal, Protocol
 
 from pydantic import BaseModel, ConfigDict
-from sqlalchemy import case, delete, insert, select, update
+from sqlalchemy import case, insert, select, update
 from sqlalchemy.exc import IntegrityError
 
 from src.commands.principal import PrincipalKind, current_principal, matches_session_instance
@@ -701,55 +701,68 @@ class CandidateService:
             return self._repair_result("wait", reservation)
         await self._crash("after_handoff_push")
         await self._crash("before_repair_acceptance")
+        return await self._accept_repair_result(state, reservation)
+
+    async def _accept_repair_result(self, state, reservation):
         now = self.clock()
-        async with self.db.immediate() as conn:
-            await self.db.lock_hierarchy_project(conn, state["project"]["id"])
-            await self._validate_authority_on(conn, state, revision=reservation["revision"])
-            member = await conn.execute(
-                update(integration_candidate_member_results)
-                .where(
-                    integration_candidate_member_results.c.batch_id == reservation["batch_id"],
-                    integration_candidate_member_results.c.revision == reservation["revision"],
-                    integration_candidate_member_results.c.member_ordinal
-                    == reservation["member_ordinal"],
-                    integration_candidate_member_results.c.result == "conflict",
+        try:
+            async with self.db.immediate() as conn:
+                await self.db.lock_hierarchy_project(conn, state["project"]["id"])
+                await self._validate_authority_on(conn, state, revision=reservation["revision"])
+                member = await conn.execute(
+                    update(integration_candidate_member_results)
+                    .where(
+                        integration_candidate_member_results.c.batch_id
+                        == reservation["batch_id"],
+                        integration_candidate_member_results.c.revision
+                        == reservation["revision"],
+                        integration_candidate_member_results.c.member_ordinal
+                        == reservation["member_ordinal"],
+                        integration_candidate_member_results.c.result == "conflict",
+                    )
+                    .values(
+                        result="applied",
+                        generated_squash_sha=reservation["resolved_head_sha"],
+                        conflict_evidence={"accepted_reservation_id": reservation["id"]},
+                        updated_at=now,
+                    )
                 )
-                .values(
-                    result="applied",
-                    generated_squash_sha=reservation["resolved_head_sha"],
-                    conflict_evidence={"accepted_reservation_id": lineage},
-                    updated_at=now,
+                cursor = await conn.execute(
+                    update(integration_candidate_revisions)
+                    .where(
+                        integration_candidate_revisions.c.batch_id
+                        == reservation["batch_id"],
+                        integration_candidate_revisions.c.revision
+                        == reservation["revision"],
+                        integration_candidate_revisions.c.next_member_ordinal
+                        == reservation["member_ordinal"],
+                    )
+                    .values(
+                        next_member_ordinal=reservation["member_ordinal"] + 1,
+                        head_sha=reservation["resolved_head_sha"],
+                        updated_at=now,
+                    )
                 )
-            )
-            cursor = await conn.execute(
-                update(integration_candidate_revisions)
-                .where(
-                    integration_candidate_revisions.c.batch_id == reservation["batch_id"],
-                    integration_candidate_revisions.c.revision == reservation["revision"],
-                    integration_candidate_revisions.c.next_member_ordinal
-                    == reservation["member_ordinal"],
+                consumed = await conn.execute(
+                    update(integration_candidate_resolutions)
+                    .where(
+                        integration_candidate_resolutions.c.id == reservation["id"],
+                        integration_candidate_resolutions.c.state == "pushed",
+                    )
+                    .values(state="accepted", updated_at=now)
                 )
-                .values(
-                    next_member_ordinal=reservation["member_ordinal"] + 1,
-                    head_sha=reservation["resolved_head_sha"],
-                    updated_at=now,
+                if member.rowcount != 1 or cursor.rowcount != 1 or consumed.rowcount != 1:
+                    raise CandidateStaleAuthority("candidate repair acceptance CAS lost")
+                await conn.execute(
+                    update(integration_batches)
+                    .where(integration_batches.c.id == reservation["batch_id"])
+                    .values(lifecycle="building", updated_at=now)
                 )
-            )
-            consumed = await conn.execute(
-                update(integration_candidate_resolutions)
-                .where(
-                    integration_candidate_resolutions.c.id == lineage,
-                    integration_candidate_resolutions.c.state == "pushed",
-                )
-                .values(state="accepted", updated_at=now)
-            )
-            if member.rowcount != 1 or cursor.rowcount != 1 or consumed.rowcount != 1:
-                raise CandidateStaleAuthority("candidate repair acceptance CAS lost")
-            await conn.execute(
-                update(integration_batches)
-                .where(integration_batches.c.id == reservation["batch_id"])
-                .values(lifecycle="building", updated_at=now)
-            )
+        except CandidateStaleAuthority:
+            canonical = await self._resolution(reservation["id"])
+            if canonical is not None and canonical["state"] == "accepted":
+                return self._repair_result("already_accepted", canonical)
+            return self._repair_result("wait", reservation)
         return self._repair_result("accepted", reservation)
 
     async def _reserve_repair_handoff(self, state, reservation, confirmation):
@@ -880,14 +893,15 @@ class CandidateService:
                 resolution_id=reservation["id"],
                 expected_role="collector",
             )
-            mutation, _inserted = await self._reserve_mutation_on(
+            mutation, inserted = await self._reserve_mutation_on(
                 conn,
                 mutation_id=mutation_id,
                 identity=identity,
                 nonce=str(uuid.uuid4()),
                 now=now,
             )
-            state["adopted_mutations"] = {mutation_id: mutation["nonce"]}
+            if inserted:
+                state["owned_mutation_nonces"] = {mutation_id: mutation["nonce"]}
         return state
 
     async def push_repair(self, reservation_id: str, fence: Fence) -> str:
@@ -1879,39 +1893,68 @@ class CandidateService:
             row, inserted = await self._reserve_mutation_on(
                 conn, mutation_id=mutation_id, identity=identity, nonce=nonce, now=now
             )
-            adopted_nonce = state.get("adopted_mutations", {}).get(mutation_id)
-            owns = inserted or adopted_nonce == row["nonce"]
+            owned_nonce = state.get("owned_mutation_nonces", {}).get(mutation_id)
+            owns = inserted or owned_nonce == row["nonce"]
             if owns:
                 nonce = row["nonce"]
             if row["state"] == "applied":
                 already_applied = True
 
-        token = await self.app_client.installation_token()
         remote = await self.app_client.exact_head_ref(target_branch.removeprefix("refs/heads/"))
         if already_applied:
-            return remote == desired_sha
+            return remote == desired_sha and await self._authority_is_current(
+                state,
+                revision=revision,
+                expected_role=expected_role,
+                expected_handoff=expected_handoff,
+            )
+        if remote == desired_sha:
+            await self._reconcile_observed_mutation(dict(row), remote)
+            canonical = await self._mutation(mutation_id)
+            return bool(
+                canonical
+                and canonical["state"] == "applied"
+                and canonical["remote_sha"] == desired_sha
+                and await self._authority_is_current(
+                    state,
+                    revision=revision,
+                    expected_role=expected_role,
+                    expected_handoff=expected_handoff,
+                )
+            )
+        if remote != expected_old_sha and not (
+            remote is None and expected_old_sha == "0" * 40
+        ):
+            return False
         if owns and float(row["expires_at"]) <= self.clock():
             owns = False
-        if remote == desired_sha:
-            pass
-        elif remote != expected_old_sha and not (remote is None and expected_old_sha == "0" * 40):
-            return False
-        elif not owns:
-            if float(row["expires_at"]) <= self.clock():
-                await self._reconcile_observed_mutation(dict(row), remote)
-            return False
-        if remote != desired_sha:
-            if not owns:
+        if not owns:
+            if float(row["expires_at"]) > self.clock():
                 return False
-            if not await self._prepush_authorized(
+            takeover = await self._takeover_expired_mutation(
                 state,
-                mutation_id=mutation_id,
+                row=dict(row),
                 nonce=nonce,
                 revision=revision,
                 expected_role=expected_role,
                 expected_handoff=expected_handoff,
-            ):
+            )
+            if takeover is None:
                 return False
+            row = takeover
+            nonce = takeover["nonce"]
+            owns = True
+        if not await self._prepush_authorized(
+            state,
+            mutation_id=mutation_id,
+            nonce=nonce,
+            revision=revision,
+            expected_role=expected_role,
+            expected_handoff=expected_handoff,
+        ):
+            return False
+        token = await self.app_client.installation_token()
+        try:
             await self.git.apush_oid_with_app_auth(
                 str(store),
                 repository=self.app_client.repository,
@@ -1920,25 +1963,46 @@ class CandidateService:
                 branch=target_branch.removeprefix("refs/heads/"),
                 expected_old_oid=expected_old_sha,
             )
-
-        try:
-            async with self.db.immediate() as conn:
-                await self.db.lock_hierarchy_project(conn, state["project"]["id"])
-                await self._validate_authority_on(
-                    conn,
+        except Exception:
+            remote = await self.app_client.exact_head_ref(
+                target_branch.removeprefix("refs/heads/")
+            )
+            await self._reconcile_observed_mutation(dict(row), remote)
+            canonical = await self._mutation(mutation_id)
+            return bool(
+                canonical
+                and canonical["state"] == "applied"
+                and canonical["remote_sha"] == desired_sha
+                and await self._authority_is_current(
                     state,
                     revision=revision,
                     expected_role=expected_role,
                     expected_handoff=expected_handoff,
                 )
+            )
+
+        authority_lost = False
+        try:
+            async with self.db.immediate() as conn:
+                await self.db.lock_hierarchy_project(conn, state["project"]["id"])
+                try:
+                    await self._validate_authority_on(
+                        conn,
+                        state,
+                        revision=revision,
+                        expected_role=expected_role,
+                        expected_handoff=expected_handoff,
+                    )
+                except CandidateStaleAuthority:
+                    authority_lost = True
+                    raise
                 changed = await conn.execute(
                     update(integration_candidate_ref_mutations)
                     .where(
                         integration_candidate_ref_mutations.c.id == mutation_id,
                         integration_candidate_ref_mutations.c.state == "reserved",
                         integration_candidate_ref_mutations.c.desired_sha == desired_sha,
-                        integration_candidate_ref_mutations.c.nonce
-                        == (nonce if owns else row["nonce"]),
+                        integration_candidate_ref_mutations.c.nonce == nonce,
                     )
                     .values(state="applied", remote_sha=desired_sha, updated_at=self.clock())
                 )
@@ -1950,16 +2014,104 @@ class CandidateService:
                             )
                         )
                     ).mappings().one()
-                    if canonical["state"] != "applied" or canonical["remote_sha"] != desired_sha:
+                    if (
+                        canonical["state"] != "applied"
+                        or canonical["remote_sha"] != desired_sha
+                    ):
                         raise CandidateStaleAuthority(
                             "candidate mutation reconciliation CAS lost"
                         )
         except CandidateStaleAuthority:
             canonical = await self._mutation(mutation_id)
+            if canonical is not None and canonical["state"] == "applied":
+                return not authority_lost and canonical["remote_sha"] == desired_sha
+            remote = await self.app_client.exact_head_ref(
+                target_branch.removeprefix("refs/heads/")
+            )
             if canonical is not None:
-                await self._reconcile_observed_mutation(canonical, desired_sha)
-            return False
+                await self._reconcile_observed_mutation(canonical, remote)
+            canonical = await self._mutation(mutation_id)
+            if authority_lost:
+                return False
+            return bool(
+                canonical
+                and canonical["state"] == "applied"
+                and canonical["remote_sha"] == desired_sha
+            )
         return True
+
+    async def _authority_is_current(
+        self, state, *, revision, expected_role, expected_handoff
+    ) -> bool:
+        async with self.db.immediate() as conn:
+            await self.db.lock_hierarchy_project(conn, state["project"]["id"])
+            try:
+                await self._validate_authority_on(
+                    conn,
+                    state,
+                    revision=revision,
+                    expected_role=expected_role,
+                    expected_handoff=expected_handoff,
+                )
+            except CandidateStaleAuthority:
+                return False
+            return True
+
+    async def _takeover_expired_mutation(
+        self,
+        state,
+        *,
+        row,
+        nonce,
+        revision,
+        expected_role,
+        expected_handoff,
+    ):
+        now = self.clock()
+        async with self.db.immediate() as conn:
+            await self.db.lock_hierarchy_project(conn, state["project"]["id"])
+            try:
+                await self._validate_authority_on(
+                    conn,
+                    state,
+                    revision=revision,
+                    expected_role=expected_role,
+                    expected_handoff=expected_handoff,
+                )
+            except CandidateStaleAuthority:
+                return None
+            lease_expires_at = (
+                await conn.execute(
+                    select(project_integration_leases.c.expires_at).where(
+                        project_integration_leases.c.project_id == state["project"]["id"]
+                    )
+                )
+            ).scalar_one()
+            if float(lease_expires_at) < now + _MUTATION_CLAIM_SECONDS:
+                return None
+            changed = await conn.execute(
+                update(integration_candidate_ref_mutations)
+                .where(
+                    integration_candidate_ref_mutations.c.id == row["id"],
+                    integration_candidate_ref_mutations.c.state == "reserved",
+                    integration_candidate_ref_mutations.c.nonce == row["nonce"],
+                    integration_candidate_ref_mutations.c.expires_at == row["expires_at"],
+                    integration_candidate_ref_mutations.c.expires_at <= now,
+                )
+                .values(
+                    nonce=nonce,
+                    expires_at=now + _MUTATION_CLAIM_SECONDS,
+                    updated_at=now,
+                )
+            )
+            if changed.rowcount != 1:
+                return None
+            return {
+                **row,
+                "nonce": nonce,
+                "expires_at": now + _MUTATION_CLAIM_SECONDS,
+                "updated_at": now,
+            }
 
     async def _prepush_authorized(
         self, state, *, mutation_id, nonce, revision, expected_role, expected_handoff
@@ -2039,17 +2191,6 @@ class CandidateService:
                         integration_candidate_ref_mutations.c.state == "reserved",
                     )
                     .values(state="applied", remote_sha=remote, updated_at=self.clock())
-                )
-            elif float(canonical["expires_at"]) <= self.clock() and (
-                remote == canonical["expected_old_sha"]
-                or (remote is None and canonical["expected_old_sha"] == "0" * 40)
-            ):
-                await conn.execute(
-                    delete(integration_candidate_ref_mutations).where(
-                        integration_candidate_ref_mutations.c.id == row["id"],
-                        integration_candidate_ref_mutations.c.nonce == canonical["nonce"],
-                        integration_candidate_ref_mutations.c.state == "reserved",
-                    )
                 )
 
     async def _observe_unresolved_mutations(self, batch_id: str) -> bool:
