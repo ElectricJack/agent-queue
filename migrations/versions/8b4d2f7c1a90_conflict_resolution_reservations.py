@@ -7,9 +7,10 @@ Create Date: 2026-09-05
 
 from collections.abc import Sequence
 
-from alembic import op
 import sqlalchemy as sa
+from alembic import op
 
+from migrations.sqlite_triggers import preserve_sqlite_triggers
 
 revision: str = "8b4d2f7c1a90"
 down_revision: str | Sequence[str] | None = "7a1d5e9f0b2c"
@@ -38,7 +39,10 @@ def upgrade() -> None:
         batch_op.add_column(
             sa.Column("session_instance_token", sa.Text(), nullable=True)
         )
-    with op.batch_alter_table("integration_promotion_intents") as batch_op:
+    with (
+        preserve_sqlite_triggers("integration_promotion_intents"),
+        op.batch_alter_table("integration_promotion_intents") as batch_op,
+    ):
         batch_op.drop_constraint("ck_integration_promotion_intents_state", type_="check")
         batch_op.add_column(sa.Column("resolution_head_sha", sa.Text(), nullable=True))
         batch_op.add_column(sa.Column("resolution_tree_sha", sa.Text(), nullable=True))
@@ -96,7 +100,10 @@ def downgrade() -> None:
         raise RuntimeError(
             "reconcile/drain resolution reservations before downgrade"
         )
-    with op.batch_alter_table("integration_promotion_intents") as batch_op:
+    with (
+        preserve_sqlite_triggers("integration_promotion_intents"),
+        op.batch_alter_table("integration_promotion_intents") as batch_op,
+    ):
         batch_op.drop_constraint(
             "ck_integration_promotion_intents_resolution_fence", type_="check"
         )

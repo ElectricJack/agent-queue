@@ -11,6 +11,7 @@ from collections.abc import Sequence
 import sqlalchemy as sa
 from alembic import op
 
+from migrations.sqlite_triggers import preserve_sqlite_triggers
 
 revision: str = "e4c6a8b20d31"
 down_revision: str | Sequence[str] | None = "c7a1e5d92f40"
@@ -121,7 +122,10 @@ def upgrade() -> None:
             name="fk_integration_parent_episodes_repository", ondelete="RESTRICT"
         ),
     )
-    with op.batch_alter_table("integration_repair_operations") as batch_op:
+    with (
+        preserve_sqlite_triggers("integration_repair_operations"),
+        op.batch_alter_table("integration_repair_operations") as batch_op,
+    ):
         batch_op.create_foreign_key(
             "fk_integration_repair_operations_parent_episode",
             "integration_parent_episodes", ["parent_task_id", "episode_id"],
@@ -311,7 +315,10 @@ def upgrade() -> None:
             ondelete="RESTRICT",
         ),
     )
-    with op.batch_alter_table("task_delivery_receipts") as batch_op:
+    with (
+        preserve_sqlite_triggers("task_delivery_receipts"),
+        op.batch_alter_table("task_delivery_receipts") as batch_op,
+    ):
         batch_op.create_check_constraint(
             "ck_task_delivery_receipts_parent_binding",
             "(parent_operation_id IS NULL AND parent_episode_id IS NULL) OR "
@@ -327,7 +334,10 @@ def upgrade() -> None:
             "integration_parent_episodes", ["target_task_id", "parent_episode_id"],
             ["parent_task_id", "id"], ondelete="RESTRICT"
         )
-    with op.batch_alter_table("task_integration_checkpoints") as batch_op:
+    with (
+        preserve_sqlite_triggers("task_integration_checkpoints"),
+        op.batch_alter_table("task_integration_checkpoints") as batch_op,
+    ):
         batch_op.create_check_constraint(
             "ck_task_integration_checkpoints_completion_binding",
             "(last_completed_operation_id IS NULL AND "
@@ -361,7 +371,10 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     _drop_append_only_guards()
-    with op.batch_alter_table("task_integration_checkpoints") as batch_op:
+    with (
+        preserve_sqlite_triggers("task_integration_checkpoints"),
+        op.batch_alter_table("task_integration_checkpoints") as batch_op,
+    ):
         batch_op.drop_constraint(
             "fk_task_integration_checkpoints_completion", type_="foreignkey"
         )
@@ -374,7 +387,10 @@ def downgrade() -> None:
         batch_op.drop_constraint(
             "ck_task_integration_checkpoints_completion_binding", type_="check"
         )
-    with op.batch_alter_table("task_delivery_receipts") as batch_op:
+    with (
+        preserve_sqlite_triggers("task_delivery_receipts"),
+        op.batch_alter_table("task_delivery_receipts") as batch_op,
+    ):
         batch_op.drop_constraint(
             "fk_task_delivery_receipts_parent_episode", type_="foreignkey"
         )
@@ -392,7 +408,10 @@ def downgrade() -> None:
     op.drop_table("integration_parent_operation_completions")
     op.drop_table("integration_parent_verifications")
     op.drop_table("integration_child_dispositions")
-    with op.batch_alter_table("integration_repair_operations") as batch_op:
+    with (
+        preserve_sqlite_triggers("integration_repair_operations"),
+        op.batch_alter_table("integration_repair_operations") as batch_op,
+    ):
         batch_op.drop_constraint(
             "fk_integration_repair_operations_verifier_task", type_="foreignkey"
         )

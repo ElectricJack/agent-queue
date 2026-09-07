@@ -113,7 +113,14 @@ async def test_blocked_lifecycle_postgres_upgrade_and_guarded_downgrade():
 
     conn = await asyncpg.connect(dsn.replace("postgresql+asyncpg://", "postgresql://"))
     try:
-        assert await conn.fetchval("SELECT version_num FROM alembic_version") == BLOCKED_REVISION
+        # The guard fires in this revision's own downgrade, so it stays
+        # current.  Below the ``9b3e5a7c1d20`` merge the version table also
+        # carries main's other head, so check membership, not the only row.
+        current = {
+            row["version_num"]
+            for row in await conn.fetch("SELECT version_num FROM alembic_version")
+        }
+        assert BLOCKED_REVISION in current, current
         await conn.execute("DELETE FROM playbook_v2_runs WHERE lifecycle = 'blocked'")
     finally:
         await conn.close()

@@ -356,6 +356,12 @@ async def test_postgres_root_promotion_schema_and_guarded_round_trip():
     try:
         async with engine.connect() as connection:
             await connection.run_sync(_assert_root_schema)
+            # ``initialize()`` leaves the database at the current head, which
+            # has moved past ``REVISION``; a refused downgrade in one
+            # transaction rolls every step back to exactly this revision.
+            head = (
+                await connection.execute(text("SELECT version_num FROM alembic_version"))
+            ).scalar_one()
         async with engine.begin() as connection:
             await connection.run_sync(_seed_child_receipt)
         async with engine.begin() as connection:
@@ -371,7 +377,7 @@ async def test_postgres_root_promotion_schema_and_guarded_round_trip():
             ).scalar_one() == "root"
             assert (
                 await connection.execute(text("SELECT version_num FROM alembic_version"))
-            ).scalar_one() == REVISION
+            ).scalar_one() == head
         async with engine.begin() as connection:
             await connection.execute(text("DELETE FROM integration_promotion_intents"))
         async with engine.begin() as connection:
