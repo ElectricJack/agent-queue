@@ -1,4 +1,4 @@
-import { useMemo, useRef } from "react";
+import { useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import type { Task } from "../../api/hooks";
 import { useProjectGraphs } from "../../api/graph";
@@ -21,7 +21,10 @@ export default function CommandCenterTasks() {
     assigned_agent: task.assigned_agent_id, priority: task.priority ?? undefined,
   })), [graph]);
   const { selectedTaskId, selectTask, clearTask } = useTaskSelection();
-  const bodyRef = useListNav<HTMLTableSectionElement>({ axis: "vertical" });
+  // loop: false — with virtualized rows "next after the last mounted row"
+  // is the overscan edge, not the end of the list, so wrapping would jump
+  // the focus a window up instead of to the first task.
+  const bodyRef = useListNav<HTMLTableSectionElement>({ axis: "vertical", loop: false });
   const names = useMemo(() => new Map(projects.map((p) => [p.id, p.name || p.id])), [projects]);
   const filtered = useMemo(
     () => tasks.filter((task) => (!projectId || task.project_id === projectId)
@@ -30,6 +33,18 @@ export default function CommandCenterTasks() {
   );
   const columns = projectId ? 5 : 6;
   const scrollRef = useRef<HTMLDivElement>(null);
+  // The scroll element is the padded region, and the count line plus the
+  // sticky header sit above the first row, so row 0 does not start at
+  // scrollTop 0. scrollMargin tells the virtualizer where the list begins;
+  // without it the visible window is computed ~1.5 rows early.
+  const [scrollMargin, setScrollMargin] = useState(0);
+  useLayoutEffect(() => {
+    const scroller = scrollRef.current;
+    const body = bodyRef.current;
+    if (!scroller || !body) return;
+    const offset = body.getBoundingClientRect().top - scroller.getBoundingClientRect().top + scroller.scrollTop;
+    setScrollMargin(Math.max(0, Math.round(offset)));
+  }, [bodyRef, error, isLoading, projectId]);
   // Only the rows in view are mounted: the graph snapshot carries every task
   // in the project, and a 5,000-row table with three interactive cells per
   // row re-rendered on every keystroke and every live refetch. Keyboard list
@@ -39,11 +54,14 @@ export default function CommandCenterTasks() {
     getScrollElement: () => scrollRef.current,
     estimateSize: () => 64,
     overscan: 12,
-    initialRect: { width: 800, height: 600 },
+    scrollMargin,
   });
   const items = virtualizer.getVirtualItems();
-  const padTop = items.length ? items[0]!.start : 0;
-  const padBottom = items.length ? virtualizer.getTotalSize() - items[items.length - 1]!.end : 0;
+  // item.start/end include scrollMargin; getTotalSize() does not.
+  const padTop = items.length ? items[0]!.start - scrollMargin : 0;
+  const padBottom = items.length
+    ? virtualizer.getTotalSize() - (items[items.length - 1]!.end - scrollMargin)
+    : 0;
 
   return (
     <div role="region" aria-label="Task list" ref={scrollRef} className="h-full min-h-0 overflow-auto p-4"
@@ -53,7 +71,7 @@ export default function CommandCenterTasks() {
       }}>
       <p className="mb-3 text-xs text-gray-500">{filtered.length} {filtered.length === 1 ? "task" : "tasks"}</p>
       {error && <p role="alert" className="mb-3 rounded border border-red-500/30 bg-red-500/10 p-3 text-sm text-red-300">Could not load tasks. Check the backend connection and try again.</p>}
-      <table className="w-full min-w-[620px] text-left text-sm">
+      <table className="w-full min-w-[620px] text-left text-sm" aria-rowcount={filtered.length + 1}>
         <thead className="sticky top-0 z-10 border-b border-gray-800 bg-gray-950 text-xs uppercase text-gray-500">
           <tr>
             <th className="px-3 py-3">Task</th>
@@ -71,7 +89,7 @@ export default function CommandCenterTasks() {
           {items.map((item) => {
             const task = filtered[item.index]!;
             return (
-              <tr key={task.id} data-index={item.index} ref={virtualizer.measureElement}
+              <tr key={task.id} data-index={item.index} ref={virtualizer.measureElement} aria-rowindex={item.index + 2}
                 tabIndex={0} data-listnav="1" data-task-row={task.id} aria-selected={selectedTaskId === task.id}
                 onClick={(event) => {
                   if ((event.target as HTMLElement).closest('button, input, select, textarea, a, [role="dialog"]')) return;

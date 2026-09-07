@@ -46,11 +46,23 @@ class LayoutStepMixin:
         self._layout_bg = asyncio.create_task(self._run_layout_step(), name="layout-step")
         return self._layout_bg
 
-    async def wait_for_layout_step(self) -> None:
-        """Await the in-flight background step, if any (tests, shutdown)."""
+    async def wait_for_layout_step(self, timeout: float | None = None) -> None:
+        """Wait for the in-flight background step, if any (tests, shutdown).
+
+        ``asyncio.wait`` rather than ``await bg``: the step's own
+        cancellation or failure must not surface in the caller (shutdown
+        already logs and moves on), and *timeout* bounds how long a tidy
+        job — 60 s budget — can hold up a shutdown.  Marks are durable, so
+        a step abandoned at the timeout is simply re-run after restart.
+        """
         bg = getattr(self, "_layout_bg", None)
-        if bg is not None and not bg.done():
-            await bg
+        if bg is None or bg.done():
+            return
+        done, _pending = await asyncio.wait({bg}, timeout=timeout)
+        if not done:
+            logger.warning(
+                "background layout step still running after %.0fs; not waiting", timeout
+            )
 
     async def _run_layout_step(self) -> None:
         """Run one layout cycle step; never raise into ``run_one_cycle``.

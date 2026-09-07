@@ -2272,7 +2272,7 @@ class Orchestrator(
         await self.wait_for_running_tasks(timeout=10)
         # A layout publish is one transaction; let an in-flight step land
         # rather than cancelling it mid-write.  Marks are durable either way.
-        await self.wait_for_layout_step()
+        await self.wait_for_layout_step(timeout=30)
         if self.integration_service:
             await self.integration_service.stop()
         if self.vault_watcher:
