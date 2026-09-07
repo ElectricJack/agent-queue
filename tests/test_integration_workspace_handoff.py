@@ -9,7 +9,12 @@ from unittest.mock import AsyncMock
 import pytest
 from sqlalchemy import insert, select, update
 
-from src.database.tables import integration_branch_owners, workspaces
+from src.database.tables import (
+    integration_branch_owners,
+    sessions,
+    task_integration_checkpoints,
+    workspaces,
+)
 from src.git.manager import GitError
 from src.integration.models import BranchKey, Fence
 from src.integration.ownership import BranchOwnership
@@ -21,6 +26,7 @@ from src.models import (
     RepoSourceType,
     SessionRecord,
     Task,
+    TaskStatus,
     Workspace,
 )
 
@@ -525,3 +531,340 @@ async def test_detached_non_slot_releases_only_after_exact_git_proof(
     assert confirmed is True
     assert events == ["validate-branch", "stop", "confirm", "clean-check", "fetch"]
     assert (await orchestrator.db.get_workspace("slot")).locked_by_task_id is None
+
+
+# --- Pool writers ---------------------------------------------------------
+#
+# A pool session attaches ``integration_branch_owners`` on every hierarchy
+# claim and is *not* stopped when it closes a task — it goes back to
+# ``aq task claim``.  The stop-and-confirm proof above therefore cannot apply
+# to it, and skipping the release outright (the old ``if not pool:`` in
+# ``_complete_session_task_locked``) left the owner row ``attached`` while
+# ``db.release_claim`` cleared the very bindings the confirmer reads, wedging
+# every later transfer of that branch on ``BranchBusy`` forever.
+
+
+async def _pool_orchestrator(orchestrator_factory, tmp_path, *, handoff_state="handoff_pending"):
+    orchestrator = await _orchestrator(orchestrator_factory, tmp_path)
+    async with orchestrator.db.immediate() as conn:
+        await conn.execute(
+            update(sessions).where(sessions.c.id == "session").values(lifecycle="pool")
+        )
+        await conn.execute(
+            update(integration_branch_owners)
+            .where(integration_branch_owners.c.id == "owner")
+            .values(handoff_state=handoff_state)
+        )
+    return orchestrator
+
+
+async def test_pool_handoff_detaches_without_stopping_the_session(
+    orchestrator_factory, tmp_path, monkeypatch
+):
+    """The detach is the whole proof: the worker keeps running and keeps its slot."""
+    orchestrator = await _pool_orchestrator(orchestrator_factory, tmp_path)
+    events: list[str] = []
+    monkeypatch.setattr(
+        orchestrator.session_providers,
+        "create",
+        lambda *_args: (_ for _ in ()).throw(AssertionError("pool writer must not be stopped")),
+    )
+    current_branch, run = _clean_git(events)
+    orchestrator.git.aget_current_branch = AsyncMock(side_effect=current_branch)
+    orchestrator.git._arun_unlocked = AsyncMock(side_effect=run)
+
+    confirmed = await orchestrator.aconfirm_pool_integration_owner_handoff(_owner())
+
+    assert confirmed is True
+    assert events == ["clean-check", "fetch", "detach"]
+    async with orchestrator.db._engine.connect() as conn:
+        released = (await conn.execute(select(integration_branch_owners))).mappings().one()
+    assert released["handoff_state"] == "released"
+    assert released["session_id"] is None
+    assert released["workspace_id"] is None
+    assert released["confirmed_workspace_id"] == "slot"
+    # The pool close owns these two releases itself (``db.release_claim``),
+    # and the agent-lock survives until ``terminate_pool_session``.
+    assert (await orchestrator.db.get_workspace("slot")).locked_by_task_id == "task"
+    session = await orchestrator.db.get_session("session")
+    assert session.state == "running"
+    assert session.task_id == "task"
+
+
+async def test_pool_handoff_replay_is_idempotent_and_touches_no_git(
+    orchestrator_factory, tmp_path, monkeypatch
+):
+    """Durable release evidence answers a retry without re-proving the checkout."""
+    orchestrator = await _pool_orchestrator(orchestrator_factory, tmp_path)
+    events: list[str] = []
+    current_branch, run = _clean_git(events)
+    orchestrator.git.aget_current_branch = AsyncMock(side_effect=current_branch)
+    orchestrator.git._arun_unlocked = AsyncMock(side_effect=run)
+
+    assert await orchestrator.aconfirm_pool_integration_owner_handoff(_owner()) is True
+    events.clear()
+    assert await orchestrator.aconfirm_pool_integration_owner_handoff(_owner()) is True
+    assert events == []
+
+
+async def test_pool_handoff_refuses_a_dirty_slot(
+    orchestrator_factory, tmp_path, monkeypatch
+):
+    """Uncommitted work means the writer has not stopped writing to the branch."""
+    orchestrator = await _pool_orchestrator(orchestrator_factory, tmp_path)
+    events: list[str] = []
+    current_branch, run = _clean_git(events, dirty=True)
+    orchestrator.git.aget_current_branch = AsyncMock(side_effect=current_branch)
+    orchestrator.git._arun_unlocked = AsyncMock(side_effect=run)
+
+    confirmed = await orchestrator.aconfirm_pool_integration_owner_handoff(_owner())
+
+    assert confirmed is False
+    assert events == ["clean-check"]
+    async with orchestrator.db._engine.connect() as conn:
+        row = (await conn.execute(select(integration_branch_owners))).mappings().one()
+    assert row["handoff_state"] == "handoff_pending"
+
+
+async def test_pool_handoff_refuses_an_unpushed_slot(
+    orchestrator_factory, tmp_path, monkeypatch
+):
+    """A local tip origin has never seen is unreviewable, un-collectable work."""
+    orchestrator = await _pool_orchestrator(orchestrator_factory, tmp_path)
+    events: list[str] = []
+    current_branch, run = _clean_git(events, pushed=False)
+    orchestrator.git.aget_current_branch = AsyncMock(side_effect=current_branch)
+    orchestrator.git._arun_unlocked = AsyncMock(side_effect=run)
+
+    confirmed = await orchestrator.aconfirm_pool_integration_owner_handoff(_owner())
+
+    assert confirmed is False
+    assert events == ["clean-check", "fetch"]
+
+
+async def test_pool_proof_is_refused_for_a_task_lifecycle_session(
+    orchestrator_factory, tmp_path, monkeypatch
+):
+    """A stoppable writer keeps the stronger termination proof."""
+    orchestrator = await _pool_orchestrator(orchestrator_factory, tmp_path)
+    async with orchestrator.db.immediate() as conn:
+        await conn.execute(
+            update(sessions).where(sessions.c.id == "session").values(lifecycle="task")
+        )
+    events: list[str] = []
+    current_branch, run = _clean_git(events)
+    orchestrator.git.aget_current_branch = AsyncMock(side_effect=current_branch)
+    orchestrator.git._arun_unlocked = AsyncMock(side_effect=run)
+
+    confirmed = await orchestrator.aconfirm_pool_integration_owner_handoff(_owner())
+
+    assert confirmed is False
+    assert events == []
+
+
+async def test_pool_proof_is_refused_for_a_repair_delegate(
+    orchestrator_factory, tmp_path, monkeypatch
+):
+    """Spec §9.1-§9.2 requires a repair writer the daemon can stop outright."""
+    orchestrator = await _pool_orchestrator(orchestrator_factory, tmp_path)
+    async with orchestrator.db.immediate() as conn:
+        await conn.execute(
+            update(integration_branch_owners)
+            .where(integration_branch_owners.c.id == "owner")
+            .values(owner_role="repair")
+        )
+    events: list[str] = []
+    current_branch, run = _clean_git(events)
+    orchestrator.git.aget_current_branch = AsyncMock(side_effect=current_branch)
+    orchestrator.git._arun_unlocked = AsyncMock(side_effect=run)
+
+    confirmed = await orchestrator.aconfirm_pool_integration_owner_handoff(
+        _owner(owner_role="repair")
+    )
+
+    assert confirmed is False
+    assert events == []
+
+
+async def test_pool_proof_is_refused_once_the_session_dropped_the_task(
+    orchestrator_factory, tmp_path, monkeypatch
+):
+    """Released-claim ordering matters: the binding is the fence for this proof."""
+    orchestrator = await _pool_orchestrator(orchestrator_factory, tmp_path)
+    async with orchestrator.db.immediate() as conn:
+        await conn.execute(
+            update(sessions).where(sessions.c.id == "session").values(task_id=None)
+        )
+    events: list[str] = []
+    current_branch, run = _clean_git(events)
+    orchestrator.git.aget_current_branch = AsyncMock(side_effect=current_branch)
+    orchestrator.git._arun_unlocked = AsyncMock(side_effect=run)
+
+    confirmed = await orchestrator.aconfirm_pool_integration_owner_handoff(_owner())
+
+    assert confirmed is False
+    assert events == []
+
+
+async def test_pool_writer_release_restores_a_reserved_fence_for_the_parent(
+    orchestrator_factory, tmp_path, monkeypatch
+):
+    """The suspended parent keeps its reservation, and a collector can take it."""
+    orchestrator = await _pool_orchestrator(
+        orchestrator_factory, tmp_path, handoff_state="attached"
+    )
+    await orchestrator.db.update_project(
+        "p", hierarchical_integration_mode="hierarchy", integration_repository_id="repo"
+    )
+    events: list[str] = []
+    current_branch, run = _clean_git(events)
+    orchestrator.git.aget_current_branch = AsyncMock(side_effect=current_branch)
+    orchestrator.git._arun_unlocked = AsyncMock(side_effect=run)
+    task = await orchestrator.db.get_task("task")
+
+    released = await orchestrator.arelease_integration_writer_for_retry(
+        task, reason="integration_parent_suspended", pool=True
+    )
+
+    assert released is True
+    target = BranchKey(repository_id="repo", branch="aq/parent")
+    owner = await BranchOwnership(orchestrator.db).get_owner(target)
+    assert owner["handoff_state"] == "reserved"
+    assert owner["owner_id"] == "task"
+    assert owner["owner_role"] == "worker"
+    assert owner["fence_token"] == 5
+    assert owner["session_id"] is None and owner["workspace_id"] is None
+
+    # This is the leak the bug produced: with the row stuck ``attached`` and
+    # its session/workspace unbound by ``release_claim``, this transfer raised
+    # ``BranchBusy`` for the rest of the branch's life.
+    await orchestrator.db.create_task(
+        Task(
+            id="collector",
+            project_id="p",
+            repo_id="repo",
+            branch_name="aq/parent",
+            title="Collector",
+            description="",
+        )
+    )
+    fence = Fence(target=target, owner_id="task", token=5)
+    transferred = await BranchOwnership(orchestrator.db).transfer(
+        fence, "collector", "collector"
+    )
+    assert transferred == Fence(target=target, owner_id="collector", token=6)
+
+
+async def test_unreleasable_pool_writer_keeps_the_branch_fenced(
+    orchestrator_factory, tmp_path, monkeypatch
+):
+    """A dirty slot at close leaves ownership attached rather than half-released."""
+    orchestrator = await _pool_orchestrator(
+        orchestrator_factory, tmp_path, handoff_state="attached"
+    )
+    await orchestrator.db.update_project(
+        "p", hierarchical_integration_mode="hierarchy", integration_repository_id="repo"
+    )
+    events: list[str] = []
+    current_branch, run = _clean_git(events, dirty=True)
+    orchestrator.git.aget_current_branch = AsyncMock(side_effect=current_branch)
+    orchestrator.git._arun_unlocked = AsyncMock(side_effect=run)
+    task = await orchestrator.db.get_task("task")
+
+    released = await orchestrator.arelease_integration_writer_for_retry(
+        task, reason="integration_parent_suspended", pool=True
+    )
+
+    assert released is False
+    owner = await BranchOwnership(orchestrator.db).get_owner(
+        BranchKey(repository_id="repo", branch="aq/parent")
+    )
+    assert owner["handoff_state"] == "handoff_pending"
+    assert owner["fence_token"] == 4
+
+
+async def test_pool_close_of_a_suspended_parent_releases_its_owner_row(
+    orchestrator_factory, tmp_path, monkeypatch
+):
+    """The regression: ``if not pool:`` skipped the release on the close path.
+
+    A pool session claims an ordinary hierarchy task, the task files a child,
+    and the close suspends it as a managed parent.  ``_cmd_task_close`` then
+    calls ``db.release_claim``, which clears ``workspaces.locked_by_task_id``
+    and ``sessions.task_id`` — so if the owner row is still ``attached`` at
+    that point, nothing can ever confirm a handoff for that branch again.
+    """
+    from src.integration import hierarchy as hierarchy_module
+    from src.models import PhaseResult
+
+    orchestrator = await _pool_orchestrator(
+        orchestrator_factory, tmp_path, handoff_state="attached"
+    )
+    db = orchestrator.db
+    await db.update_project(
+        "p", hierarchical_integration_mode="hierarchy", integration_repository_id="repo"
+    )
+    await db.create_task(
+        Task(
+            id="child",
+            project_id="p",
+            repo_id="repo",
+            parent_task_id="task",
+            branch_name="aq/child",
+            title="Child",
+            description="",
+        )
+    )
+    async with db.immediate() as conn:
+        await conn.execute(
+            insert(task_integration_checkpoints).values(
+                task_id="task",
+                repository_id="repo",
+                branch="aq/parent",
+                generation=1,
+                checkpoint_sha="a" * 40,
+                state="working",
+                version=0,
+                updated_at=1.0,
+            )
+        )
+
+    events: list[str] = []
+    current_branch, run = _clean_git(events)
+    orchestrator.git.aget_current_branch = AsyncMock(side_effect=current_branch)
+    orchestrator.git._arun_unlocked = AsyncMock(side_effect=run)
+    orchestrator.git._arun = AsyncMock(return_value="a" * 40)
+    orchestrator._get_default_branch = AsyncMock(return_value="main")
+    orchestrator._phase_verify = AsyncMock(return_value=PhaseResult.CONTINUE)
+    orchestrator.release_session_task_resources = AsyncMock(
+        side_effect=AssertionError("a pool close must not run the full release")
+    )
+    suspended = AsyncMock(return_value=None)
+    monkeypatch.setattr(
+        hierarchy_module.HierarchyIntegration,
+        "checkpoint_and_suspend_parent",
+        suspended,
+    )
+
+    result = await orchestrator.complete_session_task(
+        await db.get_task("task"),
+        outcome="pass",
+        pool=True,
+        session_live=True,
+        session_id="session",
+        notes="filed a child",
+    )
+
+    assert result["status"] == TaskStatus.PAUSED.value
+    suspended.assert_awaited_once()
+    owner = await BranchOwnership(db).get_owner(
+        BranchKey(repository_id="repo", branch="aq/parent")
+    )
+    assert owner["handoff_state"] == "reserved"
+    assert owner["owner_id"] == "task"
+    assert owner["fence_token"] == 5
+    assert owner["session_id"] is None and owner["workspace_id"] is None
+    # The claim release that follows in ``_cmd_task_close`` is still the pool
+    # path's job — the writer release must not have pre-empted it.
+    assert (await db.get_workspace("slot")).locked_by_task_id == "task"
+    assert (await db.get_session("session")).task_id == "task"

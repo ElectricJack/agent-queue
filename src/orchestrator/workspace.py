@@ -1221,6 +1221,112 @@ class WorkspaceMixin:
         released = await self.db.get_workspace(workspace.id)
         return released is not None and released.locked_by_task_id is None
 
+    async def aconfirm_pool_integration_owner_handoff(self, owner: dict) -> bool:
+        """Confirm a **pool** writer's handoff by detachment, not termination.
+
+        The task-session confirmer above proves the writer stopped by killing
+        its process.  A pool session cannot be proven that way and must not
+        be: it outlives every task it claims, so stopping it to release one
+        branch would tear down the worker mid-loop.  Spec §6.4 asks for
+        "stopped writing *and* released or detached its checkout"; for a pool
+        worker the detach is the whole proof, and it is a strong one --
+        :func:`detach_workspace_for_integration_handoff` requires a clean
+        tree whose branch tip is exactly the freshly fetched remote tip
+        before it moves HEAD off the owned branch.
+
+        The other half, "will not start writing again", is structural rather
+        than observed: this runs inside the session's own ``task_close``,
+        under the task control lock and behind the claim-epoch fence, and the
+        very next thing that close does is ``db.release_claim``.  The session
+        no longer holds the task, so nothing routes work back onto the branch.
+
+        Returns ``False`` on any missing proof, which leaves the owner row
+        fenced exactly as the task-session path does.
+        """
+        session_id = owner.get("session_id")
+        workspace_id = owner.get("workspace_id")
+        from src.orchestrator.workspace_attachments import (
+            integration_handoff_release_is_confirmed,
+            mark_pool_integration_handoff_released,
+        )
+
+        if await integration_handoff_release_is_confirmed(self.db, owner):
+            return True
+        if not session_id or not workspace_id:
+            return False
+        if owner.get("owner_role") != "worker":
+            # Repair and verifier delegates are stoppable writers by
+            # construction (spec §9.1-§9.2); they keep the termination proof.
+            return False
+        session = await self.db.get_session(session_id)
+        workspace = await self.db.get_workspace(workspace_id)
+        repository = await self.db.get_repo(str(owner.get("repository_id") or ""))
+        task = await self.db.get_task(session.task_id) if session and session.task_id else None
+        if (
+            session is None
+            or workspace is None
+            or repository is None
+            or task is None
+            or session.lifecycle != "pool"
+            or task.id != owner.get("owner_id")
+            or workspace.locked_by_task_id != session.task_id
+            or workspace.project_id != repository.project_id
+            or session.project_id != repository.project_id
+            or task.project_id != repository.project_id
+            or task.repo_id != repository.id
+            or task.branch_name != owner.get("ref")
+            or os.path.realpath(session.work_dir) != os.path.realpath(workspace.workspace_path)
+        ):
+            return False
+
+        try:
+            from src.orchestrator.workspace_attachments import (
+                detach_slot_for_integration_handoff,
+                detach_workspace_for_integration_handoff,
+            )
+
+            if workspace.is_slot:
+                detached = await detach_slot_for_integration_handoff(
+                    self.db,
+                    self.git,
+                    self._git_mutex,
+                    workspace,
+                    expected_branch=str(owner["ref"]),
+                )
+            else:
+                detached = await detach_workspace_for_integration_handoff(
+                    self.git,
+                    self._git_mutex,
+                    workspace,
+                    expected_branch=str(owner["ref"]),
+                )
+            if not detached:
+                return False
+        except Exception:
+            logger.warning(
+                "Could not detach pool integration workspace %s",
+                workspace.id,
+                exc_info=True,
+            )
+            return False
+
+        current_workspace = await self.db.get_workspace(workspace.id)
+        current_session = await self.db.get_session(session.id)
+        if (
+            current_workspace is None
+            or current_workspace.locked_by_task_id != session.task_id
+            or current_session is None
+            or current_session.task_id != session.task_id
+        ):
+            return False
+        return await mark_pool_integration_handoff_released(
+            self.db,
+            owner,
+            workspace=workspace,
+            task_id=session.task_id,
+            session_id=session.id,
+        )
+
     async def aconfirm_integration_owner_stopped_for_repair(
         self, owner: dict
     ) -> dict | None:
@@ -1314,13 +1420,22 @@ class WorkspaceMixin:
             "commit_proof": commit_proof,
         }
 
-    async def arelease_integration_writer_for_retry(self, task, *, reason: str) -> bool | None:
+    async def arelease_integration_writer_for_retry(
+        self, task, *, reason: str, pool: bool = False
+    ) -> bool | None:
         """Prove an enabled writer stopped, then restore its task reservation.
 
         ``None`` means the project is unmanaged and legacy cleanup applies.
         ``False`` means termination/detach is unknown, so the workspace lock
         must remain held.  ``True`` means the exact attachment was atomically
         released and the same task now owns a fresh reserved fence for retry.
+
+        ``pool=True`` swaps in the pool-writer handoff proof
+        (:meth:`aconfirm_pool_integration_owner_handoff`): a pool session is
+        not stopped when it closes a task, so detaching its slot from the
+        owned branch is what stands in for termination.  Everything else --
+        the fence, the CAS, the self-transfer back to ``reserved`` -- is
+        identical, which is the point: only the evidence differs.
         """
         project = await self.db.get_project(task.project_id)
         if getattr(project, "hierarchical_integration_mode", "disabled") not in {
@@ -1333,7 +1448,12 @@ class WorkspaceMixin:
             return False
         target = BranchKey(repository_id=repository_id, branch=task.branch_name)
         ownership = BranchOwnership(
-            self.db, confirm_handoff=self.aconfirm_integration_owner_handoff
+            self.db,
+            confirm_handoff=(
+                self.aconfirm_pool_integration_owner_handoff
+                if pool
+                else self.aconfirm_integration_owner_handoff
+            ),
         )
         owner = await ownership.get_owner(target)
         if owner is None or owner["owner_id"] != task.id or owner["owner_role"] != "worker":

@@ -168,6 +168,97 @@ async def mark_integration_handoff_released(
     return True
 
 
+async def mark_pool_integration_handoff_released(
+    db,
+    owner: dict,
+    *,
+    workspace,
+    task_id: str,
+    session_id: str,
+) -> bool:
+    """Record a *pool* writer's detach proof and release its owner attachment.
+
+    The task-session sibling (:func:`mark_integration_handoff_released`)
+    requires a stopped session and releases the workspace lock with the
+    ownership row.  Neither applies to a pool writer: its process outlives
+    every task it claims, and its slot keeps the durable worker's agent-lock
+    until ``terminate_pool_session`` — the close path releases only the
+    task-hold, and it does that itself through ``db.release_claim``.
+
+    So this writes exactly one thing: the ownership row moves to ``released``
+    with the detached workspace recorded as ``confirmed_workspace_id``.  The
+    proof it consumes is the caller's Git detach (spec §6.4 "released or
+    detached its checkout"), fenced here by the still-current session/task
+    binding — the same close that calls this releases the claim immediately
+    after, so the session cannot resume writing under it.
+    """
+    async with db.immediate() as conn:
+        owner_row = (
+            await conn.execute(
+                select(integration_branch_owners)
+                .where(integration_branch_owners.c.id == owner.get("id"))
+                .with_for_update()
+            )
+        ).mappings().one_or_none()
+        session_row = None
+        if owner_row is not None and owner_row["session_id"]:
+            session_row = (
+                await conn.execute(
+                    select(sessions)
+                    .where(sessions.c.id == owner_row["session_id"])
+                    .with_for_update()
+                )
+            ).mappings().one_or_none()
+        workspace_row = (
+            await conn.execute(
+                select(workspaces)
+                .where(workspaces.c.id == workspace.id)
+                .with_for_update()
+            )
+        ).mappings().one_or_none()
+        if (
+            owner_row is None
+            or session_row is None
+            or workspace_row is None
+            or owner_row["fence_token"] != owner.get("fence_token")
+            or owner_row["owner_id"] != owner.get("owner_id")
+            or owner_row["owner_role"] != "worker"
+            or owner_row["handoff_state"] != "handoff_pending"
+            or owner_row["session_id"] != owner.get("session_id")
+            or owner_row["session_id"] != session_id
+            or owner_row["workspace_id"] != workspace.id
+            or session_row["lifecycle"] != "pool"
+            or session_row["task_id"] != task_id
+            or session_row["work_dir"] != workspace_row["workspace_path"]
+            or session_row["project_id"] != workspace_row["project_id"]
+            or workspace_row["locked_by_task_id"] != task_id
+            or workspace_row["locked_by_agent_id"] != session_row["agent_id"]
+        ):
+            return False
+
+        released_owner = await conn.execute(
+            update(integration_branch_owners)
+            .where(
+                integration_branch_owners.c.id == owner_row["id"],
+                integration_branch_owners.c.fence_token == owner_row["fence_token"],
+                integration_branch_owners.c.owner_id == owner_row["owner_id"],
+                integration_branch_owners.c.handoff_state == "handoff_pending",
+                integration_branch_owners.c.session_id == owner_row["session_id"],
+                integration_branch_owners.c.workspace_id == workspace.id,
+            )
+            .values(
+                handoff_state="released",
+                session_id=None,
+                workspace_id=None,
+                confirmed_workspace_id=workspace.id,
+                updated_at=time.time(),
+            )
+        )
+        if released_owner.rowcount != 1:
+            raise RuntimeError("pool integration handoff release lost its compare-and-swap")
+    return True
+
+
 async def release_never_attached_integration_launch(
     db,
     *,

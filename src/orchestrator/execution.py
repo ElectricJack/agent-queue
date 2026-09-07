@@ -1699,22 +1699,36 @@ class ExecutionMixin:
             pr_url=pr_url or "",
         )
 
+        # Release the writer's integration attachment before anything drops
+        # the session/task/workspace bindings its handoff proof reads.  This
+        # sits *outside* the ``if not pool`` below deliberately: a pool
+        # session attaches ``integration_branch_owners`` on every hierarchy
+        # claim (``claim_commands._prepare_and_activate_locked``), so skipping
+        # it here left the owner row ``attached`` forever once
+        # ``_cmd_task_close`` called ``db.release_claim`` and cleared
+        # ``workspaces.locked_by_task_id`` / ``sessions.task_id`` — after
+        # which no transfer of that branch could ever be confirmed and every
+        # later collector/promotion/repair transfer raised ``BranchBusy``
+        # permanently.  A pool writer's proof is detachment rather than
+        # termination, which is what ``pool=pool`` selects.
+        if managed_parent_suspended or repair_writer_closed:
+            # Stop/detach the worker while preserving its durable
+            # reserved fence so the collector transfer can be proven.
+            await self.arelease_integration_writer_for_retry(
+                task,
+                reason=(
+                    "integration_repair_delegate_closed"
+                    if repair_writer_closed
+                    else "integration_parent_suspended"
+                ),
+                pool=pool,
+            )
+
         # Release the workspace and free the agent -- the session is on its
         # way out, and the next task should not wait for the drain-ack.
         # Pool sessions skip this: they keep their agent-lock and token, and
         # ``_cmd_task_close`` releases the claim itself via ``db.release_claim``.
         if not pool:
-            if managed_parent_suspended or repair_writer_closed:
-                # Stop/detach the worker while preserving its durable
-                # reserved fence so the collector transfer can be proven.
-                await self.arelease_integration_writer_for_retry(
-                    task,
-                    reason=(
-                        "integration_repair_delegate_closed"
-                        if repair_writer_closed
-                        else "integration_parent_suspended"
-                    ),
-                )
             await self.release_session_task_resources(
                 task.id, agent_id=task.assigned_agent_id, workspace_path=workspace_path,
                 expect_claim_epoch=task.claim_epoch,
