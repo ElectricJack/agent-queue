@@ -2051,6 +2051,54 @@ class MetricsConfig:
 
 
 @dataclass
+class ClaudeProviderConfig:
+    """The Claude side of ``providers``.
+
+    ``binary`` exists because a box with a harness shim does not have the real
+    CLI first on ``PATH``; the probe must be pointable at it.
+
+    ``stale_after_seconds`` is the single horizon T5's API, the dashboard card
+    and the doctor check all read.  Three independently hard-coded horizons
+    would eventually disagree about what the same card means -- one would mute
+    a bar the other still called fresh.  The default is twice the probe
+    playbook's ten-minute cadence plus slack.
+    """
+
+    usage_probe_enabled: bool = True
+    binary: str = "claude"
+    stale_after_seconds: float = 1500.0
+
+
+@dataclass
+class ProvidersConfig:
+    """Per-provider quota reporting (dashboard "provider usage" cards).
+
+    Codex gets a horizon of its own rather than sharing Claude's: its numbers
+    ride in on transcript lines, so they only advance while a Codex session is
+    live and a four-hour-old reading is normal on a Claude-only afternoon.
+    Holding it to the probe's 25 minutes would mark every Codex card stale
+    overnight and teach the operator to ignore the word.
+    """
+
+    claude: ClaudeProviderConfig = field(default_factory=ClaudeProviderConfig)
+    codex_stale_after_seconds: float = 4 * 3600.0
+
+    def validate(self) -> list[ConfigError]:
+        errors: list[ConfigError] = []
+        if self.claude.stale_after_seconds <= 0:
+            errors.append(
+                ConfigError("providers", "claude.stale_after_seconds", "must be > 0")
+            )
+        if self.codex_stale_after_seconds <= 0:
+            errors.append(
+                ConfigError("providers", "codex_stale_after_seconds", "must be > 0")
+            )
+        if not str(self.claude.binary).strip():
+            errors.append(ConfigError("providers", "claude.binary", "must not be empty"))
+        return errors
+
+
+@dataclass
 class GraphLayoutConfig:
     """Server-side task graph layout (spatial-layout design §8).
 
@@ -2138,6 +2186,7 @@ class AppConfig:
     swarm: SwarmConfig = field(default_factory=SwarmConfig)
     resources: ResourcesConfig = field(default_factory=ResourcesConfig)
     metrics: MetricsConfig = field(default_factory=MetricsConfig)
+    providers: ProvidersConfig = field(default_factory=ProvidersConfig)
     graph_layout: GraphLayoutConfig = field(default_factory=GraphLayoutConfig)
     agent_profiles: list[AgentProfileConfig] = field(default_factory=list)
     global_token_budget_daily: int | None = None
@@ -2366,6 +2415,7 @@ class AppConfig:
         errors.extend(self.swarm.validate())
         errors.extend(self.resources.validate())
         errors.extend(self.metrics.validate())
+        errors.extend(self.providers.validate())
         errors.extend(self.graph_layout.validate())
         # Sessions are the only execution path (the runtime subsystem was
         # removed), so a disabled session runtime is a daemon that accepts
@@ -2510,6 +2560,10 @@ HOT_RELOADABLE_SECTIONS = {
     "swarm",
     "resources",
     "metrics",
+    # Both consumers read it per use -- the API resolves the staleness horizon
+    # on each request, the probe resolves its binary on each run -- so an edit
+    # takes effect without a restart.
+    "providers",
     "graph_layout",
     "pricing",
     "surface",
@@ -3458,6 +3512,14 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
 
     if "metrics" in raw:
         config.metrics = MetricsConfig(**_dataclass_kwargs(MetricsConfig, raw["metrics"]))
+
+    if "providers" in raw:
+        prov = raw["providers"] or {}
+        claude_kwargs = _dataclass_kwargs(ClaudeProviderConfig, prov.get("claude"))
+        config.providers = ProvidersConfig(
+            **_dataclass_kwargs(ProvidersConfig, {k: v for k, v in prov.items() if k != "claude"}),
+            claude=ClaudeProviderConfig(**claude_kwargs),
+        )
 
     # Both spellings: the spec nests it under ``dashboard``, while
     # ``config_editor``/``update_config`` write AppConfig field names as
