@@ -32,7 +32,7 @@ vi.mock("../layout-v2/MobileLayoutList", () => ({
 }));
 vi.mock("../../../panes/store", () => ({ useShellPaneStore: () => ({ state: mocks.pane, open: mocks.open, close: mocks.close }) }));
 vi.mock("../TaskWorkspace", () => ({ useTaskWorkspace: () => ({ projectId: "alpha", projectIds: mocks.projectIds, projects: [mocks.project],
-  filters: { query: mocks.query, status: "", showCompleted: mocks.showCompleted, focus: "" }, focusId: null, setFocus: vi.fn(),
+  filters: { query: mocks.query, status: "", showCompleted: mocks.showCompleted, focus: "", window: "" }, focusId: null, setFocus: vi.fn(),
   isLoadingProjects: false, projectsError: null }) }));
 vi.mock("../useTaskSelection", () => ({ useTaskSelection: () => ({ selectedTaskId: null, selectTask: mocks.selectTask, clearTask: vi.fn() }) }));
 beforeEach(() => { mocks.playbooks = []; mocks.pane = { kind: "closed" }; mocks.open.mockClear(); mocks.close.mockClear();

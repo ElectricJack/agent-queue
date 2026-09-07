@@ -18,6 +18,7 @@ interface TaskWorkspaceValue {
   setQuery: (query: string) => void;
   setStatus: (status: string) => void;
   setShowCompleted: (show: boolean) => void;
+  setWindow: (window: string) => void;
   clearFilters: () => void;
 }
 const TaskWorkspaceContext = createContext<TaskWorkspaceValue | null>(null);
@@ -29,7 +30,10 @@ export function TaskWorkspaceProvider({ children }: { children: ReactNode }) {
   const [params, setParams] = useSearchParams();
   const rawFilters = useMemo(() => readTaskFilters(params), [params]);
   const focusId = rawFilters.focus || null;
-  const filters = useMemo(() => ({ ...rawFilters, showCompleted: rawFilters.showCompleted || !!focusId }), [rawFilters, focusId]);
+  // A time window is a statement about work done, so it must not hide the
+  // completed half of it — the "show completed" toggle is implied by it.
+  const filters = useMemo(() => ({ ...rawFilters,
+    showCompleted: rawFilters.showCompleted || !!focusId || !!rawFilters.window }), [rawFilters, focusId]);
   const projectIds = useMemo(() => projectId ? [projectId] : projects.map((p) => p.id), [projectId, projects]);
   useGraphLive(projectIds);
 
@@ -50,16 +54,17 @@ export function TaskWorkspaceProvider({ children }: { children: ReactNode }) {
       });
     }, { replace: true });
   }, [setParams]);
+  const setWindow = useCallback((window: string) => update({ window }), [update]);
   const setFocus = useCallback((id: string | null) => update({ focus: id ?? "" }), [update]);
   const clearFilters = useCallback(() => {
     setParams((previous) => {
       const current = readTaskFilters(previous);
-      return writeTaskFilters(previous, { query: "", status: "", showCompleted: false, focus: current.focus });
+      return writeTaskFilters(previous, { query: "", status: "", showCompleted: false, window: "", focus: current.focus });
     }, { replace: true });
   }, [setParams]);
   const value = useMemo(() => ({ projectId, projectIds, projects, isLoadingProjects, projectsError,
-    filters, focusId, setFocus, setQuery, setStatus, setShowCompleted, clearFilters }),
-  [projectId, projectIds, projects, isLoadingProjects, projectsError, filters, focusId, setFocus, setQuery, setStatus, setShowCompleted, clearFilters]);
+    filters, focusId, setFocus, setQuery, setStatus, setShowCompleted, setWindow, clearFilters }),
+  [projectId, projectIds, projects, isLoadingProjects, projectsError, filters, focusId, setFocus, setQuery, setStatus, setShowCompleted, setWindow, clearFilters]);
   return <TaskWorkspaceContext.Provider value={value}>{children}</TaskWorkspaceContext.Provider>;
 }
 
