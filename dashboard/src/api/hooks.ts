@@ -78,6 +78,7 @@ import {
   poolStatus,
   poolScale,
   playbookActivate,
+  playbookDelete,
   playbookActivationHealth,
   playbookArtifactDiff,
   playbookArtifacts,
@@ -157,6 +158,7 @@ import type {
   PoolScaleRequest,
   PoolScaleResponse,
   PlaybookActivationHealthResponse,
+  PlaybookDeleteResponse,
   PlaybookArtifactDiffResponse,
   ListPlaybookArtifactsResponse,
   PlaybookRunOverlayResponse,
@@ -951,6 +953,35 @@ export function useEventTriggers() {
  * trigger events spawn new runs. Distinct from useResumePlaybookRun, which
  * resumes a single in-flight run that's waiting on human input.
  */
+/** Delete one exact playbook catalog entry.
+ *
+ *  The server keys the delete on (playbook_id, scope, scope_identifier,
+ *  artifact_sha256) and refuses anything that is enabled, stale, or still owns
+ *  unfinished work, so callers pass the hash they last observed rather than
+ *  letting the server pick.  Everything that lists or projects a playbook is
+ *  invalidated: a deleted entry must not survive in any view. */
+export function useDeletePlaybook() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (input: {
+      playbook_id: string;
+      scope: string;
+      scope_identifier: string;
+      artifact_sha256: string;
+    }) =>
+      (await playbookDelete({ body: input, throwOnError: true }))
+        .data as PlaybookDeleteResponse,
+    onSuccess: (_data, variables) => {
+      queryClient.invalidateQueries({ queryKey: ["playbooks"] });
+      queryClient.invalidateQueries({ queryKey: ["playbook-activation-health"] });
+      queryClient.invalidateQueries({ queryKey: ["playbook-runs", variables.playbook_id] });
+      queryClient.invalidateQueries({ queryKey: ["playbook-source", variables.playbook_id] });
+      queryClient.invalidateQueries({ queryKey: ["playbook-v2-graph", variables.playbook_id] });
+      queryClient.invalidateQueries({ queryKey: playbookArtifactsKey(variables.playbook_id) });
+    },
+  });
+}
+
 export function useSetPlaybookEnabled() {
   const queryClient = useQueryClient();
   return useMutation({

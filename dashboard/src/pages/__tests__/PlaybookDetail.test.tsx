@@ -39,6 +39,7 @@ vi.mock("@xyflow/react", () => ({
 const state = vi.hoisted(() => ({
   semanticGraph: {} as Record<string, unknown>,
   activationHealth: {} as Record<string, unknown>,
+  deletePlaybook: vi.fn(),
 }));
 vi.mock("../../api/hooks", () => ({
   usePlaybooks: () => ({
@@ -60,6 +61,7 @@ vi.mock("../../api/hooks", () => ({
   useSetPlaybookActivation: () => ({ mutate: vi.fn() }),
   usePlaybookPendingEventAction: () => ({ mutate: vi.fn() }),
   usePlaybookRunOverlay: () => ({ data: undefined }),
+  useDeletePlaybook: () => ({ mutateAsync: state.deletePlaybook, isPending: false }),
 }));
 
 function page() {
@@ -67,10 +69,20 @@ function page() {
     <MemoryRouter initialEntries={["/settings/playbooks/review-flow"]}>
       <Routes>
         <Route path="/settings/playbooks/:playbookId" element={<PlaybookDetail />} />
+        <Route path="/settings/playbooks" element={<p>Playbook list</p>} />
       </Routes>
     </MemoryRouter>
   );
 }
+
+/** The installed entry the delete dialog reads its scope and hash from. */
+const installed = {
+  playbook_id: "review-flow",
+  scope: "system",
+  scope_identifier: "",
+  enabled: false,
+  active_artifact_sha256: "d".repeat(64),
+};
 
 beforeEach(() => {
   state.semanticGraph = { data: semanticGraph, isPending: false, isError: false, error: null };
@@ -78,6 +90,8 @@ beforeEach(() => {
     data: { activations: [semanticGraph.activation] },
     isPending: false,
   };
+  state.deletePlaybook.mockReset();
+  state.deletePlaybook.mockResolvedValue({ success: true, deleted: true });
 });
 afterEach(cleanup);
 
@@ -124,5 +138,49 @@ describe("PlaybookDetail tabs", () => {
 
     await user.click(screen.getByRole("button", { name: "Runs" }));
     expect(screen.getByText("No runs recorded for this playbook.")).toBeInTheDocument();
+  });
+});
+
+describe("PlaybookDetail delete", () => {
+  it("deletes the playbook and leaves the page it can no longer show", async () => {
+    state.activationHealth = { data: { activations: [installed] }, isPending: false };
+    const user = userEvent.setup();
+    render(page());
+
+    await user.click(screen.getByRole("button", { name: "Delete playbook review-flow" }));
+    await user.click(screen.getByRole("button", { name: "Delete playbook" }));
+
+    expect(state.deletePlaybook).toHaveBeenCalledWith({
+      playbook_id: "review-flow",
+      scope: "system",
+      scope_identifier: "",
+      artifact_sha256: "d".repeat(64),
+    });
+    expect(await screen.findByText("Playbook list")).toBeInTheDocument();
+  });
+
+  it("stays on the page and shows the refusal when the daemon says no", async () => {
+    state.activationHealth = { data: { activations: [installed] }, isPending: false };
+    state.deletePlaybook.mockRejectedValue(new Error("API 422: playbook is enabled or artifact changed; deletion refused"));
+    const user = userEvent.setup();
+    render(page());
+
+    await user.click(screen.getByRole("button", { name: "Delete playbook review-flow" }));
+    await user.click(screen.getByRole("button", { name: "Delete playbook" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("deletion refused");
+    expect(screen.queryByText("Playbook list")).not.toBeInTheDocument();
+  });
+
+  it("cancels without deleting", async () => {
+    state.activationHealth = { data: { activations: [installed] }, isPending: false };
+    const user = userEvent.setup();
+    render(page());
+
+    await user.click(screen.getByRole("button", { name: "Delete playbook review-flow" }));
+    await user.click(screen.getByRole("button", { name: "Cancel" }));
+
+    expect(state.deletePlaybook).not.toHaveBeenCalled();
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
   });
 });

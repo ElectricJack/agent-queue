@@ -6091,7 +6091,9 @@
             "description": "Successful Response",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/PlaybookDeleteResponse"
+                }
               }
             }
           },
@@ -29486,6 +29488,57 @@
           "artifact_sha256"
         ],
         "title": "PlaybookDeleteRequest"
+      },
+      "PlaybookDeleteResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "deleted": {
+            "type": "boolean",
+            "title": "Deleted",
+            "default": false
+          },
+          "playbook_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Playbook Id"
+          },
+          "scope": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scope"
+          },
+          "scope_identifier": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scope Identifier"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "PlaybookDeleteResponse",
+        "description": "Result of deleting one exact installed catalog entry.\n\n``deleted=False`` alongside ``success=True`` is the idempotent answer: the\nentry the caller named was already gone.  Every refusal (an enabled\nactivation, a stale hash, unfinished work, a policy reference) is a command\nerror rather than a ``deleted=False`` body, so a client can treat this\nresponse as \"the named entry is not installed any more\"."
       },
       "PlaybookGraphEdge": {
         "properties": {

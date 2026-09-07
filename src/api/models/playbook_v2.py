@@ -294,6 +294,22 @@ class SetPlaybookActivationResponse(V2Model):
     pending_event_replay: PendingEventReplayDTO = PendingEventReplayDTO()
 
 
+class PlaybookDeleteResponse(V2Model):
+    """Result of deleting one exact installed catalog entry.
+
+    ``deleted=False`` alongside ``success=True`` is the idempotent answer: the
+    entry the caller named was already gone.  Every refusal (an enabled
+    activation, a stale hash, unfinished work, a policy reference) is a command
+    error rather than a ``deleted=False`` body, so a client can treat this
+    response as "the named entry is not installed any more"."""
+
+    success: bool = True
+    deleted: bool = False
+    playbook_id: str | None = None
+    scope: str | None = None
+    scope_identifier: str | None = None
+
+
 # ---------------------------------------------------------------------------
 # §4.3 Graph
 # ---------------------------------------------------------------------------
@@ -932,6 +948,7 @@ RESPONSE_MODELS: dict[str, type[BaseModel]] = {
     "playbook_graph_layout_save": PlaybookGraphLayoutSaveResponse,
     "playbook_activation_health": PlaybookActivationHealthResponse,
     "playbook_activate": SetPlaybookActivationResponse,
+    "playbook_delete": PlaybookDeleteResponse,
     "playbook_artifacts": ListPlaybookArtifactsResponse,
     "playbook_artifact_diff": PlaybookArtifactDiffResponse,
     "playbook_pending_events": ListPlaybookPendingEventsResponse,
