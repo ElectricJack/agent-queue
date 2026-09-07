@@ -6068,6 +6068,51 @@
         }
       }
     },
+    "/api/playbook/delete": {
+      "post": {
+        "tags": [
+          "playbook"
+        ],
+        "summary": "Delete an exact disabled playbook catalog entry. Local operator only; refuses active or referenced work.",
+        "description": "Delete an exact disabled playbook catalog entry. Local operator only; refuses active or referenced work.",
+        "operationId": "playbook_delete",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PlaybookDeleteRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/playbook/graph-layout-save": {
       "post": {
         "tags": [
@@ -29409,6 +29454,38 @@
           "playbook_id"
         ],
         "title": "PlaybookArtifactsRequest"
+      },
+      "PlaybookDeleteRequest": {
+        "properties": {
+          "playbook_id": {
+            "type": "string",
+            "title": "Playbook Id",
+            "description": ""
+          },
+          "scope": {
+            "type": "string",
+            "title": "Scope",
+            "description": ""
+          },
+          "scope_identifier": {
+            "type": "string",
+            "title": "Scope Identifier",
+            "description": ""
+          },
+          "artifact_sha256": {
+            "type": "string",
+            "title": "Artifact Sha256",
+            "description": ""
+          }
+        },
+        "type": "object",
+        "required": [
+          "playbook_id",
+          "scope",
+          "scope_identifier",
+          "artifact_sha256"
+        ],
+        "title": "PlaybookDeleteRequest"
       },
       "PlaybookGraphEdge": {
         "properties": {

@@ -607,6 +607,8 @@ from .playbook_artifact_diff_response_422 import PlaybookArtifactDiffResponse422
 from .playbook_artifact_summary_dto import PlaybookArtifactSummaryDTO
 from .playbook_artifacts_request import PlaybookArtifactsRequest
 from .playbook_artifacts_response_422 import PlaybookArtifactsResponse422
+from .playbook_delete_request import PlaybookDeleteRequest
+from .playbook_delete_response_422 import PlaybookDeleteResponse422
 from .playbook_graph_edge import PlaybookGraphEdge
 from .playbook_graph_edge_edge_type import PlaybookGraphEdgeEdgeType
 from .playbook_graph_identity import PlaybookGraphIdentity
@@ -1699,6 +1701,8 @@ __all__ = (
     "PlaybookArtifactsRequest",
     "PlaybookArtifactsResponse422",
     "PlaybookArtifactSummaryDTO",
+    "PlaybookDeleteRequest",
+    "PlaybookDeleteResponse422",
     "PlaybookGraphEdge",
     "PlaybookGraphEdgeEdgeType",
     "PlaybookGraphIdentity",

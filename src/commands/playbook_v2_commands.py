@@ -1562,6 +1562,84 @@ class PlaybookV2CommandsMixin:
             "pending_event_replay": replay,
         }
 
+    async def _cmd_playbook_delete(self, args: dict) -> dict:
+        """Delete an exact disabled playbook entry from the installed catalog.
+
+        Requires local operator authority, explicit scope and the last observed
+        artifact hash. Active definitions and unfinished work are never deleted.
+        """
+        from sqlalchemy import delete, select
+        from src.commands.principal import PrincipalKind, current_principal
+        from src.database.tables import (
+            playbook_activations, playbook_pending_events, playbook_v2_runs,
+            integration_repair_operations, projects,
+        )
+
+        principal = current_principal()
+        if principal is not None and principal.kind is not PrincipalKind.LOCAL:
+            return {"error": "playbook deletion requires local operator authority"}
+        if not self._v2_activation_writes_enabled():
+            return {"error": V2_WRITES_DISABLED_ERROR}
+        name = _clean_str(args, "playbook_id")
+        sha = _clean_str(args, "artifact_sha256")
+        scope = args.get("scope")
+        identifier = args.get("scope_identifier")
+        if (not name or not sha or _validate_sha(sha, "artifact_sha256")
+                or scope not in {"system", "project", "agent_type"}
+                or not isinstance(identifier, str)
+                or (scope == "system" and identifier != "")
+                or (scope != "system" and not identifier)):
+            return {"error": "exact playbook_id, scope, scope_identifier and artifact_sha256 required"}
+        async with self.db.immediate() as conn:
+            row = (await conn.execute(select(playbook_activations).where(
+                playbook_activations.c.playbook_id == name,
+                playbook_activations.c.scope == scope,
+                playbook_activations.c.scope_identifier == identifier,
+            ).with_for_update())).mappings().one_or_none()
+            if row is None:
+                return {"success": True, "deleted": False}
+            if row["enabled"] or row["active_artifact_sha256"] != sha:
+                return {"error": "playbook is enabled or artifact changed; deletion refused"}
+            busy_queries = (
+                select(playbook_v2_runs.c.run_id).where(
+                    playbook_v2_runs.c.artifact_sha256 == sha,
+                    playbook_v2_runs.c.lifecycle.in_(("running", "paused", "cancelling")),
+                ),
+                select(playbook_pending_events.c.pending_event_id).where(
+                    playbook_pending_events.c.playbook_id == name,
+                    playbook_pending_events.c.scope == scope,
+                    playbook_pending_events.c.scope_identifier == identifier,
+                    playbook_pending_events.c.resolved_at.is_(None),
+                ),
+                select(integration_repair_operations.c.id).where(
+                    integration_repair_operations.c.route_playbook_id == name,
+                    integration_repair_operations.c.route_scope == scope,
+                    integration_repair_operations.c.route_scope_identifier == identifier,
+                    integration_repair_operations.c.state.in_(("active", "escalated", "human_required")),
+                ),
+            )
+            for query in busy_queries:
+                if (await conn.execute(query.limit(1))).first() is not None:
+                    return {"error": "playbook still owns unfinished work; deletion refused"}
+            policies = (await conn.execute(select(projects.c.hierarchical_integration_policy))).scalars()
+            for policy in policies:
+                if not isinstance(policy, dict):
+                    continue
+                for boundary in ("parent", "root"):
+                    route = (policy.get(boundary) or {}).get("route") or {}
+                    if (route.get("playbook_id"), route.get("scope"), route.get("scope_identifier")) == (name, scope, identifier):
+                        return {"error": "playbook is referenced by project integration policy"}
+            result = await conn.execute(delete(playbook_activations).where(
+                playbook_activations.c.activation_id == row["activation_id"],
+                playbook_activations.c.enabled.is_(False),
+                playbook_activations.c.active_artifact_sha256 == sha,
+            ))
+        manager = getattr(getattr(self, "orchestrator", None), "playbook_manager", None)
+        if manager is not None:
+            await manager.refresh()
+        return {"success": True, "deleted": result.rowcount == 1,
+                "playbook_id": name, "scope": scope, "scope_identifier": identifier}
+
     async def _cmd_set_playbook_enabled(self, args: dict) -> dict:
         """Pause or resume a playbook's activation without changing its artifact.
 

@@ -136,6 +136,7 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "get_playbook_source": "playbook",
     "update_playbook_source": "playbook",
     "set_playbook_enabled": "playbook",
+    "playbook_delete": "playbook",
     # playbook V2 semantic graph -- src/commands/playbook_v2_commands.py
     "playbook_v2_graph": "playbook",
     "playbook_graph_layout_save": "playbook",
@@ -4111,6 +4112,20 @@ _ALL_TOOL_DEFINITIONS = [
                 },
             },
             "required": ["playbook_id", "markdown"],
+        },
+    },
+    {
+        "name": "playbook_delete",
+        "description": "Delete an exact disabled playbook catalog entry. Local operator only; refuses active or referenced work.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "playbook_id": {"type": "string"},
+                "scope": {"type": "string", "enum": ["system", "project", "agent_type"]},
+                "scope_identifier": {"type": "string"},
+                "artifact_sha256": {"type": "string"},
+            },
+            "required": ["playbook_id", "scope", "scope_identifier", "artifact_sha256"],
         },
     },
     {
