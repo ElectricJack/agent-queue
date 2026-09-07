@@ -75,6 +75,7 @@ The import path must survive the cutover even though the backend does not.
 
 ```
 T0  PG test substrate           ── BLOCKING GATE, merge before anything else
+T0.5 Name every constraint      ── prerequisite for T5's autogenerate gate
      │
 T1  Config + backend selection ─┐
 T2  SQLite import escape hatch ─┤  can land together
@@ -140,6 +141,132 @@ and backend-agnostic already.
    outcome than dual-backend support.
 
 ---
+
+### T0 results (measured 2026-09-07)
+
+**Built and verified.** `tests/db_fixtures.py` (template build, clone, lease
+pool, seed capture/restore), `tests/pg_backend_shim.py`, `src/database/
+schema_key.py`, and the `_pg_backend` fixture in `tests/conftest.py`.
+
+The shim routes the *existing* suite onto Postgres with **zero test edits**:
+`Database` is `SQLiteDatabaseAdapter`, `PostgreSQLDatabaseAdapter` is a
+sibling class rather than a subclass, so patching `SQLiteDatabaseAdapter.
+__new__` to return a Postgres adapter makes Python skip `__init__` entirely
+and the SQLite path argument is simply discarded. Patching the class object
+(not a module attribute) works regardless of how a test imported `Database`.
+
+**Measured, 321 tests, `aq test -n 3`, both halves run sequentially in one
+script so they cannot contend:**
+
+| | 321 tests | pytest | wall |
+|---|---|---|---|
+| SQLite, as found | passed | 231.68s | 243.57s |
+| PG substrate, first cut | passed | 181.38s | 193.19s |
+| SQLite + head fast path | passed | 119.26s | 127.76s |
+| **PG substrate, final** | passed | **104.25s** | **111.81s** |
+
+**0.87x — 13% faster than the SQLite path it replaces, against a gate that
+only required staying under 1.5x.** The gate passes; Postgres is not the slow
+option here.
+
+The largest single win is backend-agnostic and worth landing on its own: the
+`run_schema_setup` head check took **49% off SQLite** (231.68s -> 119.26s) and
+36% off Postgres. Every `Database()` construction was running a full Alembic
+upgrade — building a `ScriptDirectory` over 114 revision files, loading
+`env.py`, opening a second connection — to conclude there was nothing to do.
+
+Two further substrate fixes closed the rest of the gap (193.19s -> 111.81s):
+`ensure_template` took the advisory lock on *every* call rather than only to
+build, serialising twelve clones behind one lock across three xdist workers;
+and `capture_seed` made 92 round trips where one `UNION ALL` probe does.
+
+Caveat on reading these: the per-worker pool creation is paid once, in
+parallel, so it inflates a seven-file run proportionally more than it will the
+full 11,330-test suite. Expect the whole-suite gain to be larger, not smaller.
+
+Three measurement traps, all of which produced wrong numbers before being
+caught — record them so the next person does not repeat them:
+
+1. **Unequal test sets.** The default SQLite run *skips* 23
+   `..._on_both_backends[postgres]` tests for want of `POSTGRES_TEST_DSN`,
+   and they are the expensive ones. Comparing 298 tests against 321 made the
+   substrate look 2.05x slower. Always set `POSTGRES_TEST_DSN` on both sides.
+2. **Concurrent runs.** A baseline taken while another pytest ran against the
+   same Postgres inflated a pure-SQLite test from 5.33s to 28.49s. Run the two
+   halves sequentially, in one script, and record `aq test --aq-status`.
+3. **Those 23 parametrized tests are themselves dual-support tax.** They exist
+   only because two backends exist; T6 deletes the parametrization outright.
+   Much of the SQLite baseline is cost the removal deletes rather than
+   optimises.
+
+**Two defects found in the substrate itself** — both are previews of what T6
+would otherwise have hit blind:
+
+* **Seed loss.** The migration chain inserts three `workspace_kinds` rows
+  (`project-repo`, `vault`, `readonly-dir`). A bare truncate deleted them, so
+  every test after the first in a leased database ran without the built-in
+  workspace kinds. Six workspace-heavy `test_orchestrator.py` tests failed —
+  and each passed in isolation, so it only reproduced under xdist. Fixed by
+  snapshotting the template's non-empty tables once and replaying them after
+  each truncate; this generalises to any future seeding migration.
+* **Truncate cost.** 92 tables truncated in a `DO` loop cost 2619ms per test
+  and dominated the run. One statement over only the non-empty tables: ~180ms.
+
+**The `run_schema_setup` fast path is a T0 deliverable, not an optimisation.**
+Today SQLite tests skip Alembic entirely because `_restore_schema_from_cache`
+returns before it loads. T4 deletes that cache, after which *nothing*
+short-circuits: every template-cloned database would parse all 114 revision
+files to conclude there is nothing to do. `_is_stamped_at_head` replaces that
+early return in 15 lines instead of 180, and unlike a `migrate=False` flag it
+also makes daemon restarts, worker startup and every CLI invocation cheap
+while keeping one code path through `initialize()`.
+
+## T0.5 — Name every constraint in `tables.py` (new, prerequisite for T5)
+
+Added 2026-09-07 after the T0 work surfaced it.
+
+T5's exit criterion is "`alembic revision --autogenerate` against a fresh
+Postgres produces an empty migration". **That is not currently satisfiable.**
+`tables.py` carries unnamed `ForeignKeyConstraint`s — at minimum on
+`agents.current_task_id` and `tasks.preferred_workspace_id` — so autogenerate
+emits spurious operations for them on every run.
+
+Caught live: an agent working on an unrelated task autogenerated a revision on
+2026-09-07 that contained
+
+```python
+with op.batch_alter_table('agents', schema=None) as batch_op:
+    batch_op.drop_constraint(None, type_='foreignkey')
+```
+
+which **cannot execute on PostgreSQL**:
+
+```
+CompileError: Can't emit DROP CONSTRAINT for constraint
+ForeignKeyConstraint(..., None, table=Table('agents', ...)); it has no name
+```
+
+It only "works" under SQLite's batch-table-rebuild emulation, which drops and
+recreates the whole table rather than issuing `ALTER`. This is the same hazard
+`CLAUDE.md` already documents for unnamed `CheckConstraint`s, one level up.
+
+### Work
+
+1. Give every `ForeignKeyConstraint` in `tables.py` an explicit
+   `name="fk_<table>_<column>"`, matching the existing `ck_<table>_<what>`
+   convention.
+2. One Alembic revision renaming the constraints the database already carries
+   (Postgres auto-named them `<table>_<column>_fkey`), so the names in the
+   schema and in `tables.py` agree.
+3. Extend the `tests/test_migration_string_defaults.py` family with a check
+   that no `Table` in `tables.py` has an unnamed `ForeignKeyConstraint`,
+   `CheckConstraint` or `UniqueConstraint` — a ratchet, so this cannot
+   regress.
+4. Then assert the empty-autogenerate property as a test, which T5 inherits.
+
+Independent of the SQLite removal: this is a live correctness bug for anyone
+running Postgres today, and it makes every autogenerate output untrustworthy.
+Worth landing on its own even if the removal is deferred.
 
 ## T1 — Config and backend selection
 
