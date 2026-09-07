@@ -21,7 +21,7 @@ class GateCreateRequest:
         question (None | str | Unset):
         await_id (None | str | Unset):
         timeout_at (None | str | Unset):
-        waiter_task_ids (None | str | Unset):
+        waiter_task_ids (list[Any] | None | Unset):
     """
 
     project_id: str
@@ -30,7 +30,7 @@ class GateCreateRequest:
     question: None | str | Unset = UNSET
     await_id: None | str | Unset = UNSET
     timeout_at: None | str | Unset = UNSET
-    waiter_task_ids: None | str | Unset = UNSET
+    waiter_task_ids: list[Any] | None | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -58,9 +58,12 @@ class GateCreateRequest:
         else:
             timeout_at = self.timeout_at
 
-        waiter_task_ids: None | str | Unset
+        waiter_task_ids: list[Any] | None | Unset
         if isinstance(self.waiter_task_ids, Unset):
             waiter_task_ids = UNSET
+        elif isinstance(self.waiter_task_ids, list):
+            waiter_task_ids = self.waiter_task_ids
+
         else:
             waiter_task_ids = self.waiter_task_ids
 
@@ -120,12 +123,20 @@ class GateCreateRequest:
 
         timeout_at = _parse_timeout_at(d.pop("timeout_at", UNSET))
 
-        def _parse_waiter_task_ids(data: object) -> None | str | Unset:
+        def _parse_waiter_task_ids(data: object) -> list[Any] | None | Unset:
             if data is None:
                 return data
             if isinstance(data, Unset):
                 return data
-            return cast(None | str | Unset, data)
+            try:
+                if not isinstance(data, list):
+                    raise TypeError()
+                waiter_task_ids_type_0 = cast(list[Any], data)
+
+                return waiter_task_ids_type_0
+            except (TypeError, ValueError, AttributeError, KeyError):
+                pass
+            return cast(list[Any] | None | Unset, data)
 
         waiter_task_ids = _parse_waiter_task_ids(d.pop("waiter_task_ids", UNSET))
 

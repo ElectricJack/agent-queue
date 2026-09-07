@@ -88,6 +88,23 @@ def _json_schema_type_to_python(prop_schema: dict) -> type:
     if "enum" in prop_schema:
         return str
 
+    # A command contract's ``args_model`` (src/commands/contracts) is projected
+    # by pydantic, which spells ``T | None`` as ``anyOf: [T, null]`` and a
+    # nested model as a ``$ref`` into ``$defs``.  Reading only ``type`` turned
+    # every such field into ``str`` and the API rejected the real value
+    # (``gate_create.waiter_task_ids: list[str] | None`` became ``str``).
+    if "$ref" in prop_schema:
+        return dict
+    branches = [
+        b for b in prop_schema.get("anyOf") or prop_schema.get("oneOf") or []
+        if b.get("type") != "null"
+    ]
+    if branches:
+        py_type: Any = _json_schema_type_to_python(branches[0])
+        for branch in branches[1:]:
+            py_type = py_type | _json_schema_type_to_python(branch)
+        return py_type
+
     schema_type = prop_schema.get("type", "string")
 
     # JSON Schema union types: {"type": ["string", "integer"]} → str

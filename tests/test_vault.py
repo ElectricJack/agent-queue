@@ -935,10 +935,10 @@ def test_ensure_default_playbooks_installs_all_defaults(tmp_path):
     """A clean install creates the minimal default playbook set.
 
     `memory-consolidation.md`, the control-plane `default-pipeline.md` and
-    `default-assignment-routing.md`, and the (disabled-by-default)
-    hierarchical-delivery / root-integration-train playbooks ship installed
-    by default.  Other playbooks that used to auto-install have been moved
-    to ``docs/example_playbooks/`` as opt-in reference material.
+    `default-assignment-routing.md`, and the disabled-by-default
+    `hierarchical-delivery.md` / `root-integration-train.md` policies ship
+    installed by default.  Other playbooks that used to auto-install have
+    been moved to ``docs/example_playbooks/`` as opt-in reference material.
     """
     result = ensure_default_playbooks(str(tmp_path))
 

@@ -90,10 +90,11 @@ class _FakeWS:
         self.sent.append(data)
 
     async def send_text(self, frame: str):
-        """Live frames arrive pre-serialized (``WebSocketManager._on_event``
+        """Live frames arrive pre-serialized: ``WebSocketManager._on_event``
         dumps each event once and ships the shared string with
-        ``send_text``); replay and hello still use ``send_json``.  Decode so
-        ``sent`` holds dicts either way."""
+        ``send_text`` (same bytes Starlette's ``send_json`` produces).
+        Hello and replay still use ``send_json``.  Decode so ``sent``
+        holds dicts either way."""
         if self._closed:
             raise RuntimeError("closed")
         self.sent.append(json.loads(frame))

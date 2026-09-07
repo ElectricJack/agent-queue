@@ -139,7 +139,9 @@ def _tool_input_schema(cmd_name: str) -> dict:
     for defn in effective_tool_definitions():
         if defn["name"] == cmd_name:
             return defn["input_schema"]
-    raise AssertionError(f"{cmd_name} has neither a fallback schema nor a tool definition")
+    raise AssertionError(
+        f"{cmd_name} has neither a fallback schema, a typed contract, nor a tool definition"
+    )
 
 
 @pytest.mark.parametrize("cmd_name", sorted(_REQUIRED_FIELDS_BY_COMMAND))
@@ -152,7 +154,8 @@ def test_codegen_request_model_has_expected_fields(cmd_name: str) -> None:
     The schema comes from the fallback table when there is one, else from the
     command's real ``_ALL_TOOL_DEFINITIONS`` entry — ``project_ready``
     graduated to a full tool definition (so the CLI exposes it) and no longer
-    needs a fallback.
+    needs a fallback — else from the typed contract's ``args_model``
+    (``gate_create`` / ``gate_resolve`` moved there and dropped their fallbacks).
     """
     schema = _FALLBACK_INPUT_SCHEMAS.get(cmd_name) or _tool_input_schema(cmd_name)
     model = _make_input_model(cmd_name, schema)
@@ -168,6 +171,56 @@ def test_codegen_request_model_has_expected_fields(cmd_name: str) -> None:
         f"{cmd_name}: expected properties {expected_present} to appear on the "
         f"request model but only found {fields}"
     )
+
+
+def test_codegen_maps_contract_projected_unions_and_refs() -> None:
+    """pydantic projects a contract's ``T | None`` as ``anyOf: [T, null]`` and a
+    nested model as a ``$ref``.  Codegen used to read only ``type`` and turned
+    both into ``str``, so the API rejected ``gate_create.waiter_task_ids:
+    ["a"]`` with a 422 once the command moved from a fallback schema to its
+    contract."""
+    from pydantic import ValidationError
+
+    model = _make_input_model(
+        "probe",
+        {
+            "$defs": {"Fence": {"type": "object", "properties": {}}},
+            "properties": {
+                "ids": {
+                    "anyOf": [{"items": {"type": "string"}, "type": "array"}, {"type": "null"}],
+                    "default": None,
+                },
+                "seconds": {
+                    "anyOf": [{"exclusiveMinimum": 0, "type": "integer"}, {"type": "null"}],
+                    "default": None,
+                },
+                "fence": {"$ref": "#/$defs/Fence"},
+                "either": {
+                    "anyOf": [{"type": "string"}, {"type": "array"}, {"type": "null"}],
+                    "default": None,
+                },
+            },
+            "required": ["fence"],
+            "type": "object",
+        },
+    )
+    body = model.model_validate(
+        {"ids": ["a", "b"], "seconds": 30, "fence": {"epoch": 1}, "either": ["x"]}
+    )
+    assert body.ids == ["a", "b"]
+    assert body.seconds == 30
+    assert body.fence == {"epoch": 1}
+    assert body.either == ["x"]
+    assert model.model_validate({"fence": {}, "either": "text"}).either == "text"
+    with pytest.raises(ValidationError):
+        model.model_validate({"fence": "not-an-object"})
+
+    # The real projection: the request model gate_create serves on the API.
+    gate = _make_input_model("gate_create", _tool_input_schema("gate_create"))
+    created = gate.model_validate(
+        {"project_id": "p", "gate_type": "human", "title": "t", "waiter_task_ids": ["a"]}
+    )
+    assert created.waiter_task_ids == ["a"]
 
 
 def test_session_summary_accepts_hex_string_epoch() -> None:

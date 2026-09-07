@@ -44,8 +44,10 @@ from src.models import AgentProfile, Project, RepoConfig, RepoSourceType, Sessio
 BASE = "a" * 40
 
 
-# Sessions and CI runners export GIT_AUTHOR_*/GIT_COMMITTER_*, which outrank
-# the per-repository ``user.*`` config these fixtures rely on for attribution.
+# Sessions and CI runners export GIT_AUTHOR_*/GIT_COMMITTER_*, which outrank the
+# per-repository ``user.*`` config these fixtures rely on to author the source
+# commits.  The product pins the identity of the commits *it* creates; the
+# fixtures must do the same for the member commits it derives that identity from.
 _AMBIENT_IDENTITY_KEYS = (
     "GIT_AUTHOR_NAME",
     "GIT_AUTHOR_EMAIL",

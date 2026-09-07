@@ -903,7 +903,7 @@ async def test_restart_reconciler_drains_more_than_one_bounded_page(
     # The property under test is paging: the restart reconciler must keep
     # refilling its bounded replay slots until every retained row has been
     # dispatched, not stop after the first page.  A small page keeps the test
-    # about paging rather than SQLite throughput — every dispatch is a real
+    # about paging rather than SQLite throughput: every dispatch is a real
     # playbook run behind the serialized ``immediate()`` writer lock, so 101
     # events at the production page size need well over the 10s wait on a
     # loaded runner.

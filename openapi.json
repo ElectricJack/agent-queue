@@ -20715,7 +20715,8 @@
           "waiter_task_ids": {
             "anyOf": [
               {
-                "type": "string"
+                "items": {},
+                "type": "array"
               },
               {
                 "type": "null"
