@@ -117,6 +117,33 @@ These live in the (system) profile's own `## Config` block, not in
 | `min_active` | Floor. `0` means "no idle workers when the queue is empty". |
 | `max_active` | Ceiling for this profile. `null` = no profile limit (the project cap still applies). |
 | `max_claims_per_session` | How many tasks one session may claim before it retires. Ignored while `swarm.fresh_context_per_task` is true, which pins the effective cap at 1. |
+| `enabled` | Operator kill-switch. `false` hands the profile no new work. Defaults to `true`; written by `aq pool set-enabled`. |
+
+### Switching a pool off without deleting it
+
+When a tier runs low on remaining usage — a fable-level pool, say — turn it
+off rather than unpicking its definition:
+
+```bash
+aq pool set-enabled --profile-id worker-fast-medium-claude --no-enabled
+aq pool set-enabled --profile-id worker-fast-medium-claude --enabled
+```
+
+The switch lives in the system profile's `## Config` (so it survives the next
+vault sync) and, like every other pool edit, is global: every project's pool
+for that profile is affected. What it changes is eligibility for **new** work:
+
+* the sizer reads bounds `(0, 0)` for the profile, so idle workers drain on the
+  usual `scale_down_grace` schedule and nothing new is started;
+* `desired` is still floored at `running_busy + starting`, so a worker holding
+  a task keeps its session and finishes that task;
+* that worker's next `aq task claim` answers `drain_requested`, so it stops
+  rather than taking another task — including a claim already long-polling.
+
+The pool keeps its `pool status` row (with `enabled: false`) and its place in
+the dashboard's pool directory, which is where the same switch lives as a
+toggle on each row; non-pooled agents carry the equivalent toggle on their
+flock row, backed by `agents.enabled` and `aq agent edit --agent-id <id> --no-enabled`.
 
 ---
 
@@ -192,6 +219,7 @@ aq system get-recent-events --event-type pool.scaled --project-id agent-queue
 | `pool.session_quarantined` | a session went terminal-bad | bus + WebSocket only |
 | `pool.bounds_changed` | `pool scale` | bus + WebSocket only |
 | `pool.lifecycle_changed` | `pool set-lifecycle` | bus + WebSocket only |
+| `pool.enabled_changed` | `pool set-enabled` | bus + WebSocket only |
 | `pool.agent_repaired` | `aq doctor --fix` touched an agent row | yes |
 
 ---
