@@ -916,7 +916,14 @@ async def test_sensitive_project_configuration_is_local_generation_cas_and_delet
     command_handler_factory,
 ):
     handler = await command_handler_factory()
-    await handler.db.create_project(Project(id="p", name="project"))
+    await handler.db.create_project(
+        Project(
+            id="p",
+            name="project",
+            repo_url="https://github.com/acme/widgets.git",
+            repo_default_branch="main",
+        )
+    )
     await handler.db.create_repo(
         RepoConfig(
             id="repo",
@@ -937,12 +944,30 @@ async def test_sensitive_project_configuration_is_local_generation_cas_and_delet
         "edit_project",
         {
             "project_id": "p",
-            "integration_repository_id": "repo",
-            "hierarchical_integration_policy": _policy(),
+            "integration_repository": {
+                "id": "repo",
+                "url": "https://github.com/acme/widgets.git",
+                "default_branch": "main",
+            },
+            "integration_mode": "pull_request",
             "expected_integration_generation": 0,
         },
     )
     assert configured["outcome"] == "configured"
+    controls.configure.assert_awaited_once_with(
+        "p",
+        updates={
+            "integration_repository": {
+                "id": "repo",
+                "url": "https://github.com/acme/widgets.git",
+                "default_branch": "main",
+            },
+            "integration_mode": "pull_request",
+        },
+        expected_generation=0,
+        reason="configure hierarchical integration",
+        operator_id="local:-",
+    )
 
     elevated = ExecutionPrincipal(
         kind=PrincipalKind.SESSION,
@@ -974,6 +999,270 @@ async def test_sensitive_project_configuration_is_local_generation_cas_and_delet
     assert "disabled and drained" in deletion["error"]
     assert await handler.db.get_project("p") is not None
     await handler.db.close()
+
+
+async def test_configure_creates_and_binds_exact_project_repository(db):
+    await db.create_project(
+        Project(
+            id="setup",
+            name="setup",
+            repo_url="https://github.com/acme/setup.git",
+            repo_default_branch="trunk",
+        )
+    )
+
+    result = await IntegrationControlService(db).configure(
+        "setup",
+        updates={
+            "integration_repository": {
+                "id": "setup-repo",
+                "url": "https://github.com/acme/setup.git",
+                "default_branch": "trunk",
+            }
+        },
+        expected_generation=0,
+        reason="bind project repository",
+        operator_id="local:operator",
+    )
+
+    assert result == {
+        "outcome": "configured",
+        "project_id": "setup",
+        "generation": 1,
+        "fields": ["integration_repository"],
+    }
+    repository = await db.get_repo("setup-repo")
+    assert repository == RepoConfig(
+        id="setup-repo",
+        project_id="setup",
+        source_type=RepoSourceType.CLONE,
+        url="https://github.com/acme/setup.git",
+        default_branch="trunk",
+    )
+    project = await db.get_project("setup")
+    assert project.integration_repository_id == "setup-repo"
+    assert project.hierarchical_integration_generation == 1
+
+
+async def test_configure_repairs_existing_project_repository_metadata(db):
+    await db.create_project(
+        Project(
+            id="repair",
+            name="repair",
+            repo_url="https://github.com/acme/repair.git",
+            repo_default_branch="main",
+        )
+    )
+    await db.create_repo(
+        RepoConfig(
+            id="repair-repo",
+            project_id="repair",
+            source_type=RepoSourceType.LINK,
+            url="",
+            default_branch="stale",
+            source_path="/srv/repair",
+        )
+    )
+
+    result = await IntegrationControlService(db).configure(
+        "repair",
+        updates={
+            "integration_repository": {
+                "id": "repair-repo",
+                "url": "https://github.com/acme/repair.git",
+                "default_branch": "main",
+            }
+        },
+        expected_generation=0,
+        reason="repair stale repository metadata",
+        operator_id="local:operator",
+    )
+
+    assert result["outcome"] == "configured"
+    repository = await db.get_repo("repair-repo")
+    assert repository.url == "https://github.com/acme/repair.git"
+    assert repository.default_branch == "main"
+    assert repository.source_type is RepoSourceType.LINK
+    assert repository.source_path == "/srv/repair"
+    assert (await db.get_project("repair")).integration_repository_id == "repair-repo"
+
+
+async def test_configure_sets_only_pull_request_review_mode(db):
+    service = IntegrationControlService(db)
+
+    with pytest.raises(ValueError, match="pull_request"):
+        await service.configure(
+            "p",
+            updates={"integration_mode": "direct"},
+            expected_generation=0,
+            reason="reject direct delivery",
+            operator_id="local:operator",
+        )
+
+    result = await service.configure(
+        "p",
+        updates={"integration_mode": "pull_request"},
+        expected_generation=0,
+        reason="require PR review",
+        operator_id="local:operator",
+    )
+
+    assert result["outcome"] == "configured"
+    assert (await db.get_project("p")).integration_mode == "pull_request"
+
+
+@pytest.mark.parametrize(
+    ("project", "repository", "error"),
+    [
+        (
+            Project(id="missing-url", name="missing URL", repo_url=""),
+            {
+                "id": "missing-url-repo",
+                "url": "https://github.com/acme/widgets.git",
+                "default_branch": "main",
+            },
+            "project repository URL is missing",
+        ),
+        (
+            Project(
+                id="wrong-url",
+                name="wrong URL",
+                repo_url="https://github.com/acme/widgets.git",
+            ),
+            {
+                "id": "wrong-url-repo",
+                "url": "https://github.com/acme/other.git",
+                "default_branch": "main",
+            },
+            "must equal the project repository URL",
+        ),
+        (
+            Project(
+                id="wrong-branch",
+                name="wrong branch",
+                repo_url="https://github.com/acme/widgets.git",
+                repo_default_branch="trunk",
+            ),
+            {
+                "id": "wrong-branch-repo",
+                "url": "https://github.com/acme/widgets.git",
+                "default_branch": "main",
+            },
+            "must equal the project default branch",
+        ),
+        (
+            Project(
+                id="non-canonical",
+                name="non-canonical URL",
+                repo_url="git@github.com:acme/widgets.git",
+            ),
+            {
+                "id": "non-canonical-repo",
+                "url": "git@github.com:acme/widgets.git",
+                "default_branch": "main",
+            },
+            "canonical GitHub HTTPS",
+        ),
+    ],
+)
+async def test_configure_rejects_untrusted_repository_metadata(db, project, repository, error):
+    await db.create_project(project)
+
+    result = await IntegrationControlService(db).configure(
+        project.id,
+        updates={"integration_repository": repository},
+        expected_generation=0,
+        reason="invalid repository metadata",
+        operator_id="local:operator",
+    )
+
+    assert result["outcome"] == "blocked"
+    assert error in result["error"]
+    assert await db.get_repo(repository["id"]) is None
+    stored = await db.get_project(project.id)
+    assert stored.integration_repository_id is None
+    assert stored.hierarchical_integration_generation == 0
+
+
+async def test_configure_rejects_repository_id_owned_by_another_project(db):
+    await db.create_project(
+        Project(
+            id="target",
+            name="target",
+            repo_url="https://github.com/acme/target.git",
+        )
+    )
+    await db.create_project(Project(id="owner", name="owner"))
+    await db.create_repo(
+        RepoConfig(
+            id="shared-id",
+            project_id="owner",
+            source_type=RepoSourceType.CLONE,
+            url="https://github.com/acme/target.git",
+        )
+    )
+
+    result = await IntegrationControlService(db).configure(
+        "target",
+        updates={
+            "integration_repository": {
+                "id": "shared-id",
+                "url": "https://github.com/acme/target.git",
+                "default_branch": "main",
+            }
+        },
+        expected_generation=0,
+        reason="reject cross-project repository",
+        operator_id="local:operator",
+    )
+
+    assert result["outcome"] == "blocked"
+    assert "does not belong to the project" in result["error"]
+    assert (await db.get_repo("shared-id")).project_id == "owner"
+    assert (await db.get_project("target")).hierarchical_integration_generation == 0
+
+
+async def test_configure_rejects_explicit_null_repository_object(db):
+    with pytest.raises(ValueError, match="exactly id, url, and default_branch"):
+        await IntegrationControlService(db).configure(
+            "p",
+            updates={"integration_repository": None},
+            expected_generation=0,
+            reason="reject empty setup",
+            operator_id="local:operator",
+        )
+
+    assert (await db.get_project("p")).hierarchical_integration_generation == 0
+
+
+async def test_configure_stale_generation_does_not_create_repository(db):
+    await db.create_project(
+        Project(
+            id="stale-setup",
+            name="stale setup",
+            repo_url="https://github.com/acme/stale.git",
+        )
+    )
+
+    result = await IntegrationControlService(db).configure(
+        "stale-setup",
+        updates={
+            "integration_repository": {
+                "id": "stale-repo",
+                "url": "https://github.com/acme/stale.git",
+                "default_branch": "main",
+            }
+        },
+        expected_generation=1,
+        reason="stale setup",
+        operator_id="local:operator",
+    )
+
+    assert result == {"outcome": "stale", "project_id": "stale-setup", "generation": 0}
+    assert await db.get_repo("stale-repo") is None
+    project = await db.get_project("stale-setup")
+    assert project.integration_repository_id is None
+    assert project.hierarchical_integration_generation == 0
 
 
 async def test_human_resume_reconciles_ambiguous_publication_and_abort_is_db_only(db):

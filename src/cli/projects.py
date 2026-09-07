@@ -211,7 +211,7 @@ def project_details(ctx: click.Context, project_id: str) -> None:
 @click.option(
     "--expected-integration-generation",
     type=click.IntRange(min=0),
-    help="Required CAS generation for integration repository or policy changes.",
+    help="Required CAS generation for integration configuration changes.",
 )
 @click.option("--reason", help="Operator audit reason for an integration configuration change.")
 @click.pass_context
@@ -235,8 +235,10 @@ def project_set(
         "budget-limit": "budget_limit",
         "branch": "default_branch",
         "default-profile": "default_profile_id",
+        "integration-repository": "integration_repository",
         "integration-repository-id": "integration_repository_id",
         "integration-policy": "hierarchical_integration_policy",
+        "integration-review-mode": "integration_mode",
     }
 
     field = KEY_MAP.get(key)
@@ -259,6 +261,19 @@ def project_set(
         coerced = None if value.lower() in ("none", "null", "clear") else value
     elif field == "integration_repository_id":
         coerced = None if value.lower() in ("none", "null", "clear") else value
+    elif field == "integration_repository":
+        try:
+            coerced = json.loads(value)
+        except json.JSONDecodeError as exc:
+            raise click.UsageError(
+                "integration-repository must be a valid JSON object"
+            ) from exc
+        if not isinstance(coerced, dict):
+            raise click.UsageError("integration-repository must be a valid JSON object")
+    elif field == "integration_mode":
+        if value != "pull_request":
+            raise click.UsageError("integration-review-mode must be pull_request")
+        coerced = value
     elif field == "hierarchical_integration_policy":
         if value.lower() in ("none", "null", "clear"):
             coerced = None
@@ -280,7 +295,12 @@ def project_set(
         cmd = "edit_project"
         args = {"project_id": project_id, field: coerced}
 
-    sensitive = field in {"integration_repository_id", "hierarchical_integration_policy"}
+    sensitive = field in {
+        "integration_repository",
+        "integration_repository_id",
+        "hierarchical_integration_policy",
+        "integration_mode",
+    }
     if sensitive:
         if expected_integration_generation is None:
             raise click.UsageError(

@@ -96,6 +96,14 @@ Remove that configuration to use the default gh path, then restart the daemon.
 Historical internal names containing `app_client` are compatibility names,
 not a requirement to configure an App.
 
+The repository's CI workflow must run on the exact pushed parent and generated
+integration branch commits, not only on `main` or a pull request's synthetic
+merge commit. Declare every full-CI job required at each boundary. The AQ
+repository ships exact-candidate CI reuse on promotion to `main`; other
+repositories need equivalent workflow support before train enablement if they
+must avoid a second full CI run after promotion. Do not waive missing CI or
+substitute an empty required-check set.
+
 ## 3. Bind reviewed project artifacts, classes, and profiles
 
 Prepare reviewed V2 bundles whose compiled scope is `project` and whose scope
@@ -158,12 +166,22 @@ for the incremented generation, then bind the next:
 
 ```bash
 aq integration status example
-aq project set example integration-repository-id repo --expected-integration-generation 0 --reason 'bind exact GitHub repository'
+aq project set example integration-repository '{"id":"repo","url":"https://github.com/OWNER/REPOSITORY.git","default_branch":"main"}' --expected-integration-generation 0 --reason 'bind exact existing project repository'
 aq integration status example
+aq project set example integration-review-mode pull_request --expected-integration-generation 1 --reason 'require PR delivery review'
 POLICY_JSON="$(jq -c . /srv/aq/reviewed/example-integration-policy.json)"
-aq project set example integration-policy "$POLICY_JSON" --expected-integration-generation 1 --reason 'bind reviewed routes and policy'
+aq project set example integration-policy "$POLICY_JSON" --expected-integration-generation 2 --reason 'bind reviewed routes and policy'
 aq integration status example
 ```
+
+`integration-repository` creates a missing repository record or repairs the URL
+and default branch of an existing project-owned record, then designates it
+atomically. Its URL and branch must exactly match the project's existing
+repository metadata; it never guesses a repository. It preserves existing
+source paths and refuses IDs owned by another project. Use
+`integration-repository-id` instead when the existing record is already correct.
+Repository, review-mode, and policy changes all require LOCAL operator authority
+and the fresh integration generation while disabled and drained.
 
 Do not put rollout mode fields through `aq project set`; mode changes exist
 only under `aq integration enable`.
@@ -174,7 +192,7 @@ First enter observe and clear every functional blocker shown by status. Observe
 runs eligibility without scheduling or mutating Git:
 
 ```bash
-aq integration enable example --mode observe --expected-generation 2 --reason 'begin observation'
+aq integration enable example --mode observe --expected-generation 3 --reason 'begin observation'
 aq integration flush example
 aq integration status example
 ```
@@ -185,7 +203,7 @@ immutable waiver, then pass the returned waiver ID to the cutover:
 
 ```bash
 aq integration waive-history example --reason 'accept reviewed pre-cutover history' --blocker-digest sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
-aq integration enable example --mode hierarchy --expected-generation 3 --reason 'enable recursive delivery' --waiver-id WAIVER_ID
+aq integration enable example --mode hierarchy --expected-generation 4 --reason 'enable recursive delivery' --waiver-id WAIVER_ID
 ```
 
 Otherwise do not waive: fix the repository, policy, artifact, activation,
@@ -199,7 +217,7 @@ After observing recursive delivery, advance to train using the fresh generation:
 
 ```bash
 aq integration status example
-aq integration enable example --mode train --expected-generation 4 --reason 'enable root train sweeps'
+aq integration enable example --mode train --expected-generation 5 --reason 'enable root train sweeps'
 aq integration flush example
 aq integration status example
 ```

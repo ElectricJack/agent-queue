@@ -629,11 +629,44 @@ class IntegrationControlService:
         operator_id: str,
     ) -> dict[str, Any]:
         """Configure rollout inputs only while fully disabled and drained."""
-        allowed = {"integration_repository_id", "hierarchical_integration_policy"}
+        allowed = {
+            "integration_repository",
+            "integration_repository_id",
+            "hierarchical_integration_policy",
+            "integration_mode",
+        }
         if not updates or set(updates) - allowed:
-            raise ValueError("only repository and hierarchical policy are configurable here")
+            raise ValueError(
+                "only repository, review mode, and hierarchical policy are configurable here"
+            )
         if expected_generation < 0:
             raise ValueError("expected integration generation must be non-negative")
+        updates = dict(updates)
+        configured_fields = sorted(updates)
+        has_repository_config = "integration_repository" in updates
+        repository_config = updates.pop("integration_repository", None)
+        if has_repository_config:
+            if "integration_repository_id" in updates:
+                raise ValueError(
+                    "integration_repository and integration_repository_id are mutually exclusive"
+                )
+            if not isinstance(repository_config, dict) or set(repository_config) != {
+                "id",
+                "url",
+                "default_branch",
+            }:
+                raise ValueError(
+                    "integration_repository must contain exactly id, url, and default_branch"
+                )
+            if any(
+                not isinstance(repository_config[key], str)
+                or not repository_config[key]
+                or repository_config[key] != repository_config[key].strip()
+                for key in ("id", "url", "default_branch")
+            ):
+                raise ValueError("integration_repository fields must be non-empty strings")
+        if "integration_mode" in updates and updates["integration_mode"] != "pull_request":
+            raise ValueError("integration review mode must be pull_request")
         if "hierarchical_integration_policy" in updates and updates[
             "hierarchical_integration_policy"
         ] is not None:
@@ -643,7 +676,6 @@ class IntegrationControlService:
             for boundary in (policy.parent, policy.root):
                 if boundary.route.scope != "project" or boundary.route.scope_identifier != project_id:
                     raise ValueError("integration routes must be scoped to the configured project")
-            updates = dict(updates)
             updates["hierarchical_integration_policy"] = policy.model_dump(mode="json")
 
         now = self.clock()
@@ -671,10 +703,58 @@ class IntegrationControlService:
                     "generation": generation,
                     "error": "integration configuration requires disabled and drained state",
                 }
-            repository_id = updates.get(
-                "integration_repository_id", project["integration_repository_id"]
-            )
-            if repository_id is not None:
+            repository_row = None
+            if has_repository_config:
+                repository_id = repository_config["id"]
+                repository_row = (
+                    await conn.execute(select(repos).where(repos.c.id == repository_id))
+                ).mappings().one_or_none()
+                if repository_row is not None and repository_row["project_id"] != project_id:
+                    return {
+                        "outcome": "blocked",
+                        "project_id": project_id,
+                        "generation": generation,
+                        "error": "designated repository does not belong to the project",
+                    }
+                project_url = str(project["repo_url"] or "")
+                if not project_url:
+                    return {
+                        "outcome": "blocked",
+                        "project_id": project_id,
+                        "generation": generation,
+                        "error": "project repository URL is missing",
+                    }
+                if repository_config["url"] != project_url:
+                    return {
+                        "outcome": "blocked",
+                        "project_id": project_id,
+                        "generation": generation,
+                        "error": "integration repository URL must equal the project repository URL",
+                    }
+                if not self._github_origin(repository_config["url"]):
+                    return {
+                        "outcome": "blocked",
+                        "project_id": project_id,
+                        "generation": generation,
+                        "error": "integration repository URL must be canonical GitHub HTTPS",
+                    }
+                project_branch = str(project["repo_default_branch"] or "")
+                if repository_config["default_branch"] != project_branch:
+                    return {
+                        "outcome": "blocked",
+                        "project_id": project_id,
+                        "generation": generation,
+                        "error": (
+                            "integration repository default branch must equal the project "
+                            "default branch"
+                        ),
+                    }
+                updates["integration_repository_id"] = repository_id
+            else:
+                repository_id = updates.get(
+                    "integration_repository_id", project["integration_repository_id"]
+                )
+            if repository_id is not None and not has_repository_config:
                 repository = (
                     await conn.execute(
                         select(repos.c.id).where(
@@ -702,6 +782,33 @@ class IntegrationControlService:
             ):
                 return {"outcome": "stale", "project_id": project_id, "generation": generation}
             next_generation = generation + 1
+            if has_repository_config:
+                if repository_row is None:
+                    await conn.execute(
+                        insert(repos).values(
+                            id=repository_config["id"],
+                            project_id=project_id,
+                            url=repository_config["url"],
+                            default_branch=repository_config["default_branch"],
+                            checkout_base_path="",
+                            source_type="clone",
+                            source_path="",
+                        )
+                    )
+                else:
+                    repaired = await conn.execute(
+                        update(repos)
+                        .where(
+                            repos.c.id == repository_config["id"],
+                            repos.c.project_id == project_id,
+                        )
+                        .values(
+                            url=repository_config["url"],
+                            default_branch=repository_config["default_branch"],
+                        )
+                    )
+                    if repaired.rowcount != 1:
+                        raise RuntimeError("integration repository lost its project ownership fence")
             changed = await conn.execute(
                 update(projects)
                 .where(
@@ -746,7 +853,7 @@ class IntegrationControlService:
             "outcome": "configured",
             "project_id": project_id,
             "generation": next_generation,
-            "fields": sorted(updates),
+            "fields": configured_fields,
         }
 
     async def flush(self, project_id: str) -> dict[str, Any]:

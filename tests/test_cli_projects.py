@@ -115,6 +115,48 @@ def test_project_set_forwards_guarded_integration_configuration(runner):
                 "project",
                 "set",
                 "p1",
+                "integration-repository",
+                '{"id":"repo-1","url":"https://github.com/acme/widgets.git","default_branch":"main"}',
+                "--expected-integration-generation",
+                "4",
+                "--reason",
+                "create exact repository",
+            ],
+            {
+                "project_id": "p1",
+                "integration_repository": {
+                    "id": "repo-1",
+                    "url": "https://github.com/acme/widgets.git",
+                    "default_branch": "main",
+                },
+                "expected_integration_generation": 4,
+                "reason": "create exact repository",
+            },
+        ),
+        (
+            [
+                "project",
+                "set",
+                "p1",
+                "integration-review-mode",
+                "pull_request",
+                "--expected-integration-generation",
+                "5",
+                "--reason",
+                "require PR review",
+            ],
+            {
+                "project_id": "p1",
+                "integration_mode": "pull_request",
+                "expected_integration_generation": 5,
+                "reason": "require PR review",
+            },
+        ),
+        (
+            [
+                "project",
+                "set",
+                "p1",
                 "integration-repository-id",
                 "repo-1",
                 "--expected-integration-generation",
@@ -178,11 +220,39 @@ def test_project_set_rejects_unguarded_or_invalid_integration_configuration(runn
                 "1",
             ],
         )
+        invalid_repository = runner.invoke(
+            cli,
+            [
+                "project",
+                "set",
+                "p1",
+                "integration-repository",
+                "not-json",
+                "--expected-integration-generation",
+                "1",
+            ],
+        )
+        invalid_review_mode = runner.invoke(
+            cli,
+            [
+                "project",
+                "set",
+                "p1",
+                "integration-review-mode",
+                "direct",
+                "--expected-integration-generation",
+                "1",
+            ],
+        )
 
     assert missing_generation.exit_code == 2
     assert "--expected-integration-generation" in missing_generation.output
     assert invalid_policy.exit_code == 2
     assert "valid JSON object" in invalid_policy.output
+    assert invalid_repository.exit_code == 2
+    assert "valid JSON object" in invalid_repository.output
+    assert invalid_review_mode.exit_code == 2
+    assert "pull_request" in invalid_review_mode.output
     client.execute.assert_not_awaited()
 
 

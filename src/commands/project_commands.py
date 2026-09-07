@@ -322,7 +322,12 @@ class ProjectCommandsMixin:
             }
         sensitive = {
             key: args[key]
-            for key in ("integration_repository_id", "hierarchical_integration_policy")
+            for key in (
+                "integration_repository",
+                "integration_repository_id",
+                "hierarchical_integration_policy",
+                "integration_mode",
+            )
             if key in args
         }
         if sensitive:
