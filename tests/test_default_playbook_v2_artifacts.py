@@ -510,7 +510,15 @@ def test_review_lists_every_required_capability(playbook_id: str) -> None:
 
 
 def test_capabilities_granted_unused_by_src() -> None:
-    """A repository write must never become a privilege grant (§4.1)."""
+    """A repository write must never become a privilege grant (§4.1).
+
+    The claim is about *code*: nothing under ``src/`` may read the field, so a
+    reviewed manifest cannot grant itself authority.  Reviewed bundles the
+    daemon ships and seeds into a new vault (``src/playbooks/required.py``) do
+    carry the key in their manifest frontmatter — that is the declaration the
+    review recorded, and it is inert data.  Those manifests are allowed by
+    path; every other hit under ``src/`` still fails.
+    """
     result = subprocess.run(
         ["grep", "-rn", "capabilities_granted", "src/"],
         cwd=REPO_ROOT,
@@ -518,7 +526,16 @@ def test_capabilities_granted_unused_by_src() -> None:
         text=True,
         check=False,
     )
-    assert result.returncode == 1, (
+    assert result.returncode in (0, 1), result.stderr
+    reviewed_manifest = re.compile(
+        r"^src/prompts/reviewed_playbooks/[^/]+/manifest\.md:"
+    )
+    offenders = [
+        line
+        for line in result.stdout.splitlines()
+        if line.strip() and not reviewed_manifest.match(line)
+    ]
+    assert not offenders, (
         "capabilities_granted is read by production code; a reviewed fixture would "
-        f"become an authority claim:\n{result.stdout}"
+        "become an authority claim:\n" + "\n".join(offenders)
     )
