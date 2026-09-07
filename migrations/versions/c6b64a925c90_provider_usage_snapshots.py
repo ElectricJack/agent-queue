@@ -6,7 +6,11 @@ Create Date: 2026-09-07
 
 Creates ``provider_usage_snapshots``: one append-only row per observation of
 one provider limit window, ``(provider, window, scope) -> used_percent,
-resets_at`` at ``observed_at``.  Codex readings ride in on the transcript
+resets_at`` at ``observed_at``, plus ``last_seen_at`` -- when that value was
+last confirmed, which is where staleness is read from.  A repeat of an
+unchanged reading writes no row and only pushes ``last_seen_at`` forward, so
+``observed_at`` cannot be used for staleness without calling a healthy idle
+quota dead.  Codex readings ride in on the transcript
 watcher, Claude readings on a probe; ``source`` is the only thing that
 distinguishes them, and it exists for staleness budgets rather than for
 branching.
@@ -46,6 +50,7 @@ def upgrade() -> None:
         sa.Column("used_percent", sa.Float(), nullable=False),
         sa.Column("resets_at", sa.Float(), nullable=True),
         sa.Column("observed_at", sa.Float(), nullable=False),
+        sa.Column("last_seen_at", sa.Float(), nullable=False),
         sa.Column("source", sa.Text(), nullable=False),
         sa.CheckConstraint(
             "source IN ('transcript','probe')",
@@ -53,12 +58,12 @@ def upgrade() -> None:
         ),
         sa.PrimaryKeyConstraint("id"),
     )
-    # Series key first, time last: every read is "newest in this series", and
-    # both backends walk the b-tree backwards for the newest row.
+    # Series key first, clock last and descending: every read is "newest in
+    # this series".
     op.create_index(
         "idx_provider_usage_snapshots_series",
         "provider_usage_snapshots",
-        ["provider", "window", "scope", "observed_at"],
+        ["provider", "window", "scope", sa.text("observed_at DESC")],
         unique=False,
     )
 

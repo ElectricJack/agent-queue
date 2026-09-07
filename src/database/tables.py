@@ -1655,22 +1655,30 @@ provider_usage_snapshots = Table(
     # Epoch of the window's reset, nullable: a percentage without a clock still
     # beats no reading at all.
     Column("resets_at", Float, nullable=True),
+    # When this value *first* appeared.  Never moves once written, so the
+    # series a sparkline draws is the history of the number, not of the reads.
     Column("observed_at", Float, nullable=False),
+    # When this value was last *confirmed*.  A duplicate reading writes no row
+    # but does push this forward, which is what separates "the quota has not
+    # moved in six hours" from "we have not heard from the probe in six hours".
+    # Staleness is computed from here, never from observed_at.
+    Column("last_seen_at", Float, nullable=False),
     Column("source", Text, nullable=False),
     CheckConstraint(
         "source IN ('transcript','probe')",
         name="ck_provider_usage_snapshots_source",
     ),
-    # Every read is "newest in this series", so the series key leads and
-    # observed_at trails it.  Stored ascending -- both backends scan a b-tree
-    # backwards, and an expression index would be invisible to autogenerate.
-    Index(
-        "idx_provider_usage_snapshots_series",
-        "provider",
-        "window",
-        "scope",
-        "observed_at",
-    ),
+)
+
+# Every read is "newest in this series", so the series key leads and the clock
+# trails it, descending.  Declared out of the Table() body because a DESC term
+# needs the Column object, which does not exist until the table does.
+Index(
+    "idx_provider_usage_snapshots_series",
+    provider_usage_snapshots.c.provider,
+    provider_usage_snapshots.c.window,
+    provider_usage_snapshots.c.scope,
+    provider_usage_snapshots.c.observed_at.desc(),
 )
 
 message_discord_receipts = Table(

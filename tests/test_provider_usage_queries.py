@@ -109,9 +109,7 @@ async def test_an_unchanged_repeat_of_the_newest_row_is_dropped(any_db):
 async def test_a_changed_percent_always_writes(any_db):
     await any_db.record_provider_usage([snap(used_percent=88.0)])
 
-    written = await any_db.record_provider_usage(
-        [snap(used_percent=89.0, observed_at=1_060.0)]
-    )
+    written = await any_db.record_provider_usage([snap(used_percent=89.0, observed_at=1_060.0)])
 
     assert written == 1
     assert await count_rows(any_db) == 2
@@ -135,9 +133,7 @@ async def test_a_reading_that_regains_a_reset_clock_writes(any_db):
     await any_db.record_provider_usage([snap(resets_at=None)])
     assert await any_db.record_provider_usage([snap(resets_at=None, observed_at=1_060.0)]) == 0
 
-    written = await any_db.record_provider_usage(
-        [snap(resets_at=2_000.0, observed_at=1_120.0)]
-    )
+    written = await any_db.record_provider_usage([snap(resets_at=2_000.0, observed_at=1_120.0)])
 
     assert written == 1
 
@@ -299,6 +295,7 @@ async def test_latest_breaks_an_observed_at_tie_on_the_later_insert(any_db):
                     "used_percent": pct,
                     "resets_at": None,
                     "observed_at": 1_000.0,
+                    "last_seen_at": 1_000.0,
                     "source": "transcript",
                 }
                 for pct in (10.0, 20.0)
@@ -358,7 +355,205 @@ async def test_purge_is_bounded_by_limit_and_takes_the_oldest_first(any_db):
     remaining = await any_db.provider_usage_series("codex", "primary")
     assert [r["observed_at"] for r in remaining] == [1_002.0, 1_003.0, 1_004.0]
 
-    # The caller re-runs until it returns 0 -- that is the whole contract.
+    # The caller re-runs until it returns 0 -- that is the whole contract.  The
+    # last row of the series survives a horizon that covers it: see below.
     assert await any_db.purge_provider_usage(9_999.0, limit=2) == 2
-    assert await any_db.purge_provider_usage(9_999.0, limit=2) == 1
     assert await any_db.purge_provider_usage(9_999.0, limit=2) == 0
+
+
+async def test_purge_keeps_the_newest_row_of_every_series(any_db):
+    """Pruning a card's only value would turn an idle account into "no data"."""
+    await any_db.record_provider_usage(
+        [
+            snap(used_percent=10.0, observed_at=1_000.0),
+            snap(used_percent=11.0, observed_at=1_001.0),
+            snap(provider="claude", window="week", used_percent=80.0, observed_at=1_002.0),
+        ]
+    )
+
+    # A horizon far past every row on the table.
+    dropped = await any_db.purge_provider_usage(9_999.0)
+
+    assert dropped == 1
+    assert [r["used_percent"] for r in await any_db.provider_usage_series("codex", "primary")] == [
+        11.0
+    ]
+    assert [r["used_percent"] for r in await any_db.provider_usage_series("claude", "week")] == [
+        80.0
+    ]
+
+
+async def test_purge_of_a_single_row_series_drops_nothing(any_db):
+    await any_db.record_provider_usage([snap()])
+
+    assert await any_db.purge_provider_usage(9_999.0) == 0
+    assert await count_rows(any_db) == 1
+
+
+# --- last_seen_at ----------------------------------------------------------
+
+
+async def test_an_insert_sets_last_seen_at_to_observed_at(any_db):
+    await any_db.record_provider_usage([snap(observed_at=1_000.0)])
+
+    row = (await any_db.latest_provider_usage())[0]
+    assert row["observed_at"] == 1_000.0
+    assert row["last_seen_at"] == 1_000.0
+
+
+async def test_a_dropped_duplicate_still_pushes_last_seen_at_forward(any_db):
+    """The reading is unchanged; the *confirmation* is new, and staleness reads
+    from the confirmation.  Otherwise a healthy account parked at 81% for six
+    hours reads as a dead probe."""
+    await any_db.record_provider_usage([snap(used_percent=81.0, observed_at=1_000.0)])
+
+    written = await any_db.record_provider_usage([snap(used_percent=81.0, observed_at=22_000.0)])
+
+    assert written == 0
+    assert await count_rows(any_db) == 1
+    row = (await any_db.latest_provider_usage())[0]
+    assert row["observed_at"] == 1_000.0
+    assert row["last_seen_at"] == 22_000.0
+
+
+async def test_last_seen_at_never_moves_backwards(any_db):
+    await any_db.record_provider_usage([snap(observed_at=1_000.0)])
+    await any_db.record_provider_usage([snap(observed_at=5_000.0)])
+
+    # Replayed at its original timestamp: no longer news, and no rewind.
+    assert await any_db.record_provider_usage([snap(observed_at=1_000.0)]) == 0
+    assert (await any_db.latest_provider_usage())[0]["last_seen_at"] == 5_000.0
+
+
+async def test_duplicates_within_one_batch_confirm_at_the_newest_of_them(any_db):
+    await any_db.record_provider_usage([snap(observed_at=1_000.0)])
+
+    written = await any_db.record_provider_usage(
+        [snap(observed_at=1_000.0 + 60 * i) for i in range(1, 11)]
+    )
+
+    assert written == 0
+    assert (await any_db.latest_provider_usage())[0]["last_seen_at"] == 1_600.0
+
+
+async def test_a_fresh_row_written_in_a_batch_is_confirmed_by_later_duplicates(any_db):
+    """The row the duplicates confirm may not exist yet when they arrive."""
+    written = await any_db.record_provider_usage(
+        [
+            snap(used_percent=88.0, observed_at=1_000.0),
+            snap(used_percent=89.0, observed_at=1_060.0),
+            snap(used_percent=89.0, observed_at=1_120.0),
+            snap(used_percent=89.0, observed_at=1_180.0),
+        ]
+    )
+
+    assert written == 2
+    row = (await any_db.latest_provider_usage())[0]
+    assert row["used_percent"] == 89.0
+    assert row["observed_at"] == 1_060.0
+    assert row["last_seen_at"] == 1_180.0
+
+
+async def test_a_changed_reading_resets_last_seen_at_to_its_own_timestamp(any_db):
+    await any_db.record_provider_usage([snap(used_percent=88.0, observed_at=1_000.0)])
+    await any_db.record_provider_usage([snap(used_percent=88.0, observed_at=9_000.0)])
+
+    await any_db.record_provider_usage([snap(used_percent=89.0, observed_at=9_060.0)])
+
+    row = (await any_db.latest_provider_usage())[0]
+    assert (row["observed_at"], row["last_seen_at"]) == (9_060.0, 9_060.0)
+    # The superseded row keeps the confirmation history it earned.
+    series = await any_db.provider_usage_series("codex", "primary")
+    assert [(r["observed_at"], r["last_seen_at"]) for r in series] == [
+        (1_000.0, 9_000.0),
+        (9_060.0, 9_060.0),
+    ]
+
+
+# --- ordering rules --------------------------------------------------------
+
+
+async def test_an_observation_older_than_the_newest_row_is_discarded(any_db):
+    """A rewound or replayed transcript must not walk a percentage backwards."""
+    await any_db.record_provider_usage([snap(used_percent=88.0, observed_at=5_000.0)])
+
+    written = await any_db.record_provider_usage([snap(used_percent=40.0, observed_at=1_000.0)])
+
+    assert written == 0
+    assert await count_rows(any_db) == 1
+    assert (await any_db.latest_provider_usage())[0]["used_percent"] == 88.0
+
+
+async def test_a_stale_observation_does_not_even_confirm_the_newest_row(any_db):
+    """It is not evidence the *current* value still holds -- it predates it."""
+    await any_db.record_provider_usage([snap(used_percent=88.0, observed_at=5_000.0)])
+
+    assert await any_db.record_provider_usage([snap(used_percent=88.0, observed_at=1_000.0)]) == 0
+
+    assert (await any_db.latest_provider_usage())[0]["last_seen_at"] == 5_000.0
+
+
+async def test_a_stale_observation_in_a_batch_does_not_block_a_fresh_one(any_db):
+    await any_db.record_provider_usage([snap(used_percent=88.0, observed_at=5_000.0)])
+
+    written = await any_db.record_provider_usage(
+        [
+            snap(used_percent=12.0, observed_at=100.0),
+            snap(used_percent=90.0, observed_at=6_000.0),
+        ]
+    )
+
+    assert written == 1
+    assert (await any_db.latest_provider_usage())[0]["used_percent"] == 90.0
+
+
+async def test_an_observation_at_the_same_timestamp_is_not_stale(any_db):
+    await any_db.record_provider_usage([snap(used_percent=88.0, observed_at=5_000.0)])
+
+    assert await any_db.record_provider_usage([snap(used_percent=89.0, observed_at=5_000.0)]) == 1
+
+
+# --- float comparison ------------------------------------------------------
+
+
+async def test_dedup_compares_percentages_with_a_tolerance(any_db):
+    """0.1 * 3 is not 0.30000000000000004 as far as a quota is concerned."""
+    await any_db.record_provider_usage([snap(used_percent=0.1 * 3, observed_at=1_000.0)])
+
+    written = await any_db.record_provider_usage([snap(used_percent=0.3, observed_at=1_060.0)])
+
+    assert written == 0
+    assert await count_rows(any_db) == 1
+
+
+async def test_a_difference_above_the_tolerance_still_writes(any_db):
+    await any_db.record_provider_usage([snap(used_percent=88.0, observed_at=1_000.0)])
+
+    written = await any_db.record_provider_usage([snap(used_percent=88.001, observed_at=1_060.0)])
+
+    assert written == 1
+
+
+async def test_dedup_compares_reset_clocks_with_a_tolerance(any_db):
+    await any_db.record_provider_usage([snap(resets_at=2_000.0 + 1e-12, observed_at=1_000.0)])
+
+    written = await any_db.record_provider_usage([snap(resets_at=2_000.0, observed_at=1_060.0)])
+
+    assert written == 0
+
+
+async def test_two_missing_reset_clocks_are_the_same_reading(any_db):
+    await any_db.record_provider_usage([snap(resets_at=None, observed_at=1_000.0)])
+
+    written = await any_db.record_provider_usage([snap(resets_at=None, observed_at=1_060.0)])
+
+    assert written == 0
+    assert (await any_db.latest_provider_usage())[0]["last_seen_at"] == 1_060.0
+
+
+async def test_losing_a_reset_clock_is_a_changed_reading(any_db):
+    await any_db.record_provider_usage([snap(resets_at=2_000.0, observed_at=1_000.0)])
+
+    written = await any_db.record_provider_usage([snap(resets_at=None, observed_at=1_060.0)])
+
+    assert written == 1
