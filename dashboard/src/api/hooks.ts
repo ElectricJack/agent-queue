@@ -1421,10 +1421,12 @@ export function useSystemConfigSchema() {
 export function useUpdateSystemConfig() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: async (input: { section: string; data: unknown; dry_run?: boolean }) =>
-      // The generated type narrows `data` to an object, but the API also accepts
-      // arrays, scalars, and null. Cast at the boundary.
-      (await updateConfig({ body: input as never, throwOnError: true }))
+    mutationFn: async (input: {
+      section: string;
+      data: Record<string, unknown> | unknown[] | string | number | boolean | null;
+      dry_run?: boolean;
+    }) =>
+      (await updateConfig({ body: input, throwOnError: true }))
         .data as UpdateConfigResponse,
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["system-config"] });

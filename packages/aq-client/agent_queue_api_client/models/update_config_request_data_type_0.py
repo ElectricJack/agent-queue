@@ -6,12 +6,12 @@ from typing import Any, TypeVar
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
 
-T = TypeVar("T", bound="UpdateConfigRequestData")
+T = TypeVar("T", bound="UpdateConfigRequestDataType0")
 
 
 @_attrs_define
-class UpdateConfigRequestData:
-    """New value for the section. null to delete."""
+class UpdateConfigRequestDataType0:
+    """ """
 
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
@@ -25,10 +25,10 @@ class UpdateConfigRequestData:
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
         d = dict(src_dict)
-        update_config_request_data = cls()
+        update_config_request_data_type_0 = cls()
 
-        update_config_request_data.additional_properties = d
-        return update_config_request_data
+        update_config_request_data_type_0.additional_properties = d
+        return update_config_request_data_type_0
 
     @property
     def additional_keys(self) -> list[str]:
