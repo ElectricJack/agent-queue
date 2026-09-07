@@ -365,6 +365,16 @@ class UpdatePlaybookSourceResponse(BaseModel):
 
 
 
+class PlaybookDeleteResponse(BaseModel):
+    """``playbook_delete``: ``deleted`` is False when no exact entry existed."""
+
+    success: bool = True
+    deleted: bool
+    playbook_id: str | None = None
+    scope: str | None = None
+    scope_identifier: str | None = None
+
+
 class SetPlaybookEnabledResponse(BaseModel):
     playbook_id: str
     enabled: bool
@@ -394,4 +404,5 @@ RESPONSE_MODELS: dict[str, type[BaseModel]] = {
     "get_playbook_source": GetPlaybookSourceResponse,
     "update_playbook_source": UpdatePlaybookSourceResponse,
     "set_playbook_enabled": SetPlaybookEnabledResponse,
+    "playbook_delete": PlaybookDeleteResponse,
 }

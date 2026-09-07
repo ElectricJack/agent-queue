@@ -6091,7 +6091,9 @@
             "description": "Successful Response",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/PlaybookDeleteResponse"
+                }
               }
             }
           },
@@ -29580,6 +29582,58 @@
           "artifact_sha256"
         ],
         "title": "PlaybookDeleteRequest"
+      },
+      "PlaybookDeleteResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "deleted": {
+            "type": "boolean",
+            "title": "Deleted"
+          },
+          "playbook_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Playbook Id"
+          },
+          "scope": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scope"
+          },
+          "scope_identifier": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scope Identifier"
+          }
+        },
+        "type": "object",
+        "required": [
+          "deleted"
+        ],
+        "title": "PlaybookDeleteResponse",
+        "description": "``playbook_delete``: ``deleted`` is False when no exact entry existed."
       },
       "PlaybookGraphEdge": {
         "properties": {
