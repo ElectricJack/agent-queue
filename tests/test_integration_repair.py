@@ -3245,6 +3245,14 @@ async def test_root_repair_close_reads_the_candidate_subject_and_frees_a_pool_sl
             integration_repair_stages.c.ordinal == 0,
         ).values(current_subject={"kind": "batch", "revision": 0,
                                   "candidate_sha": "e" * 40}))
+    from src.integration.outbox import enqueue_integration_event
+    async with handler.db.immediate() as conn:
+        await enqueue_integration_event(
+            conn, event_id=f"repair-delegate-closed-{operation_id}-0-{repair_task_id}",
+            dedup_key=f"repair-delegate-closed:{operation_id}:0:{repair_task_id}",
+            project_id="p", event_type="integration.repair_delegate_closed",
+            payload={"task_id": repair_task_id, "fence_token": 0}, available_at=1,
+        )
     closed = await handler._cmd_task_close(
         {
             "task_id": repair_task_id,
@@ -3281,7 +3289,8 @@ async def test_root_repair_close_reads_the_candidate_subject_and_frees_a_pool_sl
     assert candidate["head_sha"] == repair_head
     assert candidate["ci_evidence_id"] is None
     assert candidate["repair_parent_revision"] == 0
-    assert len(close_events) == 1
+    assert len(close_events) == 2
+    close_events = [e for e in close_events if e["payload"].get("fence_token") != 0]
     assert close_events[0]["payload"]["task_id"] == repair_task_id
     assert close_events[0]["payload"]["workspace_id"] == "root-repair-workspace"
 
