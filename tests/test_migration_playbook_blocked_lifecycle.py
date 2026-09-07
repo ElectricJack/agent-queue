@@ -69,9 +69,8 @@ def test_blocked_lifecycle_sqlite_upgrade_and_guarded_downgrade(tmp_path):
         with engine.begin() as conn:
             conn.execute(sa.text("DELETE FROM playbook_v2_runs WHERE lifecycle = 'blocked'"))
         command.downgrade(config, PRIOR_REVISION)
-        with pytest.raises(sa.exc.IntegrityError):
-            with engine.begin() as conn:
-                conn.execute(_INSERT_BLOCKED_RUN, {"sha": _ARTIFACT})
+        with pytest.raises(sa.exc.IntegrityError), engine.begin() as conn:
+            conn.execute(_INSERT_BLOCKED_RUN, {"sha": _ARTIFACT})
         command.upgrade(config, BLOCKED_REVISION)
     finally:
         engine.dispose()
@@ -113,7 +112,15 @@ async def test_blocked_lifecycle_postgres_upgrade_and_guarded_downgrade():
 
     conn = await asyncpg.connect(dsn.replace("postgresql+asyncpg://", "postgresql://"))
     try:
-        assert await conn.fetchval("SELECT version_num FROM alembic_version") == BLOCKED_REVISION
+        # The refused step is on the integration chain; the graph's other
+        # branch (main's ``4e7d1c9b2a55`` mergepoint side, joined at
+        # ``9b3e5a7c1d20``) is not a descendant of PRIOR_REVISION, so its
+        # head row stays in alembic_version and we assert membership.
+        versions = {
+            row["version_num"]
+            for row in await conn.fetch("SELECT version_num FROM alembic_version")
+        }
+        assert BLOCKED_REVISION in versions, versions
         await conn.execute("DELETE FROM playbook_v2_runs WHERE lifecycle = 'blocked'")
     finally:
         await conn.close()

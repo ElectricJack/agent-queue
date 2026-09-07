@@ -6,16 +6,22 @@ Revises: c7a1e5d92f40
 
 from __future__ import annotations
 
+import importlib
 from collections.abc import Sequence
 
 import sqlalchemy as sa
 from alembic import op
 
-
 revision: str = "e4c6a8b20d31"
 down_revision: str | Sequence[str] | None = "c7a1e5d92f40"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
+
+
+def _base_guards():
+    return importlib.import_module(
+        "migrations.versions.3f30b34c7e7c_hierarchical_integration_state"
+    )
 
 
 _APPEND_ONLY_TABLES = (
@@ -356,6 +362,9 @@ def upgrade() -> None:
             "integration_parent_verifications", ["task_id", "current_verification_id"],
             ["parent_task_id", "id"], ondelete="RESTRICT"
         )
+    _base_guards()._recreate_sqlite_guards(
+        "integration_repair_operations", "task_delivery_receipts", "task_integration_checkpoints"
+    )
     _create_append_only_guards()
 
 
@@ -399,6 +408,9 @@ def downgrade() -> None:
         batch_op.drop_constraint(
             "fk_integration_repair_operations_parent_episode", type_="foreignkey"
         )
+    _base_guards()._recreate_sqlite_guards(
+        "integration_repair_operations", "task_delivery_receipts", "task_integration_checkpoints"
+    )
     op.drop_table("integration_parent_episodes")
     op.drop_index(
         "uq_integration_repair_operations_parent_episode",

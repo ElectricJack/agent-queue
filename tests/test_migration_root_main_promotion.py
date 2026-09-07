@@ -5,16 +5,21 @@ from __future__ import annotations
 import pytest
 from alembic import command
 from alembic.config import Config
+from alembic.script import ScriptDirectory
 from sqlalchemy import create_engine, inspect, text
 
 from src.database import Database
 from tests.pg_dsn import create_scratch_database, ensure_worker_postgres_dsn
 
-
 pytestmark = [pytest.mark.perf, pytest.mark.migration]
 
 PRIOR = "d4a81f0c9e72"
 REVISION = "e9b2f1b7c3d5"
+#: ``Database.initialize()`` migrates to the current head.  On PostgreSQL a
+#: refused downgrade inside ``engine.begin()`` rolls the whole chain back to
+#: HEAD (transactional DDL); on SQLite the steps above REVISION have already
+#: committed, so the refusal leaves the database at REVISION itself.
+HEAD = ScriptDirectory.from_config(Config("alembic.ini")).get_current_head()
 POSTGRES_DSN = ensure_worker_postgres_dsn()
 
 
@@ -288,20 +293,18 @@ async def test_sqlite_upgrade_rejects_incompatible_legacy_root_identity(
         with engine.begin() as connection:
             _migrate(connection, PRIOR, downgrade=True)
             _seed_legacy_root_reservation(connection, invalid)
-        with engine.begin() as connection:
-            with pytest.raises(RuntimeError, match=message):
-                _migrate(connection, REVISION)
+        with engine.begin() as connection, pytest.raises(RuntimeError, match=message):
+            _migrate(connection, REVISION)
         with engine.connect() as connection:
             assert connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one() == PRIOR
             assert connection.execute(
                 text("SELECT intent_id, batch_id FROM integration_root_intent_members")
             ).one() == ("root-intent", "batch")
-        with engine.begin() as connection:
-            with connection.begin_nested():
-                with pytest.raises(Exception, match="root intent member reservations are append-only"):
-                    connection.execute(
-                        text("UPDATE integration_root_intent_members SET source_task_id = 'changed'")
-                    )
+        with engine.begin() as connection, connection.begin_nested():
+            with pytest.raises(Exception, match="root intent member reservations are append-only"):
+                connection.execute(
+                    text("UPDATE integration_root_intent_members SET source_task_id = 'changed'")
+                )
     finally:
         engine.dispose()
 
@@ -371,7 +374,7 @@ async def test_postgres_root_promotion_schema_and_guarded_round_trip():
             ).scalar_one() == "root"
             assert (
                 await connection.execute(text("SELECT version_num FROM alembic_version"))
-            ).scalar_one() == REVISION
+            ).scalar_one() == HEAD
         async with engine.begin() as connection:
             await connection.execute(text("DELETE FROM integration_promotion_intents"))
         async with engine.begin() as connection:

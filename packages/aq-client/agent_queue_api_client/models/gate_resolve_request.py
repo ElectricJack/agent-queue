@@ -15,9 +15,9 @@ T = TypeVar("T", bound="GateResolveRequest")
 class GateResolveRequest:
     """
     Attributes:
-        gate_id (str): Gate id to resolve
-        resolved_by (str): Identity of the resolver (user id or session)
-        resolution (None | str | Unset): Optional free-text explanation stored with the resolve event
+        gate_id (str):
+        resolved_by (str):
+        resolution (None | str | Unset):
     """
 
     gate_id: str

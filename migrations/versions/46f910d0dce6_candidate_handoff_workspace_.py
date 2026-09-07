@@ -5,8 +5,8 @@ Revises: e1eab6dbc186
 Create Date: 2026-09-05 15:57:52.541433
 
 """
-from collections.abc import Sequence
 import importlib
+from collections.abc import Sequence
 
 import sqlalchemy as sa
 from alembic import op
@@ -135,6 +135,12 @@ def upgrade() -> None:
             "(handoff_owner_id IS NOT NULL AND handoff_fence_token IS NOT NULL "
             "AND handoff_fence_token >= 0)",
         )
+    if op.get_bind().dialect.name == "sqlite":
+        # The batch rebuild dropped every trigger on the table; restore the
+        # e1eab6dbc186 state/push guards before layering this revision's on top.
+        importlib.import_module(
+            "migrations.versions.e1eab6dbc186_candidate_durable_mutation_claims"
+        )._replace_authority_guards()
     _replace_resolution_guard()
 
 

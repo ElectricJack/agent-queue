@@ -598,6 +598,49 @@ for _event_type, _payload in _CANONICAL_PAYLOADS.items():
 _CANONICAL_PAYLOADS["integration.resolution_push_observed"][
     "promotion_intent_id"
 ] = "intent-1"
+_CANONICAL_PAYLOADS["integration.candidate_green"] = {
+    "project_id": "proj-1",
+    "operation_id": "op-1",
+    "batch_id": "batch-1",
+    "revision": 1,
+    "head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+}
+_CANONICAL_PAYLOADS["integration.candidate_red"] = {
+    "project_id": "proj-1",
+    "operation_id": "op-1",
+    "batch_id": "batch-1",
+    "revision": 1,
+    "head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+}
+_CANONICAL_PAYLOADS["integration.root_delivered"] = {
+    "project_id": "proj-1",
+    "operation_id": "op-1",
+    "batch_id": "batch-1",
+    "revision": 1,
+    "member_ordinal": 0,
+    "receipt_id": "receipt-1",
+}
+_CANONICAL_PAYLOADS["integration.batch_promoted"] = {
+    "project_id": "proj-1",
+    "operation_id": "op-1",
+    "batch_id": "batch-1",
+    "revision": 1,
+    "intent_id": "intent-1",
+    "head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+}
+_CANONICAL_PAYLOADS["integration.cleanup_requested"] = {
+    "project_id": "proj-1",
+    "operation_id": "op-1",
+    "batch_id": "batch-1",
+    "revision": 1,
+    "intent_id": "intent-1",
+    "head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+}
+_CANONICAL_PAYLOADS["task.route_needed"] = {
+    "task_id": "t-1",
+    "project_id": "proj-1",
+    "title": "Task",
+}
 
 # Timer schemas are dynamically generated; add common intervals
 for _interval in ("1m", "5m", "15m", "30m", "1h", "4h", "12h", "24h"):

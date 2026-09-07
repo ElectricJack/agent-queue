@@ -97,12 +97,27 @@ def test_registry_fingerprint_is_independent_of_registration_order() -> None:
     assert first.registry_fingerprint() == second.registry_fingerprint()
 
 
+def _builtin_names() -> frozenset[str]:
+    """Every contract ``register_builtin_contracts`` installs on a fresh registry.
+
+    The singleton must carry exactly these (no more: nothing else registers at
+    import time; no fewer: the autoload ran) — derived rather than a literal
+    count so adding a built-in contract does not silently rot this ratchet.
+    """
+    from src.commands.contracts import register_builtin_contracts
+
+    registry = ContractRegistry()
+    register_builtin_contracts(registry)
+    assert registry.names(), "register_builtin_contracts installed nothing"
+    return registry.names()
+
+
 def test_a_bare_registry_registers_nothing_and_the_singleton_autoloads() -> None:
     """Built-ins arrive on first read of the singleton, not at import time."""
     from src.commands.contracts import CONTRACTS
 
     assert ContractRegistry().names() == frozenset()
-    assert len(CONTRACTS.names()) == 20
+    assert CONTRACTS.names() == _builtin_names()
     # Idempotent: a second read does not re-register and raise "already registered".
     assert CONTRACTS.names() == CONTRACTS.names()
 
@@ -119,10 +134,11 @@ def test_the_explanation_module_can_be_imported_first() -> None:
     import subprocess
     import sys
 
+    expected = len(_builtin_names())
     for first in ("src.playbooks.explanation", "src.commands.contracts"):
         proc = subprocess.run(
             [sys.executable, "-c", f"import {first}; from src.commands.contracts import CONTRACTS;"
-             " assert len(CONTRACTS.names()) == 20"],
+             f" assert len(CONTRACTS.names()) == {expected}, len(CONTRACTS.names())"],
             capture_output=True,
             text=True,
         )

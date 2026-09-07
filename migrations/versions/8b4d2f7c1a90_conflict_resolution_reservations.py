@@ -5,11 +5,11 @@ Revises: 7a1d5e9f0b2c
 Create Date: 2026-09-05
 """
 
+import importlib
 from collections.abc import Sequence
 
-from alembic import op
 import sqlalchemy as sa
-
+from alembic import op
 
 revision: str = "8b4d2f7c1a90"
 down_revision: str | Sequence[str] | None = "7a1d5e9f0b2c"
@@ -33,11 +33,35 @@ _RESOLUTION_COLUMNS = (
 )
 
 
+def _prepared_guard_module():
+    return importlib.import_module(
+        "migrations.versions.b91e4d7a2c10_prepared_promotion_evidence"
+    )
+
+
+def _drop_sqlite_prepared_guard() -> None:
+    """SQLite batch mode rebuilds ``integration_promotion_intents``; the rebuild
+    silently drops the prepared-identity trigger revision b91e4d7a2c10 created,
+    so drop it explicitly here and recreate it after the rebuild (both
+    directions).  PostgreSQL alters in place and keeps its trigger."""
+    if op.get_bind().dialect.name != "sqlite":
+        return
+    op.execute("DROP TRIGGER IF EXISTS trg_integration_prepared_identity_immutable")
+
+
+def _create_sqlite_prepared_guard() -> None:
+    if op.get_bind().dialect.name != "sqlite":
+        return
+    previous = _prepared_guard_module()
+    previous._create_prepared_guard(previous._NEW_IDENTITY)
+
+
 def upgrade() -> None:
     with op.batch_alter_table("api_session_tokens") as batch_op:
         batch_op.add_column(
             sa.Column("session_instance_token", sa.Text(), nullable=True)
         )
+    _drop_sqlite_prepared_guard()
     with op.batch_alter_table("integration_promotion_intents") as batch_op:
         batch_op.drop_constraint("ck_integration_promotion_intents_state", type_="check")
         batch_op.add_column(sa.Column("resolution_head_sha", sa.Text(), nullable=True))
@@ -83,6 +107,7 @@ def upgrade() -> None:
             "ck_integration_promotion_intents_resolution_fence",
             "resolution_fence_token IS NULL OR resolution_fence_token >= 0",
         )
+    _create_sqlite_prepared_guard()
 
 
 def downgrade() -> None:
@@ -96,6 +121,7 @@ def downgrade() -> None:
         raise RuntimeError(
             "reconcile/drain resolution reservations before downgrade"
         )
+    _drop_sqlite_prepared_guard()
     with op.batch_alter_table("integration_promotion_intents") as batch_op:
         batch_op.drop_constraint(
             "ck_integration_promotion_intents_resolution_fence", type_="check"
@@ -113,5 +139,6 @@ def downgrade() -> None:
             "ck_integration_promotion_intents_state",
             "state IN ('reserved', 'prepared', 'pushed', 'reconciled', 'committed', 'conflict')",
         )
+    _create_sqlite_prepared_guard()
     with op.batch_alter_table("api_session_tokens") as batch_op:
         batch_op.drop_column("session_instance_token")

@@ -5,16 +5,22 @@ Revises: e4c6a8b20d31
 Create Date: 2026-09-05
 """
 
+import importlib
 from collections.abc import Sequence
 
-from alembic import op
 import sqlalchemy as sa
-
+from alembic import op
 
 revision: str = "7a1d5e9f0b2c"
 down_revision: str | Sequence[str] | None = "e4c6a8b20d31"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
+
+
+def _base_guards():
+    return importlib.import_module(
+        "migrations.versions.3f30b34c7e7c_hierarchical_integration_state"
+    )
 
 
 def upgrade() -> None:
@@ -57,6 +63,9 @@ def upgrade() -> None:
             "state IN ('pending', 'active', 'awaiting_completion', 'passed', "
             "'failed', 'expired', 'cancelled')",
         )
+    _base_guards()._recreate_sqlite_guards(
+        "integration_repair_operations", "integration_repair_stages"
+    )
     op.create_table(
         "integration_repair_stage_evidence",
         sa.Column("operation_id", sa.Text(), nullable=False),
@@ -128,3 +137,6 @@ def downgrade() -> None:
         batch_op.drop_constraint(
             "uq_integration_repair_operations_batch_episode", type_="unique"
         )
+    _base_guards()._recreate_sqlite_guards(
+        "integration_repair_operations", "integration_repair_stages"
+    )

@@ -147,6 +147,12 @@ Authorized project moves transfer known active-task comment ownership in the sam
 | `default_profile_id` | TEXT | nullable REFERENCES agent_profiles(id) | Default agent profile (added via migration) |
 | `assignment_playbook_id` | TEXT | nullable | Assignment-routing playbook selected for the project; NULL uses the bundled system default. Added by Alembic `a7c91e4d2b63` |
 | `integration_mode` | TEXT | nullable | Project-level integration policy: `'direct'`, `'pull_request'`, or NULL (fall through to config `integration.default_mode`). Added by Alembic `c4d5e6f7a8b9` |
+| `hierarchical_integration_mode` | TEXT | NOT NULL DEFAULT 'disabled' | *Effective* hierarchical-integration rollout mode: one of `disabled`, `observe`, `hierarchy`, `train` (`ck_projects_hierarchical_integration_mode`). Only the orchestrator advances it, via a compare-and-set on `hierarchical_integration_generation`. Added by Alembic `c7a1e5d92f40` |
+| `integration_repository_id` | TEXT | nullable | The one `repos.id` designated as the hierarchical-integration repository (child branches, candidate trains and root promotion all target it). NULL leaves the project `repository_not_designated` and blocks every mode above `disabled`. Added by Alembic `c7a1e5d92f40` |
+| `hierarchical_integration_policy` | JSON | nullable | Frozen policy pins (required checks, repair tiers, source-branch retention, legacy-route suppression) snapshotted into each batch and repair operation; NULL uses config defaults. Added by Alembic `e4c6a8b20d31` |
+| `hierarchical_integration_desired_mode` | TEXT | NOT NULL DEFAULT 'disabled' | Mode the operator asked for with `integration_enable`; same value set as `hierarchical_integration_mode`. Differs from the effective mode while a drain is in progress. Added by Alembic `a11a5e1e4f04` |
+| `hierarchical_integration_draining` | BOOLEAN | NOT NULL DEFAULT false | True while in-flight batches/repairs are being drained before the effective mode drops to the desired one. Added by Alembic `a11a5e1e4f04` |
+| `hierarchical_integration_generation` | INTEGER | NOT NULL DEFAULT 0 | Monotone rollout fence (`>= 0`); every mode transition increments it and is recorded in `integration_rollout_transitions`. Operator controls pass `expected_generation` and are rejected on mismatch. Added by Alembic `a11a5e1e4f04` |
 | `created_at` | REAL | NOT NULL | Unix timestamp, set on insert |
 
 No `updated_at` on projects. The `discord_control_channel_id` column exists for backward compatibility — `_row_to_project` falls back to it when `discord_channel_id` is NULL.
@@ -1215,6 +1221,845 @@ Multi-agent pipelines with stage gates and agent affinity.
 | `stages` | TEXT | NOT NULL DEFAULT '[]' | JSON stage definitions |
 | `created_at` | REAL | NOT NULL | Set on insert |
 | `completed_at` | REAL | nullable | NULL until the pipeline finishes |
+
+### Hierarchical integration trains
+
+The tables below back hierarchical delivery and integration trains
+(`docs/superpowers/specs/2026-09-04-hierarchical-integration-trains-design.md`,
+Alembic `3f30b34c7e7c` through `a11a5e1e4f04`).  A parent task collects its children's reviewed
+branches into a *candidate* built from an ordered *batch*, publishes CI
+evidence for the candidate, repairs it through bounded *repair operations*,
+and promotes the green candidate to `main` under a project lease and branch
+fence.  Almost every row is evidence rather than mutable state: the
+migrations install dual-dialect triggers that reject `UPDATE`/`DELETE` on
+receipts, batch members, root-intent members, release results, waivers and
+transitions, and that keep counters (`revision`, `fence_token`, `attempts`,
+`acceptance_cursor`) monotone.  Tables that reference a task by `task_id`
+without a foreign key do so deliberately so the evidence survives archival.
+
+`repository_id` columns throughout are logical references to `repos.id`
+unless a `REFERENCES repos(id)` constraint is listed.
+
+### Table: `task_integration_checkpoints`
+
+Per-task hierarchical delivery state: the task's branch in the integration
+repository, its verified checkpoint, and the collection state machine.
+
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| `task_id` | TEXT | PRIMARY KEY | Task the checkpoint belongs to (logical reference) |
+| `repository_id` | TEXT | NOT NULL | Integration repository |
+| `branch` | TEXT | NOT NULL | Task branch name |
+| `generation` | INTEGER | NOT NULL DEFAULT 0, `>= 0` | Bumped each time the branch head is re-collected |
+| `checkpoint_sha` | TEXT | nullable | Latest collected head |
+| `verified_sha` | TEXT | nullable | Head that last passed parent verification |
+| `verified_generation` | INTEGER | nullable, `>= 0` | Generation `verified_sha` was verified at |
+| `state` | TEXT | NOT NULL DEFAULT 'working' | One of: working, awaiting_children, integration_ready, verifying |
+| `version` | INTEGER | NOT NULL DEFAULT 0, `>= 0` | Optimistic-concurrency version |
+| `last_transition_id` | TEXT | nullable | Event id of the last state transition |
+| `playbook_activation_id` | TEXT | nullable | Activation of the delivery playbook that owns the state machine |
+| `branch_owner_id` | TEXT | nullable | Current `integration_branch_owners.id` for the branch |
+| `episode_id` | TEXT | nullable | Current collection episode; `(task_id, episode_id)` REFERENCES `integration_parent_episodes(parent_task_id, id)` ON DELETE RESTRICT |
+| `current_verification_id` | TEXT | nullable | `(task_id, current_verification_id)` REFERENCES `integration_parent_verifications(parent_task_id, id)` ON DELETE RESTRICT |
+| `last_completed_operation_id` | TEXT | nullable | Set together with `last_completed_verification_id` (`ck_task_integration_checkpoints_completion_binding`); the pair plus `task_id` REFERENCES `integration_parent_operation_completions` ON DELETE RESTRICT |
+| `last_completed_verification_id` | TEXT | nullable | See above |
+| `updated_at` | REAL | NOT NULL | Unix timestamp |
+
+### Table: `task_branch_origins`
+
+Where a task's branch was cut from.  Child branches are reserved before they
+are materialized so a crash between the two leaves an auditable row.
+
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| `id` | TEXT | PRIMARY KEY | Origin id |
+| `task_id` | TEXT | NOT NULL | Task the branch belongs to |
+| `repository_id` | TEXT | NOT NULL | Repository the branch lives in |
+| `parent_task_id` | TEXT | nullable | Parent whose branch is the base, NULL for roots |
+| `parent_repository_id` | TEXT | nullable | Parent's repository |
+| `parent_ref` | TEXT | nullable | Immediate parent ref the branch was cut from |
+| `base_sha` | TEXT | NOT NULL | Commit the branch was cut at |
+| `creation_generation` | INTEGER | NOT NULL, `>= 0` | Parent checkpoint generation at creation |
+| `reserved` | BOOLEAN | NOT NULL DEFAULT false | Branch name reserved in the database |
+| `materialized` | BOOLEAN | NOT NULL DEFAULT false | Branch exists on the remote; requires `reserved` (`ck_task_branch_origins_materialized_reserved`) and cannot be cleared (trigger) |
+| `retired_at` | REAL | nullable | Set when the origin is superseded; only one live origin per `(task_id, repository_id)` (`uq_task_branch_origins_live_task_repo`, partial) |
+| `created_at` | REAL | NOT NULL | Unix timestamp |
+| `materialized_at` | REAL | nullable | When the remote branch appeared |
+
+### Table: `integration_branch_owners`
+
+Exclusive, fenced ownership of a ref in the integration repository.  Every
+push to a task/candidate/`main` branch carries the owner's `fence_token`;
+a stale owner's push is rejected before it reaches the remote.
+
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| `id` | TEXT | PRIMARY KEY | Ownership id |
+| `repository_id` | TEXT | NOT NULL | With `ref`: UNIQUE (`uq_integration_branch_owners_ref`) |
+| `ref` | TEXT | NOT NULL | Owned ref |
+| `owner_id` | TEXT | NOT NULL | Session, service or operation holding the ref |
+| `owner_role` | TEXT | NOT NULL | Role the owner acts in (worker, repair delegate, train, …) |
+| `fence_token` | INTEGER | NOT NULL, `>= 0` | Monotone fence; bumped on every handoff |
+| `handoff_state` | TEXT | NOT NULL DEFAULT 'reserved' | One of: reserved, attached, handoff_pending, released |
+| `session_id` | TEXT | nullable | Attached session |
+| `workspace_id` | TEXT | nullable | Workspace the owner works in |
+| `confirmed_workspace_id` | TEXT | nullable | Workspace whose checkout was verified to match the ref |
+| `expires_at` | REAL | nullable | Lease expiry for time-bounded owners |
+| `created_at` | REAL | NOT NULL | Unix timestamp |
+| `updated_at` | REAL | NOT NULL | Unix timestamp |
+
+### Table: `integration_review_evidence`
+
+Immutable record that a reviewer approved (or rejected) an exact
+`(head, tree)` of a source task's branch.  Batches, root-intent members and
+receipts reference it by id *and* identity so a re-review of a moved branch
+can never satisfy an older pin.
+
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| `id` | TEXT | PRIMARY KEY | Evidence id |
+| `source_task_id` | TEXT | NOT NULL | Reviewed task |
+| `repository_id` | TEXT | NOT NULL | Repository |
+| `source_base` | TEXT | NOT NULL | Base the branch was reviewed against |
+| `reviewed_head_sha` | TEXT | NOT NULL | Reviewed head commit |
+| `reviewed_tree_sha` | TEXT | NOT NULL | Reviewed tree |
+| `reviewer_task_id` | TEXT | NOT NULL | Reviewer task |
+| `reviewer_session_attempt_id` | TEXT | nullable | Reviewer session attempt |
+| `review_kind` | TEXT | NOT NULL | Review stage kind |
+| `generation` | INTEGER | NOT NULL, `>= 0` | Checkpoint generation reviewed |
+| `verdict` | TEXT | NOT NULL | One of: approved, rejected |
+| `evidence` | JSON | NOT NULL | Reviewer's structured verdict |
+| `created_at` | REAL | NOT NULL | Unix timestamp |
+
+Indexes: `uq_integration_review_evidence_root_identity` (id + identity tuple,
+unique, the composite FK target) and `idx_integration_review_evidence_current`
+for "latest approval for this head".  Rows are append-only (trigger).
+
+### Table: `integration_promotion_intents`
+
+Crash-safe promotion of a source branch onto a target branch.  A *child*
+intent promotes one task's reviewed head onto its parent's branch; a *root*
+intent promotes a green candidate onto `main` and additionally carries the
+project lease, branch fence and CI evidence that authorised the push.
+
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| `id` | TEXT | PRIMARY KEY | Intent id |
+| `domain_key` | TEXT | NOT NULL UNIQUE | Idempotency key of the promotion |
+| `operation_key` | TEXT | nullable | Owning operation key |
+| `project_id` | TEXT | nullable | Project |
+| `receipt_id` | TEXT | NOT NULL | `task_delivery_receipts.id` this intent will produce |
+| `source_task_id` | TEXT | nullable | Child intents only |
+| `target_task_id` | TEXT | nullable | Child intents only |
+| `source_head` | TEXT | NOT NULL | Source head sha |
+| `source_base` | TEXT | NOT NULL | Source base sha |
+| `repository_id` | TEXT | NOT NULL | Repository |
+| `origin_url` | TEXT | nullable | Remote URL used |
+| `target_branch` | TEXT | NOT NULL | Branch being advanced |
+| `expected_target` | TEXT | NOT NULL | Target sha the push is conditioned on |
+| `prepared_sha` | TEXT | nullable | Squash commit prepared locally; once set the identity columns are immutable (`trg_integration_prepared_identity_immutable`) |
+| `recovery_ref` | TEXT | nullable | Ref holding the prepared commit for crash recovery |
+| `fence_owner_id` | TEXT | NOT NULL | Branch owner that prepared it |
+| `fence_token` | INTEGER | NOT NULL, `>= 0` | Owner's fence token |
+| `state` | TEXT | NOT NULL | One of: reserved, prepared, pushed, reconciled, committed, conflict, resolution_reserved, superseded |
+| `review_evidence` | JSON | nullable | Pinned review evidence |
+| `authors` | JSON | nullable | Author attribution for the squash |
+| `provenance` | JSON | nullable | Source commit provenance |
+| `commit_metadata` | JSON | nullable | Commit message metadata |
+| `conflict_diagnostics` | JSON | nullable | Set when the merge conflicted |
+| `resolution_*` | — | — | `resolution_head_sha`, `resolution_tree_sha`, `resolution_commit_shas` (JSON), `resolution_operation_id`, `resolution_stage_ordinal` (`>= 0`), `resolution_task_id`, `resolution_session_id`, `resolution_session_instance_token`, `resolution_workspace_id`, `resolution_fence_owner_id`, `resolution_fence_token` (`>= 0`), `resolution_push_evidence` (JSON): all NULL, or all set with state in (resolution_reserved, committed) (`ck_integration_promotion_intents_resolution_binding`) |
+| `remote_evidence` | JSON | nullable | Remote head observed after the push; required once committed (`ck_integration_promotion_intents_committed_evidence`) |
+| `committed_at` | REAL | nullable | When the target advanced |
+| `created_at` | REAL | NOT NULL | Unix timestamp |
+| `updated_at` | REAL | NOT NULL | Unix timestamp |
+| `intent_kind` | TEXT | NOT NULL DEFAULT 'child' | `child` or `root` (`ck_integration_promotion_intents_kind_binding` ties the columns below to `root`) |
+| `root_batch_id` | TEXT | nullable | Root only; with `root_candidate_revision` REFERENCES `integration_candidate_revisions` ON DELETE RESTRICT |
+| `root_candidate_revision` | INTEGER | nullable, `>= 0` | Root only |
+| `project_lease_owner_id` | TEXT | nullable | Root only: `project_integration_leases` owner |
+| `project_lease_fence_token` | INTEGER | nullable, `>= 0` | Root only |
+| `branch_fence_owner_id` | TEXT | nullable | Root only: `main` branch owner |
+| `branch_fence_token` | INTEGER | nullable, `>= 0` | Root only |
+| `ci_evidence_id` | TEXT | nullable | Root only: green `integration_check_evidence` |
+
+Partial unique index `uq_integration_promotion_intents_unresolved_target`
+allows one unresolved intent per `(repository_id, target_branch)`;
+`uq_integration_promotion_intents_root_identity` is the composite FK target
+for `integration_root_intent_members`.  Root intents cannot leave a terminal
+state (`trg_integration_root_intent_terminal`).
+
+### Table: `task_delivery_receipts`
+
+Append-only proof that a task's work was delivered to (or dispositioned out
+of) its target branch.  Parent completion is proven by a chain of receipts,
+not by resolution JSON; the `e9b2f1b7c3d5` triggers reject every `UPDATE`
+and `DELETE`.
+
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| `id` | TEXT | PRIMARY KEY | Receipt id |
+| `domain_key` | TEXT | NOT NULL UNIQUE | Idempotency key |
+| `source_task_id` | TEXT | nullable | Delivered task; indexed with `repository_id` |
+| `target_task_id` | TEXT | nullable | Parent receiving the delivery |
+| `repository_id` | TEXT | NOT NULL | Repository |
+| `target_branch` | TEXT | NOT NULL | Branch advanced |
+| `workspace_kind` | TEXT | nullable | Workspace kind used |
+| `source_pr` | TEXT | nullable | Source PR URL |
+| `reviewed_head_sha` | TEXT | nullable | Reviewed head |
+| `reviewed_tree_sha` | TEXT | nullable | Reviewed tree |
+| `before_sha` | TEXT | nullable | Target before |
+| `squash_sha` | TEXT | nullable | Squash commit written |
+| `after_sha` | TEXT | nullable | Target after |
+| `review_evidence` | JSON | nullable | Pinned review evidence |
+| `verification_evidence` | JSON | nullable | Parent verification evidence |
+| `resolution_evidence` | JSON | nullable | Required unless `disposition = 'code'` (`ck_task_delivery_receipts_disposition_evidence`) |
+| `batch_id` | TEXT | nullable | Root-train receipts: all three of `batch_id`, `member_ordinal`, `candidate_revision` set or none (`ck_task_delivery_receipts_root_tuple`, unique when set); FKs to `integration_batch_members` and `integration_candidate_member_results` ON DELETE RESTRICT |
+| `member_ordinal` | INTEGER | nullable, `>= 0` | Sealed member ordinal |
+| `candidate_revision` | INTEGER | nullable, `>= 0` | Promoted candidate revision |
+| `disposition` | TEXT | NOT NULL | One of: code, noop, ineligible, skipped, failed |
+| `disposition_revision` | INTEGER | nullable | `integration_child_dispositions.revision` that produced a non-code receipt |
+| `parent_operation_id` | TEXT | nullable | Set with `parent_episode_id` (`ck_task_delivery_receipts_parent_binding`); REFERENCES `integration_repair_operations(id)` ON DELETE RESTRICT |
+| `parent_episode_id` | TEXT | nullable | `(target_task_id, parent_episode_id)` REFERENCES `integration_parent_episodes(parent_task_id, id)` ON DELETE RESTRICT |
+| `created_at` | REAL | NOT NULL | Unix timestamp |
+
+### Table: `integration_batches`
+
+One integration train per sweep: the ordered set of reviewed source branches
+that will be built into a candidate and promoted to `main` together.
+
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| `id` | TEXT | PRIMARY KEY | Batch id |
+| `project_id` | TEXT | NOT NULL | With `request_id`: UNIQUE (`uq_integration_batches_project_request`) |
+| `repository_id` | TEXT | NOT NULL | Integration repository |
+| `request_id` | TEXT | NOT NULL | `project_integration_schedules` request that opened it |
+| `trigger` | TEXT | nullable | periodic / manual |
+| `source_manifest_digest` | TEXT | NOT NULL | Digest of the sealed member set |
+| `base_sha` | TEXT | nullable | `main` at seal time; NULL only when `lifecycle = 'empty'` (`ck_integration_batches_empty_identity`) |
+| `lifecycle` | TEXT | NOT NULL | One of: sealing, sealed, building, testing, repairing, human_blocked, promoting, cleanup_pending, promoted, aborted, failed, empty. Cannot return to `sealing`; identity columns are immutable after sealing (triggers) |
+| `current_revision` | INTEGER | NOT NULL DEFAULT 0, `>= 0` | Latest candidate revision; monotone (trigger) |
+| `integration_branch` | TEXT | nullable | Candidate branch; NULL only when empty |
+| `pr_url` | TEXT | nullable | Audit PR for the candidate |
+| `repair_stage_ordinal` | INTEGER | nullable, `>= 0` | Active repair stage |
+| `tested_candidate_sha` | TEXT | nullable | Candidate head CI ran on |
+| `ci_evidence_id` | TEXT | nullable | Green `integration_check_evidence` |
+| `final_main_sha` | TEXT | nullable | `main` after promotion |
+| `human_abort_reason` | TEXT | nullable | Operator abort reason |
+| `policy_snapshot` | JSON | NOT NULL | Project policy frozen at seal |
+| `artifact_snapshot` | JSON | NOT NULL | Playbook artifact pins frozen at seal |
+| `cleanup_state` | TEXT | NOT NULL | Aggregate state of `integration_cleanup_items` |
+| `created_at` | REAL | NOT NULL | Unix timestamp |
+| `updated_at` | REAL | NOT NULL | Unix timestamp |
+
+Partial unique index `uq_integration_batches_active_project` allows one
+non-terminal batch per project.
+
+### Table: `integration_batch_members`
+
+The sealed, ordered members of a batch.  Append-only: the
+`trg_integration_members_*` triggers reject insert after sealing and every
+update/delete.
+
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| `batch_id` | TEXT | PK (with `ordinal`) | Batch |
+| `ordinal` | INTEGER | PK, `>= 0` | Application order |
+| `task_id` | TEXT | NOT NULL | Source task; UNIQUE per batch (`uq_integration_batch_members_task`) |
+| `pr_url` | TEXT | nullable | Source PR |
+| `repository_id` | TEXT | NOT NULL | Repository |
+| `source_base_sha` | TEXT | NOT NULL | Source branch base |
+| `reviewed_head_sha` | TEXT | NOT NULL | Pinned reviewed head |
+| `reviewed_tree_sha` | TEXT | NOT NULL | Pinned reviewed tree |
+| `source_ref` | TEXT | nullable | `refs/heads/…` retained for cleanup; NULL only for batches sealed before retention was persisted (`ck_integration_batch_members_source_retention`) |
+| `source_ref_retention` | TEXT | nullable | `delete` or `retain` |
+| `review_evidence_id` | TEXT | NOT NULL REFERENCES integration_review_evidence(id) ON DELETE RESTRICT | Approval pinned |
+| `review_evidence` | JSON | NOT NULL | Copy of the approval |
+
+`uq_integration_batch_members_root_identity` (ordinal + identity tuple) is
+the composite FK target for `integration_root_intent_members`.
+
+### Table: `integration_candidate_revisions`
+
+Each attempt to build the batch into a candidate branch.  A repair produces a
+new revision whose `repair_parent_revision` points at the red one.
+
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| `batch_id` | TEXT | PK (with `revision`) | Batch |
+| `revision` | INTEGER | PK, `>= 0` | Revision number |
+| `construction_base_sha` | TEXT | NOT NULL | `main` the candidate was built on |
+| `next_member_ordinal` | INTEGER | NOT NULL DEFAULT 0, `>= 0` | Resume cursor for crash-safe construction |
+| `repair_parent_revision` | INTEGER | nullable, `>= 0` | Revision this one repairs |
+| `head_sha` | TEXT | nullable | Candidate head once built |
+| `ci_evidence_id` | TEXT | nullable | CI evidence for `head_sha` |
+| `state` | TEXT | NOT NULL | One of: constructing, built, testing, green, red, superseded, promoted |
+| `created_at` | REAL | NOT NULL | Unix timestamp |
+| `updated_at` | REAL | NOT NULL | Unix timestamp |
+
+### Table: `integration_candidate_member_results`
+
+Per-member outcome of applying a batch member to a candidate revision.
+
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| `batch_id` | TEXT | PK | With `revision` REFERENCES `integration_candidate_revisions`; with `member_ordinal` REFERENCES `integration_batch_members` |
+| `revision` | INTEGER | PK, `>= 0` | Candidate revision |
+| `member_ordinal` | INTEGER | PK, `>= 0` | Member applied |
+| `input_head_sha` | TEXT | NOT NULL | Member head applied |
+| `input_tree_sha` | TEXT | NOT NULL | Member tree applied |
+| `generated_squash_sha` | TEXT | nullable | Squash commit; required when `result = 'applied'` |
+| `result` | TEXT | NOT NULL | One of: pending, applied, conflict, skipped |
+| `conflict_evidence` | JSON | nullable | Conflict diagnostics |
+| `created_at` | REAL | NOT NULL | Unix timestamp |
+| `updated_at` | REAL | NOT NULL | Unix timestamp |
+
+`uq_integration_candidate_results_root_identity` is the composite FK target
+for `integration_root_intent_members` and `task_delivery_receipts`.
+
+### Table: `integration_candidate_publications`
+
+Durable authority for publishing a candidate revision: the ref push and the
+audit PR are reserved here before GitHub is touched so a crash cannot
+publish twice.
+
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| `batch_id` | TEXT | PK (with `revision`) | With `revision` REFERENCES `integration_candidate_revisions` ON DELETE RESTRICT |
+| `revision` | INTEGER | PK, `>= 0` | Candidate revision |
+| `state` | TEXT | NOT NULL | One of: reserved, ref_published, pr_reserved, pr_published (monotone, trigger) |
+| `repository_id` | TEXT | NOT NULL | Repository |
+| `repository_numeric_id` | INTEGER | NOT NULL, `> 0` | GitHub repository id |
+| `repository_full_name` | TEXT | NOT NULL | `owner/name` |
+| `base_ref` | TEXT | NOT NULL | PR base |
+| `head_ref` | TEXT | NOT NULL | Published candidate ref |
+| `head_sha` | TEXT | NOT NULL | Published sha |
+| `expected_old_sha` | TEXT | NOT NULL | Compare-and-swap value for the ref push |
+| `idempotency_key` | TEXT | NOT NULL UNIQUE | GitHub idempotency key |
+| `pr_number` | INTEGER | nullable | Set with `pr_url` only when `pr_published` (`ck_integration_candidate_publications_pr_identity`) |
+| `pr_url` | TEXT | nullable | Audit PR |
+| `created_at` | REAL | NOT NULL | Unix timestamp |
+| `updated_at` | REAL | NOT NULL | Unix timestamp |
+
+### Table: `integration_candidate_resolutions`
+
+A repair delegate's conflict resolution for one member of a candidate:
+reserved with the delegate's exact session/workspace identity, pushed under
+a fence, then accepted into the next revision.
+
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| `id` | TEXT | PRIMARY KEY | Resolution id |
+| `batch_id` | TEXT | NOT NULL | With `revision`, `member_ordinal`: UNIQUE and REFERENCES `integration_candidate_member_results` ON DELETE RESTRICT |
+| `revision` | INTEGER | NOT NULL, `>= 0` | Candidate revision resolved |
+| `member_ordinal` | INTEGER | NOT NULL, `>= 0` | Member resolved |
+| `operation_id` | TEXT | NOT NULL | With `stage_ordinal` REFERENCES `integration_repair_stages` ON DELETE RESTRICT |
+| `operation_episode_id` | TEXT | NOT NULL | Repair operation episode |
+| `stage_ordinal` | INTEGER | NOT NULL | 0 or 1 |
+| `stage_deadline_at` | REAL | NOT NULL | Stage deadline the resolution must land by |
+| `project_id` | TEXT | NOT NULL | Project |
+| `repair_task_id` | TEXT | NOT NULL REFERENCES tasks(id) | Delegate task |
+| `repair_session_id` | TEXT | NOT NULL REFERENCES sessions(id) | Delegate session |
+| `repair_session_instance_token` | TEXT | NOT NULL | Session instance the writer authenticated as |
+| `repair_workspace_id` | TEXT | NOT NULL REFERENCES workspaces(id) | Delegate workspace |
+| `repair_workspace_path` | TEXT | NOT NULL | Workspace path |
+| `repository_id` | TEXT | NOT NULL | Repository |
+| `branch` | TEXT | NOT NULL | Resolution branch |
+| `target_branch` | TEXT | NOT NULL | Candidate branch |
+| `target_kind` | TEXT | NOT NULL | `qualified` or `legacy_integration` |
+| `fence_owner_id` | TEXT | NOT NULL | Branch owner |
+| `fence_token` | INTEGER | NOT NULL, `>= 0` | Fence token |
+| `handoff_owner_id` | TEXT | nullable | Set with `handoff_fence_token` when ownership is handed back (`ck_integration_candidate_resolutions_handoff`) |
+| `handoff_fence_token` | INTEGER | nullable, `>= 0` | See above |
+| `partial_head_sha` | TEXT | NOT NULL | Candidate head before the member |
+| `source_base_sha` | TEXT | NOT NULL | Member base |
+| `source_head_sha` | TEXT | NOT NULL | Member head |
+| `resolved_head_sha` | TEXT | NOT NULL | Resolved head |
+| `resolved_tree_sha` | TEXT | NOT NULL | Resolved tree |
+| `repair_commit_shas` | JSON | NOT NULL | Commits the delegate authored |
+| `push_evidence` | JSON | nullable | Required once `pushed`/`accepted`; immutable after (trigger) |
+| `state` | TEXT | NOT NULL | One of: reserved, pushed, accepted (monotone) |
+| `created_at` | REAL | NOT NULL | Unix timestamp |
+| `updated_at` | REAL | NOT NULL | Unix timestamp |
+
+### Table: `integration_candidate_ref_mutations`
+
+Prewrite log for every external ref mutation the train performs.  A row is
+reserved (with expected/desired sha, lease, branch fence and nonce) before
+the push, then marked applied with the observed remote sha; on restart the
+log is replayed before any new mutation is attempted.
+
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| `id` | TEXT | PRIMARY KEY | Mutation id |
+| `batch_id` | TEXT | NOT NULL | With `revision` REFERENCES `integration_candidate_revisions` ON DELETE RESTRICT |
+| `revision` | INTEGER | NOT NULL, `>= 0` | Candidate revision |
+| `member_ordinal` | INTEGER | nullable, `>= 0` | Member for partial pushes |
+| `resolution_id` | TEXT | nullable REFERENCES integration_candidate_resolutions(id) ON DELETE RESTRICT | Resolution being pushed |
+| `purpose` | TEXT | NOT NULL | One of: candidate_final, candidate_partial, repair_resolution, repair_handoff, root_main |
+| `repository_id` | TEXT | NOT NULL | Repository |
+| `branch` | TEXT | NOT NULL | Ref mutated |
+| `target_branch` | TEXT | NOT NULL | Logical target |
+| `expected_old_sha` | TEXT | NOT NULL | Compare-and-swap value |
+| `desired_sha` | TEXT | NOT NULL | Sha to write |
+| `operation_id` | TEXT | NOT NULL | Owning operation |
+| `operation_episode_id` | TEXT | NOT NULL | Operation episode |
+| `operation_stage` | INTEGER | NOT NULL | 0 or 1 |
+| `lease_owner_id` | TEXT | NOT NULL | Project lease owner |
+| `lease_fence_token` | INTEGER | NOT NULL, `>= 0` | Lease fence |
+| `branch_owner_id` | TEXT | NOT NULL | Branch owner |
+| `branch_owner_role` | TEXT | NOT NULL | Owner role |
+| `branch_fence_token` | INTEGER | NOT NULL, `>= 0` | Branch fence |
+| `nonce` | TEXT | NOT NULL | Push nonce embedded in the commit trailer |
+| `state` | TEXT | NOT NULL | reserved → applied (`remote_sha = desired_sha`), or superseded (root_main only) (`ck_integration_candidate_ref_mutations_remote`) |
+| `expires_at` | REAL | NOT NULL | Reservation expiry |
+| `remote_sha` | TEXT | nullable | Sha observed after the push |
+| `prewrite_at` | REAL | nullable | When the prewrite was durably recorded; root prewrites are immutable (`trg_integration_root_prewrite_immutable`) |
+| `created_at` | REAL | NOT NULL | Unix timestamp |
+| `updated_at` | REAL | NOT NULL | Unix timestamp |
+
+### Table: `integration_root_intent_members`
+
+Exact, append-only binding of a root promotion intent to the batch members,
+candidate results and review evidence it promotes.  Every FK is composite
+over the identity tuple so a rebuilt member or re-review cannot satisfy an
+older intent.  `receipt_id` is the delivery receipt the promotion writes for
+that member.
+
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| `intent_id` | TEXT | PK (with `member_ordinal`) | With `batch_id`, `candidate_revision` REFERENCES `integration_promotion_intents(id, root_batch_id, root_candidate_revision)` |
+| `member_ordinal` | INTEGER | PK, `>= 0` | Member |
+| `receipt_id` | TEXT | NOT NULL UNIQUE | Receipt to be written |
+| `batch_id` | TEXT | NOT NULL | Batch |
+| `candidate_revision` | INTEGER | NOT NULL, `>= 0` | Candidate revision |
+| `source_task_id` | TEXT | NOT NULL | Member task |
+| `repository_id` | TEXT | NOT NULL | Repository |
+| `reviewed_head_sha` | TEXT | NOT NULL | Pinned head |
+| `reviewed_tree_sha` | TEXT | NOT NULL | Pinned tree |
+| `generated_squash_sha` | TEXT | NOT NULL | Squash from the candidate result |
+| `result_evidence` | JSON | NOT NULL | Candidate result evidence |
+| `review_evidence_id` | TEXT | NOT NULL | Pinned review |
+| `created_at` | REAL | NOT NULL | Unix timestamp |
+
+Composite FKs (all ON DELETE RESTRICT): `fk_…_exact_member` →
+`integration_batch_members`, `fk_…_exact_result` →
+`integration_candidate_member_results`, `fk_…_exact_review` →
+`integration_review_evidence`.
+
+### Table: `integration_repair_operations`
+
+A bounded repair of either a red candidate batch or a parent task whose
+collected checkpoint failed verification.  Exactly one of `batch_id` /
+`parent_task_id` is set (`ck_integration_repair_operations_target`) and at
+most one non-terminal operation may target each (partial unique indexes).
+
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| `id` | TEXT | PRIMARY KEY | Operation id |
+| `target_kind` | TEXT | NOT NULL | `batch` or `parent` |
+| `batch_id` | TEXT | nullable | Batch target; UNIQUE (`uq_integration_repair_operations_batch_episode`) |
+| `parent_task_id` | TEXT | nullable | Parent target; `(parent_task_id, episode_id)` UNIQUE and REFERENCES `integration_parent_episodes(parent_task_id, id)` ON DELETE RESTRICT |
+| `episode_id` | TEXT | NOT NULL | Episode the operation belongs to |
+| `active_stage` | INTEGER | NOT NULL DEFAULT 0, `>= 0` | Current `integration_repair_stages.ordinal` |
+| `state` | TEXT | NOT NULL | One of: active, escalated, human_required, completed, cancelled |
+| `policy_snapshot` | JSON | NOT NULL | Repair policy frozen at start |
+| `artifact_snapshot` | JSON | NOT NULL | Artifact pins frozen at start |
+| `required_check_version` | TEXT | NOT NULL | Required-checks version the evidence must match |
+| `verifier_task_id` | TEXT | nullable REFERENCES tasks(id) ON DELETE RESTRICT | Existing verifier reused as writer |
+| `route_playbook_id` | TEXT | nullable | Playbook that routed the repair |
+| `route_scope` | TEXT | nullable | Routing scope |
+| `route_scope_identifier` | TEXT | nullable | Routing scope id |
+| `route_activation_id` | TEXT | nullable | Routing activation |
+| `created_at` | REAL | NOT NULL | Unix timestamp |
+| `updated_at` | REAL | NOT NULL | Unix timestamp |
+
+### Table: `integration_parent_episodes`
+
+One collection episode of a parent task: the generation and checkpoint the
+children were collected against.  Everything a parent verifies, repairs or
+accepts is bound to an episode so historic receipts cannot satisfy a later
+collection.
+
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| `id` | TEXT | PRIMARY KEY | Episode id; `(parent_task_id, id)` UNIQUE is the composite FK target |
+| `parent_task_id` | TEXT | NOT NULL REFERENCES tasks(id) ON DELETE RESTRICT | Parent |
+| `repository_id` | TEXT | NOT NULL REFERENCES repos(id) ON DELETE RESTRICT | Repository |
+| `generation` | INTEGER | NOT NULL, `>= 0` | Parent checkpoint generation |
+| `pre_collection_checkpoint_sha` | TEXT | NOT NULL | Parent head before collection |
+| `created_at` | REAL | NOT NULL | Unix timestamp |
+
+### Table: `integration_child_dispositions`
+
+How a parent's collection treated each child that did not deliver code.
+
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| `parent_task_id` | TEXT | PK (with `child_task_id`) | With `parent_episode_id` REFERENCES `integration_parent_episodes(parent_task_id, id)` ON DELETE RESTRICT |
+| `child_task_id` | TEXT | PK | Child |
+| `revision` | INTEGER | NOT NULL DEFAULT 0, `>= 0` | Bumped on every change; copied to `task_delivery_receipts.disposition_revision` |
+| `disposition` | TEXT | nullable | One of: noop, ineligible, skipped; NULL = undecided |
+| `parent_operation_id` | TEXT | NOT NULL REFERENCES integration_repair_operations(id) ON DELETE RESTRICT | Operation that decided |
+| `parent_episode_id` | TEXT | NOT NULL | Episode |
+| `updated_at` | REAL | NOT NULL | Unix timestamp |
+
+### Table: `integration_repair_stages`
+
+The (at most two) escalating stages of a repair operation, each with its own
+policy, writer and deadline.
+
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| `operation_id` | TEXT | PK (with `ordinal`) | Operation |
+| `ordinal` | INTEGER | PK | 0 or 1 |
+| `policy` | JSON | NOT NULL | Stage policy |
+| `intelligence_class` | TEXT | nullable | Class the repair delegate runs at |
+| `profile_id` | TEXT | nullable | Delegate profile |
+| `repair_task_id` | TEXT | nullable | Set with `writer_kind` (`ck_integration_repair_stages_writer_binding`) |
+| `writer_kind` | TEXT | nullable | `repair_delegate` or `existing_verifier` |
+| `starting_sha` | TEXT | NOT NULL | Head the stage started from |
+| `trigger_id` | TEXT | nullable | Event that started the stage |
+| `current_subject` | JSON | nullable | Subject (candidate/parent head) under repair |
+| `deadline_event_id` | TEXT | nullable UNIQUE | Scheduled deadline event |
+| `success_subject` | JSON | nullable | Subject that passed |
+| `success_evidence_id` | TEXT | nullable | Evidence that passed |
+| `retained_workspace_id` | TEXT | nullable | Delegate workspace kept for handoff |
+| `retained_handoff` | JSON | nullable | Handoff record |
+| `started_at` | REAL | nullable | Unix timestamp |
+| `deadline_at` | REAL | nullable | Unix timestamp |
+| `attempts` | INTEGER | NOT NULL DEFAULT 0, `>= 0` | Counted attempts |
+| `dossier` | JSON | nullable | Debug dossier handed to the next stage / human |
+| `state` | TEXT | NOT NULL | One of: pending, active, awaiting_completion, passed, failed, expired, cancelled |
+| `completed_at` | REAL | nullable | Unix timestamp |
+
+### Table: `integration_check_evidence`
+
+Authenticated CI evidence for exactly one subject: a candidate revision
+(`batch_id` + `candidate_revision`) or a parent head (`parent_task_id` +
+`parent_generation` + `parent_head_sha`) — never both
+(`ck_integration_check_evidence_subject`).
+
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| `id` | TEXT | PRIMARY KEY | Evidence id |
+| `operation_id` | TEXT | nullable | Repair operation observing it |
+| `batch_id` | TEXT | nullable | Candidate subject |
+| `candidate_revision` | INTEGER | nullable | Candidate subject |
+| `parent_task_id` | TEXT | nullable | Parent subject |
+| `parent_generation` | INTEGER | nullable | Parent subject |
+| `parent_head_sha` | TEXT | nullable | Parent subject |
+| `producer_id` | TEXT | NOT NULL | GitHub App / workflow producer; `(producer_id, run_id, attempt, required_check_version)` UNIQUE |
+| `workflow_id` | TEXT | NOT NULL | Workflow id |
+| `run_id` | TEXT | NOT NULL | Workflow run |
+| `attempt` | INTEGER | NOT NULL, `>= 0` | Run attempt |
+| `required_check_version` | TEXT | NOT NULL | Required-checks version evaluated |
+| `checks` | JSON | NOT NULL | Per-check results |
+| `conclusion` | TEXT | NOT NULL | One of: success, failure, pending, cancelled, inconclusive |
+| `classification` | TEXT | NOT NULL | Repair classification of the failure |
+| `observed_at` | REAL | NOT NULL | Unix timestamp |
+
+### Table: `integration_attestation_publications`
+
+Exclusive claim to publish a candidate's attestation (GitHub check run) so a
+restart cannot publish the same subject twice; one per `(batch_id, revision)`.
+
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| `id` | TEXT | PRIMARY KEY | Publication id |
+| `project_id` | TEXT | NOT NULL REFERENCES projects(id) ON DELETE RESTRICT | Project |
+| `batch_id` | TEXT | NOT NULL | With `revision`: UNIQUE and REFERENCES `integration_candidate_revisions` ON DELETE RESTRICT |
+| `revision` | INTEGER | NOT NULL, `>= 0` | Candidate revision |
+| `operation_id` | TEXT | NOT NULL REFERENCES integration_repair_operations(id) ON DELETE RESTRICT | Operation publishing |
+| `head_sha` | TEXT | NOT NULL | Attested head |
+| `ci_evidence_id` | TEXT | NOT NULL REFERENCES integration_check_evidence(id) ON DELETE RESTRICT | Evidence attested |
+| `external_id` | TEXT | NOT NULL UNIQUE | Check-run external id |
+| `execution_nonce` | TEXT | NOT NULL | Nonce for the publishing execution |
+| `state` | TEXT | NOT NULL | `reserved` (no `check_run_id`) or `published` (`prewrite_at` set, `check_run_id > 0`) (`ck_integration_attestation_publications_result`) |
+| `prewrite_at` | REAL | nullable | Prewrite timestamp |
+| `check_run_id` | INTEGER | nullable | GitHub check run id |
+| `expires_at` | REAL | NOT NULL | Claim expiry |
+| `created_at` | REAL | NOT NULL | Unix timestamp |
+| `updated_at` | REAL | NOT NULL | Unix timestamp |
+
+### Table: `integration_cleanup_items`
+
+Normalized, retryable cleanup work after a batch is promoted or aborted: one
+row per source PR, audit PR, remote ref, local ref or worktree.  `kind`
+decides which target columns must be set (`ck_integration_cleanup_items_target`).
+
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| `batch_id` | TEXT | PK, REFERENCES integration_batches(id) ON DELETE RESTRICT | Batch |
+| `kind` | TEXT | PK | One of: source_pr, audit_pr, remote_ref, local_ref, worktree |
+| `identity` | TEXT | PK | Target identity within the kind |
+| `domain_key` | TEXT | NOT NULL UNIQUE | Idempotency key |
+| `project_id` | TEXT | NOT NULL REFERENCES projects(id) ON DELETE RESTRICT | Project |
+| `repository_id` | TEXT | NOT NULL REFERENCES repos(id) ON DELETE RESTRICT | Repository |
+| `repository_numeric_id` | INTEGER | NOT NULL, `> 0` | GitHub repository id |
+| `repository_full_name` | TEXT | NOT NULL | `owner/name` |
+| `revision` | INTEGER | NOT NULL, `>= 0` | Candidate revision |
+| `member_ordinal` | INTEGER | nullable | `source_pr` (required) / `remote_ref` (optional) |
+| `receipt_id` | TEXT | nullable REFERENCES task_delivery_receipts(id) ON DELETE RESTRICT | `source_pr` only |
+| `target_ref` | TEXT | nullable | `remote_ref` / `local_ref` |
+| `target_pr_number` | INTEGER | nullable | `source_pr` / `audit_pr` |
+| `target_pr_url` | TEXT | nullable | `source_pr` / `audit_pr` |
+| `workspace_path` | TEXT | nullable | `worktree` |
+| `expected_sha` | TEXT | NOT NULL | Lower-case 40-char sha the target must still be at |
+| `state` | TEXT | NOT NULL | pending, retryable (open) or complete, conflict, failed (terminal, `terminal_at` set, claim cleared) |
+| `attempts` | INTEGER | NOT NULL DEFAULT 0, `>= 0` | Attempts so far |
+| `next_attempt_at` | REAL | NOT NULL | Due time; indexed for open items |
+| `execution_nonce` | TEXT | nullable | Set with `claim_expires_at` while an executor holds the item |
+| `claim_expires_at` | REAL | nullable | Claim expiry |
+| `irreversible_nonce` | TEXT | nullable | Set with `irreversible_prewrite_at` before an irreversible step (PR close, ref delete); immutable after (trigger) |
+| `irreversible_prewrite_at` | REAL | nullable | Prewrite timestamp |
+| `last_error` | TEXT | nullable | Last failure |
+| `created_at` | REAL | NOT NULL | Unix timestamp |
+| `updated_at` | REAL | NOT NULL | Unix timestamp |
+| `terminal_at` | REAL | nullable | When the item reached a terminal state |
+
+### Table: `integration_repair_stage_evidence`
+
+Which CI evidence a repair stage has already consumed, and whether it
+counted as an attempt.
+
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| `operation_id` | TEXT | PK | With `ordinal` REFERENCES `integration_repair_stages` ON DELETE RESTRICT |
+| `ordinal` | INTEGER | PK | Stage |
+| `evidence_id` | TEXT | PK, UNIQUE, REFERENCES integration_check_evidence(id) ON DELETE RESTRICT | Evidence consumed |
+| `counted_attempt` | BOOLEAN | NOT NULL DEFAULT false | Consumed an attempt |
+| `result_outcome` | TEXT | NOT NULL | Outcome derived |
+| `result_action` | TEXT | NOT NULL | Action taken |
+| `recorded_at` | REAL | NOT NULL | Unix timestamp |
+
+### Table: `integration_parent_verifications`
+
+A verification of a parent's collected head within an episode.
+
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| `id` | TEXT | PRIMARY KEY | Verification id |
+| `operation_id` | TEXT | NOT NULL REFERENCES integration_repair_operations(id) ON DELETE RESTRICT | Operation |
+| `parent_task_id` | TEXT | NOT NULL REFERENCES tasks(id) ON DELETE RESTRICT | Parent; `(parent_task_id, episode_id)` REFERENCES `integration_parent_episodes` |
+| `episode_id` | TEXT | NOT NULL | Episode |
+| `generation` | INTEGER | NOT NULL, `>= 0` | Generation verified |
+| `head_sha` | TEXT | NOT NULL | Head verified |
+| `required_check_version` | TEXT | NOT NULL | Required-checks version |
+| `created_at` | REAL | NOT NULL | Unix timestamp |
+
+Unique: `(operation_id, generation, head_sha)`, `(parent_task_id, id)` and
+`(operation_id, id, parent_task_id, episode_id)` (composite FK targets).
+
+### Table: `integration_parent_operation_completions`
+
+The single verification that completed a parent repair operation.
+
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| `operation_id` | TEXT | PRIMARY KEY, REFERENCES integration_repair_operations(id) ON DELETE RESTRICT | Completed operation |
+| `verification_id` | TEXT | NOT NULL UNIQUE | With `operation_id`, `parent_task_id`, `episode_id` REFERENCES `integration_parent_verifications` ON DELETE RESTRICT |
+| `parent_task_id` | TEXT | NOT NULL | Parent |
+| `episode_id` | TEXT | NOT NULL | Episode |
+| `completed_at` | REAL | NOT NULL | Unix timestamp |
+
+### Table: `integration_episode_receipt_acceptances`
+
+Accepts a receipt written under an earlier episode into the current one,
+recording the ancestry check that made it valid.
+
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| `episode_id` | TEXT | PK (with `receipt_id`), REFERENCES integration_parent_episodes(id) ON DELETE RESTRICT | Accepting episode |
+| `receipt_id` | TEXT | PK, REFERENCES task_delivery_receipts(id) ON DELETE RESTRICT | Accepted receipt |
+| `operation_id` | TEXT | NOT NULL REFERENCES integration_repair_operations(id) ON DELETE RESTRICT | Accepting operation |
+| `previous_episode_id` | TEXT | NOT NULL REFERENCES integration_parent_episodes(id) ON DELETE RESTRICT | Episode the receipt was written under |
+| `previous_operation_id` | TEXT | NOT NULL REFERENCES integration_repair_operations(id) ON DELETE RESTRICT | Operation that wrote it |
+| `previous_verification_id` | TEXT | NOT NULL REFERENCES integration_parent_verifications(id) ON DELETE RESTRICT | Verification that covered it |
+| `ancestry_from_sha` | TEXT | NOT NULL | Verified head |
+| `ancestry_to_sha` | TEXT | NOT NULL | Current head proven to descend from it |
+| `created_at` | REAL | NOT NULL | Unix timestamp |
+
+### Table: `integration_parent_verification_evidence`
+
+Link table binding a parent verification to the CI evidence it rests on.
+
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| `verification_id` | TEXT | PK, REFERENCES integration_parent_verifications(id) ON DELETE RESTRICT | Verification |
+| `evidence_id` | TEXT | PK, UNIQUE, REFERENCES integration_check_evidence(id) ON DELETE RESTRICT | Evidence (used by at most one verification) |
+
+### Table: `integration_operation_artifact_pins`
+
+Playbook artifacts a repair operation was started with, pinned so the
+artifact store cannot garbage-collect them while the operation runs.
+
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| `operation_id` | TEXT | PK, REFERENCES integration_repair_operations(id) ON DELETE RESTRICT | Operation |
+| `artifact_sha256` | TEXT | PK, REFERENCES playbook_artifacts(artifact_sha256) ON DELETE RESTRICT | Pinned artifact; indexed |
+
+### Table: `project_integration_schedules`
+
+Durable sweep scheduling per project: the periodic interval, the request
+outstanding, and a catch-up request queued behind it.
+
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| `project_id` | TEXT | PRIMARY KEY | Project |
+| `enabled` | BOOLEAN | NOT NULL DEFAULT false | Sweeps run |
+| `interval_seconds` | INTEGER | NOT NULL, `> 0` | Cadence |
+| `next_due_at` | REAL | NOT NULL | Next periodic sweep |
+| `last_observed_window` | REAL | nullable | Last window the scheduler observed |
+| `request_sequence` | INTEGER | NOT NULL DEFAULT 0, `>= 0` | Monotone request counter |
+| `outstanding_request_id` | TEXT | nullable | Set together with `outstanding_trigger` and `outstanding_requested_at` (`ck_project_integration_schedules_outstanding_request`) |
+| `outstanding_trigger` | TEXT | nullable | periodic / manual |
+| `outstanding_requested_at` | REAL | nullable | Unix timestamp |
+| `catchup_trigger` | TEXT | nullable | `periodic` or `manual`, set together with `catchup_requested_at` and `catchup_after_sequence` (`ck_project_integration_schedules_catchup`) |
+| `catchup_requested_at` | REAL | nullable | Unix timestamp |
+| `catchup_after_sequence` | INTEGER | nullable, `>= 0` | Request the catch-up waits behind |
+| `last_completed_sweep_at` | REAL | nullable | Unix timestamp |
+| `updated_at` | REAL | NOT NULL | Unix timestamp |
+
+### Table: `project_integration_leases`
+
+The single fenced lease a train holds on a project while it builds, tests
+and promotes a batch.
+
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| `project_id` | TEXT | PRIMARY KEY | Project |
+| `repository_id` | TEXT | NOT NULL | Repository |
+| `batch_id` | TEXT | NOT NULL | Batch the lease serves |
+| `owner_id` | TEXT | NOT NULL | Lease owner |
+| `fence_token` | INTEGER | NOT NULL, `>= 0` | Monotone fence |
+| `heartbeat_at` | REAL | NOT NULL | Last heartbeat |
+| `expires_at` | REAL | NOT NULL, `>= heartbeat_at` | Expiry |
+
+### Table: `integration_release_results`
+
+Immutable record that a promoted batch was released (lease dropped, cleanup
+queued); one per batch, `UPDATE`/`DELETE` rejected by trigger.
+
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| `batch_id` | TEXT | PRIMARY KEY, REFERENCES integration_batches(id) ON DELETE RESTRICT | Released batch |
+| `project_id` | TEXT | NOT NULL | Project |
+| `request_id` | TEXT | NOT NULL | Sweep request |
+| `operation_id` | TEXT | NOT NULL | Releasing operation |
+| `catchup_request_id` | TEXT | nullable | Catch-up request retained for the release |
+| `released_at` | REAL | NOT NULL | Unix timestamp |
+
+### Table: `integration_history_waivers`
+
+Operator waiver of the historic blockers (pre-rollout receipts, legacy gates)
+that would otherwise stop a rollout transition.  Append-only.
+
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| `id` | TEXT | PRIMARY KEY | Waiver id |
+| `project_id` | TEXT | NOT NULL REFERENCES projects(id) ON DELETE RESTRICT | Project |
+| `operator_id` | TEXT | NOT NULL, non-empty | Operator |
+| `reason` | TEXT | NOT NULL, non-empty | Reason |
+| `blocker_digest` | TEXT | NOT NULL | `sha256:` + 64 hex digest of the blocker set waived |
+| `created_at` | REAL | NOT NULL | Unix timestamp |
+
+### Table: `integration_rollout_transitions`
+
+Append-only log of every rollout mode change, keyed by the project's
+generation; the source of truth `projects.hierarchical_integration_*` is
+projected from.
+
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| `id` | TEXT | PRIMARY KEY | Transition id |
+| `project_id` | TEXT | NOT NULL REFERENCES projects(id) ON DELETE RESTRICT | With `generation`: UNIQUE |
+| `generation` | INTEGER | NOT NULL, `> 0` | Generation after the transition |
+| `old_effective_mode` | TEXT | NOT NULL | disabled / observe / hierarchy / train |
+| `new_effective_mode` | TEXT | NOT NULL | Same set |
+| `old_desired_mode` | TEXT | NOT NULL | Same set |
+| `new_desired_mode` | TEXT | NOT NULL | Same set |
+| `draining` | BOOLEAN | NOT NULL DEFAULT false | Transition started a drain |
+| `operator_id` | TEXT | NOT NULL, non-empty | Operator |
+| `reason` | TEXT | NOT NULL, non-empty | Reason |
+| `blocker_digest` | TEXT | NOT NULL | `sha256:` digest of blockers at transition time |
+| `old_legacy_policy` | JSON | NOT NULL | Legacy-route suppression before |
+| `new_legacy_policy` | JSON | NOT NULL | Legacy-route suppression after |
+| `waiver_id` | TEXT | nullable REFERENCES integration_history_waivers(id) ON DELETE RESTRICT | Waiver consumed |
+| `created_at` | REAL | NOT NULL | Unix timestamp |
+
+### Table: `integration_history_waiver_consumptions`
+
+A waiver is consumed by exactly one transition, and for the blocker digest
+it was issued against.  Append-only.
+
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| `waiver_id` | TEXT | PRIMARY KEY, REFERENCES integration_history_waivers(id) ON DELETE RESTRICT | Waiver |
+| `transition_id` | TEXT | NOT NULL UNIQUE REFERENCES integration_rollout_transitions(id) ON DELETE RESTRICT | Consuming transition |
+| `project_id` | TEXT | NOT NULL REFERENCES projects(id) ON DELETE RESTRICT | Project |
+| `blocker_digest` | TEXT | NOT NULL | `sha256:` digest matched |
+| `consumed_by` | TEXT | NOT NULL, non-empty | Actor |
+| `consumed_at` | REAL | NOT NULL | Unix timestamp |
+
+### Table: `integration_legacy_gate_applicability`
+
+Per-gate evidence of whether a pre-rollout legacy gate still applies after a
+waived transition.  Append-only.
+
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| `project_id` | TEXT | PK (with `gate_id`), REFERENCES projects(id) ON DELETE RESTRICT | Project |
+| `gate_id` | TEXT | PK, REFERENCES gates(id) ON DELETE RESTRICT | Legacy gate |
+| `waiver_id` | TEXT | NOT NULL REFERENCES integration_history_waivers(id) ON DELETE RESTRICT | Waiver |
+| `transition_id` | TEXT | NOT NULL REFERENCES integration_rollout_transitions(id) ON DELETE RESTRICT | Transition |
+| `blocker_digest` | TEXT | NOT NULL | `sha256:` digest |
+| `applicable` | BOOLEAN | NOT NULL | Gate still applies |
+| `created_at` | REAL | NOT NULL | Unix timestamp |
+
+### Table: `integration_legacy_suppression`
+
+The one deliberately mutable rollout projection: which legacy routes (merge
+sweep, final-review route, legacy gate creation) the current mode suppresses
+for a project.
+
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| `project_id` | TEXT | PRIMARY KEY, REFERENCES projects(id) ON DELETE RESTRICT | Project |
+| `generation` | INTEGER | NOT NULL, `>= 0` | Rollout generation projected |
+| `merge_sweep_suppressed` | BOOLEAN | NOT NULL DEFAULT false | Legacy merge sweep off |
+| `final_review_route_suppressed` | BOOLEAN | NOT NULL DEFAULT false | Legacy final-review route off |
+| `legacy_gate_creation_suppressed` | BOOLEAN | NOT NULL DEFAULT false | Legacy gate creation off |
+| `policy_snapshot` | JSON | NOT NULL | Policy the projection derives from |
+| `updated_at` | REAL | NOT NULL | Unix timestamp |
+
+### Table: `integration_outbox`
+
+Durable event outbox for correctness-critical integration events: rows are
+written in the same transaction as the state change and delivered to the
+bus by the reconciler, with per-destination acceptance tracking.
+
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| `id` | TEXT | PRIMARY KEY | Outbox row id |
+| `dedup_key` | TEXT | NOT NULL UNIQUE | Idempotency key |
+| `project_id` | TEXT | NOT NULL | Project |
+| `event_type` | TEXT | NOT NULL | Bus event type |
+| `payload` | JSON | NOT NULL | Event payload |
+| `destination_manifest` | JSON | nullable | Pinned destinations (playbook activations) that must accept it |
+| `acceptance_cursor` | INTEGER | NOT NULL DEFAULT 0, `>= 0` | Destinations accepted so far; monotone (trigger) |
+| `available_at` | REAL | NOT NULL | Earliest delivery; indexed for undelivered rows |
+| `delivered_at` | REAL | nullable | Delivered |
+| `attempts` | INTEGER | NOT NULL DEFAULT 0, `>= 0` | Monotone (trigger) |
+| `last_error` | TEXT | nullable | Last delivery error |
+| `created_at` | REAL | NOT NULL | Unix timestamp |
+
+### Table: `integration_outbox_artifact_pins`
+
+Playbook artifacts an outbox event pins until it is delivered.
+
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| `event_id` | TEXT | PK, REFERENCES integration_outbox(id) ON DELETE CASCADE | Outbox row |
+| `artifact_sha256` | TEXT | PK, REFERENCES playbook_artifacts(artifact_sha256) ON DELETE RESTRICT | Pinned artifact; indexed |
 
 ---
 

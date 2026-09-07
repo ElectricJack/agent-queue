@@ -715,16 +715,16 @@ async def test_failed_child_readiness_exposes_frozen_disposition_policy(db, poli
 
 async def test_arbitrary_resolution_json_cannot_satisfy_code_receipt_chain(db):
     hierarchy, _checkpointed, children = await _parent_tree(db, children=1)
-    await _code_receipt(db, children[0], "a" * 40, "d" * 40)
-    async with db.immediate() as conn:
-        await conn.execute(
-            update(task_delivery_receipts)
-            .where(task_delivery_receipts.c.id == f"receipt-{children[0]}")
-            .values(
-                squash_sha=None,
-                resolution_evidence={"kind": "conflict_resolution", "trusted": True},
-            )
-        )
+    # Receipts are append-only (trg_task_delivery_receipts_update), so the
+    # forged row is written as-is rather than patched after the fact.
+    await _code_receipt(
+        db,
+        children[0],
+        "a" * 40,
+        "d" * 40,
+        squash_sha=None,
+        resolution_evidence={"kind": "conflict_resolution", "trusted": True},
+    )
 
     readiness = await hierarchy.readiness("parent")
 
@@ -737,13 +737,16 @@ async def test_arbitrary_resolution_json_cannot_satisfy_code_receipt_chain(db):
 
 async def test_unbound_historic_receipts_do_not_satisfy_current_parent_episode(db):
     hierarchy, _checkpointed, children = await _parent_tree(db, children=1)
-    await _code_receipt(db, children[0], "a" * 40, "d" * 40)
-    async with db.immediate() as conn:
-        await conn.execute(
-            update(task_delivery_receipts)
-            .where(task_delivery_receipts.c.source_task_id == children[0])
-            .values(parent_operation_id=None, parent_episode_id=None)
-        )
+    # Receipts are append-only (trg_task_delivery_receipts_update), so the
+    # unbound historic row is written as-is rather than unbound afterwards.
+    await _code_receipt(
+        db,
+        children[0],
+        "a" * 40,
+        "d" * 40,
+        parent_operation_id=None,
+        parent_episode_id=None,
+    )
 
     readiness = await hierarchy.readiness("parent")
     assert readiness["outcome"] == "waiting"

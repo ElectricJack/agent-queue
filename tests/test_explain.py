@@ -219,7 +219,11 @@ class TestExplainCommand:
 
         assert res["reason_codes"][0] == "held"
         assert "repository_not_designated" in res["reason_codes"]
-        assert "preflight_evidence_unavailable" in res["reason_codes"]
+        # The placeholder ``preflight_evidence_unavailable`` blocker was
+        # retired with the functional preflight (operational integration
+        # controls); readiness now derives from persisted policy/artifact rows
+        # and is never reported as a permanent per-task blocker.
+        assert "preflight_evidence_unavailable" not in res["reason_codes"]
 
     async def test_disabled_project_does_not_add_integration_reasons(self, handler, db):
         await mktask(db, "ordinary", status=TaskStatus.READY)

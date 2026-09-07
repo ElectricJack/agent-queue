@@ -7671,8 +7671,8 @@
         "tags": [
           "project"
         ],
-        "summary": "Edit a project's properties: name, credit_weight, max_concurrent_agents, budget_limit, discord_channel_id, default_profile_id, assignment_playbook_id, or repo_default_branch. Use this to rename projects, adjust scheduling weight, set token budgets, link Discord channels, set a default agent profile, or change the default git branch.",
-        "description": "Edit a project's properties: name, credit_weight, max_concurrent_agents, budget_limit, discord_channel_id, default_profile_id, assignment_playbook_id, or repo_default_branch. Use this to rename projects, adjust scheduling weight, set token budgets, link Discord channels, set a default agent profile, or change the default git branch.",
+        "summary": "Edit a project's properties: name, credit_weight, max_concurrent_agents, budget_limit, discord_channel_id, default_profile_id, assignment_playbook_id, repo_default_branch, or LOCAL-only hierarchical integration configuration. Use this to rename projects, adjust scheduling weight, set token budgets, link Discord channels, set a default agent profile, or change the default git branch.",
+        "description": "Edit a project's properties: name, credit_weight, max_concurrent_agents, budget_limit, discord_channel_id, default_profile_id, assignment_playbook_id, repo_default_branch, or LOCAL-only hierarchical integration configuration. Use this to rename projects, adjust scheduling weight, set token budgets, link Discord channels, set a default agent profile, or change the default git branch.",
         "operationId": "edit_project",
         "requestBody": {
           "content": {
@@ -11280,8 +11280,8 @@
         "tags": [
           "task"
         ],
-        "summary": "Create a new gate; optionally attach it to waiter tasks.",
-        "description": "Create a new gate; optionally attach it to waiter tasks.",
+        "summary": "Open a gate, and block the tasks waiting on it until it resolves.",
+        "description": "Open a gate, and block the tasks waiting on it until it resolves.",
         "operationId": "gate_create",
         "requestBody": {
           "content": {
@@ -11374,8 +11374,8 @@
         "tags": [
           "task"
         ],
-        "summary": "Resolve a gate (idempotent) and report unblocked waiters.",
-        "description": "Resolve a gate (idempotent) and report unblocked waiters.",
+        "summary": "Resolve an open gate and unblock every task waiting on it.",
+        "description": "Resolve an open gate and unblock every task waiting on it.",
         "operationId": "gate_resolve",
         "requestBody": {
           "content": {
@@ -18781,6 +18781,55 @@
             ],
             "title": "Repo Default Branch",
             "description": "Default git branch for the project (e.g. main, dev, master)"
+          },
+          "integration_repository_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Integration Repository Id",
+            "description": "LOCAL-only designated integration repository ID."
+          },
+          "hierarchical_integration_policy": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Hierarchical Integration Policy",
+            "description": "LOCAL-only complete typed hierarchical integration policy."
+          },
+          "expected_integration_generation": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expected Integration Generation",
+            "description": "Required generation CAS for integration configuration."
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason",
+            "description": "Operator reason recorded for integration configuration."
           }
         },
         "type": "object",
@@ -20615,17 +20664,17 @@
           "project_id": {
             "type": "string",
             "title": "Project Id",
-            "description": "Project id that owns the gate"
+            "description": ""
           },
           "gate_type": {
             "type": "string",
             "title": "Gate Type",
-            "description": "Gate kind. 'routing' gates resolve only via task_route."
+            "description": ""
           },
           "title": {
             "type": "string",
             "title": "Title",
-            "description": "Human-readable gate title"
+            "description": ""
           },
           "question": {
             "anyOf": [
@@ -20637,7 +20686,7 @@
               }
             ],
             "title": "Question",
-            "description": "Optional prompt shown to the resolver"
+            "description": ""
           },
           "await_id": {
             "anyOf": [
@@ -20649,32 +20698,31 @@
               }
             ],
             "title": "Await Id",
-            "description": "Optional external id the gate is waiting on"
+            "description": ""
           },
           "timeout_at": {
             "anyOf": [
               {
-                "type": "number"
+                "type": "string"
               },
               {
                 "type": "null"
               }
             ],
             "title": "Timeout At",
-            "description": "Optional epoch after which the gate is considered expired"
+            "description": ""
           },
           "waiter_task_ids": {
             "anyOf": [
               {
-                "items": {},
-                "type": "array"
+                "type": "string"
               },
               {
                 "type": "null"
               }
             ],
             "title": "Waiter Task Ids",
-            "description": "Task ids that should be blocked by this gate"
+            "description": ""
           }
         },
         "type": "object",
@@ -20778,12 +20826,12 @@
           "gate_id": {
             "type": "string",
             "title": "Gate Id",
-            "description": "Gate id to resolve"
+            "description": ""
           },
           "resolved_by": {
             "type": "string",
             "title": "Resolved By",
-            "description": "Identity of the resolver (user id or session)"
+            "description": ""
           },
           "resolution": {
             "anyOf": [
@@ -20795,7 +20843,7 @@
               }
             ],
             "title": "Resolution",
-            "description": "Optional free-text explanation stored with the resolve event"
+            "description": ""
           }
         },
         "type": "object",

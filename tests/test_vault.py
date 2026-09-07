@@ -934,10 +934,11 @@ def test_starter_knowledge_covers_expected_types():
 def test_ensure_default_playbooks_installs_all_defaults(tmp_path):
     """A clean install creates the minimal default playbook set.
 
-    `memory-consolidation.md` and the control-plane `default-pipeline.md`
-    ship installed by default.  Other playbooks that used to auto-install
-    have been moved to ``docs/example_playbooks/`` as opt-in
-    reference material.
+    `memory-consolidation.md`, the control-plane `default-pipeline.md` and
+    `default-assignment-routing.md`, and the (disabled-by-default)
+    hierarchical-delivery / root-integration-train playbooks ship installed
+    by default.  Other playbooks that used to auto-install have been moved
+    to ``docs/example_playbooks/`` as opt-in reference material.
     """
     result = ensure_default_playbooks(str(tmp_path))
 
@@ -945,7 +946,9 @@ def test_ensure_default_playbooks_installs_all_defaults(tmp_path):
     expected_files = [
         "default-assignment-routing.md",
         "default-pipeline.md",
+        "hierarchical-delivery.md",
         "memory-consolidation.md",
+        "root-integration-train.md",
     ]
 
     # All expected files must exist on disk

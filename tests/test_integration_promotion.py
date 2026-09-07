@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -410,8 +411,23 @@ async def test_concurrent_different_domains_reserve_only_one_target_intent(db):
     assert "unresolved promotion" in str(failures[0])
 
 
+# Sessions and CI runners export GIT_AUTHOR_*/GIT_COMMITTER_*, which outrank
+# the per-repository ``user.*`` config the fixture relies on for attribution.
+_AMBIENT_IDENTITY_KEYS = (
+    "GIT_AUTHOR_NAME",
+    "GIT_AUTHOR_EMAIL",
+    "GIT_AUTHOR_DATE",
+    "GIT_COMMITTER_NAME",
+    "GIT_COMMITTER_EMAIL",
+    "GIT_COMMITTER_DATE",
+)
+
+
 def _git(args: list[str], cwd: Path | None = None) -> str:
-    result = subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True, text=True)
+    env = {key: value for key, value in os.environ.items() if key not in _AMBIENT_IDENTITY_KEYS}
+    result = subprocess.run(
+        ["git", *args], cwd=cwd, check=True, capture_output=True, text=True, env=env
+    )
     return result.stdout.strip()
 
 
