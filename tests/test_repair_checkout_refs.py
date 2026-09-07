@@ -21,6 +21,7 @@ async def test_checkpoint_accepts_same_canonical_full_ref(prefix):
     )
     task = {'id': 'repair', 'repo_id': 'repo', 'branch_name': prefix + 'aq/integration/batch'}
     assert await resolve_workspace_checkpoint(db, git, task, SimpleNamespace(id='repo')) == head
+    git.als_remote_ref.assert_awaited_once_with('/slot', 'aq/integration/batch')
 
 
 @pytest.mark.parametrize('ancestor', [True, False])
