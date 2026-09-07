@@ -4,7 +4,6 @@ import {
   Squares2X2Icon,
   ChartBarIcon,
   Cog6ToothIcon,
-  FolderIcon,
   ChevronDownIcon,
   PlusIcon,
 } from "@heroicons/react/24/outline";
@@ -15,14 +14,9 @@ import { useProjectRoots } from "../pages/project/onboarding/useProjectRoots";
 import { useProjectCreatedNavigation } from "../pages/project/onboarding/useProjectCreatedNavigation";
 import { useListNav } from "./hotkeys/useListNav";
 import { workspaceNavigation, workspaceHref } from "./projectNavigation";
-
-function linkClass(active: boolean): string {
-  return `flex items-center gap-3 rounded-lg px-3 py-2 text-sm ${
-    active
-      ? "bg-indigo-500/15 text-indigo-200"
-      : "text-gray-400 hover:bg-gray-800 hover:text-gray-100"
-  }`;
-}
+import ProjectTree from "./ProjectTree";
+import { useNavOrganization } from "./useNavOrganization";
+import { linkClass } from "./railStyles";
 
 export default function LeftRail() {
   const { data: projects } = useProjects();
@@ -33,6 +27,7 @@ export default function LeftRail() {
   const [wizardOpen, setWizardOpen] = useState(false);
   const addProjectRef = useRef<HTMLButtonElement>(null);
   const roots = useProjectRoots();
+  const { organization, update } = useNavOrganization();
   // Design §4.6: refresh the rail, expand Projects, select and open the new project.
   const onProjectCreated = useProjectCreatedNavigation(() => setProjectsOpen(true));
   return (
@@ -70,21 +65,14 @@ export default function LeftRail() {
               </button>
             </div>
             {projectsOpen && (
-              <div id="project-links" className="space-y-0.5">
-                {(projects ?? []).length === 0 && <p className="px-3 py-2 text-xs text-gray-600">No projects yet</p>}
-                {(projects ?? []).map((p) => (
-                  <Link
-                    key={p.id}
-                    to={workspaceHref(p.id, tab, search)}
-                    data-listnav="1"
-                    aria-current={projectId === p.id ? "page" : undefined}
-                    className={linkClass(projectId === p.id)}
-                  >
-                    <FolderIcon className="h-4 w-4" />
-                    <span className="truncate">{p.name ?? p.id}</span>
-                  </Link>
-                ))}
-              </div>
+              <ProjectTree
+                projects={projects ?? []}
+                organization={organization}
+                update={update}
+                activeProjectId={projectId}
+                tab={tab}
+                search={search}
+              />
             )}
           </section>
           <NavLink to="/metrics" data-listnav="1" className={({ isActive }) => linkClass(isActive)}>
