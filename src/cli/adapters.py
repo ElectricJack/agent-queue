@@ -156,6 +156,8 @@ def agent_proxy(d: Any) -> DictProxy | TypedProxy:
         patched.setdefault("session_tokens_used", 0)
         patched.setdefault("agent_type", "claude")
         patched.setdefault("last_heartbeat", None)
+        patched.setdefault("last_activity", None)
+        patched.setdefault("live", False)
         aliases = {} if patched.get("id") else {"id": "workspace_id"}
         return DictProxy(patched, aliases=aliases)
     identity = getattr(d, "id", None)

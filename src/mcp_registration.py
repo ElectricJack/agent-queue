@@ -529,19 +529,32 @@ def register_resources(mcp_server: FastMCP) -> None:
             return json.dumps({"error": f"Project not found: {project_id}"})
         return json.dumps(project_to_dict(project), indent=2)
 
+    async def _agent_liveness(db) -> dict[str, float]:
+        """Session activity per agent -- the liveness signal (see
+        :mod:`src.agents.liveness`); ``last_heartbeat`` is task-scoped."""
+        from src.agents.liveness import liveness_by_agent
+
+        return liveness_by_agent(await db.list_sessions(live_only=True))
+
     @mcp_server.resource("agentqueue://agents")
     async def list_all_agents() -> str:
         """List all registered agents and their current state."""
         db = await _db(mcp_server)
         agents = await db.list_agents()
-        return json.dumps([agent_to_dict(a) for a in agents], indent=2)
+        seen = await _agent_liveness(db)
+        return json.dumps(
+            [agent_to_dict(a, seen.get(a.id)) for a in agents], indent=2
+        )
 
     @mcp_server.resource("agentqueue://agents/active")
     async def list_active_agents() -> str:
         """List agents currently working on tasks."""
         db = await _db(mcp_server)
         agents = await db.list_agents(state=AgentState.BUSY)
-        return json.dumps([agent_to_dict(a) for a in agents], indent=2)
+        seen = await _agent_liveness(db)
+        return json.dumps(
+            [agent_to_dict(a, seen.get(a.id)) for a in agents], indent=2
+        )
 
     @mcp_server.resource("agentqueue://profiles")
     async def list_all_profiles() -> str:

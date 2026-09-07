@@ -568,6 +568,9 @@ class Agent:
     state: AgentState = AgentState.IDLE
     current_task_id: str | None = None
     pid: int | None = None
+    #: Task-scoped lease/reservation stamp -- written only while this agent
+    #: holds a task, so it is stale by design on an idle pool worker.  For
+    #: liveness read the session's ``last_activity`` (``src.agents.liveness``).
     last_heartbeat: float | None = None
     total_tokens_used: int = 0
     session_tokens_used: int = 0
