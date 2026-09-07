@@ -1061,7 +1061,7 @@ class RootPromotionService:
                     or review["reviewed_head_sha"] != member["reviewed_head_sha"]
                     or review["reviewed_tree_sha"] != member["reviewed_tree_sha"]
                     or review["verdict"] != "approved"
-                    or member["review_evidence"] != review["evidence"]
+                    or member["review_evidence"] != dict(review)
                 ):
                     raise RootPromotionInvariantError(
                         "root finalization requires the complete frozen member set"

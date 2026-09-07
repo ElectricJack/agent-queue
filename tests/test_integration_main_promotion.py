@@ -183,7 +183,12 @@ async def prepared_db(tmp_path, request):
                     repository_id="repo", source_base_sha=BASE,
                     reviewed_head_sha=chr(ord("c") + ordinal) * 40,
                     reviewed_tree_sha=chr(ord("e") + ordinal) * 40,
-                    review_evidence_id=f"review-{ordinal}", review_evidence={"approved": True},
+                    review_evidence_id=f"review-{ordinal}",
+                    review_evidence=dict((await conn.execute(
+                        select(integration_review_evidence).where(
+                            integration_review_evidence.c.id == f"review-{ordinal}"
+                        )
+                    )).mappings().one()),
                 )
             )
         await conn.execute(
