@@ -1583,6 +1583,7 @@ class TaskCommandsMixin:
                 if repair_scope["target_kind"] == "parent":
                     held_parent_id = repair_scope["parent_task_id"]
                     from src.integration.hierarchy import resolve_workspace_repair_proof
+                    from src.integration.repair import repair_subject_sha
 
                     repo = await self.db.get_repo(repair_scope["repository_id"])
                     if held_task is None or repo is None:
@@ -1591,7 +1592,7 @@ class TaskCommandsMixin:
                             "error": "repair filing target is no longer configured",
                         }
                     try:
-                        subject = repair_scope["current_subject"]
+                        base_sha = repair_subject_sha(repair_scope["current_subject"])
                         repair_commit_proof = await resolve_workspace_repair_proof(
                             self.db,
                             self.orchestrator.git,
@@ -1601,7 +1602,7 @@ class TaskCommandsMixin:
                                 "branch_name": held_task.branch_name,
                             },
                             repo,
-                            base_sha=str(subject["head_sha"]),
+                            base_sha=base_sha,
                         )
                         repair_filing_head = repair_commit_proof["head_sha"]
                     except HierarchyError as exc:

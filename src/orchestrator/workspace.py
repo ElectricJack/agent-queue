@@ -1278,9 +1278,10 @@ class WorkspaceMixin:
             head_sha = (
                 await self.git._arun(["rev-parse", "HEAD"], cwd=workspace.workspace_path)
             ).strip().lower()
-            subject = repair_scope["current_subject"]
-            base_sha = str(subject.get("head_sha") or subject.get("candidate_sha") or "")
             from src.integration.hierarchy import resolve_repair_commit_proof
+            from src.integration.repair import repair_subject_sha
+
+            base_sha = repair_subject_sha(repair_scope["current_subject"])
 
             commit_proof = await resolve_repair_commit_proof(
                 self.git,
