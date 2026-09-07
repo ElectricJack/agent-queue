@@ -16,12 +16,24 @@ moves rows.
 
 from __future__ import annotations
 
+import json
 from collections.abc import Mapping, Sequence
+from dataclasses import asdict, is_dataclass
 from typing import Any
 
-from sqlalchemy import and_, delete, func, insert, select
+from sqlalchemy import and_, delete, func, insert, select, update
 
-from src.database.tables import provider_usage_snapshots
+from src.database.tables import provider_usage_snapshots, system_config
+
+
+def probe_health_key(provider: str) -> str:
+    """The ``system_config`` key holding *provider*'s newest probe verdict.
+
+    Spelled once, here, because the writer (the probe command) and the
+    reader (``aq doctor --check providers.claude_usage``) live in different
+    subsystems and a typo in either is a check that silently never fires.
+    """
+    return f"providers.{provider}_usage.last_probe"
 
 #: Columns returned by every reader, in table order.  Kept as one list so a
 #: series row and a latest row are the same shape on the client.
@@ -39,13 +51,19 @@ _COLUMNS = (
 
 
 def _as_dict(snapshot: Any) -> dict[str, Any]:
-    """Normalise a :class:`~src.models.ProviderUsageSnapshot` or mapping.
+    """Normalise a :class:`~src.providers.snapshot.ProviderUsageSnapshot` or mapping.
 
     Mappings are accepted so a caller holding a decoded ``rate_limits`` block
     does not have to build a dataclass just to hand it over.
+
+    ``dataclasses.asdict`` rather than ``vars``: the snapshot is declared
+    with ``slots=True``, which leaves the instance with no ``__dict__`` at
+    all, and ``vars`` on one raises ``TypeError``.
     """
     if isinstance(snapshot, Mapping):
         raw: Mapping[str, Any] = snapshot
+    elif is_dataclass(snapshot) and not isinstance(snapshot, type):
+        raw = asdict(snapshot)
     else:
         raw = vars(snapshot)
     return {
@@ -240,3 +258,54 @@ class ProviderUsageQueryMixin:
                 )
             )
         return int(result.rowcount or 0)
+
+    # -- probe health ------------------------------------------------------
+    #
+    # A failed probe writes no snapshot, so the snapshot table cannot tell
+    # "the CLI's wording moved" from "nobody has probed lately".  The probe
+    # records its own verdict here on every run, success or failure, and
+    # ``aq doctor --check providers.claude_usage`` reads exactly this key.
+
+    async def record_probe_health(self, provider: str, health: Mapping[str, Any]) -> None:
+        """Store *health* as the newest verdict for *provider*'s usage probe.
+
+        One row per provider, overwritten in place: this is a status, not a
+        series.  The snapshots carry the history.
+        """
+        key = probe_health_key(provider)
+        payload = json.dumps(dict(health), sort_keys=True)
+        async with self._engine.begin() as conn:
+            existing = (
+                await conn.execute(
+                    select(system_config.c.key).where(system_config.c.key == key)
+                )
+            ).scalar()
+            if existing is None:
+                await conn.execute(insert(system_config).values(key=key, value=payload))
+            else:
+                await conn.execute(
+                    update(system_config).where(system_config.c.key == key).values(value=payload)
+                )
+
+    async def read_probe_health(self, provider: str) -> dict[str, Any] | None:
+        """The newest recorded verdict for *provider*'s probe, or ``None``.
+
+        A row this function cannot decode is reported as absent rather than
+        raised: the doctor check that reads it must be able to say "no probe
+        has run" without a traceback.
+        """
+        async with self._engine.connect() as conn:
+            raw = (
+                await conn.execute(
+                    select(system_config.c.value).where(
+                        system_config.c.key == probe_health_key(provider)
+                    )
+                )
+            ).scalar()
+        if raw is None:
+            return None
+        try:
+            decoded = json.loads(raw)
+        except ValueError:
+            return None
+        return decoded if isinstance(decoded, dict) else None

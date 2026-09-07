@@ -17,7 +17,7 @@ from sqlalchemy.exc import DBAPIError, IntegrityError
 
 from src.database import Database
 from src.database.tables import provider_usage_snapshots
-from src.models import ProviderUsageSnapshot
+from src.providers import ProviderUsageSnapshot
 from tests.pg_dsn import ensure_worker_postgres_dsn
 
 POSTGRES_DSN = ensure_worker_postgres_dsn()
