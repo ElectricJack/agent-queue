@@ -20,11 +20,11 @@ depends_on: str | Sequence[str] | None = None
 
 @contextmanager
 def _sqlite_fk_suspended():
-    """Let SQLite rebuild the referenced ``projects`` table with foreign keys on.
+    """Let SQLite rebuild the referenced ``projects`` table in batch mode.
 
-    Batch mode drops and recreates the table; with ``PRAGMA foreign_keys=ON``
-    that implicit delete fails against every row that references a project.
-    Same pattern as ``a7c91e4d2b63`` and ``882b77dc8495``.
+    With ``PRAGMA foreign_keys=ON`` the move-and-copy rebuild drops the old
+    table while repos/tasks/workspaces rows still reference it and fails with
+    ``FOREIGN KEY constraint failed``.  Same pattern as revision a7c91e4d2b63.
     """
     bind = op.get_bind()
     foreign_keys = (

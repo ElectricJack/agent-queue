@@ -27,7 +27,6 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from src.intelligence_classes import IntelligenceClass
 from src.models import (
     Agent,
     AgentProfile,
@@ -38,6 +37,7 @@ from src.models import (
     TaskStatus,
     Workspace,
 )
+from src.intelligence_classes import IntelligenceClass
 from tests.perf.test_hierarchy_statements import count_statements, seed_scale
 
 pytestmark = pytest.mark.perf
@@ -238,7 +238,7 @@ class TestClaimStatementBudgets:
 
         prepared = {}
 
-        async def _fake_prepare(session, row, task, cap=None, *, slot=None, project=None):
+        async def _fake_prepare(session, row, task, cap=None, *, slot=None):
             prepared["task"] = task
             return {"success": True, "result": "claimed", "task": None, "claim_epoch": None}
 
