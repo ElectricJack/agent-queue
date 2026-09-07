@@ -11,12 +11,37 @@ from src.event_bus import EventBus
 
 
 def test_forwarded_prefixes_include_wave4_events() -> None:
-    for prefix in ("notify.", "message.", "gate.", "session.", "task.", "pool."):
+    for prefix in ("notify.", "message.", "gate.", "session.", "task.", "pool.", "playbook."):
         assert prefix in _FORWARDED_PREFIXES, (
             f"Prefix '{prefix}' must be forwarded to WebSocket clients — "
             "the dashboard's gates/sessions/tasks pages rely on it for "
             "live invalidation."
         )
+
+
+async def test_playbook_run_lifecycle_reaches_the_dashboard() -> None:
+    """The V2 engine's own event names, not the unpublished ``notify.*`` ones.
+
+    Without this the playbook cards only changed when their 30s poll landed
+    inside a run, so a fleet's background work was effectively invisible.
+    """
+    bus = EventBus(env="dev")
+    manager = WebSocketManager(bus)
+    queue: asyncio.Queue = asyncio.Queue()
+    manager._clients["viewer"] = queue
+    manager._client_scope["viewer"] = RequestScope(kind="local")
+    manager.start()
+    try:
+        await bus.emit(
+            "playbook.v2.run.started",
+            {"run_id": "run-1", "playbook_id": "audit", "lifecycle": "running"},
+        )
+    finally:
+        manager.shutdown()
+
+    event, _frame = queue.get_nowait()
+    assert event["playbook_id"] == "audit"
+    assert event["lifecycle"] == "running"
 
 
 async def test_pool_events_are_scoped_before_websocket_fanout() -> None:

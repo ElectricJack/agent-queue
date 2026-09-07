@@ -11,6 +11,8 @@ import { useQueryClient } from "@tanstack/react-query";
 import type { NotifyEvent, TaskMessageEvent, ProposalStatusChangedEvent } from "./types";
 
 const BASE_RECONNECT_MS = 1_000;
+/** Window over which a burst of playbook frames collapses into one refetch. */
+const PLAYBOOK_INVALIDATE_MS = 400;
 const MAX_RECONNECT_MS = 30_000;
 
 export type ConnectionStatus = "connecting" | "connected" | "disconnected";
@@ -23,6 +25,8 @@ type StatusListener = (status: ConnectionStatus) => void;
 let ws: WebSocket | null = null;
 let reconnectDelay = BASE_RECONNECT_MS;
 let currentStatus: ConnectionStatus = "disconnected";
+
+let playbookInvalidation: ReturnType<typeof setTimeout> | null = null;
 
 const eventListeners = new Set<Listener>();
 const statusListeners = new Set<StatusListener>();
@@ -207,9 +211,17 @@ export function useEventStream(options: UseEventStreamOptions = {}) {
       if (type.startsWith("metrics.")) return;
 
       if (type.startsWith("notify.playbook_run_") || type.startsWith("playbook.")) {
-        // Let in-flight snapshots finish; subsequent polling also recovers missed frames.
-        queryClient.invalidateQueries({ queryKey: ["playbooks"] }, { cancelRefetch: false });
-        queryClient.invalidateQueries({ queryKey: ["playbook-runs"] }, { cancelRefetch: false });
+        // Coalesced: one run emits a frame per step, and refetching both
+        // lists on each of them would turn a ten-step playbook into twenty
+        // requests. Let in-flight snapshots finish; polling also recovers
+        // any frame missed while disconnected.
+        if (playbookInvalidation == null) {
+          playbookInvalidation = setTimeout(() => {
+            playbookInvalidation = null;
+            queryClient.invalidateQueries({ queryKey: ["playbooks"] }, { cancelRefetch: false });
+            queryClient.invalidateQueries({ queryKey: ["playbook-runs"] }, { cancelRefetch: false });
+          }, PLAYBOOK_INVALIDATE_MS);
+        }
       }
 
       // Flock metadata includes assignments and direct-child activity across projects.
