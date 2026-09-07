@@ -17,6 +17,9 @@ from src.database.tables import (
     integration_release_results,
     integration_rollout_transitions,
     project_integration_schedules,
+    projects,
+    task_integration_checkpoints,
+    tasks,
 )
 from src.integration.status import IntegrationStatusService
 from src.models import Project, RepoConfig, RepoSourceType, Task, TaskStatus
@@ -62,6 +65,93 @@ async def test_project_control_state_is_typed_and_defaults_disabled(db):
         "review_policy_invalid",
     }
     assert status["certification"]["status"] == "not_performed"
+
+
+@pytest.mark.parametrize("state", [TaskStatus.COMPLETED, TaskStatus.FAILED])
+async def test_terminal_untracked_history_does_not_block_project_readiness(db, state):
+    await db.create_task(
+        Task(id="legacy", project_id="p", title="historical", description="", status=state)
+    )
+    async with db.immediate() as conn:
+        await conn.execute(
+            update(projects)
+            .where(projects.c.id == "p")
+            .values(
+                integration_repository_id="repo",
+                hierarchical_integration_mode="train",
+                hierarchical_integration_desired_mode="train",
+            )
+        )
+    service = IntegrationStatusService(db)
+    status = await service.status("p")
+    assert status["parent_readiness"] == []
+    assert "repository_not_designated" not in {b["code"] for b in status["blockers"]}
+    # Explicit task inspection remains honest; no repository/history is fabricated.
+    assert (await db.get_task("legacy")).repo_id is None
+    assert "repository_not_designated" in {
+        b["code"] for b in (await service.task_blockers("legacy"))["blockers"]
+    }
+
+
+@pytest.mark.parametrize("kind", ["active", "child", "parent", "checkpoint", "wrong_repo"])
+async def test_current_or_tracked_tasks_keep_repository_blockers(db, kind):
+    await db.create_task(
+        Task(
+            id="subject",
+            project_id="p",
+            title="task",
+            description="",
+            status=TaskStatus.READY if kind == "active" else TaskStatus.COMPLETED,
+        )
+    )
+    async with db.immediate() as conn:
+        await conn.execute(
+            update(projects)
+            .where(projects.c.id == "p")
+            .values(
+                integration_repository_id="repo",
+                hierarchical_integration_mode="train",
+                hierarchical_integration_desired_mode="train",
+            )
+        )
+    if kind in {"child", "parent"}:
+        await db.create_task(
+            Task(
+                id="related",
+                project_id="p",
+                title="related",
+                description="",
+                status=TaskStatus.COMPLETED,
+                repo_id="repo",
+            )
+        )
+        async with db.immediate() as conn:
+            await conn.execute(
+                update(tasks)
+                .where(tasks.c.id == ("subject" if kind == "child" else "related"))
+                .values(parent_task_id="related" if kind == "child" else "subject")
+            )
+    elif kind == "wrong_repo":
+        await db.create_repo(RepoConfig(
+            id="other-repo", project_id="p", source_type=RepoSourceType.CLONE,
+            url="https://github.com/acme/other.git",
+        ))
+        await db.update_task("subject", repo_id="other-repo")
+    elif kind == "checkpoint":
+        async with db.immediate() as conn:
+            await conn.execute(
+                insert(task_integration_checkpoints).values(
+                    task_id="subject",
+                    repository_id="repo",
+                    branch="aq/subject",
+                    generation=0,
+                    checkpoint_sha="a" * 40,
+                    updated_at=1.0,
+                )
+            )
+    status = await IntegrationStatusService(db).status("p")
+    projection = next(p for p in status["parent_readiness"] if p["task_id"] == "subject")
+    assert "repository_not_designated" in {b["code"] for b in projection["blockers"]}
 
 
 async def test_conn_owned_cas_appends_transition_and_reversible_suppression(db):

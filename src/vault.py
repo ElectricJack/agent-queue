@@ -1501,7 +1501,7 @@ def ensure_default_playbooks(data_dir: str) -> dict:
 
     The bundled set includes the default review and assignment policies,
     memory consolidation, the blocked-task escalation (a ``task.failed`` with
-    ``status: blocked`` messages the project supervisor to read the session
+    ``status: BLOCKED`` messages the project supervisor to read the session
     log tail), the disabled hierarchical-delivery policy, and the disabled
     root integration train policy.  The directory is discovered mechanically
     so adding a reviewed source does not require a second production

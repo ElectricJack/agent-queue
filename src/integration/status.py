@@ -6,7 +6,7 @@ import time
 from contextlib import asynccontextmanager
 from typing import Any, AsyncIterator, Callable
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from src.database.tables import (
@@ -26,6 +26,7 @@ from src.database.tables import (
     project_integration_schedules,
     projects,
     task_integration_checkpoints,
+    task_branch_origins,
     tasks,
 )
 from src.integration.parent_completion import ParentCompletion
@@ -263,9 +264,36 @@ class IntegrationStatusService:
                     integration_legacy_suppression.c.project_id == project_id
                 ),
             )
+            children = tasks.alias("integration_status_children")
+            # Completed standalone legacy tasks were never enrolled in the
+            # train. They must not make project rollout look broken merely
+            # because their historical repository identity is absent. Keep
+            # every live task, hierarchy member, and integration-tracked task
+            # visible, even if its repository identity is corrupt/missing.
+            relevant_task = or_(
+                tasks.c.status.not_in(TERMINAL_TASK_STATES),
+                tasks.c.repo_id.is_not(None),
+                tasks.c.parent_task_id.is_not(None),
+                select(children.c.id).where(children.c.parent_task_id == tasks.c.id).exists(),
+                *(
+                    select(column).where(column == tasks.c.id).exists()
+                    for column in (
+                        task_integration_checkpoints.c.task_id,
+                        task_branch_origins.c.task_id,
+                        integration_batch_members.c.task_id,
+                        integration_repair_operations.c.parent_task_id,
+                        integration_review_evidence.c.source_task_id,
+                    )
+                ),
+            )
             task_rows = await self._all(
                 conn,
-                select(tasks.c.id).where(tasks.c.project_id == project_id).order_by(tasks.c.id),
+                select(tasks.c.id)
+                .where(
+                    tasks.c.project_id == project_id,
+                    relevant_task,
+                )
+                .order_by(tasks.c.id),
             )
             parent_readiness = []
             # Functional rollout readiness is derived from the same typed

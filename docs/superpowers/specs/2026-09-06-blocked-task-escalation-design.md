@@ -18,13 +18,13 @@ Two unrelated facts share the word:
 
 | Fact | Bus event | Meaning | Escalate? |
 |---|---|---|---|
-| A session close left the task `BLOCKED` | `task.failed` with `status: blocked` | the agent could not finish: hard failure, retry budget spent, pipeline stopped short, attempt timed out | **yes** |
+| A session close left the task `BLOCKED` | `task.failed` with `status: BLOCKED` | the agent could not finish: hard failure, retry budget spent, pipeline stopped short, attempt timed out | **yes** |
 | The dependency graph's blocked projection flipped | `task.blocked` / `task.unblocked` | an upstream task is unfinished | no: there is no session to read |
 
 The playbook triggers on the first and deliberately ignores the second. The
 `task.failed` schema (`src/event_schemas.py`) carries `status`, `context`
 (the close leg), `error`, `agent_id`, plus the base triple, so a subscription
-filter of `status == "blocked"` selects exactly the terminal legs that
+filter of `status == "BLOCKED"` (the enum's upper-case wire spelling) selects exactly the terminal legs that
 `_announce_close_outcome` in `src/orchestrator/execution.py` emits for.
 
 ## Design
@@ -32,7 +32,7 @@ filter of `status == "blocked"` selects exactly the terminal legs that
 One system-scoped rule, one command step, no LLM:
 
 ```
-task.failed[status=blocked]
+task.failed[status=BLOCKED]
   └─ message_send  to=session:supervisor-<project_id>  from=system/playbook:blocked-task-escalation
        ├─ queued        → completed
        └─ rejected / runtime_error → failed
