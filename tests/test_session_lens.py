@@ -345,7 +345,9 @@ class TestEnsureStarted:
                 self.minted: list[str] = []
                 self.revoked: list[str] = []
 
-            async def mint(self, *, session_id, task_id, project_id, elevated):
+            async def mint(
+                self, *, session_id, task_id, project_id, elevated, session_instance_token=None
+            ):
                 self.minted.append(session_id)
                 return "tok-abc"
 

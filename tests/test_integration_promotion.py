@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -410,8 +411,33 @@ async def test_concurrent_different_domains_reserve_only_one_target_intent(db):
     assert "unresolved promotion" in str(failures[0])
 
 
+# Sessions and CI runners export GIT_AUTHOR_*/GIT_COMMITTER_*, which outrank the
+# per-repository ``user.*`` config these fixtures rely on to author the source
+# commits.  The product pins the identity of the commits *it* creates; the
+# fixtures must do the same for the member commits it derives that identity from.
+_AMBIENT_IDENTITY_KEYS = (
+    "GIT_AUTHOR_NAME",
+    "GIT_AUTHOR_EMAIL",
+    "GIT_AUTHOR_DATE",
+    "GIT_COMMITTER_NAME",
+    "GIT_COMMITTER_EMAIL",
+    "GIT_COMMITTER_DATE",
+)
+
+
+def _scrubbed_env() -> dict[str, str]:
+    return {key: value for key, value in os.environ.items() if key not in _AMBIENT_IDENTITY_KEYS}
+
+
 def _git(args: list[str], cwd: Path | None = None) -> str:
-    result = subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True, text=True)
+    result = subprocess.run(
+        ["git", *args],
+        cwd=cwd,
+        check=True,
+        capture_output=True,
+        text=True,
+        env=_scrubbed_env(),
+    )
     return result.stdout.strip()
 
 
@@ -1727,12 +1753,22 @@ async def test_conflict_records_inputs_and_never_creates_a_receipt(db, promotion
 
 
 def test_conflict_diagnostics_terminates_and_bounds_many_paths():
+    # The termination budget is armed *inside* the child around the call under
+    # test: a cold interpreter plus importing ``src.integration.promotion``
+    # costs about a second on an idle box and more under CI load, which is the
+    # machine, not the diagnostics.  The outer timeout only catches a hang.
     script = """
 import json
+import signal
 from src.integration.promotion import PromotionService
 intent = {"source_base": "a" * 40, "source_head": "b" * 40, "expected_target": "c" * 40}
 stdout = "".join(f"100644 100644 deadbeef deadbeef M\\t{'p' * 96}{index}\\n" for index in range(1200))
+def _did_not_terminate(signum, frame):
+    raise SystemExit("paths-heavy conflict diagnostics did not terminate")
+signal.signal(signal.SIGALRM, _did_not_terminate)
+signal.alarm(2)
 diagnostics = PromotionService._conflict_diagnostics(intent, stdout, "conflict")
+signal.alarm(0)
 print(json.dumps({
     "size": len(json.dumps(diagnostics, sort_keys=True).encode("utf-8")),
     "truncated": diagnostics["truncated"],
@@ -1745,10 +1781,12 @@ print(json.dumps({
             check=True,
             capture_output=True,
             text=True,
-            timeout=2,
+            timeout=60,
         )
     except subprocess.TimeoutExpired:
         pytest.fail("paths-heavy conflict diagnostics did not terminate")
+    except subprocess.CalledProcessError as exc:
+        pytest.fail(f"paths-heavy conflict diagnostics failed: {exc.stderr.strip()}")
     result = json.loads(completed.stdout)
     assert result["size"] <= 65536
     assert result["truncated"] is True

@@ -8,15 +8,38 @@ Create Date: 2026-09-06 23:15:00.000000
 from __future__ import annotations
 
 from collections.abc import Sequence
+from contextlib import contextmanager
 
 import sqlalchemy as sa
 from alembic import op
-
 
 revision: str = "a11a5e1e4f04"
 down_revision: str | Sequence[str] | None = "a10c5e1e4f03"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
+
+
+@contextmanager
+def _sqlite_fk_suspended():
+    """Let SQLite rebuild the referenced ``projects`` table in batch mode.
+
+    With ``PRAGMA foreign_keys=ON`` the move-and-copy rebuild drops the old
+    table while repos/tasks/workspaces rows still reference it and fails with
+    ``FOREIGN KEY constraint failed``.  Same pattern as revision a7c91e4d2b63.
+    """
+    bind = op.get_bind()
+    foreign_keys = (
+        bind.dialect.name == "sqlite" and bind.exec_driver_sql("PRAGMA foreign_keys").scalar_one()
+    )
+    if foreign_keys:
+        with op.get_context().autocommit_block():
+            bind.exec_driver_sql("PRAGMA foreign_keys=OFF")
+    try:
+        yield
+    finally:
+        if foreign_keys:
+            with op.get_context().autocommit_block():
+                bind.exec_driver_sql("PRAGMA foreign_keys=ON")
 
 _MODES = "('disabled', 'observe', 'hierarchy', 'train')"
 _IMMUTABLE_TABLES = (
@@ -225,7 +248,7 @@ def _drop_immutable_guards() -> None:
 
 
 def upgrade() -> None:
-    with op.batch_alter_table("projects") as batch:
+    with _sqlite_fk_suspended(), op.batch_alter_table("projects") as batch:
         batch.add_column(
             sa.Column(
                 "hierarchical_integration_desired_mode",
@@ -291,7 +314,7 @@ def downgrade() -> None:
     op.drop_table("integration_history_waiver_consumptions")
     op.drop_table("integration_rollout_transitions")
     op.drop_table("integration_history_waivers")
-    with op.batch_alter_table("projects") as batch:
+    with _sqlite_fk_suspended(), op.batch_alter_table("projects") as batch:
         batch.drop_constraint(
             "ck_projects_hierarchical_integration_generation", type_="check"
         )

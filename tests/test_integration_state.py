@@ -5,7 +5,7 @@ from __future__ import annotations
 import uuid
 
 import pytest
-from sqlalchemy import delete, inspect, insert, select, update
+from sqlalchemy import delete, insert, inspect, select, update
 from sqlalchemy.exc import DBAPIError, IntegrityError
 
 from src.database import Database
@@ -18,8 +18,15 @@ from src.integration.models import BranchKey, Fence, RepairPolicy, RequiredCheck
 from src.models import Project, Task
 from tests.pg_dsn import ensure_worker_postgres_dsn
 
-
 POSTGRES_TEST_DSN = ensure_worker_postgres_dsn()
+
+#: Revision ``9b3e5a7c1d20`` merges the integration chain (``d8e9f0a1b2c3``)
+#: with main's own mergepoint (``4e7d1c9b2a55``: onboarding + Playbook V2
+#: cutover).  The task-8a tests below pin the integration chain at
+#: ``c7d8e9f0a1b2`` and expect ``upgrade head`` to be refused *before any
+#: DDL*; bringing main's branch up first keeps that refusal the only pending
+#: step, so alembic_version holds exactly these two heads afterwards.
+TASK8A_PRIOR_HEADS = frozenset({"c7d8e9f0a1b2", "4e7d1c9b2a55"})
 
 
 @pytest.fixture(params=["sqlite", "postgres"])
@@ -461,9 +468,13 @@ async def test_member_cannot_move_from_a_sealed_batch_to_a_sealing_batch(db):
 
 async def test_durable_counters_and_fences_never_decrease(db):
     from src.database.tables import (
-        integration_branch_owners, integration_candidate_revisions, integration_outbox,
-        integration_repair_operations, project_integration_leases,
-        project_integration_schedules, task_integration_checkpoints,
+        integration_branch_owners,
+        integration_candidate_revisions,
+        integration_outbox,
+        integration_repair_operations,
+        project_integration_leases,
+        project_integration_schedules,
+        task_integration_checkpoints,
     )
 
     batch = {
@@ -564,7 +575,8 @@ async def test_materialized_branch_origin_cannot_be_deleted(db):
 
 async def test_candidate_member_results_are_ordered_and_unique_per_revision(db):
     from src.database.tables import (
-        integration_batch_members, integration_candidate_member_results,
+        integration_batch_members,
+        integration_candidate_member_results,
         integration_candidate_revisions,
     )
 
@@ -620,14 +632,31 @@ async def test_candidate_member_results_are_ordered_and_unique_per_revision(db):
 
 
 async def test_only_one_active_repair_operation_can_target_a_parent(db):
-    from src.database.tables import integration_repair_operations
+    from src.database.tables import integration_parent_episodes, integration_repair_operations
+    from src.models import RepoConfig, RepoSourceType, TaskStatus
 
+    # Revision e4c6a8b20d31 binds every parent repair operation to a real
+    # parent episode (FK on parent_task_id + episode_id), so the two
+    # operations need a parent task and one episode each; the partial unique
+    # index is what must still reject the second *active* operation.
+    await db.create_repo(RepoConfig(id="repo", project_id="p", source_type=RepoSourceType.LINK))
+    await db.create_task(
+        Task(
+            id="parent", project_id="p", repo_id="repo", branch_name="aq/parent",
+            title="parent", description="parent", status=TaskStatus.IN_PROGRESS,
+        )
+    )
     values = {
         "target_kind": "parent", "parent_task_id": "parent", "active_stage": 0, "state": "active",
         "policy_snapshot": {}, "artifact_snapshot": {}, "required_check_version": "v1",
         "created_at": 1.0, "updated_at": 1.0,
     }
     async with db.immediate() as conn:
+        for episode in ("one", "two"):
+            await conn.execute(insert(integration_parent_episodes).values(
+                id=episode, parent_task_id="parent", repository_id="repo", generation=0,
+                pre_collection_checkpoint_sha="a" * 40, created_at=1.0,
+            ))
         await conn.execute(insert(integration_repair_operations).values(id="op1", episode_id="one", **values))
         await _integrity_error_in_savepoint(
             conn, insert(integration_repair_operations).values(id="op2", episode_id="two", **values)
@@ -963,6 +992,7 @@ def test_sqlite_task8a_upgrade_refuses_legacy_null_batch_identity_before_ddl(
 
     try:
         migrate("c7d8e9f0a1b2")
+        migrate("4e7d1c9b2a55")
         with engine.begin() as conn:
             conn.execute(
                 integration_batches.insert().values(
@@ -999,8 +1029,9 @@ def test_sqlite_task8a_upgrade_refuses_legacy_null_batch_identity_before_ddl(
             migrate("head")
 
         with engine.connect() as conn:
-            assert conn.execute(text("SELECT version_num FROM alembic_version")).scalar_one() == (
-                "c7d8e9f0a1b2"
+            assert (
+                set(conn.execute(text("SELECT version_num FROM alembic_version")).scalars())
+                == TASK8A_PRIOR_HEADS
             )
             assert conn.execute(
                 text(
@@ -1085,6 +1116,7 @@ async def test_postgres_task8a_upgrade_refuses_legacy_null_batch_identity_before
                     await conn.commit()
 
             await migrate("c7d8e9f0a1b2")
+            await migrate("4e7d1c9b2a55")
             async with engine.begin() as conn:
                 await conn.execute(
                     integration_batches.insert().values(
@@ -1128,8 +1160,15 @@ async def test_postgres_task8a_upgrade_refuses_legacy_null_batch_identity_before
 
             async with engine.connect() as conn:
                 assert (
-                    await conn.execute(text("SELECT version_num FROM alembic_version"))
-                ).scalar_one() == "c7d8e9f0a1b2"
+                    set(
+                        (
+                            await conn.execute(
+                                text("SELECT version_num FROM alembic_version")
+                            )
+                        ).scalars()
+                    )
+                    == TASK8A_PRIOR_HEADS
+                )
                 assert (
                     await conn.execute(
                         text(
