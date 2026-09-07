@@ -60,8 +60,12 @@ class IntegrationRecoveryControls:
                     integration_repair_stages.c.state == stage["state"],
                 )
                 .values(
+                    # Consumed attempts are durable (revision 3f30b34c7e7c keeps
+                    # ``attempts`` monotone on both dialects): a human resume
+                    # re-arms the stage's clock, never its attempt budget, so a
+                    # resumed stage that fails again escalates or re-blocks
+                    # instead of silently earning a fresh ladder.
                     state="active",
-                    attempts=0,
                     started_at=now,
                     deadline_at=now + timeout,
                     deadline_event_id=f"repair-deadline-{operation_id}-resume-{uuid4().hex}",
