@@ -360,6 +360,51 @@ class TestClaim:
         assert (session.desired_state, session.task_id) == ("running", "t2")
         assert (task.status, task.assigned_agent_id) == (TaskStatus.IN_PROGRESS, "agent-1")
 
+    @pytest.mark.parametrize("status", [TaskStatus.PAUSED, TaskStatus.BLOCKED, TaskStatus.FAILED])
+    async def test_reclaimed_pool_claim_relocks_its_slot_for_the_next_claim(
+        self, handler, db, tmp_path, status
+    ):
+        """A live worker can claim again after the reconciler releases its slot."""
+        handler.config.swarm.fresh_context_per_task = False
+        await db.update_profile("worker", max_claims_per_session=None)
+        await mktask(db, "t1", profile_id="worker")
+        sid, _ = await pool_session(db, tmp_path)
+        await db.create_project(Project(id="other-project", name="other"))
+        await db.create_workspace(
+            Workspace(
+                id="ws-other-project",
+                project_id="other-project",
+                workspace_path=str(tmp_path / "agent-1"),
+                kind_id="project-repo",
+                source_type=RepoSourceType.LINK,
+            )
+        )
+        h = scoped(handler, sid)
+        await h._cmd_task_claim({"next": True})
+
+        await db.transition_task("t1", status, context="test", force=True)
+        reconciler = SessionReconciler(
+            db,
+            handler.config,
+            SessionProviderRegistry({}),
+            bus=handler.orchestrator.bus,
+            orchestrator=handler.orchestrator,
+            epoch="test",
+        )
+        await reconciler._step_orphans(await db.list_sessions(live_only=True), time.time())
+        assert (await db.get_session(sid)).task_id is None
+        assert await db.get_workspace_for_agent("agent-1") is None
+
+        await mktask(db, "t2", profile_id="worker")
+        next_claim = await h._cmd_task_claim({"next": True})
+
+        assert next_claim["result"] == "claimed", next_claim
+        assert next_claim["task"]["id"] == "t2"
+        workspace = await db.get_workspace("ws-agent-1")
+        assert (workspace.locked_by_agent_id, workspace.locked_by_task_id) == ("agent-1", "t2")
+        assert (await db.get_workspace("ws-other-project")).locked_by_agent_id is None
+        assert (await db.get_session(sid)).claim_phase == "active"
+
     async def test_claim_next_returns_task_epoch_and_writes_file(self, handler, db, tmp_path):
         handler.orchestrator.bus.emit = AsyncMock()
         await mktask(db, "t1", profile_id="worker")
