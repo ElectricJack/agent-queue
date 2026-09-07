@@ -20,6 +20,11 @@ itself: it observes CI, files one repair task per distinct failure, and hands
 a failure that two repairs could not fix to a human. The design is
 `docs/superpowers/specs/2026-09-05-ci-main-sentinel-design.md`.
 
+This is a fallback observer of existing CI results, not a post-merge audit or a
+request to rerun full CI. If the project uses integration trains, its repair PRs
+must receive normal review and enter train collection. The sentinel and its
+repair agents never merge independently or compete with candidate repair.
+
 ## Rule: keep-main-green
 
 There is no guard. The rule reads the default branch's CI verdict and then

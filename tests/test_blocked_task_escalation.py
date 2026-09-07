@@ -12,6 +12,7 @@ import yaml
 
 from src.commands.contracts import CONTRACTS
 from src.commands.contracts.builtin import MessageSendArgs, MessageSendValue, set_handler_provider
+from src.models import TaskStatus
 from src.playbooks.authoring import PlaybookSource
 from src.playbooks.definition import (
     canonical_bytes,
@@ -36,7 +37,7 @@ def _blocked_event(**overrides):
         "task_id": "task-1",
         "project_id": "proj",
         "title": "Ship the widget",
-        "status": "blocked",
+        "status": TaskStatus.BLOCKED.value,
         "context": "max_retries",
         "error": "tests kept failing",
         "agent_id": "agent-7",
@@ -62,7 +63,9 @@ def test_artifact_filters_blocked_closes_and_messages_the_project_supervisor() -
     assert [rule.id for rule in definition.rules] == [RULE]
     trigger = definition.rules[0].trigger
     assert trigger.event_type == "task.failed"
-    assert trigger.filter == {"status": "blocked"}
+    # The wire value is the enum's own upper-case spelling; a lower-case
+    # literal here matched nothing (task fair-ridge, 2026-09-07).
+    assert trigger.filter == {"status": TaskStatus.BLOCKED.value}
 
     done, failed = f"{RULE}--done", f"{RULE}--failed"
     assert set(definition.steps) == {NOTIFY, done, failed}
@@ -104,6 +107,16 @@ def test_optional_event_fields_render_with_fallbacks_instead_of_failing() -> Non
     body = resolve_value(notify.inputs["body"], scope)
     assert "(`error`): n/a" in body
     assert "(`agent_id`): unknown" in body
+
+
+def test_recovery_notice_preserves_integration_operation_authority() -> None:
+    notify = _definition().steps[NOTIFY]
+    scope = ResolutionScope(event=_blocked_event(), context={}, bindings={}, loop={})
+    body = resolve_value(notify.inputs["body"], scope)
+    assert "aq integration status proj" in body
+    assert "do not use generic task recovery" in body
+    assert "aq integration resume" in body
+    assert "do not reset its attempt or time budgets" in body
 
 
 def test_every_command_and_outcome_resolves_against_the_live_registry() -> None:

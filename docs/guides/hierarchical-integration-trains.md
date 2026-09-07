@@ -104,10 +104,13 @@ repositories need equivalent workflow support before train enablement if they
 must avoid a second full CI run after promotion. Do not waive missing CI or
 substitute an empty required-check set.
 
-## 3. Bind reviewed project artifacts, classes, and profiles
+## 3. Bind reviewed shared artifacts, classes, and profiles
 
-Prepare reviewed V2 bundles whose compiled scope is `project` and whose scope
-identifier is the target project. Importing never activates:
+The default `hierarchical-delivery` and `root-integration-train` playbooks are
+shared system-scoped V2 bundles. Import and activate each once, then reference
+the same exact artifact from each project's policy with `scope: system` and
+an empty `scope_identifier`. Schedules, repositories, CI requirements, repair
+budgets, and operation state remain per project. Importing never activates:
 
 ```bash
 aq playbook v2-import --path /srv/aq/reviewed/hierarchical-delivery
@@ -130,7 +133,10 @@ aq agent get-profile --profile-id worker-deep-high-claude
 The policy is one JSON object. This example is structurally valid; replace its
 sample hashes, identities, project ID, activation identities, classes, profiles,
 and checks with the exact imported and installed values. Parent and root routes
-are explicit; nothing is inferred at enable time.
+are explicit; nothing is inferred at enable time. A project-specific override
+may instead name a project-scoped artifact for that exact project. Other
+project identities and agent/supervisor scopes are rejected. System activation
+does not enable integration for projects that have no policy or remain disabled.
 
 ```json
 {
@@ -138,7 +144,7 @@ are explicit; nothing is inferred at enable time.
   "parent": {
     "required_checks": {"version": "checks-v1", "names": ["Tests (default)"], "producer_id": "github-actions"},
     "repair": {"primary_seconds": 1800, "primary_attempts": 3, "debug_seconds": 3600, "debug_attempts": 3, "debug_intelligence_class": "deep", "debug_profile_id": "worker-deep-high-claude"},
-    "route": {"playbook_id": "hierarchical-delivery", "scope": "project", "scope_identifier": "example", "activation_id": null, "artifact": {"playbook_id": "hierarchical-delivery", "artifact_sha256": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "schema_generation": 2, "contract_fingerprint": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc", "source_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd", "compiler_build": "playbook-v2-compiler/1", "compiled_at": "2026-09-06T00:00:00Z", "version": 1}},
+    "route": {"playbook_id": "hierarchical-delivery", "scope": "system", "scope_identifier": "", "activation_id": null, "artifact": {"playbook_id": "hierarchical-delivery", "artifact_sha256": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "schema_generation": 2, "contract_fingerprint": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc", "source_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd", "compiler_build": "playbook-v2-compiler/1", "compiled_at": "2026-09-06T00:00:00Z", "version": 1}},
     "primary_intelligence_class": "standard",
     "primary_profile_id": "worker-standard-medium-claude",
     "verifier_intelligence_class": "standard",
@@ -147,7 +153,7 @@ are explicit; nothing is inferred at enable time.
   "root": {
     "required_checks": {"version": "checks-v1", "names": ["Tests (default)"], "producer_id": "github-actions"},
     "repair": {"primary_seconds": 1800, "primary_attempts": 3, "debug_seconds": 3600, "debug_attempts": 3, "debug_intelligence_class": "deep", "debug_profile_id": "worker-deep-high-claude"},
-    "route": {"playbook_id": "root-integration-train", "scope": "project", "scope_identifier": "example", "activation_id": null, "artifact": {"playbook_id": "root-integration-train", "artifact_sha256": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "schema_generation": 2, "contract_fingerprint": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee", "source_digest": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff", "compiler_build": "playbook-v2-compiler/1", "compiled_at": "2026-09-06T00:00:00Z", "version": 1}},
+    "route": {"playbook_id": "root-integration-train", "scope": "system", "scope_identifier": "", "activation_id": null, "artifact": {"playbook_id": "root-integration-train", "artifact_sha256": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "schema_generation": 2, "contract_fingerprint": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee", "source_digest": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff", "compiler_build": "playbook-v2-compiler/1", "compiled_at": "2026-09-06T00:00:00Z", "version": 1}},
     "primary_intelligence_class": "standard",
     "primary_profile_id": "worker-standard-medium-claude",
     "verifier_intelligence_class": "standard",
@@ -187,6 +193,23 @@ Do not put rollout mode fields through `aq project set`; mode changes exist
 only under `aq integration enable`.
 
 ## 4. Roll out one mode at a time
+
+Keep `default-pipeline` enabled: its per-task reviews supply the exact approval
+evidence trains need, and its spec/proposal rules remain in use. Hierarchy/train
+mode suppresses only its legacy per-branch final-review/merge route. Retire the
+project's `pr-merge-sweep` activation after cutover; keep the template available
+for projects using legacy delivery. `ci-main-sentinel` remains a read-only
+fallback observer of existing main CI and files repair PRs through the train.
+`blocked-task-escalation` must defer integration-owned tasks to operation-level
+recovery instead of generic task recovery or replacement repair budgets.
+
+When replacing project integration playbooks with shared system activations,
+first disable/drain affected projects and verify there is no active operation.
+Deactivate the exact project-scoped artifact hashes before activating the
+system copies, update frozen policy references while disabled, then restore
+the prior rollout mode. Archive superseded project source copies; keep retained
+artifact and event history. Temporarily pause legacy review/merge dispatch
+during that cutover so disabling integration cannot restart legacy merging.
 
 First enter observe and clear every functional blocker shown by status. Observe
 runs eligibility without scheduling or mutating Git:

@@ -27,6 +27,18 @@ def _definition():
     return load_definition_json((FIXTURE / "artifact.json").read_text(encoding="utf-8"))
 
 
+def test_repair_task_keeps_train_promotion_authority() -> None:
+    from src.commands.ci_commands import render_repair_task
+
+    _, description = render_repair_task(
+        ref="main", head_sha="a" * 40, failing_checks=["Tests (default)"],
+        failing_tests=[], run_url=None, attempt=1,
+    )
+    assert "integration train" in description
+    assert "do not merge the repair PR yourself" in description
+    assert "never push to it directly" in description
+
+
 def test_source_is_prose_scoped_to_the_project_on_a_fifteen_minute_timer() -> None:
     loaded = PlaybookSource.load(SHIPPED, vault_root=SHIPPED.parent)
     assert isinstance(loaded, PlaybookSource), getattr(loaded, "errors", ())

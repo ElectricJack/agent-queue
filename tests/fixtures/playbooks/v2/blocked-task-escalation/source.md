@@ -10,10 +10,12 @@ triggers:
 
 # Blocked task escalation
 
-Every `task.failed` event whose `status` field is `blocked` begins the one
-`escalate-blocked-task` rule. The orchestrator emits that event for every
-terminal `BLOCKED` leg of a session close — a hard failure, a spent retry
-budget, and a pass whose pipeline stopped short — and for a timed-out attempt.
+Every `task.failed` event whose `status` field is `BLOCKED` begins the one
+`escalate-blocked-task` rule. The value is the task status enum's own
+upper-case spelling, exactly as the orchestrator puts it on the wire. The
+orchestrator emits that event for every terminal `BLOCKED` leg of a session
+close — a hard failure, a spent retry budget, and a pass whose pipeline
+stopped short — and for a timed-out attempt.
 A `task.failed` event with any other `status` (a retry that re-queued the task,
 say) is not a blocked task and never starts a run. The dependency-graph
 `task.blocked` flip is a different fact about a different kind of blocking and
@@ -35,14 +37,21 @@ then ends.
    `system`, `from_id` `playbook:blocked-task-escalation`, and `priority`
    `50`. The `subject` is `Blocked task:` followed by the event's `title` and
    its `task_id`. The `body` states that the task with that `task_id` ended
-   `blocked`, quotes the event's `context` (the close leg), `error` (the
+   `BLOCKED`, quotes the event's `context` (the close leg), `error` (the
    agent's closing notes or the failure detail, or `n/a` when absent), and
    `agent_id` (the agent that held it, or `unknown`), and then instructs the
    supervisor to read the tail of the session log with
    `aq session logs <session-id> -n 200` after finding the session in the
    task column of `aq session list`, to read `aq task show <task-id>` and
-   `aq task explain <task-id>`, and to decide: retry with concrete feedback
-   via `aq task recover`, hold, spawn a follow-up task, or message the human
+   `aq task explain <task-id>`, then check `aq integration status` for the
+   event's project to identify any integration operation owning this task.
+   For integration-owned repair or verification work, do not use generic task
+   recovery or create replacement repair tasks. Let the existing primary/debug
+   escalation run and do not reset its attempt or time budgets. If that operation
+   requires human action, escalate with its operation ID; an authorized operator
+   can use `aq integration resume` or `aq integration abort` after inspecting it.
+   For ordinary tasks not owned by an integration operation, decide: retry with
+   concrete feedback via `aq task recover`, hold, spawn a follow-up task, or message the human
    with `aq message send --to user:dashboard` when human judgment is needed.
    Bind the result as `notice`. A `queued` outcome ends the rule; a
    `rejected` or `runtime_error` outcome fails it.

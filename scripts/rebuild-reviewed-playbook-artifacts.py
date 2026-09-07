@@ -630,7 +630,7 @@ def _blocked_task_escalation_body(source: PlaybookSource) -> dict[str, Any]:
     """The reviewer-authored deterministic graph for ``blocked-task-escalation``.
 
     One command step and two terminals: a ``task.failed`` event filtered to
-    ``status == "blocked"`` sends the project supervisor one message that
+    ``status == "BLOCKED"`` sends the project supervisor one message that
     names the task and tells it to read the session-log tail.  See
     ``docs/superpowers/specs/2026-09-06-blocked-task-escalation-design.md``.
     """
@@ -666,8 +666,17 @@ def _blocked_task_escalation_body(source: PlaybookSource) -> dict[str, Any]:
         lit("2. Read `aq task show "), event("task_id"), lit("` and `aq task explain "),
         event("task_id"), lit("`.\n"),
         lit(
-            "3. Decide: retry with concrete feedback via `aq task recover`, hold, spawn a "
-            "follow-up task, or message the human with "
+            "3. Check `aq integration status "
+        ), event("project_id"), lit(
+            "` for an operation owning this task. For integration-owned repair or "
+            "verification work, do not use generic task recovery or create a replacement "
+            "repair task. Let the operation's primary/debug escalation run; do not reset "
+            "its attempt or time budgets. If the operation requires human action, escalate "
+            "with its operation ID; an authorized operator can use `aq integration resume` "
+            "or `aq integration abort` after inspecting that state.\n"
+            "4. For ordinary tasks not owned by an integration operation, decide: retry "
+            "with concrete feedback via `aq task recover`, hold, spawn a follow-up task, "
+            "or message the human with "
             "`aq message send --to user:dashboard` when human judgment is needed.\n\n"
             "Sent by the `blocked-task-escalation` playbook."
         ),
@@ -678,7 +687,7 @@ def _blocked_task_escalation_body(source: PlaybookSource) -> dict[str, Any]:
             {
                 "id": rule,
                 "name": rule,
-                "trigger": {"event_type": "task.failed", "filter": {"status": "blocked"}},
+                "trigger": {"event_type": "task.failed", "filter": {"status": "BLOCKED"}},
                 "entry_step": notify,
                 "source": index.rule_ref(rule),
             }
