@@ -714,6 +714,9 @@ from .pool_project_cap import PoolProjectCap
 from .pool_scale_request import PoolScaleRequest
 from .pool_scale_response import PoolScaleResponse
 from .pool_scale_response_422 import PoolScaleResponse422
+from .pool_set_enabled_request import PoolSetEnabledRequest
+from .pool_set_enabled_response import PoolSetEnabledResponse
+from .pool_set_enabled_response_422 import PoolSetEnabledResponse422
 from .pool_set_lifecycle_request import PoolSetLifecycleRequest
 from .pool_set_lifecycle_response import PoolSetLifecycleResponse
 from .pool_set_lifecycle_response_422 import PoolSetLifecycleResponse422
@@ -1808,6 +1811,9 @@ __all__ = (
     "PoolScaleRequest",
     "PoolScaleResponse",
     "PoolScaleResponse422",
+    "PoolSetEnabledRequest",
+    "PoolSetEnabledResponse",
+    "PoolSetEnabledResponse422",
     "PoolSetLifecycleRequest",
     "PoolSetLifecycleResponse",
     "PoolSetLifecycleResponse422",

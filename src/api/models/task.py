@@ -543,6 +543,10 @@ class PoolStatusRow(BaseModel):
 
     project_id: str
     profile_id: str
+    #: Operator kill-switch on the (global) profile.  A disabled pool keeps
+    #: its row — that is what the dashboard toggles back on — and is sized to
+    #: zero, so idle workers drain and no new work is claimed.
+    enabled: bool = True
     min_active: int
     max_active: int | None = None
     desired: int
@@ -659,6 +663,14 @@ class PoolSetLifecycleResponse(BaseModel):
     error: str | None = None
 
 
+class PoolSetEnabledResponse(BaseModel):
+    success: bool
+    profile_id: str | None = None
+    enabled: bool | None = None
+    warnings: list[str] = []
+    error: str | None = None
+
+
 class TaskRecoveryResponse(BaseModel):
     task_id: str
     incident_id: str
@@ -717,6 +729,7 @@ RESPONSE_MODELS: dict[str, type[BaseModel]] = {
     "pool_status": PoolStatusResponse,
     "pool_scale": PoolScaleResponse,
     "pool_set_lifecycle": PoolSetLifecycleResponse,
+    "pool_set_enabled": PoolSetEnabledResponse,
     "formula_list": FormulaListResponse,
     "formula_show": FormulaShowResponse,
     "formula_cook": FormulaCookResponse,

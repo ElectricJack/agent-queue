@@ -253,6 +253,14 @@ class ClaimCommandsMixin:
                 project = await self.db.get_project(session.project_id)
                 default_profile = getattr(project, "default_profile_id", None)
             refresh_routing = True
+            # An operator can disable a pool profile while a worker is
+            # finishing its current task.  The task it already holds runs to
+            # completion; what the switch stops is the *next* claim — including
+            # one a long poll is still waiting for.
+            if not getattr(profile, "enabled", True):
+                return self._simple(
+                    ClaimResult.DRAIN_REQUESTED, "pool is disabled", session
+                )
             # Subscribe before checking admissibility (same discipline as
             # the frontier waiter below) — otherwise a ``project.resumed`` /
             # ``constraint.released`` / ``snapshot.refreshed`` landing

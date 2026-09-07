@@ -1,7 +1,9 @@
 import { useId, useState } from "react";
 import { Link } from "react-router-dom";
 import { ChevronDownIcon, ChevronRightIcon, UsersIcon, PlusIcon } from "@heroicons/react/24/outline";
-import { useAgentFlock, useFlockSubagents } from "../api/agents";
+import { useAgentFlock, useEditAgent, useFlockSubagents } from "../api/agents";
+import { usePoolSetEnabled } from "../api/hooks";
+import EnableToggle from "../pages/agents/EnableToggle";
 import { useAgentSelection } from "../pages/agents/useAgentSelection";
 import { AgentState, AgentEligibility, AgentWaitingQuestion, FlockSubagents } from "../pages/agents/AgentMetadata";
 import { PoolBadge, PoolQuarantine, PoolSupplyRow } from "../pages/agents/PoolMetadata";
@@ -23,6 +25,10 @@ export default function AgentFlock() {
     catch { return false; }
   });
   const [limitAt, setLimitAt] = useState<string | null>(null);
+  // One mutation each for the whole list: a row is only in flight one at a
+  // time, and ``variables`` names it, so pending/error land on the right row.
+  const editAgent = useEditAgent();
+  const setPoolEnabled = usePoolSetEnabled();
   const listId = useId();
   const Chevron = collapsed ? ChevronRightIcon : ChevronDownIcon;
 
@@ -74,17 +80,22 @@ export default function AgentFlock() {
           {agents.map((agent) => {
             const selected = selection.selectedIds.includes(agent.id);
             const descriptionId = listId + "-" + agent.id;
+            const pending = editAgent.isPending && editAgent.variables?.agent_id === agent.id;
+            const failed = editAgent.variables?.agent_id === agent.id ? editAgent.error : null;
             return (
-              <button
+              <div
                 key={agent.id}
+                className={"flex items-start gap-1 rounded-lg border px-3 py-1.5 transition-colors "
+                  + (selected ? "border-indigo-500/40 bg-indigo-500/10" : "border-transparent hover:border-gray-700 hover:bg-gray-800/70")}
+              >
+              <button
                 type="button"
                 data-listnav="1"
                 aria-label={"Open " + agent.name}
                 aria-describedby={descriptionId}
                 aria-pressed={selected}
                 onClick={(event) => setLimitAt(selection.select(agent.id, event.shiftKey) ? null : selection.locationKey)}
-                className={"block w-full rounded-lg border px-3 py-1.5 text-left transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-indigo-400 "
-                  + (selected ? "border-indigo-500/40 bg-indigo-500/10" : "border-transparent hover:border-gray-700 hover:bg-gray-800/70")}
+                className="block min-w-0 flex-1 text-left focus-visible:outline focus-visible:outline-2 focus-visible:outline-indigo-400"
               >
                 <span className="mb-0.5 flex items-center justify-between gap-2">
                   <span className="truncate text-sm font-medium text-gray-200">{agent.name}</span>
@@ -106,24 +117,42 @@ export default function AgentFlock() {
                   <span className="block truncate text-gray-400" title={agent.current_task_title || agent.current_task_id || "Idle — no assigned task"}>
                     {agent.current_task_title || agent.current_task_id || "Idle — no assigned task"}
                   </span>
+                  {agent.enabled === false && (
+                    <span className="block text-amber-300">
+                      Disabled — no new task is assigned; a task already running finishes.
+                    </span>
+                  )}
                 </span>
               </button>
+              <EnableToggle
+                enabled={agent.enabled !== false}
+                subject={agent.name}
+                pending={pending}
+                error={failed ? failed.message : null}
+                onChange={(next) => editAgent.mutate({ agent_id: agent.id, enabled: next })}
+              />
+              </div>
             );
           })}
           {pools.map((entry) => {
             const selected = selection.selectedIds.some((id) => id.split("@")[0] === entry.key);
             const descriptionId = listId + "-" + entry.key;
+            const pending = setPoolEnabled.isPending && setPoolEnabled.variables?.profile_id === entry.profileId;
+            const failed = setPoolEnabled.variables?.profile_id === entry.profileId ? setPoolEnabled.error : null;
             return (
-              <button
+              <div
                 key={entry.key}
+                className={"flex items-start gap-1 rounded-lg border px-3 py-1.5 transition-colors "
+                  + (selected ? "border-indigo-500/40 bg-indigo-500/10" : "border-transparent hover:border-gray-700 hover:bg-gray-800/70")}
+              >
+              <button
                 type="button"
                 data-listnav="1"
                 aria-label={"Open " + entry.profileId + " pool"}
                 aria-describedby={descriptionId}
                 aria-pressed={selected}
                 onClick={(event) => setLimitAt(selection.select(entry.key, event.shiftKey) ? null : selection.locationKey)}
-                className={"block w-full rounded-lg border px-3 py-1.5 text-left transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-indigo-400 "
-                  + (selected ? "border-indigo-500/40 bg-indigo-500/10" : "border-transparent hover:border-gray-700 hover:bg-gray-800/70")}
+                className="block min-w-0 flex-1 text-left focus-visible:outline focus-visible:outline-2 focus-visible:outline-indigo-400"
               >
                 <span className="mb-0.5 flex items-center justify-between gap-2">
                   <span className="truncate text-sm font-medium text-gray-200">{entry.profileId}</span>
@@ -136,8 +165,21 @@ export default function AgentFlock() {
                   <span className="block truncate text-gray-400">
                     {entry.instances.length === 1 ? "1 live instance" : entry.instances.length + " live instances"}
                   </span>
+                  {entry.pool.enabled === false && (
+                    <span className="block text-amber-300">
+                      Disabled — no new work is claimed; workers already on a task finish it.
+                    </span>
+                  )}
                 </span>
               </button>
+              <EnableToggle
+                enabled={entry.pool.enabled !== false}
+                subject={entry.profileId + " pool"}
+                pending={pending}
+                error={failed ? failed.message : null}
+                onChange={(next) => setPoolEnabled.mutate({ profile_id: entry.profileId, enabled: next })}
+              />
+              </div>
             );
           })}
           {hiddenCount > 0 && (

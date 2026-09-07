@@ -598,6 +598,32 @@ class TestClaim:
             assert closed["next"]["result"] == "drain_requested"
         assert (await h._cmd_task_claim({"task_id": "t2"}))["result"] == "drain_requested"
 
+    async def test_disabled_pool_profile_is_refused_new_work(self, handler, db, tmp_path):
+        """The operator switch stops the *next* claim, not the current task."""
+        await mktask(db, "t1", profile_id="worker")
+        sid, _ = await pool_session(db, tmp_path)
+        h = scoped(handler, sid)
+        held = await h._cmd_task_claim({"next": True})
+        assert held["result"] == "claimed"
+
+        await db.update_profile("worker", enabled=False)
+
+        # The task already held is untouched and still assigned to this session.
+        assert (await db.get_task("t1")).status == TaskStatus.IN_PROGRESS
+        refused = await h._cmd_task_claim({"next": True})
+        assert (refused["result"], refused["reason"]) == ("drain_requested", "pool is disabled")
+
+        await mktask(db, "t2", profile_id="worker")
+        # A long poll ends on the switch rather than waiting out its deadline.
+        waited = await h._cmd_task_claim({"next": True, "wait": 5})
+        assert waited["result"] == "drain_requested"
+        assert (await db.get_task("t2")).status == TaskStatus.READY
+
+        # Enabling restores eligibility for the pool's next worker.
+        await db.update_profile("worker", enabled=True)
+        s2, _ = await pool_session(db, tmp_path, sid="s2", agent_id="agent-2")
+        assert (await scoped(handler, s2)._cmd_task_claim({"next": True}))["result"] == "claimed"
+
     async def test_old_idle_pool_cannot_reuse_completed_context(self, handler, db, tmp_path):
         sid, _ = await pool_session(db, tmp_path)
         await db.update_session(sid, claims=3)

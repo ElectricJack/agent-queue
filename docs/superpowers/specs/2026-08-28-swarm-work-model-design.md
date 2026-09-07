@@ -479,7 +479,7 @@ stale shell in a reset slot finds no file and gets `stale_claim` too. Ownership 
 | `claim_in_progress` | this session's attempt is still `preparing` and `wait` elapsed (`task_id`, `claim_epoch`, `claim_phase_at` returned) | claim again with `--wait` |
 | `not_admissible` | project paused / budget exhausted (`reason` given) | wait (`--wait`) or drain-ack |
 | `session_exhausted` | `max_claims_per_session` reached | `aq session drain-ack` |
-| `drain_requested` | pool scaled down | `aq session drain-ack` |
+| `drain_requested` | pool scaled down, or the profile was disabled (`reason: pool is disabled`) | `aq session drain-ack` |
 | `stale_claim` | (on mutations) epoch mismatch | stop; the task is no longer yours |
 | `out_of_scope` | token mismatch / not a claimable lifecycle | stop |
 
@@ -939,6 +939,7 @@ regenerate from it. `*` = new. Response models: add `src/api/models/task.py` ent
 | `aq formula list \| show \| cook`* | `formula_*`* | list/show yes; cook no |
 | `aq pool status [-p] [--profile]`* | `pool_status`* — desired/active/idle/claims per key, last `pool.scaled` reason | no |
 | `aq pool scale <profile> --min N --max N`* | `pool_scale`* — edits the **system** profile's `## Config` in the vault (source of truth), sync follows. Profiles are global, so the bounds apply to every project; each project's `max_concurrent_agents` still caps its own pool at runtime. `--project-id` is accepted and ignored for one release | no |
+| `aq pool set-enabled <profile> --enabled/--no-enabled`* | `pool_set_enabled`* — operator kill-switch written to the same **system** `## Config`. A disabled profile keeps its definition and its `pool_status` row (with `enabled: false`) but is sized to bounds `(0, 0)`: idle workers drain, `desired` stays floored at `busy + starting` so a worker mid-task finishes it, and its next claim answers `drain_requested` | no |
 | `aq session drain-ack` | `session_drain_ack` | yes |
 | `aq schema` | `get_schema` (+ `outcome`, `work_outcome`, `failure_class`, `session_state`, `claim_phase`, `claim_result`, `lifecycle`, `agent_state` incl. `RETIRED`) | yes |
 

@@ -255,6 +255,36 @@ class TestReconcilePools:
         await orch._reconcile_pools()
         assert (await db.get_session(session_id)).desired_state == "stopped"
 
+    async def test_disabled_profile_starts_nothing_and_drains_idle_workers(self, orch, db):
+        """The operator switch sizes the pool to zero without deleting it."""
+        await ready(db, "t1")
+        await orch._reconcile_pools()
+        session_id = (await db.list_sessions(lifecycle="pool"))[0].id
+
+        await db.update_profile("worker", enabled=False)
+        await ready(db, "t2")
+        orch.config.swarm.scale_down_grace = 0
+        await orch._reconcile_pools()
+        await orch._reconcile_pools()
+
+        # No new worker for the newly ready task, and the idle one is drained.
+        assert len(await db.list_sessions(lifecycle="pool")) == 1
+        assert (await db.get_session(session_id)).desired_state == "stopped"
+
+    async def test_disabled_profile_leaves_a_worker_on_a_task_alone(self, orch, db):
+        await ready(db, "t1")
+        await orch._reconcile_pools()
+        session = (await db.list_sessions(lifecycle="pool"))[0]
+        await db.update_session(session.id, task_id="t1")
+
+        await db.update_profile("worker", enabled=False)
+        orch.config.swarm.scale_down_grace = 0
+        await orch._reconcile_pools()
+        await orch._reconcile_pools()
+
+        # Busy supply floors ``desired``: the task it holds runs to completion.
+        assert (await db.get_session(session.id)).desired_state == "running"
+
     async def test_codex_pool_launch_keeps_uuid_id_without_session_id_flag(self, orch, db):
         await db.update_profile("worker", harness="codex")
         orch.harness_registry.upsert(Harness(id="codex", name="codex", command="codex"))
