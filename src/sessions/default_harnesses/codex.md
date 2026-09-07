@@ -144,13 +144,17 @@ profile opts in). In a linked checkout Codex keeps its own sandbox +
 approval prompts, and the session is attachable so a human can answer them.
 
 **The softer profile opt-in is `codex_full_auto: true`.** It adds
-`--full-auto`, defaults to `false`, and is rejected when enabled on non-Codex
+`--ask-for-approval on-request --sandbox workspace-write`, defaults to `false`,
+and is rejected when enabled on non-Codex
 profiles. A disabled `false` value is harmless on other harnesses.
 Unlike the harness `permission_flag`, full-auto retains Codex's workspace
 sandbox while removing routine approval prompts. The legacy
 `permission_mode: bypassPermissions` setting remains supported and still
 selects `--dangerously-bypass-approvals-and-sandbox`; it is a stronger,
-distinct posture and is not translated to full-auto.
+distinct posture and is not translated to full-auto. The profile key is retained
+for compatibility; newer Codex versions no longer accept the `--full-auto`
+shorthand. Explicit approval or sandbox arguments in harness `args` take
+precedence over these profile defaults.
 
 Harness `args` remain a supported operator-wide way to configure either flag.
 If an enabled profile option and `args` request the same flag, the launch

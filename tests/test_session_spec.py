@@ -390,8 +390,11 @@ class TestArgvComposition:
     def test_codex_full_auto_profile_opt_in_adds_flag_once(self, builder):
         codex = Harness(id="codex", command="codex", args=("--quiet",))
         spec = _build(builder, harness=codex, profile=_Profile(codex_full_auto=True))
-        assert spec.command.count("--full-auto") == 1
-        assert spec.command.index("--quiet") < spec.command.index("--full-auto")
+        assert "--full-auto" not in spec.command
+        assert spec.command.count("--ask-for-approval") == 1
+        assert spec.command[spec.command.index("--ask-for-approval") + 1] == "on-request"
+        assert spec.command[spec.command.index("--sandbox") + 1] == "workspace-write"
+        assert spec.command.index("--quiet") < spec.command.index("--ask-for-approval")
 
     def test_codex_full_auto_defaults_off(self, builder):
         codex = Harness(id="codex", command="codex")
@@ -405,7 +408,11 @@ class TestArgvComposition:
     def test_codex_full_auto_is_not_duplicated_from_harness_args(self, builder):
         codex = Harness(id="codex", command="codex", args=("--full-auto",))
         spec = _build(builder, harness=codex, profile=_Profile(codex_full_auto=True))
-        assert spec.command.count("--full-auto") == 1
+        assert "--full-auto" not in spec.command
+        assert spec.command.count("--ask-for-approval") == 1
+        assert spec.command.count("--sandbox") == 1
+        assert spec.command[spec.command.index("--ask-for-approval") + 1] == "on-request"
+        assert spec.command[spec.command.index("--sandbox") + 1] == "workspace-write"
 
     def test_legacy_codex_bypass_takes_precedence_over_derived_full_auto(self, builder):
         bypass = "--dangerously-bypass-approvals-and-sandbox"
@@ -422,6 +429,20 @@ class TestArgvComposition:
         spec = _build(builder, harness=codex, profile=profile)
         assert spec.command.count(bypass) == 1
         assert "--full-auto" not in spec.command
+        assert "--ask-for-approval" not in spec.command
+        assert "--sandbox" not in spec.command
+
+    @pytest.mark.parametrize("args", [
+        ("--ask-for-approval", "on-request", "--sandbox", "workspace-write"),
+        ("-a", "never", "-s", "read-only"),
+        ("--ask-for-approval=never", "--sandbox=read-only"),
+    ])
+    def test_codex_full_auto_preserves_explicit_mode_args(self, builder, args):
+        codex = Harness(id="codex", command="codex", args=args)
+        spec = _build(builder, harness=codex, profile=_Profile(codex_full_auto=True))
+        assert spec.command[1:1 + len(args)] == args
+        assert spec.command.count("--ask-for-approval") == args.count("--ask-for-approval")
+        assert spec.command.count("--sandbox") == args.count("--sandbox")
 
     def test_false_codex_profile_boolean_preserves_raw_harness_arg(self, builder):
         codex = Harness(id="codex", command="codex", args=("--full-auto",))

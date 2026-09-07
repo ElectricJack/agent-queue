@@ -62,7 +62,7 @@ BYPASS_PERMISSION_MODE = "bypassPermissions"
 
 #: Profile-owned, harness-specific autonomous modes.  These are intentionally
 #: separate from ``Harness.permission_flag``: Codex's permission flag disables
-#: both approvals and sandboxing, whereas ``--full-auto`` keeps the workspace
+#: both approvals and sandboxing, whereas the full-auto profile keeps the workspace
 #: sandbox.  Claude's flag overlaps its legacy permission flag, so argv
 #: composition adds derived flags idempotently.
 CODEX_FULL_AUTO_FLAG = "--full-auto"
@@ -558,10 +558,20 @@ class SessionSpecBuilder:
             getattr(profile, "codex_full_auto", False)
         )
         if codex_full_auto:
-            if codex_stronger_bypass:
-                argv[:] = [arg for arg in argv if arg != CODEX_FULL_AUTO_FLAG]
-            else:
-                _append_once(argv, CODEX_FULL_AUTO_FLAG)
+            # Recent Codex CLIs removed the shorthand. Keep the profile key
+            # compatible, but spell out its original approval/sandbox defaults.
+            argv[:] = [arg for arg in argv if arg != CODEX_FULL_AUTO_FLAG]
+            if not codex_stronger_bypass:
+                for flag, alias, value in (
+                    ("--ask-for-approval", "-a", "on-request"),
+                    ("--sandbox", "-s", "workspace-write"),
+                ):
+                    # Explicit operator arguments override profile defaults.
+                    if not any(
+                        arg in (flag, alias) or arg.startswith(f"{flag}=")
+                        for arg in harness.args
+                    ):
+                        argv.extend((flag, value))
 
         claude_skip_permissions = _is_claude_cli(harness) and bool(
             getattr(profile, "claude_dangerously_skip_permissions", False)
