@@ -350,6 +350,36 @@ async def test_list_runs_filters_by_playbook_lifecycle_and_artifact(db):
     assert await db.list_runs(playbook_id="nope") == []
 
 
+async def test_latest_run_per_playbook_ranks_within_each_playbook(db):
+    await db.create_run(make_snapshot(run_id="run-a", started_at=NOW))
+    await db.create_run(
+        make_snapshot(run_id="run-b", lifecycle=RunLifecycle.COMPLETED, started_at=NOW + 5)
+    )
+    await db.create_run(make_snapshot(run_id="run-c", playbook_id="other", started_at=NOW + 1))
+
+    latest = await db.latest_run_per_playbook()
+    assert {pid: run.run_id for pid, run in latest.items()} == {
+        "task-review": "run-b",
+        "other": "run-c",
+    }
+    assert latest["task-review"].lifecycle is RunLifecycle.COMPLETED
+
+    scoped = await db.latest_run_per_playbook(["other"])
+    assert list(scoped) == ["other"]
+    assert await db.latest_run_per_playbook([]) == {}
+
+
+async def test_active_run_counts_exclude_terminal_runs(db):
+    await db.create_run(make_snapshot(run_id="run-a"))
+    await db.create_run(make_snapshot(run_id="run-b", lifecycle=RunLifecycle.PAUSED))
+    await db.create_run(make_snapshot(run_id="run-c", lifecycle=RunLifecycle.COMPLETED))
+    await db.create_run(make_snapshot(run_id="run-d", playbook_id="other"))
+
+    assert await db.count_active_runs_per_playbook() == {"task-review": 2, "other": 1}
+    assert await db.count_active_runs_per_playbook(["task-review"]) == {"task-review": 2}
+    assert await db.count_active_runs_per_playbook([]) == {}
+
+
 # -- B-5: the commit boundary ----------------------------------------------
 
 

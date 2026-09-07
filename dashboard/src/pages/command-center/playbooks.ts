@@ -23,6 +23,21 @@ export function playbookState(p: PlaybookSummary): string {
   return p.triggers?.length ? "Waiting for trigger" : "Ready to run";
 }
 
+/** "completed · 5m ago" — the status of the newest run and when it started. */
+export function lastRunLabel(p: PlaybookSummary, now = Date.now()): string {
+  const run = p.last_run;
+  if (!run) return "never";
+  const status = run.status.replace(/_/g, " ");
+  const at = run.completed_at ?? run.started_at;
+  if (!at) return status;
+  const seconds = Math.max(0, Math.round(now / 1000 - at));
+  const since = seconds < 60 ? "just now"
+    : seconds < 3600 ? `${Math.floor(seconds / 60)}m ago`
+    : seconds < 86400 ? `${Math.floor(seconds / 3600)}h ago`
+    : `${Math.floor(seconds / 86400)}d ago`;
+  return `${status} · ${since}`;
+}
+
 export function playbookScope(p: PlaybookSummary) {
   return p.scope === "project" ? `Project · ${p.scope_identifier}`
     : p.scope === "system" ? "System · shared" : `${p.scope} · shared`;
