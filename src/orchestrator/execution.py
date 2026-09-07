@@ -1286,6 +1286,24 @@ class ExecutionMixin:
                     # here made every root repair close raise ``KeyError``
                     # inside the pipeline guard and land the delegate in
                     # BLOCKED with its pushed repair unrecorded.
+                    if repair_scope["target_kind"] == "batch":
+                        from src.integration.repair import RepairService
+
+                        async with self.db.immediate() as conn:
+                            await self.db.lock_hierarchy_project(conn, task.project_id)
+                            current_scope = await self.db.get_repair_filing_scope(
+                                task.id, session_id=repair_scope["session_id"], conn=conn
+                            )
+                            if (current_scope is None or not current_scope["active"]
+                                or any(current_scope[key] != repair_scope[key] for key in (
+                                    "operation_id", "stage", "fence_token", "instance_token",
+                                    "workspace_id", "session_id",
+                                ))):
+                                raise HierarchyError("stale", "batch repair writer changed")
+                            binding = await RepairService(self.db).bind_current_batch_subject_on(
+                                conn, repair_scope["operation_id"]
+                            )
+                        repair_scope = {**repair_scope, "current_subject": binding["subject"]}
                     base_sha = repair_subject_sha(repair_scope["current_subject"])
                     if not is_valid_git_oid(base_sha):
                         raise HierarchyError(

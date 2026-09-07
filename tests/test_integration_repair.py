@@ -3237,6 +3237,14 @@ async def test_root_repair_close_reads_the_candidate_subject_and_frees_a_pool_sl
         "elevated": False,
     }
 
+    # Legacy built candidates could leave their stage bound to the old
+    # construction base. Close must refresh under the exact writer fence.
+    async with handler.db.immediate() as conn:
+        await conn.execute(update(integration_repair_stages).where(
+            integration_repair_stages.c.operation_id == operation_id,
+            integration_repair_stages.c.ordinal == 0,
+        ).values(current_subject={"kind": "batch", "revision": 0,
+                                  "candidate_sha": "e" * 40}))
     closed = await handler._cmd_task_close(
         {
             "task_id": repair_task_id,
