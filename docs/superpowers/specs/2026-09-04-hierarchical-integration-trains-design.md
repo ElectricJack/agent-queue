@@ -442,6 +442,27 @@ stage transition; stale events cannot restart a finished stage or promote an obs
 Before handing ownership onward, stop and reconcile the old writer; inability to stop it blocks
 for human intervention rather than granting a second writer access.
 
+A repair delegate's own successful close is one of those handoffs. The close proves the writer's
+exact pushed head, then stops it, detaches its checkout, and returns the branch to a `reserved`
+reservation still owned by that delegate in its `repair` role. Leaving the row `attached` is not an
+option: the same close releases the workspace lock and the session/task binding that any later
+stop-and-detach proof reads, so an attached row at that point can never be confirmed again and
+permanently blocks every subsequent transfer of the branch.
+
+A pull-model (pool) writer proves the same handoff differently, because stopping it is not
+available: the session is the worker loop itself and survives the close it is running inside.
+Its proof is the claim protocol plus the checkout — the task-hold the close is about to release,
+and the branch verified clean, pushed and then detached — and the branch returns to `reserved`
+exactly as above. The workspace agent-lock, the agent row and the session are left for the claim
+release that follows; only the ownership row moves. The ordering is the load-bearing part: this
+release must run inside the close, while the session/task binding and the workspace's task-hold
+still exist, because the claim release erases precisely the evidence any proof reads.
+
+Failed proof is terminal for the *release*, never for the resources. A writer that cannot be
+proven stopped or detached keeps its workspace, its claim and its session binding, and the close
+records `needs_attention` instead: releasing them on a database unlock alone is what would admit
+a second writer, and it would also destroy the evidence a later handoff attempt needs.
+
 For root batches, activate the primary stage when candidate construction starts, before the first
 CI launch, so an initial run that never completes is bounded too. A green initial candidate marks
 that exact candidate/evidence `awaiting_completion` without dispatching a repair agent; terminal
@@ -482,6 +503,11 @@ unmerged state, and unpushed commits are not pushed, reset, cleaned, stashed, de
 to the free pool. Scheduler preparation must select that exact workspace and must not overwrite
 its contents. Failed proof or CAS remains busy and never admits a second writer. This exception is
 specific to the two repair stages and does not weaken worker, collector, or verifier handoffs.
+
+The retained exception applies only while the primary is still attached. A primary that closed
+successfully is already stopped, detached, and holding a `reserved` reservation in its own `repair`
+role, so the debug stage transfers from it without further evidence, exactly as it would from a
+collector or verifier.
 
 ### 9.3 Human escalation
 

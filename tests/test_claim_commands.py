@@ -465,6 +465,31 @@ class TestClaim:
         assert res["result"] == "claimed" and res["task"]["id"] == "fast"
         assert (await db.get_task("deep")).status == TaskStatus.READY
 
+    async def test_pool_claim_takes_an_integration_repair_delegate(
+        self, handler, db, tmp_path
+    ):
+        """A repair delegate is ordinary claimable work for a pool session.
+
+        Both shipped repair profiles are ``lifecycle: pool``, so excluding
+        delegates from the frontier would strand every repair dispatch.  The
+        ownership half of the ladder is what has to accommodate the pull
+        model (``aconfirm_integration_pool_owner_handoff``), not the queue.
+        """
+        await mktask(
+            db,
+            "repair-operation-0",
+            profile_id="worker",
+            priority=1,
+            created_by_kind="integration_repair",
+            created_by_id="operation",
+        )
+        await mktask(db, "ordinary", profile_id="worker", priority=100)
+        sid, _ = await pool_session(db, tmp_path)
+
+        res = await scoped(handler, sid)._cmd_task_claim({"next": True})
+
+        assert res["result"] == "claimed" and res["task"]["id"] == "repair-operation-0"
+
     async def test_no_ready_work_without_wait(self, handler, db, tmp_path):
         sid, _ = await pool_session(db, tmp_path)
         res = await scoped(handler, sid)._cmd_task_claim({"next": True})

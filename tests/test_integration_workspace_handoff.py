@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock
 import pytest
 from sqlalchemy import insert, select, update
 
-from src.database.tables import integration_branch_owners, workspaces
+from src.database.tables import integration_branch_owners, sessions, workspaces
 from src.git.manager import GitError
 from src.integration.models import BranchKey, Fence
 from src.integration.ownership import BranchOwnership
@@ -525,3 +525,237 @@ async def test_detached_non_slot_releases_only_after_exact_git_proof(
     assert confirmed is True
     assert events == ["validate-branch", "stop", "confirm", "clean-check", "fetch"]
     assert (await orchestrator.db.get_workspace("slot")).locked_by_task_id is None
+
+
+async def _release_owner_for_retry(
+    orchestrator,
+    monkeypatch,
+    *,
+    owner_role: str,
+    events: list[str],
+    pool: bool = False,
+    session_lifecycle: str | None = None,
+    dirty: bool = False,
+):
+    """Run the close-path release against an ``attached`` owner in *owner_role*.
+
+    ``pool=True`` takes the pull-model leg, which proves the checkout detached
+    instead of stopping the session.  ``session_lifecycle`` overrides what the
+    session row says independently of the leg, so the mismatch can be tested.
+    """
+    await orchestrator.db.update_project(
+        "p",
+        hierarchical_integration_mode="hierarchy",
+        integration_repository_id="repo",
+    )
+    lifecycle = session_lifecycle or ("pool" if pool else "task")
+    async with orchestrator.db.immediate() as conn:
+        await conn.execute(
+            update(integration_branch_owners)
+            .where(integration_branch_owners.c.id == "owner")
+            .values(owner_role=owner_role, handoff_state="attached")
+        )
+        await conn.execute(
+            update(sessions).where(sessions.c.id == "session").values(lifecycle=lifecycle)
+        )
+    provider = _provider(events)
+    monkeypatch.setattr(orchestrator.session_providers, "create", lambda *_args: provider)
+    current_branch, run = _clean_git(events, dirty=dirty)
+    orchestrator.git.aget_current_branch = AsyncMock(side_effect=current_branch)
+    orchestrator.git._arun_unlocked = AsyncMock(side_effect=run)
+    task = await orchestrator.db.get_task("task")
+    return await orchestrator.arelease_integration_writer_for_retry(
+        task, reason="integration_repair_delegate_closed", pool=pool
+    )
+
+
+async def test_pool_release_detaches_the_checkout_without_stopping_the_loop(
+    orchestrator_factory, tmp_path, monkeypatch
+):
+    """A pool worker's release is a detach proof, not a session kill.
+
+    Both shipped repair profiles are ``lifecycle: pool``, so the ladder has to
+    work under the pull model.  Stopping the session would kill the worker
+    loop mid-``aq task close``; what a pool close actually provides is the
+    checkout coming off the branch plus the claim release that follows, and
+    the release therefore runs *here*, while the claim evidence still exists
+    (amber-delta).
+    """
+    orchestrator = await _orchestrator(orchestrator_factory, tmp_path)
+    events: list[str] = []
+
+    released = await _release_owner_for_retry(
+        orchestrator, monkeypatch, owner_role="repair", events=events, pool=True
+    )
+
+    assert released is True
+    # No "stop"/"confirm": the loop that is closing keeps running.
+    assert events == ["clean-check", "fetch", "detach"]
+    target = BranchKey(repository_id="repo", branch="aq/parent")
+    owner = await BranchOwnership(orchestrator.db).get_owner(target)
+    assert owner["owner_id"] == "task"
+    assert owner["owner_role"] == "repair"
+    assert owner["handoff_state"] == "reserved"
+    assert int(owner["fence_token"]) == 5
+    assert owner["session_id"] is None
+    assert owner["workspace_id"] is None
+    assert owner["confirmed_workspace_id"] == "slot"
+    # ``release_claim`` unwinds these moments later on its own terms; clearing
+    # them here would race it and destroy the evidence this check reads.
+    workspace = await orchestrator.db.get_workspace("slot")
+    assert workspace.locked_by_task_id == "task"
+    assert workspace.locked_by_agent_id == "agent"
+    session = await orchestrator.db.get_session("session")
+    assert session.state == "running" and session.task_id == "task"
+    assert (await orchestrator.db.get_agent("agent")).state is AgentState.BUSY
+
+    successor = await BranchOwnership(orchestrator.db).transfer(
+        Fence(target=target, owner_id="task", token=5), "operation", "collector"
+    )
+    assert successor == Fence(target=target, owner_id="operation", token=6)
+
+
+async def test_pool_release_on_a_dirty_checkout_is_not_release_evidence(
+    orchestrator_factory, tmp_path, monkeypatch
+):
+    """Unprovable detach keeps the branch fenced and every resource held."""
+    orchestrator = await _orchestrator(orchestrator_factory, tmp_path)
+    events: list[str] = []
+
+    released = await _release_owner_for_retry(
+        orchestrator,
+        monkeypatch,
+        owner_role="repair",
+        events=events,
+        pool=True,
+        dirty=True,
+    )
+
+    assert released is False
+    assert "detach" not in events
+    owner = await BranchOwnership(orchestrator.db).get_owner(
+        BranchKey(repository_id="repo", branch="aq/parent")
+    )
+    assert owner["handoff_state"] == "handoff_pending"
+    assert owner["session_id"] == "session"
+    assert owner["workspace_id"] == "slot"
+    assert (await orchestrator.db.get_workspace("slot")).locked_by_task_id == "task"
+    assert (await orchestrator.db.get_session("session")).task_id == "task"
+
+
+async def test_pool_release_refuses_a_task_lifecycle_session(
+    orchestrator_factory, tmp_path, monkeypatch
+):
+    """The pull-model proof is only valid for a session that survives its close.
+
+    A ``lifecycle: task`` session is torn down after the close, so "the loop
+    will not touch the branch again" is not something its claim can promise --
+    that leg owes the full stop-and-confirm proof instead.
+    """
+    orchestrator = await _orchestrator(orchestrator_factory, tmp_path)
+    events: list[str] = []
+
+    released = await _release_owner_for_retry(
+        orchestrator,
+        monkeypatch,
+        owner_role="repair",
+        events=events,
+        pool=True,
+        session_lifecycle="task",
+    )
+
+    assert released is False
+    assert events == []
+    owner = await BranchOwnership(orchestrator.db).get_owner(
+        BranchKey(repository_id="repo", branch="aq/parent")
+    )
+    assert owner["handoff_state"] == "handoff_pending"
+    assert (await orchestrator.db.get_workspace("slot")).locked_by_task_id == "task"
+
+
+async def test_release_for_retry_restores_a_closed_repair_delegates_reservation(
+    orchestrator_factory, tmp_path, monkeypatch
+):
+    """A repair delegate's close must not leave its owner row attached forever.
+
+    ``arelease_integration_writer_for_retry`` used to require
+    ``owner_role == "worker"``, so the repair leg of the session close was a
+    silent no-op: the row stayed ``attached`` to a session the close then
+    stopped, and because the confirmer needs the workspace lock and the
+    session/task binding that ``release_session_task_resources`` clears, no
+    later transfer could confirm it either (amber-delta).
+    """
+    orchestrator = await _orchestrator(orchestrator_factory, tmp_path)
+    events: list[str] = []
+
+    released = await _release_owner_for_retry(
+        orchestrator, monkeypatch, owner_role="repair", events=events
+    )
+
+    assert released is True
+    assert events == ["validate-branch", "stop", "confirm", "clean-check", "fetch", "detach"]
+    target = BranchKey(repository_id="repo", branch="aq/parent")
+    owner = await BranchOwnership(orchestrator.db).get_owner(target)
+    assert owner is not None
+    # The delegate keeps its own role and gains a fresh reserved fence.
+    assert owner["owner_id"] == "task"
+    assert owner["owner_role"] == "repair"
+    assert owner["handoff_state"] == "reserved"
+    assert int(owner["fence_token"]) == 5
+    assert owner["session_id"] is None
+    assert owner["workspace_id"] is None
+    assert owner["confirmed_workspace_id"] == "slot"
+    assert (await orchestrator.db.get_workspace("slot")).locked_by_task_id is None
+
+    # Which is exactly what makes the successor's transfer provable: a
+    # reserved owner needs no further stop/detach evidence.
+    successor = await BranchOwnership(orchestrator.db).transfer(
+        Fence(target=target, owner_id="task", token=5), "operation", "collector"
+    )
+    assert successor == Fence(target=target, owner_id="operation", token=6)
+
+
+async def test_release_for_retry_is_idempotent_for_a_repair_delegate(
+    orchestrator_factory, tmp_path, monkeypatch
+):
+    """A second release of an already-reserved delegate is a no-op success."""
+    orchestrator = await _orchestrator(orchestrator_factory, tmp_path)
+    events: list[str] = []
+    assert (
+        await _release_owner_for_retry(
+            orchestrator, monkeypatch, owner_role="repair", events=events
+        )
+        is True
+    )
+
+    task = await orchestrator.db.get_task("task")
+    again = await orchestrator.arelease_integration_writer_for_retry(
+        task, reason="integration_repair_delegate_closed"
+    )
+
+    assert again is True
+    assert events.count("stop") == 1
+    owner = await BranchOwnership(orchestrator.db).get_owner(
+        BranchKey(repository_id="repo", branch="aq/parent")
+    )
+    assert int(owner["fence_token"]) == 5
+
+
+async def test_release_for_retry_leaves_a_collector_owner_alone(
+    orchestrator_factory, tmp_path, monkeypatch
+):
+    """Only roles a *task* owns are self-transferable; collectors keep the rule."""
+    orchestrator = await _orchestrator(orchestrator_factory, tmp_path)
+    events: list[str] = []
+
+    released = await _release_owner_for_retry(
+        orchestrator, monkeypatch, owner_role="collector", events=events
+    )
+
+    assert released is False
+    assert events == []
+    owner = await BranchOwnership(orchestrator.db).get_owner(
+        BranchKey(repository_id="repo", branch="aq/parent")
+    )
+    assert owner["handoff_state"] == "attached"
+    assert (await orchestrator.db.get_workspace("slot")).locked_by_task_id == "task"

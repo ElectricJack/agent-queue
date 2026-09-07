@@ -1690,18 +1690,52 @@ class ExecutionMixin:
         # way out, and the next task should not wait for the drain-ack.
         # Pool sessions skip this: they keep their agent-lock and token, and
         # ``_cmd_task_close`` releases the claim itself via ``db.release_claim``.
-        if not pool:
-            if managed_parent_suspended or repair_writer_closed:
-                # Stop/detach the worker while preserving its durable
-                # reserved fence so the collector transfer can be proven.
-                await self.arelease_integration_writer_for_retry(
-                    task,
-                    reason=(
-                        "integration_repair_delegate_closed"
-                        if repair_writer_closed
-                        else "integration_parent_suspended"
-                    ),
+        #
+        # The integration-writer release runs *before* either teardown, on
+        # both lifecycles.  Whatever proves a writer let go of its branch --
+        # the session binding, the workspace's task-hold, the claim -- is
+        # exactly what the teardown below erases, so a release deferred past
+        # it can never be confirmed and the branch stays owned for good
+        # (amber-delta).  A pool close takes the same path with the
+        # detach-only proof (``pool=True``); the managed-parent pool leg is
+        # deliberately left to steady-impact, which owns that case.
+        release_needed = repair_writer_closed or (managed_parent_suspended and not pool)
+        handoff_unproven = False
+        if release_needed:
+            # Stop/detach the writer while preserving its durable reserved
+            # fence so the successor's transfer can be proven.  The release
+            # keeps the owner's own role -- a repair delegate ends up
+            # ``repair``/``reserved``, not stuck ``attached`` to the session
+            # this close is about to tear down.
+            released = await self.arelease_integration_writer_for_retry(
+                task,
+                reason=(
+                    "integration_repair_delegate_closed"
+                    if repair_writer_closed
+                    else "integration_parent_suspended"
+                ),
+                pool=pool,
+            )
+            # ``False`` is a *failed proof*, not a no-op: the writer may still
+            # hold the checkout.  Releasing the workspace or the claim anyway
+            # would hand the branch to a second writer on nothing but a
+            # database unlock -- the one thing design spec §9.1 forbids -- and
+            # would destroy the evidence a later handoff needs.  Keep every
+            # protected resource where it is and make it an operator-visible
+            # stall instead.  (``None`` is the unmanaged project: legacy
+            # cleanup applies and the teardown proceeds normally.)
+            if released is False:
+                handoff_unproven = True
+                logger.error(
+                    "Task %s closed while its integration branch %s could not "
+                    "be proven released; retaining workspace/claim for handoff",
+                    task.id,
+                    task.branch_name,
                 )
+                await self.db.set_task_meta(
+                    task.id, "needs_attention", "integration_handoff_unproven"
+                )
+        if not pool and not handoff_unproven:
             await self.release_session_task_resources(
                 task.id, agent_id=task.assigned_agent_id, workspace_path=workspace_path,
                 expect_claim_epoch=task.claim_epoch,
@@ -1713,6 +1747,13 @@ class ExecutionMixin:
             "pipeline_ok": completed_ok,
             "retry_count": new_retry,
         }
+        if handoff_unproven:
+            # ``_cmd_task_close`` reads this to skip the pool teardown
+            # (``restore_slot_after_task`` / ``release_claim`` / claim file).
+            # The task is terminal but the session keeps holding it, which is
+            # what makes the stall visible and the evidence recoverable.
+            response["retain_claim"] = True
+            response["needs_attention"] = "integration_handoff_unproven"
         if stranded is not None and stranded.status in ("pushed", "no_remote"):
             # ``_cmd_task_close`` writes these into ``completion.summary`` so
             # the branch is in the record a human reads, not only in metadata.

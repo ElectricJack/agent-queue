@@ -39,6 +39,14 @@ from src.models import Task, TaskStatus
 from src.playbooks.artifact_ref import ArtifactRef
 
 
+# Ownership states in which the stage-0 writer can still be recognised as this
+# operation's primary.  ``attached`` is a live writer whose dirty checkout the
+# debug escalation retains (design spec §9.2); the released pair is a delegate
+# that closed successfully and self-transferred back to its own reserved fence.
+_ATTACHED_PRIMARY_STATES = frozenset({"attached"})
+_RELEASED_PRIMARY_STATES = frozenset({"reserved", "released"})
+
+
 class _RepairInvariant(ValueError):
     """Persisted repair identity is internally inconsistent."""
 
@@ -540,7 +548,12 @@ class RepairService:
                         writer_kind="repair_delegate",
                     )
             else:
-                if not self._predecessor_matches(owner, operation):
+                released_primary = stage == 1 and await self._is_primary_writer(
+                    owner, operation_id, states=_RELEASED_PRIMARY_STATES
+                )
+                if not released_primary and not self._predecessor_matches(
+                    owner, operation
+                ):
                     return self._dispatch_value(
                         "human_required",
                         operation_id,
@@ -1205,7 +1218,26 @@ class RepairService:
             ),
         )
 
-    async def _is_primary_writer(self, owner, operation_id: str) -> bool:
+    async def _is_primary_writer(
+        self,
+        owner,
+        operation_id: str,
+        *,
+        states: frozenset[str] = _ATTACHED_PRIMARY_STATES,
+    ) -> bool:
+        """Whether *owner* is this operation's stage-0 writer in one of *states*.
+
+        ``attached`` (the default) is the retained-handoff case of design spec
+        §9.2: the primary is still live and its dirty checkout is rebound to
+        the debugger.  ``_RELEASED_PRIMARY_STATES`` is the other half — a
+        delegate that closed successfully self-transfers back to a ``reserved``
+        fence in its own ``repair`` role
+        (``arelease_integration_writer_for_retry``), which is already proven
+        stopped and detached and is therefore a valid predecessor for the next
+        stage.  Without it the escalation after a *successful* primary stage
+        fell through to :meth:`_predecessor_matches`, which knows only
+        ``collector`` and ``verifier``, and answered ``human_required``.
+        """
         async with self.db._engine.connect() as conn:
             primary = (
                 await conn.execute(
@@ -1221,7 +1253,7 @@ class RepairService:
             and self._writer_role_matches(
                 primary["writer_kind"], owner["owner_role"]
             )
-            and owner["handoff_state"] == "attached"
+            and owner["handoff_state"] in states
         )
 
     @staticmethod
