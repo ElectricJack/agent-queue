@@ -40,8 +40,12 @@ export function TaskWorkspaceProvider({ children }: { children: ReactNode }) {
   useGraphLive(projectIds);
 
   const update = useCallback((patch: Partial<TaskFilters>) => {
-    setParams((previous) => writeTaskFilters(previous, { ...readTaskFilters(previous), ...patch }), { replace: true });
-  }, [setParams]);
+    setParams((previous) => {
+      const next = writeTaskFilters(previous, { ...readTaskFilters(previous), ...patch });
+      if (graphDefaultShowsCompleted && previous.get("completed") === "0") next.set("completed", "0");
+      return next;
+    }, { replace: true });
+  }, [setParams, graphDefaultShowsCompleted]);
   const setQuery = useCallback((query: string) => update({ query }), [update]);
   const setStatus = useCallback((status: string) => {
     update({ status, ...(FINISHED_STATUSES.has(status) ? { showCompleted: true } : {}) });

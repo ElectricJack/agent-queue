@@ -45,6 +45,16 @@ describe("shared Command Center task controls", () => {
     expect(screen.getByRole("checkbox", { name: "Show completed" })).toBeChecked();
   });
 
+  it("preserves the graph completed opt-out when another filter changes", async () => {
+    mount("/projects/alpha/graph");
+    await userEvent.click(screen.getByRole("checkbox", { name: "Show completed" }));
+    await userEvent.type(screen.getByRole("searchbox", { name: "Search tasks" }), "open");
+
+    expect(screen.getByRole("checkbox", { name: "Show completed" })).not.toBeChecked();
+    expect(screen.getByTestId("query")).toHaveTextContent("completed=0");
+    await waitFor(() => expect(mocks.locate).toHaveBeenLastCalledWith("alpha", "active", "open", "", []));
+  });
+
   it("uses sidebar route scope and stores search/status in the URL", async () => {
     mount();
     expect(screen.getByTestId("scope")).toHaveTextContent("alpha");
