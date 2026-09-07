@@ -48,9 +48,14 @@ describe("last run label", () => {
   it("pairs the newest run's status with how long ago it was", () => {
     const at = now / 1000 - 300;
     expect(lastRunLabel(book("a", { last_run: { run_id: "r", status: "timed_out", completed_at: at } }), now)).toBe("timed out · 5m ago");
-    expect(lastRunLabel(book("a", { last_run: { run_id: "r", status: "running", started_at: now / 1000 - 10 } }), now)).toBe("running · just now");
+    expect(lastRunLabel(book("a", { last_run: { run_id: "r", status: "running", started_at: now / 1000 - 10 } }), now)).toBe("running · 10s");
     expect(lastRunLabel(book("a", { last_run: { run_id: "r", status: "completed", started_at: now / 1000 - 7200 } }), now)).toBe("completed · 2h ago");
     expect(lastRunLabel(book("a", { last_run: { run_id: "r", status: "failed", started_at: now / 1000 - 3 * 86400 } }), now)).toBe("failed · 3d ago");
+  });
+  it("counts an in-flight run up from its start rather than dating it", () => {
+    const running = (secondsIn: number) => book("a", { last_run: { run_id: "r", status: "running", started_at: now / 1000 - secondsIn } });
+    expect(lastRunLabel(running(90), now)).toBe("running · 1m");
+    expect(lastRunLabel(running(3900), now)).toBe("running · 1h 5m");
   });
   it("falls back to the status alone when the run carries no timestamps", () => {
     expect(lastRunLabel(book("a", { last_run: { run_id: "r", status: "completed" } }), now)).toBe("completed");
