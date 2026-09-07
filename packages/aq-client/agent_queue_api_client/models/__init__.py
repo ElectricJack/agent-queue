@@ -174,6 +174,9 @@ from .edit_profile_request_install_type_0 import EditProfileRequestInstallType0
 from .edit_profile_response import EditProfileResponse
 from .edit_profile_response_422 import EditProfileResponse422
 from .edit_project_request import EditProjectRequest
+from .edit_project_request_hierarchical_integration_policy_type_0 import (
+    EditProjectRequestHierarchicalIntegrationPolicyType0,
+)
 from .edit_project_response import EditProjectResponse
 from .edit_project_response_422 import EditProjectResponse422
 from .edit_task_request import EditTaskRequest
@@ -1270,6 +1273,7 @@ __all__ = (
     "EditProfileResponse",
     "EditProfileResponse422",
     "EditProjectRequest",
+    "EditProjectRequestHierarchicalIntegrationPolicyType0",
     "EditProjectResponse",
     "EditProjectResponse422",
     "EditTaskRequest",

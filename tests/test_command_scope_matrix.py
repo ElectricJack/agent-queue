@@ -8,7 +8,7 @@ Two layers, both derived from the real sources rather than a hand list:
    layer never consults a schema, so this needs no per-command business
    inputs and covers the entire agent surface: omitted-ID injection, foreign-ID
    rejection, and outright refusal of commands outside the set.  The set is
-   cross-checked against ``src.tools.definitions._ALL_TOOL_DEFINITIONS`` (the
+   cross-checked against ``src.mcp_registration.effective_tool_definitions`` (the
    real command-schema registry — ``CommandHandler`` has no per-command schema
    API) so neither the allowlist nor the no-definition exemption list can grow
    silently.
@@ -28,8 +28,8 @@ import pytest
 
 from src.api.auth import RequestScope
 from src.api.scope import _TASK_ID_UNPINNED, AGENT_COMMAND_SET, check_command_scope
+from src.mcp_registration import effective_tool_definitions
 from src.models import Project, SessionRecord, Task
-from src.tools.definitions import _ALL_TOOL_DEFINITIONS
 
 _ID_KEYS = ("task_id", "project_id", "session_id")
 
@@ -62,7 +62,9 @@ _NOT_IN_SET = ["delete_task", "create_task_graph", "update_config"]
 
 
 def _definitions_by_name() -> dict[str, dict]:
-    return {d["name"]: d for d in _ALL_TOOL_DEFINITIONS}
+    # Legacy ``_ALL_TOOL_DEFINITIONS`` plus contract-backed definitions
+    # (``integration_status`` carries its schema on a command contract).
+    return {d["name"]: d for d in effective_tool_definitions()}
 
 
 def _session_scope() -> RequestScope:

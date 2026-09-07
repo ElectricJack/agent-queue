@@ -267,6 +267,20 @@ class NullableParam(click.ParamType):
 def _schema_to_click_type(prop_schema: dict) -> type | click.Choice | click.ParamType | None:
     """Map a JSON Schema property to a Click parameter type."""
     schema_type = prop_schema.get("type", "string")
+    if "type" not in prop_schema:
+        # A command contract's ``args_model`` is projected by pydantic, which
+        # spells ``T | None`` as ``anyOf: [T, null]`` and a nested model as a
+        # ``$ref``.  Flatten that to the ``{"type": [...]}`` union spelling
+        # the rest of this function reads, so ``--interval-seconds`` is an
+        # int and a ``fence`` object is parsed as JSON rather than sent as
+        # the literal text.
+        branches = prop_schema.get("anyOf") or prop_schema.get("oneOf")
+        if "$ref" in prop_schema:
+            schema_type = "object"
+        elif branches:
+            schema_type = [
+                "object" if "$ref" in b else b.get("type", "string") for b in branches
+            ]
     type_names = set(schema_type) if isinstance(schema_type, list) else {schema_type}
 
     if "enum" in prop_schema:

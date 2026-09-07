@@ -255,3 +255,31 @@ class TestNullableScalarOptionsReachTheServer:
         )
         assert result.exit_code != 0
         assert "not a valid integer" in result.output
+
+
+class TestContractProjectionSchemas:
+    """Schemas projected from a command contract's ``args_model`` by pydantic:
+    ``T | None`` is ``anyOf: [T, null]`` and a nested model is a ``$ref`` —
+    neither carries a top-level ``type``."""
+
+    def test_a_nullable_scalar_projection_keeps_its_type(self):
+        """``integration_enable.interval_seconds`` is an int, not the text "30"."""
+        param = _schema_to_click_type(
+            {"anyOf": [{"exclusiveMinimum": 0, "type": "integer"}, {"type": "null"}]}
+        )
+        assert isinstance(param, NullableParam)
+        assert param.convert("30", None, None) == 30
+        assert param.convert("null", None, None) is EXPLICIT_NULL
+
+    def test_a_nullable_array_projection_parses_json(self):
+        """``gate_create.waiter_task_ids``."""
+        param = _schema_to_click_type(
+            {"anyOf": [{"items": {"type": "string"}, "type": "array"}, {"type": "null"}]}
+        )
+        assert param.convert('["a", "b"]', None, None) == ["a", "b"]
+
+    def test_a_nested_model_projection_parses_json(self):
+        """``delivery_promote.fence`` is a ``$ref`` into ``$defs``."""
+        param = _schema_to_click_type({"$ref": "#/$defs/Fence"})
+        assert isinstance(param, StructuredParam)
+        assert param.convert('{"epoch": 1}', None, None) == {"epoch": 1}

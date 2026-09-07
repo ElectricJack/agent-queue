@@ -1,12 +1,18 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import Any, TypeVar, cast
+from typing import TYPE_CHECKING, Any, TypeVar, cast
 
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
 
 from ..types import UNSET, Unset
+
+if TYPE_CHECKING:
+    from ..models.edit_project_request_hierarchical_integration_policy_type_0 import (
+        EditProjectRequestHierarchicalIntegrationPolicyType0,
+    )
+
 
 T = TypeVar("T", bound="EditProjectRequest")
 
@@ -26,6 +32,11 @@ class EditProjectRequest:
         assignment_playbook_id (None | str | Unset): Project-scoped assignment-routing playbook ID (optional, null to
             use the system default)
         repo_default_branch (None | str | Unset): Default git branch for the project (e.g. main, dev, master)
+        integration_repository_id (None | str | Unset): LOCAL-only designated integration repository ID.
+        hierarchical_integration_policy (EditProjectRequestHierarchicalIntegrationPolicyType0 | None | Unset): LOCAL-
+            only complete typed hierarchical integration policy.
+        expected_integration_generation (int | None | Unset): Required generation CAS for integration configuration.
+        reason (None | str | Unset): Operator reason recorded for integration configuration.
     """
 
     project_id: str
@@ -37,9 +48,17 @@ class EditProjectRequest:
     default_profile_id: None | str | Unset = UNSET
     assignment_playbook_id: None | str | Unset = UNSET
     repo_default_branch: None | str | Unset = UNSET
+    integration_repository_id: None | str | Unset = UNSET
+    hierarchical_integration_policy: EditProjectRequestHierarchicalIntegrationPolicyType0 | None | Unset = UNSET
+    expected_integration_generation: int | None | Unset = UNSET
+    reason: None | str | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
+        from ..models.edit_project_request_hierarchical_integration_policy_type_0 import (
+            EditProjectRequestHierarchicalIntegrationPolicyType0,
+        )
+
         project_id = self.project_id
 
         name: None | str | Unset
@@ -90,6 +109,32 @@ class EditProjectRequest:
         else:
             repo_default_branch = self.repo_default_branch
 
+        integration_repository_id: None | str | Unset
+        if isinstance(self.integration_repository_id, Unset):
+            integration_repository_id = UNSET
+        else:
+            integration_repository_id = self.integration_repository_id
+
+        hierarchical_integration_policy: dict[str, Any] | None | Unset
+        if isinstance(self.hierarchical_integration_policy, Unset):
+            hierarchical_integration_policy = UNSET
+        elif isinstance(self.hierarchical_integration_policy, EditProjectRequestHierarchicalIntegrationPolicyType0):
+            hierarchical_integration_policy = self.hierarchical_integration_policy.to_dict()
+        else:
+            hierarchical_integration_policy = self.hierarchical_integration_policy
+
+        expected_integration_generation: int | None | Unset
+        if isinstance(self.expected_integration_generation, Unset):
+            expected_integration_generation = UNSET
+        else:
+            expected_integration_generation = self.expected_integration_generation
+
+        reason: None | str | Unset
+        if isinstance(self.reason, Unset):
+            reason = UNSET
+        else:
+            reason = self.reason
+
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update(
@@ -113,11 +158,23 @@ class EditProjectRequest:
             field_dict["assignment_playbook_id"] = assignment_playbook_id
         if repo_default_branch is not UNSET:
             field_dict["repo_default_branch"] = repo_default_branch
+        if integration_repository_id is not UNSET:
+            field_dict["integration_repository_id"] = integration_repository_id
+        if hierarchical_integration_policy is not UNSET:
+            field_dict["hierarchical_integration_policy"] = hierarchical_integration_policy
+        if expected_integration_generation is not UNSET:
+            field_dict["expected_integration_generation"] = expected_integration_generation
+        if reason is not UNSET:
+            field_dict["reason"] = reason
 
         return field_dict
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
+        from ..models.edit_project_request_hierarchical_integration_policy_type_0 import (
+            EditProjectRequestHierarchicalIntegrationPolicyType0,
+        )
+
         d = dict(src_dict)
         project_id = d.pop("project_id")
 
@@ -193,6 +250,58 @@ class EditProjectRequest:
 
         repo_default_branch = _parse_repo_default_branch(d.pop("repo_default_branch", UNSET))
 
+        def _parse_integration_repository_id(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        integration_repository_id = _parse_integration_repository_id(d.pop("integration_repository_id", UNSET))
+
+        def _parse_hierarchical_integration_policy(
+            data: object,
+        ) -> EditProjectRequestHierarchicalIntegrationPolicyType0 | None | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            try:
+                if not isinstance(data, dict):
+                    raise TypeError()
+                hierarchical_integration_policy_type_0 = EditProjectRequestHierarchicalIntegrationPolicyType0.from_dict(
+                    data
+                )
+
+                return hierarchical_integration_policy_type_0
+            except (TypeError, ValueError, AttributeError, KeyError):
+                pass
+            return cast(EditProjectRequestHierarchicalIntegrationPolicyType0 | None | Unset, data)
+
+        hierarchical_integration_policy = _parse_hierarchical_integration_policy(
+            d.pop("hierarchical_integration_policy", UNSET)
+        )
+
+        def _parse_expected_integration_generation(data: object) -> int | None | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(int | None | Unset, data)
+
+        expected_integration_generation = _parse_expected_integration_generation(
+            d.pop("expected_integration_generation", UNSET)
+        )
+
+        def _parse_reason(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        reason = _parse_reason(d.pop("reason", UNSET))
+
         edit_project_request = cls(
             project_id=project_id,
             name=name,
@@ -203,6 +312,10 @@ class EditProjectRequest:
             default_profile_id=default_profile_id,
             assignment_playbook_id=assignment_playbook_id,
             repo_default_branch=repo_default_branch,
+            integration_repository_id=integration_repository_id,
+            hierarchical_integration_policy=hierarchical_integration_policy,
+            expected_integration_generation=expected_integration_generation,
+            reason=reason,
         )
 
         edit_project_request.additional_properties = d

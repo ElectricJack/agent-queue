@@ -15,13 +15,13 @@ T = TypeVar("T", bound="GateCreateRequest")
 class GateCreateRequest:
     """
     Attributes:
-        project_id (str): Project id that owns the gate
-        gate_type (str): Gate kind. 'routing' gates resolve only via task_route.
-        title (str): Human-readable gate title
-        question (None | str | Unset): Optional prompt shown to the resolver
-        await_id (None | str | Unset): Optional external id the gate is waiting on
-        timeout_at (float | None | Unset): Optional epoch after which the gate is considered expired
-        waiter_task_ids (list[Any] | None | Unset): Task ids that should be blocked by this gate
+        project_id (str):
+        gate_type (str):
+        title (str):
+        question (None | str | Unset):
+        await_id (None | str | Unset):
+        timeout_at (None | str | Unset):
+        waiter_task_ids (list[Any] | None | Unset):
     """
 
     project_id: str
@@ -29,7 +29,7 @@ class GateCreateRequest:
     title: str
     question: None | str | Unset = UNSET
     await_id: None | str | Unset = UNSET
-    timeout_at: float | None | Unset = UNSET
+    timeout_at: None | str | Unset = UNSET
     waiter_task_ids: list[Any] | None | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
@@ -52,7 +52,7 @@ class GateCreateRequest:
         else:
             await_id = self.await_id
 
-        timeout_at: float | None | Unset
+        timeout_at: None | str | Unset
         if isinstance(self.timeout_at, Unset):
             timeout_at = UNSET
         else:
@@ -114,12 +114,12 @@ class GateCreateRequest:
 
         await_id = _parse_await_id(d.pop("await_id", UNSET))
 
-        def _parse_timeout_at(data: object) -> float | None | Unset:
+        def _parse_timeout_at(data: object) -> None | str | Unset:
             if data is None:
                 return data
             if isinstance(data, Unset):
                 return data
-            return cast(float | None | Unset, data)
+            return cast(None | str | Unset, data)
 
         timeout_at = _parse_timeout_at(d.pop("timeout_at", UNSET))
 
