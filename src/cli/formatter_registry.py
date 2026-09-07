@@ -160,6 +160,7 @@ def _register_all():
     )
     from .formatters import (
         format_active_tasks_all,
+        format_task_recent_activity,
         format_agent_table,
         format_archived_tasks,
         format_available_tools,
@@ -305,6 +306,11 @@ def _register_all():
     )
     FORMATTERS["list_active_tasks_all_projects"] = FormatterSpec(
         render=format_active_tasks_all,
+        extract=None,
+        many=False,
+    )
+    FORMATTERS["task_recent_activity"] = FormatterSpec(
+        render=format_task_recent_activity,
         extract=None,
         many=False,
     )

@@ -49,6 +49,28 @@ describe("shared Command Center task controls", () => {
     expect(mocks.live).toHaveBeenLastCalledWith(["alpha"]);
   });
 
+  it("puts the chosen time range in the URL and implies completed work", async () => {
+    mount("/projects/alpha/tasks");
+    const range = screen.getByRole("combobox", { name: "Time range" });
+    expect(range).toHaveValue("");
+    const completed = screen.getByRole("checkbox", { name: "Show completed" });
+    expect(completed).not.toBeChecked();
+
+    await userEvent.selectOptions(range, "Last 24 hours");
+
+    expect(screen.getByTestId("query")).toHaveTextContent("window=24h");
+    expect(completed).toBeChecked();
+    expect(completed).toBeDisabled();
+  });
+
+  it("clears a time range along with the other filters", async () => {
+    mount("/projects/alpha/tasks?window=24h&q=checkout");
+    expect(screen.getByRole("combobox", { name: "Time range" })).toHaveValue("24h");
+    await userEvent.click(screen.getByRole("button", { name: "Clear task filters" }));
+    expect(screen.getByTestId("query")).not.toHaveTextContent("window");
+    expect(screen.getByRole("combobox", { name: "Time range" })).toHaveValue("");
+  });
+
   it("uses all projects in the global route without a second project selector", () => {
     mount("/command-center/tasks");
     expect(screen.getByTestId("scope")).toHaveTextContent("alpha,beta");
