@@ -814,6 +814,13 @@ async def test_exact_helper_launched_by_fake_git_descendant_cannot_take_credenti
         assert daemon_secret not in environment_capture.read_text()
         assert secret not in argument_capture.read_text()
         assert daemon_secret not in argument_capture.read_text()
+        # The retainer is orphaned once the leader exits; the kill path can
+        # only reap the leader, so init reaps the SIGKILLed retainer's zombie
+        # asynchronously and the group can linger for a moment.
+        for _ in range(200):
+            if not _process_group_exists(leader):
+                break
+            await asyncio.sleep(0.01)
         assert not _process_group_exists(leader)
         assert not Path(f"/proc/{descendant}").exists()
         await asyncio.sleep(0)
