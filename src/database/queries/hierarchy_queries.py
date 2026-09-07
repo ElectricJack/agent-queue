@@ -15,7 +15,6 @@ from collections.abc import Callable
 
 from sqlalchemy import and_, case, delete, exists, func, insert, literal, or_, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
-from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 from src.database.queries.task_queries import TransitionResult
 from src.database.tables import (
@@ -82,14 +81,14 @@ def materialized_origin_when_hierarchical():
             ~exists(
                 select(literal(1)).where(
                     task_branch_origins.c.task_id == tasks.c.id,
-                    task_branch_origins.c.repository_id
-                    == projects.c.integration_repository_id,
+                    task_branch_origins.c.repository_id == projects.c.integration_repository_id,
                     task_branch_origins.c.retired_at.is_(None),
                     task_branch_origins.c.materialized.is_(True),
                 )
             ),
         )
     )
+
 
 #: Session states that still hold their task — a container in one of these
 #: cannot be settled out from under a live worker (spec §7).
@@ -114,9 +113,7 @@ class HierarchyQueryMixin:
         """Reject legacy bulk hierarchy writers for hierarchy-enabled projects."""
         mode = (
             await conn.execute(
-                select(projects.c.hierarchical_integration_mode).where(
-                    projects.c.id == project_id
-                )
+                select(projects.c.hierarchical_integration_mode).where(projects.c.id == project_id)
             )
         ).scalar_one_or_none()
         if mode in {"hierarchy", "train"}:
@@ -131,12 +128,16 @@ class HierarchyQueryMixin:
             return set()
         async with self._engine.connect() as conn:
             rows = (
-                await conn.execute(
-                    select(tasks.c.id).where(
-                        tasks.c.id.in_(task_ids), materialized_origin_when_hierarchical()
+                (
+                    await conn.execute(
+                        select(tasks.c.id).where(
+                            tasks.c.id.in_(task_ids), materialized_origin_when_hierarchical()
+                        )
                     )
                 )
-            ).scalars().all()
+                .scalars()
+                .all()
+            )
         return set(rows)
 
     async def is_hierarchy_task_runnable(self, task_id: str) -> bool:
@@ -144,8 +145,7 @@ class HierarchyQueryMixin:
 
     async def mark_container(self, task_id: str, *, conn) -> None:
         """Set ``task_metadata.container = true`` (idempotent).  Never cleared."""
-        dialect = conn.dialect.name
-        ins = pg_insert if dialect == "postgresql" else sqlite_insert
+        ins = pg_insert
         await conn.execute(
             ins(task_metadata)
             .values(task_id=task_id, key=CONTAINER_KEY, value=CONTAINER_VALUE)
@@ -363,9 +363,9 @@ class HierarchyQueryMixin:
         # A mutation below a sealed root changes that member's frozen
         # aggregate just as surely as mutating the member row itself.  Walk
         # upward as well as downward so a descendant cannot evade sealing.
-        ancestor_seed = select(
-            tasks.c.id, tasks.c.parent_task_id, literal(0).label("depth")
-        ).where(tasks.c.id == task_id)
+        ancestor_seed = select(tasks.c.id, tasks.c.parent_task_id, literal(0).label("depth")).where(
+            tasks.c.id == task_id
+        )
         ancestors = ancestor_seed.cte("integration_mutation_ancestors", recursive=True)
         parent = tasks.alias("integration_mutation_parent")
         ancestors = ancestors.union_all(
@@ -430,23 +430,23 @@ class HierarchyQueryMixin:
                     receipt_source.c.parent_task_id != task_id,
                 )
             )
-        delivered = (
-            await conn.execute(
-                delivered_stmt.limit(1)
-            )
-        ).first()
+        delivered = (await conn.execute(delivered_stmt.limit(1))).first()
         if delivered:
             raise HierarchyError(
                 "delivery_target_fixed", f"{mutation} would change delivered branch identity"
             )
         origins = (
-            await conn.execute(
-                select(task_branch_origins)
-                .where(task_branch_origins.c.task_id.in_(ids))
-                .where(task_branch_origins.c.retired_at.is_(None))
-                .with_for_update()
+            (
+                await conn.execute(
+                    select(task_branch_origins)
+                    .where(task_branch_origins.c.task_id.in_(ids))
+                    .where(task_branch_origins.c.retired_at.is_(None))
+                    .with_for_update()
+                )
             )
-        ).mappings().all()
+            .mappings()
+            .all()
+        )
         if retire_pending and any(bool(row["materialized"]) for row in origins):
             raise HierarchyError(
                 "delivery_target_fixed", f"{mutation} would discard a materialized origin"
@@ -506,9 +506,7 @@ class HierarchyQueryMixin:
             # invalidation share the caller's transaction.
             await conn.execute(
                 update(task_integration_checkpoints)
-                .where(
-                    task_integration_checkpoints.c.task_id == task_row.parent_task_id
-                )
+                .where(task_integration_checkpoints.c.task_id == task_row.parent_task_id)
                 .values(
                     generation=task_integration_checkpoints.c.generation + 1,
                     verified_sha=None,
@@ -671,9 +669,7 @@ class HierarchyQueryMixin:
         )
         ready = list(settle_result.ready) + [(tid, "unblocked") for tid in own_ready_ids]
 
-        return TransitionResult(
-            flipped=flipped, settled=settle_result.settled, ready=ready
-        )
+        return TransitionResult(flipped=flipped, settled=settle_result.settled, ready=ready)
 
     async def set_parent_bulk(
         self, child_ids: list[str], parent_id: str, *, conn
@@ -843,13 +839,12 @@ class HierarchyQueryMixin:
             )
             .cte("reach", recursive=True)
         )
-        step = (
-            select(task_dependencies.c.depends_on_task_id, (base.c.depth + 1).label("depth"))
-            .where(
-                task_dependencies.c.task_id == base.c.id,
-                task_dependencies.c.dep_type.in_(blocking),
-                base.c.depth < REACHABILITY_MAX_DEPTH,
-            )
+        step = select(
+            task_dependencies.c.depends_on_task_id, (base.c.depth + 1).label("depth")
+        ).where(
+            task_dependencies.c.task_id == base.c.id,
+            task_dependencies.c.dep_type.in_(blocking),
+            base.c.depth < REACHABILITY_MAX_DEPTH,
         )
         # UNION collapses equal-depth re-convergence; the depth guard below
         # is what bounds an already-cyclic graph.
@@ -903,46 +898,48 @@ class HierarchyQueryMixin:
                 await ParentCompletion(self).mark_ready_on(conn, parent_id)
 
         child = tasks.alias("child")
-        stmt = select(tasks.c.id).select_from(
-            tasks.join(projects, projects.c.id == tasks.c.project_id)
-        ).where(
-            and_(
-                tasks.c.id.in_(sorted(pending)),
-                tasks.c.status == TaskStatus.IN_PROGRESS.value,
-                exists(
-                    select(literal(1)).where(
-                        and_(
-                            task_metadata.c.task_id == tasks.c.id,
-                            task_metadata.c.key == CONTAINER_KEY,
-                            task_metadata.c.value == CONTAINER_VALUE,
-                        )
-                    )
-                ),
-                ~exists(
-                    select(literal(1)).where(
-                        and_(
-                            sessions.c.task_id == tasks.c.id,
-                            sessions.c.state.in_(LIVE_SESSION_STATES),
-                        )
-                    )
-                ),
-                ~exists(
-                    select(literal(1)).where(
-                        and_(
-                            child.c.parent_task_id == tasks.c.id,
-                            child.c.status != TaskStatus.COMPLETED.value,
-                        )
-                    )
-                ),
-                or_(
-                    ~projects.c.hierarchical_integration_mode.in_(("hierarchy", "train")),
-                    ~exists(
+        stmt = (
+            select(tasks.c.id)
+            .select_from(tasks.join(projects, projects.c.id == tasks.c.project_id))
+            .where(
+                and_(
+                    tasks.c.id.in_(sorted(pending)),
+                    tasks.c.status == TaskStatus.IN_PROGRESS.value,
+                    exists(
                         select(literal(1)).where(
-                            task_integration_checkpoints.c.task_id == tasks.c.id,
-                            task_integration_checkpoints.c.episode_id.is_not(None),
+                            and_(
+                                task_metadata.c.task_id == tasks.c.id,
+                                task_metadata.c.key == CONTAINER_KEY,
+                                task_metadata.c.value == CONTAINER_VALUE,
+                            )
                         )
                     ),
-                ),
+                    ~exists(
+                        select(literal(1)).where(
+                            and_(
+                                sessions.c.task_id == tasks.c.id,
+                                sessions.c.state.in_(LIVE_SESSION_STATES),
+                            )
+                        )
+                    ),
+                    ~exists(
+                        select(literal(1)).where(
+                            and_(
+                                child.c.parent_task_id == tasks.c.id,
+                                child.c.status != TaskStatus.COMPLETED.value,
+                            )
+                        )
+                    ),
+                    or_(
+                        ~projects.c.hierarchical_integration_mode.in_(("hierarchy", "train")),
+                        ~exists(
+                            select(literal(1)).where(
+                                task_integration_checkpoints.c.task_id == tasks.c.id,
+                                task_integration_checkpoints.c.episode_id.is_not(None),
+                            )
+                        ),
+                    ),
+                )
             )
         )
         hits = [r[0] for r in (await conn.execute(stmt)).fetchall()]
@@ -963,9 +960,7 @@ class HierarchyQueryMixin:
             # not happen would emit ``task.completed`` for a task still
             # IN_PROGRESS.  Recursion may also have settled it already, so
             # the id is only appended once.
-            landed = (
-                await conn.execute(select(tasks.c.status).where(tasks.c.id == cid))
-            ).scalar()
+            landed = (await conn.execute(select(tasks.c.status).where(tasks.c.id == cid))).scalar()
             if landed == TaskStatus.COMPLETED.value and cid not in result.settled:
                 result.settled.append(cid)
             for sid in res.settled:
@@ -978,45 +973,47 @@ class HierarchyQueryMixin:
     async def settle_candidates(self) -> list[str]:
         """Every container the §7 predicate would settle right now (backstop)."""
         child = tasks.alias("child")
-        stmt = select(tasks.c.id).select_from(
-            tasks.join(projects, projects.c.id == tasks.c.project_id)
-        ).where(
-            and_(
-                tasks.c.status == TaskStatus.IN_PROGRESS.value,
-                exists(
-                    select(literal(1)).where(
-                        and_(
-                            task_metadata.c.task_id == tasks.c.id,
-                            task_metadata.c.key == CONTAINER_KEY,
-                            task_metadata.c.value == CONTAINER_VALUE,
-                        )
-                    )
-                ),
-                ~exists(
-                    select(literal(1)).where(
-                        and_(
-                            sessions.c.task_id == tasks.c.id,
-                            sessions.c.state.in_(LIVE_SESSION_STATES),
-                        )
-                    )
-                ),
-                ~exists(
-                    select(literal(1)).where(
-                        and_(
-                            child.c.parent_task_id == tasks.c.id,
-                            child.c.status != TaskStatus.COMPLETED.value,
-                        )
-                    )
-                ),
-                or_(
-                    ~projects.c.hierarchical_integration_mode.in_(("hierarchy", "train")),
-                    ~exists(
+        stmt = (
+            select(tasks.c.id)
+            .select_from(tasks.join(projects, projects.c.id == tasks.c.project_id))
+            .where(
+                and_(
+                    tasks.c.status == TaskStatus.IN_PROGRESS.value,
+                    exists(
                         select(literal(1)).where(
-                            task_integration_checkpoints.c.task_id == tasks.c.id,
-                            task_integration_checkpoints.c.episode_id.is_not(None),
+                            and_(
+                                task_metadata.c.task_id == tasks.c.id,
+                                task_metadata.c.key == CONTAINER_KEY,
+                                task_metadata.c.value == CONTAINER_VALUE,
+                            )
                         )
                     ),
-                ),
+                    ~exists(
+                        select(literal(1)).where(
+                            and_(
+                                sessions.c.task_id == tasks.c.id,
+                                sessions.c.state.in_(LIVE_SESSION_STATES),
+                            )
+                        )
+                    ),
+                    ~exists(
+                        select(literal(1)).where(
+                            and_(
+                                child.c.parent_task_id == tasks.c.id,
+                                child.c.status != TaskStatus.COMPLETED.value,
+                            )
+                        )
+                    ),
+                    or_(
+                        ~projects.c.hierarchical_integration_mode.in_(("hierarchy", "train")),
+                        ~exists(
+                            select(literal(1)).where(
+                                task_integration_checkpoints.c.task_id == tasks.c.id,
+                                task_integration_checkpoints.c.episode_id.is_not(None),
+                            )
+                        ),
+                    ),
+                )
             )
         )
         async with self._engine.begin() as conn:
@@ -1056,16 +1053,17 @@ class HierarchyQueryMixin:
                     )
                 )
             else:
-                await self.set_parent(
-                    task_id, parent_id, conn=conn, description=description
-                )
+                await self.set_parent(task_id, parent_id, conn=conn, description=description)
             task.parent_task_id = None if capped else parent_id
             gated = routing_policy is not None and routing_policy(task)
             if gated:
                 await self.create_gate(
-                    task.project_id, "routing", "Route task",
+                    task.project_id,
+                    "routing",
+                    "Route task",
                     question="Assign profile + intelligence class (+ workspace if profile needs one).",
-                    waiter_task_ids=[task_id], conn=conn,
+                    waiter_task_ids=[task_id],
+                    conn=conn,
                 )
                 task.is_blocked = True
         if gated:
@@ -1202,8 +1200,7 @@ class HierarchyQueryMixin:
     async def _upsert_meta(self, task_id: str, key: str, value, *, conn) -> None:
         """Set ``task_metadata[key] = value`` (JSON-encoded), insert-or-update."""
         encoded = json.dumps(value)
-        dialect = conn.dialect.name
-        ins = pg_insert if dialect == "postgresql" else sqlite_insert
+        ins = pg_insert
         stmt = ins(task_metadata).values(task_id=task_id, key=key, value=encoded)
         stmt = stmt.on_conflict_do_update(
             index_elements=["task_id", "key"], set_={"value": encoded}
@@ -1220,8 +1217,7 @@ class HierarchyQueryMixin:
         """
         if not items:
             return
-        dialect = conn.dialect.name
-        ins = pg_insert if dialect == "postgresql" else sqlite_insert
+        ins = pg_insert
         stmt = ins(task_metadata).values(
             [
                 {"task_id": task_id, "key": key, "value": json.dumps(value)}

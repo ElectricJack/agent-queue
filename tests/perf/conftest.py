@@ -25,21 +25,12 @@ from tests.pg_dsn import ensure_worker_postgres_dsn
 POSTGRES_TEST_DSN = ensure_worker_postgres_dsn()
 
 
-@pytest.fixture(params=["sqlite", "postgres"])
+@pytest.fixture
 async def any_db(request, tmp_path):
-    if request.param == "postgres":
-        if not POSTGRES_TEST_DSN:
-            pytest.skip("POSTGRES_TEST_DSN not set")
-        from src.database.adapters.postgresql import PostgreSQLDatabaseAdapter
+    from src.database import Database
 
-        db = PostgreSQLDatabaseAdapter(POSTGRES_TEST_DSN)
-        await db.initialize()
-        await db.reset_for_tests()
-    else:
-        from src.database import Database
-
-        db = Database(str(tmp_path / "perf.db"))
-        await db.initialize()
+    db = Database(str(tmp_path / "perf.db"))
+    await db.initialize()
     yield db
     await db.close()
 

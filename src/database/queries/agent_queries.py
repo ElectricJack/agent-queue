@@ -6,7 +6,6 @@ import time
 
 from sqlalchemy import and_, delete, func, insert, or_, select, update
 
-from src.database.queries.hierarchy_queries import materialized_origin_when_hierarchical
 from src.database.tables import agents, events, sessions, task_results, tasks, workspaces
 from src.models import Agent, AgentState, TaskStatus
 
@@ -43,9 +42,7 @@ class AgentQueryMixin:
 
     async def _lock_agent_roster_on(self, conn) -> None:
         """Serialize automatic growth with deletion; SQLite uses BEGIN IMMEDIATE."""
-        if conn.dialect.name == "postgresql":
-            # Namespace AQFL (agent flock), shared only by these two mutations.
-            await conn.execute(select(func.pg_advisory_xact_lock(0x4151464C, 0)))
+        await conn.execute(select(func.pg_advisory_xact_lock(0x4151464C, 0)))
 
     async def create_automatic_agent(self, agent: Agent) -> bool:
         """Bootstrap capacity only until the user manually sizes the roster.
@@ -176,16 +173,27 @@ class AgentQueryMixin:
             return result.rowcount == 1
 
     async def _reserve_idle_agent_on(self, conn, agent_id: str) -> bool:
-        active_assignment = select(tasks.c.id).where(
-            tasks.c.assigned_agent_id == agent_id,
-            tasks.c.status.in_((
-                TaskStatus.ASSIGNED.value, TaskStatus.IN_PROGRESS.value,
-                TaskStatus.WAITING_INPUT.value,
-            )),
-        ).exists()
-        held_workspace = select(workspaces.c.id).where(
-            workspaces.c.locked_by_agent_id == agent_id,
-        ).exists()
+        active_assignment = (
+            select(tasks.c.id)
+            .where(
+                tasks.c.assigned_agent_id == agent_id,
+                tasks.c.status.in_(
+                    (
+                        TaskStatus.ASSIGNED.value,
+                        TaskStatus.IN_PROGRESS.value,
+                        TaskStatus.WAITING_INPUT.value,
+                    )
+                ),
+            )
+            .exists()
+        )
+        held_workspace = (
+            select(workspaces.c.id)
+            .where(
+                workspaces.c.locked_by_agent_id == agent_id,
+            )
+            .exists()
+        )
         live = (
             select(sessions.c.id)
             .where(
@@ -220,17 +228,26 @@ class AgentQueryMixin:
         self, agent_id: str, *, expected_heartbeat: float | None
     ) -> bool:
         """Release this launch reservation only, never a successor or live owner."""
-        live = select(sessions.c.id).where(
-            sessions.c.agent_id == agent_id,
-            sessions.c.state.in_(("starting", "running", "draining")),
-        ).exists()
+        live = (
+            select(sessions.c.id)
+            .where(
+                sessions.c.agent_id == agent_id,
+                sessions.c.state.in_(("starting", "running", "draining")),
+            )
+            .exists()
+        )
         async with self.immediate() as conn:
             result = await conn.execute(
-                update(agents).where(
-                    agents.c.id == agent_id, agents.c.state == AgentState.BUSY.value,
-                    agents.c.current_task_id.is_(None), agents.c.deleted_at.is_(None),
-                    agents.c.last_heartbeat == expected_heartbeat, ~live,
-                ).values(state=AgentState.IDLE.value)
+                update(agents)
+                .where(
+                    agents.c.id == agent_id,
+                    agents.c.state == AgentState.BUSY.value,
+                    agents.c.current_task_id.is_(None),
+                    agents.c.deleted_at.is_(None),
+                    agents.c.last_heartbeat == expected_heartbeat,
+                    ~live,
+                )
+                .values(state=AgentState.IDLE.value)
             )
             return result.rowcount == 1
 
@@ -270,7 +287,6 @@ class AgentQueryMixin:
                         tasks.c.id == task_id,
                         tasks.c.status == TaskStatus.READY.value,
                         tasks.c.is_blocked == 0,
-                        materialized_origin_when_hierarchical(),
                         ~live_task,
                         ~busy_owner,
                     )

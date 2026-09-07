@@ -74,24 +74,12 @@ class IntegrationStatusService:
             raise RuntimeError("database is not initialized")
         conn = await engine.connect()
         try:
-            if conn.dialect.name == "sqlite":
-                # The sqlite3 driver's legacy transaction mode does not emit
-                # BEGIN for SELECTs.  Issue it ourselves so the first read
-                # establishes the WAL snapshot used by the whole projection.
-                await conn.execution_options(isolation_level="AUTOCOMMIT")
-                await conn.exec_driver_sql("BEGIN")
-                try:
-                    yield conn
-                finally:
-                    await conn.exec_driver_sql("ROLLBACK")
-            else:
-                if conn.dialect.name == "postgresql":
-                    await conn.execution_options(isolation_level="REPEATABLE READ")
-                transaction = await conn.begin()
-                try:
-                    yield conn
-                finally:
-                    await transaction.rollback()
+            await conn.execution_options(isolation_level="REPEATABLE READ")
+            transaction = await conn.begin()
+            try:
+                yield conn
+            finally:
+                await transaction.rollback()
         finally:
             await conn.close()
 
@@ -99,8 +87,10 @@ class IntegrationStatusService:
         """Return one complete project projection from one database snapshot."""
         async with self._consistent_snapshot() as conn:
             project = (
-                await conn.execute(select(projects).where(projects.c.id == project_id))
-            ).mappings().one_or_none()
+                (await conn.execute(select(projects).where(projects.c.id == project_id)))
+                .mappings()
+                .one_or_none()
+            )
             if project is None:
                 return None
 
@@ -130,8 +120,7 @@ class IntegrationStatusService:
                     conn,
                     select(integration_candidate_revisions).where(
                         integration_candidate_revisions.c.batch_id == batch["id"],
-                        integration_candidate_revisions.c.revision
-                        == batch["current_revision"],
+                        integration_candidate_revisions.c.revision == batch["current_revision"],
                     ),
                 )
                 member_rows = await self._all(
@@ -207,16 +196,20 @@ class IntegrationStatusService:
                 ),
             )
 
-            ownership_rows = await self._all(
-                conn,
-                select(integration_branch_owners)
-                .where(
-                    integration_branch_owners.c.repository_id
-                    == project["integration_repository_id"],
-                    integration_branch_owners.c.handoff_state != "released",
+            ownership_rows = (
+                await self._all(
+                    conn,
+                    select(integration_branch_owners)
+                    .where(
+                        integration_branch_owners.c.repository_id
+                        == project["integration_repository_id"],
+                        integration_branch_owners.c.handoff_state != "released",
+                    )
+                    .order_by(integration_branch_owners.c.ref),
                 )
-                .order_by(integration_branch_owners.c.ref),
-            ) if project["integration_repository_id"] else []
+                if project["integration_repository_id"]
+                else []
+            )
             ownership = [
                 {
                     "ref": row["ref"],
@@ -306,9 +299,9 @@ class IntegrationStatusService:
             # permanent operational blocker.
             from src.integration.controls import IntegrationControlService, _blocker_digest
 
-            functional = await IntegrationControlService(
-                self.db
-            )._functional_preflight_on(conn, project_id)
+            functional = await IntegrationControlService(self.db)._functional_preflight_on(
+                conn, project_id
+            )
             project_blockers = self._project_blockers(
                 project, batch, revision, repair, cleanup, now=self.clock()
             )
@@ -353,7 +346,9 @@ class IntegrationStatusService:
                 "ci_evidence": evidence,
                 "promotion": promotion,
                 "reconciliation": {
-                    "pending": any(item["state"] not in {"committed", "superseded"} for item in promotion)
+                    "pending": any(
+                        item["state"] not in {"committed", "superseded"} for item in promotion
+                    )
                 },
                 "cleanup_pending": cleanup,
                 "release": release,
@@ -382,12 +377,16 @@ class IntegrationStatusService:
         expected_project_id: str | None = None,
     ) -> dict[str, Any] | None:
         row = (
-            await conn.execute(
-                select(tasks, projects)
-                .select_from(tasks.join(projects, projects.c.id == tasks.c.project_id))
-                .where(tasks.c.id == task_id)
+            (
+                await conn.execute(
+                    select(tasks, projects)
+                    .select_from(tasks.join(projects, projects.c.id == tasks.c.project_id))
+                    .where(tasks.c.id == task_id)
+                )
             )
-        ).mappings().one_or_none()
+            .mappings()
+            .one_or_none()
+        )
         if row is None or (
             expected_project_id is not None and row["project_id"] != expected_project_id
         ):
@@ -448,18 +447,26 @@ class IntegrationStatusService:
                 or review["verdict"] != "approved"
             ):
                 blockers.append(
-                    _blocker("stale_review", "review does not bind the current task head", review["id"])
+                    _blocker(
+                        "stale_review", "review does not bind the current task head", review["id"]
+                    )
                 )
-        owners = await self._all(
-            conn,
-            select(integration_branch_owners.c.id).where(
-                integration_branch_owners.c.repository_id == designated,
-                integration_branch_owners.c.ref == row["branch_name"],
-                integration_branch_owners.c.handoff_state != "released",
-            ),
-        ) if designated and row["branch_name"] else []
+        owners = (
+            await self._all(
+                conn,
+                select(integration_branch_owners.c.id).where(
+                    integration_branch_owners.c.repository_id == designated,
+                    integration_branch_owners.c.ref == row["branch_name"],
+                    integration_branch_owners.c.handoff_state != "released",
+                ),
+            )
+            if designated and row["branch_name"]
+            else []
+        )
         if owners:
-            blockers.append(_blocker("active_owner", "task branch has an active owner", owners[0]["id"]))
+            blockers.append(
+                _blocker("active_owner", "task branch has an active owner", owners[0]["id"])
+            )
 
         readiness_operation = None
         if checkpoint is not None and checkpoint["episode_id"] is not None:
@@ -497,9 +504,7 @@ class IntegrationStatusService:
                 child_id = item["task_id"]
                 cause = item["reason"]
                 if child_status.get(child_id) not in TERMINAL_TASK_STATES:
-                    blockers.append(
-                        _blocker("open_child", "child task is not terminal", child_id)
-                    )
+                    blockers.append(_blocker("open_child", "child task is not terminal", child_id))
                 elif cause == "origin_mismatch":
                     blockers.append(
                         _blocker(
@@ -543,7 +548,9 @@ class IntegrationStatusService:
         repair = await self._repair_projection(conn, operation_rows)
         for item in repair:
             if item["state"] == "human_required":
-                blockers.append(_blocker("human_hold", "repair requires a human decision", item["id"]))
+                blockers.append(
+                    _blocker("human_hold", "repair requires a human decision", item["id"])
+                )
         blockers.extend(self._repair_blockers(repair, now=self.clock()))
         return {
             "task_id": task_id,
@@ -641,7 +648,9 @@ class IntegrationStatusService:
             or revision is None
             or revision["state"] not in {"green", "promoted"}
         ):
-            blockers.append(_blocker("pending_ci", "active candidate is not proven green", batch["id"]))
+            blockers.append(
+                _blocker("pending_ci", "active candidate is not proven green", batch["id"])
+            )
         for operation in repair:
             if operation["state"] == "human_required" or (
                 batch is not None and batch["lifecycle"] == "human_blocked"
@@ -653,14 +662,16 @@ class IntegrationStatusService:
         conflict = next((item for item in cleanup if item["state"] == "conflict"), None)
         if conflict is not None:
             blockers.append(
-                _blocker("cleanup_conflict", "cleanup requires operator reconciliation", conflict["identity"])
+                _blocker(
+                    "cleanup_conflict",
+                    "cleanup requires operator reconciliation",
+                    conflict["identity"],
+                )
             )
         return blockers
 
     @staticmethod
-    def _repair_blockers(
-        repair: list[dict[str, Any]], *, now: float
-    ) -> list[dict[str, Any]]:
+    def _repair_blockers(repair: list[dict[str, Any]], *, now: float) -> list[dict[str, Any]]:
         blockers: list[dict[str, Any]] = []
         for operation in repair:
             current = next(
@@ -689,14 +700,8 @@ class IntegrationStatusService:
                     )
                 )
             deadline_at = current["deadline_at"]
-            deadline_bound = (
-                current["state"] == "active" or operation["target_kind"] == "parent"
-            )
-            if (
-                deadline_bound
-                and deadline_at is not None
-                and now >= float(deadline_at)
-            ):
+            deadline_bound = current["state"] == "active" or operation["target_kind"] == "parent"
+            if deadline_bound and deadline_at is not None and now >= float(deadline_at):
                 blockers.append(
                     _blocker(
                         "budget_exhausted",

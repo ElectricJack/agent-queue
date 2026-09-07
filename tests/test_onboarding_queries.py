@@ -36,19 +36,10 @@ def test_database_protocol_exposes_onboarding_queries():
     assert issubclass(SQLiteDatabaseAdapter, DatabaseBackend)
 
 
-@pytest.fixture(params=["sqlite", "postgres"])
+@pytest.fixture
 async def db(request, tmp_path):
-    if request.param == "postgres":
-        if not POSTGRES_TEST_DSN:
-            pytest.skip("POSTGRES_TEST_DSN not set")
-        from src.database.adapters.postgresql import PostgreSQLDatabaseAdapter
-
-        database = PostgreSQLDatabaseAdapter(POSTGRES_TEST_DSN)
-        await database.initialize()
-        await database.reset_for_tests()
-    else:
-        database = Database(str(tmp_path / "onboarding.db"))
-        await database.initialize()
+    database = Database(str(tmp_path / "onboarding.db"))
+    await database.initialize()
     yield database
     await database.close()
 

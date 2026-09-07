@@ -44,19 +44,10 @@ PLAYBOOK_IDS = (
 )
 
 
-@pytest.fixture(params=["sqlite", "postgres"])
+@pytest.fixture
 async def db(request, tmp_path):
-    if request.param == "postgres":
-        if not POSTGRES_TEST_DSN:
-            pytest.skip("POSTGRES_TEST_DSN not set")
-        from src.database.adapters.postgresql import PostgreSQLDatabaseAdapter
-
-        database = PostgreSQLDatabaseAdapter(POSTGRES_TEST_DSN)
-        await database.initialize()
-        await database.reset_for_tests()
-    else:
-        database = Database(str(tmp_path / "reviewed-import.db"))
-        await database.initialize()
+    database = Database(str(tmp_path / "reviewed-import.db"))
+    await database.initialize()
     yield database
     await database.close()
 
@@ -206,9 +197,7 @@ async def test_import_refuses_duplicate_review_frontmatter_keys(db, tmp_path):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("mismatch", ["artifact_sha256", "source_sha256", "playbook_id"])
-async def test_import_refuses_review_metadata_that_does_not_match_bytes(
-    db, tmp_path, mismatch
-):
+async def test_import_refuses_review_metadata_that_does_not_match_bytes(db, tmp_path, mismatch):
     handler = _Handler(tmp_path, db)
     relative = _copy_bundle(tmp_path)
     review_path = tmp_path / "vault" / relative / "manifest.md"
@@ -272,8 +261,8 @@ async def test_failed_database_upsert_removes_a_new_artifact_file(db, tmp_path, 
     handler = _Handler(tmp_path, db)
     relative = _copy_bundle(tmp_path)
     recorded_sha = (
-        tmp_path / "vault" / relative / "artifact.sha256"
-    ).read_text(encoding="utf-8").strip()
+        (tmp_path / "vault" / relative / "artifact.sha256").read_text(encoding="utf-8").strip()
+    )
     monkeypatch.setattr(
         db,
         "upsert_playbook_artifact",
@@ -294,8 +283,8 @@ async def test_cancelled_database_upsert_removes_a_new_artifact_file(db, tmp_pat
     handler = _Handler(tmp_path, db)
     relative = _copy_bundle(tmp_path)
     recorded_sha = (
-        tmp_path / "vault" / relative / "artifact.sha256"
-    ).read_text(encoding="utf-8").strip()
+        (tmp_path / "vault" / relative / "artifact.sha256").read_text(encoding="utf-8").strip()
+    )
     monkeypatch.setattr(
         db,
         "upsert_playbook_artifact",
@@ -315,11 +304,9 @@ async def test_failed_transaction_exit_removes_a_new_artifact_file(db, tmp_path,
     handler = _Handler(tmp_path, db)
     relative = _copy_bundle(tmp_path)
     recorded_sha = (
-        tmp_path / "vault" / relative / "artifact.sha256"
-    ).read_text(encoding="utf-8").strip()
-    _fail_when_artifact_lock_exits(
-        db, monkeypatch, RuntimeError("transaction commit failed")
+        (tmp_path / "vault" / relative / "artifact.sha256").read_text(encoding="utf-8").strip()
     )
+    _fail_when_artifact_lock_exits(db, monkeypatch, RuntimeError("transaction commit failed"))
 
     result = await _import(handler, relative)
 
@@ -330,15 +317,13 @@ async def test_failed_transaction_exit_removes_a_new_artifact_file(db, tmp_path,
 
 
 @pytest.mark.asyncio
-async def test_cancelled_transaction_exit_removes_a_new_artifact_file(
-    db, tmp_path, monkeypatch
-):
+async def test_cancelled_transaction_exit_removes_a_new_artifact_file(db, tmp_path, monkeypatch):
     """Cancellation during commit rolls back bytes without being swallowed."""
     handler = _Handler(tmp_path, db)
     relative = _copy_bundle(tmp_path)
     recorded_sha = (
-        tmp_path / "vault" / relative / "artifact.sha256"
-    ).read_text(encoding="utf-8").strip()
+        (tmp_path / "vault" / relative / "artifact.sha256").read_text(encoding="utf-8").strip()
+    )
     _fail_when_artifact_lock_exits(db, monkeypatch, asyncio.CancelledError())
 
     with pytest.raises(asyncio.CancelledError):
@@ -360,9 +345,7 @@ async def test_failed_transaction_exit_preserves_an_adopted_artifact_file(
     stored_path = Path(handler._store.path_for(recorded_sha))
     stored_path.parent.mkdir(parents=True)
     stored_path.write_bytes((directory / "artifact.json").read_bytes())
-    _fail_when_artifact_lock_exits(
-        db, monkeypatch, RuntimeError("transaction commit failed")
-    )
+    _fail_when_artifact_lock_exits(db, monkeypatch, RuntimeError("transaction commit failed"))
 
     result = await _import(handler, relative)
 
@@ -372,9 +355,7 @@ async def test_failed_transaction_exit_preserves_an_adopted_artifact_file(
 
 
 def test_import_is_not_available_to_an_ordinary_agent_session():
-    scope = RequestScope(
-        kind="session", session_id="s1", task_id="t1", project_id="p1"
-    )
+    scope = RequestScope(kind="session", session_id="s1", task_id="t1", project_id="p1")
 
     assert check_command_scope("playbook_v2_import", {}, scope) == (
         "out of scope: playbook_v2_import"

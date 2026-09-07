@@ -86,8 +86,7 @@ projects = Table(
         name="ck_projects_hierarchical_integration_mode",
     ),
     CheckConstraint(
-        "hierarchical_integration_desired_mode IN "
-        "('disabled', 'observe', 'hierarchy', 'train')",
+        "hierarchical_integration_desired_mode IN ('disabled', 'observe', 'hierarchy', 'train')",
         name="ck_projects_hierarchical_integration_desired_mode",
     ),
     CheckConstraint(
@@ -253,7 +252,6 @@ task_dependencies = Table(
         "uq_task_deps_single_parent",
         "task_id",
         unique=True,
-        sqlite_where=text("dep_type = 'parent-child'"),
         postgresql_where=text("dep_type = 'parent-child'"),
     ),
 )
@@ -438,7 +436,6 @@ gates = Table(
         "gate_type",
         "await_id",
         unique=True,
-        sqlite_where=text("status = 'open'"),
         postgresql_where=text("status = 'open'"),
     ),
 )
@@ -724,7 +721,6 @@ workspaces = Table(
         "base_workspace_id",
         "slot_index",
         unique=True,
-        sqlite_where=text("base_workspace_id IS NOT NULL AND slot_index IS NOT NULL"),
         postgresql_where=text("base_workspace_id IS NOT NULL AND slot_index IS NOT NULL"),
     ),
 )
@@ -1250,7 +1246,6 @@ playbook_v2_runs = Table(
         "dispatch_id",
         "rule_id",
         unique=True,
-        sqlite_where=text("dispatch_id IS NOT NULL"),
         postgresql_where=text("dispatch_id IS NOT NULL"),
     ),
     Index("idx_playbook_v2_runs_playbook", "playbook_id", "started_at"),
@@ -1375,7 +1370,6 @@ playbook_waits = Table(
         "step_id",
         "iteration",
         unique=True,
-        sqlite_where=text("state = 'active'"),
         postgresql_where=text("state = 'active'"),
     ),
     Index("idx_playbook_waits_match", "state", "event_type"),
@@ -1443,7 +1437,6 @@ playbook_pending_events = Table(
         "playbook_id",
         "dedup_key",
         unique=True,
-        sqlite_where=text("resolved_at IS NULL AND dedup_key <> ''"),
         postgresql_where=text("resolved_at IS NULL AND dedup_key <> ''"),
     ),
     Index("idx_playbook_pending_events_playbook", "playbook_id", "received_at"),
@@ -1807,7 +1800,6 @@ task_branch_origins = Table(
         "task_id",
         "repository_id",
         unique=True,
-        sqlite_where=text("retired_at IS NULL"),
         postgresql_where=text("retired_at IS NULL"),
     ),
 )
@@ -1941,7 +1933,6 @@ integration_promotion_intents = Table(
         "repository_id",
         "target_branch",
         unique=True,
-        sqlite_where=text("state NOT IN ('committed', 'conflict', 'superseded')"),
         postgresql_where=text("state NOT IN ('committed', 'conflict', 'superseded')"),
     ),
     CheckConstraint("fence_token >= 0", name="ck_integration_promotion_intents_fence"),
@@ -2089,7 +2080,6 @@ task_delivery_receipts = Table(
         "candidate_revision",
         "member_ordinal",
         unique=True,
-        sqlite_where=text("batch_id IS NOT NULL"),
         postgresql_where=text("batch_id IS NOT NULL"),
     ),
 )
@@ -2139,10 +2129,6 @@ integration_batches = Table(
         "uq_integration_batches_active_project",
         "project_id",
         unique=True,
-        sqlite_where=text(
-            "lifecycle IN ('sealing', 'sealed', 'building', 'testing', 'repairing', "
-            "'human_blocked', 'promoting', 'cleanup_pending')"
-        ),
         postgresql_where=text(
             "lifecycle IN ('sealing', 'sealed', 'building', 'testing', 'repairing', "
             "'human_blocked', 'promoting', 'cleanup_pending')"
@@ -2491,9 +2477,7 @@ integration_root_intent_members = Table(
     Column("review_evidence_id", Text, nullable=False),
     Column("created_at", Float, nullable=False),
     CheckConstraint("member_ordinal >= 0", name="ck_integration_root_intent_members_ordinal"),
-    CheckConstraint(
-        "candidate_revision >= 0", name="ck_integration_root_intent_members_revision"
-    ),
+    CheckConstraint("candidate_revision >= 0", name="ck_integration_root_intent_members_revision"),
     ForeignKeyConstraint(
         ["intent_id", "batch_id", "candidate_revision"],
         [
@@ -2600,9 +2584,6 @@ integration_repair_operations = Table(
         "uq_integration_repair_operations_active_batch",
         "batch_id",
         unique=True,
-        sqlite_where=text(
-            "batch_id IS NOT NULL AND state IN ('active', 'escalated', 'human_required')"
-        ),
         postgresql_where=text(
             "batch_id IS NOT NULL AND state IN ('active', 'escalated', 'human_required')"
         ),
@@ -2611,9 +2592,6 @@ integration_repair_operations = Table(
         "uq_integration_repair_operations_active_parent",
         "parent_task_id",
         unique=True,
-        sqlite_where=text(
-            "parent_task_id IS NOT NULL AND state IN ('active', 'escalated', 'human_required')"
-        ),
         postgresql_where=text(
             "parent_task_id IS NOT NULL AND state IN ('active', 'escalated', 'human_required')"
         ),
@@ -2797,9 +2775,7 @@ integration_attestation_publications = Table(
     UniqueConstraint(
         "batch_id", "revision", name="uq_integration_attestation_publications_subject"
     ),
-    UniqueConstraint(
-        "external_id", name="uq_integration_attestation_publications_external"
-    ),
+    UniqueConstraint("external_id", name="uq_integration_attestation_publications_external"),
     CheckConstraint("revision >= 0", name="ck_integration_attestation_publications_revision"),
     CheckConstraint(
         "state IN ('reserved', 'published')",
@@ -2817,16 +2793,22 @@ integration_attestation_publications = Table(
         ondelete="RESTRICT",
     ),
     ForeignKeyConstraint(
-        ["project_id"], ["projects.id"],
-        name="fk_integration_attestation_publications_project", ondelete="RESTRICT",
+        ["project_id"],
+        ["projects.id"],
+        name="fk_integration_attestation_publications_project",
+        ondelete="RESTRICT",
     ),
     ForeignKeyConstraint(
-        ["operation_id"], ["integration_repair_operations.id"],
-        name="fk_integration_attestation_publications_operation", ondelete="RESTRICT",
+        ["operation_id"],
+        ["integration_repair_operations.id"],
+        name="fk_integration_attestation_publications_operation",
+        ondelete="RESTRICT",
     ),
     ForeignKeyConstraint(
-        ["ci_evidence_id"], ["integration_check_evidence.id"],
-        name="fk_integration_attestation_publications_evidence", ondelete="RESTRICT",
+        ["ci_evidence_id"],
+        ["integration_check_evidence.id"],
+        name="fk_integration_attestation_publications_evidence",
+        ondelete="RESTRICT",
     ),
 )
 
@@ -2913,27 +2895,34 @@ integration_cleanup_items = Table(
         name="ck_integration_cleanup_items_target",
     ),
     ForeignKeyConstraint(
-        ["batch_id"], ["integration_batches.id"],
-        name="fk_integration_cleanup_items_batch", ondelete="RESTRICT",
+        ["batch_id"],
+        ["integration_batches.id"],
+        name="fk_integration_cleanup_items_batch",
+        ondelete="RESTRICT",
     ),
     ForeignKeyConstraint(
-        ["project_id"], ["projects.id"],
-        name="fk_integration_cleanup_items_project", ondelete="RESTRICT",
+        ["project_id"],
+        ["projects.id"],
+        name="fk_integration_cleanup_items_project",
+        ondelete="RESTRICT",
     ),
     ForeignKeyConstraint(
-        ["repository_id"], ["repos.id"],
-        name="fk_integration_cleanup_items_repository", ondelete="RESTRICT",
+        ["repository_id"],
+        ["repos.id"],
+        name="fk_integration_cleanup_items_repository",
+        ondelete="RESTRICT",
     ),
     ForeignKeyConstraint(
-        ["receipt_id"], ["task_delivery_receipts.id"],
-        name="fk_integration_cleanup_items_receipt", ondelete="RESTRICT",
+        ["receipt_id"],
+        ["task_delivery_receipts.id"],
+        name="fk_integration_cleanup_items_receipt",
+        ondelete="RESTRICT",
     ),
     Index(
         "idx_integration_cleanup_items_due",
         "next_attempt_at",
         "batch_id",
         "domain_key",
-        sqlite_where=text("state IN ('pending', 'retryable')"),
         postgresql_where=text("state IN ('pending', 'retryable')"),
     ),
 )
@@ -3210,8 +3199,10 @@ integration_history_waivers = Table(
     Column("created_at", Float, nullable=False),
     PrimaryKeyConstraint("id", name="pk_integration_history_waivers"),
     ForeignKeyConstraint(
-        ["project_id"], ["projects.id"],
-        name="fk_integration_history_waivers_project", ondelete="RESTRICT",
+        ["project_id"],
+        ["projects.id"],
+        name="fk_integration_history_waivers_project",
+        ondelete="RESTRICT",
     ),
     CheckConstraint("length(operator_id) > 0", name="ck_integration_history_waivers_operator"),
     CheckConstraint("length(reason) > 0", name="ck_integration_history_waivers_reason"),
@@ -3244,12 +3235,16 @@ integration_rollout_transitions = Table(
         "project_id", "generation", name="uq_integration_rollout_transitions_generation"
     ),
     ForeignKeyConstraint(
-        ["project_id"], ["projects.id"],
-        name="fk_integration_rollout_transitions_project", ondelete="RESTRICT",
+        ["project_id"],
+        ["projects.id"],
+        name="fk_integration_rollout_transitions_project",
+        ondelete="RESTRICT",
     ),
     ForeignKeyConstraint(
-        ["waiver_id"], ["integration_history_waivers.id"],
-        name="fk_integration_rollout_transitions_waiver", ondelete="RESTRICT",
+        ["waiver_id"],
+        ["integration_history_waivers.id"],
+        name="fk_integration_rollout_transitions_waiver",
+        ondelete="RESTRICT",
     ),
     CheckConstraint("generation > 0", name="ck_integration_rollout_transitions_generation"),
     CheckConstraint(
@@ -3277,20 +3272,24 @@ integration_history_waiver_consumptions = Table(
     Column("consumed_by", Text, nullable=False),
     Column("consumed_at", Float, nullable=False),
     PrimaryKeyConstraint("waiver_id", name="pk_integration_history_waiver_consumptions"),
-    UniqueConstraint(
-        "transition_id", name="uq_integration_history_waiver_consumptions_transition"
+    UniqueConstraint("transition_id", name="uq_integration_history_waiver_consumptions_transition"),
+    ForeignKeyConstraint(
+        ["waiver_id"],
+        ["integration_history_waivers.id"],
+        name="fk_integration_history_waiver_consumptions_waiver",
+        ondelete="RESTRICT",
     ),
     ForeignKeyConstraint(
-        ["waiver_id"], ["integration_history_waivers.id"],
-        name="fk_integration_history_waiver_consumptions_waiver", ondelete="RESTRICT",
+        ["transition_id"],
+        ["integration_rollout_transitions.id"],
+        name="fk_integration_history_waiver_consumptions_transition",
+        ondelete="RESTRICT",
     ),
     ForeignKeyConstraint(
-        ["transition_id"], ["integration_rollout_transitions.id"],
-        name="fk_integration_history_waiver_consumptions_transition", ondelete="RESTRICT",
-    ),
-    ForeignKeyConstraint(
-        ["project_id"], ["projects.id"],
-        name="fk_integration_history_waiver_consumptions_project", ondelete="RESTRICT",
+        ["project_id"],
+        ["projects.id"],
+        name="fk_integration_history_waiver_consumptions_project",
+        ondelete="RESTRICT",
     ),
     CheckConstraint("length(consumed_by) > 0", name="ck_integration_waiver_consumptions_actor"),
     CheckConstraint(
@@ -3309,24 +3308,30 @@ integration_legacy_gate_applicability = Table(
     Column("blocker_digest", Text, nullable=False),
     Column("applicable", Boolean, nullable=False),
     Column("created_at", Float, nullable=False),
-    PrimaryKeyConstraint(
-        "project_id", "gate_id", name="pk_integration_legacy_gate_applicability"
+    PrimaryKeyConstraint("project_id", "gate_id", name="pk_integration_legacy_gate_applicability"),
+    ForeignKeyConstraint(
+        ["project_id"],
+        ["projects.id"],
+        name="fk_integration_legacy_gate_applicability_project",
+        ondelete="RESTRICT",
     ),
     ForeignKeyConstraint(
-        ["project_id"], ["projects.id"],
-        name="fk_integration_legacy_gate_applicability_project", ondelete="RESTRICT",
+        ["gate_id"],
+        ["gates.id"],
+        name="fk_integration_legacy_gate_applicability_gate",
+        ondelete="RESTRICT",
     ),
     ForeignKeyConstraint(
-        ["gate_id"], ["gates.id"],
-        name="fk_integration_legacy_gate_applicability_gate", ondelete="RESTRICT",
+        ["waiver_id"],
+        ["integration_history_waivers.id"],
+        name="fk_integration_legacy_gate_applicability_waiver",
+        ondelete="RESTRICT",
     ),
     ForeignKeyConstraint(
-        ["waiver_id"], ["integration_history_waivers.id"],
-        name="fk_integration_legacy_gate_applicability_waiver", ondelete="RESTRICT",
-    ),
-    ForeignKeyConstraint(
-        ["transition_id"], ["integration_rollout_transitions.id"],
-        name="fk_integration_legacy_gate_applicability_transition", ondelete="RESTRICT",
+        ["transition_id"],
+        ["integration_rollout_transitions.id"],
+        name="fk_integration_legacy_gate_applicability_transition",
+        ondelete="RESTRICT",
     ),
     CheckConstraint(
         "length(blocker_digest) = 71 AND blocker_digest LIKE 'sha256:%'",
@@ -3346,8 +3351,10 @@ integration_legacy_suppression = Table(
     Column("updated_at", Float, nullable=False),
     PrimaryKeyConstraint("project_id", name="pk_integration_legacy_suppression"),
     ForeignKeyConstraint(
-        ["project_id"], ["projects.id"],
-        name="fk_integration_legacy_suppression_project", ondelete="RESTRICT",
+        ["project_id"],
+        ["projects.id"],
+        name="fk_integration_legacy_suppression_project",
+        ondelete="RESTRICT",
     ),
     CheckConstraint("generation >= 0", name="ck_integration_legacy_suppression_generation"),
 )
@@ -3373,7 +3380,6 @@ integration_outbox = Table(
     Index(
         "idx_integration_outbox_pending_available",
         "available_at",
-        sqlite_where=text("delivered_at IS NULL"),
         postgresql_where=text("delivered_at IS NULL"),
     ),
 )

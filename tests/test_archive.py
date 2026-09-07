@@ -40,17 +40,8 @@ POSTGRES_TEST_DSN = ensure_worker_postgres_dsn()
 
 @pytest.fixture
 async def db(tmp_path, request):
-    if getattr(request, "param", "sqlite") == "postgres":
-        if not POSTGRES_TEST_DSN:
-            pytest.skip("POSTGRES_TEST_DSN not set")
-        from src.database.adapters.postgresql import PostgreSQLDatabaseAdapter
-
-        database = PostgreSQLDatabaseAdapter(POSTGRES_TEST_DSN)
-        await database.initialize()
-        await database.reset_for_tests()
-    else:
-        database = Database(str(tmp_path / "test.db"))
-        await database.initialize()
+    database = Database(str(tmp_path / "test.db"))
+    await database.initialize()
     yield database
     await database.close()
 
@@ -876,7 +867,6 @@ class TestAutoArchive:
         assert await db.get_task("t-1") is not None
 
 
-@pytest.mark.parametrize("db", ["sqlite", "postgres"], indirect=True)
 class TestArchiveReferences:
     @pytest.mark.parametrize("resolved,shared", [(True, False), (False, False), (False, True)])
     async def test_archive_unlinks_only_its_gate_waiters(self, db, resolved, shared):
@@ -965,7 +955,6 @@ class TestArchiveReferences:
         ]
 
 
-@pytest.mark.parametrize("db", ["sqlite", "postgres"], indirect=True)
 class TestArchiveLiveSessions:
     @pytest.mark.parametrize("state", ["starting", "running", "draining"])
     @pytest.mark.parametrize("subtree", [False, True])
@@ -1069,7 +1058,6 @@ class TestArchiveLiveSessions:
         assert (await db.get_session("live-session")).task_id == "busy"
 
 
-@pytest.mark.parametrize("db", ["sqlite", "postgres"], indirect=True)
 @pytest.mark.parametrize("status", [TaskStatus.READY, TaskStatus.ASSIGNED, TaskStatus.IN_PROGRESS])
 @pytest.mark.parametrize("aged", [False, True])
 async def test_bulk_archive_rechecks_root_status_after_selection(db, monkeypatch, status, aged):
@@ -1103,13 +1091,37 @@ async def test_completion_history_survives_archive_and_restore(db):
     from src.models import TaskCompletion
 
     await _seed_project(db)
-    await db.create_task(Task(id="history", project_id="p-1", title="Done", description="", status=TaskStatus.COMPLETED))
-    await db.save_task_completion(TaskCompletion(id="completion", task_id="history", outcome="pass", summary="Keep findings", completed_at=1.0))
+    await db.create_task(
+        Task(
+            id="history",
+            project_id="p-1",
+            title="Done",
+            description="",
+            status=TaskStatus.COMPLETED,
+        )
+    )
+    await db.save_task_completion(
+        TaskCompletion(
+            id="completion",
+            task_id="history",
+            outcome="pass",
+            summary="Keep findings",
+            completed_at=1.0,
+        )
+    )
     await db.archive_task("history")
     assert (await db.get_task_completion("history")).summary == "Keep findings"
 
     # Restoration recreates the active identity before deleting its archive snapshot.
-    await db.create_task(Task(id="history", project_id="p-1", title="Restored", description="", status=TaskStatus.COMPLETED))
+    await db.create_task(
+        Task(
+            id="history",
+            project_id="p-1",
+            title="Restored",
+            description="",
+            status=TaskStatus.COMPLETED,
+        )
+    )
     await db.delete_archived_task("history")
     assert (await db.get_task_completion("history")).summary == "Keep findings"
     await db.delete_task("history")

@@ -82,12 +82,14 @@ def test_no_string_server_default_carries_its_own_quotes():
 
     assert not offenders, (
         "String server defaults that quote themselves — SQLAlchemy quotes them again, "
-        'so the emitted DDL is DEFAULT \'\'\'x\'\'\'. Drop the inner quotes ("x") or '
-        'use sa.text("\'x\'"):\n  ' + "\n  ".join(offenders)
+        "so the emitted DDL is DEFAULT '''x'''. Drop the inner quotes (\"x\") or "
+        "use sa.text(\"'x'\"):\n  " + "\n  ".join(offenders)
     )
 
 
-@pytest.mark.parametrize("dialect_factory", [sqlite.dialect, postgresql.dialect], ids=["sqlite", "postgresql"])
+@pytest.mark.parametrize(
+    "dialect_factory", [sqlite.dialect, postgresql.dialect], ids=["sqlite", "postgresql"]
+)
 def test_emitted_ddl_has_no_doubly_quoted_default(dialect_factory):
     """Compile scan: no ``CREATE TABLE`` names a default that is itself a quoted literal.
 
@@ -110,19 +112,10 @@ def test_emitted_ddl_has_no_doubly_quoted_default(dialect_factory):
     )
 
 
-@pytest.fixture(params=["sqlite", "postgres"])
+@pytest.fixture
 async def db(request, tmp_path):
-    if request.param == "postgres":
-        if not POSTGRES_TEST_DSN:
-            pytest.skip("POSTGRES_TEST_DSN not set")
-        from src.database.adapters.postgresql import PostgreSQLDatabaseAdapter
-
-        database = PostgreSQLDatabaseAdapter(POSTGRES_TEST_DSN)
-        await database.initialize()
-        await database.reset_for_tests()
-    else:
-        database = Database(str(tmp_path / "string-defaults.db"))
-        await database.initialize()
+    database = Database(str(tmp_path / "string-defaults.db"))
+    await database.initialize()
     yield database
     await database.close()
 

@@ -29,7 +29,6 @@ from typing import Any
 
 from sqlalchemy import insert
 from sqlalchemy.dialects.postgresql import insert as pg_insert
-from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 from src.database.tables import (
     task_context,
@@ -272,7 +271,7 @@ async def build_plan(
                 "verification_type": "auto_test",
                 "retry_count": 0,
                 "max_retries": 3,
-                    "is_plan_subtask": 0,
+                "is_plan_subtask": 0,
                 "task_type": node.task_type,
                 "profile_id": node.profile,
                 "intelligence_class": node.intelligence_class,
@@ -361,7 +360,10 @@ def _rewrite_ids(plan: GraphPlan, real: dict[str, str]) -> None:
 
 
 async def write_plan(
-    db: Any, plan: GraphPlan, *, provenance: FormulaProvenance | None = None,
+    db: Any,
+    plan: GraphPlan,
+    *,
+    provenance: FormulaProvenance | None = None,
     routing_manager=None,
 ) -> None:
     """Persist a :class:`GraphPlan` in exactly one transaction.
@@ -414,13 +416,17 @@ async def write_plan(
                 real[key] = f"{plan.parent_id}.{ordinal}"
             _rewrite_ids(plan, real)
         from src.playbooks.routing import requires_routing_gate
+
         for row in plan.node_rows:
             await _insert_task(conn, row)
             if requires_routing_gate(routing_manager, row, {"parent_task_id": plan.parent_id}):
                 await db.create_gate(
-                    row["project_id"], "routing", "Route task",
+                    row["project_id"],
+                    "routing",
+                    "Route task",
                     question="Assign profile + intelligence class (+ workspace if profile needs one).",
-                    waiter_task_ids=[row["id"]], conn=conn,
+                    waiter_task_ids=[row["id"]],
+                    conn=conn,
                 )
                 plan.routing_task_ids.append(row["id"])
         # One bulk link for the whole batch: the nodes were just inserted as
@@ -481,8 +487,7 @@ async def write_plan(
                     ),
                 )
             )
-            dialect = conn.dialect.name
-            ins = pg_insert if dialect == "postgresql" else sqlite_insert
+            ins = pg_insert
             label_stmt = ins(task_labels).values(task_id=plan.parent_id, label=provenance.label)
             label_stmt = label_stmt.on_conflict_do_nothing(index_elements=["task_id", "label"])
             await conn.execute(label_stmt)
@@ -562,7 +567,9 @@ async def create_graph(
     if dry_run:
         return build_report(graph, plan, dry_run=True, provenance=provenance)
     await write_plan(
-        db, plan, provenance=provenance,
+        db,
+        plan,
+        provenance=provenance,
         routing_manager=getattr(getattr(handler, "orchestrator", None), "playbook_manager", None),
     )
     for task_id in plan.routing_task_ids:
@@ -573,8 +580,12 @@ async def create_graph(
         # may route directly instead of using the default triage recovery.
         try:
             await handler.orchestrator._emit_task_event(
-                "task.created", task, parent_task_id=task.parent_task_id,
-                profile_id=task.profile_id, created_by_kind=None, created_by_id=None,
+                "task.created",
+                task,
+                parent_task_id=task.parent_task_id,
+                profile_id=task.profile_id,
+                created_by_kind=None,
+                created_by_id=None,
             )
         except Exception:
             logger.exception("Graph task.created emission failed for %s", task_id)

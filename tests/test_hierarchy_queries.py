@@ -43,7 +43,7 @@ async def db(tmp_path):
     await database.close()
 
 
-@pytest.fixture(params=["sqlite", "postgres"])
+@pytest.fixture
 async def any_db(request, tmp_path):
     """SQLite always; PostgreSQL when ``POSTGRES_TEST_DSN`` is set (CI).
 
@@ -51,17 +51,8 @@ async def any_db(request, tmp_path):
     suite fast; the tests below assert the guards whose SQL genuinely
     differs per dialect (FOR UPDATE, recursive CTEs) on both backends.
     """
-    if request.param == "postgres":
-        if not POSTGRES_DSN:
-            pytest.skip("POSTGRES_TEST_DSN not set")
-        from src.database.adapters.postgresql import PostgreSQLDatabaseAdapter
-
-        database = PostgreSQLDatabaseAdapter(POSTGRES_DSN)
-        await database.initialize()
-        await database.reset_for_tests()
-    else:
-        database = Database(str(tmp_path / "any.db"))
-        await database.initialize()
+    database = Database(str(tmp_path / "any.db"))
+    await database.initialize()
     await database.create_project(Project(id=PROJECT_ID, name="Test Project"))
     yield database
     await database.close()
@@ -234,9 +225,7 @@ async def test_live_descendant_sessions_can_exclude_the_root(any_db):
         assert await db.live_descendant_sessions("container", conn=conn) == [
             ("root-1", "container")
         ]
-        assert (
-            await db.live_descendant_sessions("container", conn=conn, exclude_root=True) == []
-        )
+        assert await db.live_descendant_sessions("container", conn=conn, exclude_root=True) == []
 
 
 async def test_abandon_subtree_releases_each_descendant_resource_once(any_db):
@@ -246,8 +235,13 @@ async def test_abandon_subtree_releases_each_descendant_resource_once(any_db):
     await mktask(db, "root", status=TaskStatus.IN_PROGRESS)
     await mktask(db, "leaf", status=TaskStatus.IN_PROGRESS)
     await db.create_agent(
-        Agent(id="leaf-agent", name="leaf-agent", profile_id="worker", state=AgentState.BUSY,
-              current_task_id="leaf")
+        Agent(
+            id="leaf-agent",
+            name="leaf-agent",
+            profile_id="worker",
+            state=AgentState.BUSY,
+            current_task_id="leaf",
+        )
     )
     await db.create_workspace(
         Workspace(

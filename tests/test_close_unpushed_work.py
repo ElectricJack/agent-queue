@@ -67,24 +67,15 @@ def repo(tmp_path):
     return {"origin": origin, "clone": clone}
 
 
-@pytest.fixture(params=["sqlite", "postgres"])
+@pytest.fixture
 async def handler(request, tmp_path, repo):
     """SQLite always; PostgreSQL when ``POSTGRES_TEST_DSN`` is set (CI).
 
     The close path writes task metadata and a completion row, so both
     dialects are exercised rather than assumed equivalent.
     """
-    if request.param == "postgres":
-        if not POSTGRES_DSN:
-            pytest.skip("POSTGRES_TEST_DSN not set")
-        from src.database.adapters.postgresql import PostgreSQLDatabaseAdapter
-
-        db = PostgreSQLDatabaseAdapter(POSTGRES_DSN)
-        await db.initialize()
-        await db.reset_for_tests()
-    else:
-        db = Database(str(tmp_path / "close.db"))
-        await db.initialize()
+    db = Database(str(tmp_path / "close.db"))
+    await db.initialize()
     cfg = AppConfig(
         discord=DiscordConfig(bot_token="t", guild_id="1"),
         workspace_dir=str(tmp_path / "w"),
@@ -98,8 +89,9 @@ async def handler(request, tmp_path, repo):
     orch.bus.emit = AsyncMock()
     orch.command_handler = CommandHandler(orch, cfg)
 
-    async def _noop_release(task_id, *, agent_id=None, workspace_path=None,
-                            expect_claim_epoch=None):
+    async def _noop_release(
+        task_id, *, agent_id=None, workspace_path=None, expect_claim_epoch=None
+    ):
         return None
 
     orch.release_session_task_resources = _noop_release

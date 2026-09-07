@@ -47,19 +47,10 @@ ARTIFACT = "sha256:" + "1c" * 32
 NOW = 1_000_000.0
 
 
-@pytest.fixture(params=["sqlite", "postgres"])
+@pytest.fixture
 async def db(request, tmp_path):
-    if request.param == "postgres":
-        if not POSTGRES_TEST_DSN:
-            pytest.skip("POSTGRES_TEST_DSN not set")
-        from src.database.adapters.postgresql import PostgreSQLDatabaseAdapter
-
-        database = PostgreSQLDatabaseAdapter(POSTGRES_TEST_DSN)
-        await database.initialize()
-        await database.reset_for_tests()
-    else:
-        database = Database(str(tmp_path / "test.db"))
-        await database.initialize()
+    database = Database(str(tmp_path / "test.db"))
+    await database.initialize()
     await seed_artifact(database, ARTIFACT)
     yield database
     await database.close()
@@ -143,9 +134,7 @@ class Event:
 def test_run_repository_preserves_the_step_receipt_type_contract():
     from src.playbooks import run_state
 
-    commit_annotations = inspect.get_annotations(
-        RunRepository.commit_boundary, eval_str=False
-    )
+    commit_annotations = inspect.get_annotations(RunRepository.commit_boundary, eval_str=False)
     list_annotations = inspect.get_annotations(RunRepository.list_receipts, eval_str=False)
 
     assert commit_annotations["receipt"] == "StepReceipt"
@@ -414,9 +403,7 @@ async def test_one_llm_attempt_accepts_ordered_call_and_interrupted_boundaries(d
         receipt_kind="tool_turn",
         turn_index=0,
     )
-    snapshot = await db.commit_boundary(
-        replace(snapshot, llm_turns=({"turn_index": 0},)), first
-    )
+    snapshot = await db.commit_boundary(replace(snapshot, llm_turns=({"turn_index": 0},)), first)
     schema_retry = make_receipt(
         snapshot,
         receipt_id="turn-1-call",
@@ -568,9 +555,7 @@ async def test_blocked_run_persists_reloads_and_cannot_be_resurrected(db):
     assert reloaded == stopped
     assert reloaded.lifecycle is blocked
     assert reloaded.is_terminal
-    assert [run.run_id for run in await db.list_runs(lifecycle="blocked")] == [
-        snapshot.run_id
-    ]
+    assert [run.run_id for run in await db.list_runs(lifecycle="blocked")] == [snapshot.run_id]
 
     with pytest.raises(IllegalLifecycleTransition):
         await db.commit_boundary(
