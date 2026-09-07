@@ -624,6 +624,49 @@ class TestClaim:
         s2, _ = await pool_session(db, tmp_path, sid="s2", agent_id="agent-2")
         assert (await scoped(handler, s2)._cmd_task_claim({"next": True}))["result"] == "claimed"
 
+    async def test_disabling_a_pool_wakes_a_pending_long_poll(
+        self, handler, db, tmp_path, monkeypatch
+    ):
+        """The switch reaches a claim that is *already* parked in a long poll.
+
+        Without ``pool.enabled_changed`` among the wake events the disable is
+        only noticed when the wait expires, so a worker keeps asking for work
+        for up to ``swarm.claim_wait_max`` seconds after its pool was turned
+        off.  Work that became ready in the meantime stays unclaimed.
+        """
+        sid, _ = await pool_session(db, tmp_path)
+        waiting = asyncio.Event()
+        attempt = handler._attempt_claim
+
+        async def observe_attempt(*args, **kwargs):
+            result = await attempt(*args, **kwargs)
+            if result["result"] == "no_ready_work":
+                waiting.set()
+            return result
+
+        monkeypatch.setattr(handler, "_attempt_claim", observe_attempt)
+        t0 = time.monotonic()
+        claim = asyncio.create_task(
+            scoped(handler, sid)._cmd_task_claim({"next": True, "wait": 5})
+        )
+        try:
+            await asyncio.wait_for(waiting.wait(), timeout=5)
+            # Ready work exists by the time the switch flips; creating the row
+            # emits no ``task.ready``, so the poll is still parked on it.
+            await mktask(db, "late", profile_id="worker")
+            flip = await handler._cmd_pool_set_enabled(
+                {"profile_id": "worker", "enabled": False}
+            )
+            assert flip["success"] is True
+            result = await asyncio.wait_for(claim, timeout=5)
+        finally:
+            if not claim.done():
+                claim.cancel()
+                await asyncio.gather(claim, return_exceptions=True)
+        assert (result["result"], result["reason"]) == ("drain_requested", "pool is disabled")
+        assert time.monotonic() - t0 < 4.0  # woke on the event, not the deadline
+        assert (await db.get_task("late")).status == TaskStatus.READY
+
     async def test_old_idle_pool_cannot_reuse_completed_context(self, handler, db, tmp_path):
         sid, _ = await pool_session(db, tmp_path)
         await db.update_session(sid, claims=3)

@@ -29,8 +29,18 @@ __all__ = [
     "write_claim_file",
 ]
 
-_ADMISSION_EVENTS = ("project.resumed", "constraint.released", "snapshot.refreshed")
-_FRONTIER_EVENTS = ("task.ready", "gate.resolved", "task.restarted")
+# A pool profile's kill-switch has to reach a claim that is *already* parked in
+# a long poll: without it the disable is only noticed when the wait expires, and
+# a worker keeps a claim call open for up to ``swarm.claim_wait_max`` seconds
+# after the operator turned its pool off.  Both waits below re-check
+# ``profile.enabled`` at the top of the loop, so waking either one is enough.
+_POOL_EVENTS = ("pool.enabled_changed",)
+_ADMISSION_EVENTS = (
+    "project.resumed",
+    "constraint.released",
+    "snapshot.refreshed",
+) + _POOL_EVENTS
+_FRONTIER_EVENTS = ("task.ready", "gate.resolved", "task.restarted") + _POOL_EVENTS
 
 
 def _task_block(task) -> dict:
