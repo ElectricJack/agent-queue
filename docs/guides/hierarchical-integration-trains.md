@@ -206,8 +206,9 @@ recovery instead of generic task recovery or replacement repair budgets.
 When replacing project integration playbooks with shared system activations,
 first disable/drain affected projects and verify there is no active operation.
 Deactivate the exact project-scoped artifact hashes before activating the
-system copies, update frozen policy references while disabled, then restore
-the prior rollout mode. Archive superseded project source copies; keep retained
+system copies and update frozen policy references while disabled. Restart AQ
+after the activation changes to reload the integration dispatch destination
+cache, then restore the prior rollout mode. Archive superseded project source copies; keep retained
 artifact and event history. Temporarily pause legacy review/merge dispatch
 during that cutover so disabling integration cannot restart legacy merging.
 
