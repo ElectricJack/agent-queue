@@ -6,6 +6,7 @@ from types import SimpleNamespace
 from typing import Literal
 
 import pytest
+from pydantic import ValidationError
 
 from src.commands.contracts.builtin import register_builtin_contracts
 from src.commands.contracts.builtin import set_handler_provider
@@ -288,6 +289,22 @@ def test_schedule_contract_is_typed_and_retry_safe():
     assert schedule.args_model(project_id="p", now=1.0, trigger="manual").trigger == "manual"
     with pytest.raises(Exception):
         schedule.args_model(project_id="p", now=1.0, trigger="caller-defined")
+
+
+@pytest.mark.parametrize("interval_seconds", [True, "60"])
+def test_enable_contract_rejects_coercible_non_integer_intervals(interval_seconds):
+    registry = ContractRegistry()
+    register_integration_contracts(registry)
+    args_model = registry.require("integration_enable").contract.execution.args_model
+
+    with pytest.raises(ValidationError):
+        args_model(
+            project_id="p",
+            mode="train",
+            expected_generation=0,
+            reason="strict cadence",
+            interval_seconds=interval_seconds,
+        )
 
 
 def test_repair_contracts_expose_exact_typed_public_protocol():

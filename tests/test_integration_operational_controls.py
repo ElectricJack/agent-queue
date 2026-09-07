@@ -262,7 +262,7 @@ async def test_cadence_rejections_and_stale_or_draining_requests_write_nothing(d
                 reason="invalid combination",
                 operator_id="operator:local",
             )
-    for interval in (0, -1):
+    for interval in (0, -1, True, "60"):
         with pytest.raises(ValueError, match="positive"):
             await service.enable(
                 "p",
@@ -314,6 +314,27 @@ async def test_cadence_rejections_and_stale_or_draining_requests_write_nothing(d
     assert (await db.get_project("p")).hierarchical_integration_generation == 1
     assert await _row_count(db, integration_rollout_transitions) == 1
     assert await _schedule(db) == before
+
+
+@pytest.mark.parametrize("interval_seconds", [True, "60"])
+async def test_raw_enable_handler_does_not_coerce_interval(
+    command_handler_factory, interval_seconds
+):
+    handler = await command_handler_factory()
+    handler.orchestrator.integration_control_service = IntegrationControlService(handler.db)
+
+    with pytest.raises(ValueError, match="positive integer"):
+        await handler._cmd_integration_enable(
+            {
+                "project_id": "p",
+                "mode": "train",
+                "expected_generation": 0,
+                "reason": "strict cadence",
+                "interval_seconds": interval_seconds,
+            }
+        )
+
+    await handler.db.close()
 
 
 async def test_observe_flush_and_scheduler_boundary_never_create_schedule(db):

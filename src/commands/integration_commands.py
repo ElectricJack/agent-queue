@@ -325,8 +325,6 @@ class IntegrationCommandsMixin:
             expected_generation = int(args["expected_generation"])
             reason = str(args["reason"])
             interval_seconds = args.get("interval_seconds")
-            if interval_seconds is not None:
-                interval_seconds = int(interval_seconds)
         except (KeyError, TypeError, ValueError):
             return _failure("blocked", "project_id, mode, expected_generation, and reason are required")
         return await self._integration_control_service().enable(

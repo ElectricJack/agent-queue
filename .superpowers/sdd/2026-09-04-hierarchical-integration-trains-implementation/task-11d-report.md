@@ -23,9 +23,10 @@ copier work was performed.
   digest needed for a subsequent guarded operator decision.
 - [x] Added guarded `aq project set` transport for
   `integration-repository-id` and `integration-policy`, requiring an explicit
-  nonnegative expected integration generation and operator reason. Policy input
-  must parse as a JSON object. Rollout mode remains exclusive to
-  `aq integration enable`.
+  nonnegative expected integration generation. The operator reason is optional;
+  when omitted, the backend records `configure hierarchical integration`. Policy
+  input must parse as a JSON object. Rollout mode remains exclusive to `aq
+  integration enable`.
 - [x] Added report-only `integration.operational` doctor output over the reviewed
   status service: modes, generation, drain/readiness, repository, blockers/digest,
   deferred certification, active batch, human-required work, and cleanup
@@ -78,9 +79,9 @@ daemon contract/control boundary.
 - `aq integration abort OPERATION_ID --reason REASON`
 - `aq integration retry-cleanup BATCH_ID`
 - `aq project set PROJECT_ID integration-repository-id VALUE
-  --expected-integration-generation GENERATION --reason REASON`
+  --expected-integration-generation GENERATION [--reason REASON]`
 - `aq project set PROJECT_ID integration-policy POLICY_JSON
-  --expected-integration-generation GENERATION --reason REASON`
+  --expected-integration-generation GENERATION [--reason REASON]`
 
 ## RED evidence
 
@@ -164,3 +165,30 @@ amended-file gate covers those additions.
 - Populated SQLite-to-PostgreSQL copying remains unsupported and was not modified.
   No production enablement, database/config mutation, probe, deployment, push, PR,
   or main merge was performed.
+
+## Scoped review fix 1
+
+The Important finding in `task-11d-review.md` was verified and corrected. The
+optional cadence field now uses strict positive-integer validation in the public
+typed contract. The raw command handler no longer calls `int()` on that field, so
+direct handler callers pass their original value to the service's independent
+strict boundary. Boolean and numeric-string values are rejected by both applicable
+boundaries; zero and negative rejection remains covered. No other runtime behavior
+changed.
+
+The report's project-configuration wording was also corrected: expected generation
+is mandatory, but `--reason` is optional and the backend records `configure
+hierarchical integration` when it is omitted.
+
+Exact RED:
+
+- `pytest -q tests/test_integration_contracts.py::test_enable_contract_rejects_coercible_non_integer_intervals tests/test_integration_operational_controls.py::test_raw_enable_handler_does_not_coerce_interval tests/test_integration_operational_controls.py::test_cadence_rejections_and_stale_or_draining_requests_write_nothing -x`
+  -> `1 failed, 3 warnings in 1.03s`; `IntegrationEnableArgs` accepted `True`
+  without raising `ValidationError`.
+
+Exact GREEN and checks:
+
+- `pytest -q tests/test_integration_contracts.py::test_enable_contract_rejects_coercible_non_integer_intervals tests/test_integration_operational_controls.py::test_raw_enable_handler_does_not_coerce_interval tests/test_integration_operational_controls.py::test_cadence_rejections_and_stale_or_draining_requests_write_nothing -x`
+  -> `5 passed, 3 warnings in 1.25s`.
+- `ruff check src/commands/contracts/integration.py src/commands/integration_commands.py tests/test_integration_contracts.py tests/test_integration_operational_controls.py && git diff --check`
+  -> `All checks passed!`, exit 0.
