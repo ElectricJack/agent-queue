@@ -1753,12 +1753,22 @@ async def test_conflict_records_inputs_and_never_creates_a_receipt(db, promotion
 
 
 def test_conflict_diagnostics_terminates_and_bounds_many_paths():
+    # The termination budget is armed *inside* the child around the call under
+    # test: a cold interpreter plus importing ``src.integration.promotion``
+    # costs about a second on an idle box and more under CI load, which is the
+    # machine, not the diagnostics.  The outer timeout only catches a hang.
     script = """
 import json
+import signal
 from src.integration.promotion import PromotionService
 intent = {"source_base": "a" * 40, "source_head": "b" * 40, "expected_target": "c" * 40}
 stdout = "".join(f"100644 100644 deadbeef deadbeef M\\t{'p' * 96}{index}\\n" for index in range(1200))
+def _did_not_terminate(signum, frame):
+    raise SystemExit("paths-heavy conflict diagnostics did not terminate")
+signal.signal(signal.SIGALRM, _did_not_terminate)
+signal.alarm(2)
 diagnostics = PromotionService._conflict_diagnostics(intent, stdout, "conflict")
+signal.alarm(0)
 print(json.dumps({
     "size": len(json.dumps(diagnostics, sort_keys=True).encode("utf-8")),
     "truncated": diagnostics["truncated"],
@@ -1771,14 +1781,12 @@ print(json.dumps({
             check=True,
             capture_output=True,
             text=True,
-            # Termination proof, not a latency budget: importing
-            # src.integration.promotion alone takes ~1s on an idle box and
-            # several seconds on a loaded CI runner, so a tight bound flakes.
-            # The pathological input this guards against never finishes.
-            timeout=30,
+            timeout=60,
         )
     except subprocess.TimeoutExpired:
         pytest.fail("paths-heavy conflict diagnostics did not terminate")
+    except subprocess.CalledProcessError as exc:
+        pytest.fail(f"paths-heavy conflict diagnostics failed: {exc.stderr.strip()}")
     result = json.loads(completed.stdout)
     assert result["size"] <= 65536
     assert result["truncated"] is True
