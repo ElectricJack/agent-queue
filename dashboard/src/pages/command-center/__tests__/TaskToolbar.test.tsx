@@ -15,6 +15,7 @@ const mocks = vi.hoisted(() => ({
 vi.mock("../../../api/hooks", () => ({
   useProjects: () => ({ data: mocks.projects, isLoading: false, error: null }),
   useCreateTask: () => ({ mutate: mocks.create, isPending: false, error: mocks.error }),
+  useIntelligenceClasses: () => ({ data: { classes: [{ id: "standard", tier: "standard" }] }, isLoading: false, error: null }),
 }));
 vi.mock("../../../api/graphLayout", () => ({
   useTidyLayout: () => ({ mutate: mocks.tidy, isPending: false, isError: mocks.tidyFailed }),
@@ -39,6 +40,11 @@ beforeEach(() => { vi.clearAllMocks(); mocks.error = null; mocks.tidyFailed = fa
   mocks.locate.mockImplementation(async () => ({ hits: [{ id: "t1", x: 1, y: 2, w: 1, h: 1 }] })); });
 
 describe("shared Command Center task controls", () => {
+  it("shows completed work by default on the graph route", () => {
+    mount("/projects/alpha/graph");
+    expect(screen.getByRole("checkbox", { name: "Show completed" })).toBeChecked();
+  });
+
   it("uses sidebar route scope and stores search/status in the URL", async () => {
     mount();
     expect(screen.getByTestId("scope")).toHaveTextContent("alpha");
@@ -60,6 +66,7 @@ describe("shared Command Center task controls", () => {
     await userEvent.click(screen.getByRole("button", { name: /Add task/ }));
     expect(screen.getByRole("combobox", { name: "Project" })).toHaveValue("beta");
     await userEvent.type(screen.getByRole("textbox", { name: /Title/ }), "  My new task  ");
+    await userEvent.selectOptions(screen.getByRole("combobox", { name: /Intelligence class/ }), "standard");
     fireEvent.submit(screen.getByRole("form", { name: "Create task" }));
     expect(mocks.create).toHaveBeenCalledWith(expect.objectContaining({ title: "My new task", project_id: "beta" }), expect.any(Object));
   });
@@ -79,6 +86,7 @@ describe("shared Command Center task controls", () => {
     mount("/projects/alpha/graph?q=old&status=FAILED");
     await userEvent.click(screen.getByRole("button", { name: /Add task/ }));
     await userEvent.type(screen.getByRole("textbox", { name: /Title/ }), "New work");
+    await userEvent.selectOptions(screen.getByRole("combobox", { name: /Intelligence class/ }), "standard");
     fireEvent.submit(screen.getByRole("form", { name: "Create task" }));
     expect(mocks.open).toHaveBeenCalledWith("task-detail", { taskId: "new-task" });
     expect(screen.getByRole("searchbox", { name: "Search tasks" })).toHaveValue("");
@@ -105,7 +113,7 @@ describe("layout-aware task controls", () => {
   it("offers Tidy and Next result and confirms before tidying", async () => {
     mount("/projects/alpha/graph?q=check");
     await waitFor(() => expect(screen.getByRole("button", { name: "Next result (1)" })).toBeInTheDocument());
-    expect(mocks.locate).toHaveBeenCalledWith("alpha", "active", "check", "", []);
+    expect(mocks.locate).toHaveBeenCalledWith("alpha", "all", "check", "", []);
 
     vi.spyOn(window, "confirm").mockReturnValueOnce(false);
     await userEvent.click(screen.getByRole("button", { name: "Tidy layout" }));

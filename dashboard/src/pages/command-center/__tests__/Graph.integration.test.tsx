@@ -60,15 +60,16 @@ it("adds completed playbook definitions despite hidden completed tasks and opens
 });
 
 it("renders the layout canvas and maps Show completed to the variant", () => {
+  mocks.showCompleted = true;
   const view = render(<Graph />);
   expect(screen.getByTestId("layout-canvas")).toBeInTheDocument();
-  expect(mocks.layoutProps.current).toMatchObject({ projectIds: ["alpha"], variant: "active" });
+  expect(mocks.layoutProps.current).toMatchObject({ projectIds: ["alpha"], variant: "all" });
   // The status strip counts nodes from the layout extents.
   expect(screen.getByText(/7 tasks total/)).toBeInTheDocument();
 
-  mocks.showCompleted = true;
+  mocks.showCompleted = false;
   view.rerender(<Graph />);
-  expect(mocks.layoutProps.current).toMatchObject({ variant: "all" });
+  expect(mocks.layoutProps.current).toMatchObject({ variant: "active" });
 });
 
 it("keeps the canvas mounted and reports progress while an extent is still building", () => {

@@ -48,11 +48,20 @@ export default function ProjectHeader() {
   return (
     <div className="shrink-0 px-4 py-3">
       <header className="space-y-1">
-        <p className="text-xs uppercase tracking-wider text-gray-500">Project</p>
         <div className="flex items-center gap-3">
           <h1 className="text-lg font-semibold">
             {isLoading ? projectId : project?.name || projectId}
           </h1>
+          {project?.repo_url && (
+            <a
+              href={project.repo_url}
+              target="_blank"
+              rel="noreferrer"
+              className="ml-auto truncate font-mono text-xs text-gray-500 hover:text-gray-300"
+            >
+              {project.repo_url}
+            </a>
+          )}
           {project && (
             <>
               <button
@@ -89,9 +98,6 @@ export default function ProjectHeader() {
             </>
           )}
         </div>
-        {project?.repo_url && (
-          <p className="font-mono text-xs text-gray-500">{project.repo_url}</p>
-        )}
       </header>
 
       <Modal
