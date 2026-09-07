@@ -105,7 +105,7 @@ async def resolve_workspace_checkpoint(db, git, task: dict, repo: RepoConfig) ->
         raise HierarchyError("dirty", "workspace HEAD is not an exact Git OID")
     from src.git.manager import RemoteRefState
 
-    remote = await git.als_remote_ref(checkout, task["branch_name"])
+    remote = await git.als_remote_ref(checkout, task["branch_name"].removeprefix("refs/heads/"))
     if remote.state is not RemoteRefState.PRESENT or remote.oid != actual_head:
         raise HierarchyError("dirty", "workspace HEAD is not exactly pushed")
     return actual_head

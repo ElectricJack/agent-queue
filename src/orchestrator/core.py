@@ -2275,6 +2275,9 @@ class Orchestrator(
         The order matters: tasks use the DB, so we must wait for them
         to finish before closing it.
         """
+        from src.integration.completion_recovery import stop_ready_owner_recovery
+
+        await stop_ready_owner_recovery(self)
         await self.wait_for_running_tasks(timeout=10)
         # A layout publish is one transaction; let an in-flight step land
         # rather than cancelling it mid-write.  Marks are durable either way.
@@ -2902,6 +2905,9 @@ class Orchestrator(
         except Exception:
             logger.error("AgentQuestionService tick failed", exc_info=True)
         await self.session_reconciler.tick()
+        from src.integration.completion_recovery import schedule_ready_owner_recovery
+
+        schedule_ready_owner_recovery(self)
 
     async def _load_profile_for_lens(self, profile_id: str):
         """Async profile lookup used by :class:`SessionLens.ensure_started`.
