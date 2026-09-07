@@ -212,6 +212,7 @@ class TestClaim:
         assert result["result"] == "claimed"
         reset = handler.orchestrator._worktree_slots.return_value.reset_slot_for_task
         assert reset.await_args.kwargs["base_branch"] == "a" * 40
+        assert reset.await_args.kwargs["target_branch"] == "aq/child"
         owner = await ownership.get_owner(
             BranchKey(repository_id="repo", branch="aq/child")
         )

@@ -95,7 +95,7 @@ async def resolve_workspace_checkpoint(db, git, task: dict, repo: RepoConfig) ->
         raise HierarchyError("dirty", "task has no exact owned integration workspace")
     checkout = workspace.workspace_path
     branch = await git.aget_current_branch(checkout, strict=True)
-    if branch != task["branch_name"]:
+    if branch != task["branch_name"].removeprefix("refs/heads/"):
         raise HierarchyError("dirty", "workspace is not on the canonical task branch")
     status = await git._arun(["status", "--porcelain"], cwd=checkout)
     if status:

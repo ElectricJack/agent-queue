@@ -636,6 +636,17 @@ class TestResetSlot:
         merged = _git(["branch", "--contains", "HEAD", "-a"], cwd=slot.workspace_path)
         assert "release/1.0" in merged
 
+    def test_exact_repair_branch_uses_owned_ref(self, mgr, base_ws, kind, base_repo):
+        slot = self._make_slot(mgr, base_ws, kind)
+        head = _git(["rev-parse", "HEAD"], cwd=base_repo)
+        branch = asyncio.run(mgr.reset_slot_for_task(
+            slot, FakeTask(id="repair-1"), base_branch=head,
+            target_branch="refs/heads/aq/integration/batch",
+        ))
+        assert branch == "aq/integration/batch"
+        assert _git(["branch", "--show-current"], cwd=slot.workspace_path) == branch
+        assert _git(["rev-parse", "HEAD"], cwd=slot.workspace_path) == head
+
     def test_hostile_base_branch_is_rejected(self, mgr, base_ws, kind):
         """`base_branch` reaches git from task metadata — untrusted text."""
         slot = self._make_slot(mgr, base_ws, kind)
