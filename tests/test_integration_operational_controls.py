@@ -664,6 +664,48 @@ async def test_daemon_functional_preflight_reads_artifact_trust_and_workflow_var
     assert "hosted_workflow_variables_mismatch" in blockers
 
 
+@pytest.mark.parametrize("remote, expected", [
+    ({"id": 303, "full_name": "acme/widgets", "permissions": {"push": True}}, ()),
+    ({"id": 303, "full_name": "acme/widgets", "permissions": {"push": False}},
+     ("repository_write_permission_missing",)),
+    ({"id": 304, "full_name": "acme/widgets", "permissions": {"push": True}},
+     ("repository_mismatch",)),
+    ({"id": 303, "full_name": "acme/other", "permissions": {"push": True}},
+     ("repository_mismatch",)),
+    (None, ("github_auth_unavailable",)),
+])
+async def test_gh_preflight_uses_existing_auth_without_app_manifest_or_variables(db, remote, expected):
+    class Client:
+        auth_mode = "gh"
+        repository = GitHubRepositoryBinding(303, "acme/widgets")
+
+        async def request_json(self, method, path):
+            assert method == "GET"
+            assert path == "/repos/acme/widgets"
+            if remote is None:
+                raise RuntimeError("gh auth unavailable")
+            return remote
+
+    loaded = SimpleNamespace(
+        id="hierarchical-delivery", schema_version=2,
+        source_hash="sha256:" + "3" * 64, version=1,
+        contract_fingerprint=lambda: "sha256:" + "2" * 64,
+    )
+    orchestrator = SimpleNamespace(
+        db=db, integration_app_client_factory=lambda _binding: Client(),
+        integration_repository_binding_resolver=lambda _repository: Client.repository,
+        playbook_manager=SimpleNamespace(_store=SimpleNamespace(load=lambda _sha: loaded)),
+        integration_attestation_service=object(), root_promotion_service=object(),
+        integration_cleanup_service=object(), git=object(),
+        intelligence_classes={"standard": object(), "deep": object()},
+    )
+    db.list_profiles = AsyncMock(return_value=[
+        SimpleNamespace(id=value) for value in ("worker", "debugger", "verifier")
+    ])
+    blockers = await daemon_functional_preflight(orchestrator, "p", "repo")
+    assert blockers == expected
+
+
 async def test_daemon_functional_preflight_mints_token_with_variables_read(
     db, monkeypatch
 ):

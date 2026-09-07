@@ -56,10 +56,23 @@ PostgreSQL after using either copier is unsupported and would lose that state.
 This limitation does not affect an in-place schema upgrade on the backend the
 installation already uses.
 
-## 2. Configure the exact GitHub App and repository trust
+## 2. Use the daemon user's existing GitHub login
 
-The daemon configuration contains identity and an absolute key-file reference,
-never PEM or token bytes:
+A GitHub App is **not required**. AQ defaults to `gh api` for repository,
+PR, and CI reads/writes, and existing authenticated Git transport for exact
+fetch/push operations. Run these as the same OS user that runs the daemon:
+
+```bash
+gh auth status --hostname github.com
+git ls-remote https://github.com/OWNER/REPOSITORY.git HEAD
+```
+
+If the account is not logged in, run `gh auth login --hostname github.com`.
+The account needs write access to the project repositories and permission to
+read their CI results. AQ does not print or persist a copy of the gh token.
+GitHub repository protections remain enforced; AQ does not bypass them.
+
+The ordinary integration configuration needs no App IDs or private key:
 
 ```yaml
 integration:
@@ -67,44 +80,21 @@ integration:
   merge_ci_policy: required
   merge_required_checks:
     - Tests (default)
-  github_app:
-    client_id: Iv1.exampleclientid
-    app_id: 123456
-    installation_id: 23456789
-    private_key_path: /run/secrets/aq-integration-app.pem
 ```
 
-Edit this with `aq system config set` or replace the section with
-`aq system update-config --section integration --data JSON`. Validate first:
+The parent and root policy below declare the exact CI check names, version,
+and producer (`github-actions` for GitHub Actions, or the real numeric producer
+App ID). This identifies who ran CI, not a separate AQ App you must register.
+AQ verifies the repository identity and exact commit against authenticated
+GitHub results, then records durable CI receipts before guarded promotion.
+No `.github/agent-queue-integration.json`, AQ attestation App, or
+`AQ_INTEGRATION_*` Actions variables are needed in the default gh mode.
 
-```bash
-aq system config set 'integration.github_app={client_id: Iv1.exampleclientid, app_id: 123456, installation_id: 23456789, private_key_path: /run/secrets/aq-integration-app.pem}' --dry-run
-aq system config set 'integration.github_app={client_id: Iv1.exampleclientid, app_id: 123456, installation_id: 23456789, private_key_path: /run/secrets/aq-integration-app.pem}'
-aq restart
-```
-
-The App installation must be limited to the designated GitHub.com repository
-and grant the repository permissions the integration runtime already requires,
-including **Variables: read**. The daemon requests `variables:read` on its
-exact-repository installation token and rejects a token response that omits it.
-The CLI does not grant or mutate GitHub App permissions; an App owner must
-change the installation grant, then restart the daemon for credential/config
-changes.
-
-Commit `.github/agent-queue-integration.json` on the default branch. Start from
-`.github/agent-queue-integration.example.json`; set the AQ repository config
-ID, GitHub numeric repository ID/full name, attestation App ID, CI producer App
-ID, and the exact check-set name/version. The parent and root policy
-`producer_id` values must match that CI producer. Set the two repository
-Actions variables with operator credentials:
-
-```bash
-gh variable set AQ_INTEGRATION_ATTESTATION_APP_ID --repo OWNER/REPOSITORY --body 123456
-gh variable set AQ_INTEGRATION_REQUIRED_CHECK_VERSION --repo OWNER/REPOSITORY --body checks-v1
-```
-
-These values must match the default-branch trust manifest and the root policy.
-Functional preflight reads all three through the repository-bound App client.
+Existing installations that explicitly configure `integration.github_app`
+retain the legacy App-authenticated path and its trust manifest/variables.
+Remove that configuration to use the default gh path, then restart the daemon.
+Historical internal names containing `app_client` are compatibility names,
+not a requirement to configure an App.
 
 ## 3. Bind reviewed project artifacts, classes, and profiles
 
@@ -138,7 +128,7 @@ are explicit; nothing is inferred at enable time.
 {
   "version": 1,
   "parent": {
-    "required_checks": {"version": "checks-v1", "names": ["Tests (default)"], "producer_id": "15368"},
+    "required_checks": {"version": "checks-v1", "names": ["Tests (default)"], "producer_id": "github-actions"},
     "repair": {"primary_seconds": 1800, "primary_attempts": 3, "debug_seconds": 3600, "debug_attempts": 3, "debug_intelligence_class": "deep", "debug_profile_id": "worker-deep-high-claude"},
     "route": {"playbook_id": "hierarchical-delivery", "scope": "project", "scope_identifier": "example", "activation_id": null, "artifact": {"playbook_id": "hierarchical-delivery", "artifact_sha256": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "schema_generation": 2, "contract_fingerprint": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc", "source_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd", "compiler_build": "playbook-v2-compiler/1", "compiled_at": "2026-09-06T00:00:00Z", "version": 1}},
     "primary_intelligence_class": "standard",
@@ -147,7 +137,7 @@ are explicit; nothing is inferred at enable time.
     "verifier_profile_id": "worker-standard-medium-claude"
   },
   "root": {
-    "required_checks": {"version": "checks-v1", "names": ["Tests (default)"], "producer_id": "15368"},
+    "required_checks": {"version": "checks-v1", "names": ["Tests (default)"], "producer_id": "github-actions"},
     "repair": {"primary_seconds": 1800, "primary_attempts": 3, "debug_seconds": 3600, "debug_attempts": 3, "debug_intelligence_class": "deep", "debug_profile_id": "worker-deep-high-claude"},
     "route": {"playbook_id": "root-integration-train", "scope": "project", "scope_identifier": "example", "activation_id": null, "artifact": {"playbook_id": "root-integration-train", "artifact_sha256": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "schema_generation": 2, "contract_fingerprint": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee", "source_digest": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff", "compiler_build": "playbook-v2-compiler/1", "compiled_at": "2026-09-06T00:00:00Z", "version": 1}},
     "primary_intelligence_class": "standard",
@@ -199,8 +189,9 @@ aq integration enable example --mode hierarchy --expected-generation 3 --reason 
 ```
 
 Otherwise do not waive: fix the repository, policy, artifact, activation,
-profile, intelligence-class, trust-manifest, hosted-variable, or runtime-wiring
-blocker. In hierarchy mode, terminal children integrate children-first and the
+profile, intelligence-class, GitHub authentication, CI-policy, or runtime-wiring
+blocker (manifest/hosted-variable checks apply only to legacy App mode).
+In hierarchy mode, terminal children integrate children-first and the
 parent is completed only after exact current-generation/head receipt and parent
 verification. Root train sweeps remain off.
 

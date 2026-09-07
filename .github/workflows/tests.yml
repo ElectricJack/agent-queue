@@ -30,9 +30,10 @@ permissions:
 
 jobs:
   integration-attestation:
-    name: Integration attestation decision
+    name: Integration candidate CI reuse decision
     runs-on: ubuntu-latest
     permissions:
+      actions: read
       contents: read
       checks: read
     outputs:
@@ -50,72 +51,110 @@ jobs:
           EXPECTED_SHA: ${{ github.sha }}
         run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
 
-      - name: Read exact-name check runs
+      - name: Read exact workflow run evidence
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         env:
           GITHUB_API_URL: ${{ github.api_url }}
           GITHUB_REPOSITORY: ${{ github.repository }}
           GITHUB_SHA: ${{ github.sha }}
           GITHUB_TOKEN: ${{ github.token }}
+          CURRENT_RUN_ID: ${{ github.run_id }}
         run: |
           python - <<'PY'
           import json, os, re, urllib.parse, urllib.request
-          records = []
+
+          maximum = 2 * 1024 * 1024
+          headers = {
+              "Accept": "application/vnd.github+json",
+              "Authorization": f"Bearer {os.environ['GITHUB_TOKEN']}",
+              "X-GitHub-Api-Version": "2022-11-28",
+          }
+
+          def read(url):
+              request = urllib.request.Request(url, headers=headers)
+              with urllib.request.urlopen(request, timeout=30) as response:
+                  body = response.read(maximum + 1)
+                  if len(body) > maximum:
+                      raise ValueError("response too large")
+                  return json.loads(body), response.headers.get("Link", "")
+
+          evidence = {"current_run": {}, "workflow_runs": []}
           try:
-              name = urllib.parse.quote("Agent Queue Integration Attestation", safe="")
-              url = (f"{os.environ['GITHUB_API_URL']}/repos/{os.environ['GITHUB_REPOSITORY']}"
-                     f"/commits/{os.environ['GITHUB_SHA']}/check-runs"
-                     f"?check_name={name}&filter=all&per_page=100")
-              headers = {
-                  "Accept": "application/vnd.github+json",
-                  "Authorization": f"Bearer {os.environ['GITHUB_TOKEN']}",
-                  "X-GitHub-Api-Version": "2022-11-28",
-              }
+              api = os.environ["GITHUB_API_URL"]
+              repository = os.environ["GITHUB_REPOSITORY"]
+              sha = os.environ["GITHUB_SHA"]
+              current_id = int(os.environ["CURRENT_RUN_ID"])
+              current, _ = read(f"{api}/repos/{repository}/actions/runs/{current_id}")
+              workflow_id = current["workflow_id"]
+              query = urllib.parse.urlencode({
+                  "event": "push",
+                  "head_sha": sha,
+                  "exclude_pull_requests": "true",
+                  "per_page": 100,
+              })
+              url = f"{api}/repos/{repository}/actions/workflows/{workflow_id}/runs?{query}"
+              records = []
               for _ in range(10):
-                  request = urllib.request.Request(url, headers=headers)
-                  with urllib.request.urlopen(request, timeout=30) as response:
-                      body = response.read(2 * 1024 * 1024 + 1)
-                      if len(body) > 2 * 1024 * 1024:
-                          raise ValueError("response too large")
-                      value = json.loads(body)
-                      records.extend(value.get("check_runs", []))
-                      link = response.headers.get("Link", "")
+                  value, link = read(url)
+                  runs = value.get("workflow_runs") if isinstance(value, dict) else None
+                  if not isinstance(runs, list):
+                      raise ValueError("invalid workflow runs response")
+                  for run in runs:
+                      branch = run.get("head_branch") if isinstance(run, dict) else None
+                      if (
+                          not isinstance(branch, str)
+                          or re.fullmatch(
+                              r"aq/integration/p-[0-9a-f]{32}/r-[0-9a-f]{32}", branch
+                          ) is None
+                          or run.get("head_sha") != sha
+                      ):
+                          continue
+                      run_id = run["id"]
+                      attempt_number = run["run_attempt"]
+                      attempt, _ = read(
+                          f"{api}/repos/{repository}/actions/runs/{run_id}"
+                          f"/attempts/{attempt_number}"
+                      )
+                      latest, _ = read(f"{api}/repos/{repository}/actions/runs/{run_id}")
+                      records.append({"listed": run, "attempt": attempt, "latest": latest})
                   match = re.search(r'<([^>]+)>;\s*rel="next"', link)
                   if match is None:
                       break
                   url = match.group(1)
               else:
                   raise ValueError("too many response pages")
+              evidence = {"current_run": current, "workflow_runs": records}
           except Exception:
-              records = []
-          with open("attestation-records.json", "w", encoding="utf-8") as output:
-              json.dump(records, output)
+              evidence = {"current_run": {}, "workflow_runs": []}
+          with open("workflow-runs.json", "w", encoding="utf-8") as output:
+              json.dump(evidence, output)
           PY
 
-      - name: Use empty records outside main
+      - name: Use empty evidence outside main
         if: github.event_name != 'push' || github.ref != 'refs/heads/main'
-        run: echo '[]' > attestation-records.json
+        run: echo '{"current_run":{},"workflow_runs":[]}' > workflow-runs.json
 
       - name: Decide without daemon credentials
         id: decision
         env:
           EVENT_NAME: ${{ github.event_name }}
           EVENT_REF: ${{ github.ref }}
-          REPOSITORY_ID: ${{ github.event.repository.id }}
-          CHECKOUT_SHA: ${{ github.sha }}
-          ATTESTATION_APP_ID: ${{ vars.AQ_INTEGRATION_ATTESTATION_APP_ID }}
-          REQUIRED_CHECK_VERSION: ${{ vars.AQ_INTEGRATION_REQUIRED_CHECK_VERSION }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
           REPOSITORY_FULL_NAME: ${{ github.repository }}
+          CHECKOUT_SHA: ${{ github.sha }}
+          CURRENT_RUN_ID: ${{ github.run_id }}
+          CURRENT_RUN_ATTEMPT: ${{ github.run_attempt }}
           HEAD_REPOSITORY_FULL_NAME: ${{ github.event.pull_request.head.repo.full_name }}
           HEAD_REF: ${{ github.event.pull_request.head.ref }}
         run: |
           value=$(python scripts/check-integration-attestation.py \
             --event-name "$EVENT_NAME" --ref "$EVENT_REF" \
-            --repository-id "$REPOSITORY_ID" --checkout-sha "$CHECKOUT_SHA" \
-            --integration-app-id "${ATTESTATION_APP_ID:-0}" \
-            --required-check-version "${REQUIRED_CHECK_VERSION:-unconfigured}" \
-            --trust-file .github/agent-queue-integration.json \
-            --records-file attestation-records.json)
+            --default-branch "$DEFAULT_BRANCH" \
+            --repository-full-name "$REPOSITORY_FULL_NAME" \
+            --checkout-sha "$CHECKOUT_SHA" \
+            --current-run-id "$CURRENT_RUN_ID" \
+            --current-run-attempt "$CURRENT_RUN_ATTEMPT" \
+            --workflow-runs-file workflow-runs.json)
           echo "skip_full_ci=$value" >> "$GITHUB_OUTPUT"
           duplicate=$(python scripts/check-integration-attestation.py \
             --matching-integration-pr --event-name "$EVENT_NAME" \

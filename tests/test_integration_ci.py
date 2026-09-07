@@ -20,6 +20,8 @@ from src.integration.ci import (
     ATTESTATION_CHECK_NAME,
     AttestationError,
     AttestationPayload,
+    CIReceiptPayload,
+    IntegrationCITrust,
     IntegrationTrustManifest,
     AuthenticatedGitHubObserver,
     CandidateCISubject,
@@ -28,6 +30,7 @@ from src.integration.ci import (
     ParentCISubject,
     TrustedCIObservation,
     TrustedFixtureObserver,
+    ci_trust_from_policy,
     select_trusted_attestation,
 )
 from src.models import Project, RepoConfig, RepoSourceType, Task, TaskStatus
@@ -54,6 +57,56 @@ def trust() -> IntegrationTrustManifest:
             "required_checks": {"version": "checks-v1", "names": ["unit", "postgres"]},
         }
     )
+
+
+def ci_trust() -> IntegrationCITrust:
+    return ci_trust_from_policy(
+        canonical_repository_id="repo-config-1",
+        repository_id=303,
+        full_name="acme/widgets",
+        policy=policy_snapshot(),
+        boundary="root",
+    )
+
+
+def test_ci_trust_is_derived_from_the_selected_frozen_policy_boundary():
+    snapshot = policy_snapshot()
+    snapshot["parent"]["required_checks"] = {
+        "version": "focused-v2",
+        "names": ["lint", "unit"],
+        "producer_id": "github-actions",
+    }
+
+    derived = ci_trust_from_policy(
+        canonical_repository_id="repo-config-1",
+        repository_id=303,
+        full_name="acme/widgets",
+        policy=snapshot,
+        boundary="parent",
+    )
+
+    assert derived == IntegrationCITrust(
+        canonical_repository_id="repo-config-1",
+        repository_id=303,
+        full_name="acme/widgets",
+        producer_id="github-actions",
+        required_checks={"version": "focused-v2", "names": ("lint", "unit")},
+    )
+
+
+@pytest.mark.parametrize("producer_id", ["", " github-actions", "0", "-1", True])
+def test_ci_trust_rejects_malformed_policy_producer_identity(producer_id):
+    snapshot = policy_snapshot()
+    snapshot["root"]["required_checks"]["producer_id"] = producer_id
+
+    with pytest.raises((AttestationError, ValidationError), match="producer"):
+        ci_trust_from_policy(
+            canonical_repository_id="repo-config-1",
+            repository_id=303,
+            full_name="acme/widgets",
+            policy=snapshot,
+            boundary="root",
+        )
 
 
 def payload_dict() -> dict:
@@ -86,6 +139,23 @@ def payload_dict() -> dict:
             },
         ],
     }
+
+
+def receipt_payload() -> CIReceiptPayload:
+    data = payload_dict()
+    return CIReceiptPayload.model_validate(
+        {
+            "schema": "aq.integration-ci-receipt.v1",
+            "canonical_repository_id": data["canonical_repository_id"],
+            "repository_id": data["repository_id"],
+            "full_name": "acme/widgets",
+            "producer_id": "404",
+            "head_sha": data["head_sha"],
+            "required_check_set_version": data["required_check_set_version"],
+            "checks": [dict(check, producer_id="404") for check in data["checks"]],
+            "workflow_runs": data["workflow_runs"],
+        }
+    )
 
 
 def canonical(data: dict) -> bytes:
@@ -188,9 +258,10 @@ def test_attestation_selection_rejects_loose_numeric_app_identity(malformed_app_
 
 
 class FakeGitHubClient:
-    def __init__(self, checks, workflows):
+    def __init__(self, checks, workflows, jobs=None):
         self.checks = checks
         self.workflows = workflows
+        self.jobs = jobs or {}
         self.paths = []
         self.published = []
 
@@ -201,6 +272,8 @@ class FakeGitHubClient:
                 return self.checks.get("attestation", [])
             name = "unit" if "unit" in path else "postgres"
             return self.checks.get(name, [])
+        if key == "jobs":
+            return self.jobs.get(path, [])
         return self.workflows
 
     async def request_json(self, method, path, *, json_body=None, expected_statuses=None):
@@ -228,13 +301,282 @@ async def test_authenticated_observer_selects_newest_exact_producer_and_coherent
         {"id": 32, "workflow_id": 302, "run_attempt": 1, "check_suite_id": 22,
          "head_sha": SHA, "conclusion": "success"},
     ]
-    client = FakeGitHubClient(checks, workflows)
+    jobs_path = "/repos/acme/widgets/actions/runs/31/attempts/2/jobs?per_page=100"
+    jobs = {
+        jobs_path: [
+            {
+                "id": 101 + index,
+                "name": name,
+                "run_id": 31,
+                "run_attempt": 2,
+                "head_sha": SHA,
+                "status": "completed",
+                "conclusion": "success",
+                "check_run_url": (
+                    f"https://api.github.com/repos/acme/widgets/check-runs/{11 + index}"
+                ),
+            }
+            for index, name in enumerate(("unit", "postgres"))
+        ]
+    }
+    client = FakeGitHubClient(checks, workflows, jobs=jobs)
 
     observation = await AuthenticatedGitHubObserver(client).observe(trust(), SHA)
 
     assert observation.payload == AttestationPayload.model_validate(payload_dict())
     assert observation.workflow_ids == {21: 301, 22: 302}
     assert all("filter=all" in path for path, key in client.paths if key == "check_runs")
+
+
+@pytest.mark.asyncio
+async def test_gh_observer_uses_policy_producer_and_emits_manifest_free_receipt():
+    policy = policy_snapshot()
+    policy["root"]["required_checks"]["producer_id"] = "github-actions"
+    gh_trust = ci_trust_from_policy(
+        canonical_repository_id="repo-config-1",
+        repository_id=303,
+        full_name="acme/widgets",
+        policy=policy,
+        boundary="root",
+    )
+    checks = {
+        "unit": [
+            {
+                "id": 10,
+                "name": "unit",
+                "head_sha": SHA,
+                "status": "completed",
+                "conclusion": "success",
+                "app": {"id": 900, "slug": "other-ci"},
+                "check_suite": {"id": 20},
+            },
+            {
+                "id": 11,
+                "name": "unit",
+                "head_sha": SHA,
+                "status": "completed",
+                "conclusion": "success",
+                "app": {"id": 15368, "slug": "github-actions"},
+                "check_suite": {"id": 21},
+            },
+        ],
+        "postgres": [
+            {
+                "id": 12,
+                "name": "postgres",
+                "head_sha": SHA,
+                "status": "completed",
+                "conclusion": "success",
+                "app": {"id": 15368, "slug": "github-actions"},
+                "check_suite": {"id": 21},
+            }
+        ],
+    }
+    workflows = [
+        {
+            "id": 31,
+            "workflow_id": 301,
+            "run_attempt": 2,
+            "check_suite_id": 21,
+            "head_sha": SHA,
+            "status": "completed",
+            "conclusion": "success",
+            "repository": {"id": 303, "full_name": "acme/widgets"},
+            "head_repository": {"id": 303, "full_name": "acme/widgets"},
+        }
+    ]
+    jobs_path = "/repos/acme/widgets/actions/runs/31/attempts/2/jobs?per_page=100"
+    jobs = {
+        jobs_path: [
+            {
+                "id": 101 + index,
+                "name": name,
+                "run_id": 31,
+                "run_attempt": 2,
+                "head_sha": SHA,
+                "status": "completed",
+                "conclusion": "success",
+                "check_run_url": (
+                    f"https://api.github.com/repos/acme/widgets/check-runs/{11 + index}"
+                ),
+            }
+            for index, name in enumerate(("unit", "postgres"))
+        ]
+    }
+
+    observation = await AuthenticatedGitHubObserver(
+        FakeGitHubClient(checks, workflows, jobs=jobs)
+    ).observe(gh_trust, SHA)
+
+    assert isinstance(observation.payload, CIReceiptPayload)
+    assert observation.payload.producer_id == "github-actions"
+    assert observation.payload.repository_id == 303
+    assert observation.payload.head_sha == SHA
+    assert tuple(check.name for check in observation.payload.checks) == ("unit", "postgres")
+    assert {check.producer_app_id for check in observation.payload.checks} == {15368}
+    assert observation.payload.external_id.startswith("aq-ci-receipt-v1:")
+
+
+@pytest.mark.asyncio
+async def test_gh_observer_records_the_selected_check_producer_not_a_later_record():
+    gh_trust = ci_trust()
+    trusted = {
+        "id": 11,
+        "name": "unit",
+        "head_sha": SHA,
+        "status": "completed",
+        "conclusion": "success",
+        "app": {"id": 404, "slug": "trusted"},
+        "check_suite": {"id": 21},
+    }
+    unrelated = {**trusted, "id": 99, "app": {"id": 999, "slug": "other"}}
+    postgres = {**trusted, "id": 12, "name": "postgres"}
+    workflow = {
+        "id": 31,
+        "workflow_id": 301,
+        "run_attempt": 1,
+        "check_suite_id": 21,
+        "head_sha": SHA,
+        "status": "completed",
+        "conclusion": "success",
+        "repository": {"id": 303, "full_name": "acme/widgets"},
+        "head_repository": {"id": 303, "full_name": "acme/widgets"},
+    }
+
+    jobs_path = "/repos/acme/widgets/actions/runs/31/attempts/1/jobs?per_page=100"
+    jobs = {
+        jobs_path: [
+            {
+                "id": 101 + index,
+                "name": name,
+                "run_id": 31,
+                "run_attempt": 1,
+                "head_sha": SHA,
+                "status": "completed",
+                "conclusion": "success",
+                "check_run_url": (
+                    f"https://api.github.com/repos/acme/widgets/check-runs/{11 + index}"
+                ),
+            }
+            for index, name in enumerate(("unit", "postgres"))
+        ]
+    }
+    observation = await AuthenticatedGitHubObserver(
+        FakeGitHubClient(
+            {"unit": [trusted, unrelated], "postgres": [postgres]}, [workflow], jobs=jobs
+        )
+    ).observe(gh_trust, SHA)
+
+    assert {check.producer_app_id for check in observation.payload.checks} == {404}
+
+
+@pytest.mark.asyncio
+async def test_gh_observer_uses_latest_workflow_attempt_and_rejects_wrong_repository():
+    gh_trust = ci_trust()
+    check = {
+        "id": 11,
+        "name": "unit",
+        "head_sha": SHA,
+        "status": "completed",
+        "conclusion": "success",
+        "app": {"id": 404},
+        "check_suite": {"id": 21},
+    }
+    postgres = {**check, "id": 12, "name": "postgres"}
+    base_workflow = {
+        "workflow_id": 301,
+        "check_suite_id": 21,
+        "head_sha": SHA,
+        "status": "completed",
+        "repository": {"id": 303, "full_name": "acme/widgets"},
+        "head_repository": {"id": 303, "full_name": "acme/widgets"},
+    }
+    attempts = [
+        {**base_workflow, "id": 31, "run_attempt": 1, "conclusion": "success"},
+        {**base_workflow, "id": 32, "run_attempt": 2, "conclusion": "failure"},
+    ]
+    jobs_path = "/repos/acme/widgets/actions/runs/32/attempts/2/jobs?per_page=100"
+    jobs = {
+        jobs_path: [
+            {
+                "id": 101 + index,
+                "name": name,
+                "run_id": 32,
+                "run_attempt": 2,
+                "head_sha": SHA,
+                "status": "completed",
+                "conclusion": "success",
+                "check_run_url": (
+                    f"https://api.github.com/repos/acme/widgets/check-runs/{11 + index}"
+                ),
+            }
+            for index, name in enumerate(("unit", "postgres"))
+        ]
+    }
+    client = FakeGitHubClient(
+        {"unit": [check], "postgres": [postgres]}, attempts, jobs=jobs
+    )
+
+    observation = await AuthenticatedGitHubObserver(client).observe(gh_trust, SHA)
+
+    assert isinstance(observation, FailedCIObservation)
+    assert observation.workflow_runs[0]["workflow_run_id"] == 32
+    assert observation.workflow_runs[0]["run_attempt"] == 2
+
+    attempts[1] = {
+        **attempts[1],
+        "conclusion": "success",
+        "head_repository": {"id": 304, "full_name": "attacker/fork"},
+    }
+    with pytest.raises(AttestationError, match="repository"):
+        await AuthenticatedGitHubObserver(client).observe(gh_trust, SHA)
+
+
+@pytest.mark.asyncio
+async def test_gh_observer_rejects_required_check_from_an_older_workflow_attempt():
+    gh_trust = ci_trust()
+    check = {
+        "id": 11,
+        "name": "unit",
+        "head_sha": SHA,
+        "status": "completed",
+        "conclusion": "success",
+        "app": {"id": 404},
+        "check_suite": {"id": 21},
+    }
+    postgres = {**check, "id": 12, "name": "postgres"}
+    workflow = {
+        "id": 32,
+        "workflow_id": 301,
+        "run_attempt": 2,
+        "check_suite_id": 21,
+        "head_sha": SHA,
+        "status": "completed",
+        "conclusion": "success",
+        "repository": {"id": 303, "full_name": "acme/widgets"},
+        "head_repository": {"id": 303, "full_name": "acme/widgets"},
+    }
+    jobs_path = "/repos/acme/widgets/actions/runs/32/attempts/2/jobs?per_page=100"
+    jobs = {
+        jobs_path: [
+            {
+                "id": 101,
+                "name": "unit",
+                "run_id": 32,
+                "run_attempt": 2,
+                "head_sha": SHA,
+                "status": "completed",
+                "conclusion": "success",
+                "check_run_url": "https://api.github.com/repos/acme/widgets/check-runs/11",
+            }
+        ]
+    }
+    client = FakeGitHubClient(
+        {"unit": [check], "postgres": [postgres]}, [workflow], jobs=jobs
+    )
+
+    with pytest.raises(AttestationError, match="latest workflow attempt"):
+        await AuthenticatedGitHubObserver(client).observe(gh_trust, SHA)
 
 
 @pytest.mark.asyncio
@@ -439,6 +781,28 @@ async def test_ci_service_persists_normalized_parent_evidence_for_task6_consumer
         and row["producer_id"] == "404"
         for row in rows
     )
+
+
+@pytest.mark.asyncio
+async def test_ci_service_persists_manifest_free_daemon_receipt(ci_db):
+    observation = TrustedCIObservation(
+        payload=receipt_payload(),
+        workflow_ids={21: 301, 22: 302},
+    )
+    service = CIService(ci_db, ci_trust(), TrustedFixtureObserver(observation), clock=lambda: 9.0)
+
+    result = await service.observe_parent(
+        ParentCISubject(
+            operation_id="parent-op", parent_task_id="parent", generation=3, head_sha=SHA
+        )
+    )
+
+    assert result["outcome"] == "green"
+    async with ci_db._engine.connect() as conn:
+        rows = (await conn.execute(select(integration_check_evidence))).mappings().all()
+    assert len(rows) == 2
+    assert {row["producer_id"] for row in rows} == {"404"}
+    assert {row["run_id"] for row in rows} == {"31", "32"}
 
 
 @pytest.mark.asyncio

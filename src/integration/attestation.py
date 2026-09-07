@@ -33,8 +33,11 @@ from src.integration.ci import (
     AuthenticatedGitHubObserver,
     CIService,
     CandidateCISubject,
+    CIReceiptPayload,
+    IntegrationCITrust,
     IntegrationTrustManifest,
     TrustedCIObservation,
+    ci_trust_from_policy,
     select_trusted_attestation,
 )
 from src.integration.main_promotion import RootAttestationProof, RootAttestationSubject
@@ -65,7 +68,7 @@ class IntegrationEnablementProbeResult(BaseModel):
 
 
 class IntegrationAttestationService:
-    """Resolve and publish one exact, App-authenticated root attestation."""
+    """Resolve exact live CI into a durable receipt; retain legacy App publication."""
 
     def __init__(
         self,
@@ -108,6 +111,9 @@ class IntegrationAttestationService:
             payload = observation.payload
             if payload.external_id != initial["aggregate_external_id"]:
                 return AttestationPublicationResult(outcome="not_green", subject=subject)
+
+            if isinstance(payload, CIReceiptPayload):
+                return await self._publish_daemon_receipt(subject, initial, payload)
 
             claim_status, claim = await self._reserve_publication(initial)
             if claim_status == "stale":
@@ -175,6 +181,23 @@ class IntegrationAttestationService:
             return None
         try:
             trust, client = await self._load_trust(initial)
+            if isinstance(trust, IntegrationCITrust):
+                observation = await AuthenticatedGitHubObserver(client).observe(
+                    trust, subject.candidate_sha
+                )
+                if not isinstance(observation, TrustedCIObservation) or not isinstance(
+                    observation.payload, CIReceiptPayload
+                ):
+                    return None
+                proof = self._proof_from_observation(subject, initial, observation.payload)
+                if (
+                    proof is None
+                    or proof.check_run_id != claim["check_run_id"]
+                    or proof.external_id != claim["external_id"]
+                ):
+                    return None
+                rechecked = await self._published_publication(initial)
+                return proof if rechecked == claim else None
             records = await self._attestation_records(client, trust, subject.candidate_sha)
             proof = self._proof_from_records(records, trust, subject, initial)
         except (AttestationError, GitHubAppError, GitError, OSError, ValueError, ValidationError):
@@ -277,11 +300,24 @@ class IntegrationAttestationService:
         unique = tuple(dict.fromkeys(blockers))
         return IntegrationEnablementProbeResult(ready=not unique, blockers=unique)
 
-    async def _load_trust(self, state: dict[str, Any]) -> tuple[IntegrationTrustManifest, Any]:
+    async def _load_trust(
+        self, state: dict[str, Any]
+    ) -> tuple[IntegrationTrustManifest | IntegrationCITrust, Any]:
         binding = GitHubRepositoryBinding(
             state["repository_numeric_id"], state["repository_full_name"]
         )
         client = await self._client(binding)
+        if _client_auth_mode(client) == "gh":
+            return (
+                ci_trust_from_policy(
+                    canonical_repository_id=state["canonical_repository_id"],
+                    repository_id=binding.repository_id,
+                    full_name=binding.full_name,
+                    policy=state["policy_snapshot"],
+                    boundary="root",
+                ),
+                client,
+            )
         token = await client.installation_token()
         store = self._store(state["canonical_repository_id"])
         destination_ref = "refs/aq/attestation-trust/" + hashlib.sha256(
@@ -331,7 +367,10 @@ class IntegrationAttestationService:
             value is None
             or value.repository != binding
             or value.repository.forge_host != "github.com"
-            or isinstance(value.config.app_id, bool)
+        ):
+            raise AttestationError("authenticated GitHub repository binding is invalid")
+        if _client_auth_mode(value) != "gh" and (
+            isinstance(value.config.app_id, bool)
             or not isinstance(value.config.app_id, int)
             or value.config.app_id <= 0
         ):
@@ -865,6 +904,7 @@ class IntegrationAttestationService:
                 "required_check_version": required["version"],
                 "required_check_names": tuple(names),
                 "ci_producer_id": required["producer_id"],
+                "policy_snapshot": operation["policy_snapshot"],
                 "ci_evidence_id": candidate["ci_evidence_id"],
                 "aggregate_external_id": evidence["run_id"] if evidence is not None else None,
                 "publication_id": publication["idempotency_key"],
@@ -929,6 +969,50 @@ class IntegrationAttestationService:
             external_id=payload.external_id,
         )
 
+    @staticmethod
+    def _proof_from_observation(
+        subject: RootAttestationSubject,
+        state: dict[str, Any],
+        payload: CIReceiptPayload,
+    ) -> RootAttestationProof | None:
+        if payload.external_id != state["aggregate_external_id"]:
+            return None
+        return RootAttestationProof(
+            **subject.model_dump(),
+            check_run_id=max(check.check_run_id for check in payload.checks),
+            external_id=payload.external_id,
+        )
+
+    async def _publish_daemon_receipt(
+        self,
+        subject: RootAttestationSubject,
+        state: dict[str, Any],
+        payload: CIReceiptPayload,
+    ) -> AttestationPublicationResult:
+        claim_status, claim = await self._reserve_publication(state)
+        if claim_status == "stale":
+            return AttestationPublicationResult(outcome="stale", subject=subject)
+        proof = self._proof_from_observation(subject, state, payload)
+        if proof is None:
+            return AttestationPublicationResult(outcome="not_green", subject=subject)
+        if claim_status == "owner":
+            await self._crash("after_publication_reservation")
+        if (
+            claim_status != "published"
+            and claim.get("prewrite_at") is None
+            and not await self._mark_publication_prewrite(state, claim)
+        ):
+            return AttestationPublicationResult(
+                outcome="configuration_blocked", subject=subject
+            )
+        if not await self._finish_publication(state, claim, proof):
+            return AttestationPublicationResult(outcome="stale", subject=subject)
+        return AttestationPublicationResult(
+            outcome="already_published" if claim_status == "published" else "published",
+            subject=subject,
+            proof=proof,
+        )
+
     def _store(self, canonical_repository_id: str) -> Path:
         return self.data_dir / "integration-repositories" / (
             hashlib.sha256(canonical_repository_id.encode()).hexdigest() + ".git"
@@ -981,6 +1065,13 @@ def _reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
             raise AttestationError("candidate trust manifest contains duplicate fields")
         value[key] = item
     return value
+
+
+def _client_auth_mode(client: Any) -> str:
+    mode = getattr(client, "auth_mode", None)
+    if isinstance(mode, str):
+        return mode
+    return str(getattr(getattr(client, "config", None), "auth_mode", "app"))
 
 
 __all__ = [

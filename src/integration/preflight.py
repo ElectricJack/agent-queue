@@ -145,6 +145,39 @@ async def daemon_functional_preflight(
         except Exception:
             blockers.append("provider_binding_failed")
 
+    if client is not None and getattr(client, "auth_mode", None) == "gh":
+        # Existing gh credentials replace App installation and hosted-variable
+        # setup. Repository identity and access still come from GitHub, never
+        # from a task's claims or a locally authored manifest.
+        try:
+            remote = await client.request_json("GET", f"/repos/{binding.full_name}")
+            if (
+                type(remote.get("id")) is not int
+                or remote["id"] != binding.repository_id
+                or remote.get("full_name") != binding.full_name
+            ):
+                blockers.append("repository_mismatch")
+            permissions = remote.get("permissions")
+            if not isinstance(permissions, dict) or permissions.get("push") is not True:
+                blockers.append("repository_write_permission_missing")
+        except Exception:
+            blockers.append("github_auth_unavailable")
+        if policy is not None:
+            from src.integration.ci import ci_trust_from_policy
+
+            try:
+                for boundary in ("parent", "root"):
+                    ci_trust_from_policy(
+                        canonical_repository_id=repository_id,
+                        repository_id=binding.repository_id,
+                        full_name=binding.full_name,
+                        policy=policy,
+                        boundary=boundary,
+                    )
+            except (TypeError, ValueError):
+                blockers.append("ci_policy_invalid")
+        return tuple(dict.fromkeys(blockers))
+
     trust = None
     if client is not None and repository is not None and repository.default_branch:
         try:

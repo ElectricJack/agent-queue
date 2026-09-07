@@ -1,38 +1,21 @@
 #!/usr/bin/env python3
-"""Fail-closed hosted-CI decision for an exact integration attestation."""
+"""Fail-closed hosted-CI reuse decision for an exact integration workflow run."""
 
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import re
 from pathlib import Path
 from typing import Any
 
 
-ATTESTATION_NAME = "Agent Queue Integration Attestation"
-TRUST_KEYS = {
-    "schema",
-    "canonical_repository_id",
-    "repository_id",
-    "full_name",
-    "ci_producer_app_id",
-    "attestation_app_id",
-    "attestation_name",
-    "required_checks",
-}
-PAYLOAD_KEYS = {
-    "schema",
-    "canonical_repository_id",
-    "repository_id",
-    "ci_producer_app_id",
-    "attestation_app_id",
-    "head_sha",
-    "required_check_set_version",
-    "checks",
-    "workflow_runs",
-}
+INTEGRATION_BRANCH = re.compile(
+    r"aq/integration/p-[0-9a-f]{32}/r-[0-9a-f]{32}"
+)
+SHA = re.compile(r"[0-9a-f]{40}")
+EVIDENCE_KEYS = {"current_run", "workflow_runs"}
+ENTRY_KEYS = {"listed", "attempt", "latest"}
 
 
 def _pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
@@ -55,150 +38,170 @@ def _positive_int(value: object) -> bool:
     return isinstance(value, int) and not isinstance(value, bool) and value > 0
 
 
-def _canonical(value: dict[str, Any]) -> bytes:
-    return json.dumps(
-        value, sort_keys=True, separators=(",", ":"), ensure_ascii=True
-    ).encode("ascii")
-
-
-def _valid_trust(value: object) -> bool:
-    if not isinstance(value, dict) or set(value) != TRUST_KEYS:
-        return False
-    required = value.get("required_checks")
-    names = required.get("names") if isinstance(required, dict) else None
+def _repository_matches(run: dict[str, Any], full_name: str) -> bool:
+    repository = run.get("repository")
+    head_repository = run.get("head_repository")
     return bool(
-        value.get("schema") == "aq.integration-trust.v1"
-        and isinstance(value.get("canonical_repository_id"), str)
-        and value["canonical_repository_id"]
-        and _positive_int(value.get("repository_id"))
-        and isinstance(value.get("full_name"), str)
-        and value["full_name"].count("/") == 1
-        and _positive_int(value.get("ci_producer_app_id"))
-        and _positive_int(value.get("attestation_app_id"))
-        and value["ci_producer_app_id"] != value["attestation_app_id"]
-        and value.get("attestation_name") == ATTESTATION_NAME
-        and isinstance(required, dict)
-        and set(required) == {"version", "names"}
-        and isinstance(required.get("version"), str)
-        and required["version"]
-        and isinstance(names, list)
-        and names
-        and all(isinstance(name, str) and name for name in names)
-        and len(set(names)) == len(names)
+        isinstance(repository, dict)
+        and repository.get("full_name") == full_name
+        and isinstance(head_repository, dict)
+        and head_repository.get("full_name") == full_name
     )
 
 
-def _valid_payload(payload: object, trust: dict[str, Any], head_sha: str) -> bool:
-    if not isinstance(payload, dict) or set(payload) != PAYLOAD_KEYS:
-        return False
-    checks = payload.get("checks")
-    workflows = payload.get("workflow_runs")
-    if not isinstance(checks, list) or not checks or not isinstance(workflows, list) or not workflows:
-        return False
-    names: list[str] = []
-    check_ids: list[int] = []
-    suites: list[int] = []
-    for check in checks:
-        if not isinstance(check, dict) or set(check) != {
-            "name", "check_run_id", "check_suite_id", "producer_app_id", "head_sha", "conclusion"
-        }:
-            return False
-        if not all(_positive_int(check.get(key)) for key in ("check_run_id", "check_suite_id", "producer_app_id")):
-            return False
-        if (
-            check.get("head_sha") != head_sha
-            or check.get("conclusion") != "success"
-            or check.get("producer_app_id") != trust["ci_producer_app_id"]
-            or not isinstance(check.get("name"), str)
-        ):
-            return False
-        names.append(check["name"])
-        check_ids.append(check["check_run_id"])
-        suites.append(check["check_suite_id"])
-    workflow_suites: list[int] = []
-    for workflow in workflows:
-        if not isinstance(workflow, dict) or set(workflow) != {
-            "workflow_run_id", "run_attempt", "check_suite_id", "head_sha", "conclusion"
-        }:
-            return False
-        if not all(_positive_int(workflow.get(key)) for key in ("workflow_run_id", "run_attempt", "check_suite_id")):
-            return False
-        if workflow.get("head_sha") != head_sha or workflow.get("conclusion") != "success":
-            return False
-        workflow_suites.append(workflow["check_suite_id"])
+def _workflow_file(path: object) -> str | None:
+    if not isinstance(path, str):
+        return None
+    workflow_file = path.split("@", 1)[0]
+    if not workflow_file.startswith(".github/workflows/"):
+        return None
+    return workflow_file
+
+
+def _valid_current_run(
+    run: object,
+    *,
+    repository: str,
+    checkout_sha: str,
+    current_run_id: int,
+    current_run_attempt: int,
+) -> bool:
     return bool(
-        payload.get("schema") == "aq.integration-attestation.v1"
-        and payload.get("canonical_repository_id") == trust["canonical_repository_id"]
-        and payload.get("repository_id") == trust["repository_id"]
-        and payload.get("ci_producer_app_id") == trust["ci_producer_app_id"]
-        and payload.get("attestation_app_id") == trust["attestation_app_id"]
-        and payload.get("head_sha") == head_sha
-        and payload.get("required_check_set_version") == trust["required_checks"]["version"]
-        and names == trust["required_checks"]["names"]
-        and len(names) == len(set(names))
-        and len(check_ids) == len(set(check_ids))
-        and set(suites) == set(workflow_suites)
-        and len(workflow_suites) == len(set(workflow_suites))
+        isinstance(run, dict)
+        and _positive_int(run.get("id"))
+        and _positive_int(run.get("run_attempt"))
+        and run.get("id") == current_run_id
+        and run.get("run_attempt") == current_run_attempt
+        and _positive_int(run.get("workflow_id"))
+        and _workflow_file(run.get("path")) is not None
+        and run.get("event") == "push"
+        and run.get("head_branch") == "main"
+        and run.get("head_sha") == checkout_sha
+        and _repository_matches(run, repository)
+    )
+
+
+def _same_candidate_identity(
+    run: object,
+    *,
+    run_id: int,
+    run_attempt: int,
+    workflow_id: int,
+    workflow_path: str,
+    repository: str,
+    checkout_sha: str,
+) -> bool:
+    return bool(
+        isinstance(run, dict)
+        and _positive_int(run.get("id"))
+        and _positive_int(run.get("run_attempt"))
+        and _positive_int(run.get("workflow_id"))
+        and run.get("id") == run_id
+        and run.get("run_attempt") == run_attempt
+        and run.get("workflow_id") == workflow_id
+        and _workflow_file(run.get("path")) == _workflow_file(workflow_path)
+        and run.get("event") == "push"
+        and isinstance(run.get("head_branch"), str)
+        and INTEGRATION_BRANCH.fullmatch(run["head_branch"])
+        and run.get("head_sha") == checkout_sha
+        and _repository_matches(run, repository)
+    )
+
+
+def _candidate(entry: object, current: dict[str, Any], args: argparse.Namespace) -> dict[str, Any] | None:
+    if not isinstance(entry, dict) or set(entry) != ENTRY_KEYS:
+        return None
+    listed = entry["listed"]
+    if not isinstance(listed, dict):
+        return None
+    run_id = listed.get("id")
+    run_attempt = listed.get("run_attempt")
+    if (
+        not _positive_int(run_id)
+        or not _positive_int(run_attempt)
+        or run_id >= args.current_run_id
+    ):
+        return None
+    expected = {
+        "run_id": run_id,
+        "run_attempt": run_attempt,
+        "workflow_id": current["workflow_id"],
+        "workflow_path": current["path"],
+        "repository": args.repository_full_name,
+        "checkout_sha": args.checkout_sha,
+    }
+    if not all(
+        _same_candidate_identity(entry[view], **expected)
+        for view in ("listed", "attempt", "latest")
+    ):
+        return None
+    return entry
+
+
+def _successful(entry: dict[str, Any]) -> bool:
+    return all(
+        entry[view].get("status") == "completed"
+        and entry[view].get("conclusion") == "success"
+        for view in ("listed", "attempt", "latest")
     )
 
 
 def decide(args: argparse.Namespace) -> bool:
-    if args.event_name != "push" or args.ref != "refs/heads/main":
-        return False
-    trust = _load(args.trust_file)
-    records = _load(args.records_file)
-    if not _valid_trust(trust) or not isinstance(records, list):
-        return False
-    repository_id = int(args.repository_id)
-    app_id = int(args.integration_app_id)
     if (
-        trust["repository_id"] != repository_id
-        or trust["attestation_app_id"] != app_id
-        or trust["required_checks"]["version"] != args.required_check_version
+        args.event_name != "push"
+        or args.default_branch != "main"
+        or args.ref != "refs/heads/main"
+        or not isinstance(args.repository_full_name, str)
+        or args.repository_full_name.count("/") != 1
+        or not isinstance(args.checkout_sha, str)
+        or SHA.fullmatch(args.checkout_sha) is None
+        or not _positive_int(args.current_run_id)
+        or not _positive_int(args.current_run_attempt)
     ):
         return False
-    trusted: list[tuple[int, dict[str, Any]]] = []
-    for record in records:
-        if not isinstance(record, dict):
-            continue
-        app = record.get("app")
-        if record.get("name") != ATTESTATION_NAME:
-            continue
-        if not isinstance(app, dict) or not _positive_int(app.get("id")):
-            return False
-        if app.get("id") != app_id:
-            continue
-        if not _positive_int(record.get("id")):
-            return False
-        trusted.append((record["id"], record))
-    if not trusted:
+
+    evidence = _load(args.workflow_runs_file)
+    if not isinstance(evidence, dict) or set(evidence) != EVIDENCE_KEYS:
         return False
-    record = max(trusted, key=lambda item: item[0])[1]
-    if (
-        record.get("status") != "completed"
-        or record.get("conclusion") != "success"
-        or record.get("head_sha") != args.checkout_sha
-        or not isinstance(record.get("output"), dict)
-        or not isinstance(record["output"].get("text"), str)
+    current = evidence["current_run"]
+    if not _valid_current_run(
+        current,
+        repository=args.repository_full_name,
+        checkout_sha=args.checkout_sha,
+        current_run_id=args.current_run_id,
+        current_run_attempt=args.current_run_attempt,
     ):
         return False
-    raw = record["output"]["text"].encode("utf-8")
-    payload = json.loads(raw, object_pairs_hook=_pairs)
-    if not isinstance(payload, dict) or _canonical(payload) != raw:
+    records = evidence["workflow_runs"]
+    if not isinstance(records, list) or not records:
         return False
-    digest = "aq-attestation-v1:" + hashlib.sha256(raw).hexdigest()
-    return record.get("external_id") == digest and _valid_payload(payload, trust, args.checkout_sha)
+
+    candidates = [_candidate(entry, current, args) for entry in records]
+    if any(candidate is None for candidate in candidates):
+        return False
+    typed_candidates = [candidate for candidate in candidates if candidate is not None]
+    run_ids = [candidate["listed"]["id"] for candidate in typed_candidates]
+    if len(run_ids) != len(set(run_ids)):
+        return False
+    newest = max(typed_candidates, key=lambda entry: entry["listed"]["id"])
+    return _successful(newest)
 
 
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--matching-integration-pr", action="store_true")
     for name in (
-        "event-name", "ref", "repository-id", "checkout-sha", "integration-app-id",
-        "required-check-version", "trust-file", "records-file",
+        "event-name",
+        "ref",
+        "default-branch",
+        "repository-full-name",
+        "checkout-sha",
+        "workflow-runs-file",
     ):
         parser.add_argument(f"--{name}")
-    for name in ("repository-full-name", "head-repository-full-name", "head-ref"):
+    for name in ("current-run-id", "current-run-attempt"):
+        parser.add_argument(f"--{name}", type=int)
+    for name in ("head-repository-full-name", "head-ref"):
         parser.add_argument(f"--{name}")
     args = parser.parse_args()
     try:
@@ -208,9 +211,7 @@ def main() -> None:
                 and args.repository_full_name
                 and args.head_repository_full_name == args.repository_full_name
                 and isinstance(args.head_ref, str)
-                and re.fullmatch(
-                    r"aq/integration/p-[0-9a-f]{32}/r-[0-9a-f]{32}", args.head_ref
-                )
+                and INTEGRATION_BRANCH.fullmatch(args.head_ref)
             )
         else:
             result = decide(args)

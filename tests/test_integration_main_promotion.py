@@ -340,6 +340,18 @@ class PushGit(PinningGit):
         self.app.remote = HEAD
 
 
+class GitHubCLIPushGit(PushGit):
+    async def apush_oid_with_app_auth(self, _store, **kwargs):
+        assert kwargs["tip_oid"] == HEAD
+        assert kwargs["branch"] == "main"
+        assert kwargs["expected_old_oid"] == BASE
+        assert kwargs["token"] is None
+        if self.app.remote != BASE:
+            raise RuntimeError("expected old changed")
+        self.pushes.append(kwargs)
+        self.app.remote = HEAD
+
+
 class InFlightPushGit(PushGit):
     def __init__(self, app):
         super().__init__(app)
@@ -407,6 +419,81 @@ class RootAttestationProvider:
         self.posts += 1
         self.records.append({"id": 7001, "app": {"id": 101}, **json_body})
         return {"id": 7001}
+
+
+class GitHubCLIRootProvider(RootAttestationProvider):
+    def __init__(self):
+        super().__init__()
+        self.config = SimpleNamespace(auth_mode="gh")
+        self.remote = BASE
+        self.reads = 0
+        self.token_calls = 0
+
+    async def installation_token(self):
+        self.token_calls += 1
+        return None
+
+    async def exact_head_ref(self, branch):
+        assert branch == "main"
+        self.reads += 1
+        return self.remote
+
+    async def paged_items(self, path, *, key):
+        if key == "jobs":
+            run_id = int(path.split("/runs/", 1)[1].split("/", 1)[0])
+            attempt = int(path.split("/attempts/", 1)[1].split("/", 1)[0])
+            index = run_id - 31
+            return [
+                {
+                    "id": 101 + index,
+                    "name": ("unit", "postgres")[index],
+                    "run_id": run_id,
+                    "run_attempt": attempt,
+                    "head_sha": HEAD,
+                    "status": "completed",
+                    "conclusion": "success",
+                    "check_run_url": (
+                        "https://api.github.com/repos/acme/widgets/check-runs/"
+                        f"{11 + index}"
+                    ),
+                }
+            ]
+        rows = await super().paged_items(path, key=key)
+        if key == "workflow_runs":
+            return [
+                {
+                    **row,
+                    "status": "completed",
+                    "repository": {"id": 99, "full_name": "acme/widgets"},
+                    "head_repository": {"id": 99, "full_name": "acme/widgets"},
+                }
+                for row in rows
+            ]
+        return rows
+
+
+@pytest.mark.asyncio
+async def test_root_promotion_caches_authenticated_clients_per_repository_binding(tmp_path):
+    first_binding = GitHubRepositoryBinding(99, "acme/widgets")
+    second_binding = GitHubRepositoryBinding(100, "acme/gadgets")
+    clients = {
+        first_binding: SimpleNamespace(repository=first_binding),
+        second_binding: SimpleNamespace(repository=second_binding),
+    }
+    calls = []
+
+    def factory(binding):
+        calls.append(binding)
+        return clients[binding]
+
+    service = _RootPromotionService(
+        SimpleNamespace(), data_dir=tmp_path, app_client_factory=factory
+    )
+
+    assert await service._client_for(first_binding) is clients[first_binding]
+    assert await service._client_for(second_binding) is clients[second_binding]
+    assert await service._client_for(first_binding) is clients[first_binding]
+    assert calls == [first_binding, second_binding]
 
 
 class RootTrustGit:
@@ -770,6 +857,55 @@ async def test_root_command_constructs_exact_repository_bound_app_client(prepare
 
     assert result["outcome"] == "promoted"
     assert bindings == [GitHubRepositoryBinding(99, "acme/widgets")]
+    assert len(git.pushes) == 1
+
+
+@pytest.mark.asyncio
+async def test_gh_live_candidate_receipt_allows_exact_oid_main_promotion(prepared_db):
+    db, data_dir = prepared_db
+    async with db.immediate() as conn:
+        await conn.execute(
+            update(integration_batches).values(tested_candidate_sha=None, ci_evidence_id=None)
+        )
+        await conn.execute(
+            update(integration_candidate_revisions).values(state="built", ci_evidence_id=None)
+        )
+        await conn.execute(update(integration_repair_stages).values(state="active"))
+
+    provider = GitHubCLIRootProvider()
+    receipt_service = IntegrationAttestationService(
+        db,
+        data_dir=data_dir,
+        git_manager=RootTrustGit(),
+        app_client_factory=lambda binding: provider,
+        clock=lambda: 10.0,
+    )
+    observed = await receipt_service.handle_candidate_ci(
+        {
+            "operation_id": "root-op",
+            "batch_id": "batch",
+            "revision": 0,
+            "candidate_sha": HEAD,
+        },
+        10.0,
+    )
+    git = GitHubCLIPushGit(provider)
+    result = await _RootPromotionService(
+        db,
+        data_dir=data_dir,
+        git_manager=git,
+        app_client=provider,
+        attestation_resolver=receipt_service.resolve,
+        clock=lambda: 10.0,
+    ).promote("batch", 0)
+
+    assert observed["outcome"] == "published"
+    assert observed["proof"]["external_id"].startswith("aq-ci-receipt-v1:")
+    assert result.outcome == "promoted"
+    assert result.head_sha == HEAD
+    assert provider.remote == HEAD
+    assert provider.posts == 0
+    assert provider.token_calls == 1
     assert len(git.pushes) == 1
 
 

@@ -263,6 +263,29 @@ class ProviderClient:
         return "dummy-installation-token"
 
     async def paged_items(self, path, *, key):
+        if key == "jobs":
+            run_id = int(path.split("/runs/", 1)[1].split("/", 1)[0])
+            index = 0 if run_id % 1000 == 31 else 1
+            attempt = int(path.split("/attempts/", 1)[1].split("/", 1)[0])
+            return [
+                {
+                    "id": 101 + index,
+                    "name": (
+                        "Tests (default)"
+                        if index == 0
+                        else "Tests (postgres-integration)"
+                    ),
+                    "run_id": run_id,
+                    "run_attempt": attempt,
+                    "head_sha": SHA,
+                    "status": "completed",
+                    "conclusion": "success",
+                    "check_run_url": (
+                        "https://api.github.com/repos/acme/widgets/check-runs/"
+                        f"{11 + index}"
+                    ),
+                }
+            ]
         if key == "workflow_runs":
             return [
                 {
@@ -271,7 +294,10 @@ class ProviderClient:
                     "run_attempt": 2,
                     "check_suite_id": 21,
                     "head_sha": SHA,
+                    "status": "completed",
                     "conclusion": "success",
+                    "repository": {"id": 303, "full_name": "acme/widgets"},
+                    "head_repository": {"id": 303, "full_name": "acme/widgets"},
                 },
                 {
                     "id": 32 + self.workflow_offset,
@@ -279,7 +305,10 @@ class ProviderClient:
                     "run_attempt": 1,
                     "check_suite_id": 22,
                     "head_sha": SHA,
+                    "status": "completed",
                     "conclusion": "success",
+                    "repository": {"id": 303, "full_name": "acme/widgets"},
+                    "head_repository": {"id": 303, "full_name": "acme/widgets"},
                 },
             ]
         if "check_name=Tests%20%28default%29" in path:
@@ -310,6 +339,22 @@ class ProviderClient:
             "status": "completed",
             "conclusion": "success",
             "check_suite": {"id": suite_id},
+        }
+
+
+class GitHubCLIProviderClient(ProviderClient):
+    def __init__(self):
+        super().__init__()
+        self.config = SimpleNamespace(auth_mode="gh")
+
+    async def installation_token(self):
+        return None
+
+    @staticmethod
+    def _required(name, record_id, suite_id):
+        return {
+            **ProviderClient._required(name, record_id, suite_id),
+            "app": {"id": 404, "slug": "404"},
         }
 
 
@@ -409,6 +454,92 @@ async def test_candidate_observation_emits_only_durable_terminal_ci_continuation
             "revision": 0,
             "head_sha": SHA,
         }
+
+
+@pytest.mark.asyncio
+async def test_gh_candidate_green_receipt_is_durable_and_latest_rerun_fenced(
+    attestation_db, tmp_path
+):
+    await _reset_candidate_for_observation(attestation_db)
+    client = GitHubCLIProviderClient()
+    service = IntegrationAttestationService(
+        attestation_db,
+        data_dir=tmp_path,
+        git_manager=ExactTreeGit(trust_document()),
+        app_client_factory=lambda binding: client,
+        clock=lambda: 10.0,
+    )
+    row = {
+        "operation_id": "root-op",
+        "batch_id": "batch",
+        "revision": 0,
+        "candidate_sha": SHA,
+    }
+
+    observed = await service.handle_candidate_ci(row, 10.0)
+    proof = await service.resolve(subject())
+
+    assert observed["outcome"] == "published"
+    assert proof is not None
+    assert proof.check_run_id == 12
+    assert proof.external_id.startswith("aq-ci-receipt-v1:")
+    assert client.published == 0
+    async with attestation_db._engine.connect() as conn:
+        publication = (
+            await conn.execute(select(integration_attestation_publications))
+        ).mappings().one()
+    assert publication["state"] == "published"
+    assert publication["check_run_id"] == 12
+    assert publication["external_id"] == proof.external_id
+
+    assert (await service.publish(subject())).outcome == "already_published"
+    client.workflow_offset = 1000
+    assert (await service.publish(subject())).outcome == "not_green"
+    assert await service.resolve(subject()) is None
+
+
+@pytest.mark.asyncio
+async def test_gh_receipt_restart_finishes_reserved_db_write_without_lease_wait(
+    attestation_db, tmp_path
+):
+    await _reset_candidate_for_observation(attestation_db)
+    client = GitHubCLIProviderClient()
+
+    async def crash(phase):
+        if phase == "after_publication_reservation":
+            raise RuntimeError("simulated daemon loss")
+
+    first = IntegrationAttestationService(
+        attestation_db,
+        data_dir=tmp_path,
+        git_manager=ExactTreeGit(trust_document()),
+        app_client_factory=lambda binding: client,
+        crash_hook=crash,
+        clock=lambda: 10.0,
+    )
+    with pytest.raises(RuntimeError, match="simulated daemon loss"):
+        await first.handle_candidate_ci(
+            {
+                "operation_id": "root-op",
+                "batch_id": "batch",
+                "revision": 0,
+                "candidate_sha": SHA,
+            },
+            10.0,
+        )
+
+    restarted = IntegrationAttestationService(
+        attestation_db,
+        data_dir=tmp_path,
+        git_manager=ExactTreeGit(trust_document()),
+        app_client_factory=lambda binding: client,
+        clock=lambda: 10.0,
+    )
+    result = await restarted.publish(subject())
+
+    assert result.outcome == "published"
+    assert result.proof is not None
+    assert await restarted.resolve(subject()) == result.proof
 
 
 @pytest.mark.asyncio

@@ -7,6 +7,7 @@ import json
 import re
 import time
 from dataclasses import dataclass
+from collections.abc import Mapping
 from typing import Any, Literal
 from urllib.parse import quote
 
@@ -46,6 +47,63 @@ class RequiredChecksManifest(BaseModel):
         return self
 
 
+class IntegrationCITrust(BaseModel):
+    """Repository and producer identity derived from frozen integration policy."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    canonical_repository_id: str = Field(min_length=1)
+    repository_id: StrictInt = Field(gt=0)
+    full_name: str = Field(pattern=r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
+    producer_id: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
+    required_checks: RequiredChecksManifest
+
+    @model_validator(mode="after")
+    def valid_producer_identity(self) -> "IntegrationCITrust":
+        if self.producer_id.isdecimal() and int(self.producer_id) <= 0:
+            raise ValueError("numeric CI producer identity must be positive")
+        return self
+
+
+def ci_trust_from_policy(
+    *,
+    canonical_repository_id: str,
+    repository_id: int,
+    full_name: str,
+    policy: Any,
+    boundary: Literal["parent", "root"],
+) -> IntegrationCITrust:
+    """Derive CI trust from one frozen project-policy boundary, without a repo manifest."""
+    if isinstance(policy, BaseModel):
+        policy = policy.model_dump(mode="json")
+    if not isinstance(policy, Mapping):
+        raise AttestationError("CI policy is malformed")
+    selected = policy.get(boundary)
+    if isinstance(selected, BaseModel):
+        selected = selected.model_dump(mode="json")
+    required = selected.get("required_checks") if isinstance(selected, Mapping) else None
+    if isinstance(required, BaseModel):
+        required = required.model_dump(mode="json")
+    if not isinstance(required, Mapping):
+        raise AttestationError(f"{boundary} CI policy is missing required checks")
+    producer_id = required.get("producer_id")
+    if not isinstance(producer_id, str):
+        raise AttestationError("CI policy producer identity is malformed")
+    try:
+        return IntegrationCITrust(
+            canonical_repository_id=canonical_repository_id,
+            repository_id=repository_id,
+            full_name=full_name,
+            producer_id=producer_id,
+            required_checks={
+                "version": required.get("version"),
+                "names": required.get("names"),
+            },
+        )
+    except (TypeError, ValueError) as exc:
+        raise AttestationError("CI policy producer or required checks are malformed") from exc
+
+
 class IntegrationTrustManifest(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid", populate_by_name=True)
 
@@ -74,6 +132,12 @@ class AttestedCheck(BaseModel):
     producer_app_id: StrictInt = Field(gt=0)
     head_sha: str = Field(pattern=_SHA_PATTERN)
     conclusion: Literal["success"]
+
+
+class CIReceiptCheck(AttestedCheck):
+    """A required check with both configured and live GitHub producer identity."""
+
+    producer_id: str = Field(min_length=1)
 
 
 class AttestedWorkflowRun(BaseModel):
@@ -141,6 +205,39 @@ class AttestationPayload(BaseModel):
         return "aq-attestation-v1:" + hashlib.sha256(self.canonical_bytes()).hexdigest()
 
 
+class CIReceiptPayload(BaseModel):
+    """Canonical live-GitHub evidence retained by the daemon, not published as a check."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid", populate_by_name=True)
+
+    schema_: Literal["aq.integration-ci-receipt.v1"] = Field(alias="schema")
+    canonical_repository_id: str = Field(min_length=1)
+    repository_id: StrictInt = Field(gt=0)
+    full_name: str = Field(pattern=r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
+    producer_id: str = Field(min_length=1)
+    head_sha: str = Field(pattern=_SHA_PATTERN)
+    required_check_set_version: str = Field(min_length=1)
+    checks: tuple[CIReceiptCheck, ...] = Field(min_length=1)
+    workflow_runs: tuple[AttestedWorkflowRun, ...] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def coherent_attempts(self) -> "CIReceiptPayload":
+        _validate_check_workflow_coverage(self.checks, self.workflow_runs, self.head_sha)
+        return self
+
+    def canonical_bytes(self) -> bytes:
+        return json.dumps(
+            self.model_dump(mode="json", by_alias=True),
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=True,
+        ).encode("ascii")
+
+    @property
+    def external_id(self) -> str:
+        return "aq-ci-receipt-v1:" + hashlib.sha256(self.canonical_bytes()).hexdigest()
+
+
 @dataclass(frozen=True)
 class SelectedAttestation:
     record_id: int
@@ -203,7 +300,7 @@ def select_trusted_attestation(
 
 @dataclass(frozen=True)
 class TrustedCIObservation:
-    payload: AttestationPayload
+    payload: AttestationPayload | CIReceiptPayload
     workflow_ids: dict[int, int]
 
 
@@ -283,7 +380,7 @@ class TrustedFixtureObserver:
         self.observation = observation
 
     async def observe(
-        self, trust: IntegrationTrustManifest, head_sha: str
+        self, trust: IntegrationTrustManifest | IntegrationCITrust, head_sha: str
     ) -> TrustedCIObservation | FailedCIObservation:
         if isinstance(self.observation, TrustedCIObservation):
             _require_payload_matches_trust(self.observation.payload, trust, head_sha)
@@ -321,18 +418,28 @@ class IntegrationCIEvidenceAdapter:
 class CIService:
     """Observe typed integration subjects and durably append normalized trusted evidence."""
 
-    def __init__(self, db: Any, trust: IntegrationTrustManifest, observer: Any, *, clock=time.time):
+    def __init__(
+        self,
+        db: Any,
+        trust: IntegrationTrustManifest | IntegrationCITrust,
+        observer: Any,
+        *,
+        clock=time.time,
+    ):
         if not isinstance(observer, (AuthenticatedGitHubObserver, TrustedFixtureObserver)):
             raise TypeError("CIService requires an authenticated or explicit fixture observer")
         if isinstance(observer, AuthenticatedGitHubObserver):
             client = observer.client
             if (
-                client.config.app_id != trust.attestation_app_id
-                or client.repository.repository_id != trust.repository_id
+                client.repository.repository_id != trust.repository_id
                 or client.repository.full_name != trust.full_name
                 or client.repository.forge_host != "github.com"
+                or (
+                    isinstance(trust, IntegrationTrustManifest)
+                    and client.config.app_id != trust.attestation_app_id
+                )
             ):
-                raise ValueError("authenticated provider identity does not match trust manifest")
+                raise ValueError("authenticated provider identity does not match CI trust")
         self.db = db
         self.trust = trust
         self.observer = observer
@@ -421,7 +528,7 @@ class CIService:
             operation_id=subject.operation_id,
             batch_id=subject.batch_id,
             candidate_revision=subject.revision,
-            producer_id=str(payload.ci_producer_app_id),
+            producer_id=_payload_producer_id(payload),
             workflow_id="aggregate:" + digest,
             run_id=payload.external_id,
             attempt=0,
@@ -469,7 +576,7 @@ class CIService:
 
     async def _lock_parent_subject_on(
         self, conn: Any, subject: ParentCISubject
-    ) -> IntegrationTrustManifest | None:
+    ) -> IntegrationTrustManifest | IntegrationCITrust | None:
         parent = (
             await conn.execute(select(tasks).where(tasks.c.id == subject.parent_task_id))
         ).mappings().one_or_none()
@@ -634,7 +741,7 @@ class CIService:
         subject: ParentCISubject | CandidateCISubject,
         observation: TrustedCIObservation | FailedCIObservation,
         *,
-        trust: IntegrationTrustManifest,
+        trust: IntegrationTrustManifest | IntegrationCITrust,
     ) -> list[str]:
         expected_head = (
             subject.head_sha if isinstance(subject, ParentCISubject) else subject.candidate_sha
@@ -642,13 +749,13 @@ class CIService:
         if isinstance(observation, TrustedCIObservation):
             payload = observation.payload
             _require_payload_matches_trust(payload, trust, expected_head)
-            producer_id = payload.ci_producer_app_id
+            producer_id = _payload_producer_id(payload)
             version = payload.required_check_set_version
             check_rows = [check.model_dump() for check in payload.checks]
             workflow_rows = [workflow.model_dump() for workflow in payload.workflow_runs]
             overall_conclusion = "success"
         else:
-            producer_id = trust.ci_producer_app_id
+            producer_id = _trust_producer_id(trust)
             version = trust.required_checks.version
             check_rows = list(observation.checks)
             workflow_rows = list(observation.workflow_runs)
@@ -711,7 +818,7 @@ class CIService:
 
     def _operation_trust(
         self, operation: Any | None, boundary: str
-    ) -> IntegrationTrustManifest | None:
+    ) -> IntegrationTrustManifest | IntegrationCITrust | None:
         if operation is None:
             return None
         snapshot = operation["policy_snapshot"]
@@ -723,7 +830,7 @@ class CIService:
         if (
             not isinstance(configured, dict)
             or configured.get("version") != operation["required_check_version"]
-            or configured.get("producer_id") != str(self.trust.ci_producer_app_id)
+            or configured.get("producer_id") != _trust_producer_id(self.trust)
         ):
             return None
         try:
@@ -745,7 +852,7 @@ class AuthenticatedGitHubObserver:
         self.client = client
 
     async def observe(
-        self, trust: IntegrationTrustManifest, head_sha: str
+        self, trust: IntegrationTrustManifest | IntegrationCITrust, head_sha: str
     ) -> TrustedCIObservation | FailedCIObservation:
         if not isinstance(head_sha, str) or re.fullmatch(_SHA_PATTERN, head_sha) is None:
             raise AttestationError("invalid CI head")
@@ -767,7 +874,7 @@ class AuthenticatedGitHubObserver:
                     raise AttestationError(
                         f"required check App identity is malformed: {name}"
                     )
-                if app_id != trust.ci_producer_app_id:
+                if not _producer_matches(app, trust):
                     continue
                 record_id = _strict_int(record.get("id"))
                 if record_id is None or record_id <= 0:
@@ -778,6 +885,14 @@ class AuthenticatedGitHubObserver:
             if not candidates:
                 raise AttestationError(f"required check is missing: {name}")
             _, newest = max(candidates, key=lambda item: item[0])
+            selected_app = newest.get("app")
+            selected_app_id = (
+                _strict_int(selected_app.get("id"))
+                if isinstance(selected_app, dict)
+                else None
+            )
+            if selected_app_id is None or selected_app_id <= 0:
+                raise AttestationError(f"required check App identity is malformed: {name}")
             suite = newest.get("check_suite")
             suite_id = _strict_int(suite.get("id")) if isinstance(suite, dict) else None
             conclusion = newest.get("conclusion")
@@ -794,9 +909,14 @@ class AuthenticatedGitHubObserver:
                     "name": name,
                     "check_run_id": newest["id"],
                     "check_suite_id": suite_id,
-                    "producer_app_id": trust.ci_producer_app_id,
+                    "producer_app_id": selected_app_id,
                     "head_sha": head_sha,
                     "conclusion": conclusion,
+                    **(
+                        {"producer_id": trust.producer_id}
+                        if isinstance(trust, IntegrationCITrust)
+                        else {}
+                    ),
                 }
             )
 
@@ -812,9 +932,21 @@ class AuthenticatedGitHubObserver:
                 for record in workflow_records
                 if _strict_int(record.get("check_suite_id")) == suite_id
             ]
-            if len(matches) != 1:
+            if not matches:
                 raise AttestationError("workflow attempt identity is missing or ambiguous")
-            record = matches[0]
+            ordered: list[tuple[int, int, dict[str, Any]]] = []
+            for candidate in matches:
+                candidate_id = _strict_int(candidate.get("id"))
+                candidate_attempt = _strict_int(candidate.get("run_attempt"))
+                if (
+                    candidate_id is None
+                    or candidate_id <= 0
+                    or candidate_attempt is None
+                    or candidate_attempt <= 0
+                ):
+                    raise AttestationError("workflow attempt ordering identity is malformed")
+                ordered.append((candidate_attempt, candidate_id, candidate))
+            _, _, record = max(ordered, key=lambda item: (item[0], item[1]))
             workflow_run_id = _strict_int(record.get("id"))
             workflow_id = _strict_int(record.get("workflow_id"))
             run_attempt = _strict_int(record.get("run_attempt"))
@@ -830,6 +962,25 @@ class AuthenticatedGitHubObserver:
                 not in {"success", "failure", "cancelled", "skipped", "neutral"}
             ):
                 raise AttestationError("workflow attempt is not conclusive")
+            if isinstance(trust, IntegrationCITrust):
+                _require_workflow_repository(record, trust)
+                jobs = await self.client.paged_items(
+                    f"/repos/{owner}/{repository}/actions/runs/{workflow_run_id}"
+                    f"/attempts/{run_attempt}/jobs?per_page=100",
+                    key="jobs",
+                )
+                _require_latest_attempt_jobs(
+                    jobs,
+                    checks=[
+                        check
+                        for check in selected
+                        if check["check_suite_id"] == suite_id
+                    ],
+                    workflow_run_id=workflow_run_id,
+                    run_attempt=run_attempt,
+                    head_sha=head_sha,
+                    full_name=trust.full_name,
+                )
             workflow_rows.append(
                 {
                     "workflow_run_id": workflow_run_id,
@@ -853,19 +1004,31 @@ class AuthenticatedGitHubObserver:
                 workflow_ids=workflow_ids,
                 conclusion=overall,
             )
-        payload = AttestationPayload(
-            schema="aq.integration-attestation.v1",
-            canonical_repository_id=trust.canonical_repository_id,
-            repository_id=trust.repository_id,
-            ci_producer_app_id=trust.ci_producer_app_id,
-            attestation_app_id=trust.attestation_app_id,
-            head_sha=head_sha,
-            required_check_set_version=trust.required_checks.version,
-            checks=tuple(AttestedCheck.model_validate(check) for check in selected),
-            workflow_runs=tuple(
+        common = {
+            "canonical_repository_id": trust.canonical_repository_id,
+            "repository_id": trust.repository_id,
+            "head_sha": head_sha,
+            "required_check_set_version": trust.required_checks.version,
+            "workflow_runs": tuple(
                 AttestedWorkflowRun.model_validate(workflow) for workflow in workflow_rows
             ),
-        )
+        }
+        if isinstance(trust, IntegrationTrustManifest):
+            payload: AttestationPayload | CIReceiptPayload = AttestationPayload(
+                schema="aq.integration-attestation.v1",
+                ci_producer_app_id=trust.ci_producer_app_id,
+                attestation_app_id=trust.attestation_app_id,
+                checks=tuple(AttestedCheck.model_validate(check) for check in selected),
+                **common,
+            )
+        else:
+            payload = CIReceiptPayload(
+                schema="aq.integration-ci-receipt.v1",
+                full_name=trust.full_name,
+                producer_id=trust.producer_id,
+                checks=tuple(CIReceiptCheck.model_validate(check) for check in selected),
+                **common,
+            )
         return TrustedCIObservation(payload=payload, workflow_ids=workflow_ids)
 
     async def publish(
@@ -931,10 +1094,30 @@ class AuthenticatedGitHubObserver:
 
 
 def _require_payload_matches_trust(
-    payload: AttestationPayload,
-    trust: IntegrationTrustManifest,
+    payload: AttestationPayload | CIReceiptPayload,
+    trust: IntegrationTrustManifest | IntegrationCITrust,
     expected_head_sha: str,
 ) -> None:
+    if isinstance(trust, IntegrationCITrust):
+        if (
+            not isinstance(payload, CIReceiptPayload)
+            or payload.canonical_repository_id != trust.canonical_repository_id
+            or payload.repository_id != trust.repository_id
+            or payload.full_name != trust.full_name
+            or payload.producer_id != trust.producer_id
+            or payload.head_sha != expected_head_sha
+            or payload.required_check_set_version != trust.required_checks.version
+            or tuple(check.name for check in payload.checks) != trust.required_checks.names
+            or any(check.producer_id != trust.producer_id for check in payload.checks)
+            or any(
+                not _check_producer_app_id_matches(check.producer_app_id, trust.producer_id)
+                for check in payload.checks
+            )
+        ):
+            raise AttestationError("CI receipt identity does not match policy trust")
+        return
+    if not isinstance(payload, AttestationPayload):
+        raise AttestationError("attestation identity does not match trust manifest")
     if (
         payload.canonical_repository_id != trust.canonical_repository_id
         or payload.repository_id != trust.repository_id
@@ -946,6 +1129,114 @@ def _require_payload_matches_trust(
         or any(check.producer_app_id != trust.ci_producer_app_id for check in payload.checks)
     ):
         raise AttestationError("attestation identity does not match trust manifest")
+
+
+def _trust_producer_id(trust: IntegrationTrustManifest | IntegrationCITrust) -> str:
+    return (
+        str(trust.ci_producer_app_id)
+        if isinstance(trust, IntegrationTrustManifest)
+        else trust.producer_id
+    )
+
+
+def _payload_producer_id(payload: AttestationPayload | CIReceiptPayload) -> str:
+    return (
+        str(payload.ci_producer_app_id)
+        if isinstance(payload, AttestationPayload)
+        else payload.producer_id
+    )
+
+
+def _check_producer_app_id_matches(app_id: int, producer_id: str) -> bool:
+    return not producer_id.isdecimal() or app_id == int(producer_id)
+
+
+def _producer_matches(
+    app: dict[str, Any], trust: IntegrationTrustManifest | IntegrationCITrust
+) -> bool:
+    app_id = _strict_int(app.get("id"))
+    if app_id is None or app_id <= 0:
+        return False
+    expected = _trust_producer_id(trust)
+    if expected.isdecimal():
+        return app_id == int(expected)
+    slug = app.get("slug")
+    return isinstance(slug, str) and slug == expected
+
+
+def _require_workflow_repository(record: dict[str, Any], trust: IntegrationCITrust) -> None:
+    repository = record.get("repository")
+    head_repository = record.get("head_repository")
+    if (
+        record.get("status") != "completed"
+        or not isinstance(repository, dict)
+        or not isinstance(head_repository, dict)
+        or _strict_int(repository.get("id")) != trust.repository_id
+        or repository.get("full_name") != trust.full_name
+        or _strict_int(head_repository.get("id")) != trust.repository_id
+        or head_repository.get("full_name") != trust.full_name
+    ):
+        raise AttestationError("workflow repository identity does not match CI trust")
+
+
+def _require_latest_attempt_jobs(
+    jobs: list[dict[str, Any]],
+    *,
+    checks: list[dict[str, Any]],
+    workflow_run_id: int,
+    run_attempt: int,
+    head_sha: str,
+    full_name: str,
+) -> None:
+    by_name: dict[str, dict[str, Any]] = {}
+    for job in jobs:
+        name = job.get("name")
+        job_id = _strict_int(job.get("id"))
+        if not isinstance(name, str) or not name or job_id is None or job_id <= 0:
+            raise AttestationError("latest workflow attempt job identity is malformed")
+        if name in by_name:
+            raise AttestationError("latest workflow attempt job identity is ambiguous")
+        by_name[name] = job
+    for check in checks:
+        job = by_name.get(check["name"])
+        expected_url = (
+            f"https://api.github.com/repos/{full_name}/check-runs/{check['check_run_id']}"
+        )
+        if (
+            job is None
+            or _strict_int(job.get("run_id")) != workflow_run_id
+            or _strict_int(job.get("run_attempt")) != run_attempt
+            or job.get("head_sha") != head_sha
+            or job.get("status") != "completed"
+            or job.get("conclusion") != check["conclusion"]
+            or job.get("check_run_url") != expected_url
+        ):
+            raise AttestationError(
+                f"required check is not from the latest workflow attempt: {check['name']}"
+            )
+
+
+def _validate_check_workflow_coverage(
+    checks: tuple[AttestedCheck, ...],
+    workflow_runs: tuple[AttestedWorkflowRun, ...],
+    head_sha: str,
+) -> None:
+    names = [check.name for check in checks]
+    check_ids = [check.check_run_id for check in checks]
+    suites = [workflow.check_suite_id for workflow in workflow_runs]
+    if len(set(names)) != len(names) or len(set(check_ids)) != len(check_ids):
+        raise ValueError("CI receipt checks contain duplicates")
+    if len(set(suites)) != len(suites):
+        raise ValueError("CI receipt workflow attempts contain duplicate suites")
+    workflow_by_suite = {workflow.check_suite_id: workflow for workflow in workflow_runs}
+    if set(workflow_by_suite) != {check.check_suite_id for check in checks}:
+        raise ValueError("CI receipt workflow attempt coverage does not match check suites")
+    if any(
+        check.head_sha != head_sha
+        or workflow_by_suite[check.check_suite_id].head_sha != head_sha
+        for check in checks
+    ):
+        raise ValueError("CI receipt head identity is incoherent")
 
 
 def _reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:

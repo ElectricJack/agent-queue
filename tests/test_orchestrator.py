@@ -76,6 +76,9 @@ async def _drain_running_tasks(orch: Orchestrator) -> None:
 
 async def test_orchestrator_owns_single_integration_service_loop(orch):
     service = orch.integration_service
+    # No GitHub App config must not leave the entire integration transport unwired.
+    assert callable(orch.integration_app_client_factory)
+    assert callable(orch.integration_repository_binding_resolver)
     assert service is not None
     assert service._task is not None
     assert service._task.get_name() == "integration-reconciliation-service"
@@ -108,10 +111,12 @@ async def test_orchestrator_owns_single_integration_service_loop(orch):
         orch.playbook_manager = original_runtime
 
 
+@pytest.mark.parametrize("use_app", [False, True])
 async def test_configured_orchestrator_installs_repository_bound_candidate_transport(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, use_app
 ):
     from src.git.github_app import GitHubAppClient, GitHubRepositoryBinding
+    from src.git.github_cli import GitHubCLIClient
 
     config = AppConfig(
         database_path=str(tmp_path / "test.db"),
@@ -123,11 +128,13 @@ async def test_configured_orchestrator_installs_repository_bound_candidate_trans
         app_id=101,
         installation_id=202,
         private_key_path="/daemon/key.pem",
-    )
+    ) if use_app else None
     binding = GitHubRepositoryBinding(303, "acme/widgets")
     bound_client = MagicMock(repository=binding)
     bind_repository = AsyncMock(return_value=bound_client)
-    monkeypatch.setattr(GitHubAppClient, "bind_repository", bind_repository)
+    monkeypatch.setattr(
+        GitHubAppClient if use_app else GitHubCLIClient, "bind_repository", bind_repository
+    )
     orchestrator = Orchestrator(config, runtimes=MockAdapterFactory())
     await orchestrator.initialize()
     try:

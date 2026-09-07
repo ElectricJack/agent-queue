@@ -89,10 +89,12 @@ class RootAttestationSubject(BaseModel):
 
 
 class RootAttestationProof(RootAttestationSubject):
-    """Authenticated publication/readback identity supplied by Task10."""
+    """Live CI receipt identity, or legacy App publication proof, supplied by Task10."""
 
     check_run_id: StrictInt = Field(gt=0)
-    external_id: str = Field(pattern=r"^aq-attestation-v1:[0-9a-f]{64}$")
+    external_id: str = Field(
+        pattern=r"^aq-(?:attestation|ci-receipt)-v1:[0-9a-f]{64}$"
+    )
 
     def subject(self) -> RootAttestationSubject:
         fields = RootAttestationSubject.model_fields
@@ -131,6 +133,15 @@ class RootPromotionService:
         self.repository_resolver = repository_resolver
         self.app_client = app_client
         self.app_client_factory = app_client_factory
+        self._clients: dict[GitHubRepositoryBinding, Any] = {}
+        if app_client is not None:
+            repository = app_client.repository
+            binding = GitHubRepositoryBinding(
+                repository.repository_id,
+                repository.full_name,
+                getattr(repository, "forge_host", "github.com"),
+            )
+            self._clients[binding] = app_client
         self.attestation_resolver = attestation_resolver
         self.crash_hook = crash_hook
         self.clock = clock
@@ -375,32 +386,21 @@ class RootPromotionService:
                 intent_id=intent_id, receipt_ids=await self._receipt_ids(intent_id),
                 head_sha=intent["prepared_sha"],
             )
-        if self.app_client is None and self.app_client_factory is not None:
-            try:
-                binding = GitHubRepositoryBinding(
-                    attestation.repository_numeric_id,
-                    attestation.repository_full_name,
-                )
-                client = self.app_client_factory(binding)
-                if inspect.isawaitable(client):
-                    client = await client
-                if client is None or client.repository != binding:
-                    raise ValueError("root promotion App binding changed")
-                self.app_client = client
-            except Exception:
-                return RootPromotionResult(
-                    outcome="configuration_blocked", batch_id=batch_id, revision=revision,
-                    intent_id=intent_id, receipt_ids=await self._receipt_ids(intent_id),
-                    head_sha=intent["prepared_sha"],
-                )
-        if self.app_client is None:
+        binding = GitHubRepositoryBinding(
+            attestation.repository_numeric_id,
+            attestation.repository_full_name,
+        )
+        try:
+            client = await self._client_for(binding)
+        except Exception:
+            client = None
+        if client is None:
             return RootPromotionResult(
                 outcome="configuration_blocked", batch_id=batch_id, revision=revision,
                 intent_id=intent_id, receipt_ids=await self._receipt_ids(intent_id),
                 head_sha=intent["prepared_sha"],
             )
         repository = await self._repository(intent["repository_id"])
-        binding = self.app_client.repository
         expected_origin = f"https://github.com/{binding.full_name}.git"
         if (
             binding.forge_host != "github.com"
@@ -409,7 +409,7 @@ class RootPromotionService:
             or attestation.repository_full_name != binding.full_name
         ):
             raise RootPromotionInvariantError("root promotion App repository is not canonical")
-        remote = await self.app_client.exact_head_ref(
+        remote = await client.exact_head_ref(
             intent["target_branch"].removeprefix("refs/heads/")
         )
         if remote is None:
@@ -418,7 +418,7 @@ class RootPromotionService:
         reachable = remote == intent["prepared_sha"]
         if not reachable and remote != intent["expected_target"]:
             try:
-                await self._import_observed_main(store, intent, remote)
+                await self._import_observed_main(store, intent, remote, client)
             except Exception:
                 return await self._blocked(intent)
             ancestry = await self._is_ancestor(store, intent["prepared_sha"], remote)
@@ -483,7 +483,7 @@ class RootPromotionService:
                 intent_id=intent_id, receipt_ids=await self._receipt_ids(intent_id),
                 head_sha=intent["prepared_sha"],
             )
-        token = await self.app_client.installation_token()
+        token = await client.installation_token()
         authority_deadline = await self._mark_prewrite(
             intent, nonce, current_attestation
         )
@@ -497,7 +497,7 @@ class RootPromotionService:
         try:
             await self.git.apush_oid_with_app_auth(
                 str(store),
-                repository=self.app_client.repository,
+                repository=client.repository,
                 token=token,
                 tip_oid=intent["prepared_sha"],
                 branch=intent["target_branch"].removeprefix("refs/heads/"),
@@ -505,7 +505,7 @@ class RootPromotionService:
                 authority_deadline=authority_deadline,
             )
         except Exception:
-            observed = await self.app_client.exact_head_ref(
+            observed = await client.exact_head_ref(
                 intent["target_branch"].removeprefix("refs/heads/")
             )
             if observed != intent["prepared_sha"]:
@@ -1282,12 +1282,12 @@ class RootPromotionService:
         )
 
     async def _import_observed_main(
-        self, store: Path, intent: dict[str, Any], remote: str
+        self, store: Path, intent: dict[str, Any], remote: str, client: Any
     ) -> None:
-        token = await self.app_client.installation_token()
+        token = await client.installation_token()
         imported = await self.git.afetch_exact_oid_with_app_auth(
             str(store),
-            repository=self.app_client.repository,
+            repository=client.repository,
             token=token,
             oid=remote,
             destination_ref=f"refs/aq/root-main-observed/{intent['id']}",
@@ -1470,15 +1470,6 @@ class RootPromotionService:
             or publication["state"] != "pr_published"
             or publication["head_sha"] != candidate["head_sha"]
             or publication["repository_id"] != batch["repository_id"]
-            or (
-                self.app_client is not None
-                and (
-                    publication["repository_numeric_id"]
-                    != self.app_client.repository.repository_id
-                    or publication["repository_full_name"]
-                    != self.app_client.repository.full_name
-                )
-            )
         ):
             return "wait"
         ordinals = [int(member["ordinal"]) for member in state["members"]]
@@ -1565,6 +1556,20 @@ class RootPromotionService:
         if value is None or value.id != repository_id or not value.url:
             raise RootPromotionInvariantError("promotion repository is unavailable")
         return value
+
+    async def _client_for(self, binding: GitHubRepositoryBinding) -> Any | None:
+        cached = self._clients.get(binding)
+        if cached is not None:
+            return cached
+        if self.app_client_factory is None:
+            return None
+        client = self.app_client_factory(binding)
+        if inspect.isawaitable(client):
+            client = await client
+        if client is None or client.repository != binding:
+            raise ValueError("root promotion authenticated repository binding changed")
+        self._clients[binding] = client
+        return client
 
     async def _project_id(self, batch_id: str) -> str | None:
         async with self.db._engine.connect() as conn:

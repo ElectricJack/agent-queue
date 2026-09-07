@@ -2898,7 +2898,7 @@ class GitManager:
         checkout_path: str,
         *,
         repository: GitHubRepositoryBinding,
-        token: str,
+        token: str | None,
         tip_oid: str,
         branch: str,
         expected_old_oid: str,
@@ -2921,7 +2921,7 @@ class GitManager:
             self._remaining_app_push_budget(deadline)
         except asyncio.TimeoutError as exc:
             raise GitError("authenticated Git push authority deadline expired") from exc
-        if not isinstance(token, str) or not token:
+        if token is not None and (not isinstance(token, str) or not token):
             raise GitError("invalid GitHub App credential")
         branch = _validate_ref(branch)
         for label, oid in (("tip", tip_oid), ("expected target", expected_old_oid)):
@@ -2943,7 +2943,7 @@ class GitManager:
         checkout_path: str,
         *,
         repository: GitHubRepositoryBinding,
-        token: str,
+        token: str | None,
         branch: str,
         expected_old_oid: str,
         authority_deadline: float | None = None,
@@ -2958,7 +2958,7 @@ class GitManager:
             self._remaining_app_push_budget(deadline)
         except (asyncio.TimeoutError, TypeError, ValueError, OverflowError) as exc:
             raise GitError("authenticated Git delete authority deadline expired") from exc
-        if not isinstance(token, str) or not token:
+        if token is not None and (not isinstance(token, str) or not token):
             raise GitError("invalid GitHub App credential")
         branch = _validate_ref(branch)
         if not isinstance(expected_old_oid, str) or _OID_RE.fullmatch(expected_old_oid) is None:
@@ -2990,7 +2990,7 @@ class GitManager:
         destination_git_dir: str,
         *,
         repository: GitHubRepositoryBinding,
-        token: str,
+        token: str | None,
         oid: str,
         destination_ref: str,
     ) -> str:
@@ -3008,12 +3008,12 @@ class GitManager:
         destination_git_dir: str,
         *,
         destination_url: str,
-        token: str,
+        token: str | None,
         oid: str,
         destination_ref: str,
     ) -> str:
         """Private file-URL seam for credential-containment tests."""
-        if not isinstance(token, str) or not token:
+        if token is not None and (not isinstance(token, str) or not token):
             raise GitError("invalid GitHub App credential")
         if _OID_RE.fullmatch(oid) is None:
             raise GitError("invalid exact fetch OID")
@@ -3027,7 +3027,8 @@ class GitManager:
         ):
             raise GitError("invalid authenticated Git source")
         remote_url = destination_url
-        token_buffer = bytearray(token.encode("utf-8"))
+        uses_existing_auth = token is None
+        token_buffer = bytearray(token.encode("utf-8")) if token is not None else bytearray()
         with (
             _zeroized_credential(token_buffer),
             tempfile.TemporaryDirectory(prefix="aq-app-fetch-") as temporary,
@@ -3041,26 +3042,33 @@ class GitManager:
             await self._run_isolated_import_git(
                 ["init", "--bare", "--template=", str(imported)], home=home
             )
-            topology = await self._app_git_credential_topology(home=home)
+            topology = None if uses_existing_auth else await self._app_git_credential_topology(home=home)
             authority = "https://x-access-token@github.com"
             prompt = f"Password for '{authority}': "
             broker_channel = request_channel = None
             broker_task = None
             process = None
             try:
-                broker_channel, request_channel = make_request_channel()
-                request_fd = request_channel.fileno()
-                environment = self._app_git_environment(home)
-                environment.update(
-                    {
-                        "GIT_ASKPASS": str(Path(answer_prompt.__code__.co_filename)),
-                        "GIT_ASKPASS_REQUIRE": "force",
-                        "AQ_GIT_APP_REQUEST_FD": str(request_fd),
-                        "AQ_GIT_APP_USERNAME": "x-access-token",
-                        "AQ_GIT_APP_AUTHORITY": authority,
-                        "AQ_GIT_APP_REPOSITORY": remote_url,
-                    }
+                request_fd: int | None = None
+                if not uses_existing_auth:
+                    broker_channel, request_channel = make_request_channel()
+                    request_fd = request_channel.fileno()
+                environment = (
+                    self._existing_git_auth_environment()
+                    if uses_existing_auth
+                    else self._app_git_environment(home)
                 )
+                if request_fd is not None:
+                    environment.update(
+                        {
+                            "GIT_ASKPASS": str(Path(answer_prompt.__code__.co_filename)),
+                            "GIT_ASKPASS_REQUIRE": "force",
+                            "AQ_GIT_APP_REQUEST_FD": str(request_fd),
+                            "AQ_GIT_APP_USERNAME": "x-access-token",
+                            "AQ_GIT_APP_AUTHORITY": authority,
+                            "AQ_GIT_APP_REPOSITORY": remote_url,
+                        }
+                    )
                 arguments = [
                     "-c",
                     "core.hooksPath=/dev/null",
@@ -3077,6 +3085,8 @@ class GitManager:
                     "-c",
                     "protocol.ext.allow=never",
                 ]
+                if uses_existing_auth:
+                    arguments.extend(["-c", "credential.helper=!gh auth git-credential"])
                 if remote_url.startswith("file://"):
                     arguments.extend(["-c", "protocol.file.allow=always"])
                 arguments.extend(
@@ -3097,28 +3107,35 @@ class GitManager:
                     stdout=asyncio.subprocess.DEVNULL,
                     stderr=asyncio.subprocess.DEVNULL,
                     env=environment,
-                    pass_fds=(request_fd,),
+                    pass_fds=(request_fd,) if request_fd is not None else (),
                     start_new_session=True,
                 )
-                request_channel.close()
-                request_channel = None
-                broker_task = asyncio.create_task(
-                    serve_one_credential(
-                        broker_channel,
-                        token_buffer,
-                        git_pid=process.pid,
-                        topology=topology,
-                        authority=authority,
-                        repository=remote_url,
-                        prompt=prompt,
-                        timeout=min(float(self._GIT_TIMEOUT), self._APP_CREDENTIAL_BROKER_TIMEOUT),
+                if request_channel is not None:
+                    request_channel.close()
+                    request_channel = None
+                if broker_channel is not None and topology is not None:
+                    broker_task = asyncio.create_task(
+                        serve_one_credential(
+                            broker_channel,
+                            token_buffer,
+                            git_pid=process.pid,
+                            topology=topology,
+                            authority=authority,
+                            repository=remote_url,
+                            prompt=prompt,
+                            timeout=min(
+                                float(self._GIT_TIMEOUT), self._APP_CREDENTIAL_BROKER_TIMEOUT
+                            ),
+                        )
                     )
-                )
-                broker_channel = None
+                    broker_channel = None
                 await asyncio.wait_for(process.wait(), timeout=self._GIT_TIMEOUT)
                 await self._kill_app_git_group(process)
-                served = await self._settle_app_credential_broker(broker_task)
-                broker_task = None
+                if broker_task is not None:
+                    served = await self._settle_app_credential_broker(broker_task)
+                    broker_task = None
+                else:
+                    served = True
             except BaseException as exc:
                 if process is not None:
                     await self._kill_app_git_group(process)
@@ -3169,6 +3186,17 @@ class GitManager:
             "GIT_CONFIG_GLOBAL": "/dev/null",
             "GIT_NO_REPLACE_OBJECTS": "1",
             "GIT_TERMINAL_PROMPT": "0",
+        }
+
+    def _existing_git_auth_environment(self) -> dict[str, str]:
+        """Isolate Git configuration while retaining the operator's ``gh`` login."""
+        return self._SUBPROCESS_ENV | {
+            "GIT_CONFIG_NOSYSTEM": "1",
+            "GIT_CONFIG_SYSTEM": "/dev/null",
+            "GIT_CONFIG_GLOBAL": "/dev/null",
+            "GIT_NO_REPLACE_OBJECTS": "1",
+            "GIT_TERMINAL_PROMPT": "0",
+            "GIT_ASKPASS": "/bin/false",
         }
 
     @staticmethod
@@ -3295,7 +3323,7 @@ class GitManager:
         checkout_path: str,
         *,
         destination_url: str,
-        token: str,
+        token: str | None,
         tip_oid: str | None,
         branch: str,
         expected_old_oid: str,
@@ -3310,7 +3338,7 @@ class GitManager:
         """
         if _deadline is None:
             _deadline = asyncio.get_running_loop().time() + APP_AUTH_PUSH_TIMEOUT_SECONDS
-        if not isinstance(token, str) or not token:
+        if token is not None and (not isinstance(token, str) or not token):
             raise GitError("invalid GitHub App credential")
         branch = _validate_ref(branch)
         for label, oid in (("expected target", expected_old_oid),):
@@ -3331,7 +3359,8 @@ class GitManager:
             raise GitError("invalid authenticated Git destination")
 
         checkout = Path(checkout_path).resolve(strict=True)
-        token_buffer = bytearray(token.encode("utf-8"))
+        uses_existing_auth = token is None
+        token_buffer = bytearray(token.encode("utf-8")) if token is not None else bytearray()
         with (
             _zeroized_credential(token_buffer),
             tempfile.TemporaryDirectory(prefix="aq-app-push-") as temporary,
@@ -3372,8 +3401,10 @@ class GitManager:
                 if imported.decode("ascii", errors="replace") != tip_oid:
                     raise GitError("authenticated Git push preparation failed")
 
-            topology = await self._app_git_credential_topology(
-                home=home, deadline=_deadline
+            topology = (
+                None
+                if uses_existing_auth
+                else await self._app_git_credential_topology(home=home, deadline=_deadline)
             )
 
             authority = "https://x-access-token@github.com"
@@ -3382,25 +3413,32 @@ class GitManager:
             request_channel = None
             broker_task: asyncio.Task[bool] | None = None
             process: asyncio.subprocess.Process | None = None
-            try:
-                self._remaining_app_push_budget(_deadline)
-                broker_channel, request_channel = make_request_channel()
-                self._remaining_app_push_budget(_deadline)
-            except OSError as exc:
-                zeroize(token_buffer)
-                raise GitError("authenticated Git credential broker is unavailable") from exc
-            request_fd = request_channel.fileno()
-            environment = self._app_git_environment(home)
-            environment.update(
-                {
-                    "GIT_ASKPASS": str(Path(answer_prompt.__code__.co_filename)),
-                    "GIT_ASKPASS_REQUIRE": "force",
-                    "AQ_GIT_APP_REQUEST_FD": str(request_fd),
-                    "AQ_GIT_APP_USERNAME": "x-access-token",
-                    "AQ_GIT_APP_AUTHORITY": authority,
-                    "AQ_GIT_APP_REPOSITORY": destination_url,
-                }
+            request_fd: int | None = None
+            if not uses_existing_auth:
+                try:
+                    self._remaining_app_push_budget(_deadline)
+                    broker_channel, request_channel = make_request_channel()
+                    self._remaining_app_push_budget(_deadline)
+                except OSError as exc:
+                    zeroize(token_buffer)
+                    raise GitError("authenticated Git credential broker is unavailable") from exc
+                request_fd = request_channel.fileno()
+            environment = (
+                self._existing_git_auth_environment()
+                if uses_existing_auth
+                else self._app_git_environment(home)
             )
+            if request_fd is not None:
+                environment.update(
+                    {
+                        "GIT_ASKPASS": str(Path(answer_prompt.__code__.co_filename)),
+                        "GIT_ASKPASS_REQUIRE": "force",
+                        "AQ_GIT_APP_REQUEST_FD": str(request_fd),
+                        "AQ_GIT_APP_USERNAME": "x-access-token",
+                        "AQ_GIT_APP_AUTHORITY": authority,
+                        "AQ_GIT_APP_REPOSITORY": destination_url,
+                    }
+                )
             arguments = [
                 "-c",
                 "core.hooksPath=/dev/null",
@@ -3417,6 +3455,8 @@ class GitManager:
                 "-c",
                 "protocol.ext.allow=never",
             ]
+            if uses_existing_auth:
+                arguments.extend(["-c", "credential.helper=!gh auth git-credential"])
             if destination_url.startswith("file://"):
                 arguments.extend(["-c", "protocol.file.allow=always"])
             arguments.extend(
@@ -3444,31 +3484,36 @@ class GitManager:
                         stdout=asyncio.subprocess.DEVNULL,
                         stderr=asyncio.subprocess.DEVNULL,
                         env=environment,
-                        pass_fds=(request_fd,),
+                        pass_fds=(request_fd,) if request_fd is not None else (),
                         start_new_session=True,
                     )
-                    request_channel.close()
-                    request_channel = None
-                    broker_task = asyncio.create_task(
-                        serve_one_credential(
-                            broker_channel,
-                            token_buffer,
-                            git_pid=process.pid,
-                            topology=topology,
-                            authority=authority,
-                            repository=destination_url,
-                            prompt=prompt,
-                            timeout=min(
-                                self._remaining_app_push_budget(_deadline),
-                                self._APP_CREDENTIAL_BROKER_TIMEOUT,
-                            ),
+                    if request_channel is not None:
+                        request_channel.close()
+                        request_channel = None
+                    if broker_channel is not None and topology is not None:
+                        broker_task = asyncio.create_task(
+                            serve_one_credential(
+                                broker_channel,
+                                token_buffer,
+                                git_pid=process.pid,
+                                topology=topology,
+                                authority=authority,
+                                repository=destination_url,
+                                prompt=prompt,
+                                timeout=min(
+                                    self._remaining_app_push_budget(_deadline),
+                                    self._APP_CREDENTIAL_BROKER_TIMEOUT,
+                                ),
+                            )
                         )
-                    )
-                    broker_channel = None
+                        broker_channel = None
                     await process.wait()
                     await self._kill_app_git_group(process)
-                    broker_served = await self._settle_app_credential_broker(broker_task)
-                    broker_task = None
+                    if broker_task is not None:
+                        broker_served = await self._settle_app_credential_broker(broker_task)
+                        broker_task = None
+                    else:
+                        broker_served = True
             except BaseException as exc:
                 if process is not None:
                     await self._kill_app_git_group(process)

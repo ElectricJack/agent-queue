@@ -7,94 +7,91 @@ from pathlib import Path
 
 import pytest
 
-from src.integration.ci import ATTESTATION_CHECK_NAME, AttestationPayload
-
 
 ROOT = Path(__file__).parents[1]
 SCRIPT = ROOT / "scripts" / "check-integration-attestation.py"
 WORKFLOW = ROOT / ".github" / "workflows" / "tests.yml"
 SHA = "a" * 40
+CANDIDATE_REF = "aq/integration/p-" + "5" * 32 + "/r-" + "6" * 32
 
 
-def _trust() -> dict:
-    return {
-        "schema": "aq.integration-trust.v1",
-        "canonical_repository_id": "repo-config-1",
-        "repository_id": 303,
-        "full_name": "acme/widgets",
-        "ci_producer_app_id": 404,
-        "attestation_app_id": 101,
-        "attestation_name": ATTESTATION_CHECK_NAME,
-        "required_checks": {"version": "checks-v1", "names": ["Tests (default)"]},
-    }
-
-
-def _payload() -> AttestationPayload:
-    return AttestationPayload.model_validate(
-        {
-            "schema": "aq.integration-attestation.v1",
-            "canonical_repository_id": "repo-config-1",
-            "repository_id": 303,
-            "ci_producer_app_id": 404,
-            "attestation_app_id": 101,
-            "head_sha": SHA,
-            "required_check_set_version": "checks-v1",
-            "checks": [
-                {
-                    "name": "Tests (default)",
-                    "check_run_id": 11,
-                    "check_suite_id": 21,
-                    "producer_app_id": 404,
-                    "head_sha": SHA,
-                    "conclusion": "success",
-                }
-            ],
-            "workflow_runs": [
-                {
-                    "workflow_run_id": 31,
-                    "run_attempt": 1,
-                    "check_suite_id": 21,
-                    "head_sha": SHA,
-                    "conclusion": "success",
-                }
-            ],
-        }
-    )
-
-
-def _record(record_id: object = 7, *, conclusion: str = "success") -> dict:
-    payload = _payload()
+def _run_record(
+    record_id: object = 41,
+    *,
+    attempt: object = 2,
+    branch: str = CANDIDATE_REF,
+    conclusion: str | None = "success",
+    event: str = "push",
+    head_sha: str = SHA,
+    repository: str = "acme/widgets",
+    head_repository: str = "acme/widgets",
+    workflow_id: object = 17,
+    path: str = ".github/workflows/tests.yml@" + CANDIDATE_REF,
+) -> dict:
     return {
         "id": record_id,
-        "name": ATTESTATION_CHECK_NAME,
-        "app": {"id": 101},
-        "head_sha": SHA,
-        "status": "completed",
+        "run_attempt": attempt,
+        "workflow_id": workflow_id,
+        "name": "Tests",
+        "path": path,
+        "event": event,
+        "head_branch": branch,
+        "head_sha": head_sha,
+        "status": "completed" if conclusion is not None else "in_progress",
         "conclusion": conclusion,
-        "external_id": payload.external_id,
-        "output": {"text": payload.canonical_bytes().decode("ascii")},
+        "repository": {"full_name": repository},
+        "head_repository": {"full_name": head_repository},
     }
 
 
-def _run(tmp_path: Path, *, trust=None, records=None, **changes) -> str:
-    trust_path = tmp_path / "trust.json"
-    records_path = tmp_path / "records.json"
-    trust_path.write_text(json.dumps(_trust() if trust is None else trust))
-    records_path.write_text(json.dumps([_record()] if records is None else records))
+def _current_run() -> dict:
+    return {
+        **_run_record(
+            52,
+            attempt=1,
+            branch="main",
+            conclusion=None,
+            path=".github/workflows/tests.yml@main",
+        ),
+        "event": "push",
+    }
+
+
+def _evidence(*runs: dict) -> dict:
+    if not runs:
+        runs = (_run_record(),)
+    return {
+        "current_run": _current_run(),
+        "workflow_runs": [
+            {"listed": run, "attempt": dict(run), "latest": dict(run)} for run in runs
+        ],
+    }
+
+
+def _invoke(tmp_path: Path, evidence: object, **changes: str) -> subprocess.CompletedProcess[str]:
+    evidence_path = tmp_path / "workflow-runs.json"
+    evidence_path.write_text(json.dumps(evidence), encoding="utf-8")
     args = {
         "event-name": "push",
         "ref": "refs/heads/main",
-        "repository-id": "303",
+        "default-branch": "main",
+        "repository-full-name": "acme/widgets",
         "checkout-sha": SHA,
-        "integration-app-id": "101",
-        "required-check-version": "checks-v1",
+        "current-run-id": "52",
+        "current-run-attempt": "1",
     }
     args.update(changes)
     command = [sys.executable, str(SCRIPT)]
     for key, value in args.items():
         command.extend((f"--{key}", value))
-    command.extend(("--trust-file", str(trust_path), "--records-file", str(records_path)))
-    return subprocess.run(command, check=True, text=True, capture_output=True).stdout.strip()
+    command.extend(("--workflow-runs-file", str(evidence_path)))
+    return subprocess.run(command, check=True, text=True, capture_output=True)
+
+
+def _run(tmp_path: Path, evidence: object | None = None, **changes: str) -> str:
+    result = _invoke(tmp_path, _evidence() if evidence is None else evidence, **changes)
+    assert result.stderr == ""
+    return result.stdout.strip()
 
 
 def _matching_pr(*, head_repository: str, head_ref: str) -> str:
@@ -103,10 +100,14 @@ def _matching_pr(*, head_repository: str, head_ref: str) -> str:
             sys.executable,
             str(SCRIPT),
             "--matching-integration-pr",
-            "--event-name", "pull_request",
-            "--repository-full-name", "acme/widgets",
-            "--head-repository-full-name", head_repository,
-            "--head-ref", head_ref,
+            "--event-name",
+            "pull_request",
+            "--repository-full-name",
+            "acme/widgets",
+            "--head-repository-full-name",
+            head_repository,
+            "--head-ref",
+            head_ref,
         ],
         check=True,
         text=True,
@@ -114,97 +115,164 @@ def _matching_pr(*, head_repository: str, head_ref: str) -> str:
     ).stdout.strip()
 
 
-def test_workflow_decision_accepts_only_exact_main_attestation(tmp_path):
+def test_workflow_decision_reuses_exact_successful_candidate_run(tmp_path):
     assert _run(tmp_path) == "true"
-
-
-def test_workflow_decision_accepts_distinct_checks_sharing_one_suite(tmp_path):
-    trust = _trust()
-    trust["required_checks"]["names"] = ["Tests (default)", "Tests (postgres-integration)"]
-    payload = _payload().model_dump(mode="json", by_alias=True)
-    payload["checks"].append(
-        {
-            "name": "Tests (postgres-integration)",
-            "check_run_id": 12,
-            "check_suite_id": 21,
-            "producer_app_id": 404,
-            "head_sha": SHA,
-            "conclusion": "success",
-        }
-    )
-    canonical = json.dumps(
-        payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True
-    )
-    external_id = "aq-attestation-v1:" + __import__("hashlib").sha256(
-        canonical.encode("ascii")
-    ).hexdigest()
-    record = _record()
-    record["external_id"] = external_id
-    record["output"] = {"text": canonical}
-
-    assert _run(tmp_path, trust=trust, records=[record]) == "true"
 
 
 @pytest.mark.parametrize(
     "changes",
     [
         {"event-name": "pull_request"},
-        {"ref": "refs/heads/aq/integration/batch"},
-        {"repository-id": "304"},
+        {"ref": "refs/heads/aq/integration/p-" + "5" * 32 + "/r-" + "6" * 32},
+        {"default-branch": "trunk"},
+        {"repository-full-name": "acme/other"},
         {"checkout-sha": "b" * 40},
-        {"integration-app-id": "102"},
-        {"required-check-version": "checks-v2"},
+        {"current-run-id": "51"},
+        {"current-run-attempt": "2"},
     ],
 )
-def test_workflow_decision_fails_closed_for_identity_mismatch(tmp_path, changes):
+def test_workflow_decision_only_skips_for_exact_default_branch_push(tmp_path, changes):
     assert _run(tmp_path, **changes) == "false"
 
 
 @pytest.mark.parametrize(
-    "records",
+    ("field", "value"),
     [
-        [],
-        [_record(conclusion="neutral")],
-        [_record(), _record(8, conclusion="neutral")],
-        [_record(record_id=True)],
-        [_record(record_id=7.0)],
+        ("head_sha", "b" * 40),
+        ("head_branch", "aq/integration/not-generated"),
+        ("event", "pull_request"),
+        ("repository", {"full_name": "fork/widgets"}),
+        ("head_repository", {"full_name": "fork/widgets"}),
+        ("workflow_id", 18),
+        ("path", ".github/workflows/other.yml"),
+        ("status", "in_progress"),
+        ("conclusion", "failure"),
     ],
 )
-def test_workflow_decision_fails_closed_without_newest_valid_record(tmp_path, records):
-    assert _run(tmp_path, records=records) == "false"
+def test_workflow_decision_rejects_nonmatching_authenticated_evidence(tmp_path, field, value):
+    evidence = _evidence()
+    for view in ("listed", "attempt", "latest"):
+        evidence["workflow_runs"][0][view][field] = value
+    assert _run(tmp_path, evidence) == "false"
 
 
-@pytest.mark.parametrize("malformed_app_id", [101.0, True])
-def test_workflow_decision_rejects_loose_numeric_app_identity(tmp_path, malformed_app_id):
-    malformed = _record(8)
-    malformed["app"] = {"id": malformed_app_id}
-    assert _run(tmp_path, records=[_record(), malformed]) == "false"
+def test_workflow_decision_rejects_name_only_or_branch_only_evidence(tmp_path):
+    name_only = _run_record(workflow_id=18, branch="feature", head_sha="b" * 40)
+    branch_only = _run_record(head_sha="b" * 40)
+    assert _run(tmp_path, _evidence(name_only)) == "false"
+    assert _run(tmp_path, _evidence(branch_only)) == "false"
+
+
+def test_workflow_decision_rejects_pr_merge_sha_even_when_sha_matches(tmp_path):
+    assert _run(tmp_path, _evidence(_run_record(event="pull_request"))) == "false"
+
+
+def test_workflow_decision_requires_exact_latest_attempt_state(tmp_path):
+    evidence = _evidence()
+    entry = evidence["workflow_runs"][0]
+    entry["attempt"]["run_attempt"] = 1
+    assert _run(tmp_path, evidence) == "false"
+
+    evidence = _evidence()
+    evidence["workflow_runs"][0]["latest"]["run_attempt"] = 3
+    evidence["workflow_runs"][0]["latest"]["status"] = "in_progress"
+    evidence["workflow_runs"][0]["latest"]["conclusion"] = None
+    assert _run(tmp_path, evidence) == "false"
+
+
+def test_workflow_decision_does_not_fall_back_to_older_success(tmp_path):
+    older_success = _run_record(40)
+    newest_failure = _run_record(41, conclusion="failure")
+    assert _run(tmp_path, _evidence(older_success, newest_failure)) == "false"
+
+
+@pytest.mark.parametrize(
+    "evidence",
+    [
+        {"current_run": _current_run(), "workflow_runs": []},
+        [],
+        {},
+        {"current_run": _current_run(), "workflow_runs": [{"listed": _run_record()}]},
+    ],
+)
+def test_workflow_decision_fails_closed_without_complete_evidence(tmp_path, evidence):
+    assert _run(tmp_path, evidence) == "false"
+
+
+@pytest.mark.parametrize("value", [True, 52.0, 0, -1])
+def test_workflow_decision_rejects_loose_or_nonpositive_run_identity(tmp_path, value):
+    evidence = _evidence()
+    evidence["workflow_runs"][0]["listed"]["id"] = value
+    assert _run(tmp_path, evidence) == "false"
+
+
+@pytest.mark.parametrize(
+    ("view", "field", "value"),
+    [
+        ("current_run", "id", True),
+        ("current_run", "run_attempt", True),
+        ("current_run", "workflow_id", True),
+        ("attempt", "id", True),
+        ("attempt", "run_attempt", True),
+        ("latest", "workflow_id", True),
+    ],
+)
+def test_workflow_decision_requires_strict_identity_in_every_api_view(
+    tmp_path, view, field, value
+):
+    evidence = _evidence()
+    target = (
+        evidence["current_run"]
+        if view == "current_run"
+        else evidence["workflow_runs"][0][view]
+    )
+    target[field] = value
+    assert _run(tmp_path, evidence) == "false"
 
 
 def test_workflow_decision_fails_closed_for_malformed_or_duplicate_json(tmp_path):
-    trust_path = tmp_path / "trust.json"
-    records_path = tmp_path / "records.json"
-    trust_path.write_text('{"schema":"aq.integration-trust.v1","schema":"duplicate"}')
-    records_path.write_text("not json")
+    evidence_path = tmp_path / "workflow-runs.json"
+    evidence_path.write_text('{"current_run":{},"current_run":{}}', encoding="utf-8")
     command = [
         sys.executable,
         str(SCRIPT),
-        "--event-name", "push",
-        "--ref", "refs/heads/main",
-        "--repository-id", "303",
-        "--checkout-sha", SHA,
-        "--integration-app-id", "101",
-        "--required-check-version", "checks-v1",
-        "--trust-file", str(trust_path),
-        "--records-file", str(records_path),
+        "--event-name",
+        "push",
+        "--ref",
+        "refs/heads/main",
+        "--default-branch",
+        "main",
+        "--repository-full-name",
+        "acme/widgets",
+        "--checkout-sha",
+        SHA,
+        "--current-run-id",
+        "52",
+        "--current-run-attempt",
+        "1",
+        "--workflow-runs-file",
+        str(evidence_path),
     ]
     result = subprocess.run(command, check=True, text=True, capture_output=True)
     assert result.stdout.strip() == "false"
     assert result.stderr == ""
 
 
+def test_workflow_collects_authenticated_actions_evidence_without_custom_app_configuration():
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+    assert "actions: read" in workflow
+    assert "/actions/runs/" in workflow
+    assert "/attempts/" in workflow
+    assert "github.run_id" in workflow
+    assert "github.run_attempt" in workflow
+    assert "workflow-runs.json" in workflow
+    assert "AQ_INTEGRATION_ATTESTATION_APP_ID" not in workflow
+    assert "AQ_INTEGRATION_REQUIRED_CHECK_VERSION" not in workflow
+    assert "agent-queue-integration.json" not in workflow
+
+
 def test_workflow_routes_integration_push_once_and_preserves_exact_check_names():
-    workflow = WORKFLOW.read_text()
+    workflow = WORKFLOW.read_text(encoding="utf-8")
     assert "integration-attestation" in workflow
     assert "refs/heads/main" in workflow
     assert "refs/heads/aq/integration/" in workflow
@@ -216,9 +284,8 @@ def test_workflow_routes_integration_push_once_and_preserves_exact_check_names()
 
 
 def test_duplicate_pr_suppression_requires_same_repository_and_exact_generated_ref():
-    exact = "aq/integration/p-" + "5" * 32 + "/r-" + "6" * 32
-    assert _matching_pr(head_repository="acme/widgets", head_ref=exact) == "true"
-    assert _matching_pr(head_repository="fork/widgets", head_ref=exact) == "false"
+    assert _matching_pr(head_repository="acme/widgets", head_ref=CANDIDATE_REF) == "true"
+    assert _matching_pr(head_repository="fork/widgets", head_ref=CANDIDATE_REF) == "false"
     assert _matching_pr(
         head_repository="acme/widgets", head_ref="aq/integration/untrusted"
     ) == "false"

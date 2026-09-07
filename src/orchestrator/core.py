@@ -1480,6 +1480,7 @@ class Orchestrator(
             daemon_functional_preflight,
         )
         from src.git.github_app import GitHubAppClient, OwnerFilePrivateKeyProvider
+        from src.git.github_cli import GitHubCLIClient
 
         async def accept_integration_event(
             event_type: str, payload: dict[str, Any], event_id: str
@@ -1496,22 +1497,22 @@ class Orchestrator(
         integration_app_clients = {}
 
         def integration_app_client(binding):
-            if github_app_config is None:
-                return None
             cached = integration_app_clients.get(binding)
             if cached is not None:
                 return cached
-            client = GitHubAppClient(
-                github_app_config,
-                binding,
-                key_provider=OwnerFilePrivateKeyProvider(),
+            client = (
+                GitHubCLIClient(binding)
+                if github_app_config is None
+                else GitHubAppClient(
+                    github_app_config,
+                    binding,
+                    key_provider=OwnerFilePrivateKeyProvider(),
+                )
             )
             integration_app_clients[binding] = client
             return client
 
         async def resolve_integration_repository(repository):
-            if github_app_config is None:
-                return None
             from urllib.parse import urlparse
 
             parsed = urlparse(repository.url)
@@ -1528,20 +1529,21 @@ class Orchestrator(
             ):
                 return None
             full_name = parsed.path.removeprefix("/").removesuffix(".git")
-            client = await GitHubAppClient.bind_repository(
-                github_app_config,
-                full_name,
-                key_provider=OwnerFilePrivateKeyProvider(),
-            )
+            if github_app_config is None:
+                client = await GitHubCLIClient.bind_repository(full_name)
+            else:
+                client = await GitHubAppClient.bind_repository(
+                    github_app_config,
+                    full_name,
+                    key_provider=OwnerFilePrivateKeyProvider(),
+                )
             integration_app_clients[client.repository] = client
             return client.repository
 
-        self.integration_app_client_factory = (
-            integration_app_client if github_app_config is not None else None
-        )
-        self.integration_repository_binding_resolver = (
-            resolve_integration_repository if github_app_config is not None else None
-        )
+        # Historical attribute name retained for service compatibility. An App
+        # is optional: ordinary installations use the daemon user's gh login.
+        self.integration_app_client_factory = integration_app_client
+        self.integration_repository_binding_resolver = resolve_integration_repository
 
         self.integration_attestation_service = IntegrationAttestationService(
             self.db,
