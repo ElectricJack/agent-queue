@@ -301,7 +301,7 @@ class IntegrationAttestationService:
         return IntegrationEnablementProbeResult(ready=not unique, blockers=unique)
 
     async def _load_trust(
-        self, state: dict[str, Any]
+        self, state: dict[str, Any], *, boundary: str = "root"
     ) -> tuple[IntegrationTrustManifest | IntegrationCITrust, Any]:
         binding = GitHubRepositoryBinding(
             state["repository_numeric_id"], state["repository_full_name"]
@@ -314,7 +314,7 @@ class IntegrationAttestationService:
                     repository_id=binding.repository_id,
                     full_name=binding.full_name,
                     policy=state["policy_snapshot"],
-                    boundary="root",
+                    boundary=boundary,
                 ),
                 client,
             )
