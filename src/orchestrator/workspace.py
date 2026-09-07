@@ -619,6 +619,21 @@ class WorkspaceMixin:
             role,
         )
 
+    async def _hierarchy_repair_start(self, workspace: str, origin: dict, fence: Fence) -> str:
+        """Preserve the published repair tip, proving its frozen base ancestry."""
+        branch = fence.target.branch.removeprefix("refs/heads/")
+        tracking = f"refs/remotes/origin/{branch}"
+        await self.git._arun(
+            ["fetch", "--no-tags", "origin", f"+refs/heads/{branch}:{tracking}"],
+            cwd=workspace,
+        )
+        head = (await self.git._arun(["rev-parse", "--verify", tracking], cwd=workspace)).strip()
+        if not is_valid_git_oid(head) or await self.git.ais_ancestor(
+            workspace, origin["base_sha"], head, strict=True
+        ) is not True:
+            raise GitError("repair branch no longer descends from its frozen starting commit")
+        return head
+
     async def _prepare_exact_origin_workspace(
         self,
         task: Task,
@@ -630,7 +645,7 @@ class WorkspaceMixin:
         """Prepare any enabled checkout at its pinned origin under one owner fence."""
         ws = attachment.workspace
         workspace = ws.workspace_path
-        branch = fence.target.branch
+        branch = fence.target.branch.removeprefix("refs/heads/")
         base_sha = str(origin["base_sha"])
         repair = await self.db.get_active_integration_repair_for_task(task.id)
         if repair is not None and repair.get("retained_workspace_id"):
@@ -653,20 +668,24 @@ class WorkspaceMixin:
                 or current_head != provenance.get("head_sha")
             ):
                 raise BranchBusy("retained repair workspace contents changed")
-            return branch
+            return fence.target.branch
         owner = await BranchOwnership(self.db).get_owner(fence.target)
         role = owner["owner_role"] if owner else None
         async with BranchOwnership(self.db).mutation_exclusion(
             fence, expected_role=role
         ):
             if ws.is_slot:
-                return await self._worktree_slots().reset_slot_for_task(
+                if role == "repair":
+                    base_sha = await self._hierarchy_repair_start(workspace, origin, fence)
+                await self._worktree_slots().reset_slot_for_task(
                     ws,
                     task,
                     base_branch=base_sha,
                     resume_branch=None,
+                    target_branch=branch,
                     kind=attachment.kind,
                 )
+                return fence.target.branch
 
             if ws.source_type == RepoSourceType.CLONE:
                 if not await self.git.avalidate_checkout(workspace):
@@ -686,13 +705,15 @@ class WorkspaceMixin:
                 await self.git.aforce_clean_workspace(workspace)
             if await self.git.ahas_remote(workspace):
                 await self.git._arun(["fetch", "origin"], cwd=workspace)
+            if role == "repair":
+                base_sha = await self._hierarchy_repair_start(workspace, origin, fence)
             await self.git._arun(["checkout", "-B", branch, base_sha], cwd=workspace)
             actual_head = await self.git._arun(["rev-parse", "HEAD"], cwd=workspace)
             if actual_head != base_sha:
                 raise GitError(
                     f"exact origin checkout resolved {actual_head or 'no HEAD'}, expected {base_sha}"
                 )
-        return branch
+        return fence.target.branch
 
     async def _ensure_control_files_excluded(self, workspace: str) -> bool:
         """Write and verify the managed block at Git's exact exclude path.
