@@ -146,6 +146,65 @@ def test_policy_uses_compatible_rebuild_and_cleanup_defaults():
         )
 
 
+@pytest.mark.parametrize(
+    ("scope", "scope_identifier"),
+    [
+        ("system", "not-canonical"),
+        ("project", ""),
+        ("agent_type", "worker"),
+        ("supervisor", "supervisor-p"),
+    ],
+)
+def test_integration_route_rejects_noncanonical_or_unsupported_scope(
+    scope, scope_identifier
+):
+    artifact = {
+        "playbook_id": "hierarchical-delivery",
+        "artifact_sha256": "sha256:" + "a" * 64,
+        "schema_generation": 2,
+        "contract_fingerprint": "sha256:" + "b" * 64,
+        "source_digest": "sha256:" + "c" * 64,
+        "compiler_build": "test",
+        "version": 1,
+    }
+
+    with pytest.raises(ValueError, match="integration routes"):
+        HierarchicalIntegrationPolicy.model_validate(
+            {
+                "parent": {
+                    "required_checks": {
+                        "version": "v1",
+                        "names": ["unit"],
+                        "producer_id": "forge",
+                    },
+                    "repair": {"debug_intelligence_class": "debug-high"},
+                    "route": {
+                        "playbook_id": "hierarchical-delivery",
+                        "scope": scope,
+                        "scope_identifier": scope_identifier,
+                        "artifact": artifact,
+                    },
+                },
+                "root": {
+                    "required_checks": {
+                        "version": "v1",
+                        "names": ["unit"],
+                        "producer_id": "forge",
+                    },
+                    "repair": {"debug_intelligence_class": "debug-high"},
+                    "route": {
+                        "playbook_id": "hierarchical-delivery",
+                        "scope": scope,
+                        "scope_identifier": scope_identifier,
+                        "artifact": artifact,
+                    },
+                },
+                "branchless_parent": "skip",
+                "on_failed_child": "block",
+            }
+        )
+
+
 async def test_reconciliation_pages_select_only_current_work_and_keep_intent_kind(db):
     async with db.immediate() as conn:
         for ordinal, lifecycle in enumerate(("testing", "testing", "promoted")):

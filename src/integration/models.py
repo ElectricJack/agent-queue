@@ -101,7 +101,19 @@ class PlaybookRoute(BaseModel):
     def artifact_matches_route(self) -> "PlaybookRoute":
         if self.artifact.playbook_id != self.playbook_id:
             raise ValueError("route artifact belongs to another playbook")
+        if self.scope not in ("system", "project"):
+            raise ValueError("integration routes support only system or project scope")
+        if self.scope == "system" and self.scope_identifier != "":
+            raise ValueError("system integration routes require an empty scope identifier")
+        if self.scope == "project" and not self.scope_identifier:
+            raise ValueError("project integration routes require a scope identifier")
         return self
+
+    def is_available_to_project(self, project_id: str) -> bool:
+        """Whether this canonical route may serve ``project_id``."""
+        return self.scope == "system" or (
+            self.scope == "project" and self.scope_identifier == project_id
+        )
 
 
 class IntegrationBoundaryPolicy(BaseModel):

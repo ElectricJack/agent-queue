@@ -24,11 +24,23 @@ async def _resolve(value: Any) -> Any:
     return await value if inspect.isawaitable(value) else value
 
 
+def _definition_scope_matches(definition: Any, route: Any) -> bool:
+    scope = definition.scope
+    if getattr(scope, "type", None) != route.scope:
+        return False
+    if route.scope == "system":
+        return route.scope_identifier == ""
+    if route.scope == "project":
+        return getattr(scope, "project_id", None) == route.scope_identifier
+    return False
+
+
 def _artifact_matches(definition: Any, route: Any) -> bool:
     artifact = route.artifact
     try:
         return bool(
             definition.id == route.playbook_id
+            and _definition_scope_matches(definition, route)
             and definition.schema_version == artifact.schema_generation
             and definition.source_hash == artifact.source_digest
             and definition.contract_fingerprint() == artifact.contract_fingerprint

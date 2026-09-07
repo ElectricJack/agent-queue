@@ -254,11 +254,11 @@ class IntegrationControlService:
             for boundary_name, boundary in (("parent", policy.parent), ("root", policy.root)):
                 route = boundary.route
                 ref = f"{boundary_name}:{route.playbook_id}"
-                if route.scope_identifier != project_id or route.scope != "project":
+                if not route.is_available_to_project(project_id):
                     blockers.append(
                         _blocker(
                             "route_scope_mismatch",
-                            "integration route must be project-scoped to the target project",
+                            "integration route must be system-scoped or scoped to the target project",
                             ref,
                         )
                     )
@@ -272,7 +272,12 @@ class IntegrationControlService:
                     )
                 ).mappings().one_or_none()
                 expected = route.artifact.model_dump(mode="json")
-                if artifact is None or any(artifact[key] != value for key, value in expected.items()):
+                if (
+                    artifact is None
+                    or artifact["scope"] != route.scope
+                    or artifact["scope_identifier"] != route.scope_identifier
+                    or any(artifact[key] != value for key, value in expected.items())
+                ):
                     blockers.append(
                         _blocker(
                             "route_artifact_missing",
@@ -674,8 +679,10 @@ class IntegrationControlService:
                 updates["hierarchical_integration_policy"]
             )
             for boundary in (policy.parent, policy.root):
-                if boundary.route.scope != "project" or boundary.route.scope_identifier != project_id:
-                    raise ValueError("integration routes must be scoped to the configured project")
+                if not boundary.route.is_available_to_project(project_id):
+                    raise ValueError(
+                        "integration routes must be system-scoped or scoped to the configured project"
+                    )
             updates["hierarchical_integration_policy"] = policy.model_dump(mode="json")
 
         now = self.clock()

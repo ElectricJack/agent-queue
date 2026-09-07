@@ -41,13 +41,18 @@ from src.integration.scheduler import IntegrationScheduler
 from src.integration.status import IntegrationStatusService
 from src.models import Project, RepoConfig, RepoSourceType
 from src.playbooks.artifact_ref import ArtifactRef
+from src.playbooks.definition import PlaybookDefinition
 from src.profiles.capabilities import CapabilityPolicy
 
 
-def _artifact() -> ArtifactSnapshot:
+def _artifact(
+    *,
+    playbook_id: str = "hierarchical-delivery",
+    digit: str = "1",
+) -> ArtifactSnapshot:
     return ArtifactSnapshot(
-        playbook_id="hierarchical-delivery",
-        artifact_sha256="sha256:" + "1" * 64,
+        playbook_id=playbook_id,
+        artifact_sha256="sha256:" + digit * 64,
         schema_generation=2,
         contract_fingerprint="sha256:" + "2" * 64,
         source_digest="sha256:" + "3" * 64,
@@ -56,32 +61,90 @@ def _artifact() -> ArtifactSnapshot:
     )
 
 
-def _policy(*, branchless_parent: str = "verifier") -> dict:
-    boundary = IntegrationBoundaryPolicy(
-        required_checks=RequiredCheckSet(
-            version="checks-v1", names=("Tests (default)",), producer_id="1234"
-        ),
-        repair=RepairPolicy(
-            debug_intelligence_class="deep",
-            debug_profile_id="debugger",
-        ),
-        route=PlaybookRoute(
-            playbook_id="hierarchical-delivery",
-            scope="project",
-            scope_identifier="p",
-            activation_id=None,
-            artifact=_artifact(),
-        ),
-        primary_intelligence_class="standard",
-        primary_profile_id="worker",
-        verifier_intelligence_class=(
-            "standard" if branchless_parent == "verifier" else None
-        ),
-        verifier_profile_id="verifier" if branchless_parent == "verifier" else None,
+def _loaded_definition(*, scope: str) -> PlaybookDefinition:
+    scope_value = (
+        {"type": "system"}
+        if scope == "system"
+        else {"type": "project", "project_id": "p"}
     )
+    return PlaybookDefinition.model_validate(
+        {
+            "id": "hierarchical-delivery",
+            "version": 1,
+            "scope": scope_value,
+            "source_hash": "sha256:" + "3" * 64,
+            "compiled_at": "2026-09-07T00:00:00Z",
+            "rules": [
+                {
+                    "id": "integrate",
+                    "name": "Integrate",
+                    "trigger": {"event_type": "integration.requested"},
+                    "entry_step": "done",
+                    "source": {"path": "integration.md", "start_line": 1, "end_line": 1},
+                }
+            ],
+            "steps": {
+                "done": {
+                    "type": "terminal",
+                    "rule": "integrate",
+                    "title": "Done",
+                    "outcome": "completed",
+                    "source": {"path": "integration.md", "start_line": 2, "end_line": 2},
+                }
+            },
+        }
+    )
+
+
+def _artifact_for_definition(definition: PlaybookDefinition, *, digit: str) -> ArtifactSnapshot:
+    return ArtifactSnapshot(
+        playbook_id=definition.id,
+        artifact_sha256="sha256:" + digit * 64,
+        schema_generation=definition.schema_version,
+        contract_fingerprint=definition.contract_fingerprint(),
+        source_digest=definition.source_hash,
+        compiler_build="test",
+        version=definition.version,
+    )
+
+
+def _policy(
+    *,
+    branchless_parent: str = "verifier",
+    scope: str = "project",
+    scope_identifier: str = "p",
+    parent_artifact: ArtifactSnapshot | None = None,
+    root_artifact: ArtifactSnapshot | None = None,
+) -> dict:
+    def boundary(artifact: ArtifactSnapshot) -> IntegrationBoundaryPolicy:
+        return IntegrationBoundaryPolicy(
+            required_checks=RequiredCheckSet(
+                version="checks-v1", names=("Tests (default)",), producer_id="1234"
+            ),
+            repair=RepairPolicy(
+                debug_intelligence_class="deep",
+                debug_profile_id="debugger",
+            ),
+            route=PlaybookRoute(
+                playbook_id=artifact.playbook_id,
+                scope=scope,
+                scope_identifier=scope_identifier,
+                activation_id=None,
+                artifact=artifact,
+            ),
+            primary_intelligence_class="standard",
+            primary_profile_id="worker",
+            verifier_intelligence_class=(
+                "standard" if branchless_parent == "verifier" else None
+            ),
+            verifier_profile_id="verifier" if branchless_parent == "verifier" else None,
+        )
+
+    parent_artifact = parent_artifact or _artifact()
+    root_artifact = root_artifact or parent_artifact
     return HierarchicalIntegrationPolicy(
-        parent=boundary,
-        root=boundary,
+        parent=boundary(parent_artifact),
+        root=boundary(root_artifact),
         branchless_parent=branchless_parent,
         on_failed_child="block",
     ).model_dump(mode="json")
@@ -371,6 +434,168 @@ async def test_non_verifier_branchless_policy_has_no_verifier_route_blocker(
     assert preflight["blockers"] == []
 
 
+async def test_system_routes_configure_two_projects_with_project_owned_policy_state(db):
+    await db.create_project(Project(id="q", name="second project"))
+    await db.create_repo(
+        RepoConfig(
+            id="q-repo",
+            project_id="q",
+            source_type=RepoSourceType.CLONE,
+            url="https://github.com/acme/second.git",
+            default_branch="main",
+        )
+    )
+    await db.update_project(
+        "q", integration_repository_id="q-repo", integration_mode="pull_request"
+    )
+    parent_artifact = _artifact(playbook_id="hierarchical-delivery", digit="4")
+    root_artifact = _artifact(playbook_id="root-integration-train", digit="5")
+    for artifact in (parent_artifact, root_artifact):
+        await db.upsert_playbook_artifact(
+            ArtifactRef(**artifact.model_dump(mode="json")),
+            scope="system",
+            scope_identifier="",
+            path=f"/artifacts/{artifact.playbook_id}.json",
+            size_bytes=1,
+        )
+        await db.set_playbook_activation(
+            playbook_id=artifact.playbook_id,
+            scope="system",
+            scope_identifier="",
+            artifact_sha256=artifact.artifact_sha256,
+            enabled=True,
+            activated_by="test",
+            health="ready",
+            reasons="[]",
+        )
+    policy = _policy(
+        scope="system",
+        scope_identifier="",
+        parent_artifact=parent_artifact,
+        root_artifact=root_artifact,
+    )
+    service = IntegrationControlService(db, external_preflight=_external_ready)
+
+    first = await service.configure(
+        "p",
+        updates={"hierarchical_integration_policy": policy},
+        expected_generation=0,
+        reason="use shared integration routes",
+        operator_id="local:operator",
+    )
+    untouched = await db.get_project("q")
+    second = await service.configure(
+        "q",
+        updates={"hierarchical_integration_policy": policy},
+        expected_generation=0,
+        reason="use shared integration routes",
+        operator_id="local:operator",
+    )
+
+    assert first["outcome"] == second["outcome"] == "configured"
+    assert untouched.hierarchical_integration_policy is None
+    assert untouched.hierarchical_integration_generation == 0
+    for project_id in ("p", "q"):
+        project = await db.get_project(project_id)
+        assert project.hierarchical_integration_generation == 1
+        assert project.hierarchical_integration_policy == policy
+        assert (await service.preflight(project_id))["blockers"] == []
+
+
+async def test_preflight_rejects_system_route_artifact_stored_at_project_scope(db):
+    policy = _policy(scope="system", scope_identifier="")
+    await db.update_project("p", hierarchical_integration_policy=policy)
+    artifact = _artifact()
+    await db.set_playbook_activation(
+        playbook_id=artifact.playbook_id,
+        scope="system",
+        scope_identifier="",
+        artifact_sha256=artifact.artifact_sha256,
+        enabled=True,
+        activated_by="test",
+        health="ready",
+        reasons="[]",
+    )
+
+    result = await IntegrationControlService(
+        db, external_preflight=_external_ready
+    ).preflight("p")
+
+    assert [item["code"] for item in result["blockers"]] == [
+        "route_artifact_missing",
+        "route_artifact_missing",
+    ]
+
+
+async def test_preflight_rejects_project_activation_for_system_route(db):
+    artifact = _artifact(playbook_id="shared-integration", digit="6")
+    await db.upsert_playbook_artifact(
+        ArtifactRef(**artifact.model_dump(mode="json")),
+        scope="system",
+        scope_identifier="",
+        path="/artifacts/shared-integration.json",
+        size_bytes=1,
+    )
+    await db.set_playbook_activation(
+        playbook_id=artifact.playbook_id,
+        scope="project",
+        scope_identifier="p",
+        artifact_sha256=artifact.artifact_sha256,
+        enabled=True,
+        activated_by="test",
+        health="ready",
+        reasons="[]",
+    )
+    await db.update_project(
+        "p",
+        hierarchical_integration_policy=_policy(
+            scope="system", scope_identifier="", parent_artifact=artifact
+        ),
+    )
+
+    result = await IntegrationControlService(
+        db, external_preflight=_external_ready
+    ).preflight("p")
+
+    assert [item["code"] for item in result["blockers"]] == [
+        "route_not_ready",
+        "route_not_ready",
+    ]
+
+
+async def test_configure_keeps_exact_project_route_override(db):
+    result = await IntegrationControlService(db).configure(
+        "p",
+        updates={"hierarchical_integration_policy": _policy()},
+        expected_generation=0,
+        reason="keep project override",
+        operator_id="local:operator",
+    )
+
+    assert result["outcome"] == "configured"
+    project = await db.get_project("p")
+    assert project.hierarchical_integration_policy["parent"]["route"] == {
+        "playbook_id": "hierarchical-delivery",
+        "scope": "project",
+        "scope_identifier": "p",
+        "activation_id": None,
+        "artifact": _artifact().model_dump(mode="json"),
+    }
+
+
+async def test_configure_rejects_project_route_for_another_project(db):
+    with pytest.raises(ValueError, match="system-scoped or scoped to the configured project"):
+        await IntegrationControlService(db).configure(
+            "p",
+            updates={
+                "hierarchical_integration_policy": _policy(scope_identifier="other-project")
+            },
+            expected_generation=0,
+            reason="reject cross-project route",
+            operator_id="local:operator",
+        )
+
+
 async def test_disable_drains_active_batch_then_background_reconciler_restores_legacy(db):
     service = IntegrationControlService(db, external_preflight=_external_ready, clock=lambda: 30.0)
     await service.enable(
@@ -631,12 +856,12 @@ async def test_daemon_functional_preflight_reads_artifact_trust_and_workflow_var
             )
             return {"name": path.rsplit("/", 1)[-1], "value": value}
 
-    loaded = SimpleNamespace(
-        id="hierarchical-delivery",
-        schema_version=2,
-        source_hash="sha256:" + "3" * 64,
-        version=1,
-        contract_fingerprint=lambda: "sha256:" + "2" * 64,
+    loaded = _loaded_definition(scope="project")
+    await db.update_project(
+        "p",
+        hierarchical_integration_policy=_policy(
+            parent_artifact=_artifact_for_definition(loaded, digit="7")
+        ),
     )
     runtime = SimpleNamespace(_store=SimpleNamespace(load=lambda _sha: loaded))
     orchestrator = SimpleNamespace(
@@ -655,6 +880,22 @@ async def test_daemon_functional_preflight_reads_artifact_trust_and_workflow_var
     )
 
     assert await daemon_functional_preflight(orchestrator, "p", "repo") == ()
+
+    system_definition = _loaded_definition(scope="system")
+    await db.update_project(
+        "p",
+        hierarchical_integration_policy=_policy(
+            scope="system",
+            scope_identifier="",
+            parent_artifact=_artifact_for_definition(system_definition, digit="8"),
+        ),
+    )
+    runtime._store.load = lambda _sha: system_definition
+    assert await daemon_functional_preflight(orchestrator, "p", "repo") == ()
+
+    runtime._store.load = lambda _sha: loaded
+    blockers = await daemon_functional_preflight(orchestrator, "p", "repo")
+    assert "route_artifact_mismatch" in blockers
 
     runtime._store.load = lambda _sha: (_ for _ in ()).throw(FileNotFoundError())
     trust["required_checks"]["version"] = "wrong"
@@ -687,7 +928,9 @@ async def test_gh_preflight_uses_existing_auth_without_app_manifest_or_variables
             return remote
 
     loaded = SimpleNamespace(
-        id="hierarchical-delivery", schema_version=2,
+        id="hierarchical-delivery",
+        scope=SimpleNamespace(type="project", project_id="p"),
+        schema_version=2,
         source_hash="sha256:" + "3" * 64, version=1,
         contract_fingerprint=lambda: "sha256:" + "2" * 64,
     )
@@ -772,6 +1015,7 @@ async def test_daemon_functional_preflight_mints_token_with_variables_read(
     monkeypatch.setattr(client, "_app_jwt", lambda: "app-jwt")
     loaded = SimpleNamespace(
         id="hierarchical-delivery",
+        scope=SimpleNamespace(type="project", project_id="p"),
         schema_version=2,
         source_hash="sha256:" + "3" * 64,
         version=1,
