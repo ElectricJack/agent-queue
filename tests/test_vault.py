@@ -944,6 +944,7 @@ def test_ensure_default_playbooks_installs_all_defaults(tmp_path):
 
     playbooks_dir = tmp_path / "vault" / "system" / "playbooks"
     expected_files = [
+        "blocked-task-escalation.md",
         "default-assignment-routing.md",
         "default-pipeline.md",
         "hierarchical-delivery.md",

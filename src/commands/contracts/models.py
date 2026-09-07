@@ -76,6 +76,7 @@ class EffectSubject(StrEnum):
     INTEGRATION_OPERATION = "integration_operation"
     BRANCH_OWNERSHIP = "branch_ownership"
     DELIVERY_EVIDENCE = "delivery_evidence"
+    MESSAGE = "message"
 
 
 class ClausePredicate(BaseModel):

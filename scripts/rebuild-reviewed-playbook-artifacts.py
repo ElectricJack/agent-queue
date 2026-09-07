@@ -61,6 +61,7 @@ SHIPPED = {
     "ci-main-sentinel": "src/prompts/project_playbooks/agent-queue/ci-main-sentinel.md",
     "hierarchical-delivery": "src/prompts/default_playbooks/hierarchical-delivery.md",
     "root-integration-train": "src/prompts/default_playbooks/root-integration-train.md",
+    "blocked-task-escalation": "src/prompts/default_playbooks/blocked-task-escalation.md",
 }
 SOURCES = SHIPPED
 
@@ -211,6 +212,8 @@ def semantic_body(playbook_id: str, source: PlaybookSource) -> dict[str, Any]:
         return _recorded_semantic_body(playbook_id)
     if playbook_id == "root-integration-train":
         return _root_integration_train_body(source)
+    if playbook_id == "blocked-task-escalation":
+        return _blocked_task_escalation_body(source)
     return {}
 
 
@@ -613,6 +616,95 @@ def _ci_main_sentinel_body(source: PlaybookSource) -> dict[str, Any]:
                     "created": done,
                     "reused": done,
                     "skipped": done,
+                    "rejected": failed,
+                    "runtime_error": failed,
+                },
+            },
+            done: _terminal(rule, "completed", index.step_ref(rule, None)),
+            failed: _terminal(rule, "failed", index.step_ref(rule, None)),
+        },
+    }
+
+
+def _blocked_task_escalation_body(source: PlaybookSource) -> dict[str, Any]:
+    """The reviewer-authored deterministic graph for ``blocked-task-escalation``.
+
+    One command step and two terminals: a ``task.failed`` event filtered to
+    ``status == "blocked"`` sends the project supervisor one message that
+    names the task and tells it to read the session-log tail.  See
+    ``docs/superpowers/specs/2026-09-06-blocked-task-escalation-design.md``.
+    """
+    index = ProseIndex(source, source.vault_path)
+    rule = "escalate-blocked-task"
+    notify = f"{rule}--notify_supervisor"
+    done = f"{rule}--done"
+    failed = f"{rule}--failed"
+
+    def lit(value: Any) -> dict[str, Any]:
+        return {"type": "literal", "value": value}
+
+    def event(path: str) -> dict[str, Any]:
+        return {"type": "event_ref", "path": path}
+
+    def optional(path: str, fallback: str) -> dict[str, Any]:
+        return {"type": "coalesce", "options": [event(path), lit(fallback)]}
+
+    def template(*parts: dict[str, Any]) -> dict[str, Any]:
+        return {"type": "template", "parts": list(parts)}
+
+    body = template(
+        lit("Task `"), event("task_id"), lit("` (\""), event("title"),
+        lit("\") in project `"), event("project_id"), lit("` ended **blocked**.\n\n"),
+        lit("- close leg (`context`): "), event("context"), lit("\n"),
+        lit("- closing notes / failure detail (`error`): "), optional("error", "n/a"), lit("\n"),
+        lit("- agent that held it (`agent_id`): "), optional("agent_id", "unknown"), lit("\n\n"),
+        lit(
+            "Please check whether anything needs to be done:\n"
+            "1. Find the task's session in the task column of `aq session list`, then read "
+            "the tail of its log with `aq session logs <session-id> -n 200`.\n"
+        ),
+        lit("2. Read `aq task show "), event("task_id"), lit("` and `aq task explain "),
+        event("task_id"), lit("`.\n"),
+        lit(
+            "3. Decide: retry with concrete feedback via `aq task recover`, hold, spawn a "
+            "follow-up task, or message the human with "
+            "`aq message send --to user:dashboard` when human judgment is needed.\n\n"
+            "Sent by the `blocked-task-escalation` playbook."
+        ),
+    )
+
+    return {
+        "rules": [
+            {
+                "id": rule,
+                "name": rule,
+                "trigger": {"event_type": "task.failed", "filter": {"status": "blocked"}},
+                "entry_step": notify,
+                "source": index.rule_ref(rule),
+            }
+        ],
+        "steps": {
+            notify: {
+                "type": "command",
+                "rule": rule,
+                "title": "notify_supervisor",
+                "source": index.step_ref(rule, 1),
+                "command": "message_send",
+                "inputs": {
+                    "project_id": event("project_id"),
+                    "to_kind": lit("session"),
+                    "to_id": template(lit("supervisor-"), event("project_id")),
+                    "from_kind": lit("system"),
+                    "from_id": lit("playbook:blocked-task-escalation"),
+                    "priority": lit(50),
+                    "subject": template(
+                        lit("Blocked task: "), event("title"), lit(" ("), event("task_id"), lit(")")
+                    ),
+                    "body": body,
+                },
+                "save_result_as": "notice",
+                "transitions": {
+                    "queued": done,
                     "rejected": failed,
                     "runtime_error": failed,
                 },

@@ -56,6 +56,7 @@ SHIPPED_SOURCES: dict[str, str] = {
     "pr-merge-sweep": "src/prompts/project_playbooks/agent-queue/pr-merge-sweep.md",
     "ci-main-sentinel": "src/prompts/project_playbooks/agent-queue/ci-main-sentinel.md",
     "root-integration-train": "src/prompts/default_playbooks/root-integration-train.md",
+    "blocked-task-escalation": "src/prompts/default_playbooks/blocked-task-escalation.md",
 }
 
 PLAYBOOK_IDS = tuple(SHIPPED_SOURCES)

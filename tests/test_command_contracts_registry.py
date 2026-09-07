@@ -115,9 +115,12 @@ def _builtin_names() -> frozenset[str]:
 def test_a_bare_registry_registers_nothing_and_the_singleton_autoloads() -> None:
     """Built-ins arrive on first read of the singleton, not at import time."""
     from src.commands.contracts import CONTRACTS
+    from src.commands.contracts.builtin import PRESENTATIONS
 
     assert ContractRegistry().names() == frozenset()
     assert CONTRACTS.names() == _builtin_names()
+    assert set(PRESENTATIONS) <= CONTRACTS.names()
+    assert {"create_task", "ensure_task", "message_send", "stop_task"} <= CONTRACTS.names()
     # Idempotent: a second read does not re-register and raise "already registered".
     assert CONTRACTS.names() == CONTRACTS.names()
 
@@ -138,7 +141,8 @@ def test_the_explanation_module_can_be_imported_first() -> None:
     for first in ("src.playbooks.explanation", "src.commands.contracts"):
         proc = subprocess.run(
             [sys.executable, "-c", f"import {first}; from src.commands.contracts import CONTRACTS;"
-             f" assert len(CONTRACTS.names()) == {expected}, len(CONTRACTS.names())"],
+             f" assert len(CONTRACTS.names()) == {expected}, len(CONTRACTS.names());"
+             " assert 'message_send' in CONTRACTS.names() and 'create_task' in CONTRACTS.names()"],
             capture_output=True,
             text=True,
         )

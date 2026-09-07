@@ -303,6 +303,7 @@ class TestVaultInstallation:
         result = ensure_default_playbooks(str(tmp_path))
 
         expected = {
+            "blocked-task-escalation.md",
             "default-assignment-routing.md",
             "default-pipeline.md",
             "hierarchical-delivery.md",

@@ -1500,10 +1500,12 @@ def ensure_default_playbooks(data_dir: str) -> dict:
     first use by the :class:`~src.playbooks.compiler.PlaybookCompiler`.
 
     The bundled set includes the default review and assignment policies,
-    memory consolidation, the disabled hierarchical-delivery policy, and the
-    disabled root integration train policy.  The
-    directory is discovered mechanically so adding a reviewed source does not
-    require a second production inventory.
+    memory consolidation, the blocked-task escalation (a ``task.failed`` with
+    ``status: blocked`` messages the project supervisor to read the session
+    log tail), the disabled hierarchical-delivery policy, and the disabled
+    root integration train policy.  The directory is discovered mechanically
+    so adding a reviewed source does not require a second production
+    inventory.
 
     The operation is **idempotent**: existing files in the vault are never
     overwritten, except for a byte-for-byte known legacy ``default-pipeline``

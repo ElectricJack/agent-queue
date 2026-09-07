@@ -356,6 +356,30 @@ class CiBaselineStatusValue(CommandValue):
     escalation_question: str | None = None
 
 
+class MessageSendArgs(CommandArgs):
+    """``message_send`` as a playbook step: queue one message on the substrate.
+
+    ``from_kind`` defaults to ``system`` because a playbook is not a user and
+    not a session; ``from_id`` names the playbook so the recipient can tell
+    an automated escalation from a human's note.
+    """
+
+    to_kind: str
+    to_id: str
+    body: str
+    from_id: str
+    from_kind: str = "system"
+    project_id: str | None = None
+    subject: str | None = None
+    thread_id: str | None = None
+    priority: int | None = None
+
+
+class MessageSendValue(CommandValue):
+    message_id: str
+    state: str
+
+
 class StopTaskArgs(CommandArgs):
     task_id: str
 
@@ -446,6 +470,7 @@ def _outcome_of(name: str, raw: dict[str, Any]) -> str:
         "task_batch_commit": "committed",
         "task_route": "routed",
         "stop_task": "stopped",
+        "message_send": "queued",
     }[name]
 
 
@@ -770,6 +795,24 @@ PRESENTATIONS: dict[str, CommandPresentation] = {
         },
         subject_labels={},
     ),
+    "message_send": CommandPresentation(
+        title="Send a message",
+        summary="Queue one message to a session, task, profile, or user; delivery is asynchronous.",
+        arg_labels={
+            "to_kind": "Recipient kind",
+            "to_id": "Recipient",
+            "body": "Body",
+            "from_id": "Sender",
+            "from_kind": "Sender kind",
+            "project_id": "Project",
+            "subject": "Subject",
+            "thread_id": "Thread",
+            "priority": "Priority",
+        },
+        outcome_labels={"queued": "Queued", "rejected": "Rejected"},
+        result_labels={"message_id": "Message", "state": "State"},
+        subject_labels={"message": "a message"},
+    ),
     "task_route_options": CommandPresentation(
         title="Read a task's routing options",
         summary=(
@@ -1017,6 +1060,16 @@ def register_builtin_contracts(registry: ContractRegistry) -> None:
             (),
             IdempotencySpec(mode="natural"),
             True,
+        ),
+        (
+            "message_send",
+            MessageSendArgs,
+            MessageSendValue,
+            _outcomes("queued"),
+            SideEffectClass.CREATE,
+            (CreateClause(subject=EffectSubject.MESSAGE),),
+            IdempotencySpec(mode="none"),
+            False,
         ),
         (
             "stop_task",
