@@ -201,7 +201,7 @@ export default function SystemConfig() {
                     type="button"
                     disabled={update.isPending}
                     onClick={async () => {
-                      let parsed: unknown;
+                      let parsed: Parameters<typeof update.mutateAsync>[0]["data"];
                       try {
                         parsed = JSON.parse(draft);
                       } catch (e) {
