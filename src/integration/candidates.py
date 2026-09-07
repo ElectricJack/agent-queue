@@ -237,7 +237,7 @@ class CandidateService:
         store = await self._ensure_store(repository)
         await self._fetch_inputs(store, state)
         await self._retain_sources(store, state)
-        if revision["state"] != "built":
+        if revision["state"] not in {"built", "green"}:
             try:
                 revision = await self._construct(state, revision, store, operation_id=operation_id)
             except (CandidateStaleAuthority, StaleFence, BranchBusy):
@@ -249,11 +249,33 @@ class CandidateService:
                 )
         if revision["state"] in {"conflict", "source_moved", "base_moved"}:
             return self._result(revision["state"], state, revision, operation_id)
+        # A legacy squash or accepted linear repair must not publish a candidate
+        # that loses the reviewed source ancestry. Rebuild through the existing
+        # revision fence; this also invalidates any old candidate CI evidence.
+        if not await self._has_reviewed_ancestry(store, state, revision):
+            new_base = await self.app_client.exact_head_ref(repository.default_branch)
+            if new_base is None:
+                return self._result("base_moved", state, revision, operation_id)
+            return await self.rebuild(batch_id, revision_number, new_base)
+        if revision["state"] == "green":
+            return self._result("already_built", state, revision, operation_id)
         outcome = "already_built" if was_built or batch["pr_url"] else "built"
         pushed = await self._publish(state, revision, store)
         if pushed.get("publication_wait"):
             return self._result("wait", state, pushed, operation_id)
         return self._result(outcome, state, pushed, operation_id)
+
+    async def _has_reviewed_ancestry(self, store, state, revision) -> bool:
+        for member in state["members"]:
+            ancestry = await self.git.arun_git_result(
+                ["merge-base", "--is-ancestor", member["reviewed_head_sha"], revision["head_sha"]],
+                cwd=str(store),
+            )
+            if ancestry.returncode not in {0, 1}:
+                raise RuntimeError(ancestry.stderr or "candidate ancestry check failed")
+            if ancestry.returncode == 1:
+                return False
+        return True
 
     async def rebuild(
         self, batch_id: str, expected_revision: int, new_base_sha: str
@@ -1354,7 +1376,10 @@ class CandidateService:
             )
             authored_at = f"@{int(state['batch']['created_at'])} +0000"
             committed = await self.git.arun_git_result(
-                ["commit-tree", tree_sha, "-p", current, "-m", message],
+                [
+                    "commit-tree", tree_sha, "-p", current,
+                    "-p", member["reviewed_head_sha"], "-m", message,
+                ],
                 cwd=str(store),
                 env={
                     "GIT_AUTHOR_NAME": primary["name"],
@@ -2407,14 +2432,27 @@ class CandidateService:
 
     async def _accepted_parent_repair(self, revision, ordinal, store: Path):
         parent = revision.get("repair_parent_revision")
-        if parent is None:
-            return None
-        row = await self._member_result(revision["batch_id"], int(parent), ordinal)
-        evidence = row.get("conflict_evidence") if row else None
-        if row is None or row["result"] != "applied" or not evidence:
-            return None
-        reservation_id = evidence.get("accepted_reservation_id")
-        if not reservation_id:
+        child_revision = int(revision["revision"])
+        while parent is not None:
+            if int(parent) >= child_revision:
+                raise CandidateStaleAuthority("candidate repair revision ancestry is invalid")
+            row = await self._member_result(revision["batch_id"], int(parent), ordinal)
+            evidence = row.get("conflict_evidence") if row else None
+            if row is None or row["result"] != "applied" or not evidence:
+                return None
+            reservation_id = evidence.get("accepted_reservation_id")
+            if reservation_id:
+                break
+            if not evidence.get("accepted_lineage"):
+                return None
+            # A replay stores the validated lineage, not a new acceptance.
+            # Follow strictly older revisions back to the original reservation.
+            previous = await self._revision(revision["batch_id"], int(parent))
+            if previous is None:
+                raise CandidateStaleAuthority("candidate repair revision is missing")
+            child_revision = int(parent)
+            parent = previous.get("repair_parent_revision")
+        else:
             return None
         accepted = await self._resolution(reservation_id)
         if (
