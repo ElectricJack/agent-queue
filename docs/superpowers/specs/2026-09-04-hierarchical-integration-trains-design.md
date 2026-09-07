@@ -195,6 +195,35 @@ The collector retains ownership across sibling promotions and hands it to a conf
 when necessary. Once every required child is delivered, it releases ownership before waking the
 parent verifier. A reviewed child may wait while its parent continues working.
 
+#### Handoff proof for a pool writer
+
+"Stopped writing" has two proof shapes, because writers have two lifecycles.
+
+A **task session** exists for exactly one task, so the daemon proves it stopped by stopping it:
+`provider.stop`, an uncached `confirm_stopped` probe, then a detach of its checkout. That is the
+proof used by task-lifecycle writers. Pool workers and repair delegates instead use the
+claim-bound detach proof below; their configured lifecycle determines the proof shape.
+
+A **pool worker** outlives every task it claims: it closes one task and immediately claims the
+next. Stopping it to release one branch would tear down the worker mid-loop, and ordinary
+hierarchy tasks must stay poolable. Its handoff proof is therefore the other half of the sentence
+above — *released or detached its checkout* — evaluated at close:
+
+- the checkout is clean, its branch tip is exactly the freshly fetched remote tip, and HEAD is
+  then detached off the owned branch (the same Git proof the task-session path performs after
+  stopping the process);
+- the ownership row still names that exact session and workspace, and the session still holds the
+  task, when the proof is consumed; and
+- the release runs inside the closing session's own `task_close`, under the task control lock and
+  behind the claim-epoch fence, immediately before the claim is released — so the session no
+  longer holds the task and nothing routes work back onto the branch.
+
+Both shapes end in the same durable state: the attachment is atomically released and the task
+retains a fresh reserved fence, so a suspended parent can re-attach on wake and a collector can
+transfer without treating expiry as liveness evidence. A pool writer whose slot is dirty or
+unpushed fails its proof exactly like a task session whose stop is unconfirmed: ownership stays
+fenced and the branch keeps its writer.
+
 For each child, the collector:
 
 1. Pins the reviewed source head and current target head.

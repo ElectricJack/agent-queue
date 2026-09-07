@@ -352,7 +352,7 @@ class TestOrphans:
         assert (await db.get_session(sid)).task_id == "t1"
         assert (await db.get_workspace("ws-agent-1")).locked_by_agent_id == "agent-1"
         assert (await db.get_session(other_sid)).task_id is None
-        assert (await db.get_workspace("ws-agent-2")).locked_by_agent_id is None
+        assert (await db.get_workspace("ws-agent-2")).locked_by_agent_id == "agent-2"
 
     async def test_released_integration_owner_allows_non_live_claim_reclaim(self, db, reconciler):
         sid = await held_pool_session(db)
@@ -371,7 +371,7 @@ class TestOrphans:
         await reconciler._step_orphans(live, now)
 
         assert (await db.get_session(sid)).task_id is None
-        assert (await db.get_workspace("ws-agent-1")).locked_by_agent_id is None
+        assert (await db.get_workspace("ws-agent-1")).locked_by_agent_id == "agent-1"
 
     async def test_termination_retains_attached_integration_owner_bindings(self, db):
         sid = await held_pool_session(db)
@@ -406,7 +406,7 @@ class TestOrphans:
         messages = await db.get_pending_messages("session", sid)
         assert (session.task_id, session.claim_phase) == (None, None)
         assert task.status is status
-        assert workspace.locked_by_agent_id is None
+        assert workspace.locked_by_agent_id == "agent-1"
         assert len(messages) == 1
         assert messages[0].from_kind == "system"
         assert messages[0].to_id == sid
@@ -507,4 +507,4 @@ class TestOrphans:
             None,
         )
         assert (await db.get_agent("agent-1")).state == AgentState.IDLE
-        assert (await db.get_workspace("ws-agent-1")).locked_by_agent_id is None
+        assert (await db.get_workspace("ws-agent-1")).locked_by_agent_id == "agent-1"

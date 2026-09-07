@@ -1075,7 +1075,7 @@ class SessionReconciler:
                     expected_claim_epoch=row.last_claim_epoch,
                     expected_task_status=task.status if task is not None else None,
                     drain_after_release=self.config.swarm.fresh_context_per_task,
-                    release_workspace_lock=True,
+                    # The pool process still owns this checkout until termination.
                 )
                 if release.released and row.work_dir:
                     remove_claim_file_if_matches(

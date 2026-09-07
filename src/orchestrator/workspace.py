@@ -1294,6 +1294,8 @@ class WorkspaceMixin:
             or repository is None
             or task is None
             or session.lifecycle != "pool"
+            or owner.get("owner_role") not in {"worker", "repair"}
+            or task.id != owner.get("owner_id")
             or workspace.locked_by_task_id != session.task_id
             or workspace.project_id != repository.project_id
             or session.project_id != repository.project_id
@@ -1336,13 +1338,18 @@ class WorkspaceMixin:
             return False
 
         current_workspace = await self.db.get_workspace(workspace.id)
+        current_session = await self.db.get_session(session.id)
         if (
             current_workspace is None
+            or current_session is None
+            or current_session.task_id != session.task_id
+            or current_session.instance_token != session.instance_token
             or current_workspace.locked_by_task_id != session.task_id
         ):
             return False
         return await mark_integration_pool_handoff_released(
-            self.db, owner, workspace=workspace, task_id=session.task_id
+            self.db, owner, workspace=workspace, task_id=session.task_id,
+            session_instance_token=session.instance_token
         )
 
     async def aconfirm_integration_owner_stopped_for_repair(

@@ -174,6 +174,7 @@ async def mark_integration_pool_handoff_released(
     *,
     workspace,
     task_id: str,
+    session_instance_token: str,
 ) -> bool:
     """Record a **pool** writer's detach proof without unbinding its slot.
 
@@ -199,6 +200,10 @@ async def mark_integration_pool_handoff_released(
     its own terms.
     """
     async with db.immediate() as conn:
+        # Match release_claim: session before owner/workspace.
+        session_row = (await conn.execute(select(sessions).where(
+            sessions.c.id == owner.get("session_id")
+        ).with_for_update())).mappings().one_or_none()
         owner_row = (
             await conn.execute(
                 select(integration_branch_owners)
@@ -206,15 +211,6 @@ async def mark_integration_pool_handoff_released(
                 .with_for_update()
             )
         ).mappings().one_or_none()
-        session_row = None
-        if owner_row is not None and owner_row["session_id"]:
-            session_row = (
-                await conn.execute(
-                    select(sessions)
-                    .where(sessions.c.id == owner_row["session_id"])
-                    .with_for_update()
-                )
-            ).mappings().one_or_none()
         workspace_row = (
             await conn.execute(
                 select(workspaces)
@@ -228,10 +224,13 @@ async def mark_integration_pool_handoff_released(
             or workspace_row is None
             or owner_row["fence_token"] != owner.get("fence_token")
             or owner_row["owner_id"] != owner.get("owner_id")
+            or owner_row["owner_id"] != task_id
+            or owner_row["owner_role"] not in {"worker", "repair"}
             or owner_row["handoff_state"] != "handoff_pending"
             or owner_row["session_id"] != owner.get("session_id")
             or owner_row["workspace_id"] != workspace.id
             or session_row["lifecycle"] != "pool"
+            or session_row["instance_token"] != session_instance_token
             or session_row["task_id"] != task_id
             or session_row["work_dir"] != workspace_row["workspace_path"]
             or session_row["project_id"] != workspace_row["project_id"]

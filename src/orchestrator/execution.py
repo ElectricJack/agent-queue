@@ -1728,9 +1728,10 @@ class ExecutionMixin:
         # exactly what the teardown below erases, so a release deferred past
         # it can never be confirmed and the branch stays owned for good
         # (amber-delta).  A pool close takes the same path with the
-        # detach-only proof (``pool=True``); the managed-parent pool leg is
-        # deliberately left to steady-impact, which owns that case.
-        release_needed = repair_writer_closed or (managed_parent_suspended and not pool)
+        # detach-only proof (``pool=True``) also releases completed root and
+        # suspended parent writers before their claim bindings disappear.
+        release_needed = (repair_writer_closed or managed_parent_suspended
+                          or (completed_ok and new_status == TaskStatus.COMPLETED))
         handoff_unproven = False
         if release_needed:
             # Stop/detach the writer while preserving its durable reserved
