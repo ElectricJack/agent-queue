@@ -27,7 +27,6 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from src.intelligence_classes import IntelligenceClass
 from src.models import (
     Agent,
     AgentProfile,
@@ -38,6 +37,7 @@ from src.models import (
     TaskStatus,
     Workspace,
 )
+from src.intelligence_classes import IntelligenceClass
 from tests.perf.test_hierarchy_statements import count_statements, seed_scale
 
 pytestmark = pytest.mark.perf
@@ -204,7 +204,11 @@ class TestClaimStatementBudgets:
         # pause/reassignment and restart recovery. SQLite records two more
         # transaction-boundary statements around that required insert; the
         # backoff and pause keys are deliberately cleared by one DELETE.
-        budget = 21 if dialect == "sqlite" else 17
+        # ``_prepare_and_activate_locked``'s project re-read (+1) decides
+        # whether the claim takes the hierarchical-integration branch path
+        # from the project's *current* ``hierarchical_integration_mode`` —
+        # the outer loop's read may be a full ``--wait`` old by then.
+        budget = 22 if dialect == "sqlite" else 18
         print(f"\ntask_claim happy path ({dialect}): {c['n']} statements (budget {budget})")
         assert c["n"] <= budget, f"{c['n']} statements > budget {budget}"
 
@@ -234,7 +238,7 @@ class TestClaimStatementBudgets:
 
         prepared = {}
 
-        async def _fake_prepare(session, row, task, cap=None, *, slot=None, project=None):
+        async def _fake_prepare(session, row, task, cap=None, *, slot=None):
             prepared["task"] = task
             return {"success": True, "result": "claimed", "task": None, "claim_epoch": None}
 

@@ -1771,7 +1771,11 @@ print(json.dumps({
             check=True,
             capture_output=True,
             text=True,
-            timeout=2,
+            # Termination proof, not a latency budget: importing
+            # src.integration.promotion alone takes ~1s on an idle box and
+            # several seconds on a loaded CI runner, so a tight bound flakes.
+            # The pathological input this guards against never finishes.
+            timeout=30,
         )
     except subprocess.TimeoutExpired:
         pytest.fail("paths-heavy conflict diagnostics did not terminate")

@@ -5,7 +5,7 @@ from __future__ import annotations
 import uuid
 
 import pytest
-from sqlalchemy import delete, inspect, insert, select, update
+from sqlalchemy import delete, insert, inspect, select, update
 from sqlalchemy.exc import DBAPIError, IntegrityError
 
 from src.database import Database
@@ -17,7 +17,6 @@ from src.database.tables import (
 from src.integration.models import BranchKey, Fence, RepairPolicy, RequiredCheckSet
 from src.models import Project, Task
 from tests.pg_dsn import ensure_worker_postgres_dsn
-
 
 POSTGRES_TEST_DSN = ensure_worker_postgres_dsn()
 
@@ -469,9 +468,13 @@ async def test_member_cannot_move_from_a_sealed_batch_to_a_sealing_batch(db):
 
 async def test_durable_counters_and_fences_never_decrease(db):
     from src.database.tables import (
-        integration_branch_owners, integration_candidate_revisions, integration_outbox,
-        integration_repair_operations, project_integration_leases,
-        project_integration_schedules, task_integration_checkpoints,
+        integration_branch_owners,
+        integration_candidate_revisions,
+        integration_outbox,
+        integration_repair_operations,
+        project_integration_leases,
+        project_integration_schedules,
+        task_integration_checkpoints,
     )
 
     batch = {
@@ -572,7 +575,8 @@ async def test_materialized_branch_origin_cannot_be_deleted(db):
 
 async def test_candidate_member_results_are_ordered_and_unique_per_revision(db):
     from src.database.tables import (
-        integration_batch_members, integration_candidate_member_results,
+        integration_batch_members,
+        integration_candidate_member_results,
         integration_candidate_revisions,
     )
 

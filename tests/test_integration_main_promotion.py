@@ -1313,9 +1313,15 @@ async def test_prewrite_deadline_consumes_dispatch_delay_in_real_app_transport(
         return await original_import(args, **kwargs)
 
     monkeypatch.setattr(git.transport, "_run_isolated_import_git", delayed_import)
-    monkeypatch.setattr(main_promotion_module, "APP_AUTH_PUSH_TIMEOUT_SECONDS", 0.4)
+    # The budget only has to be (a) longer than the 0.1s dispatch delay below
+    # so the push still succeeds and (b) short enough that the assertion at
+    # the end proves the deadline was anchored *before* that delay.  The real
+    # push spawns several git subprocesses inside what is left of it, so the
+    # budget is generous: 0.4s expired on a loaded CI runner.
+    push_timeout = 3.0
+    monkeypatch.setattr(main_promotion_module, "APP_AUTH_PUSH_TIMEOUT_SECONDS", push_timeout)
     monkeypatch.setattr(main_promotion_module, "APP_AUTH_PUSH_CLEANUP_MARGIN_SECONDS", 0.1)
-    monkeypatch.setattr(git_manager_module, "APP_AUTH_PUSH_TIMEOUT_SECONDS", 0.4)
+    monkeypatch.setattr(git_manager_module, "APP_AUTH_PUSH_TIMEOUT_SECONDS", push_timeout)
     monkeypatch.setattr(git_manager_module, "APP_AUTH_PUSH_CLEANUP_MARGIN_SECONDS", 0.1)
     prewrite_seen_at = None
 
@@ -1338,7 +1344,9 @@ async def test_prewrite_deadline_consumes_dispatch_delay_in_real_app_transport(
     assert len(git.pushes) == 1
     deadline = git.pushes[0]["authority_deadline"]
     assert prewrite_seen_at is not None
-    assert 0 < deadline - prewrite_seen_at <= 0.4
+    # Anchored at the prewrite marker: a deadline derived after the 0.1s
+    # dispatch delay would land at prewrite_seen_at + 0.1 + push_timeout.
+    assert 0 < deadline - prewrite_seen_at <= push_timeout
     assert _git(target, "rev-parse", "refs/heads/main") == real_tip
 
 

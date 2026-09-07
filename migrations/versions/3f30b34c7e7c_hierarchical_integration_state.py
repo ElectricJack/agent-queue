@@ -5,17 +5,63 @@ Revises: e6a1b2c3d4f5
 Create Date: 2026-09-04 19:53:59.203608
 
 """
-from typing import Sequence, Union
+from collections.abc import Sequence
 
-from alembic import op
 import sqlalchemy as sa
-
+from alembic import op
 
 # revision identifiers, used by Alembic.
 revision: str = '3f30b34c7e7c'
-down_revision: Union[str, Sequence[str], None] = 'e6a1b2c3d4f5'
-branch_labels: Union[str, Sequence[str], None] = None
-depends_on: Union[str, Sequence[str], None] = None
+down_revision: str | Sequence[str] | None = 'e6a1b2c3d4f5'
+branch_labels: str | Sequence[str] | None = None
+depends_on: str | Sequence[str] | None = None
+
+
+#: SQLite monotone-counter guards (one ``BEFORE UPDATE`` trigger per table).
+#: Module-level so later revisions can recreate them: SQLite batch mode
+#: rebuilds a table by move-and-copy, which silently drops its triggers.
+_SQLITE_MONOTONE_GUARDS = (
+    ("trg_integration_checkpoint_monotone", "task_integration_checkpoints", "NEW.generation < OLD.generation OR NEW.version < OLD.version", "checkpoint generation and version cannot decrease"),
+    ("trg_integration_batch_revision_monotone", "integration_batches", "NEW.current_revision < OLD.current_revision", "integration batch revision cannot decrease"),
+    ("trg_integration_branch_fence_monotone", "integration_branch_owners", "NEW.fence_token < OLD.fence_token", "integration branch fence cannot decrease"),
+    ("trg_integration_lease_fence_monotone", "project_integration_leases", "NEW.fence_token < OLD.fence_token", "integration lease fence cannot decrease"),
+    ("trg_integration_schedule_sequence_monotone", "project_integration_schedules", "NEW.request_sequence < OLD.request_sequence", "integration schedule request sequence cannot decrease"),
+    ("trg_integration_outbox_attempts_monotone", "integration_outbox", "NEW.attempts < OLD.attempts", "integration outbox attempts cannot decrease"),
+    ("trg_integration_repair_attempts_monotone", "integration_repair_stages", "NEW.attempts < OLD.attempts", "integration repair attempts cannot decrease"),
+    ("trg_integration_candidate_progress_monotone", "integration_candidate_revisions", "NEW.next_member_ordinal < OLD.next_member_ordinal", "integration candidate progress cannot decrease"),
+    ("trg_integration_repair_operation_stage_monotone", "integration_repair_operations", "NEW.active_stage < OLD.active_stage", "integration repair operation stage cannot decrease"),
+)
+
+
+def _sqlite_monotone_guard_ddl(trigger: str, table: str, condition: str, message: str) -> str:
+    return (
+        f"CREATE TRIGGER {trigger} BEFORE UPDATE ON {table} WHEN {condition} "
+        f"BEGIN SELECT RAISE(ABORT, '{message}'); END"
+    )
+
+
+def _recreate_sqlite_guards(*tables: str) -> None:
+    """Recreate this revision's SQLite triggers on ``tables`` after a batch rebuild.
+
+    ``op.batch_alter_table`` on SQLite copies the table and drops the original,
+    and the original's triggers go with it.  Every later revision that rebuilds
+    one of these tables calls this afterwards (both directions) so the guards
+    survive the rebuild.  No-op on PostgreSQL, which alters in place.
+    """
+    if op.get_bind().dialect.name != "sqlite":
+        return
+    for trigger, table, condition, message in _SQLITE_MONOTONE_GUARDS:
+        if table in tables:
+            op.execute(f"DROP TRIGGER IF EXISTS {trigger}")
+            op.execute(_sqlite_monotone_guard_ddl(trigger, table, condition, message))
+    if "task_delivery_receipts" in tables:
+        for event in ("UPDATE", "DELETE"):
+            op.execute(f"DROP TRIGGER IF EXISTS trg_task_delivery_receipts_{event.lower()}")
+            op.execute(
+                f"CREATE TRIGGER trg_task_delivery_receipts_{event.lower()} BEFORE {event} ON "
+                "task_delivery_receipts BEGIN SELECT RAISE(ABORT, "
+                "'task delivery receipts are append-only'); END"
+            )
 
 
 def _create_immutability_guards() -> None:
@@ -128,18 +174,8 @@ def _create_immutability_guards() -> None:
     op.execute("""CREATE TRIGGER trg_integration_members_insert BEFORE INSERT ON integration_batch_members WHEN NOT EXISTS (SELECT 1 FROM integration_batches WHERE id = NEW.batch_id AND lifecycle = 'sealing') BEGIN SELECT RAISE(ABORT, 'sealed integration batch membership is immutable'); END""")
     op.execute("""CREATE TRIGGER trg_integration_members_update BEFORE UPDATE ON integration_batch_members WHEN NOT EXISTS (SELECT 1 FROM integration_batches WHERE id = OLD.batch_id AND lifecycle = 'sealing') OR NOT EXISTS (SELECT 1 FROM integration_batches WHERE id = NEW.batch_id AND lifecycle = 'sealing') BEGIN SELECT RAISE(ABORT, 'sealed integration batch membership is immutable'); END""")
     op.execute("""CREATE TRIGGER trg_integration_members_delete BEFORE DELETE ON integration_batch_members WHEN NOT EXISTS (SELECT 1 FROM integration_batches WHERE id = OLD.batch_id AND lifecycle = 'sealing') BEGIN SELECT RAISE(ABORT, 'sealed integration batch membership is immutable'); END""")
-    for trigger, table, condition, message in (
-        ("trg_integration_checkpoint_monotone", "task_integration_checkpoints", "NEW.generation < OLD.generation OR NEW.version < OLD.version", "checkpoint generation and version cannot decrease"),
-        ("trg_integration_batch_revision_monotone", "integration_batches", "NEW.current_revision < OLD.current_revision", "integration batch revision cannot decrease"),
-        ("trg_integration_branch_fence_monotone", "integration_branch_owners", "NEW.fence_token < OLD.fence_token", "integration branch fence cannot decrease"),
-        ("trg_integration_lease_fence_monotone", "project_integration_leases", "NEW.fence_token < OLD.fence_token", "integration lease fence cannot decrease"),
-        ("trg_integration_schedule_sequence_monotone", "project_integration_schedules", "NEW.request_sequence < OLD.request_sequence", "integration schedule request sequence cannot decrease"),
-        ("trg_integration_outbox_attempts_monotone", "integration_outbox", "NEW.attempts < OLD.attempts", "integration outbox attempts cannot decrease"),
-        ("trg_integration_repair_attempts_monotone", "integration_repair_stages", "NEW.attempts < OLD.attempts", "integration repair attempts cannot decrease"),
-        ("trg_integration_candidate_progress_monotone", "integration_candidate_revisions", "NEW.next_member_ordinal < OLD.next_member_ordinal", "integration candidate progress cannot decrease"),
-        ("trg_integration_repair_operation_stage_monotone", "integration_repair_operations", "NEW.active_stage < OLD.active_stage", "integration repair operation stage cannot decrease"),
-    ):
-        op.execute(f"CREATE TRIGGER {trigger} BEFORE UPDATE ON {table} WHEN {condition} BEGIN SELECT RAISE(ABORT, '{message}'); END")
+    for trigger, table, condition, message in _SQLITE_MONOTONE_GUARDS:
+        op.execute(_sqlite_monotone_guard_ddl(trigger, table, condition, message))
     op.execute("""CREATE TRIGGER trg_integration_prepared_identity_immutable BEFORE UPDATE ON integration_promotion_intents WHEN OLD.prepared_sha IS NOT NULL AND (NEW.domain_key IS NOT OLD.domain_key OR NEW.receipt_id IS NOT OLD.receipt_id OR NEW.source_task_id IS NOT OLD.source_task_id OR NEW.source_head IS NOT OLD.source_head OR NEW.source_base IS NOT OLD.source_base OR NEW.repository_id IS NOT OLD.repository_id OR NEW.target_branch IS NOT OLD.target_branch OR NEW.expected_target IS NOT OLD.expected_target OR NEW.prepared_sha IS NOT OLD.prepared_sha OR NEW.fence_owner_id IS NOT OLD.fence_owner_id OR NEW.fence_token IS NOT OLD.fence_token OR NEW.recovery_ref IS NOT OLD.recovery_ref) BEGIN SELECT RAISE(ABORT, 'prepared integration identity is immutable'); END""")
     op.execute("CREATE TRIGGER trg_task_delivery_receipts_update BEFORE UPDATE ON task_delivery_receipts BEGIN SELECT RAISE(ABORT, 'task delivery receipts are append-only'); END")
     op.execute("CREATE TRIGGER trg_task_delivery_receipts_delete BEFORE DELETE ON task_delivery_receipts BEGIN SELECT RAISE(ABORT, 'task delivery receipts are append-only'); END")
@@ -174,7 +210,7 @@ def _drop_immutability_guards() -> None:
         op.execute("DROP FUNCTION integration_member_is_mutable()")
         return
     for event in ("insert", "update", "delete"):
-        op.execute(f"DROP TRIGGER trg_integration_members_{event}")
+        op.execute(f"DROP TRIGGER IF EXISTS trg_integration_members_{event}")
     for trigger in (
         "trg_integration_checkpoint_monotone",
         "trg_integration_batch_revision_monotone",
@@ -191,7 +227,7 @@ def _drop_immutability_guards() -> None:
         "trg_task_branch_origins_materialized_update",
         "trg_task_branch_origins_materialized_delete",
     ):
-        op.execute(f"DROP TRIGGER {trigger}")
+        op.execute(f"DROP TRIGGER IF EXISTS {trigger}")
 
 
 def upgrade() -> None:
