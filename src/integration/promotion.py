@@ -1,4 +1,4 @@
-"""Crash-recoverable child-to-parent squash promotion."""
+"""Crash-recoverable child-to-parent merge promotion."""
 
 from __future__ import annotations
 
@@ -228,7 +228,10 @@ class PromotionService:
             committer = metadata["committer"]
             git_date = f"{int(metadata['timestamp'])} +0000"
             commit = await self.git.arun_git_result(
-                ["commit-tree", tree_oid, "-p", intent["expected_target"]],
+                [
+                    "commit-tree", tree_oid, "-p", intent["expected_target"],
+                    "-p", intent["source_head"],
+                ],
                 cwd=str(repository.retained_git_dir),
                 stdin=metadata["message"] + "\n",
                 env={
