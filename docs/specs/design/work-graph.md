@@ -151,7 +151,12 @@ Before it merges anything, `pr_merge` asks what CI said. `integration.merge_ci_p
 status-check rollup does — nothing, a logged verdict in the result's `ci`
 block, or a refusal. The gate exists because GitHub's does not: `main`
 carries no required status check, so `gh pr merge` merged 29 of the last 30
-PRs red, #341 among them. See [the merge-gating guide](../../guides/merge-gating.md).
+PRs red, #341 among them. It asks a second question too: is the head *up to
+date* with its base? A green rollup only proves the head passed against the
+base as it was when the run started, and two PRs each green on a stale base
+put a red `main` together (#390 + #391). `integration.merge_require_up_to_date`
+(shipped `true`) folds that into the same verdict as a `base` block. See
+[the merge-gating guide](../../guides/merge-gating.md).
 
 The merge itself records what it did. `pr_merge` writes `pr_base` and
 `pr_merged_to_default` on the task carrying that PR and returns

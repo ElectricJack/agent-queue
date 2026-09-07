@@ -38,6 +38,7 @@ Both are reduced to ``(name, state)`` pairs before anything is judged.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 
 #: Conclusions that mean "this check is satisfied".  ``NEUTRAL`` and
@@ -76,9 +77,97 @@ UNKNOWN = "unknown"
 MERGE_CI_POLICY_OFF = "off"
 MERGE_CI_POLICY_WARN = "warn"
 MERGE_CI_POLICY_REQUIRED = "required"
-MERGE_CI_POLICIES = frozenset(
-    {MERGE_CI_POLICY_OFF, MERGE_CI_POLICY_WARN, MERGE_CI_POLICY_REQUIRED}
+MERGE_CI_POLICIES = frozenset({MERGE_CI_POLICY_OFF, MERGE_CI_POLICY_WARN, MERGE_CI_POLICY_REQUIRED})
+
+#: Base-freshness verdicts — the second question ``pr_merge`` asks.
+#:
+#: A green rollup only says the head passed *against the base as it was
+#: when the run started*.  PRs #390 and #391 (2026-09-03) were each green on
+#: their own base: #390 committed the ruff-formatted
+#: ``packages/aq-client/README.md``, #391 was branched earlier and changed
+#: how that README is generated.  Merged back to back, ``main`` carried
+#: #390's README next to #391's generator hooks and failed
+#: ``test_generated_client_boilerplate_matches_what_the_pinned_generator_writes``
+#: — a combination no pre-merge run could have observed.  GitHub's answer
+#: is the "Require branches to be up to date before merging" flag on a
+#: required status check; :func:`classify_base` is the same rule applied
+#: on the fleet's own merge path, where it can be turned on before the
+#: ruleset flag (which would stall every merge until ``pr_merge`` knew
+#: how to recover).
+BASE_CURRENT = "current"
+BASE_STALE = "stale"
+BASE_UNKNOWN = "unknown"
+
+_PR_URL = re.compile(
+    r"^https?://[^/]+/(?P<owner>[^/]+)/(?P<repo>[^/]+)/pull/(?P<number>\d+)(?:[/?#].*)?$"
 )
+
+
+def parse_pr_url(pr_url: str) -> tuple[str, str, int] | None:
+    """``https://github.com/o/r/pull/42`` → ``("o", "r", 42)``, else ``None``.
+
+    The owner/repo pair is what the compare API needs; ``gh pr view`` does
+    not return the base repository's slug directly.
+    """
+    m = _PR_URL.match(str(pr_url or "").strip())
+    if m is None:
+        return None
+    return m.group("owner"), m.group("repo"), int(m.group("number"))
+
+
+@dataclass(frozen=True)
+class BaseFreshness:
+    """Whether a PR head contains its base branch's tip.
+
+    Attributes
+    ----------
+    state:
+        :data:`BASE_CURRENT` (``behind_by == 0``), :data:`BASE_STALE`
+        (the base has commits the head does not) or :data:`BASE_UNKNOWN`
+        (the comparison could not be made).
+    ref:
+        The base branch name, ``""`` when unknown.
+    behind_by:
+        Commits on the base that the head lacks, ``None`` when unknown.
+    """
+
+    state: str
+    ref: str = ""
+    behind_by: int | None = None
+
+    @property
+    def is_current(self) -> bool:
+        return self.state == BASE_CURRENT
+
+    def summary(self) -> str:
+        if self.state == BASE_UNKNOWN:
+            return "base freshness could not be read"
+        if self.state == BASE_CURRENT:
+            return f"up to date with {self.ref}"
+        return f"{self.behind_by} commit(s) behind {self.ref}"
+
+    def as_dict(self) -> dict:
+        return {"ref": self.ref, "behind_by": self.behind_by, "state": self.state}
+
+
+def classify_base(comparison: tuple[str, int] | None) -> BaseFreshness:
+    """Judge ``(base_ref, behind_by)`` as :meth:`GitManager.apr_behind_base` returns it.
+
+    ``None`` is "could not compare" and is never read as current: under
+    ``merge_ci_policy: required`` it blocks, for the same reason an
+    unreadable rollup does.
+    """
+    if comparison is None:
+        return BaseFreshness(state=BASE_UNKNOWN)
+    ref, behind = comparison
+    try:
+        behind = int(behind)
+    except (TypeError, ValueError):
+        return BaseFreshness(state=BASE_UNKNOWN, ref=str(ref or ""))
+    if behind < 0:
+        return BaseFreshness(state=BASE_UNKNOWN, ref=str(ref or ""))
+    state = BASE_CURRENT if behind == 0 else BASE_STALE
+    return BaseFreshness(state=state, ref=str(ref or ""), behind_by=behind)
 
 
 @dataclass(frozen=True)

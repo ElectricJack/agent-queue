@@ -3,11 +3,26 @@ name: Tests
 on:
   push:
   pull_request:
+  # Merge-queue entries (Settings → Rules → "Require merge queue"). Not in
+  # use yet; declaring the trigger is what lets an operator turn the queue
+  # on without a workflow change — see docs/guides/merge-gating.md.
+  merge_group:
 
-# Keep main's in-progress runs visible; newer PR pushes may still supersede
-# their own stale checks.
+# Every push to `main` is a merge commit, and its run is the only CI run
+# that ever sees the *combination* of PRs that landed. Two PRs that were
+# each green on their own (stale) base can still put a red `main` together
+# (#390 + #391, 2026-09-03: one committed a generated file, the other
+# changed how it is generated). That run must therefore never be lost.
+#
+# With a shared group per ref GitHub keeps at most one *pending* run: a
+# burst of merges cancels every queued main run but the newest (#381's and
+# #391's runs were both cancelled that way, so #391's merge commit was never
+# tested on main at all). Keying main's group by commit gives each merge
+# commit its own run, so a red main is reported on the commit that caused
+# it, within one CI cycle, and needs no bisecting. PR branches keep one
+# group per ref so a newer push still supersedes its own stale checks.
 concurrency:
-  group: tests-${{ github.ref }}
+  group: tests-${{ github.ref }}-${{ github.ref == 'refs/heads/main' && github.sha || 'head' }}
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 permissions:
