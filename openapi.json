@@ -41348,8 +41348,28 @@
             "description": "Top-level section to replace (e.g. 'scheduling')."
           },
           "data": {
-            "additionalProperties": true,
-            "type": "object",
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "items": {},
+                "type": "array"
+              },
+              {
+                "type": "string"
+              },
+              {
+                "type": "number"
+              },
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
             "title": "Data",
             "description": "New value for the section. null to delete."
           },

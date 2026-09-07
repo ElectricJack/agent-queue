@@ -1073,7 +1073,7 @@ from .update_and_restart_request import UpdateAndRestartRequest
 from .update_and_restart_response import UpdateAndRestartResponse
 from .update_and_restart_response_422 import UpdateAndRestartResponse422
 from .update_config_request import UpdateConfigRequest
-from .update_config_request_data import UpdateConfigRequestData
+from .update_config_request_data_type_0 import UpdateConfigRequestDataType0
 from .update_config_response import UpdateConfigResponse
 from .update_config_response_422 import UpdateConfigResponse422
 from .update_playbook_source_request import UpdatePlaybookSourceRequest
@@ -2161,7 +2161,7 @@ __all__ = (
     "UpdateAndRestartResponse",
     "UpdateAndRestartResponse422",
     "UpdateConfigRequest",
-    "UpdateConfigRequestData",
+    "UpdateConfigRequestDataType0",
     "UpdateConfigResponse",
     "UpdateConfigResponse422",
     "UpdatePlaybookSourceRequest",

@@ -107,10 +107,6 @@ def _json_schema_type_to_python(prop_schema: dict) -> type:
 
     schema_type = prop_schema.get("type", "string")
 
-    # JSON Schema union types: {"type": ["string", "integer"]} → str
-    if isinstance(schema_type, list):
-        schema_type = schema_type[0] if schema_type else "string"
-
     type_map = {
         "string": str,
         "integer": int,
@@ -118,7 +114,23 @@ def _json_schema_type_to_python(prop_schema: dict) -> type:
         "boolean": bool,
         "array": list,
         "object": dict,
+        "null": type(None),
     }
+
+    # JSON Schema union types: {"type": ["object", "array", "null"]}.  Keeping
+    # only the first branch narrowed ``update_config``'s ``data`` (declared
+    # ``object|array|string|number|boolean|null``) to ``dict``, so the typed
+    # route answered 422 ``Input should be a valid dictionary`` for every
+    # list-valued section — ``project_roots`` is one, which is why the
+    # dashboard could not add a project root.  Build the real union instead.
+    if isinstance(schema_type, list):
+        if not schema_type:
+            return str
+        py_type: Any = type_map.get(schema_type[0], str)
+        for branch in schema_type[1:]:
+            py_type = py_type | type_map.get(branch, str)
+        return py_type
+
     return type_map.get(schema_type, str)
 
 
