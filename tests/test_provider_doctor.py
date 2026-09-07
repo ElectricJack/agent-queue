@@ -8,11 +8,12 @@ number that is old rather than wrong.  These tests pin the four verdicts that
 tell those apart — and the one thing the check must *not* do, which is warn
 about a probe an operator turned off on purpose.
 
-The check reads the probe's recorded verdict (``record_probe_health``), never
-the newest snapshot's age.  ``test_a_fresh_probe_is_ok_even_when_the_newest_snapshot_is_old``
-is the test that holds that line: ``record_provider_usage`` drops an
-unchanged reading, so a healthy probe against a steady account legitimately
-stops writing rows, and a check that measured snapshot age would cry wolf.
+Freshness is the age of the newest ``source='probe'`` snapshot, measured
+against ``providers.claude.stale_after_seconds`` — the same number the
+dashboard card draws, so doctor and the card never disagree about what
+"stale" means.  The probe's recorded verdict (``record_probe_health``) is
+read for the faults a snapshot cannot express: a body that did not parse,
+and a probe that failed outright.
 """
 
 from __future__ import annotations
@@ -159,29 +160,54 @@ async def test_a_fresh_parsed_probe_reports_the_percentages(db):
     assert finding.fixable is False
 
 
-async def test_a_fresh_probe_is_ok_even_when_the_newest_snapshot_is_old(db):
-    """Freshness comes from the probe verdict, not from snapshot age.
+async def test_a_stale_snapshot_warns_even_when_the_probe_verdict_is_fresh(db):
+    """T7's freshness rule is about the snapshot, not the verdict.
 
-    ``record_provider_usage`` drops a reading identical to the newest stored
-    row, so an account parked at 45% for a day writes one row and then
-    nothing.  Measuring the snapshot would report a working probe as stale.
+    A probe that runs on time but leaves the newest reading a day old leaves
+    the dashboard card just as frozen as one that never runs, so the age the
+    horizon is compared against is the snapshot's.
     """
     await _seed_snapshots(db, observed_at=time.time() - 86_400)
     await _record_health(db, ts=time.time() - 60)
 
     finding = await _run(db, _config())
 
-    assert finding.severity is Severity.OK
-    assert "week (Fable) 81%" in finding.detail
+    assert finding.severity is Severity.WARN
+    assert "1.0d ago" in finding.detail
+    assert finding.data["age_seconds"] > 86_000
+    assert finding.data["probe_verdict_age_seconds"] < 120
 
 
-async def test_a_probe_with_no_snapshots_yet_is_still_ok(db):
+async def test_a_probe_that_has_stored_no_reading_warns(db):
+    """A healthy-looking verdict with an empty table has nothing to draw."""
     await _record_health(db, recorded=0)
 
     finding = await _run(db, _config())
 
-    assert finding.severity is Severity.OK
-    assert "no snapshots stored yet" in finding.detail
+    assert finding.severity is Severity.WARN
+    assert "stored no reading" in finding.detail
+    assert finding.data["age_seconds"] is None
+
+
+async def test_transcript_rows_do_not_count_as_probe_freshness(db):
+    """Only ``source='probe'`` rows say the probe is still running."""
+    await db.record_provider_usage(
+        [
+            ProviderUsageSnapshot(
+                provider="claude",
+                window="session",
+                used_percent=5.0,
+                observed_at=time.time(),
+                source="transcript",
+            )
+        ]
+    )
+    await _record_health(db)
+
+    finding = await _run(db, _config())
+
+    assert finding.severity is Severity.WARN
+    assert "stored no reading" in finding.detail
 
 
 # ---------------------------------------------------------------------------
@@ -189,9 +215,10 @@ async def test_a_probe_with_no_snapshots_yet_is_still_ok(db):
 # ---------------------------------------------------------------------------
 
 
-async def test_a_probe_older_than_the_horizon_warns(db):
-    await _seed_snapshots(db)
-    await _record_health(db, ts=time.time() - 4 * 3600)
+async def test_a_snapshot_older_than_the_horizon_warns(db):
+    now = time.time()
+    await _seed_snapshots(db, observed_at=now - 4 * 3600)
+    await _record_health(db, ts=now - 4 * 3600)
 
     finding = await _run(db, _config(stale_after=1500))
 
@@ -204,7 +231,8 @@ async def test_a_probe_older_than_the_horizon_warns(db):
 
 async def test_the_horizon_comes_from_config(db):
     """One horizon, read from config, so doctor and the dashboard agree."""
-    await _record_health(db, ts=time.time() - 1800)
+    await _seed_snapshots(db, observed_at=time.time() - 1800)
+    await _record_health(db)
 
     assert (await _run(db, _config(stale_after=1500))).severity is Severity.WARN
     assert (await _run(db, _config(stale_after=7200))).severity is Severity.OK

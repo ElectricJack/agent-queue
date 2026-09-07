@@ -14,19 +14,21 @@ the timer can stop firing, and the CLI's wording can move under the regex in
 that is merely old rather than wrong, which is precisely the failure nobody
 notices.  This check is what notices.
 
-Why probe *health*, not the newest snapshot
--------------------------------------------
+Freshness is snapshot age
+-------------------------
 
-The obvious implementation — "warn when the newest ``source='probe'`` row is
-older than the horizon" — is wrong, and wrong in the direction that produces
-false alarms.  ``record_provider_usage`` deliberately drops a reading equal
-to the newest row already stored for its series, so an account sitting at 45%
-for six hours writes *one* row and then nothing.  A perfectly healthy probe
-firing every ten minutes would look six hours stale.
+The check's freshness rule is the one the implementation spec (T7) writes:
+WARN when the newest ``source='probe'`` snapshot for Claude is older than
+``providers.claude.stale_after_seconds`` while ``usage_probe_enabled`` is
+true.  That is the number the dashboard card is actually drawing, so it is
+the number an operator wants supervised — a probe that runs on time but
+stores nothing leaves the card just as frozen as a probe that never runs.
 
-So freshness is read from the verdict the probe records on **every** run,
-success or failure (``record_probe_health`` / ``read_probe_health``), and the
-snapshots are used only to fill in the percentages an OK line reports.
+The probe's own recorded verdict (``record_probe_health`` /
+``read_probe_health``, written on *every* run, success or failure) is still
+read, because the snapshot table cannot express "the CLI's wording moved":
+a probe that parses nothing writes no row.  So the verdict decides the
+*wording* faults and the snapshots decide *staleness*.
 
 Report-only, by design
 ----------------------
@@ -109,15 +111,29 @@ def _percentages(rows: list[dict]) -> str:
 async def _latest_claude_rows(ctx: DoctorContext) -> list[dict]:
     """Newest snapshot per Claude series, or ``[]`` if the read fails.
 
-    A check must not turn a reporting problem into a traceback: the health
-    verdict is the part that decides the severity, and the percentages are
-    decoration on the detail line.
+    A check must not turn a reporting problem into a traceback: an
+    unreadable snapshot table is reported as "no probe snapshot", which is
+    what an operator sees on the dashboard card too.
     """
     try:
         rows = await ctx.db.latest_provider_usage("claude")
-    except Exception:  # noqa: BLE001 - pragma: no cover; decoration must not break the verdict
+    except Exception:  # noqa: BLE001 - pragma: no cover; a broken read is "nothing stored"
         return []
     return [dict(row) for row in rows or []]
+
+
+def _newest_probe_observed_at(rows: list[dict]) -> float | None:
+    """``observed_at`` of the newest ``source='probe'`` row, or ``None``.
+
+    Rows written by the transcript watcher are deliberately ignored: they
+    say nothing about whether the ``/usage`` probe is still running.
+    """
+    stamps = [
+        float(row["observed_at"])
+        for row in rows
+        if str(row.get("source") or "") == "probe" and row.get("observed_at") is not None
+    ]
+    return max(stamps) if stamps else None
 
 
 async def _check_claude_usage(ctx: DoctorContext) -> CheckResult:
@@ -128,10 +144,10 @@ async def _check_claude_usage(ctx: DoctorContext) -> CheckResult:
     * ``INFO`` — no database, or the probe is disabled, or the box has no
       Claude CLI / an API-key account with no window to report.
     * ``WARN`` — no probe has ever run; the last probe's body did not parse;
-      the last probe failed outright; the last probe is older than
-      ``providers.claude.stale_after_seconds``.
-    * ``OK`` — a recent probe that parsed, with the current percentages on
-      the detail line.
+      the last probe failed outright; the newest ``probe`` snapshot is older
+      than ``providers.claude.stale_after_seconds`` (or there is none).
+    * ``OK`` — a probe snapshot inside the horizon, with the current
+      percentages on the detail line.
     """
     if ctx.db is None:
         return CheckResult(
@@ -144,7 +160,8 @@ async def _check_claude_usage(ctx: DoctorContext) -> CheckResult:
     if claude is not None and not getattr(claude, "usage_probe_enabled", True):
         # Disabled is a decision an operator made, not a fault.  Reporting it
         # as OK rather than WARN is the difference between a check that stays
-        # useful and one everybody learns to ignore.
+        # useful and one everybody learns to ignore.  It is read before every
+        # staleness rule, because with the probe off they would all fire.
         return CheckResult(
             id=CHECK_ID,
             severity=Severity.OK,
@@ -157,7 +174,13 @@ async def _check_claude_usage(ctx: DoctorContext) -> CheckResult:
     except Exception:  # noqa: BLE001 - pragma: no cover; an unreadable verdict is "no probe"
         health = None
 
-    if not health:
+    rows = await _latest_claude_rows(ctx)
+    now = time.time()
+    horizon = _stale_after(claude)
+    probed_at = _newest_probe_observed_at(rows)
+    snapshot_age = None if probed_at is None else max(0.0, now - probed_at)
+
+    if not health and probed_at is None:
         return CheckResult(
             id=CHECK_ID,
             severity=Severity.WARN,
@@ -166,13 +189,12 @@ async def _check_claude_usage(ctx: DoctorContext) -> CheckResult:
                 "provider-usage-probe playbook, or run "
                 "`aq run provider_usage_probe` once to confirm the CLI answers"
             ),
-            data={"enabled": True, "probe_ran": False},
+            data={"enabled": True, "probe_ran": False, "stale_after_seconds": horizon},
         )
 
-    now = time.time()
+    health = health or {}
     ts = float(health.get("ts") or 0.0)
-    age = max(0.0, now - ts) if ts else None
-    horizon = _stale_after(claude)
+    verdict_age = max(0.0, now - ts) if ts else None
     outcome = str(health.get("outcome") or "unknown")
     data: dict[str, Any] = {
         "enabled": True,
@@ -180,7 +202,11 @@ async def _check_claude_usage(ctx: DoctorContext) -> CheckResult:
         "outcome": outcome,
         "ok": bool(health.get("ok")),
         "unparsed": bool(health.get("unparsed")),
-        "age_seconds": None if age is None else round(age, 3),
+        # ``age_seconds`` is the age of the number the dashboard is drawing —
+        # the snapshot — because that is what the horizon is compared against.
+        # The verdict's own age rides along beside it for the failure lines.
+        "age_seconds": None if snapshot_age is None else round(snapshot_age, 3),
+        "probe_verdict_age_seconds": None if verdict_age is None else round(verdict_age, 3),
         "stale_after_seconds": horizon,
     }
 
@@ -189,7 +215,7 @@ async def _check_claude_usage(ctx: DoctorContext) -> CheckResult:
     # sentence that gets it fixed; the age rides along in the same line so
     # nothing is lost by ordering them this way.
     if health.get("unparsed"):
-        suffix = f" (last probe {_age(age)} ago)" if age is not None else ""
+        suffix = f" (last probe {_age(verdict_age)} ago)" if verdict_age is not None else ""
         return CheckResult(
             id=CHECK_ID,
             severity=Severity.WARN,
@@ -201,9 +227,9 @@ async def _check_claude_usage(ctx: DoctorContext) -> CheckResult:
             data=data,
         )
 
-    if not health.get("ok"):
+    if health and not health.get("ok"):
         error = str(health.get("error") or outcome)
-        suffix = f" ({_age(age)} ago)" if age is not None else ""
+        suffix = f" ({_age(verdict_age)} ago)" if verdict_age is not None else ""
         return CheckResult(
             id=CHECK_ID,
             severity=Severity.WARN,
@@ -224,30 +250,36 @@ async def _check_claude_usage(ctx: DoctorContext) -> CheckResult:
             data=data,
         )
 
-    if age is None or age > horizon:
-        seen = "never" if age is None else f"{_age(age)} ago"
+    if snapshot_age is None:
         return CheckResult(
             id=CHECK_ID,
             severity=Severity.WARN,
             detail=(
-                f"the claude /usage probe last ran {seen}, past the "
-                f"{_age(horizon)} horizon — the provider-usage-probe timer is "
-                "not firing and the dashboard's numbers are frozen"
+                "the claude /usage probe has stored no reading — the "
+                "dashboard's Claude card has nothing to draw; run "
+                "`aq run provider_usage_probe` and check what it reports"
             ),
             data=data,
         )
 
-    rows = await _latest_claude_rows(ctx)
+    if snapshot_age > horizon:
+        return CheckResult(
+            id=CHECK_ID,
+            severity=Severity.WARN,
+            detail=(
+                f"the newest claude /usage snapshot is {_age(snapshot_age)} ago, "
+                f"past the {_age(horizon)} horizon — the provider-usage-probe "
+                "timer is not firing and the dashboard's numbers are frozen"
+            ),
+            data=data,
+        )
+
     data["series"] = len(rows)
     percentages = _percentages(rows)
     return CheckResult(
         id=CHECK_ID,
         severity=Severity.OK,
-        detail=(
-            f"claude /usage probed {_age(age)} ago: {percentages}"
-            if percentages
-            else f"claude /usage probed {_age(age)} ago; no snapshots stored yet"
-        ),
+        detail=f"claude /usage probed {_age(snapshot_age)} ago: {percentages}",
         data=data,
     )
 
