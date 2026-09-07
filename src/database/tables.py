@@ -1655,7 +1655,14 @@ provider_usage_snapshots = Table(
     # Epoch of the window's reset, nullable: a percentage without a clock still
     # beats no reading at all.
     Column("resets_at", Float, nullable=True),
+    # When this value first appeared.  Never advances for an unchanged reading,
+    # so the sparkline keeps its shape and a step is a real step.
     Column("observed_at", Float, nullable=False),
+    # When this value was last *confirmed*.  The writer drops a reading equal to
+    # the newest stored row, so a window steady at 81% all afternoon has an
+    # observed_at hours old while the producer re-confirms it every few minutes:
+    # freshness is measured from here, never from observed_at (spec amendment A3).
+    Column("last_seen_at", Float, nullable=False),
     Column("source", Text, nullable=False),
     CheckConstraint(
         "source IN ('transcript','probe')",

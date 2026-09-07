@@ -2,12 +2,20 @@
 
 The table is append-only, so the only interesting logic here is the one
 thing that keeps it from growing without bound: :meth:`record_provider_usage`
-drops a reading identical to the newest row already stored for its series.
+drops a reading identical to the newest row already stored for its series and
+advances that row's ``last_seen_at`` instead.
 Both producers re-report the same number until it moves — the transcript
 watcher re-reads a rollout file every tick, the probe runs on a ten-minute
 timer against a window that changes in whole percent — so without that check
 an idle fleet would write a row a second forever and the series would carry
 no more information than it does now.
+
+That second half matters as much as the first: a dropped reading is still a
+*successful confirmation*, and a reader that could only see ``observed_at``
+would have no way to tell a window steady at 81% for six hours from a producer
+that died at 13:00.  ``observed_at`` is when a value first appeared;
+``last_seen_at`` is when it was last confirmed, and freshness is measured from
+the latter (spec amendment A3).
 
 Nothing here interprets a snapshot.  Staleness budgets, bar colouring and
 reset arithmetic belong to the API and dashboard layers; this module only
@@ -19,7 +27,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from typing import Any
 
-from sqlalchemy import and_, delete, func, insert, select
+from sqlalchemy import and_, delete, func, insert, select, update
 
 from src.database.tables import provider_usage_snapshots
 
@@ -34,6 +42,7 @@ _COLUMNS = (
     provider_usage_snapshots.c.used_percent,
     provider_usage_snapshots.c.resets_at,
     provider_usage_snapshots.c.observed_at,
+    provider_usage_snapshots.c.last_seen_at,
     provider_usage_snapshots.c.source,
 )
 
@@ -56,6 +65,13 @@ def _as_dict(snapshot: Any) -> dict[str, Any]:
         "used_percent": float(raw["used_percent"]),
         "resets_at": None if raw.get("resets_at") is None else float(raw["resets_at"]),
         "observed_at": float(raw["observed_at"]),
+        # A brand new value has been confirmed exactly once, at the moment it
+        # was observed.  A caller may pass an explicit last_seen_at (a replayed
+        # row), but never one earlier than observed_at.
+        "last_seen_at": max(
+            float(raw["observed_at"]),
+            float(raw.get("last_seen_at") or raw["observed_at"]),
+        ),
         "source": str(raw["source"]),
     }
 
@@ -80,8 +96,10 @@ def _newest_stmt(key: tuple[str, str, str]):
     provider, window, scope = key
     return (
         select(
+            provider_usage_snapshots.c.id,
             provider_usage_snapshots.c.used_percent,
             provider_usage_snapshots.c.resets_at,
+            provider_usage_snapshots.c.last_seen_at,
         )
         .where(
             and_(
@@ -105,10 +123,16 @@ class ProviderUsageQueryMixin:
         """Append *snapshots*, dropping unchanged repeats; return rows written.
 
         A snapshot whose ``(used_percent, resets_at)`` equals the newest row
-        already stored for its ``(provider, window, scope)`` series is
-        discarded; a changed reading is always written.  The rule applies
-        within the batch as well, so handing over a hundred identical
-        readings writes at most one.
+        already stored for its ``(provider, window, scope)`` series is not
+        written again.  It is not discarded either: it advances that row's
+        ``last_seen_at`` to ``max(last_seen_at, observed_at)``, which is what
+        lets a reader tell "steady at 81% and re-confirmed a minute ago" from
+        "nothing has reported since 13:00".  The return value counts *rows
+        written*, so a pure confirmation still returns 0.
+
+        The rule applies within the batch as well, so handing over a hundred
+        identical readings writes at most one row and leaves its
+        ``last_seen_at`` at the newest observation in the batch.
 
         The whole batch runs in one transaction: on SQLite a commit is an
         fsync, and the transcript watcher can offer several series at once
@@ -124,21 +148,51 @@ class ProviderUsageQueryMixin:
 
         fresh: list[dict[str, Any]] = []
         async with self._engine.begin() as conn:
-            newest: dict[tuple[str, str, str], tuple[float, float | None]] = {}
+            # Per series: the newest reading, when it was last confirmed, and
+            # where it lives -- ``row`` while it is still a pending insert in
+            # this batch, ``row_id`` once it is a row in the table.
+            newest: dict[tuple[str, str, str], dict[str, Any]] = {}
             for key in {_series_key(row) for row in rows}:
                 stored = (await conn.execute(_newest_stmt(key))).first()
                 if stored is not None:
-                    newest[key] = (
-                        float(stored[0]),
-                        None if stored[1] is None else float(stored[1]),
-                    )
+                    newest[key] = {
+                        "row_id": int(stored[0]),
+                        "reading": (
+                            float(stored[1]),
+                            None if stored[2] is None else float(stored[2]),
+                        ),
+                        "last_seen": float(stored[3]),
+                        "row": None,
+                    }
+
+            confirmed: dict[int, float] = {}
             for row in rows:
                 key = _series_key(row)
                 reading = _reading(row)
-                if newest.get(key) == reading:
+                current = newest.get(key)
+                if current is not None and current["reading"] == reading:
+                    seen = max(current["last_seen"], row["last_seen_at"])
+                    if seen > current["last_seen"]:
+                        current["last_seen"] = seen
+                        if current["row"] is not None:
+                            current["row"]["last_seen_at"] = seen
+                        else:
+                            confirmed[current["row_id"]] = seen
                     continue
-                newest[key] = reading
+                newest[key] = {
+                    "row_id": None,
+                    "reading": reading,
+                    "last_seen": row["last_seen_at"],
+                    "row": row,
+                }
                 fresh.append(row)
+
+            for row_id, seen in confirmed.items():
+                await conn.execute(
+                    update(provider_usage_snapshots)
+                    .where(provider_usage_snapshots.c.id == row_id)
+                    .values(last_seen_at=seen)
+                )
             if fresh:
                 await conn.execute(insert(provider_usage_snapshots), fresh)
         return len(fresh)

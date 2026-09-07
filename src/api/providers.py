@@ -46,17 +46,19 @@ def series_key(row: dict) -> str:
 def _last_seen(row: dict) -> float:
     """When this reading was last *confirmed*.
 
-    ``last_seen_at`` is the right field (spec amendment A3): an unchanged
-    reading advances it in place while ``observed_at`` stays at the moment the
-    value first appeared, so measuring age from ``observed_at`` would call a
-    steady-but-healthy window stale.  It falls back to ``observed_at`` so a row
-    written before the column existed still reports an honest age instead of
-    an epoch-zero one.
+    ``last_seen_at`` is the only field freshness may be measured from (spec
+    amendment A3).  The writer does not re-append a reading equal to the newest
+    stored row; it advances that row's ``last_seen_at`` in place, while
+    ``observed_at`` stays at the moment the value first appeared.  So a week
+    window steady at 81% since lunch is confirmed every ten minutes and carries
+    an ``observed_at`` hours old, and an ``observed_at``-based clock would call
+    that healthy account stale -- the failure this endpoint exists to avoid.
+
+    Read unconditionally, with no ``observed_at`` fallback: a fallback would
+    reintroduce exactly that verdict for any row the storage layer failed to
+    supply the column for, and silently.
     """
-    value = row.get("last_seen_at")
-    if value is None:
-        value = row["observed_at"]
-    return float(value)
+    return float(row["last_seen_at"])
 
 
 def _horizon(provider: str, config) -> float:

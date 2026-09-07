@@ -36,8 +36,8 @@ class ProviderUsageSnapshot(BaseModel):
     resets_at: float | None = None
     observed_at: float
     #: When this value was last *confirmed*, which for an unchanged reading is
-    #: later than ``observed_at``.  Falls back to ``observed_at`` on a row
-    #: written before the column existed.
+    #: later than ``observed_at``.  This -- never ``observed_at`` -- is what
+    #: ``stale`` is computed from, and what a client must render an age from.
     last_seen_at: float
     source: str
     #: Server-computed: ``now - last_seen_at`` exceeded this series' horizon.
