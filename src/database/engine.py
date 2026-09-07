@@ -8,14 +8,12 @@ running Alembic migrations on startup.
 from __future__ import annotations
 
 import contextlib
-import hashlib
 import logging
 import os
 import shutil
 import sqlite3
 import stat
 import tempfile
-from functools import lru_cache
 from pathlib import Path
 
 try:
@@ -28,12 +26,20 @@ from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 from sqlalchemy.pool import NullPool, StaticPool
 
 from src.database.migration_guard import VERIFY, migration_decision
+from src.database.schema_key import (
+    ALEMBIC_INI as _ALEMBIC_INI_SHARED,
+    PROJECT_ROOT as _PROJECT_ROOT_SHARED,
+    alembic_head_revisions,
+    schema_inputs,
+    schema_key,
+)
 
 logger = logging.getLogger(__name__)
 
-# Resolve alembic.ini relative to the project root (two levels up from this file)
-_PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
-_ALEMBIC_INI = _PROJECT_ROOT / "alembic.ini"
+# Both re-exported from ``schema_key`` so there is exactly one answer to
+# "where is the repo root" shared by the engine and the test substrate.
+_PROJECT_ROOT = _PROJECT_ROOT_SHARED
+_ALEMBIC_INI = _ALEMBIC_INI_SHARED
 _SCHEMA_CACHE_DIRNAME = "aq-schema-cache"
 
 
@@ -61,12 +67,11 @@ def _schema_cache_is_enabled(database_path: Path) -> bool:
     return True
 
 
-def _alembic_head_revisions() -> tuple[str, ...]:
-    """Read Alembic's current heads for cache validation and cache keys."""
-    from alembic.config import Config
-    from alembic.script import ScriptDirectory
-
-    return tuple(sorted(ScriptDirectory.from_config(Config(str(_ALEMBIC_INI))).get_heads()))
+#: Re-exported from :mod:`src.database.schema_key` so the SQLite template
+#: cache and the PostgreSQL test template share one definition of the key.
+_alembic_head_revisions = alembic_head_revisions
+_schema_cache_inputs = schema_inputs
+_schema_cache_key = schema_key
 
 
 def _schema_cache_directory() -> Path:
@@ -92,38 +97,6 @@ def _schema_cache_directory() -> Path:
         if info.st_mode & 0o077:
             os.chmod(directory, 0o700)
     return directory
-
-
-def _schema_cache_inputs() -> list[Path]:
-    """Every file whose content decides what a fully migrated schema looks like.
-
-    ``migrations/env.py`` configures how revisions run (batch mode, the
-    per-migration transaction) and revision ``b2c3d4e5f6a7`` imports
-    ``src.database.hierarchy_migration``, so a change to either has to
-    invalidate the template exactly as a changed revision file does.
-    """
-    database = _PROJECT_ROOT / "src" / "database"
-    migrations = _PROJECT_ROOT / "migrations"
-    return [
-        database / "tables.py",
-        database / "hierarchy_migration.py",
-        migrations / "env.py",
-        *sorted((migrations / "versions").glob("*.py")),
-    ]
-
-
-@lru_cache(maxsize=1)
-def _schema_cache_key() -> tuple[str, tuple[str, ...]]:
-    """Hash schema inputs so a changed migration never reuses an old template."""
-    digest = hashlib.sha256()
-    for source in _schema_cache_inputs():
-        digest.update(str(source.relative_to(_PROJECT_ROOT)).encode())
-        digest.update(b"\0")
-        with source.open("rb") as handle:
-            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-                digest.update(chunk)
-    heads = _alembic_head_revisions()
-    return f"{'-'.join(heads)}-{digest.hexdigest()}", heads
 
 
 def _cached_template_is_valid(template: Path, expected_heads: tuple[str, ...]) -> bool:
@@ -387,6 +360,22 @@ def _verify_schema_at_head(sync_connection) -> None:
     )
 
 
+def _is_stamped_at_head(sync_connection) -> bool:
+    """True when the database is already stamped at this checkout's head.
+
+    Deliberately avoids ``ScriptDirectory`` here and reads the head set from
+    the cached :func:`alembic_head_revisions` instead: this runs on every
+    database construction, and parsing the whole ``migrations/versions`` tree
+    per call is the cost being eliminated.  ``get_current_heads`` is a single
+    read of ``alembic_version`` and returns ``()`` when the table is absent,
+    which correctly falls through to the pre-Alembic stamping path.
+    """
+    from alembic.migration import MigrationContext
+
+    current = set(MigrationContext.configure(sync_connection).get_current_heads())
+    return bool(current) and current == set(alembic_head_revisions())
+
+
 def _stamp_alembic_baseline(sync_connection) -> None:
     """Stamp an existing database at the baseline migration.
 
@@ -459,6 +448,14 @@ async def _run_schema_setup_without_cache(engine: AsyncEngine) -> None:
             # Reflection opened an implicit transaction — end it so Alembic
             # can own the per-revision boundaries.
             sync_conn.commit()
+
+            if has_alembic and _is_stamped_at_head(sync_conn):
+                # Already at head: `alembic upgrade head` would be a no-op, but
+                # reaching that conclusion costs a ScriptDirectory build plus an
+                # env.py run. Skipping it is what lets a template-cloned test
+                # database (or a daemon restart with no new revisions) open in
+                # milliseconds instead of hundreds of them.
+                return
 
             if has_data_tables and not has_alembic:
                 # Existing DB from before Alembic — stamp at baseline,
