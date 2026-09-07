@@ -717,3 +717,95 @@ agent_profile:
         parsed = parse_profile(content)
         assert parsed.role == "You review code."
         assert "Be thorough" in parsed.rules
+
+
+# ---------------------------------------------------------------------------
+# Backslash / Unicode escape handling in the markdown patchers
+# ---------------------------------------------------------------------------
+
+
+class TestEscapeSafePatching:
+    """Patched text is substituted literally, never as a regex template.
+
+    The supervisor profile's frontmatter description carries an em dash, which
+    ``yaml.safe_dump`` writes as ``\\u2014``.  Feeding that to ``re.sub`` as a
+    replacement template raised ``bad escape \\u at position 25`` and surfaced
+    as an API 422 whenever the profile was updated (e.g. allowing all AQ tools).
+    """
+
+    def test_frontmatter_description_with_unicode_escape(self):
+        from src.commands.profile_commands import _patch_frontmatter_fields
+
+        markdown = (
+            "---\n"
+            "id: supervisor\n"
+            'name: Supervisor\n'
+            "description: old\n"
+            "---\n\n"
+            "# Supervisor\n"
+        )
+        patched = _patch_frontmatter_fields(
+            markdown,
+            {"description": "Supervisor — plans, steers, escalates."},
+        )
+        parsed = parse_profile(patched)
+        assert parsed.is_valid
+        assert (
+            parsed.frontmatter.extra["description"]
+            == "Supervisor — plans, steers, escalates."
+        )
+        assert parsed.frontmatter.id == "supervisor"
+
+    def test_frontmatter_value_with_literal_backslashes(self):
+        from src.commands.profile_commands import _patch_frontmatter_fields
+
+        markdown = "---\nid: t\nname: old\ndescription: d\n---\n\n# T\n"
+        value = "a\\1 b\\g<0> c\\\\ d"
+        patched = _patch_frontmatter_fields(markdown, {"name": value})
+        parsed = parse_profile(patched)
+        assert parsed.is_valid
+        assert parsed.frontmatter.name == value
+
+    def test_json_section_with_unicode_and_backslashes(self):
+        from src.commands.profile_commands import _replace_json_section
+
+        markdown = (
+            "---\nid: t\nname: T\n---\n\n"
+            "## Capabilities\n\n"
+            '```json\n{\n  "harness_tools": ["Read"]\n}\n```\n\n'
+            "## Role\nkeep me\n"
+        )
+        tools = ["Bash", "Read", "mcp__agent-queue__task_show", "Note — all\\1 tools"]
+        patched = _replace_json_section(
+            markdown, "Capabilities", {"harness_tools": tools, "plugin_tools": [], "aq_commands": []}
+        )
+        parsed = parse_profile(patched)
+        assert parsed.is_valid
+        assert parsed.capabilities["harness_tools"] == tools
+        assert "keep me" in patched
+
+    def test_wrapped_frontmatter_scalar_is_fully_replaced(self):
+        """A folded multi-line scalar is consumed whole, leaving no orphan line."""
+        import yaml
+
+        from src.commands.profile_commands import _patch_frontmatter_fields
+
+        long_description = (
+            "Supervisor — plans, steers, escalates within its session scope. "
+            "Never edits code."
+        )
+        markdown = (
+            "---\n"
+            "id: supervisor\n"
+            "name: Supervisor\n"
+            + yaml.safe_dump({"description": "old " * 30}, default_flow_style=False)
+            + "---\n\n# Supervisor\n"
+        )
+        patched = _patch_frontmatter_fields(markdown, {"description": long_description})
+        body = patched.split("---\n")[1]
+        assert yaml.safe_load(body) == {
+            "id": "supervisor",
+            "name": "Supervisor",
+            "description": long_description,
+        }
+        assert parse_profile(patched).is_valid
