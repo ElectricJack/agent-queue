@@ -15,6 +15,7 @@ from src.database.tables import (
     integration_attestation_publications,
     integration_branch_owners,
     integration_candidate_revisions,
+    integration_candidate_member_results,
     integration_candidate_ref_mutations,
     integration_check_evidence,
     integration_operation_artifact_pins,
@@ -695,6 +696,14 @@ class RepairService:
         completed_at = self.clock() if now is None else now
         transition = None
         async with self.db.immediate() as conn:
+            project_id = (await conn.execute(
+                select(tasks.c.project_id).where(tasks.c.id == repair_task_id)
+            )).scalar_one_or_none()
+            if project_id is None:
+                return {"outcome": "stale"}
+            # CI takes project -> batch/revision -> operation. Serialize here
+            # before get_repair_filing_scope locks operation/stage and owner.
+            await self.db.lock_hierarchy_project(conn, project_id)
             scope = await self.db.get_repair_filing_scope(
                 repair_task_id, session_id=session_id, conn=conn
             )
@@ -732,6 +741,11 @@ class RepairService:
                     head_sha=head_sha,
                     commit_proof=commit_proof,
                     now=completed_at,
+                )
+            else:
+                await self.adopt_batch_repair_on(
+                    conn, operation_id, head_sha=head_sha,
+                    commit_proof=commit_proof, now=completed_at,
                 )
             transition = await self.db._apply_transition(
                 conn,
@@ -884,6 +898,132 @@ class RepairService:
         return await self.db.due_integration_repair_stage_page(
             now=observed_at, after=after, limit=limit
         )
+
+    async def adopt_batch_repair_on(
+        self,
+        conn,
+        operation_id: str,
+        *,
+        head_sha: str,
+        commit_proof: dict[str, Any] | None,
+        now: float,
+    ) -> None:
+        """Bind a proved CI repair while the caller holds the exact writer fence.
+
+        The old candidate and its CI/publication identity stay immutable. A new
+        revision copies reviewed member results and requires its own evidence.
+        This is internal to the guarded delegate close, not an operator override.
+        """
+        if not is_valid_git_oid(head_sha) or commit_proof is None:
+            raise ValueError("batch repair requires exact verified commit lineage")
+        operation = (
+            (
+                await conn.execute(
+                    select(integration_repair_operations)
+                    .where(integration_repair_operations.c.id == operation_id)
+                    .with_for_update()
+                )
+            )
+            .mappings()
+            .one()
+        )
+        if operation["target_kind"] != "batch" or operation["state"] not in {"active", "escalated"}:
+            raise ValueError("batch repair operation is not active")
+        batch, revision = await self._current_batch_subject_rows_on(conn, operation)
+        stage = (
+            (
+                await conn.execute(
+                    select(integration_repair_stages)
+                    .where(
+                        integration_repair_stages.c.operation_id == operation_id,
+                        integration_repair_stages.c.ordinal == operation["active_stage"],
+                    )
+                    .with_for_update()
+                )
+            )
+            .mappings()
+            .one()
+        )
+        if stage["state"] != "active" or now >= float(stage["deadline_at"]):
+            raise ValueError("batch repair stage is no longer active")
+        if stage["current_subject"] != self._batch_subject(revision):
+            raise ValueError("batch repair subject changed during close")
+        dossier = self._dossier_with_repair_commits(
+            stage["dossier"], revision["head_sha"], head_sha, commit_proof
+        )
+        if head_sha == revision["head_sha"]:
+            return
+        if revision["state"] not in {"built", "testing", "red"}:
+            raise ValueError("batch CI repair requires a fully constructed candidate")
+        members = (
+            (
+                await conn.execute(
+                    select(integration_candidate_member_results).where(
+                        integration_candidate_member_results.c.batch_id == batch["id"],
+                        integration_candidate_member_results.c.revision == revision["revision"],
+                    )
+                )
+            )
+            .mappings()
+            .all()
+        )
+        if any(member["result"] not in {"applied", "skipped"} for member in members):
+            raise ValueError("batch CI repair cannot replace an unresolved member")
+        next_revision = int(revision["revision"]) + 1
+        await conn.execute(
+            update(integration_candidate_revisions)
+            .where(
+                integration_candidate_revisions.c.batch_id == batch["id"],
+                integration_candidate_revisions.c.revision == revision["revision"],
+            )
+            .values(state="superseded", updated_at=now)
+        )
+        await conn.execute(
+            insert(integration_candidate_revisions).values(
+                batch_id=batch["id"],
+                revision=next_revision,
+                construction_base_sha=revision["construction_base_sha"],
+                next_member_ordinal=revision["next_member_ordinal"],
+                repair_parent_revision=revision["revision"],
+                head_sha=head_sha,
+                state="built",
+                created_at=now,
+                updated_at=now,
+            )
+        )
+        for member in members:
+            await conn.execute(
+                insert(integration_candidate_member_results).values(
+                    **{
+                        **dict(member),
+                        "revision": next_revision,
+                        "created_at": now,
+                        "updated_at": now,
+                    }
+                )
+            )
+        await conn.execute(
+            update(integration_batches)
+            .where(
+                integration_batches.c.id == batch["id"],
+            )
+            .values(
+                current_revision=next_revision,
+                tested_candidate_sha=None,
+                ci_evidence_id=None,
+                lifecycle="testing",
+                updated_at=now,
+            )
+        )
+        await conn.execute(
+            update(integration_repair_stages)
+            .where(
+                integration_repair_stages.c.operation_id == operation_id,
+                integration_repair_stages.c.ordinal == stage["ordinal"],
+            )
+            .values(dossier=dossier)
+        )
+        await self.bind_current_batch_subject_on(conn, operation_id, now=now)
 
     async def bind_current_batch_subject_on(
         self, conn, operation_id: str, *, now: float | None = None
