@@ -1726,7 +1726,7 @@ policy, writer and deadline.
 | `retained_handoff` | JSON | nullable | Handoff record |
 | `started_at` | REAL | nullable | Unix timestamp |
 | `deadline_at` | REAL | nullable | Unix timestamp |
-| `attempts` | INTEGER | NOT NULL DEFAULT 0, `>= 0` | Counted attempts |
+| `attempts` | INTEGER | NOT NULL DEFAULT 0, `>= 0` | Counted attempts; monotone (trigger) except when a human resume re-arms a `failed`/`expired`/`cancelled` stage back to `active` (a12a5e1e4f05) |
 | `dossier` | JSON | nullable | Debug dossier handed to the next stage / human |
 | `state` | TEXT | NOT NULL | One of: pending, active, awaiting_completion, passed, failed, expired, cancelled |
 | `completed_at` | REAL | nullable | Unix timestamp |
