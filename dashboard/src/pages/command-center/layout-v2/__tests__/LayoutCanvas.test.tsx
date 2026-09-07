@@ -89,7 +89,7 @@ const n = (id: string, kind: string, x: number, y: number, extra: Record<string,
   container_id: null, kind, context_only: false, agg_children: 1, agg_descendants: 1,
   agg_completed: 0, agg_running: 0, agg_blocked: 0, agg_active: 1, ...extra,
 });
-const filters = { query: "", status: "", showCompleted: false, focus: "" };
+const filters = { query: "", status: "", showCompleted: false, focus: "", window: "" };
 const base = {
   projectIds: ["p1"],
   projectNames: new Map([["p1", "P1"]]),

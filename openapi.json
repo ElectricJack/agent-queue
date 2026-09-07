@@ -13102,6 +13102,53 @@
         }
       }
     },
+    "/api/task/recent-activity": {
+      "post": {
+        "tags": [
+          "task"
+        ],
+        "summary": "Show what was worked on recently and by which models. Returns every task with activity in the last N hours (default 24) \u2014 tasks whose agent sessions ran during the window, tasks that completed in it, and tasks whose state changed in it \u2014 so both finished and still-in-progress work is included. Each item carries status, outcome, timestamps, and one entry per session attempt with the model that attempt actually reported ('models' is the distinct set, newest attempt first; 'unattributed_attempts' counts attempts that reported no model, which is never guessed from the profile). The response also has 'by_model' totals across the window. Use this for 'what did we do yesterday' or 'which models did the work'.",
+        "description": "Show what was worked on recently and by which models. Returns every task with activity in the last N hours (default 24) \u2014 tasks whose agent sessions ran during the window, tasks that completed in it, and tasks whose state changed in it \u2014 so both finished and still-in-progress work is included. Each item carries status, outcome, timestamps, and one entry per session attempt with the model that attempt actually reported ('models' is the distinct set, newest attempt first; 'unattributed_attempts' counts attempts that reported no model, which is never guessed from the profile). The response also has 'by_model' totals across the window. Use this for 'what did we do yesterday' or 'which models did the work'.",
+        "operationId": "task_recent_activity",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TaskRecentActivityRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TaskRecentActivityResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/task/recover": {
       "post": {
         "tags": [
@@ -38490,6 +38537,362 @@
         "title": "SubagentRollup",
         "description": "Sub-agent totals across a set of agents.\n\n``complete`` is a conjunction: one live session without harness hooks\nmakes every number here a lower bound, and callers must say so rather\nthan present a floor as a total."
       },
+      "TaskActivityAttempt": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "session_id": {
+            "type": "string",
+            "title": "Session Id"
+          },
+          "task_id": {
+            "type": "string",
+            "title": "Task Id"
+          },
+          "agent_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Agent Id"
+          },
+          "agent_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Agent Name"
+          },
+          "profile_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Profile Id"
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model"
+          },
+          "intelligence_class": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Intelligence Class"
+          },
+          "llm_provider": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Llm Provider"
+          },
+          "harness": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Harness"
+          },
+          "provider": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Provider"
+          },
+          "state": {
+            "type": "string",
+            "title": "State",
+            "default": ""
+          },
+          "started_at": {
+            "type": "number",
+            "title": "Started At",
+            "default": 0.0
+          },
+          "ended_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ended At"
+          },
+          "end_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "End Reason"
+          },
+          "outcome": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Outcome"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "session_id",
+          "task_id"
+        ],
+        "title": "TaskActivityAttempt",
+        "description": "One session attempt on a task, with the model it actually reported."
+      },
+      "TaskActivityItem": {
+        "properties": {
+          "task_id": {
+            "type": "string",
+            "title": "Task Id"
+          },
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Id"
+          },
+          "title": {
+            "type": "string",
+            "title": "Title",
+            "default": ""
+          },
+          "status": {
+            "type": "string",
+            "title": "Status",
+            "default": ""
+          },
+          "priority": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Priority"
+          },
+          "parent_task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Parent Task Id"
+          },
+          "archived": {
+            "type": "boolean",
+            "title": "Archived",
+            "default": false
+          },
+          "created_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Created At"
+          },
+          "updated_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Updated At"
+          },
+          "last_activity_at": {
+            "type": "number",
+            "title": "Last Activity At",
+            "default": 0.0
+          },
+          "attempts": {
+            "items": {
+              "$ref": "#/components/schemas/TaskActivityAttempt"
+            },
+            "type": "array",
+            "title": "Attempts",
+            "default": []
+          },
+          "attempt_count": {
+            "type": "integer",
+            "title": "Attempt Count",
+            "default": 0
+          },
+          "models": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Models",
+            "default": []
+          },
+          "unattributed_attempts": {
+            "type": "integer",
+            "title": "Unattributed Attempts",
+            "default": 0
+          },
+          "outcome": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Outcome"
+          },
+          "work_outcome": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Work Outcome"
+          },
+          "failure_class": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Failure Class"
+          },
+          "completed_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Completed At"
+          },
+          "summary": {
+            "type": "string",
+            "title": "Summary",
+            "default": ""
+          },
+          "pr_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pr Url"
+          }
+        },
+        "type": "object",
+        "required": [
+          "task_id"
+        ],
+        "title": "TaskActivityItem"
+      },
+      "TaskActivityModelTotal": {
+        "properties": {
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model"
+          },
+          "tasks": {
+            "type": "integer",
+            "title": "Tasks",
+            "default": 0
+          },
+          "attempts": {
+            "type": "integer",
+            "title": "Attempts",
+            "default": 0
+          }
+        },
+        "type": "object",
+        "title": "TaskActivityModelTotal"
+      },
       "TaskAttachmentDeleteResponse": {
         "properties": {
           "success": {
@@ -39958,6 +40361,111 @@
           "depth"
         ],
         "title": "TaskProgressResponse"
+      },
+      "TaskRecentActivityRequest": {
+        "properties": {
+          "hours": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Hours",
+            "description": "Size of the window ending now, in hours. Default 24; capped at 744 (31 days)."
+          },
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Id",
+            "description": "Restrict to one project. Defaults to the caller's active project; omit both for every project."
+          },
+          "limit": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Limit",
+            "description": "Maximum tasks to return, most recently active first. Default 200, maximum 1000. 'truncated' is true when more tasks matched than were returned."
+          }
+        },
+        "type": "object",
+        "title": "TaskRecentActivityRequest"
+      },
+      "TaskRecentActivityResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "since": {
+            "type": "number",
+            "title": "Since",
+            "default": 0.0
+          },
+          "until": {
+            "type": "number",
+            "title": "Until",
+            "default": 0.0
+          },
+          "hours": {
+            "type": "number",
+            "title": "Hours",
+            "default": 24.0
+          },
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Id"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/TaskActivityItem"
+            },
+            "type": "array",
+            "title": "Items",
+            "default": []
+          },
+          "total": {
+            "type": "integer",
+            "title": "Total",
+            "default": 0
+          },
+          "truncated": {
+            "type": "boolean",
+            "title": "Truncated",
+            "default": false
+          },
+          "by_model": {
+            "items": {
+              "$ref": "#/components/schemas/TaskActivityModelTotal"
+            },
+            "type": "array",
+            "title": "By Model",
+            "default": []
+          }
+        },
+        "type": "object",
+        "title": "TaskRecentActivityResponse"
       },
       "TaskRecoverRequest": {
         "properties": {

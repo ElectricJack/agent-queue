@@ -973,6 +973,9 @@ from .subagent_rollup import SubagentRollup
 from .tail_api_streams_stream_id_tail_get_response_tail_api_streams_stream_id_tail_get import (
     TailApiStreamsStreamIdTailGetResponseTailApiStreamsStreamIdTailGet,
 )
+from .task_activity_attempt import TaskActivityAttempt
+from .task_activity_item import TaskActivityItem
+from .task_activity_model_total import TaskActivityModelTotal
 from .task_attachment_delete_response import TaskAttachmentDeleteResponse
 from .task_attachment_detail import TaskAttachmentDetail
 from .task_attachment_response import TaskAttachmentResponse
@@ -1028,6 +1031,9 @@ from .task_metrics import TaskMetrics
 from .task_progress_request import TaskProgressRequest
 from .task_progress_response import TaskProgressResponse
 from .task_progress_response_422 import TaskProgressResponse422
+from .task_recent_activity_request import TaskRecentActivityRequest
+from .task_recent_activity_response import TaskRecentActivityResponse
+from .task_recent_activity_response_422 import TaskRecentActivityResponse422
 from .task_recover_request import TaskRecoverRequest
 from .task_recover_response_422 import TaskRecoverResponse422
 from .task_recovery_response import TaskRecoveryResponse
@@ -2066,6 +2072,9 @@ __all__ = (
     "SubagentMetricsBySession",
     "SubagentRollup",
     "TailApiStreamsStreamIdTailGetResponseTailApiStreamsStreamIdTailGet",
+    "TaskActivityAttempt",
+    "TaskActivityItem",
+    "TaskActivityModelTotal",
     "TaskAttachmentDeleteResponse",
     "TaskAttachmentDetail",
     "TaskAttachmentResponse",
@@ -2121,6 +2130,9 @@ __all__ = (
     "TaskProgressRequest",
     "TaskProgressResponse",
     "TaskProgressResponse422",
+    "TaskRecentActivityRequest",
+    "TaskRecentActivityResponse",
+    "TaskRecentActivityResponse422",
     "TaskRecoverRequest",
     "TaskRecoverResponse422",
     "TaskRecoveryResponse",
