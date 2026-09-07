@@ -13,7 +13,7 @@ from __future__ import annotations
 import json
 import time
 
-from sqlalchemy import Float, and_, case, cast, delete, exists, false, func, literal, select, update
+from sqlalchemy import Float, and_, case, cast, delete, exists, false, func, literal, or_, select, update
 
 from src.database.queries.blocked_state import apply_label_filters
 from src.database.queries.hierarchy_queries import (
@@ -335,10 +335,31 @@ class ClaimQueryMixin:
                     .where(agents.c.id == agent_id)
                     .values(state=AgentState.BUSY.value, current_task_id=task_id)
                 )
+            # A reconciled active pool claim deliberately releases its
+            # workspace lock while its worker remains alive.  Its next claim
+            # must reclaim the same checkout named by ``work_dir``; choosing
+            # any free slot would leave the session running in the wrong
+            # directory.  Keep this conditional update in the claim's
+            # transaction so a competing worker can win at most one slot.
             stmt = (
                 update(workspaces)
-                .where(workspaces.c.locked_by_agent_id == agent_id)
-                .values(locked_by_task_id=task_id)
+                .where(
+                    workspaces.c.project_id
+                    == select(sessions.c.project_id)
+                    .where(sessions.c.id == session_id)
+                    .scalar_subquery(),
+                    workspaces.c.workspace_path == work_dir,
+                    workspaces.c.enabled.is_(True),
+                    or_(
+                        workspaces.c.locked_by_agent_id == agent_id,
+                        workspaces.c.locked_by_agent_id.is_(None),
+                    ),
+                )
+                .values(
+                    locked_by_agent_id=agent_id,
+                    locked_by_task_id=task_id,
+                    locked_at=now,
+                )
             )
             if supports_returning(conn):
                 row = (await conn.execute(stmt.returning(*workspaces.c))).mappings().fetchone()
@@ -348,7 +369,14 @@ class ClaimQueryMixin:
                 row = (
                     (
                         await conn.execute(
-                            select(workspaces).where(workspaces.c.locked_by_agent_id == agent_id)
+                            select(workspaces).where(
+                                workspaces.c.project_id
+                                == select(sessions.c.project_id)
+                                .where(sessions.c.id == session_id)
+                                .scalar_subquery(),
+                                workspaces.c.workspace_path == work_dir,
+                                workspaces.c.locked_by_agent_id == agent_id,
+                            )
                         )
                     )
                     .mappings()
@@ -451,7 +479,9 @@ class ClaimQueryMixin:
         prepare_backoff=False,
         expected_task_id=None,
         expected_claim_epoch=None,
+        expected_task_status=None,
         drain_after_release=False,
+        release_workspace_lock=False,
         end_reason=None,
     ) -> TransitionResult:
         row = (
@@ -487,6 +517,10 @@ class ClaimQueryMixin:
                 assigned_agent_id=None,
                 projection_stable=True,
                 returning=True,
+                # Releasing the worker's ownership must not resume or alter
+                # an explicit manual pause.  It only clears its stale agent
+                # assignment after a task moved out from under the claim.
+                _manual_pause_control=task_status is TaskStatus.PAUSED,
             )
             if task_status == TaskStatus.READY:
                 # An active claim can only release the IN_PROGRESS,
@@ -500,12 +534,20 @@ class ClaimQueryMixin:
                         tasks.c.is_blocked == 0,
                     ),
                 )
+            elif expected_task_status is not None:
+                # The reconciler observed a non-live task before entering
+                # this transaction.  Do not replay that old state over a
+                # concurrent resume: the guarded write is also the proof
+                # that this session may release its claim and workspace.
+                transition["extra_where"] = tasks.c.status == expected_task_status.value
             out = await self._apply_transition(
                 conn,
                 task_id,
                 task_status,
                 **transition,
             )
+            if expected_task_status is not None and out.row is None:
+                return out
             epoch = (out.row or {}).get("claim_epoch")
             if needs_attention:
                 await self._upsert_meta(task_id, "needs_attention", needs_attention, conn=conn)
@@ -543,13 +585,16 @@ class ClaimQueryMixin:
         if agent_id:
             # Clear the task lock unconditionally — even a session that held no
             # task (e.g. released mid-``claiming``) must not leave a stale
-            # ``locked_by_task_id`` on its agent's workspace.  The agent lock
-            # itself (``locked_by_agent_id``) is retained; only
-            # ``terminate_pool_session`` releases it.
+            # ``locked_by_task_id`` on its agent's workspace.  A task that
+            # became non-live underneath an active worker must also release
+            # the agent lock, so the slot can serve the next claim.
             await conn.execute(
                 update(workspaces)
                 .where(workspaces.c.locked_by_agent_id == agent_id)
-                .values(locked_by_task_id=None)
+                .values(
+                    locked_by_agent_id=None if release_workspace_lock else workspaces.c.locked_by_agent_id,
+                    locked_by_task_id=None,
+                )
             )
             await conn.execute(
                 update(agents)
@@ -589,7 +634,9 @@ class ClaimQueryMixin:
         needs_attention=None,
         expected_task_id=None,
         expected_claim_epoch=None,
+        expected_task_status=None,
         drain_after_release=False,
+        release_workspace_lock=False,
         prepare_backoff=False,
         conn=None,
     ) -> TransitionResult:
@@ -601,7 +648,9 @@ class ClaimQueryMixin:
             needs_attention=needs_attention,
             expected_task_id=expected_task_id,
             expected_claim_epoch=expected_claim_epoch,
+            expected_task_status=expected_task_status,
             drain_after_release=drain_after_release,
+            release_workspace_lock=release_workspace_lock,
             prepare_backoff=prepare_backoff,
         )
         if conn is not None:

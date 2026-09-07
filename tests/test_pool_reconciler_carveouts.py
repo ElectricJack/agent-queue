@@ -12,6 +12,8 @@ import pytest
 from src.commands.claim_commands import write_claim_file
 from src.config import AppConfig, DiscordConfig
 from src.database import Database
+from src.doctor.models import Severity
+from src.doctor.pool_checks import run_check
 from src.models import (
     Agent,
     AgentProfile,
@@ -292,6 +294,69 @@ class TestPrepareTimeoutFlagGate:
 
 
 class TestOrphans:
+    @pytest.mark.parametrize("status", [TaskStatus.PAUSED, TaskStatus.BLOCKED, TaskStatus.FAILED])
+    async def test_non_live_active_pool_claim_is_released_and_worker_is_notified(
+        self, db, reconciler, status
+    ):
+        sid = await held_pool_session(db)
+        await db.transition_task("t1", status, context="test", force=True)
+
+        live, now = await observe(reconciler)
+        await reconciler._step_orphans(live, now)
+
+        session = await db.get_session(sid)
+        task = await db.get_task("t1")
+        workspace = await db.get_workspace("ws-agent-1")
+        messages = await db.get_pending_messages("session", sid)
+        assert (session.task_id, session.claim_phase) == (None, None)
+        assert task.status is status
+        assert workspace.locked_by_agent_id is None
+        assert len(messages) == 1
+        assert messages[0].from_kind == "system"
+        assert messages[0].to_id == sid
+        assert status.value in messages[0].body
+        finding = await run_check(db, "pools.stuck", config=None)
+        assert finding.severity is Severity.OK
+
+    async def test_live_active_pool_claim_is_not_reclaimed(self, db, reconciler):
+        sid = await held_pool_session(db)
+
+        live, now = await observe(reconciler)
+        await reconciler._step_orphans(live, now)
+
+        session = await db.get_session(sid)
+        workspace = await db.get_workspace("ws-agent-1")
+        assert (session.task_id, session.claim_phase) == ("t1", "active")
+        assert workspace.locked_by_agent_id == "agent-1"
+        assert await db.get_pending_messages("session", sid) == []
+
+    @pytest.mark.parametrize("status", [TaskStatus.PAUSED, TaskStatus.BLOCKED])
+    async def test_reclaim_does_not_overwrite_a_concurrent_resume(
+        self, db, reconciler, monkeypatch, status
+    ):
+        """The release transaction, not the earlier orphan read, owns the race."""
+        sid = await held_pool_session(db)
+        transition_kwargs = {"resume_after": time.time() + 60} if status is TaskStatus.PAUSED else {}
+        await db.transition_task("t1", status, context="test", force=True, **transition_kwargs)
+
+        real_release_claim = db.release_claim
+
+        async def resume_before_release(*args, **kwargs):
+            await db.transition_task("t1", TaskStatus.IN_PROGRESS, context="concurrent_resume", force=True)
+            return await real_release_claim(*args, **kwargs)
+
+        monkeypatch.setattr(db, "release_claim", resume_before_release)
+        live, now = await observe(reconciler)
+        await reconciler._step_orphans(live, now)
+
+        task = await db.get_task("t1")
+        session = await db.get_session(sid)
+        workspace = await db.get_workspace("ws-agent-1")
+        assert task.status is TaskStatus.IN_PROGRESS
+        assert (session.task_id, session.claim_phase) == ("t1", "active")
+        assert workspace.locked_by_agent_id == "agent-1"
+        assert await db.get_pending_messages("session", sid) == []
+
     async def test_terminal_pool_task_release_removes_claim_file(
         self, db, reconciler, tmp_path
     ):
@@ -346,4 +411,4 @@ class TestOrphans:
             None,
         )
         assert (await db.get_agent("agent-1")).state == AgentState.IDLE
-        assert (await db.get_workspace_for_agent("agent-1")).locked_by_agent_id == "agent-1"
+        assert (await db.get_workspace("ws-agent-1")).locked_by_agent_id is None
