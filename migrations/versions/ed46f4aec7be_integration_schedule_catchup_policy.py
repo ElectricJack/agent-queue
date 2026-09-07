@@ -7,8 +7,10 @@ Create Date: 2026-09-05 23:05:16.782246
 """
 from typing import Sequence, Union
 
-from alembic import op
 import sqlalchemy as sa
+from alembic import op
+
+from migrations.sqlite_triggers import preserve_sqlite_triggers
 
 # revision identifiers, used by Alembic.
 revision: str = "ed46f4aec7be"
@@ -19,7 +21,10 @@ depends_on: Union[str, Sequence[str], None] = None
 
 def upgrade() -> None:
     """Upgrade schema."""
-    with op.batch_alter_table("project_integration_schedules") as batch_op:
+    with (
+        preserve_sqlite_triggers("project_integration_schedules"),
+        op.batch_alter_table("project_integration_schedules") as batch_op,
+    ):
         batch_op.add_column(sa.Column("catchup_trigger", sa.Text(), nullable=True))
         batch_op.add_column(sa.Column("catchup_requested_at", sa.Float(), nullable=True))
         batch_op.add_column(sa.Column("catchup_after_sequence", sa.Integer(), nullable=True))
@@ -48,7 +53,10 @@ def downgrade() -> None:
             "cannot downgrade integration schedule catch-up policy while project "
             f"{project_id!r} has live catch-up state"
         )
-    with op.batch_alter_table("project_integration_schedules") as batch_op:
+    with (
+        preserve_sqlite_triggers("project_integration_schedules"),
+        op.batch_alter_table("project_integration_schedules") as batch_op,
+    ):
         batch_op.drop_constraint(
             "ck_project_integration_schedules_catchup", type_="check"
         )

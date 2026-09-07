@@ -5,11 +5,13 @@ Revises: e1eab6dbc186
 Create Date: 2026-09-05 15:57:52.541433
 
 """
-from collections.abc import Sequence
 import importlib
+from collections.abc import Sequence
 
 import sqlalchemy as sa
 from alembic import op
+
+from migrations.sqlite_triggers import preserve_sqlite_triggers
 
 # revision identifiers, used by Alembic.
 revision: str = "46f910d0dce6"
@@ -122,7 +124,10 @@ def upgrade() -> None:
         "target_kind = CASE WHEN target_branch = branch THEN 'legacy_integration' "
         "ELSE 'qualified' END"
     )
-    with op.batch_alter_table("integration_candidate_resolutions") as batch_op:
+    with (
+        preserve_sqlite_triggers("integration_candidate_resolutions"),
+        op.batch_alter_table("integration_candidate_resolutions") as batch_op,
+    ):
         batch_op.alter_column("repair_workspace_path", existing_type=sa.Text(), nullable=False)
         batch_op.alter_column("target_kind", existing_type=sa.Text(), nullable=False)
         batch_op.create_check_constraint(
@@ -150,7 +155,16 @@ def downgrade() -> None:
         raise RuntimeError(
             "cannot downgrade candidate resolutions with live candidate handoff provenance"
         )
-    with op.batch_alter_table("integration_candidate_resolutions") as batch_op:
+    if op.get_bind().dialect.name == "sqlite":
+        # This revision's guards name columns dropped below; retire them before
+        # the rebuild so the trigger snapshot does not restore them dangling.
+        # ``_replace_authority_guards`` puts the previous identity guard back.
+        op.execute("DROP TRIGGER IF EXISTS trg_candidate_resolution_identity")
+        op.execute("DROP TRIGGER IF EXISTS trg_candidate_resolution_handoff")
+    with (
+        preserve_sqlite_triggers("integration_candidate_resolutions"),
+        op.batch_alter_table("integration_candidate_resolutions") as batch_op,
+    ):
         batch_op.drop_constraint(
             "ck_integration_candidate_resolutions_handoff", type_="check"
         )

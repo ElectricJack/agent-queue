@@ -7,9 +7,10 @@ Create Date: 2026-09-05
 
 from collections.abc import Sequence
 
-from alembic import op
 import sqlalchemy as sa
+from alembic import op
 
+from migrations.sqlite_triggers import preserve_sqlite_triggers
 
 revision: str = "7a1d5e9f0b2c"
 down_revision: str | Sequence[str] | None = "e4c6a8b20d31"
@@ -18,11 +19,17 @@ depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:
-    with op.batch_alter_table("integration_repair_operations") as batch_op:
+    with (
+        preserve_sqlite_triggers("integration_repair_operations"),
+        op.batch_alter_table("integration_repair_operations") as batch_op,
+    ):
         batch_op.create_unique_constraint(
             "uq_integration_repair_operations_batch_episode", ["batch_id"]
         )
-    with op.batch_alter_table("integration_repair_stages") as batch_op:
+    with (
+        preserve_sqlite_triggers("integration_repair_stages"),
+        op.batch_alter_table("integration_repair_stages") as batch_op,
+    ):
         batch_op.drop_constraint("ck_integration_repair_stages_state", type_="check")
         batch_op.add_column(sa.Column("writer_kind", sa.Text(), nullable=True))
         batch_op.add_column(sa.Column("trigger_id", sa.Text(), nullable=True))
@@ -39,7 +46,10 @@ def upgrade() -> None:
         "UPDATE integration_repair_stages SET writer_kind = 'repair_delegate' "
         "WHERE repair_task_id IS NOT NULL"
     )
-    with op.batch_alter_table("integration_repair_stages") as batch_op:
+    with (
+        preserve_sqlite_triggers("integration_repair_stages"),
+        op.batch_alter_table("integration_repair_stages") as batch_op,
+    ):
         batch_op.create_check_constraint(
             "ck_integration_repair_stages_writer_kind",
             "writer_kind IS NULL OR writer_kind IN ('repair_delegate', 'existing_verifier')",
@@ -98,7 +108,10 @@ def downgrade() -> None:
         "UPDATE integration_repair_stages SET intelligence_class = '' "
         "WHERE intelligence_class IS NULL"
     )
-    with op.batch_alter_table("integration_repair_stages") as batch_op:
+    with (
+        preserve_sqlite_triggers("integration_repair_stages"),
+        op.batch_alter_table("integration_repair_stages") as batch_op,
+    ):
         batch_op.drop_constraint("ck_integration_repair_stages_state", type_="check")
         batch_op.drop_constraint(
             "uq_integration_repair_stages_deadline_event", type_="unique"
@@ -124,7 +137,10 @@ def downgrade() -> None:
             "ck_integration_repair_stages_state",
             "state IN ('pending', 'active', 'passed', 'failed', 'expired', 'cancelled')",
         )
-    with op.batch_alter_table("integration_repair_operations") as batch_op:
+    with (
+        preserve_sqlite_triggers("integration_repair_operations"),
+        op.batch_alter_table("integration_repair_operations") as batch_op,
+    ):
         batch_op.drop_constraint(
             "uq_integration_repair_operations_batch_episode", type_="unique"
         )
