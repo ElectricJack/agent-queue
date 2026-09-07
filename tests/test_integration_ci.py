@@ -13,6 +13,7 @@ from src.database.tables import (
     integration_check_evidence,
     integration_parent_episodes,
     integration_repair_operations,
+    integration_repair_stages,
     task_integration_checkpoints,
 )
 
@@ -1081,6 +1082,13 @@ async def test_ci_service_binds_root_evidence_to_exact_batch_revision_and_candid
                 required_check_version="checks-v1", created_at=1.0, updated_at=1.0,
             )
         )
+    async with ci_db.immediate() as conn:
+        await conn.execute(insert(integration_repair_stages).values(
+            operation_id="root-op", ordinal=0, state="active", policy={},
+            intelligence_class="standard-medium", starting_sha="0" * 40,
+            current_subject={"kind": "batch", "revision": 4, "candidate_sha": SHA},
+            deadline_at=10.0,
+        ))
     observation = TrustedCIObservation(
         payload=AttestationPayload.model_validate(payload_dict()), workflow_ids={21: 301, 22: 302}
     )
@@ -1113,6 +1121,11 @@ async def test_ci_service_binds_root_evidence_to_exact_batch_revision_and_candid
         batch = (
             await conn.execute(select(integration_batches).where(integration_batches.c.id == "batch"))
         ).mappings().one()
+    from src.integration.repair import RepairService
+
+    expired = await RepairService(ci_db).expire("root-op", 0, now=100.0)
+    assert expired["outcome"] == "not_due"
+    assert expired["action"] == "awaiting_promotion"
     assert candidate["state"] == "green"
     assert candidate["ci_evidence_id"] == result["aggregate_evidence_id"]
     assert batch["ci_evidence_id"] == result["aggregate_evidence_id"]
