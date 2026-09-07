@@ -1,5 +1,5 @@
 {
-  "artifact_sha256": "sha256:90d121194684e05c91e2b00dc2273b103b07dab800f78a8ffee98c3788ac33e1",
+  "artifact_sha256": "sha256:593a5fd6368773797603f0e9541edb7b9bcbf417b0636b42179b8846d4254d43",
   "coverage": [
     {
       "event_type": "timer.30m",

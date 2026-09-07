@@ -305,7 +305,9 @@ class TestVaultInstallation:
         expected = {
             "default-assignment-routing.md",
             "default-pipeline.md",
+            "hierarchical-delivery.md",
             "memory-consolidation.md",
+            "root-integration-train.md",
         }
         installed = set(result["created"])
         assert expected == installed, (
