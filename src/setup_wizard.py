@@ -457,10 +457,10 @@ def _build_pg_config(dsn: str, existing_sqlite_path: str | None) -> dict:
 
 
 def step_database(existing: dict) -> dict:
-    """Step 1b: Configure database backend.
+    """Step 1b: Configure the PostgreSQL connection.
 
-    Handles re-run detection: if an existing config specifies PostgreSQL,
-    confirms it. If SQLite, offers to switch. If no config, prompts for choice.
+    PostgreSQL is the only supported backend.  A config still carrying a
+    SQLite path is offered the one-way import rather than being kept.
 
     Args:
         existing: Pre-loaded config values from ``_load_existing_config()``.
@@ -489,40 +489,17 @@ def step_database(existing: dict) -> dict:
             }
         # Fall through to re-select
 
-    # Re-run: existing SQLite config
+    # Re-run: a config left over from the SQLite era.  There is nothing to
+    # keep -- offer to carry the data across instead of stranding it.
     elif existing_sqlite:
         default_db = os.path.expanduser(existing_sqlite)
-        # Check if this is just defaults that already exist
-        has_saved_db = existing.get("DATABASE_PATH") or yaml_cfg.get("database_path")
-        defaults_exist = os.path.isdir(os.path.dirname(default_db))
-        if has_saved_db or defaults_exist:
-            success(f"Database: SQLite ({default_db})")
-            switch = prompt_yes_no("Switch to PostgreSQL?", default=False)
-            if not switch:
-                os.makedirs(os.path.dirname(default_db), exist_ok=True)
-                return {"backend": "sqlite", "url": default_db}
+        if os.path.exists(default_db):
+            info(f"Found a SQLite database from a previous release: {default_db}")
+            info("SQLite is no longer supported; its data can be imported into PostgreSQL.")
             return _select_postgresql(existing_sqlite_path=default_db)
 
-    # Fresh install
-    step_header(1, "Database Backend")
-
-    print(f"  {BOLD}Database options:{RESET}")
-    print(f"    1) SQLite {DIM}(default — zero config, file-based){RESET}")
-    print(f"    2) PostgreSQL {DIM}(recommended for production){RESET}")
-    print()
-    choice = prompt("Select database backend", "1")
-
-    if choice == "2":
-        return _select_postgresql()
-
-    # SQLite
-    default_db = os.path.expanduser("~/.agent-queue/agent-queue.db")
-    db_path = prompt("Database path", default_db)
-    db_path = os.path.expanduser(db_path)
-    _save_env_value("DATABASE_PATH", db_path)
-    os.makedirs(os.path.dirname(db_path), exist_ok=True)
-    success(f"Directory ready: {os.path.dirname(db_path)}")
-    return {"backend": "sqlite", "url": db_path}
+    step_header(1, "Database")
+    return _select_postgresql()
 
 
 # ── Step 2: Discord ──────────────────────────────────────────────────────────

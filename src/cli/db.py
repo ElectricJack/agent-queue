@@ -41,12 +41,10 @@ def _head_revisions() -> list[str]:
 
 def _make_engine(config):
     """An engine for *config*'s database that has not run any migration."""
-    from src.database.engine import create_postgres_engine, create_sqlite_engine
+    from src.database.engine import create_postgres_engine
 
-    url = config.database.url or config.database_path
-    if config.database.backend == "postgresql":
-        return create_postgres_engine(url, 1, 2), url
-    return create_sqlite_engine(url), url
+    url = config.database.url
+    return create_postgres_engine(url, 1, 2), url
 
 
 def _display_url(url: str) -> str:

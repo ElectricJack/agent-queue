@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import pytest
 
-from src.database import SQLiteDatabaseAdapter
+from src.database import Database
 from src.models import DepType, Project, Task, TaskStatus
 from src.state_machine import InvalidTransition
 from src.task_names import generate_task_id, naming_depth
@@ -26,7 +26,7 @@ PROJECT = "p-wg5"
 
 @pytest.fixture
 async def db(tmp_path):
-    database = SQLiteDatabaseAdapter(str(tmp_path / "wg5.db"))
+    database = Database(str(tmp_path / "wg5.db"))
     await database.initialize()
     await database.create_project(Project(id=PROJECT, name="wg5"))
     yield database

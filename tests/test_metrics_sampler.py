@@ -14,7 +14,7 @@ import time
 import pytest
 
 from src.config import AppConfig
-from src.database import SQLiteDatabaseAdapter
+from src.database import Database
 from src.event_bus import EventBus
 from src.metrics.sampler import (
     METRIC_TICK_EVENT,
@@ -35,7 +35,7 @@ HOUR = 1_699_999_200.0
 
 @pytest.fixture
 async def db(tmp_path):
-    database = SQLiteDatabaseAdapter(str(tmp_path / "metrics.db"))
+    database = Database(str(tmp_path / "metrics.db"))
     await database.initialize()
     await database.create_project(Project(id=PROJECT, name="metrics"))
     yield database

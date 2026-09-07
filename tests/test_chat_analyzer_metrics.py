@@ -33,13 +33,13 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from src.database import SQLiteDatabaseAdapter
+from src.database import Database
 
 
 @pytest.fixture
 async def db(tmp_path):
-    """Provide an initialized SQLiteDatabaseAdapter."""
-    database = SQLiteDatabaseAdapter(str(tmp_path / "metrics.db"))
+    """Provide an initialized Database."""
+    database = Database(str(tmp_path / "metrics.db"))
     await database.initialize()
     yield database
     await database.close()

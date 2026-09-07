@@ -80,7 +80,7 @@ async def _check_config_parse(ctx: DoctorContext) -> CheckResult:
 
 
 # ---------------------------------------------------------------------------
-# db.connect / db.migrations / db.wal_size
+# db.connect / db.migrations
 # ---------------------------------------------------------------------------
 
 
@@ -168,62 +168,10 @@ async def _check_db_migrations(ctx: DoctorContext) -> CheckResult:
     )
 
 
-def _sqlite_path(ctx: DoctorContext) -> str | None:
-    """Resolve the on-disk SQLite file, or None for non-SQLite installs."""
-    if getattr(ctx.config.database, "backend", "sqlite") != "sqlite":
-        return None
-    path = getattr(ctx.db, "_path", None) if ctx.db is not None else None
-    if not path:
-        path = ctx.config.database.url or ctx.config.database_path
-    if not path or path == ":memory:":
-        return None
-    return path
 
 
-async def _check_db_wal_size(ctx: DoctorContext) -> CheckResult:
-    """Warn when the SQLite write-ahead log has grown past the threshold."""
-    path = _sqlite_path(ctx)
-    if path is None:
-        return CheckResult(
-            id="db.wal_size",
-            severity=Severity.INFO,
-            detail="not a file-backed SQLite database — WAL size not applicable",
-        )
-    wal = f"{path}-wal"
-    if not os.path.exists(wal):
-        return CheckResult(id="db.wal_size", severity=Severity.OK, detail="no WAL file present")
-    size_mb = os.path.getsize(wal) / _MB
-    threshold = ctx.config.security.wal_warn_mb
-    data = {"path": wal, "size_mb": round(size_mb, 1), "threshold_mb": threshold}
-    if size_mb > threshold:
-        return CheckResult(
-            id="db.wal_size",
-            severity=Severity.WARN,
-            detail=f"WAL is {size_mb:.0f} MB (threshold {threshold} MB)",
-            fixable=True,
-            data=data,
-        )
-    return CheckResult(
-        id="db.wal_size",
-        severity=Severity.OK,
-        detail=f"WAL is {size_mb:.1f} MB (threshold {threshold} MB)",
-        fixable=True,
-        data=data,
-    )
 
 
-async def _fix_db_wal_size(ctx: DoctorContext) -> CheckResult:
-    """Checkpoint and truncate the WAL.  Idempotent — a no-op when already small."""
-    from sqlalchemy import text
-
-    engine = getattr(ctx.db, "_engine", None) if ctx.db is not None else None
-    if engine is None:
-        return CheckResult(
-            id="db.wal_size", severity=Severity.INFO, detail="no engine — nothing to checkpoint"
-        )
-    async with engine.begin() as conn:
-        await conn.execute(text("PRAGMA wal_checkpoint(TRUNCATE)"))
-    return CheckResult(id="db.wal_size", severity=Severity.OK, detail="WAL checkpointed")
 
 
 # ---------------------------------------------------------------------------
@@ -797,7 +745,6 @@ def builtin_checks() -> list[DoctorCheck]:
         DoctorCheck(id="config.parse", run=_check_config_parse),
         DoctorCheck(id="db.connect", run=_check_db_connect),
         DoctorCheck(id="db.migrations", run=_check_db_migrations),
-        DoctorCheck(id="db.wal_size", run=_check_db_wal_size, fix=_fix_db_wal_size),
         DoctorCheck(id="vault.parse", run=_check_vault_parse, timeout_s=15.0),
         DoctorCheck(id="harness.binaries", run=_check_harness_binaries, timeout_s=15.0),
         DoctorCheck(id="harness.drift", run=_check_harness_drift, fix=_fix_harness_drift),

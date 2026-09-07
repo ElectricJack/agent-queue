@@ -18,7 +18,7 @@ import pytest
 from fastapi import WebSocketDisconnect
 
 from src.api.websocket import WebSocketManager
-from src.database import SQLiteDatabaseAdapter
+from src.database import Database
 from src.event_bus import EventBus
 from src.event_schemas import EVENT_SCHEMAS, validate_event
 from src.models import Project, Task, TaskStatus
@@ -29,7 +29,7 @@ PROJECT = "p-replay"
 
 @pytest.fixture
 async def db(tmp_path):
-    database = SQLiteDatabaseAdapter(str(tmp_path / "replay.db"))
+    database = Database(str(tmp_path / "replay.db"))
     await database.initialize()
     await database.create_project(Project(id=PROJECT, name="replay"))
     yield database

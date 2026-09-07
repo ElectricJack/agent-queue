@@ -16,6 +16,12 @@ from src.models import TaskContext  # noqa: F401  (re-exported for test modules)
 os.environ.setdefault("AQ_SCHEMA_CACHE", "1")
 
 
+def _resolve_base_dsn() -> str | None:
+    from tests.db_fixtures import base_dsn
+
+    return base_dsn()
+
+
 def _refuse_production_database() -> None:
     """Fail collection if the suite is pointed at the daemon's real database.
 
@@ -42,6 +48,52 @@ def _refuse_production_database() -> None:
 
 
 _refuse_production_database()
+
+
+# ── PostgreSQL backend shim (AQ_TEST_BACKEND=postgres) ─────────────────────
+# Off by default.  When on, every SQLite Database(...) in the suite is routed
+# to a template-cloned Postgres database leased per test.  See
+# tests/pg_backend_shim.py and docs/superpowers/specs/
+# 2026-09-07-sqlite-removal-implementation.md §T0.
+_PG_POOL = None
+_PG_POOL_DSNS: list[str] = []
+
+#: Resolved at import time on purpose: ``ensure_worker_postgres_dsn`` calls
+#: ``asyncio.run`` internally, so it cannot run inside the async fixture below.
+_PG_BASE_DSN: str | None = _resolve_base_dsn()
+
+
+@pytest.fixture(autouse=True)
+async def _pg_backend(request):
+    from tests import pg_backend_shim
+
+    if not pg_backend_shim.enabled():
+        yield
+        return
+
+    global _PG_POOL, _PG_POOL_DSNS
+    from tests import db_fixtures
+    from tests.db_fixtures import POOL_SIZE, LeasePool
+
+    if _PG_POOL is None:
+        if not _PG_BASE_DSN:
+            pytest.fail("AQ_TEST_BACKEND=postgres but POSTGRES_TEST_DSN is not set")
+        _PG_POOL = LeasePool(_PG_BASE_DSN, os.environ.get("PYTEST_XDIST_WORKER", "master"))
+        _PG_POOL_DSNS = [await _PG_POOL.acquire() for _ in range(POOL_SIZE)]
+
+    pg_backend_shim.ROUTER.reset(_PG_POOL_DSNS)
+    pg_backend_shim.install()
+    try:
+        yield
+    finally:
+        pg_backend_shim.uninstall()
+        # Truncate *and* replay the migration seed rows: the built-in
+        # workspace_kinds live in the template, and a bare truncate would
+        # leave every test after the first without them.
+        for leased in pg_backend_shim.ROUTER.leased:
+            await db_fixtures.truncate_all(leased)
+            if db_fixtures._SEED:
+                await db_fixtures.restore_seed(leased, db_fixtures._SEED)
 
 
 @pytest.fixture

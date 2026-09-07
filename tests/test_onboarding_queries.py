@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from src.config import EventsConfig, load_config
-from src.database import Database, DatabaseBackend, SQLiteDatabaseAdapter
+from src.database import Database, DatabaseBackend, Database
 from src.models import Project, RepoSourceType, Workspace
 from tests.pg_dsn import ensure_worker_postgres_dsn
 
@@ -33,7 +33,7 @@ def test_onboarding_retention_config_round_trips_and_validates(tmp_path):
 
 
 def test_database_protocol_exposes_onboarding_queries():
-    assert issubclass(SQLiteDatabaseAdapter, DatabaseBackend)
+    assert issubclass(Database, DatabaseBackend)
 
 
 @pytest.fixture

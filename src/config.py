@@ -805,7 +805,7 @@ class DatabaseConfig:
     @property
     def backend(self) -> str:
         """Infer backend from the URL scheme."""
-        return "postgresql" if is_postgres_url(self.url) else "sqlite"
+        return "postgresql"
 
     def validate(self) -> list[ConfigError]:
         errors: list[ConfigError] = []
@@ -2335,28 +2335,15 @@ class AppConfig:
 
         # Validate database config
         errors.extend(self.database.validate())
-        if self.database.backend == "sqlite":
-            db_path = self.database.url
-            if not db_path:
-                errors.append(ConfigError("database", "url", "database path is required"))
-            else:
-                db_parent = os.path.dirname(db_path)
-                if db_parent and not os.path.exists(db_parent):
-                    grandparent = os.path.dirname(db_parent)
-                    if (
-                        grandparent
-                        and os.path.exists(grandparent)
-                        and not os.access(grandparent, os.W_OK)
-                    ):
-                        errors.append(
-                            ConfigError(
-                                "database",
-                                "url",
-                                f"parent directory '{db_parent}' does not exist "
-                                "and cannot be created",
-                                severity="warning",
-                            )
-                        )
+        if not is_postgres_url(self.database.url):
+            errors.append(
+                ConfigError(
+                    "database",
+                    "url",
+                    "a PostgreSQL DSN is required (postgresql://...); SQLite is no "
+                    "longer supported — see `aq db import-sqlite`",
+                )
+            )
 
         # Validate messaging_platform field. "telegram" gets a dedicated,
         # actionable error rather than folding into the generic "must be

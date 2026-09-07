@@ -10,13 +10,13 @@ import time
 
 import pytest
 
-from src.database import SQLiteDatabaseAdapter
+from src.database import Database
 from src.models import Message, Project
 
 
 @pytest.fixture
 async def db(tmp_path):
-    database = SQLiteDatabaseAdapter(str(tmp_path / "messages.db"))
+    database = Database(str(tmp_path / "messages.db"))
     await database.initialize()
     await database.create_project(Project(id="p1", name="p1"))
     await database.create_project(Project(id="p2", name="p2"))

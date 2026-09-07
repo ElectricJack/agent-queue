@@ -22,7 +22,7 @@ import uuid
 import pytest
 from sqlalchemy import insert, select, text
 
-from src.database import SQLiteDatabaseAdapter
+from src.database import Database
 from src.database.queries.blocked_state import blocked_predicate
 from src.database.queries.hierarchy_queries import HierarchyError
 from src.database.tables import gates, task_dependencies, task_gates, tasks as tasks_t
@@ -35,7 +35,7 @@ PROJECT = "p-wg"
 
 @pytest.fixture
 async def db(tmp_path):
-    database = SQLiteDatabaseAdapter(str(tmp_path / "wg.db"))
+    database = Database(str(tmp_path / "wg.db"))
     await database.initialize()
     await database.create_project(Project(id=PROJECT, name="work-graph"))
     yield database
