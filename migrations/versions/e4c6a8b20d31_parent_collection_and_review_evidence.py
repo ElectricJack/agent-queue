@@ -6,17 +6,22 @@ Revises: c7a1e5d92f40
 
 from __future__ import annotations
 
+import importlib
 from collections.abc import Sequence
 
 import sqlalchemy as sa
 from alembic import op
 
-from migrations.sqlite_triggers import preserve_sqlite_triggers
-
 revision: str = "e4c6a8b20d31"
 down_revision: str | Sequence[str] | None = "c7a1e5d92f40"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
+
+
+def _base_guards():
+    return importlib.import_module(
+        "migrations.versions.3f30b34c7e7c_hierarchical_integration_state"
+    )
 
 
 _APPEND_ONLY_TABLES = (
@@ -122,10 +127,7 @@ def upgrade() -> None:
             name="fk_integration_parent_episodes_repository", ondelete="RESTRICT"
         ),
     )
-    with (
-        preserve_sqlite_triggers("integration_repair_operations"),
-        op.batch_alter_table("integration_repair_operations") as batch_op,
-    ):
+    with op.batch_alter_table("integration_repair_operations") as batch_op:
         batch_op.create_foreign_key(
             "fk_integration_repair_operations_parent_episode",
             "integration_parent_episodes", ["parent_task_id", "episode_id"],
@@ -315,10 +317,7 @@ def upgrade() -> None:
             ondelete="RESTRICT",
         ),
     )
-    with (
-        preserve_sqlite_triggers("task_delivery_receipts"),
-        op.batch_alter_table("task_delivery_receipts") as batch_op,
-    ):
+    with op.batch_alter_table("task_delivery_receipts") as batch_op:
         batch_op.create_check_constraint(
             "ck_task_delivery_receipts_parent_binding",
             "(parent_operation_id IS NULL AND parent_episode_id IS NULL) OR "
@@ -334,10 +333,7 @@ def upgrade() -> None:
             "integration_parent_episodes", ["target_task_id", "parent_episode_id"],
             ["parent_task_id", "id"], ondelete="RESTRICT"
         )
-    with (
-        preserve_sqlite_triggers("task_integration_checkpoints"),
-        op.batch_alter_table("task_integration_checkpoints") as batch_op,
-    ):
+    with op.batch_alter_table("task_integration_checkpoints") as batch_op:
         batch_op.create_check_constraint(
             "ck_task_integration_checkpoints_completion_binding",
             "(last_completed_operation_id IS NULL AND "
@@ -366,15 +362,15 @@ def upgrade() -> None:
             "integration_parent_verifications", ["task_id", "current_verification_id"],
             ["parent_task_id", "id"], ondelete="RESTRICT"
         )
+    _base_guards()._recreate_sqlite_guards(
+        "integration_repair_operations", "task_delivery_receipts", "task_integration_checkpoints"
+    )
     _create_append_only_guards()
 
 
 def downgrade() -> None:
     _drop_append_only_guards()
-    with (
-        preserve_sqlite_triggers("task_integration_checkpoints"),
-        op.batch_alter_table("task_integration_checkpoints") as batch_op,
-    ):
+    with op.batch_alter_table("task_integration_checkpoints") as batch_op:
         batch_op.drop_constraint(
             "fk_task_integration_checkpoints_completion", type_="foreignkey"
         )
@@ -387,10 +383,7 @@ def downgrade() -> None:
         batch_op.drop_constraint(
             "ck_task_integration_checkpoints_completion_binding", type_="check"
         )
-    with (
-        preserve_sqlite_triggers("task_delivery_receipts"),
-        op.batch_alter_table("task_delivery_receipts") as batch_op,
-    ):
+    with op.batch_alter_table("task_delivery_receipts") as batch_op:
         batch_op.drop_constraint(
             "fk_task_delivery_receipts_parent_episode", type_="foreignkey"
         )
@@ -408,16 +401,16 @@ def downgrade() -> None:
     op.drop_table("integration_parent_operation_completions")
     op.drop_table("integration_parent_verifications")
     op.drop_table("integration_child_dispositions")
-    with (
-        preserve_sqlite_triggers("integration_repair_operations"),
-        op.batch_alter_table("integration_repair_operations") as batch_op,
-    ):
+    with op.batch_alter_table("integration_repair_operations") as batch_op:
         batch_op.drop_constraint(
             "fk_integration_repair_operations_verifier_task", type_="foreignkey"
         )
         batch_op.drop_constraint(
             "fk_integration_repair_operations_parent_episode", type_="foreignkey"
         )
+    _base_guards()._recreate_sqlite_guards(
+        "integration_repair_operations", "task_delivery_receipts", "task_integration_checkpoints"
+    )
     op.drop_table("integration_parent_episodes")
     op.drop_index(
         "uq_integration_repair_operations_parent_episode",
