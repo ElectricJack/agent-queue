@@ -14,6 +14,7 @@ import {
 } from "../api/hooks";
 import StatusBadge from "../components/StatusBadge";
 import PlaybookSemanticReview from "./playbook-graph-v2/PlaybookSemanticReview";
+import MarkdownPreview from "../components/MarkdownPreview";
 
 type TabId = "source" | "graph" | "runs";
 
@@ -90,7 +91,8 @@ export default function PlaybookDetail() {
 }
 
 // ---------------------------------------------------------------------------
-// Source tab — editable textarea wired to sync save-and-compile
+// Source tab — rendered markdown by default; Edit opens the raw source in a
+// textarea wired to sync save-and-compile.
 // ---------------------------------------------------------------------------
 
 function SourceTab({ playbookId }: { playbookId: string }) {
@@ -101,6 +103,7 @@ function SourceTab({ playbookId }: { playbookId: string }) {
   const [baseHash, setBaseHash] = useState("");
   const [lastResult, setLastResult] = useState<PlaybookUpdateResult | null>(null);
   const [saveError, setSaveError] = useState<string | null>(null);
+  const [editing, setEditing] = useState(false);
 
   useEffect(() => {
     if (source) {
@@ -128,6 +131,10 @@ function SourceTab({ playbookId }: { playbookId: string }) {
         setSaveError(
           "Vault changed underneath this editor. Reload to pick up the latest, or overwrite by saving again without the hash.",
         );
+      } else {
+        // Saved cleanly (compiled or not) — fall back to the rendered view of
+        // what the editor now holds.
+        setEditing(false);
       }
     } catch (err) {
       setSaveError(err instanceof Error ? err.message : String(err));
@@ -144,39 +151,74 @@ function SourceTab({ playbookId }: { playbookId: string }) {
         <span>hash {baseHash.slice(0, 12)}</span>
       </div>
 
-      <textarea
-        value={draft}
-        onChange={(e) => setDraft(e.target.value)}
-        spellCheck={false}
-        className="h-[60vh] w-full resize-none rounded-lg border border-gray-800 bg-gray-900 p-4 font-mono text-sm text-gray-200 focus:border-indigo-500 focus:outline-none"
-      />
+      {!editing ? (
+        <>
+          <div
+            role="region"
+            aria-label="Playbook source preview"
+            className="min-h-[60vh] w-full overflow-y-auto rounded-lg border border-gray-800 bg-gray-900 p-4"
+          >
+            <MarkdownPreview source={draft} />
+          </div>
 
-      <div className="flex items-center gap-3">
-        <button
-          onClick={onSave}
-          disabled={!dirty || update.isPending}
-          className="rounded-md bg-indigo-600 px-4 py-1.5 text-sm font-medium text-white hover:bg-indigo-500 disabled:cursor-not-allowed disabled:bg-gray-700"
-        >
-          {update.isPending ? "Saving..." : dirty ? "Save & Compile" : "Saved"}
-        </button>
-        <button
-          onClick={() => {
-            setDraft(source.markdown);
-            setSaveError(null);
-            setLastResult(null);
-          }}
-          disabled={!dirty || update.isPending}
-          className="rounded-md bg-gray-800 px-3 py-1.5 text-sm text-gray-300 hover:bg-gray-700 disabled:cursor-not-allowed disabled:opacity-50"
-        >
-          Revert
-        </button>
-        <button
-          onClick={() => refetch()}
-          className="rounded-md bg-gray-800 px-3 py-1.5 text-sm text-gray-300 hover:bg-gray-700"
-        >
-          Reload
-        </button>
-      </div>
+          <div className="flex items-center gap-3">
+            <button
+              onClick={() => {
+                setSaveError(null);
+                setLastResult(null);
+                setEditing(true);
+              }}
+              className="rounded-md bg-indigo-600 px-4 py-1.5 text-sm font-medium text-white hover:bg-indigo-500"
+            >
+              Edit
+            </button>
+            <button
+              onClick={() => refetch()}
+              className="rounded-md bg-gray-800 px-3 py-1.5 text-sm text-gray-300 hover:bg-gray-700"
+            >
+              Reload
+            </button>
+          </div>
+        </>
+      ) : (
+        <>
+          <textarea
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            spellCheck={false}
+            aria-label="Playbook markdown source"
+            className="h-[60vh] w-full resize-none rounded-lg border border-gray-800 bg-gray-900 p-4 font-mono text-sm text-gray-200 focus:border-indigo-500 focus:outline-none"
+          />
+
+          <div className="flex items-center gap-3">
+            <button
+              onClick={onSave}
+              disabled={!dirty || update.isPending}
+              className="rounded-md bg-indigo-600 px-4 py-1.5 text-sm font-medium text-white hover:bg-indigo-500 disabled:cursor-not-allowed disabled:bg-gray-700"
+            >
+              {update.isPending ? "Saving..." : dirty ? "Save & Compile" : "Saved"}
+            </button>
+            <button
+              onClick={() => {
+                setDraft(source.markdown);
+                setSaveError(null);
+                setLastResult(null);
+                setEditing(false);
+              }}
+              disabled={update.isPending}
+              className="rounded-md bg-gray-800 px-3 py-1.5 text-sm text-gray-300 hover:bg-gray-700 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              Cancel
+            </button>
+            <button
+              onClick={() => refetch()}
+              className="rounded-md bg-gray-800 px-3 py-1.5 text-sm text-gray-300 hover:bg-gray-700"
+            >
+              Reload
+            </button>
+          </div>
+        </>
+      )}
 
       {saveError && (
         <div className="flex items-start gap-2 rounded-lg border border-red-500/30 bg-red-500/10 p-3 text-sm text-red-300">
