@@ -943,6 +943,12 @@ class AgentProfile:
     # workspace no session may touch (see
     # :mod:`src.orchestrator.base_workspace`).
     read_only: bool = False
+    # Operator kill-switch for the whole profile.  ``False`` means "hand this
+    # profile no new work": its pools size down to their busy sessions (idle
+    # workers drain, in-flight tasks finish) and ``task_claim`` refuses.  The
+    # definition, its vault markdown and its DB row are all left intact so the
+    # profile stays visible and can be switched back on.
+    enabled: bool = True
     # Opt-in escape hatch for the base-checkout guard.  A session's
     # ``work_dir`` may not be a base workspace — the clone that hosts the
     # slot worktrees, routinely a human's own checkout — unless its profile

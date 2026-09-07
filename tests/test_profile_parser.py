@@ -1526,11 +1526,19 @@ class TestValidateConfig:
             "default_class",
             "needs_workspace",
             "read_only",
+            "enabled",
             "allow_base_checkout",
             "min_active",
             "max_active",
             "max_claims_per_session",
         }
+
+    def test_config_enabled_must_be_a_boolean(self):
+        """``enabled`` is the operator kill-switch written by pool_set_enabled."""
+        assert _validate_config({"enabled": False}) == []
+        assert _validate_config({"enabled": True}) == []
+        errors = _validate_config({"enabled": "false"})
+        assert errors and "'enabled' must be a boolean" in errors[0]
 
     def test_config_model_rejected(self):
         """``model`` is rejected: the class and harness resolve the model."""
