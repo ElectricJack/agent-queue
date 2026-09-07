@@ -57,6 +57,7 @@ SHIPPED_SOURCES: dict[str, str] = {
     "ci-main-sentinel": "src/prompts/project_playbooks/agent-queue/ci-main-sentinel.md",
     "root-integration-train": "src/prompts/default_playbooks/root-integration-train.md",
     "blocked-task-escalation": "src/prompts/default_playbooks/blocked-task-escalation.md",
+    "provider-usage-probe": "src/prompts/default_playbooks/provider-usage-probe.md",
 }
 
 PLAYBOOK_IDS = tuple(SHIPPED_SOURCES)

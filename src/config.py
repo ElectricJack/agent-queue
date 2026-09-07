@@ -1971,6 +1971,54 @@ class SwarmConfig:
 
 
 @dataclass
+class ClaudeProviderConfig:
+    """The Claude ``/usage`` probe (provider-usage design, T4).
+
+    ``binary`` exists because a box may front the CLI with a harness shim;
+    the probe runs whatever this names and never appends ``--bare``, which
+    would force API-key auth and report a different account entirely.
+
+    ``stale_after_seconds`` is the one horizon the API, the dashboard card
+    and the doctor check all read.  Three independently hard-coded numbers
+    would eventually disagree about what the same card means.  The default
+    is twice the shipped playbook's ten-minute cadence plus slack.
+    """
+
+    usage_probe_enabled: bool = True
+    binary: str = "claude"
+    stale_after_seconds: int = 1500
+
+    def validate(self) -> list[ConfigError]:
+        errors: list[ConfigError] = []
+        if not str(self.binary).strip():
+            errors.append(ConfigError("providers", "claude.binary", "must not be empty"))
+        if self.stale_after_seconds <= 0:
+            errors.append(ConfigError("providers", "claude.stale_after_seconds", "must be > 0"))
+        return errors
+
+
+@dataclass
+class ProvidersConfig:
+    """Each provider's own account of the quota our agents draw on.
+
+    Codex needs no settings: its numbers arrive passively on the transcript
+    lines the watcher already reads.  It gets a horizon of its own anyway,
+    and a much longer one, because a Codex reading only advances while a
+    Codex session is live — four hours of silence is an idle fleet, not a
+    broken feed.
+    """
+
+    claude: ClaudeProviderConfig = field(default_factory=ClaudeProviderConfig)
+    codex_stale_after_seconds: int = 4 * 3600
+
+    def validate(self) -> list[ConfigError]:
+        errors = list(self.claude.validate())
+        if self.codex_stale_after_seconds <= 0:
+            errors.append(ConfigError("providers", "codex_stale_after_seconds", "must be > 0"))
+        return errors
+
+
+@dataclass
 class MetricsConfig:
     """Fleet metrics sampler and time series (dashboard Metrics tab).
 
@@ -2138,6 +2186,7 @@ class AppConfig:
     swarm: SwarmConfig = field(default_factory=SwarmConfig)
     resources: ResourcesConfig = field(default_factory=ResourcesConfig)
     metrics: MetricsConfig = field(default_factory=MetricsConfig)
+    providers: ProvidersConfig = field(default_factory=ProvidersConfig)
     graph_layout: GraphLayoutConfig = field(default_factory=GraphLayoutConfig)
     agent_profiles: list[AgentProfileConfig] = field(default_factory=list)
     global_token_budget_daily: int | None = None
@@ -2366,6 +2415,7 @@ class AppConfig:
         errors.extend(self.swarm.validate())
         errors.extend(self.resources.validate())
         errors.extend(self.metrics.validate())
+        errors.extend(self.providers.validate())
         errors.extend(self.graph_layout.validate())
         # Sessions are the only execution path (the runtime subsystem was
         # removed), so a disabled session runtime is a daemon that accepts
@@ -2470,6 +2520,7 @@ class AppConfig:
         updated.resources = fresh.resources
         updated.pricing = fresh.pricing
         updated.surface = fresh.surface
+        updated.providers = fresh.providers
 
         return updated
 
@@ -2510,6 +2561,7 @@ HOT_RELOADABLE_SECTIONS = {
     "swarm",
     "resources",
     "metrics",
+    "providers",
     "graph_layout",
     "pricing",
     "surface",
@@ -3458,6 +3510,17 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
 
     if "metrics" in raw:
         config.metrics = MetricsConfig(**_dataclass_kwargs(MetricsConfig, raw["metrics"]))
+
+    if "providers" in raw:
+        providers_raw = raw["providers"] or {}
+        claude_raw = providers_raw.get("claude") or {}
+        kwargs = _dataclass_kwargs(ProvidersConfig, providers_raw)
+        # The nested section is a dataclass, not a scalar: build it from its
+        # own sub-mapping rather than letting the raw dict through.
+        kwargs["claude"] = ClaudeProviderConfig(
+            **_dataclass_kwargs(ClaudeProviderConfig, claude_raw)
+        )
+        config.providers = ProvidersConfig(**kwargs)
 
     # Both spellings: the spec nests it under ``dashboard``, while
     # ``config_editor``/``update_config`` write AppConfig field names as
