@@ -18,7 +18,12 @@ from src.integration.outbox import (
 )
 from src.playbooks.artifact_store import ArtifactStore
 from src.playbooks.routing import install_routing_activation_snapshot
-from src.playbooks.services import build_v2_engine
+from src.playbooks.services import (
+    INTEGRATION_LIFECYCLE_PLAYBOOK_IDS,
+    IntegrationRouteTarget,
+    build_v2_engine,
+    resolve_integration_route,
+)
 from src.playbooks.waits import PENDING_EVENT_DISPATCH_LEASE_SECONDS
 
 logger = logging.getLogger(__name__)
@@ -55,14 +60,22 @@ class _FrozenOperationRoute:
             artifact_sha256=row.get("artifact_sha256"),
         )
 
+    @classmethod
+    def from_target(cls, target: IntegrationRouteTarget) -> _FrozenOperationRoute:
+        return cls(
+            activation_id=target.activation_id,
+            playbook_id=target.playbook_id,
+            scope=target.scope,
+            scope_identifier=target.scope_identifier,
+            artifact_sha256=target.artifact_sha256,
+        )
+
     def matches(self, destination: _IntegrationDestination) -> bool:
         return (
-            destination.activation_id,
             destination.playbook_id,
             destination.scope,
             destination.scope_identifier,
         ) == (
-            self.activation_id,
             self.playbook_id,
             self.scope,
             self.scope_identifier,
@@ -186,13 +199,8 @@ class V2PlaybookRuntime:
         event["_event_type"] = event_type
         if state.manifest is None:
             hydrated = await self._engine._hydrate_event(event)
-            route_row = None
-            operation_id = hydrated.get("operation_id")
-            if isinstance(operation_id, str) and operation_id:
-                route_row = await self._db.get_integration_operation_artifact_route(
-                    operation_id
-                )
-            route = _FrozenOperationRoute.from_row(route_row) if route_row else None
+            target = await resolve_integration_route(self._db, event_type, hydrated)
+            route = _FrozenOperationRoute.from_target(target) if target is not None else None
             suppression = None
             project_id = hydrated.get("project_id")
             get_suppression = getattr(
@@ -283,6 +291,14 @@ class V2PlaybookRuntime:
         project_id = hydrated.get("project_id")
         agent_type = hydrated.get("agent_type")
         selected: list[_IntegrationDestination] = []
+        if (
+            not isinstance(project_id, str)
+            or not project_id.strip()
+        ):
+            return []
+        lifecycle_ids = INTEGRATION_LIFECYCLE_PLAYBOOK_IDS | (
+            {route.playbook_id} if route is not None and route.playbook_id else set()
+        )
         owner_admitted = route is None
         for destination in self._integration_destinations:
             if (
@@ -299,6 +315,8 @@ class V2PlaybookRuntime:
 
             candidate = destination
             is_owner = route is not None and route.matches(destination)
+            if destination.playbook_id in lifecycle_ids and not is_owner:
+                continue
             if (
                 not is_owner
                 and destination.playbook_id == "pr-merge-sweep"

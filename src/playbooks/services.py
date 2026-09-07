@@ -8,6 +8,8 @@ import time
 from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock
 
+from src.integration.models import HierarchicalIntegrationPolicy
+
 if TYPE_CHECKING:
     from src.commands.handler import CommandHandler
     from src.llm import LLMClient
@@ -21,6 +23,154 @@ _EXCLUDED_TOOLS = frozenset({"load_tools", "reply_to_user"})
 #: Event families the timer service emits with ``project_id: null``; they are
 #: system-scoped by nature and a project-scoped playbook may trigger on them.
 GLOBAL_EVENT_PREFIXES = ("timer.", "cron.")
+
+# These two definitions are the command-bearing integration lifecycle.  They
+# are shared at system scope, but their authority always comes from a project's
+# frozen policy route.  Other system playbooks (default review, notifications,
+# observers) retain normal event-to-scope fanout.
+INTEGRATION_LIFECYCLE_PLAYBOOK_IDS = frozenset(
+    {"hierarchical-delivery", "root-integration-train"}
+)
+_PARENT_INTEGRATION_EVENTS = frozenset(
+    {
+        "task.completed",
+        "task.failed",
+        "task.child_added",
+        "task.parent_checkpointed",
+        "delivery.ready",
+        "delivery.applied",
+        "task.integration_ready",
+        "task.integration_verified",
+        "integration.ci_completed",
+        "integration.repair_exhausted",
+        "integration.repair_deadline_due",
+        "integration.resolution_push_observed",
+        "integration.repair_delegate_closed",
+    }
+)
+_ROOT_INTEGRATION_EVENTS = frozenset(
+    {
+        "integration.sweep_due",
+        "integration.sealed",
+        "integration.candidate_green",
+        "integration.candidate_red",
+        "integration.repair_exhausted",
+        "integration.batch_promoted",
+        "integration.cleanup_requested",
+    }
+)
+_POLICY_ROUTE_FALLBACK_EVENTS = frozenset(
+    {
+        "task.completed",
+        "task.failed",
+        "task.child_added",
+        "task.parent_checkpointed",
+        "integration.sweep_due",
+    }
+)
+
+
+@dataclass(frozen=True, slots=True)
+class IntegrationRouteTarget:
+    """One project-authorized activation address and immutable artifact."""
+
+    activation_id: str | None
+    playbook_id: str
+    scope: str
+    scope_identifier: str
+    artifact_sha256: str
+
+    def matches_activation(self, row: Any) -> bool:
+        return (
+            row.get("playbook_id") == self.playbook_id
+            and row.get("scope") == self.scope
+            and (row.get("scope_identifier") or "") == self.scope_identifier
+        )
+
+
+def is_integration_route_event(event_type: str) -> bool:
+    return event_type in _PARENT_INTEGRATION_EVENTS | _ROOT_INTEGRATION_EVENTS
+
+
+async def resolve_integration_route(
+    db: Any, event_type: str, event: Any
+) -> IntegrationRouteTarget | None:
+    """Resolve project authority for one integration-lifecycle dispatch.
+
+    Operation-bound events use the operation's immutable route.  Only the
+    initial root sweep and ordinary child terminal events may fall back to the
+    project's current policy because no integration operation exists yet.
+    Missing/invalid project identity, disabled integration, and invalid policy
+    all fail closed.
+    """
+
+    if not is_integration_route_event(event_type):
+        return None
+    project_id = event.get("project_id") if isinstance(event, dict) else None
+    if not isinstance(project_id, str) or not project_id.strip():
+        return None
+    project = await db.get_project(project_id)
+    if (
+        project is None
+        or project.hierarchical_integration_mode not in {"hierarchy", "train"}
+    ):
+        return None
+    try:
+        policy = HierarchicalIntegrationPolicy.model_validate(
+            project.hierarchical_integration_policy
+        )
+    except (TypeError, ValueError):
+        return None
+
+    operation_id = event.get("operation_id")
+    if isinstance(operation_id, str) and operation_id.strip():
+        row = await db.get_integration_operation_artifact_route(operation_id)
+        if row is not None:
+            scope = row.get("scope")
+            identifier = row.get("scope_identifier")
+            sha = row.get("artifact_sha256")
+            activation_id = row.get("activation_id")
+            playbook_id = row.get("playbook_id")
+            if (
+                isinstance(playbook_id, str)
+                and playbook_id
+                and isinstance(activation_id, str)
+                and activation_id
+                and isinstance(sha, str)
+                and sha
+                and (
+                    (scope == "system" and identifier == "")
+                    or (scope == "project" and identifier == project_id)
+                )
+            ):
+                if scope == "system" and row.get("project_id") != project_id:
+                    return None
+                return IntegrationRouteTarget(
+                    activation_id=activation_id,
+                    playbook_id=playbook_id,
+                    scope=scope,
+                    scope_identifier=identifier,
+                    artifact_sha256=sha,
+                )
+            return None
+    if event_type not in _POLICY_ROUTE_FALLBACK_EVENTS:
+        return None
+    if event_type == "integration.sweep_due" and (
+        not isinstance(operation_id, str) or not operation_id.strip()
+    ):
+        return None
+
+    boundary = policy.root if event_type == "integration.sweep_due" else policy.parent
+    route = boundary.route
+    if not route.is_available_to_project(project_id):
+        return None
+    return IntegrationRouteTarget(
+        activation_id=route.activation_id,
+        playbook_id=route.playbook_id,
+        scope=route.scope,
+        scope_identifier=route.scope_identifier,
+        artifact_sha256=route.artifact.artifact_sha256,
+    )
 
 
 def is_global_event(event_type: str) -> bool:
@@ -49,6 +199,15 @@ class DatabaseActivationSource:
         # ``ci-main-sentinel`` forever.  Every other event without a project id
         # still reaches system playbooks only.
         global_event = project_id is None and is_global_event(event_type)
+        integration_event = is_integration_route_event(event_type)
+        integration_route = (
+            await resolve_integration_route(self._db, event_type, event)
+            if integration_event
+            else None
+        )
+        lifecycle_ids = INTEGRATION_LIFECYCLE_PLAYBOOK_IDS | (
+            {integration_route.playbook_id} if integration_route is not None else set()
+        )
         for row in rows:
             health = getattr(row.get("health"), "value", row.get("health"))
             artifact_sha256 = row.get("active_artifact_sha256")
@@ -56,6 +215,10 @@ class DatabaseActivationSource:
                 continue
             scope = row.get("scope")
             identifier = row.get("scope_identifier") or ""
+            if integration_event and row.get("playbook_id") in lifecycle_ids:
+                if integration_route is None or not integration_route.matches_activation(row):
+                    continue
+                artifact_sha256 = integration_route.artifact_sha256
             # A global timer has no event project.  The activation address is
             # therefore the only authoritative project identity for the
             # per-project legacy merge sweep.

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -13,6 +14,7 @@ from src.config import PlaybooksConfig
 from src.database import Database
 from src.database.tables import (
     integration_operation_artifact_pins,
+    integration_batches,
     integration_outbox,
     integration_outbox_artifact_pins,
     integration_repair_operations,
@@ -140,6 +142,67 @@ async def _activate(
     return activation_id, ref.artifact_sha256
 
 
+async def _enable_with_route(
+    db,
+    *,
+    playbook_id: str,
+    activation_id: str,
+    artifact_sha256: str,
+    scope: str,
+    scope_identifier: str,
+    project_id: str = "p",
+    mode: str = "train",
+) -> None:
+    artifact = await db.get_playbook_artifact(artifact_sha256)
+    assert artifact is not None
+    repository_id = f"repo-{project_id}"
+    if await db.get_repo(repository_id) is None:
+        await db.create_repo(
+            RepoConfig(
+                id=repository_id,
+                project_id=project_id,
+                source_type=RepoSourceType.CLONE,
+                url=f"https://github.com/acme/{project_id}.git",
+                default_branch="main",
+            )
+        )
+    boundary = {
+        "required_checks": {
+            "version": "checks-v1",
+            "names": ["Tests (default)"],
+            "producer_id": "1234",
+        },
+        "repair": {
+            "debug_intelligence_class": "deep",
+            "debug_profile_id": "debugger",
+        },
+        "route": {
+            "playbook_id": playbook_id,
+            "scope": scope,
+            "scope_identifier": scope_identifier,
+            "activation_id": activation_id,
+            "artifact": artifact.as_dict(),
+        },
+        "primary_intelligence_class": "standard",
+        "primary_profile_id": "worker",
+    }
+    await db.update_project(
+        project_id,
+        integration_mode="pull_request",
+        integration_repository_id=repository_id,
+        hierarchical_integration_mode=mode,
+        hierarchical_integration_policy={
+            "version": 1,
+            "parent": boundary,
+            "root": boundary,
+            "branchless_parent": "skip",
+            "on_failed_child": "block",
+            "on_main_moved": "rebuild",
+            "cleanup": {},
+        },
+    )
+
+
 def _runtime(db, compiled_root) -> V2PlaybookRuntime:
     config = SimpleNamespace(
         compiled_root=str(compiled_root),
@@ -194,8 +257,29 @@ async def _pin_operation_route(
     activation_id: str,
     scope: str = "project",
     scope_identifier: str = "p",
+    batch_project_id: str | None = None,
 ) -> None:
     async with db.immediate() as conn:
+        if batch_project_id is not None:
+            await conn.execute(
+                integration_batches.insert().values(
+                    id=operation_id,
+                    project_id=batch_project_id,
+                    repository_id=f"repo-{batch_project_id}",
+                    request_id=f"request-{operation_id}",
+                    trigger="test",
+                    source_manifest_digest="sha256:" + "a" * 64,
+                    base_sha="b" * 40,
+                    lifecycle="sealed",
+                    current_revision=0,
+                    integration_branch=f"refs/heads/aq/integration/{operation_id}",
+                    policy_snapshot={},
+                    artifact_snapshot={},
+                    cleanup_state="pending",
+                    created_at=NOW,
+                    updated_at=NOW,
+                )
+            )
         await conn.execute(
             integration_repair_operations.insert().values(
                 id=operation_id,
@@ -546,26 +630,196 @@ async def test_scoped_destinations_dispatch_only_their_pinned_activation(db, tmp
         "integration.sealed",
         scope="system",
     )
-    _project_id, project_sha = await _activate(
+    project_id, project_sha = await _activate(
         db,
         compiled,
         "integration-train",
         "integration.sealed",
         scope="project",
     )
+    await _enable_with_route(
+        db,
+        playbook_id="integration-train",
+        activation_id=project_id,
+        artifact_sha256=project_sha,
+        scope="project",
+        scope_identifier="p",
+    )
+    await _pin_operation_route(
+        db,
+        operation_id="operation-1",
+        playbook_id="integration-train",
+        artifact_sha256=project_sha,
+        activation_id=project_id,
+    )
     await _enqueue(db)
     runtime = _runtime(db, compiled)
     await runtime.refresh()
 
     assert await IntegrationOutbox(db, runtime.accept_integration_event).dispatch_due(NOW) == 1
-    await _wait_for_accepted(db, "event-1", count=2)
-    await _wait_for_pending_resolution(db, "event-1", count=2)
+    await _wait_for_accepted(db, "event-1", count=1)
+    await _wait_for_pending_resolution(db, "event-1", count=1)
     await runtime.shutdown()
 
     async with db._engine.connect() as conn:
         runs = (await conn.execute(select(playbook_v2_runs))).mappings().all()
-    assert {row["artifact_sha256"] for row in runs} == {system_sha, project_sha}
-    assert len({row["dispatch_id"] for row in runs}) == 2
+    assert [row["artifact_sha256"] for row in runs] == [project_sha]
+    assert system_sha != project_sha
+
+
+async def test_one_system_route_services_two_projects_without_crossing_identity(
+    db, tmp_path
+):
+    compiled = tmp_path / "compiled"
+    activation_id, artifact_sha = await _activate(
+        db,
+        compiled,
+        "root-integration-train",
+        "integration.sweep_due",
+        scope="system",
+    )
+    await db.create_project(Project(id="p2", name="second integration project"))
+    for project_id in ("p", "p2"):
+        await _enable_with_route(
+            db,
+            playbook_id="root-integration-train",
+            activation_id=activation_id,
+            artifact_sha256=artifact_sha,
+            scope="system",
+            scope_identifier="",
+            project_id=project_id,
+        )
+    runtime = _runtime(db, compiled)
+    await runtime.refresh()
+    runtime._schedule_integration_pending = lambda _rows: None
+
+    for ordinal, project_id in enumerate(("p", "p2"), start=1):
+        event_id = f"event-{ordinal}"
+        operation_id = f"integration-sweep:{project_id}:1"
+        async with db.immediate() as conn:
+            await enqueue_integration_event(
+                conn,
+                event_id=event_id,
+                dedup_key=event_id,
+                project_id=project_id,
+                event_type="integration.sweep_due",
+                payload={"project_id": project_id, "operation_id": operation_id},
+                available_at=NOW,
+            )
+        assert await runtime.accept_integration_event(
+            "integration.sweep_due",
+            {
+                "project_id": project_id,
+                "operation_id": operation_id,
+            },
+            event_id,
+        )
+    await runtime.shutdown()
+
+    rows = sorted(await _pending_rows(db), key=lambda row: row["event_id"])
+    assert [row["scope"] for row in rows] == ["system", "system"]
+    assert [row["scope_identifier"] for row in rows] == ["", ""]
+    assert [json.loads(row["event"])["project_id"] for row in rows] == ["p", "p2"]
+
+
+async def test_system_route_rejects_disabled_or_policyless_project(db, tmp_path):
+    compiled = tmp_path / "compiled"
+    await _activate(
+        db,
+        compiled,
+        "root-integration-train",
+        "integration.sweep_due",
+        scope="system",
+    )
+    runtime = _runtime(db, compiled)
+    await runtime.refresh()
+
+    for ordinal, (project_id, operation_id) in enumerate(
+        (("p", "integration-sweep:p:1"), ("p", "integration-sweep:p:2")), start=1
+    ):
+        async with db.immediate() as conn:
+            await enqueue_integration_event(
+                conn,
+                event_id=f"event-{ordinal}",
+                dedup_key=f"event-{ordinal}",
+                project_id=project_id,
+                event_type="integration.sweep_due",
+                payload={"project_id": project_id, "operation_id": operation_id},
+                available_at=NOW,
+            )
+
+    assert not await runtime.accept_integration_event(
+        "integration.sweep_due",
+        {"project_id": "p", "operation_id": "integration-sweep:p:1"},
+        "event-1",
+    )
+    assert not await runtime.accept_integration_event(
+        "integration.sweep_due",
+        {"project_id": "", "operation_id": "integration-sweep:p:2"},
+        "event-2",
+    )
+    assert await _pending_rows(db) == []
+    await runtime.shutdown()
+
+
+async def test_system_frozen_operation_route_rejects_another_project(db, tmp_path):
+    compiled = tmp_path / "compiled"
+    activation_id, artifact_sha = await _activate(
+        db,
+        compiled,
+        "root-integration-train",
+        "integration.sealed",
+        scope="system",
+    )
+    await db.create_project(Project(id="p2", name="second integration project"))
+    for project_id in ("p", "p2"):
+        await _enable_with_route(
+            db,
+            playbook_id="root-integration-train",
+            activation_id=activation_id,
+            artifact_sha256=artifact_sha,
+            scope="system",
+            scope_identifier="",
+            project_id=project_id,
+        )
+    await _pin_operation_route(
+        db,
+        operation_id="operation-1",
+        playbook_id="root-integration-train",
+        artifact_sha256=artifact_sha,
+        activation_id=activation_id,
+        scope="system",
+        scope_identifier="",
+        batch_project_id="p",
+    )
+    async with db.immediate() as conn:
+        for project_id in ("p", "p2"):
+            await enqueue_integration_event(
+                conn,
+                event_id=f"event-{project_id}",
+                dedup_key=f"event-{project_id}",
+                project_id=project_id,
+                event_type="integration.sealed",
+                payload={"project_id": project_id, "operation_id": "operation-1"},
+                available_at=NOW,
+            )
+    runtime = _runtime(db, compiled)
+    await runtime.refresh()
+    runtime._schedule_integration_pending = lambda _rows: None
+
+    assert not await runtime.accept_integration_event(
+        "integration.sealed",
+        {"project_id": "p2", "operation_id": "operation-1"},
+        "event-p2",
+    )
+    assert await runtime.accept_integration_event(
+        "integration.sealed",
+        {"project_id": "p", "operation_id": "operation-1"},
+        "event-p",
+    )
+    [pending] = await _pending_rows(db)
+    assert json.loads(pending["event"])["project_id"] == "p"
+    await runtime.shutdown()
 
 
 async def test_large_fanout_acceptance_resumes_in_bounded_pages(db, tmp_path):
@@ -769,6 +1023,14 @@ async def test_new_operation_event_uses_frozen_owner_and_current_sibling_artifac
     _sibling_activation, sibling_sha = await _activate(
         db, compiled, "integration-observer", "integration.sealed", source_digit="3"
     )
+    await _enable_with_route(
+        db,
+        playbook_id="hierarchical-delivery",
+        activation_id=owner_activation,
+        artifact_sha256=owner_old_sha,
+        scope="project",
+        scope_identifier="p",
+    )
     await _pin_operation_route(
         db,
         operation_id="operation-1",
@@ -807,6 +1069,14 @@ async def test_disabled_frozen_owner_still_accepts_new_operation_event(
     )
     sibling_activation, sibling_sha = await _activate(
         db, compiled, "integration-observer", "integration.sealed", source_digit="3"
+    )
+    await _enable_with_route(
+        db,
+        playbook_id="hierarchical-delivery",
+        activation_id=owner_activation,
+        artifact_sha256=owner_sha,
+        scope="project",
+        scope_identifier="p",
     )
     await _pin_operation_route(
         db,

@@ -11,7 +11,7 @@ from __future__ import annotations
 import pytest
 
 from src.database import Database
-from src.models import Project
+from src.models import Project, RepoConfig, RepoSourceType
 from src.playbooks.artifact_ref import ArtifactRef
 from src.playbooks.services import DatabaseActivationSource, is_global_event
 
@@ -101,6 +101,56 @@ async def _ids(source, event_type, event=None):
     return sorted(ref.playbook_id for ref in await source.ready_activations(event_type, event))
 
 
+async def _enable_system_integration_route(
+    db, *, project_id: str, playbook_id: str, artifact_sha256: str
+) -> None:
+    repository_id = f"repo-{project_id}"
+    await db.create_repo(
+        RepoConfig(
+            id=repository_id,
+            project_id=project_id,
+            source_type=RepoSourceType.CLONE,
+            url=f"https://github.com/acme/{project_id}.git",
+        )
+    )
+    artifact = await db.get_playbook_artifact(artifact_sha256)
+    assert artifact is not None
+    boundary = {
+        "required_checks": {
+            "version": "checks-v1",
+            "names": ["Tests (default)"],
+            "producer_id": "1234",
+        },
+        "repair": {
+            "debug_intelligence_class": "deep",
+            "debug_profile_id": "debugger",
+        },
+        "route": {
+            "playbook_id": playbook_id,
+            "scope": "system",
+            "scope_identifier": "",
+            "activation_id": None,
+            "artifact": artifact.as_dict(),
+        },
+        "primary_intelligence_class": "standard",
+        "primary_profile_id": "worker",
+    }
+    await db.update_project(
+        project_id,
+        integration_mode="pull_request",
+        integration_repository_id=repository_id,
+        hierarchical_integration_mode="hierarchy",
+        hierarchical_integration_policy={
+            "version": 1,
+            "parent": boundary,
+            "root": boundary,
+            "branchless_parent": "skip",
+            "on_failed_child": "block",
+            "cleanup": {},
+        },
+    )
+
+
 def test_global_event_families():
     assert is_global_event("timer.30m") and is_global_event("cron.07:00")
     assert not is_global_event("task.completed") and not is_global_event("")
@@ -137,3 +187,34 @@ async def test_agent_type_scope_needs_a_project_and_matching_type(activations):
     assert await _ids(activations, "timer.30m", {"agent_type": "reviewer"}) == [
         "default-pipeline", "other-sweep", "pr-merge-sweep"
     ]
+
+
+async def test_disabled_project_does_not_admit_shared_hierarchical_delivery(db):
+    await db.create_project(Project(id="disabled", name="disabled"))
+    await _activate(db, "hierarchical-delivery", "system", "", "5")
+    source = DatabaseActivationSource(db)
+
+    assert await _ids(
+        source,
+        "task.completed",
+        {"project_id": "disabled", "task_id": "task-1", "title": "done"},
+    ) == []
+
+
+async def test_enabled_project_uses_shared_route_without_activation_id(db):
+    await db.create_project(Project(id="enabled", name="enabled"))
+    await _activate(db, "default-pipeline", "system", "", "5")
+    await _activate(db, "hierarchical-delivery", "system", "", "6")
+    await _enable_system_integration_route(
+        db,
+        project_id="enabled",
+        playbook_id="hierarchical-delivery",
+        artifact_sha256="sha256:" + "6" * 64,
+    )
+    source = DatabaseActivationSource(db)
+
+    assert await _ids(
+        source,
+        "task.completed",
+        {"project_id": "enabled", "task_id": "task-1", "title": "done"},
+    ) == ["default-pipeline", "hierarchical-delivery"]

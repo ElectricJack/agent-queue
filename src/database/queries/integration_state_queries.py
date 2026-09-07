@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from sqlalchemy import and_, select
+from sqlalchemy import and_, func, select
 
 from src.database.tables import (
     integration_batches,
@@ -64,14 +64,27 @@ class IntegrationStateQueriesMixin:
                 integration_repair_operations.c.route_activation_id.label(
                     "activation_id"
                 ),
+                func.coalesce(
+                    integration_batches.c.project_id,
+                    tasks.c.project_id,
+                ).label("project_id"),
                 integration_repair_operations.c.artifact_snapshot,
                 integration_operation_artifact_pins.c.artifact_sha256,
             )
             .select_from(
-                integration_repair_operations.outerjoin(
+                integration_repair_operations
+                .outerjoin(
                     integration_operation_artifact_pins,
                     integration_operation_artifact_pins.c.operation_id
                     == integration_repair_operations.c.id,
+                )
+                .outerjoin(
+                    integration_batches,
+                    integration_batches.c.id == integration_repair_operations.c.batch_id,
+                )
+                .outerjoin(
+                    tasks,
+                    tasks.c.id == integration_repair_operations.c.parent_task_id,
                 )
             )
             .where(integration_repair_operations.c.id == operation_id)
