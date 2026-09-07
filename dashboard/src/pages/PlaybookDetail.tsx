@@ -35,7 +35,15 @@ export default function PlaybookDetail() {
   const [confirmDelete, setConfirmDelete] = useState(false);
 
   const { data: playbooks } = usePlaybooks();
-  const meta = useMemo(() => playbooks?.find((p) => p.id === id), [playbooks, id]);
+  // The detail route identifies only the playbook ID.  An ID can be installed
+  // in multiple scopes, so never let an arbitrary catalog row select a scope
+  // for the destructive action.  DeletePlaybookModal will require the operator
+  // to choose the entry from a scoped list row in that case.
+  const matchingPlaybooks = useMemo(
+    () => playbooks?.filter((p) => p.id === id) ?? [],
+    [playbooks, id],
+  );
+  const meta = matchingPlaybooks.length === 1 ? matchingPlaybooks[0] : undefined;
 
   return (
     <div className="h-full overflow-y-auto p-6 space-y-6">

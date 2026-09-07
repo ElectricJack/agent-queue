@@ -40,10 +40,11 @@ const state = vi.hoisted(() => ({
   semanticGraph: {} as Record<string, unknown>,
   activationHealth: {} as Record<string, unknown>,
   deletePlaybook: vi.fn(),
+  playbooks: [] as Array<Record<string, unknown>>,
 }));
 vi.mock("../../api/hooks", () => ({
   usePlaybooks: () => ({
-    data: [{ id: "review-flow", scope: "system", version: 3, node_count: 5, triggers: ["task.created"], running_count: 0 }],
+    data: state.playbooks,
   }),
   usePlaybookSource: () => ({
     data: { markdown: "# review-flow source", source_hash: "abc123def456", path: "/vault/playbooks/review-flow.md" },
@@ -85,6 +86,7 @@ const installed = {
 };
 
 beforeEach(() => {
+  state.playbooks = [{ id: "review-flow", scope: "system", version: 3, node_count: 5, triggers: ["task.created"], running_count: 0 }];
   state.semanticGraph = { data: semanticGraph, isPending: false, isError: false, error: null };
   state.activationHealth = {
     data: { activations: [semanticGraph.activation] },
@@ -182,5 +184,29 @@ describe("PlaybookDetail delete", () => {
 
     expect(state.deletePlaybook).not.toHaveBeenCalled();
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  });
+
+  it("refuses an ambiguous duplicate ID instead of deleting the first scope", async () => {
+    state.playbooks = [
+      { id: "review-flow", scope: "system", version: 3, node_count: 5, triggers: [], running_count: 0 },
+      { id: "review-flow", scope: "project", scope_identifier: "alpha", version: 3, node_count: 5, triggers: [], running_count: 0 },
+    ];
+    state.activationHealth = {
+      data: {
+        activations: [
+          installed,
+          { ...installed, scope: "project", scope_identifier: "alpha", active_artifact_sha256: "e".repeat(64) },
+        ],
+      },
+      isPending: false,
+    };
+    const user = userEvent.setup();
+    render(page());
+
+    await user.click(screen.getByRole("button", { name: "Delete playbook review-flow" }));
+
+    expect(await screen.findByRole("status")).toHaveTextContent("installed in more than one scope");
+    expect(screen.getByRole("button", { name: "Delete playbook" })).toBeDisabled();
+    expect(state.deletePlaybook).not.toHaveBeenCalled();
   });
 });
