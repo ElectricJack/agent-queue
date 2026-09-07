@@ -138,6 +138,9 @@ async def test_pool_management_routes_round_trip_on_postgres(pool_api):
             {
                 "project_id": "pool-project",
                 "profile_id": "worker",
+                # The operator kill-switch on the (global) profile; a pool that
+                # has never been disabled reports it on.
+                "enabled": True,
                 "min_active": 0,
                 "max_active": None,
                 "desired": 0,
