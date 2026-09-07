@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from sqlalchemy import (
     JSON,
+    BigInteger,
     Boolean,
     CheckConstraint,
     Column,
@@ -2722,7 +2723,7 @@ integration_attestation_publications = Table(
     Column("execution_nonce", Text, nullable=False),
     Column("state", Text, nullable=False),
     Column("prewrite_at", Float, nullable=True),
-    Column("check_run_id", Integer, nullable=True),
+    Column("check_run_id", BigInteger().with_variant(Integer(), "sqlite"), nullable=True),
     Column("expires_at", Float, nullable=False),
     Column("created_at", Float, nullable=False),
     Column("updated_at", Float, nullable=False),
