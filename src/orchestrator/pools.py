@@ -634,7 +634,15 @@ class PoolsMixin:
         agent = await self.db.get_agent(session.agent_id) if session.agent_id else None
         still_owned = agent is None or agent.current_task_id in (None, session.task_id)
         if not other_live and still_owned:
-            await self.db.terminate_pool_session(session.id, reason=reason, task_status=task_status)
+            release = await self.db.terminate_pool_session(
+                session.id, reason=reason, task_status=task_status
+            )
+            # An attached or pending integration owner retains this exact
+            # session/workspace binding.  It is not safe to mark the worker
+            # reusable or remove its claim file until the owner handoff has
+            # durably completed.
+            if not release.released:
+                return
             from src.claim_file import remove_claim_file
             try:
                 remove_claim_file(session.work_dir)

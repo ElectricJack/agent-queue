@@ -26,6 +26,7 @@ from src.database.queries.task_queries import (
 )
 from src.database.tables import (
     agents,
+    integration_branch_owners,
     sessions,
     task_metadata,
     task_workspace_requirements,
@@ -504,6 +505,32 @@ class ClaimQueryMixin:
             and row["last_claim_epoch"] != expected_claim_epoch
         ):
             return out
+        # An attached integration owner is durable evidence that this exact
+        # session is still responsible for its workspace.  Do not clear the
+        # claim or either workspace binding until its handoff completes: a
+        # pool reconciler can otherwise destroy the evidence a repair or
+        # integration close needs.  Lock the owner row in this transaction so
+        # the decision composes with ownership handoff on Postgres too.
+        if agent_id:
+            protected_owner = (
+                await conn.execute(
+                    select(integration_branch_owners.c.id)
+                    .join(
+                        workspaces,
+                        integration_branch_owners.c.workspace_id == workspaces.c.id,
+                    )
+                    .where(
+                        integration_branch_owners.c.session_id == session_id,
+                        integration_branch_owners.c.handoff_state.in_(
+                            ("attached", "handoff_pending")
+                        ),
+                        workspaces.c.locked_by_agent_id == agent_id,
+                    )
+                    .with_for_update()
+                )
+            ).first()
+            if protected_owner is not None:
+                return out
         epoch = None
         if task_id:
             # ``projection_stable``: IN_PROGRESS -> READY cannot move any
@@ -674,6 +701,8 @@ class ClaimQueryMixin:
                 result="released",
                 needs_attention=None,
             )
+            if not out.released:
+                return out
             row = (
                 await c.execute(select(sessions.c.agent_id).where(sessions.c.id == session_id))
             ).fetchone()

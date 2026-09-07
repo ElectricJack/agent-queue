@@ -11,10 +11,12 @@ import uuid
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from sqlalchemy import insert
 
 from src.commands.claim_commands import CLAIM_FILE, write_claim_file
 from src.config import AppConfig, DiscordConfig
 from src.database import Database
+from src.database.tables import integration_branch_owners
 from src.intelligence_classes import IntelligenceClass
 from src.models import (
     AgentProfile,
@@ -338,6 +340,37 @@ class TestReconcilePools:
         updated = await db.get_session(session.id)
         assert updated.state == "stopped"
         assert not os.path.exists(claim_path)
+
+    async def test_terminate_pool_session_retains_attached_integration_owner(self, orch, db):
+        await ready(db, "t1")
+        await orch._reconcile_pools()
+        session = (await db.list_sessions(lifecycle="pool"))[0]
+        claim_path = os.path.join(session.work_dir, CLAIM_FILE)
+        await db.update_session(session.id, task_id="t1", claim_phase="active")
+        await db.update_task("t1", status=TaskStatus.IN_PROGRESS, assigned_agent_id=session.agent_id)
+        await db.update_agent(session.agent_id, current_task_id="t1")
+        workspace = await db.get_workspace_for_agent(session.agent_id)
+        await db.update_workspace(workspace.id, locked_by_task_id="t1")
+        write_claim_file(session.work_dir, {"task_id": "t1", "claim_epoch": 0})
+        async with db.immediate() as conn:
+            await conn.execute(
+                insert(integration_branch_owners).values(
+                    id="owner-1", repository_id="repo-1", ref="aq/t1", owner_id="t1",
+                    owner_role="worker", fence_token=1, handoff_state="attached",
+                    session_id=session.id, workspace_id=workspace.id,
+                    created_at=time.time(), updated_at=time.time(),
+                )
+            )
+
+        await orch._terminate_pool_session(session, reason="integration_owner")
+
+        updated = await db.get_session(session.id)
+        agent = await db.get_agent(session.agent_id)
+        assert updated.state != "stopped"
+        assert updated.task_id == "t1"
+        assert agent.state is not AgentState.IDLE
+        assert (await db.get_workspace(workspace.id)).locked_by_agent_id == session.agent_id
+        assert os.path.exists(claim_path)
 
     async def test_startup_warns_when_pool_profiles_but_swarm_disabled(self, orch, caplog):
         """I5 / ruling P2-17: say out loud that the flag strands pool work."""
