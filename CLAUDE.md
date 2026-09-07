@@ -97,6 +97,7 @@ alembic upgrade head  # apply locally
 - Migrations must work for both SQLite and PostgreSQL
 - **Always name `CheckConstraint`s** (`name="ck_<table>_<what>"`). Autogenerate matches check constraints by name only, so an unnamed one in `tables.py` is invisible to the comparison and every subsequent autogenerate emits a spurious `drop_constraint` for the auto-named constraint the database actually carries
 - `server_default` takes the **bare** value, never a pre-quoted one: `server_default="system"`, not `server_default="'system'"` (SQLAlchemy quotes it again and the DDL becomes `DEFAULT '''system'''`). Booleans use `sa.false()` / `sa.true()`, never `"0"` / `"1"`. Guarded by `tests/test_migration_string_defaults.py` and `tests/test_migration_boolean_defaults.py`
+- **SQLite `batch_alter_table` drops the table's triggers** (it copies the table and drops the original). Wrap any rebuild of a table that carries triggers in `preserve_sqlite_triggers("<table>")` from `migrations/sqlite_triggers.py` (upgrade *and* downgrade), and drop a trigger you mean to replace *before* the block. `tests/test_migration_sqlite_triggers.py` walks the chain and fails on any revision that loses a trigger it never names
 - `src/database/hierarchy_migration.py` is the swarm-work-model hierarchy migration's canonicalisation logic (snapshot → canonicalise → validate → apply), driven by Alembic revisions `a1b2c3d4e5f6` (DDL) and `b2c3d4e5f6a7` (data + partial unique index) and exercised standalone via `aq system db-preflight-hierarchy`
 - Test with: `pytest tests/test_database.py -v`
 

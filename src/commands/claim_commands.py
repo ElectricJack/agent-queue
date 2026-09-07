@@ -285,7 +285,9 @@ class ClaimCommandsMixin:
                 # never reads it (spec §15).
                 seq0 = await self.db.max_event_id() if wait else 0
                 routing = self._pool_claim_routing(session, profile)
-                outcome = await self._attempt_claim(session, want_id, cap, default_profile, routing=routing)
+                outcome = await self._attempt_claim(
+                    session, want_id, cap, default_profile, routing=routing, project=project
+                )
                 result = outcome["result"]
                 if (result == ClaimResult.SESSION_EXHAUSTED.value
                         and self.config.swarm.fresh_context_per_task):
@@ -367,7 +369,9 @@ class ClaimCommandsMixin:
             None,
         )
 
-    async def _attempt_claim(self, session, want_id, cap, default_profile, *, routing=None) -> dict:
+    async def _attempt_claim(
+        self, session, want_id, cap, default_profile, *, routing=None, project=None
+    ) -> dict:
         """Decide the outcome on one ``immediate()`` transaction, on *conn* only.
 
         Every read/write in here must take ``conn`` explicitly (never a
@@ -470,7 +474,9 @@ class ClaimCommandsMixin:
             key = (session.id, task.claim_epoch)
             self.orchestrator.claim_waiters[key] = asyncio.get_running_loop().create_future()
             try:
-                return await self._prepare_and_activate(session, row, task, cap, slot=slot)
+                return await self._prepare_and_activate(
+                    session, row, task, cap, slot=slot, project=project
+                )
             finally:
                 # Every ordinary exit already resolved and popped the future
                 # via ``_resolve_claim_waiters``; this covers the paths that
@@ -490,21 +496,30 @@ class ClaimCommandsMixin:
             return self._simple(ClaimResult.CLAIM_CONFLICT, "", row, cap)
         return self._simple(ClaimResult.NO_READY_WORK, "", row, cap)
 
-    async def _prepare_and_activate(self, session, row, task, cap=None, *, slot=None) -> dict:
+    async def _prepare_and_activate(
+        self, session, row, task, cap=None, *, slot=None, project=None
+    ) -> dict:
         async with self.orchestrator._task_control_lock(task.id):
             if not await self.db.claim_preparation_is_current(
                 session.id, task.id, task.claim_epoch
             ):
                 self._resolve_claim_waiters(session.id, task.claim_epoch, "prepare_failed")
                 return self._simple(ClaimResult.PREPARE_FAILED, "claim changed before preparation", row, cap)
-            return await self._prepare_and_activate_locked(session, row, task, cap, slot=slot)
+            return await self._prepare_and_activate_locked(
+                session, row, task, cap, slot=slot, project=project
+            )
 
-    async def _prepare_and_activate_locked(self, session, row, task, cap=None, *, slot=None) -> dict:
+    async def _prepare_and_activate_locked(
+        self, session, row, task, cap=None, *, slot=None, project=None
+    ) -> dict:
         """Reset the slot, write the claim file, activate.
 
         *slot* is the workspace row ``record_holder`` already returned from
         inside the claim transaction (spec §15); it is only re-read here for
-        callers that did not have one.
+        callers that did not have one.  *project* is the task's project row
+        the admission loop already read; it is only re-read here for callers
+        that did not have it (the claim path's statement budget counts one
+        project read, not two).
         """
         epoch = task.claim_epoch
         hierarchy_attached = False
@@ -514,7 +529,8 @@ class ClaimCommandsMixin:
                 slot = await self.db.get_workspace_for_agent(row.agent_id)
             if slot is None:
                 raise RuntimeError("session holds no workspace slot")
-            project = await self.db.get_project(task.project_id)
+            if project is None or getattr(project, "id", None) != task.project_id:
+                project = await self.db.get_project(task.project_id)
             hierarchy_enabled = getattr(
                 project, "hierarchical_integration_mode", "disabled"
             ) in {"hierarchy", "train"}

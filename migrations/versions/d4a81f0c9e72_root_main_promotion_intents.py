@@ -13,16 +13,12 @@ from collections.abc import Sequence
 import sqlalchemy as sa
 from alembic import op
 
+from migrations.sqlite_triggers import preserve_sqlite_triggers
+
 revision: str = "d4a81f0c9e72"
 down_revision: str | Sequence[str] | None = "46f910d0dce6"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
-
-
-def _base_guards():
-    return importlib.import_module(
-        "migrations.versions.3f30b34c7e7c_hierarchical_integration_state"
-    )
 
 
 _ROOT_INTENT_COLUMNS = (
@@ -211,7 +207,10 @@ def upgrade() -> None:
     )
     _create_prepared_guard()
 
-    with op.batch_alter_table("task_delivery_receipts") as batch:
+    with (
+        preserve_sqlite_triggers("task_delivery_receipts"),
+        op.batch_alter_table("task_delivery_receipts") as batch,
+    ):
         batch.create_check_constraint(
             "ck_task_delivery_receipts_root_tuple",
             "(batch_id IS NULL AND member_ordinal IS NULL AND candidate_revision IS NULL) OR "
@@ -233,7 +232,6 @@ def upgrade() -> None:
             ondelete="RESTRICT",
         )
 
-    _base_guards()._recreate_sqlite_guards("task_delivery_receipts")
     with op.batch_alter_table("integration_candidate_ref_mutations") as batch:
         batch.drop_constraint("ck_integration_candidate_ref_mutations_purpose", type_="check")
         batch.drop_constraint("ck_integration_candidate_ref_mutations_state", type_="check")
@@ -337,11 +335,13 @@ def downgrade() -> None:
         )
     _replace_mutation_guard()
 
-    with op.batch_alter_table("task_delivery_receipts") as batch:
+    with (
+        preserve_sqlite_triggers("task_delivery_receipts"),
+        op.batch_alter_table("task_delivery_receipts") as batch,
+    ):
         batch.drop_constraint("fk_task_delivery_receipts_root_result", type_="foreignkey")
         batch.drop_constraint("fk_task_delivery_receipts_root_member", type_="foreignkey")
         batch.drop_constraint("ck_task_delivery_receipts_root_tuple", type_="check")
-    _base_guards()._recreate_sqlite_guards("task_delivery_receipts")
 
     _drop_prepared_guard()
     op.drop_index(

@@ -247,6 +247,29 @@ def _drop_immutable_guards() -> None:
                 op.execute(f"DROP TRIGGER IF EXISTS trg_{table}_{action}")
 
 
+@contextmanager
+def _sqlite_fk_suspended():
+    """Let SQLite rebuild the referenced ``projects`` table with foreign keys on.
+
+    Batch mode drops and recreates the table; with ``PRAGMA foreign_keys=ON``
+    that implicit delete fails against every row that references a project.
+    Same pattern as ``a7c91e4d2b63`` and ``882b77dc8495``.
+    """
+    bind = op.get_bind()
+    foreign_keys = (
+        bind.dialect.name == "sqlite" and bind.exec_driver_sql("PRAGMA foreign_keys").scalar_one()
+    )
+    if foreign_keys:
+        with op.get_context().autocommit_block():
+            bind.exec_driver_sql("PRAGMA foreign_keys=OFF")
+    try:
+        yield
+    finally:
+        if foreign_keys:
+            with op.get_context().autocommit_block():
+                bind.exec_driver_sql("PRAGMA foreign_keys=ON")
+
+
 def upgrade() -> None:
     with _sqlite_fk_suspended(), op.batch_alter_table("projects") as batch:
         batch.add_column(
