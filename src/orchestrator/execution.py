@@ -1266,7 +1266,9 @@ class ExecutionMixin:
                 hierarchy_managed = bool(hierarchy_enabled and checkpoint)
                 verifier_operation = await self.db.get_integration_verifier_operation(task.id)
                 if repair_delegate:
+                    from src.git.manager import is_valid_git_oid
                     from src.integration.hierarchy import resolve_workspace_repair_proof
+                    from src.integration.repair import repair_subject_sha
 
                     repair_repo = await self.db.get_repo(task.repo_id or "")
                     if (
@@ -1278,7 +1280,18 @@ class ExecutionMixin:
                             "invariant_error",
                             "repair repository/workspace attachment is not configured",
                         )
-                    subject = repair_scope["current_subject"]
+                    # Root and parent stages anchor on different subject
+                    # fields (``candidate_sha`` vs ``head_sha``), so the OID
+                    # comes from the shared resolver -- indexing ``head_sha``
+                    # here made every root repair close raise ``KeyError``
+                    # inside the pipeline guard and land the delegate in
+                    # BLOCKED with its pushed repair unrecorded.
+                    base_sha = repair_subject_sha(repair_scope["current_subject"])
+                    if not is_valid_git_oid(base_sha):
+                        raise HierarchyError(
+                            "invariant_error",
+                            "repair stage subject carries no candidate commit",
+                        )
                     repair_commit_proof = await resolve_workspace_repair_proof(
                         self.db,
                         self.git,
@@ -1288,7 +1301,7 @@ class ExecutionMixin:
                             "branch_name": task.branch_name,
                         },
                         repair_repo,
-                        base_sha=str(subject["head_sha"]),
+                        base_sha=base_sha,
                     )
                     repair_writer_head = repair_commit_proof["head_sha"]
                     repair_writer_closed = True

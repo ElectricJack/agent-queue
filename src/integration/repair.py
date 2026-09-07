@@ -39,6 +39,20 @@ from src.models import Task, TaskStatus
 from src.playbooks.artifact_ref import ArtifactRef
 
 
+def repair_subject_sha(subject: dict[str, Any] | None) -> str:
+    """The exact commit a repair stage's current subject is anchored on.
+
+    The two target kinds carry different canonical subjects: a parent
+    episode's is ``{"kind": "parent", "generation", "head_sha"}`` while a
+    root batch's is ``{"kind": "batch", "revision", "candidate_sha"}``.
+    Every consumer wants the OID, not the shape, so resolve it in one place
+    -- reaching for ``subject["head_sha"]`` raises ``KeyError`` on every
+    root repair and turns a passing close into a blocked task.
+    """
+    raw = subject or {}
+    return str(raw.get("head_sha") or raw.get("candidate_sha") or "")
+
+
 class _RepairInvariant(ValueError):
     """Persisted repair identity is internally inconsistent."""
 
@@ -1838,10 +1852,7 @@ class RepairService:
             raise ValueError("repair operation project identity is missing")
         return str(project_id)
 
-    @staticmethod
-    def _subject_sha(subject: dict[str, Any] | None) -> str:
-        raw = subject or {}
-        return str(raw.get("head_sha") or raw.get("candidate_sha") or "")
+    _subject_sha = staticmethod(repair_subject_sha)
 
     async def _start_context_on(
         self,

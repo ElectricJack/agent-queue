@@ -2980,7 +2980,7 @@ async def test_real_task_close_bypasses_legacy_pipeline_and_rejects_stale_stage(
             "summary": "repair work complete",
         }
     )
-    assert closed["success"] is True
+    assert closed["success"] is True, closed
     assert (await handler.db.get_task(repair_task_id)).status is TaskStatus.COMPLETED
     handler.orchestrator._run_completion_pipeline.assert_not_awaited()
     async with handler.db._engine.connect() as conn:
@@ -3107,3 +3107,176 @@ async def test_batch_repair_delegate_can_file_only_explicit_project_root(
     assert await handler.db.get_typed_dependencies(filed.id) == [
         (repair_task_id, "discovered-from")
     ]
+
+
+@pytest.mark.parametrize("lifecycle", ["task", "pool"])
+async def test_root_repair_close_reads_the_candidate_subject_and_frees_a_pool_slot(
+    command_handler_factory, lifecycle
+):
+    """A root delegate anchors its proof on ``candidate_sha``, not ``head_sha``.
+
+    Root stages bind ``{"kind": "batch", "revision", "candidate_sha"}`` while
+    parent stages bind ``head_sha``.  Reading ``head_sha`` unconditionally
+    raised ``KeyError`` inside the close pipeline's guard, so a passing root
+    repair landed BLOCKED with its pushed commits unrecorded — and on a pool
+    session the slot was released with the delegate never completed.
+    """
+    from src.integration.repair import RepairService
+
+    handler = await command_handler_factory()
+    await _configure_db(handler.db)
+    operation_id = await _seed_root_operation(handler.db)
+    async with handler.db.immediate() as conn:
+        await conn.execute(
+            insert(integration_branch_owners).values(
+                id="batch-owner",
+                repository_id="repo",
+                ref="aq/integration/batch",
+                owner_id="batch",
+                owner_role="collector",
+                fence_token=1,
+                handoff_state="reserved",
+                created_at=1.0,
+                updated_at=1.0,
+            )
+        )
+    service = RepairService(
+        handler.db,
+        route_validator=lambda _intelligence_class, _profile_id: True,
+    )
+    await service.start(operation_id, STARTING_SHA, "batch", now=100.0)
+    dispatched = await service.dispatch(operation_id, 0)
+    repair_task_id = dispatched["repair_task_id"]
+    repair_head = "d" * 40
+    is_pool = lifecycle == "pool"
+    await handler.db.create_agent(
+        Agent(
+            id="root-repair-agent",
+            name="Root Repair Agent",
+            profile_id="repairer",
+            state=AgentState.BUSY,
+            current_task_id=repair_task_id,
+        )
+    )
+    async with handler.db.immediate() as conn:
+        await conn.execute(
+            update(tasks)
+            .where(tasks.c.id == repair_task_id)
+            .values(status="IN_PROGRESS", claim_epoch=1)
+        )
+        await conn.execute(
+            insert(workspaces).values(
+                id="root-repair-workspace",
+                project_id="p",
+                workspace_path="/tmp/root-repair",
+                source_type="link",
+                locked_by_task_id=repair_task_id,
+                locked_by_agent_id="root-repair-agent",
+                enabled=True,
+                created_at=2.0,
+            )
+        )
+    await handler.db.create_session(
+        SessionRecord(
+            id="root-repair-session",
+            task_id=repair_task_id,
+            project_id="p",
+            profile_id="repairer",
+            harness="fake",
+            provider="fake",
+            name="s-root-repair",
+            lifecycle=lifecycle,
+            state="running",
+            work_dir="/tmp/root-repair",
+            epoch="epoch",
+            instance_token="token",
+            started_at=2.0,
+            agent_id="root-repair-agent",
+            last_claim_epoch=1 if is_pool else None,
+        )
+    )
+    async with handler.db.immediate() as conn:
+        await conn.execute(
+            update(integration_branch_owners)
+            .where(integration_branch_owners.c.id == "batch-owner")
+            .values(
+                handoff_state="attached",
+                session_id="root-repair-session",
+                workspace_id="root-repair-workspace",
+            )
+        )
+
+    handler.orchestrator.git.aget_current_branch = AsyncMock(
+        return_value="aq/integration/batch"
+    )
+
+    async def run_git(args, *, cwd):
+        if args[0] == "status":
+            return ""
+        if args[0] == "rev-list":
+            return f"{repair_head}\n"
+        return repair_head
+
+    handler.orchestrator.git._arun = AsyncMock(side_effect=run_git)
+    handler.orchestrator.git.als_remote_ref = AsyncMock(
+        return_value=RemoteRefResult(RemoteRefState.PRESENT, oid=repair_head)
+    )
+    handler.orchestrator.git.ais_ancestor = AsyncMock(return_value=True)
+    handler.orchestrator.git.arev_parse = AsyncMock(return_value=repair_head)
+    handler.orchestrator._run_completion_pipeline = AsyncMock(
+        side_effect=AssertionError("root repair delegate entered legacy integration")
+    )
+    handler.orchestrator.release_session_task_resources = AsyncMock()
+    handler._current_scope = {
+        "kind": "session",
+        "session_id": "root-repair-session",
+        "task_id": repair_task_id,
+        "project_id": "p",
+        "elevated": False,
+    }
+
+    closed = await handler._cmd_task_close(
+        {
+            "task_id": repair_task_id,
+            "session_id": "root-repair-session",
+            "outcome": "pass",
+            "summary": "root repair pushed",
+            **({"claim_epoch": 1} if is_pool else {}),
+        }
+    )
+
+    assert closed["success"] is True, closed
+    assert (await handler.db.get_task(repair_task_id)).status is TaskStatus.COMPLETED
+    handler.orchestrator._run_completion_pipeline.assert_not_awaited()
+    # The lineage proof starts at the batch subject's ``candidate_sha``.
+    assert handler.orchestrator.git.ais_ancestor.await_args.args == (
+        "/tmp/root-repair",
+        STARTING_SHA,
+        repair_head,
+    )
+    async with handler.db._engine.connect() as conn:
+        close_events = (
+            await conn.execute(
+                select(integration_outbox).where(
+                    integration_outbox.c.event_type
+                    == "integration.repair_delegate_closed"
+                )
+            )
+        ).mappings().all()
+    assert len(close_events) == 1
+    assert close_events[0]["payload"]["task_id"] == repair_task_id
+    assert close_events[0]["payload"]["workspace_id"] == "root-repair-workspace"
+
+    session = await handler.db.get_session("root-repair-session")
+    if is_pool:
+        # The slot goes straight back on the market for the next claim, so
+        # the close has to have completed the delegate before letting go.
+        assert session.task_id is None
+        assert session.last_claim_epoch == 1
+        slot = await handler.db.get_workspace("root-repair-workspace")
+        assert slot.locked_by_task_id is None
+        assert slot.locked_by_agent_id == "root-repair-agent"
+        handler.orchestrator.release_session_task_resources.assert_not_awaited()
+    else:
+        assert session.task_id == repair_task_id
+        handler.orchestrator.release_session_task_resources.assert_awaited()
