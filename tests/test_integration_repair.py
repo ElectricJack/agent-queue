@@ -3121,6 +3121,8 @@ async def test_root_repair_close_reads_the_candidate_subject_and_frees_a_pool_sl
     repair landed BLOCKED with its pushed commits unrecorded — and on a pool
     session the slot was released with the delegate never completed.
     """
+    import time
+
     from src.integration.repair import RepairService
 
     handler = await command_handler_factory()
@@ -3144,7 +3146,7 @@ async def test_root_repair_close_reads_the_candidate_subject_and_frees_a_pool_sl
         handler.db,
         route_validator=lambda _intelligence_class, _profile_id: True,
     )
-    await service.start(operation_id, STARTING_SHA, "batch", now=100.0)
+    await service.start(operation_id, STARTING_SHA, "batch", now=time.time())
     dispatched = await service.dispatch(operation_id, 0)
     repair_task_id = dispatched["repair_task_id"]
     repair_head = "d" * 40
@@ -3263,6 +3265,14 @@ async def test_root_repair_close_reads_the_candidate_subject_and_frees_a_pool_sl
                 )
             )
         ).mappings().all()
+    async with handler.db._engine.connect() as conn:
+        candidate = (await conn.execute(select(integration_candidate_revisions).where(
+            integration_candidate_revisions.c.batch_id == "batch",
+            integration_candidate_revisions.c.revision == 1,
+        ))).mappings().one()
+    assert candidate["head_sha"] == repair_head
+    assert candidate["ci_evidence_id"] is None
+    assert candidate["repair_parent_revision"] == 0
     assert len(close_events) == 1
     assert close_events[0]["payload"]["task_id"] == repair_task_id
     assert close_events[0]["payload"]["workspace_id"] == "root-repair-workspace"
