@@ -7,6 +7,7 @@ multiple API calls or provide friendly key aliasing.
 
 from __future__ import annotations
 
+import json
 from typing import Any
 from uuid import uuid4
 
@@ -207,9 +208,22 @@ def project_details(ctx: click.Context, project_id: str) -> None:
 @click.argument("project_id")
 @click.argument("key")
 @click.argument("value")
+@click.option(
+    "--expected-integration-generation",
+    type=click.IntRange(min=0),
+    help="Required CAS generation for integration repository or policy changes.",
+)
+@click.option("--reason", help="Operator audit reason for an integration configuration change.")
 @click.pass_context
 @_handle_errors
-def project_set(ctx: click.Context, project_id: str, key: str, value: str) -> None:
+def project_set(
+    ctx: click.Context,
+    project_id: str,
+    key: str,
+    value: str,
+    expected_integration_generation: int | None,
+    reason: str | None,
+) -> None:
     """Set a project property. e.g. aq project set myproj channel 123456"""
     api_url = ctx.obj.get("api_url") if ctx.obj else None
 
@@ -221,6 +235,8 @@ def project_set(ctx: click.Context, project_id: str, key: str, value: str) -> No
         "budget-limit": "budget_limit",
         "branch": "default_branch",
         "default-profile": "default_profile_id",
+        "integration-repository-id": "integration_repository_id",
+        "integration-policy": "hierarchical_integration_policy",
     }
 
     field = KEY_MAP.get(key)
@@ -230,7 +246,7 @@ def project_set(ctx: click.Context, project_id: str, key: str, value: str) -> No
         )
         raise SystemExit(1)
 
-    coerced: str | int | float | None = value
+    coerced: str | int | float | dict | None = value
     if field == "max_concurrent_agents":
         coerced = int(value)
     elif field == "credit_weight":
@@ -241,6 +257,18 @@ def project_set(ctx: click.Context, project_id: str, key: str, value: str) -> No
         # Clearing falls the task back to the profile-resolution chain rather
         # than pinning every unpinned task to one lane.
         coerced = None if value.lower() in ("none", "null", "clear") else value
+    elif field == "integration_repository_id":
+        coerced = None if value.lower() in ("none", "null", "clear") else value
+    elif field == "hierarchical_integration_policy":
+        if value.lower() in ("none", "null", "clear"):
+            coerced = None
+        else:
+            try:
+                coerced = json.loads(value)
+            except json.JSONDecodeError as exc:
+                raise click.UsageError("integration-policy must be a valid JSON object") from exc
+            if not isinstance(coerced, dict):
+                raise click.UsageError("integration-policy must be a valid JSON object")
 
     if field == "default_branch":
         cmd = "set_default_branch"
@@ -252,9 +280,24 @@ def project_set(ctx: click.Context, project_id: str, key: str, value: str) -> No
         cmd = "edit_project"
         args = {"project_id": project_id, field: coerced}
 
+    sensitive = field in {"integration_repository_id", "hierarchical_integration_policy"}
+    if sensitive:
+        if expected_integration_generation is None:
+            raise click.UsageError(
+                "--expected-integration-generation is required for integration configuration"
+            )
+        args["expected_integration_generation"] = expected_integration_generation
+        if reason is not None:
+            args["reason"] = reason
+
     async def _set():
         async with _get_client(api_url) as client:
             return await client.execute(cmd, args)
 
-    _run(_set())
+    result = _run(_set())
+    if sensitive:
+        from .envelope import emit
+
+        emit(ctx, result, entity="integration")
+        return
     console.print(f"[green]Updated[/] {project_id} [bold cyan]{key}[/] = {value}")

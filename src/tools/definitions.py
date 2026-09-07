@@ -313,14 +313,6 @@ _CLI_CATEGORY_OVERRIDES: dict[str, str] = {
 # A command that needs arguments and appears in neither table is a bug, not a
 # no-argument command — ``_discover_all_commands`` logs a warning naming it.
 _FALLBACK_INPUT_SCHEMAS: dict[str, dict] = {
-    # -- assignment routing (read half; the playbook calls it by contract) --
-    "task_route_options": {
-        "type": "object",
-        "properties": {
-            "task_id": {"type": "string", "description": "Task id to report routing options for"},
-        },
-        "required": ["task_id"],
-    },
     # -- explain + ready frontier (work-graph WG-4) ------------------------
     "explain_task": {
         "type": "object",
@@ -334,39 +326,6 @@ _FALLBACK_INPUT_SCHEMAS: dict[str, dict] = {
     # ``aq project ready --profile-id X --brief``), which makes a fallback
     # redundant: a typed definition wins on every surface.
     # -- gate operator surface (work-graph WG-3) ---------------------------
-    "gate_create": {
-        "type": "object",
-        "properties": {
-            "project_id": {"type": "string", "description": "Project id that owns the gate"},
-            # Mirrors ``src.database.tables.GATE_TYPES``, which the gates table
-            # enforces with a CHECK constraint.  Spelled out rather than
-            # imported: this module is pure data with no database imports.
-            "gate_type": {
-                "type": "string",
-                "enum": ["human", "timer", "pr-merged", "ci-run", "event", "task", "routing"],
-                "description": "Gate kind. 'routing' gates resolve only via task_route.",
-            },
-            "title": {"type": "string", "description": "Human-readable gate title"},
-            "question": {
-                "type": "string",
-                "description": "Optional prompt shown to the resolver",
-            },
-            "await_id": {
-                "type": "string",
-                "description": "Optional external id the gate is waiting on",
-            },
-            "timeout_at": {
-                "type": "number",
-                "description": "Optional epoch after which the gate is considered expired",
-            },
-            "waiter_task_ids": {
-                "type": "array",
-                "description": "Task ids that should be blocked by this gate",
-                "items": {"type": "string"},
-            },
-        },
-        "required": ["project_id", "gate_type", "title"],
-    },
     "gate_list": {
         "type": "object",
         "properties": {
@@ -389,21 +348,6 @@ _FALLBACK_INPUT_SCHEMAS: dict[str, dict] = {
             "gate_id": {"type": "string", "description": "Gate id to fetch"},
         },
         "required": ["gate_id"],
-    },
-    "gate_resolve": {
-        "type": "object",
-        "properties": {
-            "gate_id": {"type": "string", "description": "Gate id to resolve"},
-            "resolved_by": {
-                "type": "string",
-                "description": "Identity of the resolver (user id or session)",
-            },
-            "resolution": {
-                "type": "string",
-                "description": "Optional free-text explanation stored with the resolve event",
-            },
-        },
-        "required": ["gate_id", "resolved_by"],
     },
     # -- session operator surface (session-runtime spec §3, §5) ------------
     "session_list": {

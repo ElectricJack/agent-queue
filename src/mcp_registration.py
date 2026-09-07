@@ -161,9 +161,10 @@ def _discover_all_commands(warn_on_empty_schema: bool = False) -> dict[str, dict
 
     Returns a dict mapping command name → basic tool definition dict for
     every ``_cmd_*`` method on ``CommandHandler``.  Descriptions come from
-    the method docstring.  The input schema comes from
-    ``_FALLBACK_INPUT_SCHEMAS`` when the command has one, and is otherwise
-    the empty ``{"type": "object", "properties": {}}``.
+    the method docstring.  The input schema comes from the typed command
+    contract when the handler has one, then ``_FALLBACK_INPUT_SCHEMAS`` when
+    the command has one, and is otherwise the empty
+    ``{"type": "object", "properties": {}}``.
 
     This is used as a safety net: any command present in ``CommandHandler``
     but absent from ``_ALL_TOOL_DEFINITIONS`` will still be registered via
@@ -188,9 +189,10 @@ def _discover_all_commands(warn_on_empty_schema: bool = False) -> dict[str, dict
     # Lazy import to avoid circular dependency at module level.
     # CommandHandler imports tool_registry → tool_registry is imported here.
     from src.commands.handler import CommandHandler  # noqa: E402
+    from src.commands.contracts import CONTRACTS
     from src.tools.definitions import _FALLBACK_INPUT_SCHEMAS
 
-    typed = {d["name"] for d in _ALL_TOOL_DEFINITIONS}
+    typed = {d["name"] for d in _ALL_TOOL_DEFINITIONS} | set(CONTRACTS.names())
 
     discovered: dict[str, dict] = {}
     undefined: list[str] = []
@@ -207,7 +209,12 @@ def _discover_all_commands(warn_on_empty_schema: bool = False) -> dict[str, dict
         first_line = doc.split("\n")[0].strip() if doc else ""
         description = first_line or f"Execute the {cmd_name} command."
 
-        schema = _FALLBACK_INPUT_SCHEMAS.get(cmd_name)
+        registration = CONTRACTS.get(cmd_name)
+        if registration is not None:
+            description = registration.contract.presentation.summary or description
+            schema = registration.contract.execution.args_model.model_json_schema()
+        else:
+            schema = _FALLBACK_INPUT_SCHEMAS.get(cmd_name)
         if schema is None:
             schema = {"type": "object", "properties": {}}
             if cmd_name not in typed and _needs_arguments(method):

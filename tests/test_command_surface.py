@@ -72,9 +72,7 @@ KNOWN_AUTO_REGISTERED: frozenset[str] = frozenset(
         # Not task-scope MCP tools, so left to auto-discovery rather than
         # given rich schemas — mirrors tests/test_mcp_server.py.
         "explain_task",
-        "gate_create",
         "gate_list",
-        "gate_resolve",
         "gate_show",
     }
 )
@@ -137,7 +135,22 @@ def _command_names() -> set[str]:
 
 
 def _defined_tool_names() -> set[str]:
-    return {d["name"] for d in _ALL_TOOL_DEFINITIONS}
+    return {d["name"] for d in _effective_typed_definitions()}
+
+
+def _effective_typed_definitions() -> list[dict]:
+    """Legacy definitions plus typed contracts projected by discovery."""
+    from src.commands.contracts import CONTRACTS
+    from src.mcp_registration import _discover_all_commands
+
+    definitions = list(_ALL_TOOL_DEFINITIONS)
+    seen = {definition["name"] for definition in definitions}
+    discovered = _discover_all_commands()
+    for name in sorted(CONTRACTS.names() & discovered.keys()):
+        if name not in seen:
+            definitions.append(discovered[name])
+            seen.add(name)
+    return definitions
 
 
 class TestCommandSurface:
@@ -173,7 +186,7 @@ class TestCommandSurface:
         # without a _cmd_ method is only acceptable when it is tagged as such.
         orphans = sorted(
             d["name"]
-            for d in _ALL_TOOL_DEFINITIONS
+            for d in _effective_typed_definitions()
             if d["name"] not in commands
             and not d.get("_plugin")
             and d["name"] not in PENDING_UNLANDED_COMMANDS
@@ -194,12 +207,12 @@ class TestCommandSurface:
         )
 
     def test_tool_definitions_are_unique(self):
-        names = [d["name"] for d in _ALL_TOOL_DEFINITIONS]
+        names = [d["name"] for d in _effective_typed_definitions()]
         duplicates = sorted({n for n in names if names.count(n) > 1})
         assert not duplicates, f"duplicate tool definitions: {', '.join(duplicates)}"
 
     def test_tool_definitions_are_well_formed(self):
-        for definition in _ALL_TOOL_DEFINITIONS:
+        for definition in _effective_typed_definitions():
             assert definition.get("name"), definition
             assert definition.get("description"), definition["name"]
             schema = definition.get("input_schema")
@@ -364,6 +377,19 @@ class TestNoArgumentlessCommandsByAccident:
             f"{', '.join(offenders)}. Add a typed definition to "
             "_ALL_TOOL_DEFINITIONS or a schema to _FALLBACK_INPUT_SCHEMAS."
         )
+
+    def test_contract_discovery_projects_integration_enable_schema(self):
+        from src.mcp_registration import _discover_all_commands
+
+        discovered = _discover_all_commands()
+        schema = discovered["integration_enable"]["input_schema"]
+        properties = schema["properties"]
+        assert properties["expected_generation"]["minimum"] == 0
+        assert properties["interval_seconds"]["anyOf"][0]["exclusiveMinimum"] == 0
+        assert {"project_id", "mode", "expected_generation", "reason"} <= set(
+            schema["required"]
+        )
+        assert "integration_probe" not in discovered
 
     def test_empty_schema_ledger_does_not_rot(self):
         from src.mcp_registration import _discover_all_commands, _needs_arguments

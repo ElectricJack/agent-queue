@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import time
 
+from types import SimpleNamespace
+
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -17,6 +19,8 @@ from src.database import Database
 from src.doctor import default_registry
 from src.doctor.integration_checks import run_check
 from src.doctor.models import Severity
+from src.doctor.models import DoctorContext
+from src.doctor.runner import run_doctor
 from src.models import Project, Task, TaskStatus
 
 
@@ -151,3 +155,125 @@ async def test_check_is_registered_in_the_default_registry():
     registry = default_registry()
     ids = {c.id for c in registry.checks()}
     assert "integration.unreviewed_prs" in ids
+
+
+@pytest.mark.asyncio
+async def test_operational_check_reports_modes_blockers_and_human_attention_read_only(db):
+    handler = MagicMock()
+    handler.execute = AsyncMock(
+        return_value={
+            "outcome": "status",
+            "project_id": "p",
+            "effective_mode": "train",
+            "desired_mode": "disabled",
+            "generation": 8,
+            "draining": True,
+            "ready": False,
+            "rollout_ready": False,
+            "blockers": [
+                {
+                    "code": "hosted_workflow_variables_unavailable",
+                    "detail": "functional integration dependency is unavailable",
+                    "ref": "repo",
+                }
+            ],
+            "blocker_digest": "sha256:" + "c" * 64,
+            "certification": {"status": "not_performed", "deferred": ["security"]},
+            "repair": [{"id": "op-1", "state": "human_required"}],
+            "cleanup_pending": [
+                {
+                    "batch_id": "batch-1",
+                    "identity": "refs/heads/aq/integration/batch-1",
+                    "state": "conflict",
+                    "irreversible": False,
+                }
+            ],
+        }
+    )
+
+    result = await run_check(db, "integration.operational", handler=handler)
+
+    assert result.severity is Severity.WARN
+    assert result.fixable is False
+    project = result.data["projects"][0]
+    assert project["effective_mode"] == "train"
+    assert project["desired_mode"] == "disabled"
+    assert project["draining"] is True
+    assert project["generation"] == 8
+    assert project["blockers"][0]["code"] == "hosted_workflow_variables_unavailable"
+    assert project["human_required"] == [{"operation_id": "op-1", "state": "human_required"}]
+    assert project["cleanup_attention"][0]["batch_id"] == "batch-1"
+    assert project["certification"]["status"] == "not_performed"
+    handler.execute.assert_awaited_once_with("integration_status", {"project_id": "p"})
+
+
+@pytest.mark.asyncio
+async def test_operational_check_is_info_for_disabled_unconfigured_projects(db):
+    handler = MagicMock()
+    handler.execute = AsyncMock(
+        return_value={
+            "outcome": "status",
+            "project_id": "p",
+            "effective_mode": "disabled",
+            "desired_mode": "disabled",
+            "generation": 0,
+            "draining": False,
+            "ready": False,
+            "blockers": [{"code": "repository_not_designated", "detail": "missing", "ref": "p"}],
+            "certification": {"status": "not_performed"},
+            "repair": [],
+            "cleanup_pending": [],
+        }
+    )
+
+    result = await run_check(db, "integration.operational", handler=handler)
+
+    assert result.severity is Severity.INFO
+    assert "disabled" in result.detail
+    assert result.data["projects"][0]["blockers"][0]["code"] == "repository_not_designated"
+
+
+@pytest.mark.asyncio
+async def test_operational_doctor_fix_mode_never_mutates_or_calls_control_commands(db):
+    handler = MagicMock()
+    handler.execute = AsyncMock(
+        return_value={
+            "outcome": "status",
+            "project_id": "p",
+            "effective_mode": "observe",
+            "desired_mode": "observe",
+            "generation": 2,
+            "draining": False,
+            "ready": True,
+            "blockers": [],
+            "certification": {"status": "not_performed"},
+            "repair": [],
+            "cleanup_pending": [],
+        }
+    )
+    checks = [check for check in default_registry().checks() if check.id == "integration.operational"]
+    assert len(checks) == 1
+    assert checks[0].fix is None
+
+    outcome = await run_doctor(
+        default_registry(),
+        DoctorContext(config=SimpleNamespace(), db=db, handler=handler),
+        fix=True,
+        only=["integration.operational"],
+    )
+
+    assert outcome["exit_code"] == 0
+    assert outcome["summary"]["fixes_applied"] == 0
+    handler.execute.assert_awaited_once_with("integration_status", {"project_id": "p"})
+
+
+@pytest.mark.asyncio
+async def test_operational_check_surfaces_schema_or_status_failure(db):
+    handler = MagicMock()
+    handler.execute = AsyncMock(side_effect=RuntimeError("no such table: integration_batches"))
+
+    result = await run_check(db, "integration.operational", handler=handler)
+
+    assert result.severity is Severity.ERROR
+    assert "db.migrations" in result.detail
+    assert "integration_batches" in result.data["errors"][0]["error"]

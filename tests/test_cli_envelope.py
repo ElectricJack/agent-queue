@@ -103,13 +103,14 @@ class TestEnvelopeShape:
 
 
 class TestBriefProjections:
-    def test_all_five_entities_from_design_spec_present(self):
+    def test_all_registered_entities_present(self):
         assert set(BRIEF_PROJECTIONS.keys()) == {
             "task",
             "session",
             "gate",
             "message",
             "workspace",
+            "integration",
         }
 
     def test_task_brief_matches_design_table(self):

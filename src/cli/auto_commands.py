@@ -86,6 +86,14 @@ HANDCRAFTED_COVERAGE = {
     "set_default_branch",
     "set_project_channel",
     "onboard_project",
+    # integration.py — positional identities and explicit rollout CAS fences.
+    "integration_status",
+    "integration_flush",
+    "integration_enable",
+    "integration_waive_history",
+    "integration_resume",
+    "integration_abort",
+    "integration_retry_cleanup",
     # plugins.py (all plugin commands are hand-crafted with direct-DB access)
     "plugin_list",
     "plugin_info",

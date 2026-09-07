@@ -49,6 +49,22 @@ BRIEF_PROJECTIONS: dict[str, tuple[str, ...]] = {
     "gate": ("id", "gate_type", "status", "task_id"),
     "message": ("id", "from", "subject", "created_at", "read"),
     "workspace": ("id", "kind_id", "path", "locked_by"),
+    "integration": (
+        "outcome",
+        "project_id",
+        "operation_id",
+        "batch_id",
+        "effective_mode",
+        "desired_mode",
+        "generation",
+        "draining",
+        "ready",
+        "blockers",
+        "blocker_digest",
+        "state",
+        "stage",
+        "count",
+    ),
 }
 
 

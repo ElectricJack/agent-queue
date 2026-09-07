@@ -395,11 +395,19 @@ class IntegrationControlService:
         reason: str,
         operator_id: str,
         waiver_id: str | None = None,
+        interval_seconds: int | None = None,
     ) -> dict[str, Any]:
         if mode not in {"disabled", "observe", "hierarchy", "train"}:
             raise ValueError("integration mode must be disabled, observe, hierarchy, or train")
         if expected_generation < 0 or not reason.strip() or not operator_id.strip():
             raise ValueError("expected generation, reason, and operator are required")
+        if interval_seconds is not None:
+            if isinstance(interval_seconds, bool) or not isinstance(interval_seconds, int):
+                raise ValueError("integration schedule interval must be a positive integer")
+            if interval_seconds <= 0:
+                raise ValueError("integration schedule interval must be positive")
+            if mode != "train":
+                raise ValueError("integration schedule interval is only valid with train mode")
 
         observed = await self.preflight(project_id)
         if observed["project_id"] is None:
@@ -436,6 +444,30 @@ class IntegrationControlService:
                     select(projects).where(projects.c.id == project_id).with_for_update()
                 )
             ).mappings().one()
+            if interval_seconds is not None and current[
+                "hierarchical_integration_draining"
+            ]:
+                blockers = _sorted_blockers(
+                    list(locked["blockers"])
+                    + [
+                        _blocker(
+                            "integration_drain_active",
+                            "integration cadence cannot change while the project is draining",
+                            project_id,
+                        )
+                    ]
+                )
+                return {
+                    "outcome": "blocked",
+                    "project_id": project_id,
+                    "effective_mode": current["hierarchical_integration_mode"],
+                    "desired_mode": current["hierarchical_integration_desired_mode"],
+                    "draining": True,
+                    "generation": int(current["hierarchical_integration_generation"]),
+                    "blockers": blockers,
+                    "blocker_digest": _blocker_digest(blockers),
+                    "certification": observed["certification"],
+                }
             active = await self._has_active_work_on(conn, project_id)
             if (
                 mode == "observe"
@@ -573,6 +605,7 @@ class IntegrationControlService:
                 enabled=mode == "train" and not draining,
                 create=mode == "train" and not draining,
                 now=now,
+                interval_seconds=interval_seconds,
             )
         return {
             "outcome": outcome,
@@ -851,6 +884,7 @@ class IntegrationControlService:
         enabled: bool,
         create: bool,
         now: float,
+        interval_seconds: int | None = None,
     ) -> None:
         schedule = (
             await conn.execute(
@@ -860,17 +894,26 @@ class IntegrationControlService:
             )
         ).mappings().one_or_none()
         if schedule is None and create:
+            interval = interval_seconds or IntegrationScheduler.DEFAULT_INTERVAL_SECONDS
             await conn.execute(
                 insert(project_integration_schedules).values(
                     project_id=project_id,
                     enabled=enabled,
-                    interval_seconds=IntegrationScheduler.DEFAULT_INTERVAL_SECONDS,
-                    next_due_at=now + IntegrationScheduler.DEFAULT_INTERVAL_SECONDS,
+                    interval_seconds=interval,
+                    next_due_at=now + interval,
                     updated_at=now,
                 )
             )
         elif schedule is not None:
             values: dict[str, Any] = {"enabled": enabled, "updated_at": now}
+            if (
+                interval_seconds is not None
+                and interval_seconds != schedule["interval_seconds"]
+            ):
+                values.update(
+                    interval_seconds=interval_seconds,
+                    next_due_at=now + interval_seconds,
+                )
             if not enabled:
                 values.update(
                     catchup_trigger=None,

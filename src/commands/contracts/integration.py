@@ -80,6 +80,7 @@ class IntegrationEnableArgs(CommandArgs):
     expected_generation: int = Field(ge=0)
     reason: str = Field(min_length=1)
     waiver_id: str | None = Field(default=None, min_length=1)
+    interval_seconds: int | None = Field(default=None, gt=0)
 
 
 class IntegrationWaiveHistoryArgs(CommandArgs):

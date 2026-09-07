@@ -24,6 +24,7 @@ from src.database.tables import (
     integration_repair_stages,
     integration_rollout_transitions,
     project_integration_schedules,
+    projects,
 )
 from src.config import GitHubAppConfig
 from src.git.github_app import GitHubAppClient, GitHubRepositoryBinding, HttpResponse
@@ -137,6 +138,12 @@ async def _row_count(db, table) -> int:
         return len((await conn.execute(select(table))).all())
 
 
+async def _schedule(db) -> dict:
+    async with db._engine.connect() as conn:
+        row = (await conn.execute(select(project_integration_schedules))).mappings().one()
+        return dict(row)
+
+
 async def test_enable_is_atomic_and_stale_generation_changes_nothing(db):
     service = IntegrationControlService(db, external_preflight=_external_ready, clock=lambda: 10.0)
 
@@ -178,6 +185,135 @@ async def test_enable_is_atomic_and_stale_generation_changes_nothing(db):
     assert stale["outcome"] == "stale"
     assert await _row_count(db, integration_rollout_transitions) == 1
     assert (await db.get_project("p")).hierarchical_integration_mode == "train"
+
+
+async def test_train_enable_configures_default_then_preserves_and_overrides_cadence(db):
+    now = 10.0
+    service = IntegrationControlService(db, external_preflight=_external_ready, clock=lambda: now)
+
+    await service.enable(
+        "p",
+        mode="train",
+        expected_generation=0,
+        reason="default cadence",
+        operator_id="operator:local",
+    )
+    assert (await _schedule(db))["interval_seconds"] == 300
+
+    now = 20.0
+    await service.enable(
+        "p",
+        mode="train",
+        expected_generation=1,
+        reason="same mode preserves cadence",
+        operator_id="operator:local",
+    )
+    preserved = await _schedule(db)
+    assert preserved["interval_seconds"] == 300
+    assert preserved["next_due_at"] == 310.0
+
+    async with db.immediate() as conn:
+        await conn.execute(
+            update(project_integration_schedules)
+            .where(project_integration_schedules.c.project_id == "p")
+            .values(
+                request_sequence=4,
+                outstanding_request_id="integration-sweep:p:4",
+                outstanding_trigger="manual",
+                outstanding_requested_at=21.0,
+                catchup_trigger="manual",
+                catchup_requested_at=22.0,
+                catchup_after_sequence=4,
+            )
+        )
+
+    now = 50.0
+    changed = await service.enable(
+        "p",
+        mode="train",
+        interval_seconds=900,
+        expected_generation=2,
+        reason="slow cadence",
+        operator_id="operator:local",
+    )
+    schedule = await _schedule(db)
+    assert changed["outcome"] == "enabled"
+    assert changed["generation"] == 3
+    assert schedule["interval_seconds"] == 900
+    assert schedule["next_due_at"] == 950.0
+    assert schedule["request_sequence"] == 4
+    assert schedule["outstanding_request_id"] == "integration-sweep:p:4"
+    assert schedule["outstanding_trigger"] == "manual"
+    assert schedule["outstanding_requested_at"] == 21.0
+    assert schedule["catchup_trigger"] == "manual"
+    assert schedule["catchup_requested_at"] == 22.0
+    assert schedule["catchup_after_sequence"] == 4
+
+
+async def test_cadence_rejections_and_stale_or_draining_requests_write_nothing(db):
+    service = IntegrationControlService(db, external_preflight=_external_ready, clock=lambda: 70.0)
+    for mode in ("disabled", "observe", "hierarchy"):
+        with pytest.raises(ValueError, match="only valid with train"):
+            await service.enable(
+                "p",
+                mode=mode,
+                interval_seconds=60,
+                expected_generation=0,
+                reason="invalid combination",
+                operator_id="operator:local",
+            )
+    for interval in (0, -1):
+        with pytest.raises(ValueError, match="positive"):
+            await service.enable(
+                "p",
+                mode="train",
+                interval_seconds=interval,
+                expected_generation=0,
+                reason="invalid interval",
+                operator_id="operator:local",
+            )
+    assert await _row_count(db, integration_rollout_transitions) == 0
+
+    await service.enable(
+        "p",
+        mode="train",
+        interval_seconds=300,
+        expected_generation=0,
+        reason="start",
+        operator_id="operator:local",
+    )
+    before = await _schedule(db)
+    stale = await service.enable(
+        "p",
+        mode="train",
+        interval_seconds=600,
+        expected_generation=0,
+        reason="stale cadence",
+        operator_id="operator:local",
+    )
+    assert stale["outcome"] == "stale"
+    assert await _schedule(db) == before
+
+    async with db.immediate() as conn:
+        await conn.execute(
+            update(projects)
+            .where(projects.c.id == "p")
+            .values(hierarchical_integration_draining=True)
+        )
+    blocked = await service.enable(
+        "p",
+        mode="train",
+        interval_seconds=600,
+        expected_generation=1,
+        reason="must not cancel drain",
+        operator_id="operator:local",
+    )
+    assert blocked["outcome"] == "blocked"
+    assert blocked["draining"] is True
+    assert blocked["blockers"][0]["code"] == "integration_drain_active"
+    assert (await db.get_project("p")).hierarchical_integration_generation == 1
+    assert await _row_count(db, integration_rollout_transitions) == 1
+    assert await _schedule(db) == before
 
 
 async def test_observe_flush_and_scheduler_boundary_never_create_schedule(db):
@@ -637,12 +773,22 @@ async def test_public_control_authority_keeps_enable_local_and_status_project_sc
         "integration_enable",
         {
             "project_id": "p",
-            "mode": "observe",
+            "mode": "train",
+            "interval_seconds": 600,
             "expected_generation": 0,
             "reason": "operator requested",
         },
     )
     assert local["outcome"] == "enabled"
+    controls.enable.assert_awaited_once_with(
+        "p",
+        mode="train",
+        interval_seconds=600,
+        expected_generation=0,
+        reason="operator requested",
+        operator_id="local:-",
+        waiver_id=None,
+    )
 
     elevated = ExecutionPrincipal(
         kind=PrincipalKind.SESSION,

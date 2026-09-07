@@ -44,6 +44,144 @@ _WINDOW_SECONDS = 24 * 60 * 60
 _MAX_PR_PROBES = 20
 
 
+def _operational_projection(status: dict) -> dict:
+    """Keep the operator-relevant, non-secret part of ``integration_status``."""
+    repair = list(status.get("repair") or [])
+    cleanup = list(status.get("cleanup_pending") or [])
+    return {
+        "project_id": status.get("project_id"),
+        "effective_mode": status.get("effective_mode"),
+        "desired_mode": status.get("desired_mode"),
+        "generation": status.get("generation"),
+        "draining": bool(status.get("draining")),
+        "ready": bool(status.get("rollout_ready", status.get("ready", False))),
+        "repository_id": status.get("repository_id"),
+        "blockers": list(status.get("blockers") or []),
+        "blocker_digest": status.get("blocker_digest"),
+        "certification": status.get("certification"),
+        "active_batch": status.get("active_batch"),
+        "human_required": [
+            {"operation_id": item.get("id"), "state": item.get("state")}
+            for item in repair
+            if item.get("state") == "human_required"
+        ],
+        "cleanup_attention": [
+            item
+            for item in cleanup
+            if item.get("state") in {"conflict", "failed", "human_required"}
+            or bool(item.get("irreversible"))
+        ],
+    }
+
+
+async def _check_operational(ctx: DoctorContext) -> CheckResult:
+    """Aggregate the reviewed read-only status command for every project.
+
+    The command is the authority for functional preflight and operational
+    state.  Doctor deliberately does not inspect credentials, run a provider
+    probe, retry cleanup, change modes, or repair schema.
+    """
+    if ctx.db is None or ctx.handler is None:
+        return CheckResult(
+            id="integration.operational",
+            severity=Severity.INFO,
+            detail="integration status unavailable without database and command handler",
+        )
+
+    try:
+        projects = sorted(await ctx.db.list_projects(), key=lambda project: project.id)
+    except Exception as exc:
+        return CheckResult(
+            id="integration.operational",
+            severity=Severity.ERROR,
+            detail="could not enumerate projects; check db.migrations",
+            data={"errors": [{"error": f"{type(exc).__name__}: {exc}"}]},
+        )
+
+    projections: list[dict] = []
+    errors: list[dict[str, str]] = []
+    for project in projects:
+        try:
+            status = await ctx.handler.execute(
+                "integration_status", {"project_id": project.id}
+            )
+        except Exception as exc:
+            errors.append(
+                {"project_id": project.id, "error": f"{type(exc).__name__}: {exc}"}
+            )
+            continue
+        if not isinstance(status, dict) or status.get("outcome") != "status":
+            errors.append(
+                {
+                    "project_id": project.id,
+                    "error": str(
+                        status.get("error") or status.get("outcome") or "invalid status result"
+                    )
+                    if isinstance(status, dict)
+                    else f"invalid status result: {type(status).__name__}",
+                }
+            )
+            continue
+        projections.append(_operational_projection(status))
+
+    if errors:
+        return CheckResult(
+            id="integration.operational",
+            severity=Severity.ERROR,
+            detail=(
+                f"integration status failed for {len(errors)} project(s); "
+                "check db.migrations and daemon configuration"
+            ),
+            data={"projects": projections, "errors": errors},
+        )
+
+    if not projections:
+        return CheckResult(
+            id="integration.operational",
+            severity=Severity.INFO,
+            detail="no projects configured",
+            data={"projects": []},
+        )
+
+    attention = [
+        project
+        for project in projections
+        if project["draining"]
+        or project["human_required"]
+        or project["cleanup_attention"]
+        or (
+            (project["effective_mode"] != "disabled" or project["desired_mode"] != "disabled")
+            and project["blockers"]
+        )
+    ]
+    if attention:
+        return CheckResult(
+            id="integration.operational",
+            severity=Severity.WARN,
+            detail=f"{len(attention)} integration project(s) require operator attention",
+            data={"projects": projections},
+        )
+
+    disabled = [
+        project
+        for project in projections
+        if project["effective_mode"] == "disabled" and project["desired_mode"] == "disabled"
+    ]
+    if len(disabled) == len(projections):
+        return CheckResult(
+            id="integration.operational",
+            severity=Severity.INFO,
+            detail=f"hierarchical integration is disabled for {len(disabled)} project(s)",
+            data={"projects": projections},
+        )
+    return CheckResult(
+        id="integration.operational",
+        severity=Severity.OK,
+        detail="enabled integration projects have no operational findings",
+        data={"projects": projections},
+    )
+
+
 def _review_dedup_key(task_id: str) -> str:
     """The dedup key ``per-task-review`` uses for its ``ensure_task``.
 
@@ -149,6 +287,11 @@ async def _check_unreviewed_prs(ctx: DoctorContext) -> CheckResult:
 
 def integration_checks() -> list[DoctorCheck]:
     return [
+        DoctorCheck(
+            id="integration.operational",
+            run=_check_operational,
+            owner=OWNER,
+        ),
         # Report-only: no ``fix``.  Back-filling review tasks by hand would
         # paper over whatever stopped the pipeline, and the right repair
         # (re-emit the events, or merge the backlog in dependency order) is an

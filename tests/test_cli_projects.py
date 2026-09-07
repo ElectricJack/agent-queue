@@ -106,6 +106,86 @@ def test_project_details_and_set_forward_correct_args_and_render_client_errors(r
     assert envelope["data"] is None
 
 
+def test_project_set_forwards_guarded_integration_configuration(runner):
+    from src.cli.app import cli
+
+    cases = (
+        (
+            [
+                "project",
+                "set",
+                "p1",
+                "integration-repository-id",
+                "repo-1",
+                "--expected-integration-generation",
+                "4",
+                "--reason",
+                "bind exact repository",
+            ],
+            {
+                "project_id": "p1",
+                "integration_repository_id": "repo-1",
+                "expected_integration_generation": 4,
+                "reason": "bind exact repository",
+            },
+        ),
+        (
+            [
+                "project",
+                "set",
+                "p1",
+                "integration-policy",
+                '{"version": 1}',
+                "--expected-integration-generation",
+                "5",
+                "--reason",
+                "bind reviewed policy",
+            ],
+            {
+                "project_id": "p1",
+                "hierarchical_integration_policy": {"version": 1},
+                "expected_integration_generation": 5,
+                "reason": "bind reviewed policy",
+            },
+        ),
+    )
+    for argv, expected in cases:
+        client = _client({"edit_project": {"outcome": "configured", "generation": 5}})
+        with patch("src.cli.projects._get_client", return_value=client):
+            result = runner.invoke(cli, argv)
+        assert result.exit_code == 0, result.output
+        client.execute.assert_awaited_once_with("edit_project", expected)
+
+
+def test_project_set_rejects_unguarded_or_invalid_integration_configuration(runner):
+    from src.cli.app import cli
+
+    client = _client({})
+    with patch("src.cli.projects._get_client", return_value=client):
+        missing_generation = runner.invoke(
+            cli,
+            ["project", "set", "p1", "integration-repository-id", "repo-1"],
+        )
+        invalid_policy = runner.invoke(
+            cli,
+            [
+                "project",
+                "set",
+                "p1",
+                "integration-policy",
+                "not-json",
+                "--expected-integration-generation",
+                "1",
+            ],
+        )
+
+    assert missing_generation.exit_code == 2
+    assert "--expected-integration-generation" in missing_generation.output
+    assert invalid_policy.exit_code == 2
+    assert "valid JSON object" in invalid_policy.output
+    client.execute.assert_not_awaited()
+
+
 @pytest.mark.parametrize(
     ("extra_argv", "extra_args"),
     [
