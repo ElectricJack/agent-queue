@@ -740,6 +740,64 @@ class PlaybookRunQueryMixin:
             for row in rows
         ]
 
+    async def latest_run_per_playbook(
+        self, playbook_ids: Collection[str] | None = None
+    ) -> dict[str, RunSnapshot]:
+        """The newest run of each playbook, keyed by ``playbook_id``.
+
+        The listing surfaces ("last run" on the playbook cards and tables) need
+        one row per *definition*, not the newest N runs box-wide, so this ranks
+        within each playbook rather than paging ``list_runs``.
+        """
+        ranked = select(
+            playbook_v2_runs.c.playbook_id,
+            playbook_v2_runs.c.snapshot,
+            playbook_v2_runs.c.snapshot_version,
+            func.row_number()
+            .over(
+                partition_by=playbook_v2_runs.c.playbook_id,
+                order_by=(
+                    playbook_v2_runs.c.started_at.desc(),
+                    playbook_v2_runs.c.run_id.desc(),
+                ),
+            )
+            .label("rank"),
+        )
+        if playbook_ids is not None:
+            wanted = list(playbook_ids)
+            if not wanted:
+                return {}
+            ranked = ranked.where(playbook_v2_runs.c.playbook_id.in_(wanted))
+        subquery = ranked.subquery()
+        stmt = select(subquery).where(subquery.c.rank == 1)
+        async with self._engine.connect() as conn:
+            rows = (await conn.execute(stmt)).mappings().fetchall()
+        return {
+            str(row["playbook_id"]): deserialize_snapshot(
+                row["snapshot"], version=int(row["snapshot_version"])
+            )
+            for row in rows
+        }
+
+    async def count_active_runs_per_playbook(
+        self, playbook_ids: Collection[str] | None = None
+    ) -> dict[str, int]:
+        """Non-terminal run counts for many playbooks in one round trip."""
+        terminal = [state.value for state in TERMINAL_LIFECYCLES]
+        stmt = (
+            select(playbook_v2_runs.c.playbook_id, func.count().label("active"))
+            .where(playbook_v2_runs.c.lifecycle.not_in(terminal))
+            .group_by(playbook_v2_runs.c.playbook_id)
+        )
+        if playbook_ids is not None:
+            wanted = list(playbook_ids)
+            if not wanted:
+                return {}
+            stmt = stmt.where(playbook_v2_runs.c.playbook_id.in_(wanted))
+        async with self._engine.connect() as conn:
+            rows = (await conn.execute(stmt)).mappings().fetchall()
+        return {str(row["playbook_id"]): int(row["active"]) for row in rows}
+
     async def count_active_runs(self, playbook_id: str) -> int:
         """Non-terminal runs for one playbook, for activation-health summaries."""
         terminal = [state.value for state in TERMINAL_LIFECYCLES]

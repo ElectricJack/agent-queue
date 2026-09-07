@@ -9,6 +9,20 @@ from pathlib import Path
 from typing import Any
 
 
+def _last_run_summary(run: Any | None) -> dict[str, Any] | None:
+    """The listing's view of one run snapshot, or ``None`` if it never ran."""
+    if run is None:
+        return None
+    lifecycle = run.lifecycle
+    return {
+        "run_id": run.run_id,
+        "status": lifecycle.value if hasattr(lifecycle, "value") else str(lifecycle),
+        "started_at": getattr(run, "started_at", None),
+        "completed_at": getattr(run, "completed_at", None),
+        "tokens_used": int(getattr(getattr(run, "budget", None), "total_tokens", 0) or 0),
+    }
+
+
 class PlaybookCommandsMixin:
     def _v2_engine(self):
         from src.playbooks.services import build_v2_engine
@@ -134,11 +148,18 @@ class PlaybookCommandsMixin:
         rows = await self.db.list_playbook_activations(enabled_only=False)
         requested_scope = str(args.get("scope") or "").strip()
         engine = self._v2_engine()
+        selected = [
+            dict(raw_row)
+            for raw_row in rows
+            if not requested_scope or dict(raw_row).get("scope") == requested_scope
+        ]
+        # The listing surfaces show "last run" and a live running count per
+        # definition; both come from the run table, not from the activation.
+        ids = [row["playbook_id"] for row in selected]
+        latest_runs = await self.db.latest_run_per_playbook(ids)
+        active_counts = await self.db.count_active_runs_per_playbook(ids)
         playbooks: list[dict[str, Any]] = []
-        for raw_row in rows:
-            row = dict(raw_row)
-            if requested_scope and row.get("scope") != requested_scope:
-                continue
+        for row in selected:
             artifact = engine.services.artifact_store.load(row["active_artifact_sha256"])
             compiled_at = artifact.compiled_at
             playbooks.append({
@@ -157,6 +178,8 @@ class PlaybookCommandsMixin:
                 "node_count": len(artifact.steps),
                 "status": row.get("health") or "active",
                 "enabled": bool(row.get("enabled", True)),
+                "running_count": active_counts.get(row["playbook_id"], 0),
+                "last_run": _last_run_summary(latest_runs.get(row["playbook_id"])),
             })
         return {"playbooks": playbooks, "count": len(playbooks)}
 

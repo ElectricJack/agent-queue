@@ -2,7 +2,7 @@ import { memo } from "react";
 import { ArrowPathIcon } from "@heroicons/react/24/outline";
 import type { Node, NodeProps } from "@xyflow/react";
 import { NODE_HEIGHT, NODE_WIDTH, type PlaybookNodeData } from "./types";
-import { playbookRunning, playbookScope, playbookState } from "./playbooks";
+import { lastRunLabel, playbookRunning, playbookScope, playbookState } from "./playbooks";
 
 export function PlaybookCard({ data, selected = false, fluid = false }: { data: PlaybookNodeData; selected?: boolean; fluid?: boolean }) {
   const { playbook: p, onOpenPlaybook } = data;
@@ -16,7 +16,7 @@ export function PlaybookCard({ data, selected = false, fluid = false }: { data: 
     <span className="mt-2 line-clamp-2 w-full font-medium" title={p.id}>{p.id}</span>
     <span className="mt-1 w-full truncate text-[10px] text-gray-400" title={playbookScope(p)}>{playbookScope(p)}</span>
     <span className="mt-1 w-full truncate text-[10px] text-violet-300" title={(p.triggers ?? []).join(", ")}>{[...new Set(p.triggers ?? [])].join(" · ") || "Manual"}</span>
-    <span className="mt-auto text-[10px] text-gray-400">Last run: {p.last_run?.status.replace(/_/g, " ") ?? "never"}{p.enabled === false && active ? " · triggers paused" : ""}</span>
+    <span className="mt-auto text-[10px] text-gray-400">Last run: {lastRunLabel(p)}{p.enabled === false && active ? " · triggers paused" : ""}</span>
   </button>;
 }
 
