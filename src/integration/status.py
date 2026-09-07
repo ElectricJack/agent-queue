@@ -282,7 +282,10 @@ class IntegrationStatusService:
                         task_branch_origins.c.task_id,
                         integration_batch_members.c.task_id,
                         integration_repair_operations.c.parent_task_id,
+                        integration_repair_operations.c.verifier_task_id,
+                        integration_repair_stages.c.repair_task_id,
                         integration_review_evidence.c.source_task_id,
+                        integration_review_evidence.c.reviewer_task_id,
                     )
                 ),
             )

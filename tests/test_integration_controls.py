@@ -13,6 +13,7 @@ from src.database.tables import (
     integration_legacy_gate_applicability,
     integration_repair_operations,
     integration_repair_stages,
+    integration_review_evidence,
     integration_batches,
     integration_release_results,
     integration_rollout_transitions,
@@ -93,7 +94,8 @@ async def test_terminal_untracked_history_does_not_block_project_readiness(db, s
     }
 
 
-@pytest.mark.parametrize("kind", ["active", "child", "parent", "checkpoint", "wrong_repo"])
+@pytest.mark.parametrize("kind", ["active", "child", "parent", "checkpoint", "wrong_repo",
+                                 "verifier", "reviewer", "repair_delegate"])
 async def test_current_or_tracked_tasks_keep_repository_blockers(db, kind):
     await db.create_task(
         Task(
@@ -149,6 +151,28 @@ async def test_current_or_tracked_tasks_keep_repository_blockers(db, kind):
                     updated_at=1.0,
                 )
             )
+    elif kind == "reviewer":
+        async with db.immediate() as conn:
+            await conn.execute(insert(integration_review_evidence).values(
+                id="review", source_task_id="historical-source", repository_id="repo",
+                source_base="a" * 40, reviewed_head_sha="b" * 40, reviewed_tree_sha="c" * 40,
+                reviewer_task_id="subject", review_kind="task", generation=0,
+                verdict="approved", evidence={}, created_at=1.0,
+            ))
+    elif kind in {"verifier", "repair_delegate"}:
+        async with db.immediate() as conn:
+            await conn.execute(insert(integration_repair_operations).values(
+                id="historical-operation", target_kind="batch", batch_id="historical-batch",
+                episode_id="historical-batch", state="completed", policy_snapshot={},
+                artifact_snapshot={}, required_check_version="v1", created_at=1.0, updated_at=1.0,
+                verifier_task_id="subject" if kind == "verifier" else None,
+            ))
+            if kind == "repair_delegate":
+                await conn.execute(insert(integration_repair_stages).values(
+                    operation_id="historical-operation", ordinal=0, policy={},
+                    repair_task_id="subject", writer_kind="repair_delegate",
+                    starting_sha="a" * 40, state="passed",
+                ))
     status = await IntegrationStatusService(db).status("p")
     projection = next(p for p in status["parent_readiness"] if p["task_id"] == "subject")
     assert "repository_not_designated" in {b["code"] for b in projection["blockers"]}
