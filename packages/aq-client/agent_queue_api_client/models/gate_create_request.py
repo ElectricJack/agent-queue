@@ -15,13 +15,13 @@ T = TypeVar("T", bound="GateCreateRequest")
 class GateCreateRequest:
     """
     Attributes:
-        project_id (str): Project id that owns the gate
-        gate_type (str): Gate kind. 'routing' gates resolve only via task_route.
-        title (str): Human-readable gate title
-        question (None | str | Unset): Optional prompt shown to the resolver
-        await_id (None | str | Unset): Optional external id the gate is waiting on
-        timeout_at (float | None | Unset): Optional epoch after which the gate is considered expired
-        waiter_task_ids (list[Any] | None | Unset): Task ids that should be blocked by this gate
+        project_id (str):
+        gate_type (str):
+        title (str):
+        question (None | str | Unset):
+        await_id (None | str | Unset):
+        timeout_at (None | str | Unset):
+        waiter_task_ids (None | str | Unset):
     """
 
     project_id: str
@@ -29,8 +29,8 @@ class GateCreateRequest:
     title: str
     question: None | str | Unset = UNSET
     await_id: None | str | Unset = UNSET
-    timeout_at: float | None | Unset = UNSET
-    waiter_task_ids: list[Any] | None | Unset = UNSET
+    timeout_at: None | str | Unset = UNSET
+    waiter_task_ids: None | str | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -52,18 +52,15 @@ class GateCreateRequest:
         else:
             await_id = self.await_id
 
-        timeout_at: float | None | Unset
+        timeout_at: None | str | Unset
         if isinstance(self.timeout_at, Unset):
             timeout_at = UNSET
         else:
             timeout_at = self.timeout_at
 
-        waiter_task_ids: list[Any] | None | Unset
+        waiter_task_ids: None | str | Unset
         if isinstance(self.waiter_task_ids, Unset):
             waiter_task_ids = UNSET
-        elif isinstance(self.waiter_task_ids, list):
-            waiter_task_ids = self.waiter_task_ids
-
         else:
             waiter_task_ids = self.waiter_task_ids
 
@@ -114,29 +111,21 @@ class GateCreateRequest:
 
         await_id = _parse_await_id(d.pop("await_id", UNSET))
 
-        def _parse_timeout_at(data: object) -> float | None | Unset:
+        def _parse_timeout_at(data: object) -> None | str | Unset:
             if data is None:
                 return data
             if isinstance(data, Unset):
                 return data
-            return cast(float | None | Unset, data)
+            return cast(None | str | Unset, data)
 
         timeout_at = _parse_timeout_at(d.pop("timeout_at", UNSET))
 
-        def _parse_waiter_task_ids(data: object) -> list[Any] | None | Unset:
+        def _parse_waiter_task_ids(data: object) -> None | str | Unset:
             if data is None:
                 return data
             if isinstance(data, Unset):
                 return data
-            try:
-                if not isinstance(data, list):
-                    raise TypeError()
-                waiter_task_ids_type_0 = cast(list[Any], data)
-
-                return waiter_task_ids_type_0
-            except (TypeError, ValueError, AttributeError, KeyError):
-                pass
-            return cast(list[Any] | None | Unset, data)
+            return cast(None | str | Unset, data)
 
         waiter_task_ids = _parse_waiter_task_ids(d.pop("waiter_task_ids", UNSET))
 

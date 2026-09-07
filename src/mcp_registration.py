@@ -239,6 +239,29 @@ def _discover_all_commands(warn_on_empty_schema: bool = False) -> dict[str, dict
     return discovered
 
 
+def effective_tool_definitions() -> list[dict]:
+    """The typed command surface: legacy definitions plus contract-backed ones.
+
+    ``_ALL_TOOL_DEFINITIONS`` used to be the only source of a rich input
+    schema.  Commands registered in ``src.commands.contracts`` carry their
+    schema on the contract's ``args_model`` instead and are projected by
+    :func:`_discover_all_commands`, so a ratchet that treats a command as
+    "untyped" because it is absent from ``_ALL_TOOL_DEFINITIONS`` is wrong
+    for them.  Every drift check over the typed surface should read this
+    list; a legacy entry wins over a contract projection of the same name.
+    """
+    from src.commands.contracts import CONTRACTS
+
+    definitions = list(_ALL_TOOL_DEFINITIONS)
+    seen = {definition["name"] for definition in definitions}
+    discovered = _discover_all_commands()
+    for name in sorted(CONTRACTS.names() & discovered.keys()):
+        if name not in seen:
+            definitions.append(discovered[name])
+            seen.add(name)
+    return definitions
+
+
 def _needs_arguments(method: Any) -> bool:
     """Does this ``_cmd_*`` implementation actually read its ``args`` dict?
 

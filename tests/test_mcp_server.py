@@ -563,12 +563,19 @@ class TestDriftDetection:
             "gate_show",
             "project_ready",
         }
+        from src.mcp_registration import effective_tool_definitions
+
         tools = await mcp_server.list_tools()
-        extra = {t.name for t in tools} - {d["name"] for d in _ALL_TOOL_DEFINITIONS}
+        # Contract-backed commands (src/commands/contracts) carry a typed
+        # schema without an _ALL_TOOL_DEFINITIONS entry, so they are typed,
+        # not auto-discovered.
+        typed = {d["name"] for d in effective_tool_definitions()}
+        extra = {t.name for t in tools} - typed
         unexpected = extra - known_auto_discovered
         assert not unexpected, (
             f"Unexpected auto-discovered commands: {unexpected}. "
-            f"Add entries to _ALL_TOOL_DEFINITIONS or update known_auto_discovered."
+            f"Add entries to _ALL_TOOL_DEFINITIONS, register a contract, or update "
+            f"known_auto_discovered."
         )
 
     async def test_registered_count_matches_expected(self, mcp_server):
@@ -674,12 +681,15 @@ class TestDriftDetection:
             # bearer scope, so there is no LLM-facing definition to write.
             "subagent_event",
         }
+        from src.mcp_registration import effective_tool_definitions
+
         all_commands = _discover_all_commands()
-        explicit = {d["name"] for d in _ALL_TOOL_DEFINITIONS}
+        explicit = {d["name"] for d in effective_tool_definitions()}
         missing = sorted(set(all_commands) - explicit - known_auto_discovered)
         assert not missing, (
             f"CommandHandler has commands without explicit tool definitions: {missing}. "
-            f"Add entries to _ALL_TOOL_DEFINITIONS or update known_auto_discovered."
+            f"Add entries to _ALL_TOOL_DEFINITIONS, register a contract, or update "
+            f"known_auto_discovered."
         )
 
     def test_no_duplicate_tool_definitions(self):

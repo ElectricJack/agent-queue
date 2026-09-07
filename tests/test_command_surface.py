@@ -15,7 +15,6 @@ import pytest
 
 from src.commands.handler import CommandHandler
 from src.mcp_registration import DEFAULT_EXCLUDED_COMMANDS, get_effective_exclusions
-from src.tools.definitions import _ALL_TOOL_DEFINITIONS
 
 #: Commands intentionally left to ``register_command_tools``'s docstring-derived
 #: auto-registration rather than being given a typed schema.  This list is a
@@ -140,17 +139,9 @@ def _defined_tool_names() -> set[str]:
 
 def _effective_typed_definitions() -> list[dict]:
     """Legacy definitions plus typed contracts projected by discovery."""
-    from src.commands.contracts import CONTRACTS
-    from src.mcp_registration import _discover_all_commands
+    from src.mcp_registration import effective_tool_definitions
 
-    definitions = list(_ALL_TOOL_DEFINITIONS)
-    seen = {definition["name"] for definition in definitions}
-    discovered = _discover_all_commands()
-    for name in sorted(CONTRACTS.names() & discovered.keys()):
-        if name not in seen:
-            definitions.append(discovered[name])
-            seen.add(name)
-    return definitions
+    return effective_tool_definitions()
 
 
 class TestCommandSurface:

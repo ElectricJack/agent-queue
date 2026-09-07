@@ -30,6 +30,38 @@ from src.database.tables import (
     events,
     gates,
     hierarchy_migration_rejects,
+    integration_attestation_publications,
+    integration_batch_members,
+    integration_batches,
+    integration_branch_owners,
+    integration_candidate_member_results,
+    integration_candidate_publications,
+    integration_candidate_ref_mutations,
+    integration_candidate_resolutions,
+    integration_candidate_revisions,
+    integration_check_evidence,
+    integration_child_dispositions,
+    integration_cleanup_items,
+    integration_episode_receipt_acceptances,
+    integration_history_waiver_consumptions,
+    integration_history_waivers,
+    integration_legacy_gate_applicability,
+    integration_legacy_suppression,
+    integration_operation_artifact_pins,
+    integration_outbox,
+    integration_outbox_artifact_pins,
+    integration_parent_episodes,
+    integration_parent_operation_completions,
+    integration_parent_verification_evidence,
+    integration_parent_verifications,
+    integration_promotion_intents,
+    integration_release_results,
+    integration_repair_operations,
+    integration_repair_stage_evidence,
+    integration_repair_stages,
+    integration_review_evidence,
+    integration_rollout_transitions,
+    integration_root_intent_members,
     layout_dirty,
     layout_jobs,
     merge_slots,
@@ -45,6 +77,8 @@ from src.database.tables import (
     plugin_data,
     plugins,
     project_constraints,
+    project_integration_leases,
+    project_integration_schedules,
     project_layout_meta,
     project_onboarding_requests,
     projects,
@@ -54,12 +88,15 @@ from src.database.tables import (
     subagent_events,
     system_config,
     task_assignment_routes,
+    task_branch_origins,
     task_comments,
     task_completion_records,
     task_context,
     task_criteria,
+    task_delivery_receipts,
     task_dependencies,
     task_gates,
+    task_integration_checkpoints,
     task_labels,
     task_layout_cells,
     task_layouts,
@@ -164,6 +201,82 @@ _ORDERED_TABLES = [
     # hooks and hook_runs tables removed (playbooks spec §13 Phase 3)
     # FK → plugins
     plugin_data,
+    # Hierarchical integration trains (tables added on the
+    # feat/hierarchical-integration-trains series), in FK-safe order.
+    # No FKs.
+    integration_batches,
+    # No FKs.
+    integration_branch_owners,
+    # No FKs.
+    integration_candidate_revisions,
+    # No FKs.
+    integration_check_evidence,
+    # No FKs.
+    integration_outbox,
+    # No FKs.
+    integration_repair_stages,
+    # No FKs.
+    integration_review_evidence,
+    # No FKs.
+    project_integration_leases,
+    # No FKs.
+    project_integration_schedules,
+    # No FKs.
+    task_branch_origins,
+    # FK → integration_review_evidence
+    integration_batch_members,
+    # FK → integration_candidate_revisions
+    integration_candidate_publications,
+    # FK → integration_outbox, playbook_artifacts
+    integration_outbox_artifact_pins,
+    # FK → integration_candidate_revisions
+    integration_promotion_intents,
+    # FK → integration_batches
+    integration_release_results,
+    # FK → integration_check_evidence, integration_repair_stages
+    integration_repair_stage_evidence,
+    # FK → integration_batch_members, integration_candidate_revisions
+    integration_candidate_member_results,
+    # FK → projects
+    integration_history_waivers,
+    # FK → projects
+    integration_legacy_suppression,
+    # FK → integration_history_waivers, projects
+    integration_rollout_transitions,
+    # FK → integration_batch_members, integration_candidate_member_results, integration_promotion_intents, integration_review_evidence
+    integration_root_intent_members,
+    # FK → integration_history_waivers, integration_rollout_transitions, projects
+    integration_history_waiver_consumptions,
+    # FK → gates, integration_history_waivers, integration_rollout_transitions, projects
+    integration_legacy_gate_applicability,
+    # FK → repos, tasks
+    integration_parent_episodes,
+    # FK → integration_candidate_member_results, integration_repair_stages, sessions, tasks, workspaces
+    integration_candidate_resolutions,
+    # FK → integration_parent_episodes, tasks
+    integration_repair_operations,
+    # FK → integration_candidate_revisions, integration_check_evidence, integration_repair_operations, projects
+    integration_attestation_publications,
+    # FK → integration_candidate_resolutions, integration_candidate_revisions
+    integration_candidate_ref_mutations,
+    # FK → integration_parent_episodes, integration_repair_operations
+    integration_child_dispositions,
+    # FK → integration_repair_operations, playbook_artifacts
+    integration_operation_artifact_pins,
+    # FK → integration_parent_episodes, integration_repair_operations, tasks
+    integration_parent_verifications,
+    # FK → integration_batch_members, integration_candidate_member_results, integration_parent_episodes, integration_repair_operations
+    task_delivery_receipts,
+    # FK → integration_batches, projects, repos, task_delivery_receipts
+    integration_cleanup_items,
+    # FK → integration_parent_episodes, integration_parent_verifications, integration_repair_operations, task_delivery_receipts
+    integration_episode_receipt_acceptances,
+    # FK → integration_parent_verifications, integration_repair_operations
+    integration_parent_operation_completions,
+    # FK → integration_check_evidence, integration_parent_verifications
+    integration_parent_verification_evidence,
+    # FK → integration_parent_episodes, integration_parent_operation_completions, integration_parent_verifications
+    task_integration_checkpoints,
 ]
 
 # Columns NULLed out on first insert because they point at a table that is

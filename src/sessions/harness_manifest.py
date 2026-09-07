@@ -80,6 +80,7 @@ SHIPPED_HARNESS_HASHES: Mapping[str, frozenset[str]] = {
             "8cc90bc5c0e99cf7e737bef15368de5e34ff0293b78044fc76aaaceda837f9a3",  # ca7ffda9 2026-09-03
             "69faf87a91c38b06871e9501aae2e978f14aa1812503f9503f6935ec2444e3d9",  # keen-current-10 2026-09-02 (composer_clear_keys)
             "b2d63549a13b54ac759e642faf5fa7347fc475020bb8e5e72e4e159fd99a84fb",  # merged main + composer_clear_keys
+            "f9dcf86290b94d59fab3369e9d9fef15fcf8aed7e4f4efab498d71fcedea5bfe",  # 84945773 2026-09-06 (codex full-auto shorthand)
         }
     ),
     "gemini.md": frozenset(

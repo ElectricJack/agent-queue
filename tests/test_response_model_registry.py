@@ -132,9 +132,11 @@ _PRESENT_PROPERTIES_BY_COMMAND: dict[str, set[str]] = {
 
 
 def _tool_input_schema(cmd_name: str) -> dict:
-    from src.tools import _ALL_TOOL_DEFINITIONS
+    # Legacy _ALL_TOOL_DEFINITIONS entries plus contract-backed schemas
+    # (gate_create / gate_resolve moved to src/commands/contracts).
+    from src.mcp_registration import effective_tool_definitions
 
-    for defn in _ALL_TOOL_DEFINITIONS:
+    for defn in effective_tool_definitions():
         if defn["name"] == cmd_name:
             return defn["input_schema"]
     raise AssertionError(f"{cmd_name} has neither a fallback schema nor a tool definition")

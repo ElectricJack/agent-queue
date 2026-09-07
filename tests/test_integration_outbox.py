@@ -31,6 +31,7 @@ from src.integration.controls import IntegrationControlService
 from src.models import Project, RepoConfig, RepoSourceType
 from src.playbooks.artifact_store import ArtifactStore
 from src.playbooks.definition import PlaybookDefinition
+from src.playbooks import runtime as runtime_module
 from src.playbooks.runtime import V2PlaybookRuntime
 
 
@@ -896,12 +897,23 @@ async def test_operation_pin_is_a_reference_for_gc_file_rechecks(db, tmp_path):
     assert await db.filter_referenced_artifact_shas([old_sha]) == {old_sha}
 
 
-async def test_restart_reconciler_drains_more_than_one_bounded_page(db, tmp_path):
+async def test_restart_reconciler_drains_more_than_one_bounded_page(
+    db, tmp_path, monkeypatch
+):
+    # The property under test is paging: the restart reconciler must keep
+    # refilling its bounded replay slots until every retained row has been
+    # dispatched, not stop after the first page.  A small page keeps the test
+    # about paging rather than SQLite throughput — every dispatch is a real
+    # playbook run behind the serialized ``immediate()`` writer lock, so 101
+    # events at the production page size need well over the 10s wait on a
+    # loaded runner.
+    monkeypatch.setattr(runtime_module, "_INTEGRATION_REPLAY_PAGE_SIZE", 4)
+    total = 9  # two full pages and a partial third
     compiled = tmp_path / "compiled"
     activation_id, artifact_sha256 = await _activate(
         db, compiled, "integration-train", "integration.sealed"
     )
-    for ordinal in range(101):
+    for ordinal in range(total):
         event_id = f"event-{ordinal:03d}"
         await db.retain_integration_event(
             playbook_id="integration-train",
@@ -928,13 +940,13 @@ async def test_restart_reconciler_drains_more_than_one_bounded_page(db, tmp_path
                 row["resolution"] == "dispatched"
                 for row in await _pending_rows(db)
             )
-            < 101
+            < total
         ):
             await asyncio.sleep(0.02)
     await restarted.shutdown()
 
-    assert await _accepted_activation_count(db, "event-100") == 1
-    assert sum(row["resolution"] == "dispatched" for row in await _pending_rows(db)) == 101
+    assert await _accepted_activation_count(db, f"event-{total - 1:03d}") == 1
+    assert sum(row["resolution"] == "dispatched" for row in await _pending_rows(db)) == total
 
 
 async def test_artifact_retention_keeps_pending_pin(db, tmp_path):

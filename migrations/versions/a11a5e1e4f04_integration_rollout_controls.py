@@ -18,6 +18,29 @@ down_revision: str | Sequence[str] | None = "a10c5e1e4f03"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
+
+@contextmanager
+def _sqlite_fk_suspended():
+    """Let SQLite rebuild the referenced ``projects`` table in batch mode.
+
+    With ``PRAGMA foreign_keys=ON`` the move-and-copy rebuild drops the old
+    table while repos/tasks/workspaces rows still reference it and fails with
+    ``FOREIGN KEY constraint failed``.  Same pattern as revision a7c91e4d2b63.
+    """
+    bind = op.get_bind()
+    foreign_keys = (
+        bind.dialect.name == "sqlite" and bind.exec_driver_sql("PRAGMA foreign_keys").scalar_one()
+    )
+    if foreign_keys:
+        with op.get_context().autocommit_block():
+            bind.exec_driver_sql("PRAGMA foreign_keys=OFF")
+    try:
+        yield
+    finally:
+        if foreign_keys:
+            with op.get_context().autocommit_block():
+                bind.exec_driver_sql("PRAGMA foreign_keys=ON")
+
 _MODES = "('disabled', 'observe', 'hierarchy', 'train')"
 _IMMUTABLE_TABLES = (
     "integration_history_waivers",

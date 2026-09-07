@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import subprocess
 from contextlib import asynccontextmanager
 from dataclasses import replace
@@ -43,9 +44,30 @@ from src.models import AgentProfile, Project, RepoConfig, RepoSourceType, Sessio
 BASE = "a" * 40
 
 
+# Sessions and CI runners export GIT_AUTHOR_*/GIT_COMMITTER_*, which outrank
+# the per-repository ``user.*`` config these fixtures rely on for attribution.
+_AMBIENT_IDENTITY_KEYS = (
+    "GIT_AUTHOR_NAME",
+    "GIT_AUTHOR_EMAIL",
+    "GIT_AUTHOR_DATE",
+    "GIT_COMMITTER_NAME",
+    "GIT_COMMITTER_EMAIL",
+    "GIT_COMMITTER_DATE",
+)
+
+
+def _scrubbed_env() -> dict[str, str]:
+    return {key: value for key, value in os.environ.items() if key not in _AMBIENT_IDENTITY_KEYS}
+
+
 def _git(cwd: Path, *args: str) -> str:
     return subprocess.run(
-        ["git", *args], cwd=cwd, check=True, capture_output=True, text=True
+        ["git", *args],
+        cwd=cwd,
+        check=True,
+        capture_output=True,
+        text=True,
+        env=_scrubbed_env(),
     ).stdout.strip()
 
 
