@@ -250,6 +250,10 @@ class Orchestrator(
         # orchestrator only reads the class the playbook wrote onto the task.
         self.assignment_routing = ExplicitRouting()
         self._route_needed_emitted: dict[str, float] = {}
+        # Populated before Playbooks V2 subscribes.  The health endpoint uses
+        # this durable-policy verdict rather than mistaking an empty trigger
+        # list for a healthy routing subsystem.
+        self.required_playbook_status: dict[str, Any] = {"ok": True, "required": {}}
         # Live adapter instances keyed by agent_id.  Stored so we can call
         # adapter.stop() from admin commands (stop_task, timeout recovery).
         self._adapters: dict[str, object] = {}
@@ -414,7 +418,9 @@ class Orchestrator(
         # ``SessionReconciler.tick`` and every route (SSE, session_logs)
         # shares the same reader state.  Base_dir=None => Path.home()
         # (spec default).
-        self.agent_questions = AgentQuestionService(self.db, self.bus, self.session_providers, config)
+        self.agent_questions = AgentQuestionService(
+            self.db, self.bus, self.session_providers, config
+        )
         self.transcript_watcher = TranscriptWatcher(
             db=self.db,
             bus=self.bus,
@@ -724,9 +730,7 @@ class Orchestrator(
                     permission_mode=pc.permission_mode,
                     harness=pc.harness,
                     codex_full_auto=pc.codex_full_auto,
-                    claude_dangerously_skip_permissions=(
-                        pc.claude_dangerously_skip_permissions
-                    ),
+                    claude_dangerously_skip_permissions=(pc.claude_dangerously_skip_permissions),
                     allowed_tools=pc.allowed_tools,
                     mcp_servers=_coerce_mcp_server_names(pc.mcp_servers),
                     system_prompt_suffix=pc.system_prompt_suffix,
@@ -816,8 +820,7 @@ class Orchestrator(
             return chosen
         project.default_profile_id = chosen
         logger.info(
-            "Task dispatch: project=%s had no default_profile_id; "
-            "backfilled to system default %s",
+            "Task dispatch: project=%s had no default_profile_id; backfilled to system default %s",
             project.id,
             chosen,
         )
@@ -953,14 +956,19 @@ class Orchestrator(
         agent_id = snapshot.get("agent_id")
         captured = snapshot.get("sessions")
         if captured is None:  # Older persisted pauses predate exact-session snapshots.
-            captured = [{"id": row.id, "instance_token": row.instance_token}
-                        for row in await self.db.list_sessions(agent_id=agent_id)
-                        if row.task_id == task_id]
+            captured = [
+                {"id": row.id, "instance_token": row.instance_token}
+                for row in await self.db.list_sessions(agent_id=agent_id)
+                if row.task_id == task_id
+            ]
         for identity in captured:
             async with self._pool_teardown_lock(identity["id"]):
                 session = await self.db.get_session(identity["id"])
-                if (session is None or session.instance_token != identity["instance_token"]
-                        or session.task_id not in (None, task_id)):
+                if (
+                    session is None
+                    or session.instance_token != identity["instance_token"]
+                    or session.task_id not in (None, task_id)
+                ):
                     continue
                 # A reconciler's stopped marker is not confirmation that this
                 # pending pause stopped its exact process. Retry the provider.
@@ -970,37 +978,55 @@ class Orchestrator(
                     await token_store.revoke_session(session.id)
                 provider = self.session_providers.create(session.provider, self.config)
                 try:
-                    await provider.stop(SessionHandle(
-                        name=session.name, provider=session.provider,
-                        instance_token=session.instance_token,
-                    ), grace=2.0)
+                    await provider.stop(
+                        SessionHandle(
+                            name=session.name,
+                            provider=session.provider,
+                            instance_token=session.instance_token,
+                        ),
+                        grace=2.0,
+                    )
                 except Exception as exc:
-                    raise ValueError("Task is paused, but its session could not stop. Retry Resume.") from exc
+                    raise ValueError(
+                        "Task is paused, but its session could not stop. Retry Resume."
+                    ) from exc
                 if session.session_key:
                     await self.db.set_task_meta(task_id, "session_resume_key", session.session_key)
                 await self.db.update_session(
-                    session.id, state="quarantined" if session.state == "quarantined" else "stopped",
+                    session.id,
+                    state="quarantined" if session.state == "quarantined" else "stopped",
                     desired_state="stopped",
                     task_id=None if session.lifecycle == "pool" else task_id,
-                    claim_phase=None, claim_phase_at=None,
+                    claim_phase=None,
+                    claim_phase_at=None,
                     last_claim_result="manually_paused",
                 )
         agent = await self.db.get_agent(agent_id) if agent_id else None
-        adapter = self._adapters.get(agent_id) if agent and agent.current_task_id == task_id else None
+        adapter = (
+            self._adapters.get(agent_id) if agent and agent.current_task_id == task_id else None
+        )
         if adapter is not None:
             try:
                 await adapter.stop()
             except Exception as exc:
-                raise ValueError("Task is paused, but its adapter could not stop. Retry Resume.") from exc
+                raise ValueError(
+                    "Task is paused, but its adapter could not stop. Retry Resume."
+                ) from exc
         bg_task = self._running_tasks.get(task_id)
         if bg_task and not bg_task.done() and bg_task is not asyncio.current_task():
             bg_task.cancel()
             _, pending = await asyncio.wait({bg_task}, timeout=5.0)
             if pending:
-                raise ValueError("Task is paused; execution cleanup is still running. Retry Resume.")
-        owned_workspaces = [ws for ws in await self.db.list_workspaces() if ws.locked_by_task_id == task_id]
+                raise ValueError(
+                    "Task is paused; execution cleanup is still running. Retry Resume."
+                )
+        owned_workspaces = [
+            ws for ws in await self.db.list_workspaces() if ws.locked_by_task_id == task_id
+        ]
         if len(owned_workspaces) > 1:
-            raise ValueError("Task is paused with multiple locked workspaces; retaining resources for safe recovery.")
+            raise ValueError(
+                "Task is paused with multiple locked workspaces; retaining resources for safe recovery."
+            )
         ws = owned_workspaces[0] if owned_workspaces else None
         if ws:
             if not await self._checkpoint_paused_workspace(task_id, ws, deferrable=deferrable):
@@ -1041,17 +1067,25 @@ class Orchestrator(
             return True
         attempts = int(state.get("attempts", 0)) + 1
         if attempts < PAUSE_CHECKPOINT_MAX_ATTEMPTS and Path(ws.workspace_path).is_dir():
-            await self.db.set_task_meta(task_id, PAUSE_CHECKPOINT_RETRY_META, {
-                "attempts": attempts,
-                "next_attempt_at": time.time() + min(2.0 ** attempts, PAUSE_CHECKPOINT_MAX_BACKOFF),
-                "reason": reason,
-            })
+            await self.db.set_task_meta(
+                task_id,
+                PAUSE_CHECKPOINT_RETRY_META,
+                {
+                    "attempts": attempts,
+                    "next_attempt_at": time.time()
+                    + min(2.0**attempts, PAUSE_CHECKPOINT_MAX_BACKOFF),
+                    "reason": reason,
+                },
+            )
             raise ValueError(
                 f"Task is paused, but its workspace could not be preserved: {reason}. Retry Resume."
             )
         logger.warning(
             "Task %s is being paused without a Git checkpoint after %d attempt(s) on %s: %s",
-            task_id, attempts, ws.workspace_path, reason,
+            task_id,
+            attempts,
+            ws.workspace_path,
+            reason,
         )
         await self._salvage_paused_workspace(task_id, ws)
         try:
@@ -1246,6 +1280,7 @@ class Orchestrator(
         self._log_resource_gating()
         await self.db.initialize()
         from src.agents.configuration import ensure_supervisor_agent
+
         supervisor_agent = await ensure_supervisor_agent(self.db)
         for row in await self.db.list_sessions(name="n-supervisor--global"):
             if row.project_id is None and row.agent_id is None:
@@ -1419,19 +1454,36 @@ class Orchestrator(
         if self.config.playbooks.enabled:
             from src.playbooks.runtime import V2PlaybookRuntime
             from src.timer_service import TimerService
+            from src.playbooks.required import (
+                RequiredPlaybookReconciler,
+                ensure_reviewed_playbook_bundles,
+            )
 
             if self._command_handler is None:
                 raise RuntimeError("Playbooks enabled before command handler was wired")
+            installed = ensure_reviewed_playbook_bundles(self.config.data_dir)
+            if installed:
+                logger.info(
+                    "Installed reviewed required playbook bundles: %s", ", ".join(installed)
+                )
+            self.required_playbook_reconciler = RequiredPlaybookReconciler(
+                config=self.config, db=self.db, handler=self._command_handler
+            )
+            self.required_playbook_status = await self.required_playbook_reconciler.reconcile()
             self.playbook_manager = V2PlaybookRuntime(
                 config=self.config,
                 db=self.db,
                 handler=self._command_handler,
                 llm=self.llm,
                 bus=self.bus,
+                required_playbook_status=self.required_playbook_status,
             )
             await self.playbook_manager.refresh()
             subscribed = self.playbook_manager.subscribe_to_events()
             logger.info("Subscribed Playbooks V2 to %d active trigger(s)", subscribed)
+            replay = await self.required_playbook_reconciler.replay_route_needed_events()
+            if replay.get("errors"):
+                logger.error("Required playbook pending-event replay errors: %s", replay["errors"])
 
             self.timer_service = TimerService(
                 event_bus=self.bus,
@@ -1441,6 +1493,7 @@ class Orchestrator(
             self.timer_service.start()
 
             from src.playbooks.resume_handler import PlaybookResumeHandler
+
             self.playbook_resume_handler = PlaybookResumeHandler(
                 db=self.db,
                 event_bus=self.bus,
@@ -1450,6 +1503,7 @@ class Orchestrator(
             self.playbook_resume_handler.subscribe()
 
             from src.workflow_stage_resume_handler import WorkflowStageResumeHandler
+
             self.workflow_stage_resume_handler = WorkflowStageResumeHandler(
                 db=self.db,
                 event_bus=self.bus,
@@ -1459,6 +1513,7 @@ class Orchestrator(
             self.workflow_stage_resume_handler.subscribe()
         else:
             self.playbook_manager = None
+            self.required_playbook_reconciler = None
             self.timer_service = None
             self.playbook_resume_handler = None
             self.workflow_stage_resume_handler = None
@@ -1903,6 +1958,18 @@ class Orchestrator(
         except Exception as e:
             logger.warning("Startup README scan failed: %s", e)
 
+        # Some capability registries are populated by late startup wiring.
+        # Retry the reviewed import after all of those registries exist, then
+        # publish the now-durable activation into the runtime snapshot before
+        # the first scheduler cycle can emit task.route_needed.
+        if self.required_playbook_reconciler is not None:
+            self.required_playbook_status = await self.required_playbook_reconciler.reconcile()
+            self.playbook_manager._required_playbook_status = self.required_playbook_status
+            await self.playbook_manager.refresh()
+            replay = await self.required_playbook_reconciler.replay_route_needed_events()
+            if replay.get("errors"):
+                logger.error("Required playbook late replay errors: %s", replay["errors"])
+
     async def _recover_stale_state(self, skip_task_ids: set[str] | None = None) -> None:
         """Reset any in-flight work from a previous daemon run.
 
@@ -2031,9 +2098,7 @@ class Orchestrator(
         tasks = await self.db.list_tasks(status=TaskStatus.IN_PROGRESS)
         for t in tasks:
             if t.id in skip_task_ids:
-                logger.info(
-                    "Recovery: task '%s' kept IN_PROGRESS — its session was adopted", t.id
-                )
+                logger.info("Recovery: task '%s' kept IN_PROGRESS — its session was adopted", t.id)
                 continue
             if await self.db.get_subtasks(t.id):
                 logger.info(
@@ -2707,17 +2772,13 @@ class Orchestrator(
             try:
                 gates = await self.db.list_open_gates_by_type(gate_type)
             except Exception:
-                logger.exception(
-                    "_sweep_gates: list_open_gates_by_type(%s) failed", gate_type
-                )
+                logger.exception("_sweep_gates: list_open_gates_by_type(%s) failed", gate_type)
                 continue
             for gate in gates:
                 pr_url = gate.get("await_id")
                 if not pr_url:
                     continue
-                merged = await self._poll_pr_merged(
-                    pr_url, project_id=gate["project_id"]
-                )
+                merged = await self._poll_pr_merged(pr_url, project_id=gate["project_id"])
                 if merged is not True:
                     continue
                 # "Merged" is not "on main".  A PR merged into a stacked
@@ -2756,9 +2817,7 @@ class Orchestrator(
                     limit=100, event_type=event_type, since=gate["created_at"]
                 )
             except Exception:
-                logger.debug(
-                    "_sweep_gates: get_recent_events failed", exc_info=True
-                )
+                logger.debug("_sweep_gates: get_recent_events failed", exc_info=True)
                 continue
             if rows:
                 await self._resolve_gate_and_emit(
@@ -2858,9 +2917,7 @@ class Orchestrator(
                 if ws.kind_id is None:
                     continue
                 try:
-                    kind = await self.db.resolve_workspace_kind(
-                        project.id, ws.kind_id
-                    )
+                    kind = await self.db.resolve_workspace_kind(project.id, ws.kind_id)
                 except Exception:
                     kind = None
                 if kind is None or getattr(kind, "mode", None) != KIND_MODE_WORKTREE:
@@ -3033,11 +3090,13 @@ class Orchestrator(
 
         tasks = [
             _replace(task, intelligence_class=assignment_routes[task.id].intelligence_class)
-            if task.id in assignment_routes else task
+            if task.id in assignment_routes
+            else task
             for task in task_snapshot
         ]
         routed_ready = [
-            task for task in tasks
+            task
+            for task in tasks
             if task.status == TaskStatus.READY
             and not task.is_blocked
             and task.id in hierarchy_runnable_task_ids
@@ -3070,8 +3129,9 @@ class Orchestrator(
         agents = await self.db.list_agents()
         live_sessions = await self.db.list_sessions(live_only=True)
         occupied = {row.agent_id for row in live_sessions if row.agent_id}
-        agents = [agent for agent in agents
-                  if agent.state != AgentState.IDLE or agent.id not in occupied]
+        agents = [
+            agent for agent in agents if agent.state != AgentState.IDLE or agent.id not in occupied
+        ]
 
         # Token usage within the rolling window — this is the "actual usage"
         # that the deficit-based scheduler compares against each project's
@@ -3109,9 +3169,7 @@ class Orchestrator(
         for p in projects:
             workspace_counts[p.id] = await self.db.count_available_workspaces(
                 p.id,
-                worktree_slot_cap=(
-                    self._project_slot_cap(p) if worktrees_enabled else None
-                ),
+                worktree_slot_cap=(self._project_slot_cap(p) if worktrees_enabled else None),
             )
 
         # NOTE: tasks_completed_in_window is empty here, which effectively
@@ -3134,8 +3192,7 @@ class Orchestrator(
         # saved profile: a stopped pool worker can take any new specialization.
         all_profiles = await self.db.list_profiles()
         pool_ids_by_project: dict[str, set[str]] = {
-            p.id: await self._pool_profile_ids(p.id, system_profiles=all_profiles)
-            for p in projects
+            p.id: await self._pool_profile_ids(p.id, system_profiles=all_profiles) for p in projects
         }
         if any(pool_ids_by_project.values()):
             # ``project.default_profile_id`` alone is rung 2 of
