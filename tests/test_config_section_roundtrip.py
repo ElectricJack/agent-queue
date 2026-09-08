@@ -20,6 +20,7 @@ import pytest
 import yaml
 
 from src.config import AppConfig, ConfigValidationError, load_config
+from tests.pg_dsn import create_scratch_database
 
 # YAML key for sections whose ``AppConfig`` attribute is spelled differently.
 SECTION_YAML_KEY = {"agents_config": "agents"}
@@ -129,7 +130,7 @@ def test_playbooks_section_reads_every_field_it_declares(tmp_path):
 
 
 def test_playbooks_cancellation_grace_seconds_loads_from_yaml(tmp_path):
-    path = tmp_path / "config.yaml"
+    path = await create_scratch_database("mig")
     path.write_text(
         yaml.dump(
             {
@@ -172,7 +173,7 @@ def test_streams_section_loads_from_yaml(tmp_path):
     deleted outright (prime-torrent-81); ``streams`` is the half that had a
     consumer, so it is the half this guards.
     """
-    path = tmp_path / "config.yaml"
+    path = await create_scratch_database("mig")
     path.write_text(
         yaml.dump(
             {
@@ -207,7 +208,7 @@ def test_partial_section_keeps_every_default_the_dataclass_declares(tmp_path):
     :class:`LoggingConfig` declared ``"dev"``.  Deriving the keywords from
     the dataclass leaves untouched keys to the dataclass by construction.
     """
-    path = tmp_path / "config.yaml"
+    path = await create_scratch_database("mig")
     path.write_text(
         yaml.dump(
             {
@@ -233,7 +234,7 @@ def test_partial_section_keeps_every_default_the_dataclass_declares(tmp_path):
 
 def test_tuple_fields_load_from_a_yaml_list(tmp_path):
     """``tuple[str, ...]`` fields keep their declared type, not YAML's list."""
-    path = tmp_path / "config.yaml"
+    path = await create_scratch_database("mig")
     path.write_text(
         yaml.dump(
             {
@@ -248,7 +249,7 @@ def test_tuple_fields_load_from_a_yaml_list(tmp_path):
 
 def test_a_key_written_with_no_value_leaves_the_default(tmp_path):
     """``level:`` alone on its line asserts nothing, so it must not win."""
-    path = tmp_path / "config.yaml"
+    path = await create_scratch_database("mig")
     path.write_text(
         f"database_path: {tmp_path / 'test.db'}\n"
         "discord:\n  bot_token: t\n  guild_id: '1'\n"

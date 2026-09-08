@@ -38,6 +38,7 @@ from src.models import (
     WorkspaceKind,
 )
 from src.orchestrator import Orchestrator
+from tests.db_fixtures import lease_dsn
 
 pytestmark = pytest.mark.asyncio
 
@@ -72,7 +73,7 @@ class _SuccessfulSlots:
 
 @pytest.fixture
 async def env(tmp_path):
-    db = Database(str(tmp_path / "wait.db"))
+    db = Database(lease_dsn("wait.db"))
     await db.initialize()
     await db.create_project(Project(id="p", name="p"))
     await db.create_profile(AgentProfile(id="worker", name="Worker"))

@@ -18,10 +18,12 @@ import pytest
 from fastapi import WebSocketDisconnect
 
 from src.api.websocket import WebSocketManager
-from src.database import SQLiteDatabaseAdapter
+from src.database import Database
 from src.event_bus import EventBus
 from src.event_schemas import EVENT_SCHEMAS, validate_event
 from src.models import Project, Task, TaskStatus
+from tests.db_fixtures import lease_dsn
+from src.config import DatabaseConfig
 
 
 PROJECT = "p-replay"
@@ -29,7 +31,7 @@ PROJECT = "p-replay"
 
 @pytest.fixture
 async def db(tmp_path):
-    database = SQLiteDatabaseAdapter(str(tmp_path / "replay.db"))
+    database = Database(lease_dsn("replay.db"))
     await database.initialize()
     await database.create_project(Project(id=PROJECT, name="replay"))
     yield database
@@ -487,7 +489,7 @@ class TestBlockedFlipEmitters:
         from src.orchestrator import Orchestrator
 
         cfg = AppConfig(
-            database_path=str(tmp_path / "e.db"),
+            database=DatabaseConfig(url=lease_dsn("e.db")),
             workspace_dir=str(tmp_path / "ws"),
             data_dir=str(tmp_path / "data"),
         )

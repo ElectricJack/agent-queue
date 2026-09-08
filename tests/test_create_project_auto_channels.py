@@ -10,15 +10,16 @@ Covers:
 """
 
 import pytest
-from src.config import AppConfig, DiscordConfig, PerProjectChannelsConfig
+from src.config import DatabaseConfig, AppConfig, DiscordConfig, PerProjectChannelsConfig
 from src.commands.handler import CommandHandler
 from src.database import Database
 from src.orchestrator import Orchestrator
+from tests.db_fixtures import lease_dsn
 
 
 @pytest.fixture
 async def db(tmp_path):
-    database = Database(str(tmp_path / "test.db"))
+    database = Database(lease_dsn("test.db"))
     await database.initialize()
     yield database
     await database.close()
@@ -34,7 +35,7 @@ def config_auto_create_off(tmp_path):
             per_project_channels=PerProjectChannelsConfig(auto_create=False),
         ),
         workspace_dir=str(tmp_path / "workspaces"),
-        database_path=str(tmp_path / "test.db"),
+        database=DatabaseConfig(url=lease_dsn("test.db")),
         data_dir=str(tmp_path / "data"),
     )
 
@@ -49,7 +50,7 @@ def config_auto_create_on(tmp_path):
             per_project_channels=PerProjectChannelsConfig(auto_create=True),
         ),
         workspace_dir=str(tmp_path / "workspaces"),
-        database_path=str(tmp_path / "test.db"),
+        database=DatabaseConfig(url=lease_dsn("test.db")),
         data_dir=str(tmp_path / "data"),
     )
 

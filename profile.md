@@ -16,7 +16,7 @@ Agent Queue is a self-improving orchestration platform for AI coding agents. It 
 
 ## Architecture
 
-Single Python asyncio process. Event-driven state machine. SQLAlchemy Core with Alembic migrations (SQLite default, PostgreSQL supported). Discord bot + MCP server for control planes. All components communicate through an async EventBus.
+Single Python asyncio process. Event-driven state machine. SQLAlchemy Core with Alembic migrations (PostgreSQL only). Discord bot + MCP server for control planes. All components communicate through an async EventBus.
 
 ```
 asyncio event loop
@@ -221,7 +221,7 @@ Not all knowledge is needed at all times. L0/L1 are cheap (always loaded, ~250 t
 ### Why files as source of truth?
 Playbooks, profiles, facts, and knowledge are all markdown files in `~/.agent-queue/vault/`. This makes them browsable in Obsidian, editable by hand, diffable with git, and transparent. The database and Milvus are derived indexes, not canonical stores.
 
-### Why SQLite (with PostgreSQL supported)?
+### Why PostgreSQL only?
 Lightweight, zero-ops. Single process means no need for distributed locking. WAL mode gives concurrent reads. Survives restarts. Runs on a Raspberry Pi. SQLAlchemy Core provides dialect portability — PostgreSQL supported via asyncpg for production deployments.
 
 ### Why Discord as control plane?
@@ -304,7 +304,7 @@ Key sections: `discord`, `scheduling`, `auto_task`, `pause_retry`, `hook_engine`
 - Git operations wrapped in `GitManager` with `GitError` exceptions
 - **Linter:** ruff (line-length 100, target py312)
 - **Tests:** pytest with pytest-asyncio (`asyncio_mode = "auto"`)
-- **Dependencies:** sqlalchemy[asyncio], aiosqlite, alembic, discord.py, claude-agent-sdk, pyyaml (memsearch ships with the external `aq-memory` plugin)
+- **Dependencies:** sqlalchemy[asyncio], asyncpg, alembic, discord.py, claude-agent-sdk, pyyaml (memsearch ships with the external `aq-memory` plugin)
 
 ## Infrastructure
 

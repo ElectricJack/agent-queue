@@ -14,7 +14,6 @@ from urllib.parse import urlparse
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy import or_, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
-from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 from src.database.tables import (
     integration_batch_members,
@@ -37,9 +36,7 @@ from src.git.manager import GitError
 class CleanupMaterializationResult(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid", strict=True)
 
-    outcome: Literal[
-        "materialized", "already_materialized", "stale", "conflict", "invariant_error"
-    ]
+    outcome: Literal["materialized", "already_materialized", "stale", "conflict", "invariant_error"]
     batch_id: str
     item_count: int = 0
 
@@ -82,28 +79,30 @@ class IntegrationCleanupService:
         observed_at = self.clock() if now is None else now
         async with self.db._engine.connect() as conn:
             rows = (
-                await conn.execute(
-                    select(integration_cleanup_items)
-                    .where(
-                        integration_cleanup_items.c.batch_id == batch_id,
-                        integration_cleanup_items.c.state.in_(("pending", "retryable")),
-                        integration_cleanup_items.c.next_attempt_at <= observed_at,
-                        or_(
-                            integration_cleanup_items.c.execution_nonce.is_(None),
-                            integration_cleanup_items.c.claim_expires_at <= observed_at,
-                        ),
+                (
+                    await conn.execute(
+                        select(integration_cleanup_items)
+                        .where(
+                            integration_cleanup_items.c.batch_id == batch_id,
+                            integration_cleanup_items.c.state.in_(("pending", "retryable")),
+                            integration_cleanup_items.c.next_attempt_at <= observed_at,
+                            or_(
+                                integration_cleanup_items.c.execution_nonce.is_(None),
+                                integration_cleanup_items.c.claim_expires_at <= observed_at,
+                            ),
+                        )
+                        .order_by(
+                            integration_cleanup_items.c.next_attempt_at,
+                            integration_cleanup_items.c.domain_key,
+                        )
+                        .limit(limit)
                     )
-                    .order_by(
-                        integration_cleanup_items.c.next_attempt_at,
-                        integration_cleanup_items.c.domain_key,
-                    )
-                    .limit(limit)
                 )
-            ).mappings().all()
-        results = [
-            await self.execute(
-                row["batch_id"], row["kind"], row["identity"], now=observed_at
+                .mappings()
+                .all()
             )
+        results = [
+            await self.execute(row["batch_id"], row["kind"], row["identity"], now=observed_at)
             for row in rows
         ]
         await self._reconcile_aggregate(batch_id, observed_at)
@@ -119,16 +118,20 @@ class IntegrationCleanupService:
         nonce = uuid.uuid4().hex
         async with self.db.immediate() as conn:
             row = (
-                await conn.execute(
-                    select(integration_cleanup_items)
-                    .where(
-                        integration_cleanup_items.c.batch_id == batch_id,
-                        integration_cleanup_items.c.kind == kind,
-                        integration_cleanup_items.c.identity == identity,
+                (
+                    await conn.execute(
+                        select(integration_cleanup_items)
+                        .where(
+                            integration_cleanup_items.c.batch_id == batch_id,
+                            integration_cleanup_items.c.kind == kind,
+                            integration_cleanup_items.c.identity == identity,
+                        )
+                        .with_for_update()
                     )
-                    .with_for_update()
                 )
-            ).mappings().one_or_none()
+                .mappings()
+                .one_or_none()
+            )
             if row is None:
                 return CleanupExecutionResult(
                     outcome="stale", batch_id=batch_id, kind=kind, identity=identity, attempts=0
@@ -201,9 +204,7 @@ class IntegrationCleanupService:
         provider = self.forge_provider or await self._app_client(binding)
         if provider is None:
             return "retryable", "cleanup forge provider is unavailable"
-        current = await provider.exact_pull_request(
-            number=int(row["target_pr_number"])
-        )
+        current = await provider.exact_pull_request(number=int(row["target_pr_number"]))
         if current is None:
             return "complete", None
         if (
@@ -229,9 +230,7 @@ class IntegrationCleanupService:
                     ),
                 )
         if current.get("state") != "closed":
-            await provider.close_pull_request(
-                number=int(row["target_pr_number"])
-            )
+            await provider.close_pull_request(number=int(row["target_pr_number"]))
         return "complete", None
 
     async def _mark_irreversible_prewrite(self, row: dict[str, Any]) -> str:
@@ -241,16 +240,20 @@ class IntegrationCleanupService:
         now = float(row["updated_at"])
         async with self.db.immediate() as conn:
             current = (
-                await conn.execute(
-                    select(integration_cleanup_items)
-                    .where(
-                        integration_cleanup_items.c.batch_id == row["batch_id"],
-                        integration_cleanup_items.c.kind == row["kind"],
-                        integration_cleanup_items.c.identity == row["identity"],
+                (
+                    await conn.execute(
+                        select(integration_cleanup_items)
+                        .where(
+                            integration_cleanup_items.c.batch_id == row["batch_id"],
+                            integration_cleanup_items.c.kind == row["kind"],
+                            integration_cleanup_items.c.identity == row["identity"],
+                        )
+                        .with_for_update()
                     )
-                    .with_for_update()
                 )
-            ).mappings().one_or_none()
+                .mappings()
+                .one_or_none()
+            )
             if current is None or current["state"] not in {"pending", "retryable"}:
                 return "stale"
             if current["irreversible_prewrite_at"] is not None:
@@ -298,15 +301,18 @@ class IntegrationCleanupService:
         if row["member_ordinal"] is not None:
             async with self.db._engine.connect() as conn:
                 owner = (
-                    await conn.execute(
-                        select(integration_branch_owners).where(
-                            integration_branch_owners.c.repository_id
-                            == row["repository_id"],
-                            integration_branch_owners.c.ref == row["target_ref"],
-                            integration_branch_owners.c.handoff_state != "released",
+                    (
+                        await conn.execute(
+                            select(integration_branch_owners).where(
+                                integration_branch_owners.c.repository_id == row["repository_id"],
+                                integration_branch_owners.c.ref == row["target_ref"],
+                                integration_branch_owners.c.handoff_state != "released",
+                            )
                         )
                     )
-                ).mappings().one_or_none()
+                    .mappings()
+                    .one_or_none()
+                )
             if owner is not None:
                 return "conflict", "source ref has an active branch owner"
         app = await self._app_client(binding)
@@ -343,32 +349,44 @@ class IntegrationCleanupService:
         store = str(self.retained_store(row["repository_id"]))
         async with self.db._engine.connect() as conn:
             intent = (
-                await conn.execute(
-                    select(integration_promotion_intents).where(
-                        integration_promotion_intents.c.intent_kind == "root",
-                        integration_promotion_intents.c.root_batch_id == row["batch_id"],
-                        integration_promotion_intents.c.root_candidate_revision
-                        == row["revision"],
+                (
+                    await conn.execute(
+                        select(integration_promotion_intents).where(
+                            integration_promotion_intents.c.intent_kind == "root",
+                            integration_promotion_intents.c.root_batch_id == row["batch_id"],
+                            integration_promotion_intents.c.root_candidate_revision
+                            == row["revision"],
+                        )
                     )
                 )
-            ).mappings().one_or_none()
+                .mappings()
+                .one_or_none()
+            )
             mutation = (
-                await conn.execute(
-                    select(integration_candidate_ref_mutations).where(
-                        integration_candidate_ref_mutations.c.batch_id == row["batch_id"],
-                        integration_candidate_ref_mutations.c.revision == row["revision"],
-                        integration_candidate_ref_mutations.c.purpose == "root_main",
+                (
+                    await conn.execute(
+                        select(integration_candidate_ref_mutations).where(
+                            integration_candidate_ref_mutations.c.batch_id == row["batch_id"],
+                            integration_candidate_ref_mutations.c.revision == row["revision"],
+                            integration_candidate_ref_mutations.c.purpose == "root_main",
+                        )
                     )
                 )
-            ).mappings().one_or_none()
+                .mappings()
+                .one_or_none()
+            )
             owner = (
-                await conn.execute(
-                    select(integration_branch_owners).where(
-                        integration_branch_owners.c.repository_id == row["repository_id"],
-                        integration_branch_owners.c.ref == row["target_ref"],
+                (
+                    await conn.execute(
+                        select(integration_branch_owners).where(
+                            integration_branch_owners.c.repository_id == row["repository_id"],
+                            integration_branch_owners.c.ref == row["target_ref"],
+                        )
                     )
                 )
-            ).mappings().one_or_none()
+                .mappings()
+                .one_or_none()
+            )
         if (
             intent is None
             or mutation is None
@@ -403,32 +421,36 @@ class IntegrationCleanupService:
             return "retryable", "worktree cleanup transport is unavailable"
         async with self.db._engine.connect() as conn:
             workspace = (
-                await conn.execute(
-                    select(workspaces).where(workspaces.c.id == row["identity"])
-                )
-            ).mappings().one_or_none()
+                (await conn.execute(select(workspaces).where(workspaces.c.id == row["identity"])))
+                .mappings()
+                .one_or_none()
+            )
             retained = (
-                await conn.execute(
-                    select(
-                        integration_repair_operations.c.id.label("operation_id"),
-                        integration_repair_operations.c.batch_id,
-                        integration_repair_operations.c.state.label("operation_state"),
-                        integration_repair_stages.c.state.label("stage_state"),
-                        integration_repair_stages.c.retained_handoff,
-                    )
-                    .select_from(
-                        integration_repair_operations.join(
-                            integration_repair_stages,
-                            integration_repair_stages.c.operation_id
-                            == integration_repair_operations.c.id,
+                (
+                    await conn.execute(
+                        select(
+                            integration_repair_operations.c.id.label("operation_id"),
+                            integration_repair_operations.c.batch_id,
+                            integration_repair_operations.c.state.label("operation_state"),
+                            integration_repair_stages.c.state.label("stage_state"),
+                            integration_repair_stages.c.retained_handoff,
+                        )
+                        .select_from(
+                            integration_repair_operations.join(
+                                integration_repair_stages,
+                                integration_repair_stages.c.operation_id
+                                == integration_repair_operations.c.id,
+                            )
+                        )
+                        .where(
+                            integration_repair_operations.c.batch_id == row["batch_id"],
+                            integration_repair_stages.c.retained_workspace_id == row["identity"],
                         )
                     )
-                    .where(
-                        integration_repair_operations.c.batch_id == row["batch_id"],
-                        integration_repair_stages.c.retained_workspace_id == row["identity"],
-                    )
                 )
-            ).mappings().one_or_none()
+                .mappings()
+                .one_or_none()
+            )
             base_path = None
             if workspace is not None:
                 base_path = (
@@ -445,15 +467,13 @@ class IntegrationCleanupService:
             or workspace["project_id"] != row["project_id"]
             or workspace["workspace_path"] != row["workspace_path"]
             or workspace["base_workspace_id"] is None
-            or getattr(workspace["source_type"], "value", workspace["source_type"])
-            != "worktree"
+            or getattr(workspace["source_type"], "value", workspace["source_type"]) != "worktree"
             or retained is None
             or retained["operation_state"] != "completed"
             or retained["stage_state"] not in {"passed", "failed", "expired"}
             or not isinstance(handoff, dict)
             or handoff.get("workspace_id") != row["identity"]
-            or handoff.get("operation_id", retained["operation_id"])
-            != retained["operation_id"]
+            or handoff.get("operation_id", retained["operation_id"]) != retained["operation_id"]
             or handoff.get("head_sha") != row["expected_sha"]
             or base_path is None
         ):
@@ -528,16 +548,21 @@ class IntegrationCleanupService:
             )
             if result.rowcount != 1:
                 current = (
-                    await conn.execute(
-                        select(integration_cleanup_items).where(
-                            integration_cleanup_items.c.batch_id == row["batch_id"],
-                            integration_cleanup_items.c.kind == row["kind"],
-                            integration_cleanup_items.c.identity == row["identity"],
+                    (
+                        await conn.execute(
+                            select(integration_cleanup_items).where(
+                                integration_cleanup_items.c.batch_id == row["batch_id"],
+                                integration_cleanup_items.c.kind == row["kind"],
+                                integration_cleanup_items.c.identity == row["identity"],
+                            )
                         )
                     )
-                ).mappings().one()
+                    .mappings()
+                    .one()
+                )
                 return self._execution_result(
-                    "already_complete" if current["state"] in {"complete", "conflict", "failed"}
+                    "already_complete"
+                    if current["state"] in {"complete", "conflict", "failed"}
                     else "wait",
                     current,
                 )
@@ -559,15 +584,21 @@ class IntegrationCleanupService:
 
     async def _project_aggregate_on(self, conn, batch_id, now):
         rows = (
-            await conn.execute(
-                select(integration_cleanup_items.c.state).where(
-                    integration_cleanup_items.c.batch_id == batch_id
+            (
+                await conn.execute(
+                    select(integration_cleanup_items.c.state).where(
+                        integration_cleanup_items.c.batch_id == batch_id
+                    )
                 )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
         if not rows or any(state in {"pending", "retryable"} for state in rows):
             return
-        aggregate = "conflict" if any(state in {"conflict", "failed"} for state in rows) else "complete"
+        aggregate = (
+            "conflict" if any(state in {"conflict", "failed"} for state in rows) else "complete"
+        )
         await conn.execute(
             update(integration_batches)
             .where(
@@ -630,21 +661,29 @@ class IntegrationCleanupService:
         async with self.db.immediate() as conn:
             await self.db.lock_hierarchy_project(conn, str(project_id))
             batch = (
-                await conn.execute(
-                    select(integration_batches)
-                    .where(integration_batches.c.id == batch_id)
-                    .with_for_update()
-                )
-            ).mappings().one_or_none()
-            publication = (
-                await conn.execute(
-                    select(integration_candidate_publications).where(
-                        integration_candidate_publications.c.batch_id == batch_id,
-                        integration_candidate_publications.c.revision
-                        == (batch["current_revision"] if batch is not None else -1),
+                (
+                    await conn.execute(
+                        select(integration_batches)
+                        .where(integration_batches.c.id == batch_id)
+                        .with_for_update()
                     )
                 )
-            ).mappings().one_or_none()
+                .mappings()
+                .one_or_none()
+            )
+            publication = (
+                (
+                    await conn.execute(
+                        select(integration_candidate_publications).where(
+                            integration_candidate_publications.c.batch_id == batch_id,
+                            integration_candidate_publications.c.revision
+                            == (batch["current_revision"] if batch is not None else -1),
+                        )
+                    )
+                )
+                .mappings()
+                .one_or_none()
+            )
             if (
                 batch is None
                 or batch["lifecycle"] != "promoted"
@@ -652,23 +691,29 @@ class IntegrationCleanupService:
                 or publication is None
                 or publication["state"] != "pr_published"
             ):
-                return CleanupMaterializationResult(
-                    outcome="invariant_error", batch_id=batch_id
-                )
+                return CleanupMaterializationResult(outcome="invariant_error", batch_id=batch_id)
             members = (
-                await conn.execute(
-                    select(integration_batch_members)
-                    .where(integration_batch_members.c.batch_id == batch_id)
-                    .order_by(integration_batch_members.c.ordinal)
+                (
+                    await conn.execute(
+                        select(integration_batch_members)
+                        .where(integration_batch_members.c.batch_id == batch_id)
+                        .order_by(integration_batch_members.c.ordinal)
+                    )
                 )
-            ).mappings().all()
+                .mappings()
+                .all()
+            )
             reservations = (
-                await conn.execute(
-                    select(integration_root_intent_members)
-                    .where(integration_root_intent_members.c.batch_id == batch_id)
-                    .order_by(integration_root_intent_members.c.member_ordinal)
+                (
+                    await conn.execute(
+                        select(integration_root_intent_members)
+                        .where(integration_root_intent_members.c.batch_id == batch_id)
+                        .order_by(integration_root_intent_members.c.member_ordinal)
+                    )
                 )
-            ).mappings().all()
+                .mappings()
+                .all()
+            )
             receipts = {
                 row["id"]: dict(row)
                 for row in (
@@ -679,19 +724,18 @@ class IntegrationCleanupService:
                             == batch["current_revision"],
                         )
                     )
-                ).mappings().all()
+                )
+                .mappings()
+                .all()
             }
             if (
                 not members
                 or len(members) != len(reservations)
                 or any(row["receipt_id"] not in receipts for row in reservations)
             ):
-                return CleanupMaterializationResult(
-                    outcome="invariant_error", batch_id=batch_id
-                )
+                return CleanupMaterializationResult(outcome="invariant_error", batch_id=batch_id)
             if any(
-                row["source_ref"] is None or row["source_ref_retention"] is None
-                for row in members
+                row["source_ref"] is None or row["source_ref_retention"] is None for row in members
             ):
                 await conn.execute(
                     update(integration_batches)
@@ -701,37 +745,35 @@ class IntegrationCleanupService:
                     )
                     .values(cleanup_state="conflict", updated_at=observed_at)
                 )
-                return CleanupMaterializationResult(
-                    outcome="conflict", batch_id=batch_id
-                )
+                return CleanupMaterializationResult(outcome="conflict", batch_id=batch_id)
             items = self._items(batch, publication, members, reservations, receipts, observed_at)
             items.extend(await self._worktree_items(conn, batch, publication, observed_at))
-            insert_fn = pg_insert if conn.dialect.name == "postgresql" else sqlite_insert
+            insert_fn = pg_insert
             for item in items:
                 await conn.execute(
                     insert_fn(integration_cleanup_items)
                     .values(**item)
-                    .on_conflict_do_nothing(
-                        index_elements=["batch_id", "kind", "identity"]
-                    )
+                    .on_conflict_do_nothing(index_elements=["batch_id", "kind", "identity"])
                 )
             persisted = (
-                await conn.execute(
-                    select(integration_cleanup_items).where(
-                        integration_cleanup_items.c.batch_id == batch_id
+                (
+                    await conn.execute(
+                        select(integration_cleanup_items).where(
+                            integration_cleanup_items.c.batch_id == batch_id
+                        )
                     )
                 )
-            ).mappings().all()
-            expected = {
-                (item["batch_id"], item["kind"], item["identity"]): item for item in items
-            }
+                .mappings()
+                .all()
+            )
+            expected = {(item["batch_id"], item["kind"], item["identity"]): item for item in items}
             if len(persisted) != len(expected) or any(
-                not self._same_identity(dict(row), expected[(row["batch_id"], row["kind"], row["identity"])])
+                not self._same_identity(
+                    dict(row), expected[(row["batch_id"], row["kind"], row["identity"])]
+                )
                 for row in persisted
             ):
-                return CleanupMaterializationResult(
-                    outcome="invariant_error", batch_id=batch_id
-                )
+                return CleanupMaterializationResult(outcome="invariant_error", batch_id=batch_id)
             return CleanupMaterializationResult(
                 outcome="materialized",
                 batch_id=batch_id,
@@ -755,9 +797,7 @@ class IntegrationCleanupService:
         items = []
         for member, reservation in zip(members, reservations, strict=True):
             if member["pr_url"]:
-                number = self._pr_number(
-                    member["pr_url"], publication["repository_full_name"]
-                )
+                number = self._pr_number(member["pr_url"], publication["repository_full_name"])
                 identity = f"{publication['repository_numeric_id']}#{number}"
                 items.append(
                     common
@@ -813,7 +853,8 @@ class IntegrationCleanupService:
 
     async def _worktree_items(self, conn, batch, publication, now):
         rows = (
-            await conn.execute(
+            (
+                await conn.execute(
                     select(
                         workspaces.c.id.label("workspace_id"),
                         workspaces.c.workspace_path,
@@ -821,29 +862,35 @@ class IntegrationCleanupService:
                         integration_repair_stages.c.state.label("stage_state"),
                         integration_repair_stages.c.completed_at,
                         integration_repair_stages.c.retained_handoff,
-                )
-                .select_from(
-                    integration_repair_operations
-                    .join(
-                        integration_repair_stages,
-                        integration_repair_stages.c.operation_id
-                        == integration_repair_operations.c.id,
                     )
-                    .join(
-                        workspaces,
-                        workspaces.c.id == integration_repair_stages.c.retained_workspace_id,
+                    .select_from(
+                        integration_repair_operations.join(
+                            integration_repair_stages,
+                            integration_repair_stages.c.operation_id
+                            == integration_repair_operations.c.id,
+                        ).join(
+                            workspaces,
+                            workspaces.c.id == integration_repair_stages.c.retained_workspace_id,
+                        )
                     )
+                    .where(integration_repair_operations.c.batch_id == batch["id"])
                 )
-                .where(integration_repair_operations.c.batch_id == batch["id"])
             )
-        ).mappings().all()
+            .mappings()
+            .all()
+        )
         common = {
-            "batch_id": batch["id"], "project_id": batch["project_id"],
+            "batch_id": batch["id"],
+            "project_id": batch["project_id"],
             "repository_id": batch["repository_id"],
             "repository_numeric_id": publication["repository_numeric_id"],
             "repository_full_name": publication["repository_full_name"],
-            "revision": int(batch["current_revision"]), "state": "pending", "attempts": 0,
-            "next_attempt_at": now, "created_at": now, "updated_at": now,
+            "revision": int(batch["current_revision"]),
+            "state": "pending",
+            "attempts": 0,
+            "next_attempt_at": now,
+            "created_at": now,
+            "updated_at": now,
         }
         items = []
         cleanup = (batch["policy_snapshot"] or {}).get("cleanup", {})
@@ -852,8 +899,7 @@ class IntegrationCleanupService:
             handoff = row["retained_handoff"] or {}
             if (
                 handoff.get("workspace_id") != row["workspace_id"]
-                or handoff.get("operation_id", row["operation_id"])
-                != row["operation_id"]
+                or handoff.get("operation_id", row["operation_id"]) != row["operation_id"]
                 or handoff.get("head_sha") is None
             ):
                 raise ValueError("retained worktree provenance is incomplete")
@@ -879,7 +925,11 @@ class IntegrationCleanupService:
     def _pr_number(url: str, full_name: str) -> int:
         parsed = urlparse(url)
         prefix = f"/{full_name}/pull/"
-        if parsed.scheme != "https" or parsed.netloc != "github.com" or not parsed.path.startswith(prefix):
+        if (
+            parsed.scheme != "https"
+            or parsed.netloc != "github.com"
+            or not parsed.path.startswith(prefix)
+        ):
             raise ValueError("cleanup PR identity does not match repository")
         suffix = parsed.path.removeprefix(prefix).strip("/")
         if not suffix.isdigit() or int(suffix) <= 0:
@@ -889,8 +939,15 @@ class IntegrationCleanupService:
     @staticmethod
     def _same_identity(row: dict[str, Any], expected: dict[str, Any]) -> bool:
         mutable = {
-            "state", "attempts", "next_attempt_at", "execution_nonce", "claim_expires_at",
-            "last_error", "created_at", "updated_at", "terminal_at",
+            "state",
+            "attempts",
+            "next_attempt_at",
+            "execution_nonce",
+            "claim_expires_at",
+            "last_error",
+            "created_at",
+            "updated_at",
+            "terminal_at",
         }
         return all(row.get(key) == value for key, value in expected.items() if key not in mutable)
 

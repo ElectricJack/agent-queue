@@ -33,11 +33,13 @@ from tests.session_dispatch_helpers import (
     drain_running_tasks,
     fake_provider,
 )
+from tests.db_fixtures import lease_dsn
+from src.config import DatabaseConfig
 
 
 @pytest.fixture
 async def db(tmp_path):
-    database = Database(str(tmp_path / "test.db"))
+    database = Database(lease_dsn("test.db"))
     await database.initialize()
     yield database
     await database.close()
@@ -258,7 +260,7 @@ class TestProfileResolution:
     @pytest.fixture
     async def orch(self, tmp_path):
         config = AppConfig(
-            database_path=str(tmp_path / "test.db"),
+            database=DatabaseConfig(url=lease_dsn("test.db")),
             workspace_dir=str(tmp_path / "workspaces"),
             data_dir=str(tmp_path / "data"),
         )
@@ -461,7 +463,7 @@ class TestProfileSyncFromConfig:
     async def test_sync_creates_profiles(self, tmp_path):
         config = AppConfig(
             data_dir=str(tmp_path / "data"),
-            database_path=str(tmp_path / "test.db"),
+            database=DatabaseConfig(url=lease_dsn("test.db")),
             workspace_dir=str(tmp_path / "workspaces"),
             agent_profiles=[
                 AgentProfileConfig(
@@ -494,7 +496,7 @@ class TestProfileSyncFromConfig:
         """
         config = AppConfig(
             data_dir=str(tmp_path / "data"),
-            database_path=str(tmp_path / "test.db"),
+            database=DatabaseConfig(url=lease_dsn("test.db")),
             workspace_dir=str(tmp_path / "workspaces"),
             agent_profiles=[
                 AgentProfileConfig(id="test-reviewer", name="Reviewer v1"),
@@ -507,7 +509,7 @@ class TestProfileSyncFromConfig:
         # Second startup with updated YAML but untouched vault markdown.
         config2 = AppConfig(
             data_dir=str(tmp_path / "data"),
-            database_path=str(tmp_path / "test.db"),
+            database=DatabaseConfig(url=lease_dsn("test.db")),
             workspace_dir=str(tmp_path / "workspaces"),
             agent_profiles=[
                 AgentProfileConfig(id="test-reviewer", name="Reviewer v2"),
@@ -533,7 +535,7 @@ class TestProfileCommands:
         from src.commands.handler import CommandHandler
 
         config = AppConfig(
-            database_path=str(tmp_path / "test.db"),
+            database=DatabaseConfig(url=lease_dsn("test.db")),
             workspace_dir=str(tmp_path / "workspaces"),
             data_dir=str(tmp_path / "data"),
         )
@@ -1048,7 +1050,7 @@ class TestToolValidation:
         from src.commands.handler import CommandHandler
 
         config = AppConfig(
-            database_path=str(tmp_path / "test.db"),
+            database=DatabaseConfig(url=lease_dsn("test.db")),
             workspace_dir=str(tmp_path / "workspaces"),
             data_dir=str(tmp_path / "data"),
         )
@@ -1071,7 +1073,7 @@ class TestToolValidation:
         from src.commands.handler import CommandHandler
 
         config = AppConfig(
-            database_path=str(tmp_path / "test.db"),
+            database=DatabaseConfig(url=lease_dsn("test.db")),
             workspace_dir=str(tmp_path / "workspaces"),
             data_dir=str(tmp_path / "data"),
         )
@@ -1095,7 +1097,7 @@ class TestToolValidation:
         from src.commands.handler import CommandHandler
 
         config = AppConfig(
-            database_path=str(tmp_path / "test.db"),
+            database=DatabaseConfig(url=lease_dsn("test.db")),
             workspace_dir=str(tmp_path / "workspaces"),
             data_dir=str(tmp_path / "data"),
         )
@@ -1126,7 +1128,7 @@ class TestListAvailableTools:
         from src.commands.handler import CommandHandler
 
         config = AppConfig(
-            database_path=str(tmp_path / "test.db"),
+            database=DatabaseConfig(url=lease_dsn("test.db")),
             workspace_dir=str(tmp_path / "workspaces"),
             data_dir=str(tmp_path / "data"),
         )
@@ -1153,7 +1155,7 @@ class TestCheckProfile:
         from src.commands.handler import CommandHandler
 
         config = AppConfig(
-            database_path=str(tmp_path / "test.db"),
+            database=DatabaseConfig(url=lease_dsn("test.db")),
             workspace_dir=str(tmp_path / "workspaces"),
             data_dir=str(tmp_path / "data"),
         )
@@ -1177,7 +1179,7 @@ class TestCheckProfile:
         from src.commands.handler import CommandHandler
 
         config = AppConfig(
-            database_path=str(tmp_path / "test.db"),
+            database=DatabaseConfig(url=lease_dsn("test.db")),
             workspace_dir=str(tmp_path / "workspaces"),
             data_dir=str(tmp_path / "data"),
         )
@@ -1202,7 +1204,7 @@ class TestCheckProfile:
         from src.commands.handler import CommandHandler
 
         config = AppConfig(
-            database_path=str(tmp_path / "test.db"),
+            database=DatabaseConfig(url=lease_dsn("test.db")),
             workspace_dir=str(tmp_path / "workspaces"),
             data_dir=str(tmp_path / "data"),
         )
@@ -1224,7 +1226,7 @@ class TestExportImport:
         from src.commands.handler import CommandHandler
 
         config = AppConfig(
-            database_path=str(tmp_path / "test.db"),
+            database=DatabaseConfig(url=lease_dsn("test.db")),
             workspace_dir=str(tmp_path / "workspaces"),
             data_dir=str(tmp_path / "data"),
         )
@@ -1250,7 +1252,7 @@ class TestExportImport:
         from src.commands.handler import CommandHandler
 
         config = AppConfig(
-            database_path=str(tmp_path / "test.db"),
+            database=DatabaseConfig(url=lease_dsn("test.db")),
             workspace_dir=str(tmp_path / "workspaces"),
             data_dir=str(tmp_path / "data"),
         )
@@ -1288,7 +1290,7 @@ class TestExportImport:
         from src.commands.handler import CommandHandler
 
         config = AppConfig(
-            database_path=str(tmp_path / "test.db"),
+            database=DatabaseConfig(url=lease_dsn("test.db")),
             workspace_dir=str(tmp_path / "workspaces"),
             data_dir=str(tmp_path / "data"),
         )
@@ -1319,7 +1321,7 @@ agent_profile:
         from src.commands.handler import CommandHandler
 
         config = AppConfig(
-            database_path=str(tmp_path / "test.db"),
+            database=DatabaseConfig(url=lease_dsn("test.db")),
             workspace_dir=str(tmp_path / "workspaces"),
             data_dir=str(tmp_path / "data"),
         )
@@ -1347,7 +1349,7 @@ agent_profile:
         from src.commands.handler import CommandHandler
 
         config = AppConfig(
-            database_path=str(tmp_path / "test.db"),
+            database=DatabaseConfig(url=lease_dsn("test.db")),
             workspace_dir=str(tmp_path / "workspaces"),
             data_dir=str(tmp_path / "data"),
         )
@@ -1389,7 +1391,7 @@ agent_profile:
         from src.commands.handler import CommandHandler
 
         config = AppConfig(
-            database_path=str(tmp_path / "test.db"),
+            database=DatabaseConfig(url=lease_dsn("test.db")),
             workspace_dir=str(tmp_path / "workspaces"),
             data_dir=str(tmp_path / "data"),
         )
@@ -1413,7 +1415,7 @@ agent_profile:
         from src.commands.handler import CommandHandler
 
         config = AppConfig(
-            database_path=str(tmp_path / "test.db"),
+            database=DatabaseConfig(url=lease_dsn("test.db")),
             workspace_dir=str(tmp_path / "workspaces"),
             data_dir=str(tmp_path / "data"),
         )
@@ -1435,7 +1437,7 @@ agent_profile:
         from src.commands.handler import CommandHandler
 
         config = AppConfig(
-            database_path=str(tmp_path / "test.db"),
+            database=DatabaseConfig(url=lease_dsn("test.db")),
             workspace_dir=str(tmp_path / "workspaces"),
             data_dir=str(tmp_path / "data"),
         )
@@ -1486,7 +1488,7 @@ class TestProfileMcpServersShape:
         from src.commands.handler import CommandHandler
 
         config = AppConfig(
-            database_path=str(tmp_path / "test.db"),
+            database=DatabaseConfig(url=lease_dsn("test.db")),
             workspace_dir=str(tmp_path / "workspaces"),
             data_dir=str(tmp_path / "data"),
         )

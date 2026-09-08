@@ -33,6 +33,7 @@ from src.integration.models import (
     RequiredCheckSet,
 )
 from src.models import Project, RepoConfig, RepoSourceType, Task, TaskStatus, Workspace
+from tests.db_fixtures import lease_dsn
 
 
 BASE = "a" * 40
@@ -47,7 +48,7 @@ def _git(args, cwd):
 
 @pytest.fixture
 async def db(tmp_path):
-    database = Database(str(tmp_path / "hierarchy.db"))
+    database = Database(lease_dsn("hierarchy.db"))
     await database.initialize()
     await database.create_project(Project(id="p", name="hierarchy"))
     await database.create_repo(
@@ -143,7 +144,7 @@ async def _origins(db) -> list[dict]:
 
 
 async def test_project_mode_and_designated_repository_round_trip_and_validate(tmp_path):
-    database = Database(str(tmp_path / "project.db"))
+    database = Database(lease_dsn("project.db"))
     await database.initialize()
     await database.create_project(Project(id="p", name="one"))
     await database.create_project(Project(id="other", name="two"))

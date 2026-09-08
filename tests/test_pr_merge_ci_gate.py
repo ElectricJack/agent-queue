@@ -18,11 +18,13 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from src.commands.handler import CommandHandler
-from src.config import AppConfig, DiscordConfig, IntegrationConfig
+from src.config import DatabaseConfig, AppConfig, DiscordConfig, IntegrationConfig
 from src.database import Database
 from src.git import ci_gate
 from src.models import Project, RepoSourceType, Workspace
 from src.orchestrator import Orchestrator
+from tests.db_fixtures import lease_dsn
+from tests.pg_dsn import create_scratch_database
 
 PR = "https://github.com/o/r/pull/341"
 
@@ -229,7 +231,7 @@ async def test_apr_check_rollup_maps_null_to_an_empty_list(monkeypatch):
 
 @pytest.fixture
 async def db(tmp_path):
-    d = Database(str(tmp_path / "cg.db"))
+    d = Database(lease_dsn("cg.db"))
     await d.initialize()
     await d.create_project(Project(id="p1", name="P1"))
     await d.create_workspace(
@@ -248,7 +250,7 @@ def _config(tmp_path, **integration) -> AppConfig:
     return AppConfig(
         discord=DiscordConfig(bot_token="t", guild_id="1"),
         workspace_dir=str(tmp_path / "w"),
-        database_path=str(tmp_path / "cg.db"),
+        database=DatabaseConfig(url=lease_dsn("cg.db")),
         data_dir=str(tmp_path / "d"),
         integration=IntegrationConfig(**integration),
     )
@@ -415,7 +417,7 @@ def test_integration_config_rejects_a_non_list_of_check_names():
 def test_loader_reads_the_merge_ci_policy(tmp_path):
     from src.config import load_config
 
-    path = tmp_path / "config.yaml"
+    path = await create_scratch_database("mig")
     path.write_text(
         "discord:\n"
         "  bot_token: t\n"
@@ -434,7 +436,7 @@ def test_loader_reads_the_merge_ci_policy(tmp_path):
 def test_loader_accepts_a_single_check_name_as_a_bare_string(tmp_path):
     from src.config import load_config
 
-    path = tmp_path / "config.yaml"
+    path = await create_scratch_database("mig")
     path.write_text(
         "discord:\n"
         "  bot_token: t\n"
@@ -661,7 +663,7 @@ def test_up_to_date_is_required_by_default():
 def test_loader_reads_merge_require_up_to_date(tmp_path):
     from src.config import load_config
 
-    path = tmp_path / "config.yaml"
+    path = await create_scratch_database("mig")
     path.write_text(
         "discord:\n"
         "  bot_token: t\n"

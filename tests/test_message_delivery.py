@@ -17,10 +17,11 @@ import pytest
 from sqlalchemy import insert, update as sa_update
 
 from src.config import MessagesConfig
-from src.database import SQLiteDatabaseAdapter
+from src.database import Database
 from src.database.tables import messages
 from src.messages.delivery import PARK_AFTER_SECONDS, MessageDeliveryEngine
 from src.models import Project
+from tests.db_fixtures import lease_dsn
 
 
 # --------------------------------------------------------------------------
@@ -30,7 +31,7 @@ from src.models import Project
 
 @pytest.fixture
 async def db(tmp_path):
-    database = SQLiteDatabaseAdapter(str(tmp_path / "delivery.db"))
+    database = Database(lease_dsn("delivery.db"))
     await database.initialize()
     await database.create_project(Project(id="p1", name="p1"))
     yield database

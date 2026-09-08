@@ -10,8 +10,8 @@ PostgreSQL has no such hazard (its default read-committed transaction already
 takes row locks as needed), so there ``immediate()`` is exactly
 ``engine.begin()``.
 
-A file-backed SQLite engine uses ``NullPool`` (one fresh DBAPI connection
-per transaction, see ``create_sqlite_engine``), so an ``immediate()`` block
+The engine uses ``NullPool`` (one fresh DBAPI connection per transaction),
+so an ``immediate()`` block
 and any concurrent plain ``engine.begin()`` writer are isolated from each
 other by SQLite's own writer lock, with ``PRAGMA busy_timeout`` bounding
 the wait.  The ``asyncio.Lock`` below is kept on top of that: it serialises
@@ -69,10 +69,9 @@ class TransactionQueryMixin:
         if engine is None:  # pragma: no cover - defensive
             raise RuntimeError("database is not initialized")
 
-        if engine.dialect.name != "sqlite":
-            async with engine.begin() as conn:
-                yield conn
-            return
+        async with engine.begin() as conn:
+            yield conn
+        return
 
         async with self._get_immediate_lock():
             conn = await engine.connect()

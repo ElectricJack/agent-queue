@@ -25,13 +25,14 @@ from src.api.providers import (
 )
 from src.config import AppConfig
 from src.database import Database
+from tests.db_fixtures import lease_dsn
 
 NOW = 1_800_000_000.0
 
 
 @pytest.fixture
 async def db(tmp_path):
-    database = Database(str(tmp_path / "p.db"))
+    database = Database(lease_dsn("p.db"))
     await database.initialize()
     yield database
     await database.close()

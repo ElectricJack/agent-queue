@@ -10,13 +10,15 @@ from src.config import AppConfig, SwarmConfig
 from src.database import Database
 from src.models import AgentProfile, AgentState, Project, SessionRecord
 from src.profiles.parser import VALID_LIFECYCLES, parse_profile
+from tests.db_fixtures import lease_dsn
+from tests.pg_dsn import create_scratch_database
 
 PROJECT_ID = "proj"
 
 
 @pytest.fixture
 async def db(tmp_path):
-    database = Database(str(tmp_path / "test.db"))
+    database = Database(lease_dsn("test.db"))
     await database.initialize()
     await database.create_project(Project(id=PROJECT_ID, name="p"))
     yield database
@@ -158,6 +160,6 @@ class TestSwarmConfig:
 @pytest.mark.parametrize("setting, expected", [("", True), ("fresh_context_per_task: false", False), ("fresh_context_per_task: true", True)])
 def test_fresh_context_policy_loads_from_config(tmp_path, setting, expected):
     from src.config import load_config
-    path = tmp_path / "config.yaml"
+    path = await create_scratch_database("mig")
     path.write_text("database_path: " + str(tmp_path / "aq.db") + "\ndiscord:\n  bot_token: test\n  guild_id: '1'\nswarm:\n  enabled: true\n  " + setting + "\n")
     assert load_config(str(path)).swarm.fresh_context_per_task is expected

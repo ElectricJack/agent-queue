@@ -11,6 +11,7 @@ import pytest
 from alembic import command
 from alembic.config import Config
 from sqlalchemy import create_engine, text
+from tests.pg_dsn import create_scratch_database
 
 PRIOR = "4d6f8a0b2c1e"
 REVISION = "c52f1a4fb6ba"
@@ -25,7 +26,7 @@ def _config(path) -> Config:
 
 
 def test_upgrade_adds_cache_columns_without_touching_existing_rows(tmp_path):
-    path = tmp_path / "cache.db"
+    path = await create_scratch_database("mig")
     config = _config(path)
     command.upgrade(config, PRIOR)
     engine = create_engine(f"sqlite:///{path}")
@@ -78,7 +79,7 @@ def test_upgrade_adds_cache_columns_without_touching_existing_rows(tmp_path):
 
 
 def test_transcript_checkpoints_round_trips(tmp_path):
-    path = tmp_path / "checkpoints.db"
+    path = await create_scratch_database("mig")
     config = _config(path)
     command.upgrade(config, PRIOR)
     engine = create_engine(f"sqlite:///{path}")

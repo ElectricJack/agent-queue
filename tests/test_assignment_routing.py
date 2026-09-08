@@ -14,13 +14,14 @@ import pytest
 
 from src.assignment_routing import EffectiveAssignmentRoute, explicit_route, explicit_routes
 from src.commands.routing_commands import build_route_options, profile_for_class
-from src.config import AppConfig, DiscordConfig
+from src.config import DatabaseConfig, AppConfig, DiscordConfig
 from src.database import Database
 from src.intelligence_classes import IntelligenceClass
 from src.models import Agent, AgentProfile, AgentState, Project, Task, TaskStatus
 from src.orchestrator import Orchestrator
 from src.orchestrator.route_needed import ROUTE_NEEDED_INTERVAL_SECONDS
 from src.sessions.harness_parser import Harness
+from tests.db_fixtures import lease_dsn
 
 CLASSES = {
     "standard-medium": IntelligenceClass("standard-medium", "Standard", "", {
@@ -120,7 +121,7 @@ def test_profile_for_class_prefers_pin_then_pool_on_default_provider_then_id() -
 
 @pytest.fixture
 async def orch(tmp_path):
-    db = Database(str(tmp_path / "routing.db"))
+    db = Database(lease_dsn("routing.db"))
     await db.initialize()
     for profile in _profiles():
         if ":" in profile.id:
@@ -132,7 +133,7 @@ async def orch(tmp_path):
     cfg = AppConfig(
         discord=DiscordConfig(bot_token="test", guild_id="1"),
         workspace_dir=str(tmp_path / "work"), data_dir=str(tmp_path / "data"),
-        database_path=str(tmp_path / "unused.db"),
+        database=DatabaseConfig(url=lease_dsn("unused.db")),
     )
     cfg.sessions.enabled = True
     cfg.sessions.provider = "fake"

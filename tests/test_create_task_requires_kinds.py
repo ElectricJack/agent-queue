@@ -10,11 +10,12 @@ import pytest
 from src.commands.handler import CommandHandler
 from src.database import Database
 from src.models import Project, WorkspaceKind
+from tests.db_fixtures import lease_dsn
 
 
 @pytest.fixture
 async def setup(tmp_path):
-    db = Database(str(tmp_path / "test.db"))
+    db = Database(lease_dsn("test.db"))
     await db.initialize()
     await db.create_project(Project(id="p1", name="test"))
 

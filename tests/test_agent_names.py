@@ -19,6 +19,8 @@ from src.agent_names import (
 )
 from src.database import Database
 from src.models import Agent
+from tests.db_fixtures import lease_dsn
+from src.config import DatabaseConfig
 
 
 class TestNamePools:
@@ -210,7 +212,7 @@ class TestGenerateUniqueAgentName:
 
     async def test_integration_with_real_db(self, tmp_path):
         """Integration test with a real database."""
-        db = Database(str(tmp_path / "test.db"))
+        db = Database(lease_dsn("test.db"))
         await db.initialize()
 
         try:
@@ -233,7 +235,7 @@ class TestGenerateUniqueAgentName:
 
     async def test_multiple_unique_names(self, tmp_path):
         """Generate many names and verify they're all unique."""
-        db = Database(str(tmp_path / "test.db"))
+        db = Database(lease_dsn("test.db"))
         await db.initialize()
 
         try:
@@ -262,7 +264,7 @@ class TestCommandHandlerIntegration:
         from src.orchestrator import Orchestrator
 
         config = AppConfig(
-            database_path=str(tmp_path / "test.db"),
+            database=DatabaseConfig(url=lease_dsn("test.db")),
             workspace_dir=str(tmp_path / "workspaces"),
             data_dir=str(tmp_path / "data"),
         )

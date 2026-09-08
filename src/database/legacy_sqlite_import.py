@@ -17,9 +17,10 @@ import logging
 from typing import Callable
 
 from sqlalchemy import Integer, insert, or_, select, text, update
+from sqlalchemy.ext.asyncio import create_async_engine
 from sqlalchemy.ext.asyncio import AsyncEngine
 
-from src.database.engine import create_postgres_engine, create_sqlite_engine
+from src.database.engine import create_postgres_engine
 from src.database.tables import (
     agent_profiles,
     agent_questions,
@@ -120,7 +121,7 @@ logger = logging.getLogger(__name__)
 #
 # This list must cover every table in ``tables.metadata`` — a missing table is
 # silently dropped data for anyone migrating a SQLite install to PostgreSQL.
-# ``tests/test_migrate_sqlite_to_pg.py`` asserts the two sets match so the list
+# ``tests/test_legacy_sqlite_import.py`` asserts the two sets match so the list
 # cannot drift when a new table is added to ``tables.py``.
 #
 # Circular and self-referential FKs are handled by inserting the offending
@@ -287,6 +288,24 @@ _DEFERRED_COLS: dict[str, frozenset[str]] = {
 }
 
 
+def _read_only_sqlite_engine(path: str) -> AsyncEngine:
+    """A minimal aiosqlite engine, for reading a legacy database only.
+
+    The daemon no longer has a SQLite backend, so this module owns the three
+    lines it needs rather than depending on an engine factory that no longer
+    exists.  ``aiosqlite`` is an optional dependency (``pip install
+    agent-queue[sqlite-import]``) precisely because this is the only caller.
+    """
+    try:
+        import aiosqlite  # noqa: F401
+    except ImportError:  # pragma: no cover - depends on the install
+        raise ImportError(
+            "Reading a legacy SQLite database needs aiosqlite. "
+            'Install it with: pip install "agent-queue[sqlite-import]"'
+        ) from None
+    return create_async_engine(f"sqlite+aiosqlite:///{path}", future=True)
+
+
 async def migrate_sqlite_to_postgres(
     sqlite_path: str,
     pg_dsn: str,
@@ -307,7 +326,7 @@ async def migrate_sqlite_to_postgres(
     Raises:
         RuntimeError: If the PostgreSQL database already contains data.
     """
-    sqlite_engine = create_sqlite_engine(sqlite_path)
+    sqlite_engine = _read_only_sqlite_engine(sqlite_path)
     pg_engine = create_postgres_engine(pg_dsn)
 
     try:

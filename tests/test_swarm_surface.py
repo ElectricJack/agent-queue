@@ -9,11 +9,12 @@ import pytest
 from click.testing import CliRunner
 
 from src.commands.handler import CommandHandler
-from src.config import AppConfig, DiscordConfig
+from src.config import DatabaseConfig, AppConfig, DiscordConfig
 from src.database import Database
 from src.models import Project
 from src.orchestrator import Orchestrator
 from src.tools.definitions import _ALL_TOOL_DEFINITIONS, _TOOL_CATEGORIES
+from tests.db_fixtures import lease_dsn
 
 PROJECT_ID = "proj"
 
@@ -280,13 +281,13 @@ def test_cli_claim_timeout_is_long():
 
 @pytest.fixture
 async def handler(tmp_path):
-    db = Database(str(tmp_path / "test.db"))
+    db = Database(lease_dsn("test.db"))
     await db.initialize()
     await db.create_project(Project(id=PROJECT_ID, name="p"))
     cfg = AppConfig(
         discord=DiscordConfig(bot_token="t", guild_id="1"),
         workspace_dir=str(tmp_path / "ws"),
-        database_path=str(tmp_path / "test.db"),
+        database=DatabaseConfig(url=lease_dsn("test.db")),
         data_dir=str(tmp_path / "data"),
     )
     orch = Orchestrator(cfg)

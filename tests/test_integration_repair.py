@@ -58,6 +58,7 @@ from src.models import (
 )
 from src.scheduler import AssignAction
 from src.profiles.capabilities import CapabilityPolicy
+from tests.db_fixtures import lease_dsn
 
 
 STARTING_SHA = "a" * 40
@@ -115,7 +116,7 @@ def _policy() -> dict:
 
 @pytest.fixture
 async def db(tmp_path):
-    database = Database(str(tmp_path / "repair.db"))
+    database = Database(lease_dsn("repair.db"))
     await database.initialize()
     await _configure_db(database)
     yield database

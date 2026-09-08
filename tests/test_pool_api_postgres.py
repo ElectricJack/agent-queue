@@ -9,6 +9,8 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 
 from tests.pg_dsn import ensure_worker_postgres_dsn
+from tests.db_fixtures import lease_dsn
+from src.config import DatabaseConfig
 
 POSTGRES_DSN = ensure_worker_postgres_dsn() or ""
 
@@ -66,7 +68,7 @@ async def pool_api(tmp_path, monkeypatch):
 
     config = AppConfig(
         discord=DiscordConfig(bot_token="t", guild_id="1"),
-        database_path=str(tmp_path / "unused.db"),
+        database=DatabaseConfig(url=lease_dsn("unused.db")),
         data_dir=str(data_dir),
         workspace_dir=str(tmp_path / "workspaces"),
     )

@@ -12,13 +12,14 @@ from src.database.tables import events
 from src.event_bus import EventBus
 from src.models import Project, Task, TaskStatus
 from tests.perf.test_hierarchy_statements import count_statements
+from tests.db_fixtures import lease_dsn
 
 PROJECT_ID = "proj"
 
 
 @pytest.fixture
 async def db(tmp_path):
-    database = Database(str(tmp_path / "test.db"))
+    database = Database(lease_dsn("test.db"))
     await database.initialize()
     await database.create_project(Project(id=PROJECT_ID, name="p"))
     yield database

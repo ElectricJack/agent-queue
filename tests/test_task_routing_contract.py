@@ -8,18 +8,19 @@ from src.api.codegen import _make_input_model
 from src.api.models.task import CreateTaskResponse, GetTaskResponse, ListTasksResponse
 from src.api.models.agent import GetProfileResponse, ListProfilesResponse
 from src.commands.handler import CommandHandler
-from src.config import AppConfig
+from src.config import DatabaseConfig, AppConfig
 from src.database import Database
 from src.models import Agent, AgentProfile, Project, Task, TaskStatus
 from src.orchestrator import Orchestrator
 from src.task_graph import parse_graph
 from src.tools.definitions import _ALL_TOOL_DEFINITIONS
 from src.vault import ensure_default_intelligence_classes
+from tests.db_fixtures import lease_dsn
 
 
 @pytest.fixture
 async def setup(tmp_path):
-    db = Database(str(tmp_path / "routing.db"))
+    db = Database(lease_dsn("routing.db"))
     await db.initialize()
     await db.create_project(Project(id="p", name="Project"))
     await db.create_profile(AgentProfile(
@@ -28,7 +29,7 @@ async def setup(tmp_path):
     ))
     data_dir = str(tmp_path / "data")
     ensure_default_intelligence_classes(data_dir)
-    config = AppConfig(data_dir=data_dir, database_path=str(tmp_path / "routing.db"))
+    config = AppConfig(data_dir=data_dir, database=DatabaseConfig(url=lease_dsn("routing.db")))
     orch = Orchestrator(config)
     orch.db = db
     orch.git = MagicMock()

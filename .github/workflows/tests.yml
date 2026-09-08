@@ -245,21 +245,13 @@ jobs:
           cache-dependency-path: pyproject.toml
 
       - name: Install project
-        run: pip install -e ".[dev,cli,postgresql]"
+        run: pip install -e ".[dev,cli]"
 
-      - name: Apply migrations to a scratch SQLite database
-        env:
-          # Keep the migration check off the developer default
-          # (~/.agent-queue/agent-queue.db) and out of pytest's collection path.
-          AGENT_QUEUE_DB_URL: sqlite+aiosqlite:///${{ runner.temp }}/ci-migration-check.db
-        run: alembic upgrade head
-
-      # SQLite is not a proxy for the production backend: it stores booleans
-      # as integers and accepts DDL Postgres rejects outright (revision
-      # 33bdb059ceff shipped ``BOOLEAN DEFAULT 0``, which upgraded cleanly on
-      # SQLite and failed every Postgres run with DatatypeMismatchError).
-      # Run the same chain against a real Postgres so that class of break
-      # fails here, in seconds, instead of in every Postgres test fixture.
+      # The SQLite half of this check is gone with the backend.  It was never
+      # a proxy for production anyway: it stored booleans as integers and
+      # accepted DDL Postgres rejects outright (revision 33bdb059ceff shipped
+      # ``BOOLEAN DEFAULT 0``, which upgraded cleanly on SQLite and failed
+      # every Postgres run with DatatypeMismatchError).
       - name: Apply migrations to a scratch PostgreSQL database
         env:
           PGPASSWORD: agent_queue

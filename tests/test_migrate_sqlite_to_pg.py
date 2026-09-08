@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import pytest
 
-from src.database.migrate_sqlite_to_pg import _DEFERRED_COLS, _ORDERED_TABLES
+from src.database.legacy_sqlite_import import _DEFERRED_COLS, _ORDERED_TABLES
 from src.database.tables import metadata
 from tests.pg_dsn import ensure_worker_postgres_dsn
 
@@ -152,7 +152,7 @@ async def test_migrate_sqlite_to_postgres_copies_rows_and_restores_deferred_fks(
     """
     from sqlalchemy import text
 
-    from src.database.migrate_sqlite_to_pg import migrate_sqlite_to_postgres
+    from src.database.legacy_sqlite_import import migrate_sqlite_to_postgres
 
     path = await _seeded_source(tmp_path)
     target = await _empty_pg_adapter()
@@ -189,7 +189,7 @@ async def test_migrate_sqlite_to_postgres_resets_postgres_sequences(tmp_path) ->
     """
     from sqlalchemy import text
 
-    from src.database.migrate_sqlite_to_pg import migrate_sqlite_to_postgres
+    from src.database.legacy_sqlite_import import migrate_sqlite_to_postgres
 
     path = await _seeded_source(tmp_path)
     target = await _empty_pg_adapter()
@@ -217,7 +217,7 @@ async def test_migrate_sqlite_to_postgres_rejects_nonempty_target_without_copyin
 ) -> None:
     from sqlalchemy import text
 
-    from src.database.migrate_sqlite_to_pg import migrate_sqlite_to_postgres
+    from src.database.legacy_sqlite_import import migrate_sqlite_to_postgres
 
     path = await _seeded_source(tmp_path)
     target = await _empty_pg_adapter()
@@ -241,7 +241,7 @@ async def test_migrate_sqlite_to_postgres_rejects_nonempty_target_without_copyin
 
 @pytest.mark.skipif(not POSTGRES_DSN, reason="POSTGRES_TEST_DSN not set")
 async def test_migrate_sqlite_to_postgres_reports_per_table_progress_in_order(tmp_path) -> None:
-    from src.database.migrate_sqlite_to_pg import migrate_sqlite_to_postgres
+    from src.database.legacy_sqlite_import import migrate_sqlite_to_postgres
 
     path = await _seeded_source(tmp_path)
     target = await _empty_pg_adapter()

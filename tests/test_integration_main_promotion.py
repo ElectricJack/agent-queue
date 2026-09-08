@@ -53,6 +53,7 @@ from src.git.github_app import GitHubRepositoryBinding
 from src.models import Project, RepoConfig, RepoSourceType
 from src.profiles.capabilities import DENY_ALL
 from tests.pg_dsn import create_scratch_database, ensure_worker_postgres_dsn
+from tests.db_fixtures import lease_dsn
 
 
 BASE = "a" * 40
@@ -133,7 +134,7 @@ async def prepared_db(tmp_path, request):
         postgres_dsn = await create_scratch_database("root_finalizer_e9")
         database = PostgreSQLDatabaseAdapter(postgres_dsn, 0, 1)
     else:
-        database = Database(str(tmp_path / "main-promotion.db"))
+        database = Database(lease_dsn("main-promotion.db"))
     await database.initialize()
     await database.create_project(Project(id="p", name="project"))
     await database.create_repo(
@@ -1011,7 +1012,7 @@ async def test_publication_and_main_are_ordered_in_both_directions(prepared_db):
 
 @pytest.mark.asyncio
 async def test_root_prepare_empty_replays_without_durable_side_effects(tmp_path):
-    db = Database(str(tmp_path / "empty.db"))
+    db = Database(lease_dsn("empty.db"))
     await db.initialize()
     await db.create_project(Project(id="p", name="project"))
     await db.create_repo(

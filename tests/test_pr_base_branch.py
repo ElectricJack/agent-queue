@@ -21,7 +21,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from src.commands.handler import CommandHandler
-from src.config import AppConfig, DiscordConfig
+from src.config import DatabaseConfig, AppConfig, DiscordConfig
 from src.database import Database
 from src.git.manager import GitError, PullRequestIdentity
 from src.models import (
@@ -34,6 +34,7 @@ from src.models import (
 )
 from src.orchestrator import Orchestrator
 from tests.pg_dsn import ensure_worker_postgres_dsn
+from tests.db_fixtures import lease_dsn
 
 POSTGRES_DSN = ensure_worker_postgres_dsn()
 
@@ -51,28 +52,19 @@ PR_IDENTITY = PullRequestIdentity(
 )
 
 
-@pytest.fixture(params=["sqlite", "postgres"])
+@pytest.fixture
 async def orch(request, tmp_path):
     """SQLite always; PostgreSQL when ``POSTGRES_TEST_DSN`` is set (CI).
 
     Both halves write through the database — task metadata on the merge,
     gate rows on the sweep — so both dialects run.
     """
-    if request.param == "postgres":
-        if not POSTGRES_DSN:
-            pytest.skip("POSTGRES_TEST_DSN not set")
-        from src.database.adapters.postgresql import PostgreSQLDatabaseAdapter
-
-        db = PostgreSQLDatabaseAdapter(POSTGRES_DSN)
-        await db.initialize()
-        await db.reset_for_tests()
-    else:
-        db = Database(str(tmp_path / "base.db"))
-        await db.initialize()
+    db = Database(lease_dsn("base.db"))
+    await db.initialize()
     cfg = AppConfig(
         discord=DiscordConfig(bot_token="t", guild_id="1"),
         workspace_dir=str(tmp_path / "w"),
-        database_path=str(tmp_path / "base.db"),
+        database=DatabaseConfig(url=lease_dsn("base.db")),
         data_dir=str(tmp_path / "d"),
     )
     o = Orchestrator(cfg)
@@ -85,9 +77,7 @@ async def orch(request, tmp_path):
     o.bus = MagicMock()
     o.bus.emit = AsyncMock()
     o.command_handler = CommandHandler(o, cfg)
-    await db.create_project(
-        Project(id="p1", name="P1", repo_default_branch="main")
-    )
+    await db.create_project(Project(id="p1", name="P1", repo_default_branch="main"))
     await db.upsert_profile(AgentProfile(id="worker", name="W"))
     await db.create_workspace(
         Workspace(
@@ -122,14 +112,10 @@ async def _task_with_pr(db, task_id: str = "t1") -> str:
 
 async def test_merge_to_a_feature_branch_is_labelled_and_recorded(orch):
     await _task_with_pr(orch.db)
-    orch.git.amerge_pr = AsyncMock(
-        return_value={"success": True, "sha": "abc", "error": None}
-    )
+    orch.git.amerge_pr = AsyncMock(return_value={"success": True, "sha": "abc", "error": None})
     orch.git.apr_base_ref = AsyncMock(return_value="feature/pkg4-core")
 
-    result = await orch.command_handler.execute(
-        "pr_merge", {"project_id": "p1", "pr_url": PR}
-    )
+    result = await orch.command_handler.execute("pr_merge", {"project_id": "p1", "pr_url": PR})
 
     assert result["success"] is True
     assert result["base"] == "feature/pkg4-core"
@@ -141,14 +127,10 @@ async def test_merge_to_a_feature_branch_is_labelled_and_recorded(orch):
 
 async def test_merge_to_the_default_branch_carries_no_warning(orch):
     await _task_with_pr(orch.db)
-    orch.git.amerge_pr = AsyncMock(
-        return_value={"success": True, "sha": "abc", "error": None}
-    )
+    orch.git.amerge_pr = AsyncMock(return_value={"success": True, "sha": "abc", "error": None})
     orch.git.apr_base_ref = AsyncMock(return_value="main")
 
-    result = await orch.command_handler.execute(
-        "pr_merge", {"project_id": "p1", "pr_url": PR}
-    )
+    result = await orch.command_handler.execute("pr_merge", {"project_id": "p1", "pr_url": PR})
 
     assert result["merged_to_default"] is True
     assert "note" not in result
@@ -158,14 +140,10 @@ async def test_merge_to_the_default_branch_carries_no_warning(orch):
 async def test_unknown_base_does_not_fail_the_merge(orch):
     """No ``gh``, no auth: the merge still succeeded and must report so."""
     await _task_with_pr(orch.db)
-    orch.git.amerge_pr = AsyncMock(
-        return_value={"success": True, "sha": "abc", "error": None}
-    )
+    orch.git.amerge_pr = AsyncMock(return_value={"success": True, "sha": "abc", "error": None})
     orch.git.apr_base_ref = AsyncMock(return_value=None)
 
-    result = await orch.command_handler.execute(
-        "pr_merge", {"project_id": "p1", "pr_url": PR}
-    )
+    result = await orch.command_handler.execute("pr_merge", {"project_id": "p1", "pr_url": PR})
 
     assert result["success"] is True
     assert "base" not in result
@@ -179,9 +157,7 @@ async def test_a_failed_merge_records_nothing(orch):
     )
     orch.git.apr_base_ref = AsyncMock(return_value="feature/pkg4-core")
 
-    result = await orch.command_handler.execute(
-        "pr_merge", {"project_id": "p1", "pr_url": PR}
-    )
+    result = await orch.command_handler.execute("pr_merge", {"project_id": "p1", "pr_url": PR})
 
     assert result["success"] is False
     assert await orch.db.get_task_meta("t1", "pr_base") is None
@@ -194,9 +170,7 @@ async def test_identity_validation_failure_fails_closed_before_merging(orch):
     orch.git.amerge_pr = AsyncMock()
     orch.git.apr_base_ref = AsyncMock(return_value="main")
 
-    result = await orch.command_handler.execute(
-        "pr_merge", {"project_id": "p1", "pr_url": PR}
-    )
+    result = await orch.command_handler.execute("pr_merge", {"project_id": "p1", "pr_url": PR})
 
     assert result["success"] is False
     assert result["error"] == "Could not validate immutable PR delivery: head moved"
@@ -244,9 +218,7 @@ async def test_gate_stays_open_while_the_base_has_not_reached_main(orch):
 
     await orch._sweep_resolve_pr_ci_gates()
 
-    assert [g["id"] for g in await orch.db.list_open_gates_by_type("pr-merged")] == [
-        gate_id
-    ]
+    assert [g["id"] for g in await orch.db.list_open_gates_by_type("pr-merged")] == [gate_id]
 
 
 async def test_gate_resolves_once_the_base_reaches_main(orch):

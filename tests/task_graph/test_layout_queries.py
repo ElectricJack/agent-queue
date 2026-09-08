@@ -3,11 +3,12 @@ import pytest
 from src.database import Database
 from src.models import Project, Task, TaskStatus
 from src.task_graph.layout.model import LayoutRow, Translation, WriteSet
+from tests.db_fixtures import lease_dsn
 
 
 @pytest.fixture
 async def db(tmp_path):
-    d = Database(str(tmp_path / "lq.db"))
+    d = Database(lease_dsn("lq.db"))
     await d.initialize()
     await d.create_project(Project(id="p1", name="P1"))
     yield d

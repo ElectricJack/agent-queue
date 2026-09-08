@@ -7,11 +7,12 @@ from src.database import Database
 from src.models import Project, Task, TaskStatus
 from src.task_graph.layout.constants import CARD_W, SIBLING_GAP
 from src.task_graph.layout.driver import LayoutDriver
+from tests.db_fixtures import lease_dsn
 
 
 @pytest.fixture
 async def db(tmp_path):
-    d = Database(str(tmp_path / "drv.db"))
+    d = Database(lease_dsn("drv.db"))
     await d.initialize()
     await d.create_project(Project(id="p1", name="P1"))
     yield d

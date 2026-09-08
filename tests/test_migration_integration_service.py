@@ -96,8 +96,8 @@ def _exercise_round_trip(connection) -> None:
 
 
 async def test_sqlite_catchup_migration_guarded_round_trip(tmp_path):
-    path = tmp_path / "catchup.db"
-    database = Database(str(path))
+    path = await create_scratch_database("mig")
+    database = Database(path)
     await database.initialize()
     await database.close()
     engine = create_engine(f"sqlite:///{path}")

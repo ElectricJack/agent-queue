@@ -11,6 +11,7 @@ from src.config import MessagesConfig
 from src.database import Database
 from src.models import Project
 from src.panes.registry import SERVER_PANE_REGISTRY, PaneEntry
+from tests.db_fixtures import lease_dsn
 
 
 @pytest.fixture
@@ -24,7 +25,7 @@ def registry_with_test_view():
 
 @pytest.fixture
 async def handler(tmp_path):
-    db = Database(str(tmp_path / "panes.db"))
+    db = Database(lease_dsn("panes.db"))
     await db.initialize()
     await db.create_project(Project(id="demo", name="demo"))
     orch = MagicMock()

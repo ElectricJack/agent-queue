@@ -12,6 +12,7 @@ import pytest
 
 from src.database import Database
 from src.database.adapters.postgresql import PostgreSQLDatabaseAdapter
+from tests.db_fixtures import lease_dsn
 
 #: Deliberately outside any temp directory -- a stand-in for "someone's real
 #: database file", never actually opened (the guard raises first).
@@ -27,7 +28,7 @@ class TestSQLiteResetGuard:
 
     async def test_allows_path_under_tempdir(self, monkeypatch, tmp_path):
         monkeypatch.delenv("AQ_ALLOW_DB_RESET", raising=False)
-        db = Database(str(tmp_path / "ok.db"))
+        db = Database(lease_dsn("ok.db"))
         await db.initialize()
         await db.reset_for_tests()  # must not raise
         await db.close()

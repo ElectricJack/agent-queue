@@ -32,6 +32,8 @@ from src.profiles.parser import (
     parse_profile,
     parsed_profile_to_agent_profile,
 )
+from tests.db_fixtures import lease_dsn
+from src.config import DatabaseConfig
 
 
 # ---------------------------------------------------------------------------
@@ -386,7 +388,7 @@ class TestCommandVaultWrite:
         from src.commands.handler import CommandHandler
 
         config = AppConfig(
-            database_path=str(tmp_path / "test.db"),
+            database=DatabaseConfig(url=lease_dsn("test.db")),
             workspace_dir=str(tmp_path / "workspaces"),
             data_dir=str(tmp_path / "data"),
         )

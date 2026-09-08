@@ -45,6 +45,7 @@ from src.database.queries.playbook_run_queries import (
 )
 from src.playbooks.run_state import PendingEventQuotaExceeded
 from tests.pg_dsn import ensure_worker_postgres_dsn
+from tests.db_fixtures import lease_dsn
 
 POSTGRES_TEST_DSN = ensure_worker_postgres_dsn()
 
@@ -55,19 +56,10 @@ DAY = 86_400.0
 # -- fixtures ---------------------------------------------------------------
 
 
-@pytest.fixture(params=["sqlite", "postgres"])
+@pytest.fixture
 async def db(request, tmp_path):
-    if request.param == "postgres":
-        if not POSTGRES_TEST_DSN:
-            pytest.skip("POSTGRES_TEST_DSN not set")
-        from src.database.adapters.postgresql import PostgreSQLDatabaseAdapter
-
-        database = PostgreSQLDatabaseAdapter(POSTGRES_TEST_DSN)
-        await database.initialize()
-        await database.reset_for_tests()
-    else:
-        database = Database(str(tmp_path / "test.db"))
-        await database.initialize()
+    database = Database(lease_dsn("test.db"))
+    await database.initialize()
     try:
         yield database
     finally:
@@ -109,9 +101,7 @@ async def retain_n(db, count: int, *, start: int = 0) -> list[str]:
 def _command_handler(row, *, resolve=True):
     """The command mixin over doubles — the boundary, not the storage."""
     handler = PlaybookV2CommandsMixin()
-    handler.config = SimpleNamespace(
-        playbooks=PlaybooksConfig(enabled=True)
-    )
+    handler.config = SimpleNamespace(playbooks=PlaybooksConfig(enabled=True))
     handler.db = SimpleNamespace(
         get_pending_events=AsyncMock(return_value=[row]),
         resolve_pending_event=AsyncMock(return_value=resolve),
@@ -150,9 +140,7 @@ async def test_overflow_drop_oldest_is_audited(db):
     assert len(unresolved) == 3
     assert first not in {row["pending_event_id"] for row in unresolved}
 
-    everything = await db.list_pending_events(
-        playbook_id="default-pipeline", include_resolved=True
-    )
+    everything = await db.list_pending_events(playbook_id="default-pipeline", include_resolved=True)
     [dropped] = [row for row in everything if row["pending_event_id"] == first]
     assert dropped["resolution"] == "discarded"
     assert dropped["resolved_by"] == PENDING_EVENT_OVERFLOW_ACTOR
@@ -241,9 +229,7 @@ async def test_duplicate_at_a_full_queue_evicts_nothing(db):
     )
 
     assert duplicate is None
-    rows = await db.list_pending_events(
-        playbook_id="default-pipeline", include_resolved=True
-    )
+    rows = await db.list_pending_events(playbook_id="default-pipeline", include_resolved=True)
     assert {row["pending_event_id"] for row in rows} == {oldest, newest}
     assert all(row["resolution"] is None for row in rows)
     assert all(row["resolved_at"] is None for row in rows)
@@ -291,9 +277,7 @@ async def test_duplicate_of_a_claimed_event_at_a_full_queue_evicts_nothing(db):
     )
 
     assert duplicate is None
-    [row] = await db.list_pending_events(
-        playbook_id="default-pipeline", include_resolved=True
-    )
+    [row] = await db.list_pending_events(playbook_id="default-pipeline", include_resolved=True)
     assert row["pending_event_id"] == held
     assert row["resolution"] is None
 
@@ -362,9 +346,7 @@ async def test_concurrent_duplicates_at_a_full_queue_lose_nothing(db):
     )
 
     assert results == [None, None, None, None]
-    rows = await db.list_pending_events(
-        playbook_id="default-pipeline", include_resolved=True
-    )
+    rows = await db.list_pending_events(playbook_id="default-pipeline", include_resolved=True)
     assert {row["pending_event_id"] for row in rows} == {oldest, newest}
     assert all(row["resolution"] is None for row in rows)
 
@@ -399,9 +381,7 @@ async def test_concurrent_arrivals_at_a_full_queue_lose_nothing(db):
     assert all(isinstance(error, PendingEventQuotaExceeded) for error in refused)
     assert None not in results  # distinct dedup keys are never duplicates
 
-    everything = await db.list_pending_events(
-        playbook_id="default-pipeline", include_resolved=True
-    )
+    everything = await db.list_pending_events(playbook_id="default-pipeline", include_resolved=True)
     # Every row that was ever written is accounted for, and only those.
     assert {row["pending_event_id"] for row in everything} == held | accepted
     for row in everything:
@@ -464,9 +444,7 @@ async def test_replay_re_evaluates_guards():
 
     # The activation is rebuilt while the event is held; the guard now fails.
     rebuilt, rebuilt_runs = engine_for(guarded("fail"))
-    replayed = await rebuilt.dispatch_event(
-        held, TRUSTED_LOCAL, playbook_ids=["default-pipeline"]
-    )
+    replayed = await rebuilt.dispatch_event(held, TRUSTED_LOCAL, playbook_ids=["default-pipeline"])
     assert replayed.rules_selected == ()
     assert replayed.run_ids == ()
     assert rebuilt_runs.create_calls == 0
@@ -651,9 +629,7 @@ def test_an_unknown_overflow_policy_does_not_break_the_daemon(caplog):
         pass
 
     repository = _Repository()
-    bind_pending_event_policy(
-        repository, PlaybooksConfig(v2_pending_event_on_overflow="whatever")
-    )
+    bind_pending_event_policy(repository, PlaybooksConfig(v2_pending_event_on_overflow="whatever"))
 
     assert repository.playbook_pending_event_overflow() == DEFAULT_PENDING_EVENT_OVERFLOW
 
@@ -739,9 +715,7 @@ def _held(event_id, **overrides):
 
 async def test_manual_policy_leaves_the_backlog_for_the_operator():
     """The default policy does not touch held events, and says so."""
-    handler, engine, definition, ref = _activation_handler(
-        policy="manual", held=[_held("event-1")]
-    )
+    handler, engine, definition, ref = _activation_handler(policy="manual", held=[_held("event-1")])
 
     result = await _activate(handler, definition, ref)
 
@@ -930,8 +904,6 @@ async def test_automatic_replay_skips_a_row_another_operator_holds():
     assert replay["skipped"] == ["event-1"]
     assert replay["dispatched_run_ids"] == []
     engine.dispatch_event.assert_not_awaited()
-
-
 
 
 # -- 9c: the production caller for activation-aware config validation ---------

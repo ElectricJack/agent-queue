@@ -14,13 +14,14 @@ from src.commands.handler import CommandHandler
 from src.database import Database
 from src.models import AgentProfile, Project, TaskStatus
 from src.task_graph.formulas import FormulaRegistry, load_from_vault
+from tests.db_fixtures import lease_dsn
 
 FIXTURES = Path(__file__).parent / "fixtures" / "formulas"
 
 
 @pytest.fixture
 async def setup(tmp_path):
-    db = Database(str(tmp_path / "f.db"))
+    db = Database(lease_dsn("f.db"))
     await db.initialize()
     await db.create_project(Project(id="p1", name="test"))
     await db.create_project(Project(id="p2", name="other"))

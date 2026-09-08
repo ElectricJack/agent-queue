@@ -8,11 +8,12 @@ from src.config import AppConfig
 from src.database import Database
 from src.models import AgentProfile, Project, SessionRecord, Task
 from src.prime import PrimeRenderer
+from tests.db_fixtures import lease_dsn
 
 
 @pytest.fixture
 async def prime_context(tmp_path):
-    db = Database(str(tmp_path / "prime.db"))
+    db = Database(lease_dsn("prime.db"))
     await db.initialize()
     await db.create_project(Project(id="p", name="Project"))
     await db.create_profile(AgentProfile(id="coder", name="Coder"))

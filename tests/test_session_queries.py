@@ -13,11 +13,12 @@ import pytest
 from src.database import Database
 from src.database.queries.session_queries import InvalidSessionTransition
 from src.models import Project, SessionRecord
+from tests.db_fixtures import lease_dsn
 
 
 @pytest.fixture
 async def db(tmp_path):
-    database = Database(str(tmp_path / "test.db"))
+    database = Database(lease_dsn("test.db"))
     await database.initialize()
     await database.create_project(Project(id="p1", name="P1"))
     yield database

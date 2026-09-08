@@ -746,7 +746,7 @@ class HealthCheckConfig:
 #: is the form this repo's own tooling passes around (``POSTGRES_TEST_DSN``,
 #: ``alembic.ini``).  Matching only ``postgresql://`` made such a URL fall
 #: through to the SQLite branch, where it was treated as a *file path* — the
-#: daemon then silently ran on an empty SQLite database and
+#: daemon then silently ran on an empty database and
 #: :func:`src.main.run` created a directory literally named
 #: ``postgresql+asyncpg:/agent_queue:…@host:5533``.  Fail-fast is not
 #: possible here (a bare path is a legal value), so the scheme list has to
@@ -770,7 +770,7 @@ SYNC_ONLY_POSTGRES_SCHEMES: tuple[str, ...] = ("postgresql+psycopg2://",)
 
 
 def is_postgres_url(url: str) -> bool:
-    """True when *url* is a PostgreSQL DSN rather than a SQLite file path."""
+    """True when *url* is a PostgreSQL DSN rather than a bare path."""
     return str(url or "").startswith(POSTGRES_URL_SCHEMES)
 
 
@@ -781,11 +781,11 @@ class DatabaseConfig:
     The ``url`` field determines the backend automatically:
 
     - Any scheme in :data:`POSTGRES_URL_SCHEMES` → PostgreSQL (asyncpg)
-    - Anything else (file path or empty) → SQLite (aiosqlite)
+    - Anything else (a bare path, or empty) → rejected by ``validate()``
 
     Examples::
 
-        # SQLite (default — same as the legacy database_path field):
+        # PostgreSQL is the only supported backend:
         database:
           url: ~/.agent-queue/agent-queue.db
 
@@ -805,7 +805,7 @@ class DatabaseConfig:
     @property
     def backend(self) -> str:
         """Infer backend from the URL scheme."""
-        return "postgresql" if is_postgres_url(self.url) else "sqlite"
+        return "postgresql"
 
     def validate(self) -> list[ConfigError]:
         errors: list[ConfigError] = []
@@ -2148,7 +2148,7 @@ class AppConfig:
         default_factory=lambda: os.path.expanduser("~/agent-queue-workspaces")
     )
     project_roots: list[ProjectRoot] = field(default_factory=list)
-    database_path: str = ""  # Legacy SQLite path — use database.url instead
+    database_path: str = ""  # Deprecated alias for database.url; removed next release
     database: DatabaseConfig = field(default_factory=DatabaseConfig)
     profile: str = ""
     env: str = "production"
@@ -2335,28 +2335,15 @@ class AppConfig:
 
         # Validate database config
         errors.extend(self.database.validate())
-        if self.database.backend == "sqlite":
-            db_path = self.database.url
-            if not db_path:
-                errors.append(ConfigError("database", "url", "database path is required"))
-            else:
-                db_parent = os.path.dirname(db_path)
-                if db_parent and not os.path.exists(db_parent):
-                    grandparent = os.path.dirname(db_parent)
-                    if (
-                        grandparent
-                        and os.path.exists(grandparent)
-                        and not os.access(grandparent, os.W_OK)
-                    ):
-                        errors.append(
-                            ConfigError(
-                                "database",
-                                "url",
-                                f"parent directory '{db_parent}' does not exist "
-                                "and cannot be created",
-                                severity="warning",
-                            )
-                        )
+        if not is_postgres_url(self.database.url):
+            errors.append(
+                ConfigError(
+                    "database",
+                    "url",
+                    "a PostgreSQL DSN is required (postgresql://...); SQLite is no "
+                    "longer supported — see `aq db import-sqlite`",
+                )
+            )
 
         # Validate messaging_platform field. "telegram" gets a dedicated,
         # actionable error rather than folding into the generic "must be

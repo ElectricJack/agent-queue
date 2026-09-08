@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import logging
-import sqlite3
 import time
 import uuid
 from collections.abc import Callable
@@ -58,15 +57,13 @@ _INTEGRATION_COMPLETION_TOKEN = object()
 _INTEGRATION_WAKE_TOKEN = object()
 
 
-#: ``UPDATE … RETURNING`` / ``INSERT … RETURNING`` landed in SQLite 3.35.
-#: PostgreSQL has always had it.  Every RETURNING-based fast path in the
-#: claim path (spec §15) keeps a two-statement fallback for older SQLite.
-SQLITE_RETURNING = sqlite3.sqlite_version_info >= (3, 35, 0)
-
-
 def supports_returning(conn) -> bool:
-    """True when *conn*'s dialect can run ``… RETURNING`` (see above)."""
-    return conn.dialect.name != "sqlite" or SQLITE_RETURNING
+    """PostgreSQL has always had ``… RETURNING``.
+
+    Kept as a function rather than inlined at ~20 call sites: the claim path
+    (spec §15) reads better asking a named question than asserting True.
+    """
+    return True
 
 
 #: Statuses that no clause of ``blocked_predicate()`` can distinguish: the
@@ -1383,10 +1380,7 @@ class TaskQueryMixin:
     async def _assert_pause_cleanup_complete(self, task_id: str, *, conn) -> None:
         # Lock the task before reading metadata: a concurrent pause cannot
         # install a hold between this check and a cascading deletion.
-        if conn.dialect.name == "sqlite":
-            await conn.execute(update(tasks).where(tasks.c.id == task_id).values(id=tasks.c.id))
-        else:
-            await conn.execute(select(tasks.c.id).where(tasks.c.id == task_id).with_for_update())
+        await conn.execute(select(tasks.c.id).where(tasks.c.id == task_id).with_for_update())
         saved = (await conn.execute(select(task_metadata.c.value).where(
             task_metadata.c.task_id == task_id, task_metadata.c.key == "manual_pause"
         ))).scalar_one_or_none()

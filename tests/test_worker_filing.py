@@ -9,11 +9,12 @@ import pytest
 from click.testing import CliRunner
 
 from src.commands.handler import CommandHandler
-from src.config import AppConfig, DiscordConfig
+from src.config import DatabaseConfig, AppConfig, DiscordConfig
 from src.database import Database
 from src.models import Agent, AgentState, Project, SessionRecord, Task, TaskStatus
 from src.orchestrator import Orchestrator
 from tests.pg_dsn import ensure_worker_postgres_dsn
+from tests.db_fixtures import lease_dsn
 
 PROJECT_ID = "proj"
 
@@ -26,7 +27,7 @@ POSTGRES_TEST_DSN = ensure_worker_postgres_dsn()
 
 @pytest.fixture
 async def db(tmp_path):
-    database = Database(str(tmp_path / "test.db"))
+    database = Database(lease_dsn("test.db"))
     await database.initialize()
     await database.create_project(Project(id=PROJECT_ID, name="p"))
     await database.create_project(Project(id="other", name="o"))
@@ -37,7 +38,7 @@ async def db(tmp_path):
 @pytest.fixture
 async def handler(db, tmp_path):
     cfg = AppConfig(discord=DiscordConfig(bot_token="t", guild_id="1"),
-                    workspace_dir=str(tmp_path / "ws"), database_path=str(tmp_path / "test.db"),
+                    workspace_dir=str(tmp_path / "ws"), database=DatabaseConfig(url=lease_dsn("test.db")),
                     data_dir=str(tmp_path / "data"))
     cfg.swarm.enabled = True
     cfg.swarm.max_filings_per_task = 2

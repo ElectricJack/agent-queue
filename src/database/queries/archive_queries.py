@@ -8,7 +8,6 @@ import time
 
 from sqlalchemy import and_, delete, exists, func, literal, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
-from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 from src.database.tables import (
     agents,
@@ -48,19 +47,20 @@ class ArchiveQueryMixin:
             if live:
                 raise HierarchyError("live_descendants", ", ".join(sorted(t for _, t in live)))
             task_rows = select(tasks.c.id, tasks.c.status).where(tasks.c.id.in_(ids))
-            if conn.dialect.name == "postgresql":
-                # A key lock also fences new session FK references. Recheck
-                # after acquiring it to catch a launch that won that race.
-                task_rows = task_rows.order_by(tasks.c.id).with_for_update()
+            task_rows = task_rows.order_by(tasks.c.id).with_for_update()
             rows = (await conn.execute(task_rows)).fetchall()
             live_ids = (
-                await conn.execute(
-                    select(sessions.c.task_id).where(
-                        sessions.c.task_id.in_(ids),
-                        sessions.c.state.in_(LIVE_SESSION_STATES),
+                (
+                    await conn.execute(
+                        select(sessions.c.task_id).where(
+                            sessions.c.task_id.in_(ids),
+                            sessions.c.state.in_(LIVE_SESSION_STATES),
+                        )
                     )
                 )
-            ).scalars().all()
+                .scalars()
+                .all()
+            )
             if live_ids:
                 raise HierarchyError("live_descendants", ", ".join(sorted(set(live_ids))))
             if any(r[0] == task_id and r[1] not in terminal for r in rows):
@@ -88,8 +88,10 @@ class ArchiveQueryMixin:
             ).scalar_one_or_none()
             if project_id is not None:
                 await self.mark_layout_dirty(
-                    project_id, [*ids, *await self._layout_parent_ids(ids, conn=conn)],
-                    "task.archived", conn=conn,
+                    project_id,
+                    [*ids, *await self._layout_parent_ids(ids, conn=conn)],
+                    "task.archived",
+                    conn=conn,
                 )
             for tid in reversed(ids):
                 task = await self._get_task_conn(tid, conn=conn)
@@ -128,7 +130,7 @@ class ArchiveQueryMixin:
         now = time.time()
         # Insert into archive (skip if already archived).
         # on_conflict_do_nothing requires dialect-specific insert.
-        _insert = pg_insert if self._engine.dialect.name == "postgresql" else sqlite_insert
+        _insert = pg_insert
         await conn.execute(
             _insert(archived_tasks)
             .on_conflict_do_nothing()
@@ -173,9 +175,11 @@ class ArchiveQueryMixin:
 
         # Legacy allocation could reuse an archived ID in another project.
         # Never drop the active identity or overwrite that archive's timestamps.
-        archived_project_id = (await conn.execute(
-            select(archived_tasks.c.project_id).where(archived_tasks.c.id == task_id)
-        )).scalar_one()
+        archived_project_id = (
+            await conn.execute(
+                select(archived_tasks.c.project_id).where(archived_tasks.c.id == task_id)
+            )
+        ).scalar_one()
         if archived_project_id != task.project_id:
             from src.database.queries.hierarchy_queries import HierarchyError
 
@@ -345,9 +349,12 @@ class ArchiveQueryMixin:
                 delete(task_comments).where(
                     task_comments.c.task_id == task_id,
                     task_comments.c.project_id == archived_project_id,
-                    ~exists(select(tasks.c.id).where(
-                        tasks.c.id == task_id, tasks.c.project_id == archived_project_id,
-                    )),
+                    ~exists(
+                        select(tasks.c.id).where(
+                            tasks.c.id == task_id,
+                            tasks.c.project_id == archived_project_id,
+                        )
+                    ),
                 )
             )
         return True

@@ -42,11 +42,12 @@ from src.integration.models import BranchKey, Fence
 from src.integration.ownership import BranchOwnership
 from src.models import AgentProfile, Project, RepoConfig, RepoSourceType, Task, TaskStatus
 from src.database.queries.task_queries import StaleClaim
+from tests.db_fixtures import lease_dsn
 
 
 @pytest.fixture
 async def db(tmp_path):
-    database = Database(str(tmp_path / "parent-completion.db"))
+    database = Database(lease_dsn("parent-completion.db"))
     await database.initialize()
     await database.create_project(Project(id="p", name="integration project"))
     yield database

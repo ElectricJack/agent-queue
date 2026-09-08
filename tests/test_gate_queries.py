@@ -14,8 +14,9 @@ import time
 
 import pytest
 
-from src.database import SQLiteDatabaseAdapter
+from src.database import Database
 from src.models import DepType, Project, Task, TaskStatus
+from tests.db_fixtures import lease_dsn
 
 
 PROJECT = "p-wg"
@@ -23,7 +24,7 @@ PROJECT = "p-wg"
 
 @pytest.fixture
 async def db(tmp_path):
-    database = SQLiteDatabaseAdapter(str(tmp_path / "wg.db"))
+    database = Database(lease_dsn("wg.db"))
     await database.initialize()
     await database.create_project(Project(id=PROJECT, name="wg"))
     yield database
