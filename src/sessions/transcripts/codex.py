@@ -195,6 +195,60 @@ def _usage_from_token_count(info: dict) -> dict | None:
     }
 
 
+#: Codex names its two limit windows ``primary`` and ``secondary`` and gives
+#: neither a duration we can name honestly (``window_minutes`` is 10080 today
+#: and something else tomorrow), so the names round-trip verbatim rather than
+#: being translated into "week" and guessed at.
+_RATE_LIMIT_WINDOWS = ("primary", "secondary")
+
+
+def _rate_limits_from_payload(payload: dict) -> dict | None:
+    """``token_count.rate_limits`` → the normalized shape the watcher stores.
+
+    Returns ``None`` unless at least one window carries a numeric
+    ``used_percent``: a ``rate_limits`` block that is present but empty is
+    Codex telling us it does not know, and inventing a 0% from it would read
+    downstream as a freshly emptied quota.
+
+    The mapping out of Codex's vocabulary happens here rather than in the
+    watcher so the watcher never learns what ``primary`` means to one
+    harness.  ``scope`` has no Codex analogue and stays ``""``.
+    """
+    block = payload.get("rate_limits")
+    if not isinstance(block, dict):
+        return None
+
+    windows: list[dict] = []
+    for name in _RATE_LIMIT_WINDOWS:
+        window = block.get(name)
+        if not isinstance(window, dict):
+            continue
+        raw_percent = window.get("used_percent")
+        if not isinstance(raw_percent, (int, float)) or isinstance(raw_percent, bool):
+            continue
+        raw_reset = window.get("resets_at")
+        resets_at = (
+            float(raw_reset)
+            if isinstance(raw_reset, (int, float)) and not isinstance(raw_reset, bool)
+            else None
+        )
+        windows.append(
+            {
+                "window": name,
+                "used_percent": float(raw_percent),
+                "resets_at": resets_at,
+            }
+        )
+    if not windows:
+        return None
+
+    # ``plan_type`` is the human-facing plan ("pro"); ``limit_id`` is the
+    # internal id and only a fallback, so a payload that stops carrying the
+    # plan still labels its account with something.
+    label = block.get("plan_type") or block.get("limit_id") or ""
+    return {"account_label": str(label), "windows": windows}
+
+
 def _entry_from_line(raw: dict, uuid: str) -> TranscriptEntry | None:
     """One decoded rollout line → an entry, or ``None`` to skip."""
     payload = raw.get("payload")
@@ -214,7 +268,12 @@ def _entry_from_line(raw: dict, uuid: str) -> TranscriptEntry | None:
         if ptype == "token_count":
             info = payload.get("info")
             usage = _usage_from_token_count(info) if isinstance(info, dict) else None
-            if not usage:
+            rate_limits = _rate_limits_from_payload(payload)
+            # Codex emits a token_count with a null ``info`` but a live
+            # ``rate_limits`` block, so the quota reading has to be able to
+            # stand on its own — otherwise the only lines that ever carry a
+            # percentage are the ones that also happen to bill tokens.
+            if not usage and not rate_limits:
                 return None
             # Typed ``assistant`` with empty text: the watcher charges usage
             # off assistant entries, and ``_emit_entry`` drops entries with
@@ -227,6 +286,7 @@ def _entry_from_line(raw: dict, uuid: str) -> TranscriptEntry | None:
                 model=None,
                 usage=usage,
                 ts=ts,
+                rate_limits=rate_limits,
             )
         return None
 
