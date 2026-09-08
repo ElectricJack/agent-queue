@@ -432,6 +432,13 @@ async def test_candidate_observation_emits_only_durable_terminal_ci_continuation
     }
 
     first = await service.handle_candidate_ci(row, 10.0)
+    if provider_kind == "green":
+        async with attestation_db.immediate() as conn:
+            await conn.execute(
+                update(integration_batches)
+                .where(integration_batches.c.id == "batch")
+                .values(lifecycle="repairing")
+            )
     second = await service.handle_candidate_ci(row, 10.0)
 
     assert first["outcome"] == expected_outcome
@@ -439,6 +446,13 @@ async def test_candidate_observation_emits_only_durable_terminal_ci_continuation
         assert second["outcome"] == "not_green"
     async with attestation_db._engine.connect() as conn:
         events = (await conn.execute(select(integration_outbox))).mappings().all()
+        batch = (
+            await conn.execute(
+                select(integration_batches).where(integration_batches.c.id == "batch")
+            )
+        ).mappings().one()
+    if provider_kind == "green":
+        assert batch["lifecycle"] == "testing"
     if expected_event is None:
         assert events == []
     else:
