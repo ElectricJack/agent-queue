@@ -18,7 +18,7 @@ Freshness is snapshot age
 -------------------------
 
 The check's freshness rule is the one the implementation spec (T7) writes:
-WARN when the newest ``source='probe'`` snapshot for Claude is older than
+WARN when the newest ``source='probe'`` confirmation for Claude is older than
 ``providers.claude.stale_after_seconds`` while ``usage_probe_enabled`` is
 true.  That is the number the dashboard card is actually drawing, so it is
 the number an operator wants supervised — a probe that runs on time but
@@ -122,7 +122,7 @@ async def _latest_claude_rows(ctx: DoctorContext) -> list[dict]:
     return [dict(row) for row in rows or []]
 
 
-def _newest_probe_observed_at(rows: list[dict]) -> float | None:
+def _newest_probe_seen_at(rows: list[dict]) -> float | None:
     """Last confirmation of the newest ``source='probe'`` row, or ``None``.
 
     Rows written by the transcript watcher are deliberately ignored: they
@@ -177,7 +177,7 @@ async def _check_claude_usage(ctx: DoctorContext) -> CheckResult:
     rows = await _latest_claude_rows(ctx)
     now = time.time()
     horizon = _stale_after(claude)
-    probed_at = _newest_probe_observed_at(rows)
+    probed_at = _newest_probe_seen_at(rows)
     snapshot_age = None if probed_at is None else max(0.0, now - probed_at)
 
     if not health and probed_at is None:

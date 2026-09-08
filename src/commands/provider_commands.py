@@ -44,9 +44,9 @@ class ProviderCommandsMixin:
             ``outcome`` is ``probed`` (snapshots written), ``unparsed`` (the
             CLI answered with something no limit-line regex matched),
             ``not_applicable`` (an API-key account has no window to report),
-            or ``unavailable`` (the CLI is not installed on this box) — all
+            or ``unavailable`` (the CLI is absent or timed out) — all
             four with ``success: True``, because none of them is a broken
-            step an operator can act on.  A timeout, a non-zero exit, or an
+            step an operator can act on. A non-zero exit or an
             unreadable body returns ``success: False`` and writes no
             snapshot.
         """

@@ -69,8 +69,10 @@ class FakeProcess:
         self.returncode = returncode
         self._hang = hang
         self.killed = False
+        self.started = asyncio.Event()
 
     async def communicate(self) -> tuple[bytes, bytes]:
+        self.started.set()
         if self._hang:
             await asyncio.Event().wait()
         return self._stdout, self._stderr
@@ -167,18 +169,29 @@ async def test_the_configured_binary_is_what_runs(handler, spawned) -> None:
 # ---------------------------------------------------------------------------
 
 
-async def test_a_timeout_fails_and_writes_nothing(handler, spawned, monkeypatch) -> None:
+async def test_a_timeout_is_unavailable_and_writes_nothing(handler, spawned, monkeypatch) -> None:
     hung = FakeProcess(hang=True)
     spawned["box"]["process"] = hung
     monkeypatch.setattr(probe_module, "DEFAULT_TIMEOUT_SECONDS", 0.05)
 
     result = await handler.execute("provider_usage_probe", {})
 
-    assert result["success"] is False
-    assert result["reason"] == probe_module.TIMEOUT
-    assert "did not answer" in result["error"]
+    assert result["success"] is True
+    assert result["outcome"] == probe_module.UNAVAILABLE
+    assert "did not answer" in result["detail"]
     assert await _snapshot_rows(handler) == []
     assert hung.killed, "an abandoned probe must be reaped, not left a zombie"
+
+
+async def test_cancelling_a_probe_reaps_its_subprocess(spawned) -> None:
+    hung = FakeProcess(hang=True)
+    spawned["box"]["process"] = hung
+    task = asyncio.create_task(probe_module.probe_claude_usage())
+    await asyncio.wait_for(hung.started.wait(), timeout=1)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert hung.killed
 
 
 async def test_a_non_zero_exit_fails_and_writes_nothing(handler, spawned) -> None:
@@ -371,6 +384,30 @@ async def test_a_failed_probe_maps_onto_rejected(contracted, spawned) -> None:
     result = await registration.invoke(ProviderUsageProbeArgs(), None)
 
     assert result.outcome == "rejected"
+    # The playbook executor round-trips the value before taking an outcome
+    # edge; a model_construct bypass must not turn rejection into a fault.
+    validated = registration.contract.execution.result_model.model_validate(
+        result.value.model_dump()
+    )
+    assert validated.outcome == "rejected"
+    assert validated.provider == "claude"
+    from types import SimpleNamespace
+
+    from src.playbooks.definition import CommandStep
+    from src.playbooks.executors.command import _consume
+
+    step = CommandStep.model_validate({
+        "rule": "probe", "title": "Probe",
+        "source": {"path": "probe.md", "start_line": 1, "end_line": 1},
+        "command": "provider_usage_probe", "transitions": {"rejected": "failed"},
+        "save_result_as": "probe_result",
+    })
+    consumed = _consume(
+        result, registration, step, SimpleNamespace(run_id="probe-run"),
+        resolved_inputs={}, key="probe-key",
+    )
+    assert consumed.outcome == "rejected"
+    assert consumed.value["provider"] == "claude"
 
 
 # ---------------------------------------------------------------------------

@@ -509,7 +509,13 @@ def _adapter(name: str, value_type: type[CommandValue]):
             with principal_context(ctx):
                 raw = await _handler().execute(name, args.model_dump(exclude_none=True))
         outcome = _outcome_of(name, raw)
-        if outcome in {"rejected", "refused_routing_gate", "already_linked", "not_running"}:
+        if name == "provider_usage_probe" and outcome == "rejected":
+            value = value_type(
+                outcome=outcome,
+                provider=str(raw.get("provider") or getattr(args, "provider", None) or "claude"),
+                detail=raw.get("error"),
+            )
+        elif outcome in {"rejected", "refused_routing_gate", "already_linked", "not_running"}:
             value = value_type.model_construct()
         else:
             try:

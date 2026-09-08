@@ -52,7 +52,7 @@ PROBED = "probed"
 UNPARSED = "unparsed"
 #: An API-key account has no subscription window to report.  Not a fault.
 NOT_APPLICABLE = "not_applicable"
-#: The ``claude`` binary is not on this box.  Also not a fault.
+#: The ``claude`` binary is absent or did not answer in time. Not a fault.
 UNAVAILABLE = "unavailable"
 #: The CLI did not answer inside the timeout.
 TIMEOUT = "timeout"
@@ -74,7 +74,7 @@ class ProbeResult:
     """What one probe learned, and whether the caller may act on it.
 
     ``ok`` is the caller's ``success``: false only for the outcomes that mean
-    "we asked and could not get an answer".  ``detail`` explains an outcome
+    "the CLI returned an error or malformed answer". ``detail`` explains an outcome
     the caller reports as a success (a missing binary); ``error`` explains
     one it reports as a failure.  Exactly one of the two is ever set.
     """
@@ -132,12 +132,14 @@ async def probe_claude_usage(
 
     try:
         stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=budget)
+    except asyncio.CancelledError:
+        await _terminate(proc)
+        raise
     except TimeoutError:
         await _terminate(proc)
         return ProbeResult(
-            outcome=TIMEOUT,
-            ok=False,
-            error=f"{binary} /usage did not answer within {budget:g}s",
+            outcome=UNAVAILABLE,
+            detail=f"{binary} /usage did not answer within {budget:g}s",
         )
 
     if proc.returncode != 0:
