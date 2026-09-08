@@ -545,7 +545,7 @@ class CIService:
                 integration_candidate_revisions.c.batch_id == subject.batch_id,
                 integration_candidate_revisions.c.revision == subject.revision,
                 integration_candidate_revisions.c.head_sha == subject.candidate_sha,
-                integration_candidate_revisions.c.state.in_(("built", "testing")),
+                integration_candidate_revisions.c.state.in_(("built", "testing", "green")),
             )
             .values(state="green", ci_evidence_id=aggregate_id, updated_at=self.clock())
         )
@@ -738,7 +738,7 @@ class CIService:
             and operation["state"] in {"active", "escalated"}
             and self._operation_trust(operation, "root") == self.trust
             and candidate["head_sha"] == subject.candidate_sha
-            and candidate["state"] in {"built", "testing"}
+            and candidate["state"] in {"built", "testing", "green"}
         )
 
     def _enabled_project_repository(self, project: Any | None) -> bool:

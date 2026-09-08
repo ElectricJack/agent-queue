@@ -1103,6 +1103,19 @@ async def test_ci_service_binds_root_evidence_to_exact_batch_revision_and_candid
             operation_id="root-op", batch_id="batch", revision=4, candidate_sha=SHA
         )
     )
+    if initial_lifecycle == "repairing":
+        async with ci_db.immediate() as conn:
+            await conn.execute(
+                update(integration_batches)
+                .where(integration_batches.c.id == "batch")
+                .values(lifecycle="repairing")
+            )
+        replay = await service.observe_candidate(
+            CandidateCISubject(
+                operation_id="root-op", batch_id="batch", revision=4, candidate_sha=SHA
+            )
+        )
+        assert replay["outcome"] == "green"
     stale = await service.observe_candidate(
         CandidateCISubject(
             operation_id="root-op", batch_id="batch", revision=3, candidate_sha=SHA
