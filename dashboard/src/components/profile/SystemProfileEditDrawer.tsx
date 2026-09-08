@@ -153,7 +153,6 @@ export default function SystemProfileEditDrawer({ open, onClose, profileId }: Pr
               value={form.allowed_tools}
               onChange={(t) => set("allowed_tools", t)}
               enabledServers={form.mcp_servers}
-              model=""
             />
           </Section>
         </div>

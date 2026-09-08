@@ -507,10 +507,11 @@ class TestCommandVaultWrite:
             ),
             ({"description": "Updated modern description"}, {}, "Updated modern description", None),
             (
+                # Written back sorted, so an edit produces a stable vault diff.
                 {"harness": "codex", "allowed_tools": ["Read", "Bash"]},
                 {"harness": "codex"},
                 None,
-                ["Read", "Bash"],
+                ["Bash", "Read"],
             ),
         ],
     )
@@ -584,6 +585,104 @@ Keep this operator note exactly as authored.
         assert "## MCP Servers\n```json\n[\"agent-queue\", \"github\"]\n```" in edited
         assert "## Local rationale\nKeep this operator note exactly as authored." in edited
         assert "This rationale must remain next to the operational settings." in edited
+
+    async def _write_modern_profile(self, handler, profile_id="namespaced"):
+        """A profile that authors ``## Capabilities`` — the current shape."""
+        vault_path = handler._vault_profile_path(profile_id)
+        os.makedirs(os.path.dirname(vault_path), exist_ok=True)
+        with open(vault_path, "w") as f:
+            f.write(
+                f"""---
+id: {profile_id}
+name: Namespaced Worker
+---
+
+# Namespaced Worker
+
+## Config
+```json
+{{
+  "harness": "claude"
+}}
+```
+
+## Capabilities
+```json
+{{
+  "harness_tools": ["Bash"],
+  "aq_commands": ["task_show"],
+  "plugin_tools": []
+}}
+```
+"""
+            )
+        return vault_path
+
+    async def test_edit_routes_each_tool_to_the_namespace_that_gates_it(self, handler):
+        """A picker sends one flat list; aq command names must not land in harness_tools.
+
+        Writing the whole selection into ``harness_tools`` put aq command names
+        in the namespace the launcher filters against ``HARNESS_TOOL_NAMES``,
+        where every one of them is dropped, while ``aq_commands`` — the
+        namespace the dispatch gate actually consults — kept its old value.
+        """
+        vault_path = await self._write_modern_profile(handler)
+
+        result = await handler.execute(
+            "edit_profile",
+            {
+                "profile_id": "namespaced",
+                "allowed_tools": ["Read", "Bash", "list_tasks", "task_show"],
+            },
+        )
+        assert result["updated"] == "namespaced"
+
+        with open(vault_path) as f:
+            parsed = parse_profile(f.read())
+        assert parsed.is_valid
+        assert parsed.capabilities["harness_tools"] == ["Bash", "Read"]
+        assert parsed.capabilities["aq_commands"] == ["list_tasks", "task_show"]
+
+        profile = await handler.db.get_profile("namespaced")
+        assert profile.harness_tools == ["Bash", "Read"]
+        assert profile.aq_commands == ["list_tasks", "task_show"]
+
+    async def test_get_profile_reports_the_authored_namespaces(self, handler):
+        """The editors read ``allowed_tools``; a modern profile never fills it.
+
+        Reporting the empty column showed an empty picker for every migrated
+        profile, so a save looked like it had been discarded.
+        """
+        await self._write_modern_profile(handler, "reported")
+        await handler.execute(
+            "edit_profile", {"profile_id": "reported", "allowed_tools": ["Bash", "task_show"]}
+        )
+
+        detail = await handler.execute("get_profile", {"profile_id": "reported"})
+        assert detail["allowed_tools"] == ["Bash", "task_show"]
+
+        listed = await handler.execute("list_profiles", {})
+        row = next(p for p in listed["profiles"] if p["id"] == "reported")
+        assert row["allowed_tools"] == ["Bash", "task_show"]
+
+    async def test_edit_refuses_a_selection_that_would_strand_the_aq_cli(self, handler):
+        """Harness tools empty alongside aq commands is a hard parse error.
+
+        Caught before the write it is a message in the editor; caught at sync
+        it is a vault file that no longer parses.
+        """
+        vault_path = await self._write_modern_profile(handler, "stranded")
+        with open(vault_path) as f:
+            before = f.read()
+
+        result = await handler.execute(
+            "edit_profile", {"profile_id": "stranded", "allowed_tools": ["task_show"]}
+        )
+
+        assert "error" in result
+        assert "Bash" in result["error"]
+        with open(vault_path) as f:
+            assert f.read() == before
 
     async def test_delete_removes_vault_file(self, handler):
         """delete_profile should remove the vault markdown file."""
