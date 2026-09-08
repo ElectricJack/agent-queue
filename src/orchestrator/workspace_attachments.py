@@ -76,6 +76,9 @@ async def mark_integration_handoff_released(
 ) -> bool:
     """Atomically record detach proof and release the exact old DB lock."""
     async with db.immediate() as conn:
+        session_row = (await conn.execute(select(sessions).where(
+            sessions.c.id == owner.get("session_id")
+        ).with_for_update())).mappings().one_or_none()
         owner_row = (
             await conn.execute(
                 select(integration_branch_owners)
@@ -83,15 +86,6 @@ async def mark_integration_handoff_released(
                 .with_for_update()
             )
         ).mappings().one_or_none()
-        session_row = None
-        if owner_row is not None and owner_row["session_id"]:
-            session_row = (
-                await conn.execute(
-                    select(sessions)
-                    .where(sessions.c.id == owner_row["session_id"])
-                    .with_for_update()
-                )
-            ).mappings().one_or_none()
         workspace_row = (
             await conn.execute(
                 select(workspaces)

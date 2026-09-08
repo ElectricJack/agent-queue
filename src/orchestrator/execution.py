@@ -1730,8 +1730,19 @@ class ExecutionMixin:
         # (amber-delta).  A pool close takes the same path with the
         # detach-only proof (``pool=True``) also releases completed root and
         # suspended parent writers before their claim bindings disappear.
-        release_needed = (repair_writer_closed or managed_parent_suspended
-                          or (completed_ok and new_status == TaskStatus.COMPLETED))
+        completed_writer = False
+        if completed_ok and new_status == TaskStatus.COMPLETED and task.repo_id and task.branch_name:
+            from src.integration.models import BranchKey
+            from src.integration.ownership import BranchOwnership
+
+            completed_owner = await BranchOwnership(self.db).get_owner(
+                BranchKey(repository_id=task.repo_id, branch=task.branch_name)
+            )
+            completed_writer = bool(
+                completed_owner and completed_owner["owner_id"] == task.id
+                and completed_owner["owner_role"] in {"worker", "repair"}
+            )
+        release_needed = repair_writer_closed or managed_parent_suspended or completed_writer
         handoff_unproven = False
         if release_needed:
             # Stop/detach the writer while preserving its durable reserved
@@ -1979,6 +1990,22 @@ class ExecutionMixin:
         Repeated cleanup only releases the old task's locks and assignment;
         it must not disturb a durable worker already reused for another task.
         """
+        # A terminal task can still own a checkout when its handoff proof
+        # failed. Reconciliation must preserve those bindings for recovery.
+        from sqlalchemy import select
+        from src.database.tables import integration_branch_owners, workspaces
+
+        async with self.db._engine.connect() as conn:
+            protected = (await conn.execute(
+                select(integration_branch_owners.c.id).join(
+                    workspaces, integration_branch_owners.c.workspace_id == workspaces.c.id
+                ).where(
+                    workspaces.c.locked_by_task_id == task_id,
+                    integration_branch_owners.c.handoff_state.in_(("attached", "handoff_pending")),
+                )
+            )).first()
+        if protected is not None:
+            return
         if workspace_path is None:
             try:
                 ws = await self.db.get_workspace_for_task(task_id)

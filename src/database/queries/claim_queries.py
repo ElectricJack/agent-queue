@@ -13,7 +13,7 @@ from __future__ import annotations
 import json
 import time
 
-from sqlalchemy import Float, and_, case, cast, delete, exists, false, func, literal, or_, select, update
+from sqlalchemy import Float, and_, case, cast, delete, exists, false, func, literal, select, update
 
 from src.database.queries.blocked_state import apply_label_filters
 from src.database.queries.hierarchy_queries import (
@@ -336,12 +336,8 @@ class ClaimQueryMixin:
                     .where(agents.c.id == agent_id)
                     .values(state=AgentState.BUSY.value, current_task_id=task_id)
                 )
-            # A reconciled active pool claim deliberately releases its
-            # workspace lock while its worker remains alive.  Its next claim
-            # must reclaim the same checkout named by ``work_dir``; choosing
-            # any free slot would leave the session running in the wrong
-            # directory.  Keep this conditional update in the claim's
-            # transaction so a competing worker can win at most one slot.
+            # Pool sessions keep the agent lock for their lifetime; claiming
+            # another task only changes the task hold within that same slot.
             stmt = (
                 update(workspaces)
                 .where(
@@ -351,10 +347,7 @@ class ClaimQueryMixin:
                     .scalar_subquery(),
                     workspaces.c.workspace_path == work_dir,
                     workspaces.c.enabled.is_(True),
-                    or_(
-                        workspaces.c.locked_by_agent_id == agent_id,
-                        workspaces.c.locked_by_agent_id.is_(None),
-                    ),
+                    workspaces.c.locked_by_agent_id == agent_id,
                 )
                 .values(
                     locked_by_agent_id=agent_id,

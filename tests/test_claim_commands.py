@@ -361,7 +361,7 @@ class TestClaim:
         assert (task.status, task.assigned_agent_id) == (TaskStatus.IN_PROGRESS, "agent-1")
 
     @pytest.mark.parametrize("status", [TaskStatus.PAUSED, TaskStatus.BLOCKED, TaskStatus.FAILED])
-    async def test_reclaimed_pool_claim_relocks_its_slot_for_the_next_claim(
+    async def test_reclaimed_pool_claim_retains_its_slot_for_the_next_claim(
         self, handler, db, tmp_path, status
     ):
         """A live worker can claim again after the reconciler releases its slot."""
@@ -393,7 +393,7 @@ class TestClaim:
         )
         await reconciler._step_orphans(await db.list_sessions(live_only=True), time.time())
         assert (await db.get_session(sid)).task_id is None
-        assert await db.get_workspace_for_agent("agent-1") is None
+        assert (await db.get_workspace_for_agent("agent-1")).locked_by_task_id is None
 
         await mktask(db, "t2", profile_id="worker")
         next_claim = await h._cmd_task_claim({"next": True})

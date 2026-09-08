@@ -3228,6 +3228,16 @@ async def test_root_repair_close_reads_the_candidate_subject_and_frees_a_pool_sl
     handler.orchestrator._run_completion_pipeline = AsyncMock(
         side_effect=AssertionError("root repair delegate entered legacy integration")
     )
+    async def release_proved_owner(*_args, **_kwargs):
+        async with handler.db.immediate() as conn:
+            await conn.execute(update(integration_branch_owners).where(
+                integration_branch_owners.c.id == "batch-owner"
+            ).values(handoff_state="released", session_id=None, workspace_id=None,
+                     confirmed_workspace_id="root-repair-workspace"))
+        return True
+    handler.orchestrator.arelease_integration_writer_for_retry = AsyncMock(
+        side_effect=release_proved_owner
+    )
     handler.orchestrator.release_session_task_resources = AsyncMock()
     handler._current_scope = {
         "kind": "session",
@@ -3702,6 +3712,7 @@ async def test_delegate_close_retains_everything_when_the_handoff_is_unproven(
     repair_task_id, _stopped = await _stage_closable_repair_delegate(
         handler, monkeypatch, lifecycle=lifecycle, clean=False
     )
+    real_release = handler.orchestrator.release_session_task_resources
     released_resources = AsyncMock()
     handler.orchestrator.release_session_task_resources = released_resources
 
@@ -3723,6 +3734,7 @@ async def test_delegate_close_retains_everything_when_the_handoff_is_unproven(
     )
     # Nothing was released on either lifecycle.
     released_resources.assert_not_awaited()
+    await real_release(repair_task_id, agent_id="repair-agent")
     owner = await BranchOwnership(handler.db).get_owner(
         BranchKey(repository_id="repo", branch="aq/parent")
     )
