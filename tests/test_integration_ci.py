@@ -1052,13 +1052,17 @@ async def test_parent_declared_check_transport_absence_requests_safe_full_suite(
 
 
 @pytest.mark.asyncio
-async def test_ci_service_binds_root_evidence_to_exact_batch_revision_and_candidate(ci_db):
+@pytest.mark.parametrize("initial_lifecycle", ["testing", "repairing"])
+async def test_ci_service_binds_root_evidence_to_exact_batch_revision_and_candidate(
+    ci_db, initial_lifecycle
+):
     async with ci_db.immediate() as conn:
         await conn.execute(
             insert(integration_batches).values(
                 id="batch", project_id="p", repository_id="repo-config-1", request_id="request",
                 source_manifest_digest="sha256:" + "d" * 64, base_sha="0" * 40,
-                lifecycle="testing", current_revision=4, integration_branch="integration/batch",
+                lifecycle=initial_lifecycle, current_revision=4,
+                integration_branch="integration/batch",
                 policy_snapshot=policy_snapshot(), artifact_snapshot={}, cleanup_state="pending",
                 created_at=1.0, updated_at=1.0,
             )
@@ -1130,6 +1134,7 @@ async def test_ci_service_binds_root_evidence_to_exact_batch_revision_and_candid
     assert candidate["ci_evidence_id"] == result["aggregate_evidence_id"]
     assert batch["ci_evidence_id"] == result["aggregate_evidence_id"]
     assert batch["tested_candidate_sha"] == SHA
+    assert batch["lifecycle"] == "testing"
     assert all(
         row["operation_id"] == "root-op"
         and row["batch_id"] == "batch"
