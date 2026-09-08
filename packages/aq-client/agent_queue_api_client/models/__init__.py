@@ -712,6 +712,7 @@ from .plugin_update_response import PluginUpdateResponse
 from .plugin_update_response_422 import PluginUpdateResponse422
 from .pool_instance_status import PoolInstanceStatus
 from .pool_project_cap import PoolProjectCap
+from .pool_project_status import PoolProjectStatus
 from .pool_scale_request import PoolScaleRequest
 from .pool_scale_response import PoolScaleResponse
 from .pool_scale_response_422 import PoolScaleResponse422
@@ -1819,6 +1820,7 @@ __all__ = (
     "PluginUpdateResponse422",
     "PoolInstanceStatus",
     "PoolProjectCap",
+    "PoolProjectStatus",
     "PoolScaleRequest",
     "PoolScaleResponse",
     "PoolScaleResponse422",

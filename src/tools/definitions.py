@@ -5622,14 +5622,18 @@ _ALL_TOOL_DEFINITIONS = [
         "name": "pool_status",
         "description": (
             "Supply/demand/bounds snapshot for every worker pool (one row per "
-            "project, profile). Backs `aq pool status`."
+            "profile, fleet-wide, with the per-project placement detail nested "
+            "in `projects`). Backs `aq pool status`."
         ),
         "input_schema": {
             "type": "object",
             "properties": {
                 "project_id": {
                     "type": "string",
-                    "description": "Limit to this project (optional — defaults to all).",
+                    "description": (
+                        "View filter on the per-project breakdown (optional — defaults "
+                        "to all). Pool bounds and totals stay fleet-wide."
+                    ),
                 },
             },
         },

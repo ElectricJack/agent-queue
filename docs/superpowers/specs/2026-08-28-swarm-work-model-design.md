@@ -531,6 +531,15 @@ succeeded, `task_claim(next=True)` in a **separate** transaction, returning
 
 ### 11. Pool reconciler — `_reconcile_pools`
 
+> **Superseded in part (2026-09-08).** The per-project keying described below —
+> supply, demand and bounds grouped by `(project_id, profile_id)` — was replaced
+> by fleet-wide sizing per profile plus an explicit placement step. See
+> [global worker pools](2026-09-08-global-worker-pools-design.md) for the
+> current model (`PoolKey(profile_id)`, `place_pool_actions`,
+> `min_per_project`, `swarm.global_max_active`). The rest of this section — the
+> measurement shape, the scale-down grace, the launch/teardown rules — still
+> holds. This text is kept as the historical record.
+
 New cascade step, after `_reconcile_sessions`, gated by `swarm.enabled`. Per tick:
 
 1. **Demand** (1 statement): `ready` = count of tasks matching the work query minus the

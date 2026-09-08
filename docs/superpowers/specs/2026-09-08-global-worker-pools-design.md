@@ -1,7 +1,8 @@
 # Global worker pools
 
 **Date:** 2026-09-08
-**Status:** design — not implemented
+**Status:** implemented (2026-09-08) — sizing, placement, bounds, doctor, CLI and
+API surfaces have shipped; the dashboard re-keying in §6.4 has not
 **Supersedes:** the per-project runtime keying in
 `docs/superpowers/specs/2026-08-28-swarm-work-model-design.md` §11
 **Primary code:** `src/scheduler.py` (`size_pools`), `src/orchestrator/pools.py`,

@@ -148,9 +148,46 @@ class TestSwarmConfig:
             cfg.max_filings_per_task,
         ) == (False, 60, 2, 5, 120, 120, 20)
 
+    def test_global_max_active_defaults_to_none(self):
+        # None means "inherit resources.max_concurrent_agents"; the knob is
+        # separate so tuning fleet size does not re-tune test parallelism.
+        assert SwarmConfig().global_max_active is None
+        assert not SwarmConfig().validate()
+
     def test_validate_rejects_negative(self):
         cfg = SwarmConfig(prepare_timeout=-1)
         assert cfg.validate()
+
+    @pytest.mark.parametrize("bad", [0, -1])
+    def test_validate_rejects_global_max_active_below_one(self, bad):
+        # 0 would mean "no pool may ever run" — that is swarm.enabled: false.
+        errors = SwarmConfig(global_max_active=bad).validate()
+        assert [e for e in errors if e.field == "global_max_active"]
+
+    def test_validate_accepts_an_explicit_positive_global_max_active(self):
+        assert not SwarmConfig(global_max_active=1).validate()
+
+    def test_global_max_active_loads_from_yaml(self, tmp_path):
+        from src.config import load_config
+
+        path = tmp_path / "config.yaml"
+        path.write_text(
+            "database:\n  url: postgresql+asyncpg://test:test@localhost/test\n"
+            "discord:\n  bot_token: test\n  guild_id: '1'\n"
+            "swarm:\n  enabled: true\n  global_max_active: 12\n"
+        )
+        assert load_config(str(path)).swarm.global_max_active == 12
+
+    def test_global_max_active_absent_from_yaml_stays_none(self, tmp_path):
+        from src.config import load_config
+
+        path = tmp_path / "config.yaml"
+        path.write_text(
+            "database:\n  url: postgresql+asyncpg://test:test@localhost/test\n"
+            "discord:\n  bot_token: test\n  guild_id: '1'\n"
+            "swarm:\n  enabled: true\n"
+        )
+        assert load_config(str(path)).swarm.global_max_active is None
 
     def test_app_config_has_swarm(self):
         assert isinstance(AppConfig().swarm, SwarmConfig)

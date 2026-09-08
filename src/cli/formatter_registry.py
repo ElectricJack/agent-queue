@@ -405,7 +405,7 @@ def _register_all():
         empty_message="No projects found.",
     )
 
-    # -- Worker pools (swarm-work-model §11) ---------------------------------
+    # -- Worker pools (global-worker-pools §6.2) -----------------------------
 
     FORMATTERS["pool_status"] = FormatterSpec(
         render=format_pool_table,

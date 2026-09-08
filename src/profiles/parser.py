@@ -71,6 +71,7 @@ CONFIG_KNOWN_KEYS = frozenset(
         "allow_base_checkout",
         "min_active",
         "max_active",
+        "min_per_project",
         "max_claims_per_session",
     }
 )
@@ -681,7 +682,13 @@ def _validate_session_config(config: dict) -> list[str]:
 
     # Pool-only sizing keys (swarm-work-model §9).  NULL/absent = unlimited
     # for max_claims_per_session; 0 is a parse error everywhere.
-    for key in ("min_active", "max_active", "max_claims_per_session"):
+    #
+    # ``min_per_project`` (global-worker-pools §2.1) is a *warm floor per
+    # eligible project*, not a bound on the fleet, so it follows ``min_active``
+    # rather than the "positive or omitted" siblings: an explicit ``0`` is the
+    # meaningful (and default) statement "keep nothing resident in a project
+    # that has no work", and only a negative value is nonsense.
+    for key in ("min_active", "max_active", "min_per_project", "max_claims_per_session"):
         if key not in config:
             continue
         value = config[key]
@@ -690,9 +697,9 @@ def _validate_session_config(config: dict) -> list[str]:
         if isinstance(value, bool) or not isinstance(value, int):
             errors.append(f"Config '{key}' must be an integer, got {type(value).__name__}")
             continue
-        if key == "min_active":
+        if key in ("min_active", "min_per_project"):
             if value < 0:
-                errors.append(f"Config 'min_active' must be >= 0, got {value}")
+                errors.append(f"Config '{key}' must be >= 0, got {value}")
         elif value <= 0:
             errors.append(f"Config '{key}' must be positive (omit it for unlimited), got {value}")
         if lifecycle != "pool":
@@ -1110,7 +1117,7 @@ def parsed_profile_to_agent_profile(parsed: ParsedProfile) -> dict:
         value = parsed.config.get(key)
         if isinstance(value, int) and not isinstance(value, bool):
             result[key] = value
-    for key in ("min_active", "max_active", "max_claims_per_session"):
+    for key in ("min_active", "max_active", "min_per_project", "max_claims_per_session"):
         value = parsed.config.get(key)
         if isinstance(value, int) and not isinstance(value, bool):
             result[key] = value

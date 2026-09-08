@@ -121,6 +121,10 @@ class ProfileSummary(BaseModel):
     lifecycle: str = "task"
     min_active: int | None = None
     max_active: int | None = None
+    #: Per-project warm floor for a pool profile: how many workers stay
+    #: resident in *each* eligible project.  ``None`` reads as 0 -- no
+    #: reservation, which is the default now that sizing is fleet-wide.
+    min_per_project: int | None = None
 
 
 class SubagentRollup(BaseModel):

@@ -1402,6 +1402,83 @@ class TestTokenLedgerPricingColumns:
         assert current in script.get_heads()
 
 
+class TestAgentProfilesMinPerProject:
+    """``agent_profiles.min_per_project`` (global-worker-pools §2.1).
+
+    The per-project warm floor is nullable with no backfill: NULL reads as 0,
+    so every pre-existing profile keeps today's sizing behaviour.
+    """
+
+    def test_declared_in_metadata(self):
+        from src.database.tables import agent_profiles
+
+        cols = {c.name: c for c in agent_profiles.columns}
+        assert "min_per_project" in cols
+        assert cols["min_per_project"].nullable is True
+
+    async def test_present_in_a_migrated_database(self, db):
+        from sqlalchemy import inspect
+
+        def _cols(sync_conn):
+            return {c["name"] for c in inspect(sync_conn).get_columns("agent_profiles")}
+
+        async with db._engine.begin() as conn:
+            cols = await conn.run_sync(_cols)
+        assert "min_per_project" in cols
+
+    @pytest.mark.migration
+    @pytest.mark.integration
+    async def test_upgrade_adds_the_column_to_a_pre_column_database(self):
+        """The ALTER path, on a database that predates the column.
+
+        Fresh databases get the column from the squashed baseline's
+        ``metadata.create_all``, so only this shape exercises ``a00000000003``'s
+        ``add_column`` at all.
+        """
+        from sqlalchemy import inspect, text
+
+        from src.database.engine import create_postgres_engine, run_schema_setup
+        from src.database.tables import metadata
+        from tests.pg_dsn import create_scratch_database, ensure_worker_postgres_dsn
+
+        if not ensure_worker_postgres_dsn():
+            pytest.skip("POSTGRES_TEST_DSN not set")
+
+        dsn = await create_scratch_database("min_per_project_upgrade")
+        engine = create_postgres_engine(dsn)
+        try:
+            async with engine.begin() as conn:
+                await conn.run_sync(metadata.create_all)
+                await conn.execute(text("ALTER TABLE agent_profiles DROP COLUMN min_per_project"))
+                await conn.execute(text("CREATE TABLE alembic_version (version_num VARCHAR(32))"))
+                await conn.execute(text("INSERT INTO alembic_version VALUES ('a00000000002')"))
+
+            await run_schema_setup(engine)
+
+            def _cols(sync_conn):
+                return {c["name"] for c in inspect(sync_conn).get_columns("agent_profiles")}
+
+            async with engine.begin() as conn:
+                assert "min_per_project" in await conn.run_sync(_cols)
+                version = (await conn.execute(text("SELECT version_num FROM alembic_version"))).scalar()
+            assert version == "a00000000003"
+        finally:
+            await engine.dispose()
+
+    def test_migration_is_in_the_linear_history(self):
+        """One head, and a00000000003 chains onto the restored-guards revision."""
+        from pathlib import Path
+
+        from alembic.config import Config
+        from alembic.script import ScriptDirectory
+
+        root = Path(__file__).resolve().parent.parent
+        script = ScriptDirectory.from_config(Config(str(root / "alembic.ini")))
+        rev = script.get_revision("a00000000003")
+        assert rev.down_revision == "a00000000002"
+        assert list(script.get_heads()) == ["a00000000003"]
+
+
 async def test_layout_tables_exist(tmp_path):
     from sqlalchemy import inspect
     from src.database import Database

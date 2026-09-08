@@ -7592,8 +7592,8 @@
         "tags": [
           "pool"
         ],
-        "summary": "Supply/demand/bounds snapshot for every worker pool (one row per project, profile). Backs `aq pool status`.",
-        "description": "Supply/demand/bounds snapshot for every worker pool (one row per project, profile). Backs `aq pool status`.",
+        "summary": "Supply/demand/bounds snapshot for every worker pool (one row per profile, fleet-wide, with the per-project placement detail nested in `projects`). Backs `aq pool status`.",
+        "description": "Supply/demand/bounds snapshot for every worker pool (one row per profile, fleet-wide, with the per-project placement detail nested in `projects`). Backs `aq pool status`.",
         "operationId": "pool_status",
         "requestBody": {
           "content": {
@@ -31798,6 +31798,17 @@
             "type": "string",
             "title": "Session Id"
           },
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Id"
+          },
           "name": {
             "type": "string",
             "title": "Name"
@@ -31900,6 +31911,83 @@
         ],
         "title": "PoolProjectCap",
         "description": "A project's runtime ceiling for a pool whose bounds are global."
+      },
+      "PoolProjectStatus": {
+        "properties": {
+          "project_id": {
+            "type": "string",
+            "title": "Project Id"
+          },
+          "ready": {
+            "type": "integer",
+            "title": "Ready",
+            "default": 0
+          },
+          "running_idle": {
+            "type": "integer",
+            "title": "Running Idle",
+            "default": 0
+          },
+          "running_busy": {
+            "type": "integer",
+            "title": "Running Busy",
+            "default": 0
+          },
+          "starting": {
+            "type": "integer",
+            "title": "Starting",
+            "default": 0
+          },
+          "draining": {
+            "type": "integer",
+            "title": "Draining",
+            "default": 0
+          },
+          "max_concurrent_agents": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Concurrent Agents"
+          },
+          "workspace_capacity": {
+            "type": "integer",
+            "title": "Workspace Capacity",
+            "default": 0
+          },
+          "quarantined_until": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Quarantined Until"
+          },
+          "quarantined_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Quarantined Reason"
+          }
+        },
+        "type": "object",
+        "required": [
+          "project_id"
+        ],
+        "title": "PoolProjectStatus",
+        "description": "Where one pool's workers actually are, in a single project.\n\nSizing is fleet-wide, but a worker still lives in one project for its\nlifetime, so \"where are my workers running\" has to stay answerable.\nThese are the placement inputs and the per-project share of the pool's\nsupply, for the one project named by ``project_id``."
       },
       "PoolScaleRequest": {
         "properties": {
@@ -32228,7 +32316,7 @@
               }
             ],
             "title": "Project Id",
-            "description": "Limit to this project (optional \u2014 defaults to all)."
+            "description": "View filter on the per-project breakdown (optional \u2014 defaults to all). Pool bounds and totals stay fleet-wide."
           }
         },
         "type": "object",
@@ -32255,10 +32343,6 @@
       },
       "PoolStatusRow": {
         "properties": {
-          "project_id": {
-            "type": "string",
-            "title": "Project Id"
-          },
           "profile_id": {
             "type": "string",
             "title": "Profile Id"
@@ -32282,6 +32366,11 @@
               }
             ],
             "title": "Max Active"
+          },
+          "min_per_project": {
+            "type": "integer",
+            "title": "Min Per Project",
+            "default": 0
           },
           "desired": {
             "type": "integer",
@@ -32307,27 +32396,13 @@
             "type": "integer",
             "title": "Ready"
           },
-          "quarantined_until": {
-            "anyOf": [
-              {
-                "type": "number"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Quarantined Until"
-          },
-          "quarantined_reason": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Quarantined Reason"
+          "projects": {
+            "items": {
+              "$ref": "#/components/schemas/PoolProjectStatus"
+            },
+            "type": "array",
+            "title": "Projects",
+            "default": []
           },
           "instances": {
             "items": {
@@ -32340,7 +32415,6 @@
         },
         "type": "object",
         "required": [
-          "project_id",
           "profile_id",
           "min_active",
           "desired",
@@ -32351,7 +32425,7 @@
           "ready"
         ],
         "title": "PoolStatusRow",
-        "description": "One (project, profile) worker-pool row \u2014 swarm-work-model \u00a711."
+        "description": "One worker pool -- a profile, fleet-wide (global-worker-pools \u00a76.1).\n\nA row used to be one ``(project_id, profile_id)`` pair, which quietly\nmultiplied ``min_active``/``max_active`` by the number of active\nprojects.  Bounds and supply are aggregates over the whole fleet now,\nand the per-project detail lives in ``projects``."
       },
       "PrMergeBaseFreshness": {
         "properties": {
@@ -33130,6 +33204,17 @@
               }
             ],
             "title": "Max Active"
+          },
+          "min_per_project": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Min Per Project"
           }
         },
         "type": "object",

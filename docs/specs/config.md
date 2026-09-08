@@ -443,17 +443,24 @@ fresh each tick/request, there is no restart-required subset.
 |---|---|---|---|
 | `enabled` | `bool` | `False` | Master switch. `false` disables `_reconcile_pools`, refuses new `lifecycle: pool` launches, and makes `task_claim` return `not_admissible` with `reason: "swarm_disabled"` — the command surface stays present (so clients and schemas are stable before pools turn on) but hands out no work. |
 | `claim_wait_max` | `int` | `60` | Upper clamp on `task_claim`'s `--wait` seconds — both the frontier long-poll and the admission long-poll. |
-| `max_starts_per_tick` | `int` | `2` | Pool session launches `_reconcile_pools` may start in one cascade tick, across all `(project, profile)` keys. |
+| `global_max_active` | `int \| None` | `None` | Box-wide ceiling on live pool sessions across every profile. `None` resolves to `resources.max_concurrent_agents` (default 8), so the bound always exists; an explicit integer overrides it. A knob of its own rather than a direct read of `resources.max_concurrent_agents`, because that value also derives each session's xdist worker share — fleet size and test parallelism must move independently. |
+| `max_starts_per_tick` | `int` | `2` | Pool session launches `_reconcile_pools` may start in one cascade tick, across all pools (one pool = one profile, fleet-wide). |
 | `max_drains_per_tick` | `int` | `5` | Idle pool sessions `_reconcile_pools` may mark `desired_state='stopped'` in one bulk update per tick. |
-| `scale_down_grace` | `int` | `120` | Seconds a `(project, profile)` key's surplus (idle above its sized floor) must persist, tracked in memory, before a drain is issued. |
+| `scale_down_grace` | `int` | `120` | Seconds a pool's surplus (idle above its sized floor) must persist, tracked in memory, before a drain is issued. |
 | `prepare_timeout` | `int` | `120` | Seconds a claim may stay `claim_phase='preparing'` (the git-reset window) before the reconciler releases it as `prepare_failed`. |
 | `max_filings_per_task` | `int` | `20` | Worker-filed tasks (`create_task` from a session holding a task) permitted per held task, across all its claims; reserved atomically, see design §12. |
 
-Validation (`SwarmConfig.validate`): every integer key must be `>= 0`.
+Validation (`SwarmConfig.validate`): every integer key must be `>= 0`, except
+`global_max_active`, which must be `>= 1` when set (omit it to inherit
+`resources.max_concurrent_agents`; `enabled: false` is how you stop pools
+entirely).
 
-No global pool cap exists — sizing binds on each project's `max_concurrent_agents`
-and each profile's own `min_active`/`max_active` (profile markdown, pool-only
-keys — parse error on `lifecycle: task`/`named`).
+Sizing is fleet-wide, one pool per profile: it binds on the profile's own
+`min_active` / `max_active` / `min_per_project` (profile markdown, pool-only
+keys — parse error on `lifecycle: task`/`named`) and on `global_max_active`.
+Each project's `max_concurrent_agents` is applied afterwards, by the placement
+step that chooses which project an authorised worker launches into. See
+`docs/superpowers/specs/2026-09-08-global-worker-pools-design.md`.
 
 **Caveat — `enabled: false` strands pool profiles (ruling P2-17).** The push
 path's gates are keyed on `lifecycle` alone, deliberately: a `lifecycle: pool`

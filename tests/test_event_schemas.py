@@ -344,3 +344,59 @@ class TestTimerEventSchemas:
     def test_validate_payload_catches_missing_timer_fields(self):
         errors = validate_payload("timer.10m", {"tick_time": "2026-01-01T00:00:00Z"})
         assert any("interval" in e for e in errors)
+
+
+class TestPoolEventSchemas:
+    """Global worker pools §4/§6.3 — the two new events and ``pool.scaled``."""
+
+    def test_pool_scaled_accepts_a_placement_reason(self):
+        """Optional, not required: a drain reports no reason and never had one."""
+        schema = get_schema("pool.scaled")
+        assert "placement_reason" in schema["optional"]
+        assert "placement_reason" not in schema["required"]
+        errors = validate_payload(
+            "pool.scaled",
+            {
+                "project_id": "p",
+                "profile_id": "worker",
+                "kind": "start",
+                "count": 1,
+                "placement_reason": "warm_floor",
+            },
+        )
+        assert errors == []
+
+    def test_pool_placement_starved_required_fields(self):
+        schema = get_schema("pool.placement_starved")
+        assert schema["required"] == ["profile_id", "wanted", "reasons"]
+
+    def test_pool_placement_starved_payload_validates(self):
+        errors = validate_payload(
+            "pool.placement_starved",
+            {"profile_id": "worker", "wanted": 2, "reasons": {"p": "no_workspace"}},
+        )
+        assert errors == []
+
+    def test_pool_bounds_rescoped_carries_both_ceilings(self):
+        schema = get_schema("pool.bounds_rescoped")
+        assert "effective_max_active" in schema["required"]
+        assert "previous_effective_max_active" in schema["required"]
+        assert "eligible_projects" in schema["required"]
+
+    def test_pool_bounds_rescoped_payload_validates(self):
+        errors = validate_payload(
+            "pool.bounds_rescoped",
+            {
+                "profile_id": "worker",
+                "eligible_projects": 5,
+                "effective_max_active": 4,
+                "effective_min_active": 0,
+                "previous_effective_max_active": 20,
+                "previous_effective_min_active": 0,
+            },
+        )
+        assert errors == []
+
+    def test_new_pool_events_are_registered(self):
+        for event_type in ("pool.placement_starved", "pool.bounds_rescoped"):
+            assert event_type in registered_event_types()

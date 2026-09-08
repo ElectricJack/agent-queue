@@ -4,9 +4,10 @@ import type { CreateMode } from "./useAgentSelection";
 /**
  * The fork every creation starts at.
  *
- * A durable agent and a worker pool are different objects — different scope
- * (global vs per project), different lifecycle (one long-lived session vs
- * capacity the daemon sizes), different management surface. Presenting one
+ * A durable agent and a worker pool are different objects — same global
+ * scope, but a different lifecycle (one long-lived session you name and
+ * manage vs capacity the daemon sizes, places and drains) and a different
+ * management surface. Presenting one
  * "Add agent" form for both let an operator pick a ``lifecycle: pool``
  * profile and get pool capacity that the flock then files under its pool
  * entry, which read as a failed creation.
@@ -23,9 +24,10 @@ const choices: { mode: Exclude<CreateMode, "choice">; label: string; scope: stri
   {
     mode: "pool",
     label: "Create agent pool",
-    scope: "Elastic capacity · per project",
-    body: "Capacity for one project, not a named worker. The daemon starts and drains "
-      + "instances between the bounds you set, and each instance claims its own work.",
+    scope: "Elastic capacity · fleet-wide",
+    body: "Capacity for the whole fleet, not a named worker. The daemon starts and drains "
+      + "instances between the bounds you set, places each one into a project, and every "
+      + "instance claims its own work.",
     Icon: RectangleStackIcon,
   },
 ];

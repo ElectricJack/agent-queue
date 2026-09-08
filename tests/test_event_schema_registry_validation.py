@@ -783,6 +783,23 @@ _CANONICAL_PAYLOADS["pool.enabled_changed"] = {
     "profile_id": "worker",
     "enabled": False,
 }
+# Global worker pools §6.3 / §4 — emitted by ``_emit_placement_starved`` and
+# ``_announce_bounds_rescoped``.  No ``project_id``: a pool is a fleet now, and
+# both events are about the profile, with projects appearing only as the
+# per-project blocking reasons inside the payload.
+_CANONICAL_PAYLOADS["pool.placement_starved"] = {
+    "profile_id": "worker",
+    "wanted": 2,
+    "reasons": {"proj-1": "quarantined", "proj-2": "no_workspace"},
+}
+_CANONICAL_PAYLOADS["pool.bounds_rescoped"] = {
+    "profile_id": "worker",
+    "eligible_projects": 5,
+    "effective_max_active": 4,
+    "effective_min_active": 0,
+    "previous_effective_max_active": 20,
+    "previous_effective_min_active": 0,
+}
 _CANONICAL_PAYLOADS["formula.cooked"] = {
     "container_id": "t-1",
     "project_id": "proj-1",

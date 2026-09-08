@@ -385,10 +385,13 @@ class TestQuarantine:
 
         status = await handler._cmd_pool_status({"project_id": PROJECT_ID})
         row = next(r for r in status["pools"] if r["profile_id"] == "worker")
-        assert row["quarantined_until"] > time.time()
+        # The pool is global; the quarantine belongs to the project whose
+        # checkout the harness died in.
+        entry = next(p for p in row["projects"] if p["project_id"] == PROJECT_ID)
+        assert entry["quarantined_until"] > time.time()
         # The captured startup output is what makes the row actionable; a
         # bare timestamp left an operator with nowhere to look.
-        assert "unknown flag --nope" in row["quarantined_reason"]
+        assert "unknown flag --nope" in entry["quarantined_reason"]
 
         assert len(_pool_warnings(caplog)) == 1
 
@@ -500,21 +503,23 @@ class TestPoolStatusRendering:
         Console(file=buf, width=200).print(format_pool_table([row]))
         return buf.getvalue()
 
-    def _row(self, **kw):
-        base = {
-            "project_id": PROJECT_ID,
+    def _row(self, **project):
+        """One pool row, with ``project`` folded into its single project entry."""
+        entry = {"project_id": PROJECT_ID, "ready": 1, "workspace_capacity": 1}
+        entry.update(project)
+        return {
             "profile_id": "worker",
             "min_active": 0,
             "max_active": 2,
+            "min_per_project": 0,
             "desired": 0,
             "running_idle": 0,
             "running_busy": 0,
             "starting": 0,
             "draining": 0,
             "ready": 1,
+            "projects": [entry],
         }
-        base.update(kw)
-        return base
 
     def test_quarantine_reason_is_rendered(self):
         out = self._render(
@@ -524,6 +529,10 @@ class TestPoolStatusRendering:
             )
         )
         assert "unknown harness" in out
+        # And the project it applies to, now that the pool spans projects.
+        assert PROJECT_ID in out
 
-    def test_healthy_pool_renders_a_dash(self):
-        assert "—" in self._render(self._row())
+    def test_healthy_pool_renders_placement_and_no_quarantine_note(self):
+        out = self._render(self._row())
+        assert f"{PROJECT_ID}:0" in out
+        assert "quarantined" not in out

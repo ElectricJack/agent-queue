@@ -154,11 +154,11 @@ Part II claims/pools/worker-filed work). Off by default (`swarm.enabled: false`)
 | `src/database/hierarchy_migration.py` | Snapshot → canonicalise → validate → apply migration for the parent-edge/column drift |
 | `src/database/queries/claim_queries.py` | The one-transaction claim (session-slot CAS → work query → holder rows), `release_claim`, `terminate_pool_session` |
 | `src/commands/claim_commands.py` | `_cmd_task_claim` (`task_claim`) — admission checks, long-poll, attempt-outcome resolution |
-| `src/orchestrator/pools.py` | `_reconcile_pools` cascade step — demand/supply aggregation, pool session launch/terminate |
-| `src/scheduler.py` | (also) pure `size_pools(...) -> list[PoolAction]` — pool sizing, table-tested, no I/O |
+| `src/orchestrator/pools.py` | `_measure_pools` (`PoolMeasurement`) and the `_reconcile_pools` cascade step — fleet-wide demand/supply aggregation, placement, pool session launch/terminate |
+| `src/scheduler.py` | (also) pure `size_pools(...) -> list[PoolAction]` (fleet-wide, one pool per profile) and `place_pool_actions(...)` (which project each start/drain applies to) — table-tested, no I/O |
 | `src/sessions/reconciler.py` | (also) pool carve-outs on the session reconciler steps — `_step_prepare_timeout`, pool branches of `_step_orphans`/`_step_exits` |
-| `src/doctor/pool_checks.py` | `pools.stuck`, `pools.orphan_agents`, `pools.preparing_stuck`, `pools.stranded_feature_branches`, `claims.holder_consistency` (report-only) |
-| `src/profiles/parser.py` | (also) `lifecycle: pool` + `min_active`/`max_active`/`max_claims_per_session` parsing |
+| `src/doctor/pool_checks.py` | `pools.stuck`, `pools.orphan_agents`, `pools.preparing_stuck`, `pools.stranded_feature_branches`, `pools.global_bounds_migration`, `pools.floor_exceeds_max`, `pools.placement_starved`, `claims.holder_consistency` (report-only) |
+| `src/profiles/parser.py` | (also) `lifecycle: pool` + `min_active`/`max_active`/`min_per_project`/`max_claims_per_session` parsing |
 
 ### Formulas (Swarm Work Model, Part III)
 

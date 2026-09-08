@@ -961,6 +961,13 @@ class AgentProfile:
     # lifecycle: pool (swarm-work-model §9).  NULL = unlimited claims.
     min_active: int | None = None
     max_active: int | None = None
+    # Per-project warm floor (global-worker-pools §2.1).  Pool sizing is
+    # fleet-wide, so ``min_active`` alone cannot say "keep one worker resident
+    # in *every* project".  This does: the effective global floor becomes
+    # ``max(min_active, sum(min_per_project) over eligible projects)``, and
+    # placement spends the difference on the projects that are short.  NULL is
+    # read as 0 — no project holds a reservation open by default.
+    min_per_project: int | None = None
     max_claims_per_session: int | None = None
 
 

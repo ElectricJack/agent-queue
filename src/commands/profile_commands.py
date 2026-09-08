@@ -259,6 +259,7 @@ class ProfileCommandsMixin:
                     "lifecycle": getattr(p, "lifecycle", "task") or "task",
                     "min_active": getattr(p, "min_active", None),
                     "max_active": getattr(p, "max_active", None),
+                    "min_per_project": getattr(p, "min_per_project", None),
                 }
                 for p in profiles
             ],

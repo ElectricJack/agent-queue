@@ -1,13 +1,17 @@
 import { useEffect, useId, useState } from "react";
 import { XMarkIcon, CommandLineIcon, Cog6ToothIcon } from "@heroicons/react/24/outline";
 import { PoolInstanceTerminal } from "./AgentTerminal";
-import { PoolBadge, PoolQuarantine, PoolSupplyRow } from "./PoolMetadata";
+import { PoolBadge, PoolPlacementRow, PoolQuarantine, PoolSupplyRow } from "./PoolMetadata";
+import PoolProjects from "./PoolProjects";
 import PoolScaleFields from "./PoolScaleFields";
 import { formatIdle, type PoolEntry } from "./pools";
 
 function instanceLabel(instance: PoolEntry["instances"][number]) {
   return [
     instance.name,
+    // The pool is fleet-wide but each instance is pinned to the project it was
+    // launched into, so the picker has to say which one it is about to show.
+    instance.project_id || "no project",
     instance.task_id || "unclaimed",
     formatIdle(instance.idle_seconds),
   ].join(" · ");
@@ -31,7 +35,7 @@ export default function PoolWindow({ entry, instanceId, onInstanceChange, onClos
     if (resetToken) setTab("terminal");
   }, [resetToken]);
 
-  const { pool, instances } = entry;
+  const { pool, projects, instances } = entry;
   // A pinned instance can drain away between polls; fall back to the pool's
   // oldest live session rather than blanking the view.
   const instance = instances.find((row) => row.id === instanceId) ?? instances[0] ?? null;
@@ -51,10 +55,10 @@ export default function PoolWindow({ entry, instanceId, onInstanceChange, onClos
             <div className="flex items-center gap-2">
               <h2 className="truncate text-sm font-semibold text-gray-100">{title}</h2>
               <PoolBadge />
-              <span className="truncate text-[10px] text-gray-500">{pool.project_id}</span>
             </div>
             <p className="mt-0.5"><PoolSupplyRow pool={pool} /></p>
-            <PoolQuarantine pool={pool} />
+            <PoolPlacementRow projects={projects} />
+            <PoolQuarantine projects={projects} />
             {instances.length > 0 ? (
               <label className="mt-1 flex min-w-0 items-center gap-2 text-[10px] text-gray-500" htmlFor={id + "-instance"}>
                 Instance
@@ -112,9 +116,11 @@ export default function PoolWindow({ entry, instanceId, onInstanceChange, onClos
             <p className="text-xs leading-relaxed text-gray-400">
               Lifecycle: <span className="text-gray-200">pool</span>. The daemon sizes this pool
               between the bounds below; individual instances are started and drained
-              automatically and cannot be added or deleted by hand.
+              automatically and cannot be added or deleted by hand. Bounds are fleet-wide: the
+              placer decides which project each authorised start lands in.
             </p>
             <PoolScaleFields pool={pool} />
+            <PoolProjects projects={projects} />
           </div>
         )}
       </div>

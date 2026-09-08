@@ -71,6 +71,7 @@ class ProfileQueryMixin:
                     default_class=profile.default_class or "",
                     min_active=profile.min_active,
                     max_active=profile.max_active,
+                    min_per_project=profile.min_per_project,
                     max_claims_per_session=profile.max_claims_per_session,
                     created_at=now,
                     updated_at=now,
@@ -158,6 +159,7 @@ class ProfileQueryMixin:
                 default_class=profile.default_class or "",
                 min_active=profile.min_active,
                 max_active=profile.max_active,
+                min_per_project=profile.min_per_project,
                 max_claims_per_session=profile.max_claims_per_session,
             )
             return "updated"
@@ -226,5 +228,6 @@ class ProfileQueryMixin:
             max_session_age=row.get("max_session_age"),
             min_active=row.get("min_active"),
             max_active=row.get("max_active"),
+            min_per_project=row.get("min_per_project"),
             max_claims_per_session=row.get("max_claims_per_session"),
         )

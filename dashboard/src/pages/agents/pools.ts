@@ -1,50 +1,54 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useProfiles, usePoolSessions, usePoolStatus, type Profile, type PoolStatusRow, type SessionSummary } from "../../api/hooks";
+import { useProfiles, usePoolSessions, usePoolStatus, type Profile, type PoolProjectStatus, type PoolStatusRow, type SessionSummary } from "../../api/hooks";
 import type { FlockAgent } from "../../api/agents";
 
-/** A pool profile in one project, together with the sessions currently running it. */
+/** One worker pool — a profile, fleet-wide — with the sessions running it. */
 export interface PoolEntry {
   /** Selection key — see ``poolSelectionKey`` in useAgentSelection. */
   key: string;
-  projectId: string;
   profileId: string;
   pool: PoolStatusRow;
+  /**
+   * Where the pool's supply actually sits, one row per project the daemon
+   * placed a worker in (or could place one in). Sizing is fleet-wide but a
+   * worker still lives inside the project whose worktree it was launched
+   * against, so this is the only answer to "where are my workers running".
+   */
+  projects: PoolProjectStatus[];
   instances: SessionSummary[];
 }
 
 export const POOL_PREFIX = "pool:";
 
-export function poolAddress(projectId: string, profileId: string) {
-  return POOL_PREFIX + projectId + ":" + profileId;
+export function poolAddress(profileId: string) {
+  return POOL_PREFIX + profileId;
 }
 
 /**
  * Join ``pool_status`` rows to their live sessions.
  *
- * Sessions carry ``project_id``/``profile_id`` in the plain (unscoped) form
- * the pool sizer uses, so the join is a straight key match. Instances are
- * ordered oldest first: a pool churns, and a stable order keeps the selected
- * instance from jumping under the user between polls.
+ * A pool is identified by its profile alone: bounds, demand and supply are
+ * aggregated across every project, so the join is a profile match and the
+ * per-project detail rides along in ``projects``. Instances are ordered oldest
+ * first: a pool churns, and a stable order keeps the selected instance from
+ * jumping under the user between polls. Projects are ordered by id for the
+ * same reason — the busiest project changes between polls, the id does not.
  */
 export function poolEntries(pools: PoolStatusRow[], sessions: SessionSummary[]): PoolEntry[] {
-  const byKey = new Map<string, SessionSummary[]>();
+  const byProfile = new Map<string, SessionSummary[]>();
   for (const session of sessions) {
-    if (!session.project_id || !session.profile_id) continue;
-    const key = poolAddress(session.project_id, session.profile_id);
-    byKey.set(key, [...(byKey.get(key) ?? []), session]);
+    if (!session.profile_id) continue;
+    byProfile.set(session.profile_id, [...(byProfile.get(session.profile_id) ?? []), session]);
   }
   return [...pools]
-    .sort((a, b) => a.profile_id.localeCompare(b.profile_id) || a.project_id.localeCompare(b.project_id))
-    .map((pool) => {
-      const key = poolAddress(pool.project_id, pool.profile_id);
-      return {
-        key,
-        projectId: pool.project_id,
-        profileId: pool.profile_id,
-        pool,
-        instances: [...(byKey.get(key) ?? [])].sort((a, b) => (a.started_at ?? 0) - (b.started_at ?? 0)),
-      };
-    });
+    .sort((a, b) => a.profile_id.localeCompare(b.profile_id))
+    .map((pool) => ({
+      key: poolAddress(pool.profile_id),
+      profileId: pool.profile_id,
+      pool,
+      projects: [...(pool.projects ?? [])].sort((a, b) => a.project_id.localeCompare(b.project_id)),
+      instances: [...(byProfile.get(pool.profile_id) ?? [])].sort((a, b) => (a.started_at ?? 0) - (b.started_at ?? 0)),
+    }));
 }
 
 export interface BusyPoolEntries {
@@ -152,9 +156,43 @@ export function isPoolAgent(agent: FlockAgent, poolIds: Set<string>): boolean {
   return poolIds.has(agent.profile_id);
 }
 
-export function poolQuarantineSeconds(pool: PoolStatusRow, now = Date.now() / 1000): number {
-  const until = pool.quarantined_until;
+/**
+ * How long a *project* is still quarantined for this pool.
+ *
+ * A quarantine is a launch failure in one project's workspace, never a
+ * property of the global pool, so it is read per project row and the pool is
+ * described as quarantined only where it actually cannot start a worker.
+ */
+export function projectQuarantineSeconds(project: PoolProjectStatus, now = Date.now() / 1000): number {
+  const until = project.quarantined_until;
   return until && until > now ? until - now : 0;
+}
+
+/** The projects a pool currently cannot start a worker in, soonest first. */
+export function quarantinedProjects(projects: PoolProjectStatus[], now = Date.now() / 1000): PoolProjectStatus[] {
+  return projects
+    .filter((project) => projectQuarantineSeconds(project, now) > 0)
+    .sort((a, b) => projectQuarantineSeconds(a, now) - projectQuarantineSeconds(b, now));
+}
+
+/** Live workers (idle + busy) a project is holding for this pool. */
+export function projectLiveCount(project: PoolProjectStatus): number {
+  return (project.running_idle ?? 0) + (project.running_busy ?? 0);
+}
+
+/**
+ * "where the workers are", short enough for a rail row.
+ *
+ * Warmth deliberately concentrates in the busiest project (global worker pools
+ * §7.2), so the placement an operator needs at a glance is the ordering by
+ * live workers, not the full table — that lives in the pool's detail view.
+ * Projects holding nothing are dropped: a pool row would otherwise list every
+ * active project on the box.
+ */
+export function poolPlacement(projects: PoolProjectStatus[]): PoolProjectStatus[] {
+  return projects
+    .filter((project) => projectLiveCount(project) > 0 || (project.starting ?? 0) > 0)
+    .sort((a, b) => projectLiveCount(b) - projectLiveCount(a) || a.project_id.localeCompare(b.project_id));
 }
 
 /** The supply breakdown, in the order the CLI's `aq pool status` prints it. */

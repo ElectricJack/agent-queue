@@ -964,7 +964,36 @@ _SWARM_SCHEMAS: dict[str, EventSchema] = {
     },
     "pool.scaled": {
         "required": ["project_id", "profile_id", "kind", "count"],
+        # ``placement_reason`` — ``warm_floor`` / ``deficit`` / ``spread`` —
+        # answers "why *there*?" now that sizing is fleet-wide and a separate
+        # placement step chooses the project (global-worker-pools §6.3).
+        # Optional rather than required: a drain reports no reason, and the
+        # sizer alone never had one.
+        "optional": ["placement_reason"],
+    },
+    # Sizing authorised a start and no project could take it — the condition
+    # that was invisible before placement became explicit (§6.3).  ``reasons``
+    # maps project id to the predicate that excluded it: ``quarantined``,
+    # ``no_workspace``, ``at_cap``.  Rate-limited by ``_report_pool_starvation``
+    # to appearance and reason-change, never one per 5s tick.
+    "pool.placement_starved": {
+        "required": ["profile_id", "wanted", "reasons"],
         "optional": [],
+    },
+    # One per pool profile on the first reconcile tick of a daemon lifetime:
+    # ``min_active``/``max_active`` are fleet-wide bounds now rather than
+    # per-project ones multiplied by the active-project count, and on a
+    # multi-project install that is a large intended reduction (§4).  Carries
+    # both ceilings so ``aq system get-recent-events`` answers "why did my
+    # fleet shrink at 03:14?".
+    "pool.bounds_rescoped": {
+        "required": [
+            "profile_id",
+            "eligible_projects",
+            "effective_max_active",
+            "previous_effective_max_active",
+        ],
+        "optional": ["effective_min_active", "previous_effective_min_active"],
     },
     # -- worker pool operator/dashboard updates -----------------------------
     "pool.session_started": {

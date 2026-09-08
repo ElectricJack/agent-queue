@@ -836,6 +836,8 @@ agent_profiles = Table(
     # lifecycle: pool (swarm-work-model §9).  NULL = unlimited claims.
     Column("min_active", Integer, nullable=True),
     Column("max_active", Integer, nullable=True),
+    # Per-project warm floor (global-worker-pools §2.1).  NULL = 0.
+    Column("min_per_project", Integer, nullable=True),
     Column("max_claims_per_session", Integer, nullable=True),
     # Authored config for a thin project pool override.  The effective fields
     # above stay materialized for scheduling/query paths that predate overlays.

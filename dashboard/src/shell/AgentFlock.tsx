@@ -6,7 +6,7 @@ import { usePoolSetEnabled } from "../api/hooks";
 import EnableToggle from "../pages/agents/EnableToggle";
 import { useAgentSelection } from "../pages/agents/useAgentSelection";
 import { AgentState, AgentEligibility, AgentWaitingQuestion, FlockSubagents } from "../pages/agents/AgentMetadata";
-import { PoolBadge, PoolQuarantine, PoolSupplyRow } from "../pages/agents/PoolMetadata";
+import { PoolBadge, PoolPlacementRow, PoolQuarantine, PoolSupplyRow } from "../pages/agents/PoolMetadata";
 import { isPoolAgent, useDebouncedBusyPoolEntries, usePoolFlock } from "../pages/agents/pools";
 
 const COLLAPSED_KEY = "aq:flock:collapsed";
@@ -159,9 +159,9 @@ export default function AgentFlock() {
                   <PoolBadge />
                 </span>
                 <span id={descriptionId} className="block space-y-0.5 text-[10px] leading-tight text-gray-500">
-                  <span className="block truncate" title={entry.projectId}>{entry.projectId}</span>
+                  <PoolPlacementRow projects={entry.projects} />
                   <PoolSupplyRow pool={entry.pool} />
-                  <PoolQuarantine pool={entry.pool} />
+                  <PoolQuarantine projects={entry.projects} />
                   <span className="block truncate text-gray-400">
                     {entry.instances.length === 1 ? "1 live instance" : entry.instances.length + " live instances"}
                   </span>

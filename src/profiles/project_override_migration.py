@@ -44,7 +44,13 @@ _PROSE_SECTIONS = ("role", "rules", "reflection")
 
 #: Sizing/lifecycle keys are the whole reason overrides existed in practice,
 #: so the report names them first when it lists a promoted config diff.
-_POOL_KEYS = ("lifecycle", "min_active", "max_active", "max_claims_per_session")
+_POOL_KEYS = (
+    "lifecycle",
+    "min_active",
+    "max_active",
+    "min_per_project",
+    "max_claims_per_session",
+)
 
 
 def project_override_profile_id(profile_id: str | None) -> bool:

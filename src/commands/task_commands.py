@@ -4153,19 +4153,21 @@ class TaskCommandsMixin:
                 detail += f": {quarantine_reason}"
             return Reason(code="awaiting_pool_session", detail=detail, ref=profile_id)
 
-        supply, _demand, bounds, _profiles, _caps, _projects = await orchestrator._measure_pools(
-            {task.project_id}
-        )
+        measurement = await orchestrator._measure_pools({task.project_id})
         from src.scheduler import PoolKey
 
-        sup = supply.get(PoolKey(task.project_id, profile_id))
+        # Pools are sized fleet-wide now, but the question here is local:
+        # "what is standing between *this* task and a worker?" — so read the
+        # project's own slice of the pool, not the fleet aggregate.
+        pool = measurement.supply.get(PoolKey(profile_id))
+        sup = pool.by_project.get(task.project_id) if pool is not None else None
         if sup is None:
             return Reason(
                 code="awaiting_pool_session",
                 detail=f"routed to pool profile '{profile_id}', which has no pool in this project",
                 ref=profile_id,
             )
-        _lo, hi = bounds.get(PoolKey(task.project_id, profile_id), (0, None))
+        _lo, hi = measurement.bounds.get(PoolKey(profile_id), (0, None))
         live = sup.running_idle + sup.running_busy + sup.starting
         detail = (
             f"awaiting a '{profile_id}' pool session to claim it "

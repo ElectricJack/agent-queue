@@ -1949,12 +1949,28 @@ class SwarmConfig:
 
     ``enabled`` gates ``_reconcile_pools`` and ``lifecycle: pool`` launches.
     Everything else is a tunable read each tick — hot-reloadable.
+
+    ``global_max_active`` is the box-wide ceiling on running pool workers
+    across every profile (global-worker-pools §2.2).  ``None`` resolves to
+    ``resources.max_concurrent_agents`` so the bound exists by default; an
+    explicit integer overrides it.
+
+    It is a knob of its own rather than a direct read of
+    ``resources.max_concurrent_agents`` because that value is not only a fleet
+    size.  ``ResourcesConfig.cpu_share`` divides the core budget by it to
+    derive each session's xdist worker share, and ``test_worker_cap`` inherits
+    that share for ``aq test`` (``config.py`` ~1911) — so raising it to run
+    more workers would silently shrink every session's test parallelism, and
+    lowering it would silently inflate it.  Fleet size and test parallelism
+    are tuned for different reasons and must move independently.
     """
 
     enabled: bool = False
     # Retire a pool conversation after each task; the global worker is reused.
     fresh_context_per_task: bool = True
     claim_wait_max: int = 60  # seconds a `task_claim --wait` may block
+    #: None -> resources.max_concurrent_agents.
+    global_max_active: int | None = None
     max_starts_per_tick: int = 2
     max_drains_per_tick: int = 5
     scale_down_grace: int = 120  # seconds of surplus before a drain
@@ -1967,6 +1983,20 @@ class SwarmConfig:
                     "scale_down_grace", "prepare_timeout", "max_filings_per_task"):
             if getattr(self, key) < 0:
                 errors.append(ConfigError("swarm", key, "must be >= 0"))
+        # Unlike its siblings, an explicit ``global_max_active`` of 0 is not a
+        # degenerate-but-meaningful setting: it says "no pool worker may ever
+        # run", which is what ``enabled: false`` already says, more honestly
+        # and without leaving the reconciler churning against a zero ceiling.
+        # Omit the key (``None``) to inherit ``resources.max_concurrent_agents``.
+        if self.global_max_active is not None and self.global_max_active < 1:
+            errors.append(
+                ConfigError(
+                    "swarm",
+                    "global_max_active",
+                    "must be >= 1 (omit it to inherit resources.max_concurrent_agents, "
+                    "or set swarm.enabled: false to stop pools entirely)",
+                )
+            )
         return errors
 
 
@@ -3463,6 +3493,10 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
             enabled=bool(sw.get("enabled", False)),
             fresh_context_per_task=bool(sw.get("fresh_context_per_task", True)),
             claim_wait_max=int(sw.get("claim_wait_max", 60)),
+            global_max_active=(
+                None if sw.get("global_max_active") is None
+                else int(sw["global_max_active"])
+            ),
             max_starts_per_tick=int(sw.get("max_starts_per_tick", 2)),
             max_drains_per_tick=int(sw.get("max_drains_per_tick", 5)),
             scale_down_grace=int(sw.get("scale_down_grace", 120)),

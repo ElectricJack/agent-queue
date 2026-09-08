@@ -280,6 +280,7 @@ async def sync_profile_to_db(
         allow_base_checkout=profile_dict.get("allow_base_checkout", False),
         min_active=profile_dict.get("min_active"),
         max_active=profile_dict.get("max_active"),
+        min_per_project=profile_dict.get("min_per_project"),
         max_claims_per_session=profile_dict.get("max_claims_per_session"),
     )
 
