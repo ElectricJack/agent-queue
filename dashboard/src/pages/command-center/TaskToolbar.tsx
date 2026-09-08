@@ -7,10 +7,10 @@ import { useJumpToResult } from "./layout-v2/useJumpToResult";
 import { useShellPaneStore } from "../../panes/store";
 import { useShortcut } from "../../shell/hotkeys/useShortcuts";
 import { useTaskWorkspace } from "./TaskWorkspace";
-import { FINISHED_STATUSES, TASK_STATUSES, taskStatusLabel } from "./taskFilters";
+import { ACTIVITY_WINDOWS, FINISHED_STATUSES, TASK_STATUSES, taskStatusLabel } from "./taskFilters";
 
 export default function TaskToolbar() {
-  const { projectId, filters, focusId, setQuery, setStatus, setShowCompleted, clearFilters } = useTaskWorkspace();
+  const { projectId, filters, focusId, setQuery, setStatus, setShowCompleted, setWindow, clearFilters } = useTaskWorkspace();
   const variant = filters.showCompleted || focusId ? "all" : "active";
   // Only the graph pans to a hit, and only a server-side layout knows where
   // one is: on the Tasks tab the control would do nothing, so it is not shown
@@ -25,7 +25,7 @@ export default function TaskToolbar() {
   const shortcutsAvailable = () => !createOpen && !document.querySelector('[role="dialog"], [aria-modal="true"]');
   useShortcut("n", { label: "add task", section: "Tasks", onFire: () => setCreateOpen(true), when: shortcutsAvailable });
   useShortcut("/", { label: "search tasks", section: "Tasks", onFire: () => searchRef.current?.focus(), when: shortcutsAvailable });
-  const hasFilters = !!(filters.query || filters.status || filters.showCompleted);
+  const hasFilters = !!(filters.query || filters.status || filters.showCompleted || filters.window);
 
   return (
     <div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-gray-800 bg-gray-950 px-4 py-3">
@@ -42,9 +42,15 @@ export default function TaskToolbar() {
         {filters.status && !TASK_STATUSES.includes(filters.status) && <option value={filters.status}>{taskStatusLabel(filters.status)}</option>}
         {TASK_STATUSES.map((status) => <option key={status} value={status}>{taskStatusLabel(status)}</option>)}
       </select>
-      <label className="flex h-9 items-center gap-2 px-1 text-xs text-gray-400" title={focusId ? "Disabled while focused" : undefined}>
+      <select aria-label="Time range" value={filters.window} onChange={(e) => setWindow(e.target.value)}
+        title="Limit the list to tasks worked on recently, and show which models did the work"
+        className="h-9 max-w-48 rounded-md border border-gray-700 bg-gray-900 px-2 text-sm text-gray-200 focus:border-indigo-500 focus:outline-none">
+        <option value="">Any time</option>
+        {ACTIVITY_WINDOWS.map((w) => <option key={w.key} value={w.key}>{w.label}</option>)}
+      </select>
+      <label className="flex h-9 items-center gap-2 px-1 text-xs text-gray-400" title={focusId ? "Disabled while focused" : filters.window ? "Included with a time range" : undefined}>
         <input type="checkbox" checked={filters.showCompleted || FINISHED_STATUSES.has(filters.status)}
-          disabled={!!focusId} onChange={(e) => setShowCompleted(e.target.checked)} className="accent-indigo-500 disabled:opacity-50" />
+          disabled={!!focusId || !!filters.window} onChange={(e) => setShowCompleted(e.target.checked)} className="accent-indigo-500 disabled:opacity-50" />
         Show completed
       </label>
       {onGraph && jumpCount > 0 && <button type="button" onClick={jumpNext}

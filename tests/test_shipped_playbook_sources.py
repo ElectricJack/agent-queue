@@ -41,6 +41,15 @@ INSTALLED_SOURCE_ROOTS = (
 #: registries.
 EXCLUDED_SAMPLE_ROOTS: tuple[str, ...] = ("src/prompts/project_playbooks",)
 
+#: Reviewed V2 bundles the daemon itself ships and seeds into a new vault
+#: (``src/playbooks/required.py``: ``ensure_reviewed_playbook_bundles``).  These
+#: are *not* prose authoring sources: ``source.md`` is the byte-for-byte copy of
+#: the installed source whose digest ``manifest.md`` binds, so parametrising the
+#: assertions above over them would assert the same file twice under a second
+#: name.  The bundle's own integrity is asserted by
+#: ``tests/test_required_playbooks.py`` and by the artifact suite.
+REVIEWED_BUNDLE_ROOTS: tuple[str, ...] = ("src/prompts/reviewed_playbooks",)
+
 #: Prompt Markdown that is not a playbook at all.
 NON_PLAYBOOK_PROMPTS = (
     "src/prompts/consolidation_task.md",
@@ -130,7 +139,12 @@ def test_classifier_distinguishes_examples() -> None:
 
 
 def test_excluded_roots_are_declared_not_forgotten() -> None:
-    declared = INSTALLED_SOURCE_ROOTS + EXCLUDED_SAMPLE_ROOTS + NON_PLAYBOOK_PROMPTS
+    declared = (
+        INSTALLED_SOURCE_ROOTS
+        + EXCLUDED_SAMPLE_ROOTS
+        + REVIEWED_BUNDLE_ROOTS
+        + NON_PLAYBOOK_PROMPTS
+    )
     unclassified: list[str] = []
     for path in sorted((REPO_ROOT / "src" / "prompts").rglob("*.md")):
         rel = _rel(path)
@@ -140,7 +154,8 @@ def test_excluded_roots_are_declared_not_forgotten() -> None:
             unclassified.append(rel)
     assert not unclassified, (
         "every Markdown file under src/prompts/ must be claimed by exactly one of "
-        "INSTALLED_SOURCE_ROOTS, EXCLUDED_SAMPLE_ROOTS or NON_PLAYBOOK_PROMPTS; "
+        "INSTALLED_SOURCE_ROOTS, EXCLUDED_SAMPLE_ROOTS, REVIEWED_BUNDLE_ROOTS or "
+        "NON_PLAYBOOK_PROMPTS; "
         f"unclassified: {unclassified}"
     )
 
