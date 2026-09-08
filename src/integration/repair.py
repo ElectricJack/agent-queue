@@ -768,11 +768,13 @@ class RepairService:
                 assigned_agent_id=None,
             )
             project_id = str(scope["project_id"])
-            event_id = f"repair-delegate-closed-{operation_id}-{stage}-{repair_task_id}"
+            event_id = (f"repair-delegate-closed-{operation_id}-{stage}-{repair_task_id}"
+                        f"-{fence_token}-{session_id}")
             await enqueue_integration_event(
                 conn,
                 event_id=event_id,
-                dedup_key=f"repair-delegate-closed:{operation_id}:{stage}:{repair_task_id}",
+                dedup_key=(f"repair-delegate-closed:{operation_id}:{stage}:{repair_task_id}"
+                           f":{fence_token}:{session_id}"),
                 project_id=project_id,
                 event_type="integration.repair_delegate_closed",
                 payload={
