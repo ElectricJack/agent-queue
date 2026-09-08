@@ -14286,6 +14286,22 @@
           "settings": {
             "$ref": "#/components/schemas/AgentSettings"
           },
+          "last_activity": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Activity"
+          },
+          "live": {
+            "type": "boolean",
+            "title": "Live",
+            "default": false
+          },
           "last_heartbeat": {
             "anyOf": [
               {

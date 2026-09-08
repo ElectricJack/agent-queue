@@ -529,6 +529,9 @@ agents = Table(
     Column("checkout_path", Text, nullable=True),
     Column("repo_id", Text, ForeignKey("repos.id"), nullable=True),
     Column("pid", Integer, nullable=True),
+    # Task-scoped: advances only while the agent holds a task (task heartbeat
+    # + reservation CAS fence).  Liveness is sessions.last_activity -- see
+    # src/agents/liveness.py.
     Column("last_heartbeat", Float, nullable=True),
     Column("total_tokens_used", Integer, nullable=False, server_default="0"),
     Column("session_tokens_used", Integer, nullable=False, server_default="0"),

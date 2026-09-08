@@ -1129,10 +1129,11 @@ class SessionCommandsMixin:
     async def _cmd_task_heartbeat(self, args: dict) -> dict:
         """Refresh this task's agent lease.  Backs ``aq task heartbeat``.
 
-        Two cheap writes: ``agents.last_heartbeat`` (what the rest of the
-        daemon already reads) and ``sessions.last_activity`` (what the
-        stall ladder measures).  Returns the new lease expiry so an agent
-        about to run something long can see how much runway it has.
+        Two cheap writes: ``sessions.last_activity`` (the liveness signal
+        every surface reads -- see :mod:`src.agents.liveness`) and the
+        task-scoped ``agents.last_heartbeat`` lease fence.  Returns the new
+        lease expiry so an agent about to run something long can see how
+        much runway it has.
         """
         task_id = args.get("task_id")
         session = None

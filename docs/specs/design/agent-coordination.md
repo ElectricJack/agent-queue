@@ -258,6 +258,27 @@ The scheduler continues to handle:
 - **Fairness** — deficit-based allocation across projects
 - **Assignment mechanics** — lock workspace, launch adapter process
 
+### Agent Liveness Has One Definition
+
+An agent is **live** when it owns a live session (`starting` / `running` /
+`draining`) whose `sessions.last_activity` is inside the session lease TTL.
+That is the only definition; every surface — `aq agent list`, the agents API
+(`live` / `last_activity` on `AgentSummary`), the MCP `agentqueue://agents`
+resources — reads it from `src/agents/liveness.py`, which is also where the
+stall ladder's notion of activity comes from.
+
+`agents.last_heartbeat` is **task-scoped** and is not liveness. Its only
+writers are `aq task heartbeat` (`_cmd_task_heartbeat`) and the transcript
+watcher's in-turn tail, and both require the agent to be holding a task. A
+pool worker parked in `aq task claim --next --wait 60` holds no task, so its
+heartbeat stays at whatever the last task left there: an idle-but-healthy
+worker reads as hours stale, and a reader concludes the fleet is hung when it
+is not. The field remains in the schema because it is load bearing as a
+lease/reservation fence — `reserve_agent` compare-and-sets on it, and the
+agent reconciler uses it as a grace window for a launch that has not attached
+a session yet — but it must be labelled as the task heartbeat wherever it is
+surfaced, never as liveness.
+
 ### What Coordination Playbooks Own: Workflow Structure
 
 Coordination playbooks define **what work exists and how it relates** — they build

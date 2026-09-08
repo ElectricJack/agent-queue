@@ -90,6 +90,15 @@ class AgentSummary(BaseModel):
     #: graph and is counted there, not folded into a launch tally.
     subagents_spawned_total: int = 0
     settings: AgentSettings
+    #: Liveness: the agent's live session's ``last_activity`` (see
+    #: ``src.agents.liveness``).  ``None`` means no live session.
+    last_activity: float | None = None
+    #: ``last_activity`` inside the session lease TTL.  This is the one
+    #: answer to "is this agent alive"; an idle pool worker with a running
+    #: session is live even though it holds no task.
+    live: bool = False
+    #: Task-scoped heartbeat, written only while the agent holds a task.
+    #: Stale by design on an idle pool worker -- never read it as liveness.
     last_heartbeat: float | None = None
     session_tokens_used: int = 0
 

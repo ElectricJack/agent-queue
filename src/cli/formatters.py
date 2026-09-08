@@ -254,7 +254,10 @@ def format_agent_table(agents: list[Any]) -> Table:
     table.add_column("Type", style="dim")
     table.add_column("State", no_wrap=True)
     table.add_column("Current Task", style="bright_cyan")
-    table.add_column("Heartbeat", style="dim")
+    # Liveness is session activity, not ``last_heartbeat`` -- that field only
+    # advances while the agent holds a task, so an idle-but-healthy pool
+    # worker would render as hours stale.  See ``src.agents.liveness``.
+    table.add_column("Activity", style="dim")
     table.add_column("Tokens", justify="right", style="dim")
 
     for agent in agents:
@@ -271,7 +274,7 @@ def format_agent_table(agents: list[Any]) -> Table:
             agent.profile_id,
             state_text,
             agent.current_task_id or "—",
-            _relative_time(agent.last_heartbeat),
+            _relative_time(agent.last_activity),
             tokens,
         )
 
