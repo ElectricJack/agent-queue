@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 from sqlalchemy import event, insert, select, update
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import DBAPIError
 
 from src.database import Database
 from src.database.tables import (
@@ -371,10 +371,10 @@ async def test_waiver_consumption_and_gate_applicability_are_append_only(db):
         integration_legacy_gate_applicability,
     )
     for table in immutable_tables:
-        with pytest.raises(IntegrityError):
+        with pytest.raises(DBAPIError, match="integration control history is immutable"):
             async with db._engine.begin() as conn:
                 await conn.execute(update(table).values(created_at=99.0))
-        with pytest.raises(IntegrityError):
+        with pytest.raises(DBAPIError, match="integration control history is immutable"):
             async with db._engine.begin() as conn:
                 await conn.execute(table.delete())
 

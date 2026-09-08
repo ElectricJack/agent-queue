@@ -55,6 +55,7 @@ def schema_inputs() -> list[Path]:
         database / "tables.py",
         database / "hierarchy_migration.py",
         migrations / "env.py",
+        migrations / "integration_guards.py",
         *sorted((migrations / "versions").glob("*.py")),
     ]
 

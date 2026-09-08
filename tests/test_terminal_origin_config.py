@@ -3,15 +3,14 @@ import yaml
 
 from src.config import ApiAuthConfig, load_config
 from src.config_editor import build_config_schema
-from tests.pg_dsn import create_scratch_database
 
 
 def test_terminal_origins_load_and_are_editable(tmp_path):
     origins = ["http://localhost:5173", "https://dashboard.example", "http://[::1]:5173"]
-    path = await create_scratch_database("mig")
+    path = tmp_path / "config.yaml"
     path.write_text(yaml.safe_dump({
         "discord": {"bot_token": "test-token", "guild_id": "1"},
-        "database_path": str(tmp_path / "state.db"),
+        "database": {"url": "postgresql+asyncpg://test:test@localhost/test"},
         "api_auth": {"trusted_dashboard_origins": origins},
     }))
     config = load_config(str(path))

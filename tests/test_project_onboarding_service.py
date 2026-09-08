@@ -207,7 +207,7 @@ async def onboarding(request, tmp_path: Path):
         data_dir=str(data_dir),
         database=DatabaseConfig(url=lease_dsn("onboarding.db")),
     )
-    database = Database(config.database_path)
+    database = Database(config.database.url)
     await database.initialize()
     service = ProjectOnboardingService(database, config, GitManager())
     yield service, database, config, root, data_dir

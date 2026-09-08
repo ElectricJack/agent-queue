@@ -18,7 +18,6 @@ from src.config import AppConfig, ModelPricing, PricingConfig
 from src.database import Database
 from src.models import Agent, AgentState, Project
 from tests.db_fixtures import lease_dsn
-from tests.pg_dsn import create_scratch_database
 
 
 @pytest.fixture
@@ -465,14 +464,14 @@ class TestConfigWiring:
         return (
             f"data_dir: {d}\n"
             f"workspace_dir: {d}/ws\n"
-            f"database:\n  url: {d}/aq.db\n"
+            "database:\n  url: postgresql+asyncpg://test:test@localhost/test\n"
             "discord:\n  bot_token: t\n  guild_id: '1'\n"
         )
 
     def test_pricing_parsed_from_list_form(self, tmp_path):
         from src.config import load_config
 
-        path = await create_scratch_database("mig")
+        path = tmp_path / "config.yaml"
         path.write_text(
             self._base_yaml(tmp_path.as_posix())
             + "pricing:\n"
@@ -490,7 +489,7 @@ class TestConfigWiring:
     def test_pricing_parsed_from_mapping_form(self, tmp_path):
         from src.config import load_config
 
-        path = await create_scratch_database("mig")
+        path = tmp_path / "config.yaml"
         path.write_text(
             self._base_yaml(tmp_path.as_posix())
             + "pricing:\n  models:\n    - {model: 'gpt-*', input_per_mtok: 2.0}\n",
@@ -502,7 +501,7 @@ class TestConfigWiring:
     def test_security_section_parsed(self, tmp_path):
         from src.config import load_config
 
-        path = await create_scratch_database("mig")
+        path = tmp_path / "config.yaml"
         path.write_text(
             self._base_yaml(tmp_path.as_posix())
             + "security:\n"
@@ -549,7 +548,7 @@ class TestConfigWiring:
         from src.config import load_config
         from src.config_editor import write_section
 
-        path = await create_scratch_database("mig")
+        path = tmp_path / "config.yaml"
         path.write_text(
             self._base_yaml(tmp_path.as_posix())
             + "pricing:\n"

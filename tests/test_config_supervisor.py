@@ -42,7 +42,7 @@ def test_supervisor_global_idle_timeout_from_yaml(tmp_path):
         yaml.safe_dump(
             {
                 "data_dir": str(tmp_path / "data"),
-                "database_path": str(tmp_path / "test.db"),
+                "database": {"url": "postgresql+asyncpg://localhost/aq_test"},
                 "discord": {
                     "bot_token": "test-token-for-validation",
                     "guild_id": "123456789",
@@ -66,7 +66,7 @@ def test_retired_supervisor_sections_still_load(tmp_path):
         yaml.safe_dump(
             {
                 "data_dir": str(tmp_path / "data"),
-                "database_path": str(tmp_path / "test.db"),
+                "database": {"url": "postgresql+asyncpg://localhost/aq_test"},
                 "discord": {
                     "bot_token": "test-token-for-validation",
                     "guild_id": "123456789",

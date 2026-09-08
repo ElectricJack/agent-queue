@@ -27,13 +27,13 @@ import re
 
 import pytest
 from sqlalchemy import insert, select
-from sqlalchemy.dialects import postgresql, sqlite
+from sqlalchemy.dialects import postgresql
 from sqlalchemy.schema import CreateTable
 
 from src.database import Database
 from src.database.tables import metadata, playbook_activations, playbook_artifacts
-from tests.pg_dsn import ensure_worker_postgres_dsn
 from tests.db_fixtures import lease_dsn
+from tests.pg_dsn import ensure_worker_postgres_dsn
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 
@@ -88,17 +88,14 @@ def test_no_string_server_default_carries_its_own_quotes():
     )
 
 
-@pytest.mark.parametrize(
-    "dialect_factory", [sqlite.dialect, postgresql.dialect], ids=["sqlite", "postgresql"]
-)
-def test_emitted_ddl_has_no_doubly_quoted_default(dialect_factory):
+def test_emitted_ddl_has_no_doubly_quoted_default():
     """Compile scan: no ``CREATE TABLE`` names a default that is itself a quoted literal.
 
     Catches the mistake however it is spelled — a raw string, ``sa.text``, or
     a ``DefaultClause`` — because it looks at what the database will actually
     be told.
     """
-    dialect = dialect_factory()
+    dialect = postgresql.dialect()
     offenders: list[str] = []
     for table in metadata.sorted_tables:
         ddl = str(CreateTable(table).compile(dialect=dialect))

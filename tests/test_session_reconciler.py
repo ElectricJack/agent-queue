@@ -1419,7 +1419,7 @@ class TestBackstop:
 
         config.data_dir = str(tmp_path / "data")
         config.workspace_dir = str(tmp_path / "workspaces")
-        config.database_path = str(tmp_path / "unused.db")
+        config.database = DatabaseConfig(url=lease_dsn("unused.db"))
         config.sessions.lease_ttl_seconds = 0
         config.agents_config.stuck_timeout_seconds = 3600
         config.work_graph.blocked_state_authoritative = authoritative

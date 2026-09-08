@@ -19,19 +19,18 @@ from src.doctor.models import DoctorContext, Severity
 from src.doctor.project_checks import project_checks
 from src.doctor import default_registry
 from src.event_bus import EventBus
-from tests.pg_dsn import create_scratch_database
 
 
 def _write_config(tmp_path, roots) -> str:
     workspaces = tmp_path / "workspaces"
     workspaces.mkdir(exist_ok=True)
-    path = await create_scratch_database("mig")
+    path = tmp_path / "config.yaml"
     path.write_text(
         yaml.safe_dump(
             {
                 "messaging_platform": "none",
                 "workspace_dir": str(workspaces),
-                "database_path": str(tmp_path / "aq.db"),
+                "database": {"url": "postgresql+asyncpg://test:test@localhost/test"},
                 "project_roots": roots,
             }
         ),

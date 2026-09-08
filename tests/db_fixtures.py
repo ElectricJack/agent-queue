@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import os
 import re
+import uuid
 
 from src.database.schema_key import schema_key_slug
 from tests.pg_dsn import ensure_worker_postgres_dsn
@@ -90,7 +91,11 @@ async def ensure_template(base_dsn: str) -> str:
     # Fast path: the template almost always already exists, and taking the
     # advisory lock to discover that serialises every worker behind every
     # other worker's clone.  Check first, lock only to build.
-    conn = await _connect_admin(base_dsn)
+    # Advisory locks are database-scoped. Every worker must coordinate through
+    # the same maintenance database, even though its test DSN is worker-local.
+    prefix, _ = _split(base_dsn)
+    maintenance_dsn = f"{prefix}/postgres"
+    conn = await _connect_admin(maintenance_dsn)
     try:
         if await _database_exists(conn, name):
             _TEMPLATE_READY = name
@@ -98,7 +103,7 @@ async def ensure_template(base_dsn: str) -> str:
     finally:
         await conn.close()
 
-    conn = await _connect_admin(base_dsn)
+    conn = await _connect_admin(maintenance_dsn)
     try:
         await conn.execute("SELECT pg_advisory_lock($1)", _TEMPLATE_LOCK_KEY)
         try:
@@ -107,25 +112,9 @@ async def ensure_template(base_dsn: str) -> str:
             building = f"{name}_building"
             await conn.execute(f'DROP DATABASE IF EXISTS "{building}" WITH (FORCE)')
             await conn.execute(f'CREATE DATABASE "{building}"')
-        finally:
-            await conn.execute("SELECT pg_advisory_unlock($1)", _TEMPLATE_LOCK_KEY)
-    finally:
-        await conn.close()
-
-    # Migrate the temporary database with its own engine, then dispose it so
-    # nothing is connected when the rename lands.
-    prefix, _ = _split(base_dsn)
-    await _migrate(f"{prefix}/{name}_building")
-
-    conn = await _connect_admin(base_dsn)
-    try:
-        await conn.execute("SELECT pg_advisory_lock($1)", _TEMPLATE_LOCK_KEY)
-        try:
-            if await _database_exists(conn, name):
-                # Another worker won the race while we were migrating.
-                await conn.execute(f'DROP DATABASE IF EXISTS "{name}_building" WITH (FORCE)')
-                _TEMPLATE_READY = name
-                return name
+            # Hold the lock until publication: releasing it during migration
+            # lets another worker drop the database we are still building.
+            await _migrate(f"{prefix}/{building}")
             await conn.execute(f'ALTER DATABASE "{name}_building" RENAME TO "{name}"')
             await conn.execute(
                 "UPDATE pg_database SET datistemplate = true WHERE datname = $1", name
@@ -280,13 +269,14 @@ class LeasePool:
     def __init__(self, base_dsn: str, worker: str, size: int = POOL_SIZE):
         self._base = base_dsn
         self._worker = _IDENT_RE.sub("_", worker) or "master"
+        self._run_id = uuid.uuid4().hex[:12]
         self._size = size
         self._free: list[str] = []
         self._created: set[str] = set()
         self._next = 0
 
     def _name(self, index: int) -> str:
-        return f"aq_test_{self._worker}_{index}"
+        return f"aq_test_{self._run_id}_{self._worker}_{index}"
 
     async def acquire(self) -> str:
         """Lease a clean database; returns its DSN."""

@@ -230,20 +230,14 @@ def _stamp_legacy_database(sync_connection) -> bool:
     return True
 
 
-def _stamp_alembic_baseline(sync_connection) -> None:
-    """Stamp an existing database at the baseline migration.
-
-    Used for pre-Alembic databases that already have the core schema
-    but no ``alembic_version`` table.  By stamping at the baseline
-    (instead of head), any post-baseline migrations (e.g. new tables
-    like ``task_metadata``) are applied on the subsequent upgrade call.
-    """
-    from alembic import command
-    from alembic.config import Config
-
-    alembic_cfg = Config(str(_ALEMBIC_INI))
-    alembic_cfg.attributes["connection"] = sync_connection
-    command.stamp(alembic_cfg, "311e98c39ffa")
+def _reject_unstamped_legacy_database() -> None:
+    """The squash cannot infer which migrations an unstamped schema needs."""
+    raise RuntimeError(
+        "Existing database has tables but no alembic_version; its migration history "
+        "cannot be verified. Upgrade this database to the pre-squash head "
+        "6ad7aebb8c7c using the previous release first, then retry this release. "
+        "No schema or migration version has been changed."
+    )
 
 
 async def run_schema_setup(engine: AsyncEngine) -> None:
@@ -252,8 +246,8 @@ async def run_schema_setup(engine: AsyncEngine) -> None:
     A database already stamped at this checkout's head returns immediately
     (see :func:`_is_stamped_at_head`); a new database runs the full chain.
     For existing pre-Alembic databases (have tables but no
-    ``alembic_version``), it stamps them at the baseline revision
-    and then runs any newer migrations to bring the schema up to date.
+    ``alembic_version``), it refuses to guess their migration history and
+    directs the operator to upgrade on the previous release first.
 
     Uses ``engine.connect()`` rather than ``engine.begin()`` so that
     Alembic owns transaction boundaries: ``migrations/env.py`` configures
@@ -295,8 +289,10 @@ async def _run_schema_setup_without_cache(engine: AsyncEngine) -> None:
             # can own the per-revision boundaries.
             sync_conn.commit()
 
-            if has_alembic and _stamp_legacy_database(sync_conn):
-                return
+            if has_alembic:
+                # Stamping adopts the squashed baseline, but later repairs
+                # still need to run before this database is at current head.
+                _stamp_legacy_database(sync_conn)
 
             if has_alembic and _is_stamped_at_head(sync_conn):
                 # Already at head: `alembic upgrade head` would be a no-op, but
@@ -307,11 +303,7 @@ async def _run_schema_setup_without_cache(engine: AsyncEngine) -> None:
                 return
 
             if has_data_tables and not has_alembic:
-                # Existing DB from before Alembic — stamp at baseline,
-                # then upgrade so post-baseline migrations are applied.
-                logger.info("Pre-Alembic database detected, stamping at baseline")
-                _stamp_alembic_baseline(sync_conn)
-                _run_alembic_upgrade(sync_conn)
+                _reject_unstamped_legacy_database()
             else:
                 # New DB or already-Alembic DB — run migrations normally
                 _run_alembic_upgrade(sync_conn)

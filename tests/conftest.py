@@ -65,6 +65,14 @@ _PG_POOL_DSNS: list[str] = []
 _PG_BASE_DSN: str | None = _resolve_base_dsn()
 
 
+@pytest.fixture(scope="session", autouse=True)
+async def _dispose_pg_pool():
+    """Remove this run's uniquely named databases after all tests finish."""
+    yield
+    if _PG_POOL is not None:
+        await _PG_POOL.dispose()
+
+
 @pytest.fixture(autouse=True)
 async def _pg_backend():
     """Arm this test's pool of leasable Postgres databases.
@@ -81,8 +89,13 @@ async def _pg_backend():
     if _PG_POOL is None:
         if not _PG_BASE_DSN:
             pytest.fail("POSTGRES_TEST_DSN is not set; the suite needs a PostgreSQL server")
-        _PG_POOL = LeasePool(_PG_BASE_DSN, os.environ.get("PYTEST_XDIST_WORKER", "master"))
-        _PG_POOL_DSNS = [await _PG_POOL.acquire() for _ in range(POOL_SIZE)]
+        pool = LeasePool(_PG_BASE_DSN, os.environ.get("PYTEST_XDIST_WORKER", "master"))
+        try:
+            pool_dsns = [await pool.acquire() for _ in range(POOL_SIZE)]
+        except BaseException:
+            await pool.dispose()
+            raise
+        _PG_POOL, _PG_POOL_DSNS = pool, pool_dsns
 
     db_fixtures.begin_test(_PG_POOL_DSNS)
     try:
@@ -307,7 +320,7 @@ async def internal_plugins_handler(tmp_path: Path):
                 data_dir=str(tmp_path / "data"),
             )
         if db is None:
-            db = Database(config.database_path)
+            db = Database(config.database.url)
             await db.initialize()
             created_dbs.append(db)
         if git is None:

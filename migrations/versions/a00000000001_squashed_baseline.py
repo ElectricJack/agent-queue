@@ -7,9 +7,9 @@ tax: 71 used ``op.batch_alter_table`` (which exists only because SQLite cannot
 about eight seconds per fresh database and made every ``ScriptDirectory``
 build parse 117 files.
 
-The schema this creates is ``src.database.tables.metadata`` verbatim, so it
-stays correct by construction: there is no hand-maintained DDL here to drift
-from the table definitions.
+Tables come from ``src.database.tables.metadata``. PostgreSQL trigger functions
+are preserved separately in ``migrations.integration_guards`` because table
+metadata does not represent their immutability and monotonicity enforcement.
 
 **Existing databases are not asked to replay this.**  A database stamped at
 the pre-squash head is stamped forward to this revision instead — see
@@ -26,15 +26,15 @@ Create Date: 2026-09-07
 from __future__ import annotations
 
 import time
-from typing import Sequence, Union
+from collections.abc import Sequence
 
 import sqlalchemy as sa
 from alembic import op
 
 revision: str = "a00000000001"
-down_revision: Union[str, Sequence[str], None] = None
-branch_labels: Union[str, Sequence[str], None] = None
-depends_on: Union[str, Sequence[str], None] = None
+down_revision: str | Sequence[str] | None = None
+branch_labels: str | Sequence[str] | None = None
+depends_on: str | Sequence[str] | None = None
 
 #: The single head of the pre-squash revision graph.  A database stamped here
 #: already has this exact schema, so it is stamped forward rather than rebuilt.
@@ -42,10 +42,12 @@ LEGACY_HEAD = "6ad7aebb8c7c"
 
 
 def upgrade() -> None:
+    from migrations.integration_guards import install_integration_guards
     from src.database.tables import metadata
 
     bind = op.get_bind()
     metadata.create_all(bind)
+    install_integration_guards(bind)
     _seed_system_workspace_kinds(bind)
 
 
@@ -61,54 +63,54 @@ def _seed_system_workspace_kinds(bind) -> None:
 
     now = time.time()
     rows = [
-        dict(
-            project_id="__system__",
-            id="project-repo",
-            description=(
+        {
+            "project_id": "__system__",
+            "id": "project-repo",
+            "description": (
                 "Default project repository — single writable, "
                 "exclusively-locked clone of the project repo."
             ),
-            writable=True,
-            lockable=True,
-            is_git_repo=True,
-            repo_url=None,
-            default_lock_mode="exclusive",
-            auto_attach=False,
-            created_at=now,
-            updated_at=now,
-        ),
-        dict(
-            project_id="__system__",
-            id="vault",
-            description=(
+            "writable": True,
+            "lockable": True,
+            "is_git_repo": True,
+            "repo_url": None,
+            "default_lock_mode": "exclusive",
+            "auto_attach": False,
+            "created_at": now,
+            "updated_at": now,
+        },
+        {
+            "project_id": "__system__",
+            "id": "vault",
+            "description": (
                 "Project vault — agent memory, notes, knowledge bases. "
                 "Auto-attached to every task; not lockable."
             ),
-            writable=True,
-            lockable=False,
-            is_git_repo=False,
-            repo_url=None,
-            default_lock_mode=None,
-            auto_attach=True,
-            created_at=now,
-            updated_at=now,
-        ),
-        dict(
-            project_id="__system__",
-            id="readonly-dir",
-            description=(
+            "writable": True,
+            "lockable": False,
+            "is_git_repo": False,
+            "repo_url": None,
+            "default_lock_mode": None,
+            "auto_attach": True,
+            "created_at": now,
+            "updated_at": now,
+        },
+        {
+            "project_id": "__system__",
+            "id": "readonly-dir",
+            "description": (
                 "Read-only reference directory — docs, schemas, peer "
                 "projects. Not writable, not lockable."
             ),
-            writable=False,
-            lockable=False,
-            is_git_repo=False,
-            repo_url=None,
-            default_lock_mode=None,
-            auto_attach=False,
-            created_at=now,
-            updated_at=now,
-        ),
+            "writable": False,
+            "lockable": False,
+            "is_git_repo": False,
+            "repo_url": None,
+            "default_lock_mode": None,
+            "auto_attach": False,
+            "created_at": now,
+            "updated_at": now,
+        },
     ]
     existing = {
         (r[0], r[1])
