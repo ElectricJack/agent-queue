@@ -5222,6 +5222,33 @@ _ALL_TOOL_DEFINITIONS = [
             "required": ["project_id"],
         },
     },
+    # provider usage — the Claude quota probe (provider-usage design T4)
+    {
+        "name": "provider_usage_probe",
+        "description": (
+            "Ask a provider's own CLI what is left of the account's limit windows "
+            "and record the reading.  Only ``claude`` is probeable today; Codex "
+            "publishes its rate limits passively on transcript lines and needs no "
+            "probe.  The call is free — a live run reports zero turns and zero "
+            "cost — so it bills none of the quota it reports.  ``outcome`` is "
+            "``probed``, ``unparsed`` (the CLI's wording moved), "
+            "``not_applicable`` (an API-key account has no window), "
+            "``unavailable`` (no CLI on this box) or ``disabled``; all five are "
+            "successes. A timeout is unavailable; a non-zero exit fails and writes nothing, "
+            "so the last good reading survives."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "provider": {
+                    "type": "string",
+                    "enum": ["claude"],
+                    "description": "Provider to probe. Default: claude.",
+                },
+            },
+            "required": [],
+        },
+    },
     {
         "name": "pr_merge",
         "description": (

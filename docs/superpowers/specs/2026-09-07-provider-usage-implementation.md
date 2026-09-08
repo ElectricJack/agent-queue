@@ -11,6 +11,12 @@ names its files, its tests, and what "done" means.
 
 ## Global constraints (apply to every task)
 
+> **Read [Amendments](#amendments--2026-09-07-re-verified-against-the-box-and-the-tree)
+> at the end of this file before starting your section.** They are corrections
+> found by re-running the probe and reading the code these tasks touch, and where
+> one contradicts a section above, the amendment wins. A1–A2 change T3, A3 changes
+> T1/T5/T6/T7, A4 changes T5, A5–A6 change T2/T1, A7–A8 change T4.
+
 - Python 3.12, ruff line-length 100. `ruff check <touched paths>` before close.
 - Commands return `{"success": bool, ...}` and go through `CommandHandler`.
 - Async only — `GitManager`'s `a`-prefixed API, `asyncio.create_subprocess_exec`,
@@ -408,3 +414,190 @@ nodes:
       - "aq test tests/test_provider_doctor.py passes"
     priority: 105
 ```
+
+---
+
+## Amendments — 2026-09-07, re-verified against the box and the tree
+
+Everything above stands. These are corrections found by re-running the probe
+and reading the code the tasks touch; each one would otherwise be discovered
+as a failing test or, worse, as a wrong number on a card. Where an amendment
+contradicts a section above, **the amendment wins**.
+
+### A1 — `/usage` drops `:00` on the hour (affects T3)
+
+The sample in T3 was taken at `3:59pm`. Re-run at 13:33 the same day, the
+same command prints:
+
+```
+You are currently using your subscription to power your Claude Code usage
+
+Current session: 6% used · resets Sep 7, 4pm (America/Los_Angeles)
+Current week (all models): 46% used · resets Sep 9, 3pm (America/Los_Angeles)
+Current week (Fable): 81% used · resets Sep 9, 3pm (America/Los_Angeles)
+```
+
+`4pm`, not `4:00pm`. A reset parser that only accepts `%b %d, %I:%M%p` fails on
+the majority of real readings — weekly windows reset on the hour. Accept both
+`%b %d, %I%p` and `%b %d, %I:%M%p`, case-insensitively for the meridiem. Both
+spellings need a test.
+
+### A2 — the `result` body is full of other percentages (affects T3)
+
+The verified sample above is only the head of `result`. What follows it is:
+
+```
+What's contributing to your limits usage?
+Approximate, based on local sessions on this machine — ...
+
+Last 24h · 2240 requests · 72 sessions
+  64% of your usage was at >150k context
+  32% of your usage came from subagent-heavy sessions
+  Top subagents: fork 14%, general-purpose 6%
+```
+
+Those lines are not limit lines and must contribute nothing. The `^Current `
+anchor plus `re.MULTILINE` is what keeps them out — so put this block in the
+fixture and assert three snapshots, not "a body that happens to contain only
+limit lines". Untested anchoring is the failure mode that puts `64%` on a card.
+
+Also make the `· resets …` tail **optional** in the regex: a limit line without
+a reset clause is a snapshot with `resets_at=None`, not a parse failure. T3
+already says that for an unparseable reset; it must also hold for an absent one.
+
+### A3 — dedup and staleness contradict each other; add `last_seen_at`
+(affects T1, T5, T6, T7)
+
+T1 drops an unchanged reading, T5 computes `stale` from `observed_at`, and T7
+WARNs when the newest probe snapshot is older than 30 minutes. Put together,
+a perfectly healthy Claude week window sitting at 81% for six hours writes no
+row for six hours and is then reported stale by the API, rendered muted by the
+card, and WARNed about by the doctor — while the probe is succeeding every ten
+minutes. That is exactly the "frozen and live look identical" failure the
+design set out to prevent, inverted.
+
+Fix it in T1 with one more column:
+
+| column | type | notes |
+|---|---|---|
+| `last_seen_at` | Float, not null | when this value was last **confirmed** |
+
+- `record_provider_usage` on a duplicate updates that row's `last_seen_at` to
+  `max(last_seen_at, observed_at)` and still returns "no row written".
+- An insert sets `last_seen_at = observed_at`.
+- `observed_at` keeps its meaning — when the value first appeared — so the
+  sparkline series is unchanged.
+- **T5, T6 and T7 compute staleness from `last_seen_at`, never from
+  `observed_at`.**
+
+Two more rules for `record_provider_usage` while it is being written:
+
+- Compare `used_percent` with a tolerance (`abs(a - b) < 1e-9`), not `==` on
+  floats, and treat `None`/`None` resets as equal.
+- Drop an observation older than the newest stored row for its series
+  entirely — write nothing, not even `last_seen_at`. A rewound or replayed
+  transcript must not be able to walk a percentage backwards.
+
+`purge_provider_usage` must keep the newest row of every series regardless of
+age: pruning a card's only value turns a known-but-idle account into "no data".
+
+### A4 — T5 does not use `RESPONSE_MODELS`
+
+`RESPONSE_MODELS` maps **command name → model** for the auto-generated
+CommandHandler endpoints (`src/api/models/__init__.py:get_all_response_models`).
+A hand-written codegen router is not in it: `src/api/models/metrics.py`, the
+closest precedent and the one to copy, has no `RESPONSE_MODELS` at all.
+Register the router in `src/api/app.py` with `include_router` and nothing else.
+
+Also: `packages/aq-ts-client/src/` is gitignored and generated, so "both
+clients committed" means `openapi.json` plus `packages/aq-client/**`. Run
+`./scripts/regenerate-ts-client.sh --from-file` anyway — the dashboard build
+in T6 needs the types.
+
+### A5 — the `token_count` branch returns `None` today without usage
+(affects T2)
+
+`_entry_from_line` currently does:
+
+```python
+usage = _usage_from_token_count(info) if isinstance(info, dict) else None
+if not usage:
+    return None
+```
+
+so a line carrying `rate_limits` but no usable `info` is dropped before
+anything can attach a rate limit to it. T2 step 2 says "attach it to the entry
+the `token_count` branch already returns" — there may not be one. Change the
+gate to `if not usage and not limits: return None` and carry the two
+independently.
+
+The watcher block needs the same treatment, and must **not** be gated on
+`agent_id`: a provider quota is an account fact, not an agent fact, and the
+existing code skips `_record_usage` entirely when the agent cannot be
+resolved.
+
+```python
+if entry.type == "assistant" and (entry.usage or entry.rate_limits):
+    if entry.uuid in state.charged_uuids:
+        continue
+    if entry.usage and agent_id:
+        await self._record_usage(row, entry, agent_id=agent_id)
+    if entry.rate_limits:
+        await self._record_provider_rate_limits(row, entry)
+    state.charged_uuids.add(entry.uuid)
+    state.last_charged_uuid = entry.uuid
+```
+
+Idempotency is sound as specified: the codex reader's uuid is
+`f"{stem}:{line_start}"`, a byte offset, so a replayed line yields the same
+uuid and `charged_uuids` rejects it. Wrap the write in `try/except Exception`
+with a `logger.debug`, exactly like `_record_usage` — a malformed
+`rate_limits` block must never abort a watcher tick.
+
+Codex's `resets_at` is an absolute epoch in the observed payload. Accept
+`resets_in_seconds` as a fallback (`observed_at + value`) and `None` when
+neither is present.
+
+### A6 — `window` is a reserved word in PostgreSQL (affects T1)
+
+SQLAlchemy quotes it in both the DDL and every generated statement, so the
+column name is safe as specified. Add one PostgreSQL test that inserts and
+reads a row so a future hand-written SQL string cannot regress it silently.
+
+### A7 — T4 must persist the probe's own health for T7
+
+T7 WARNs when "the last probe returned `unparsed`", which nothing in T4
+currently records: a failed probe writes no snapshot, so the doctor cannot
+tell "the wording moved" from "nobody has probed lately". T4 must write a
+`system_config` row under `providers.claude_usage.last_probe`:
+
+```json
+{"ok": false, "unparsed": true, "not_applicable": false,
+ "error": null, "ts": 1789135776.0, "recorded": 0}
+```
+
+on **every** probe, success or failure. T7 reads exactly that key. Follow
+`_DAEMON_STARTS_KEY` in `src/database/queries/metrics_queries.py` for the
+`system_config` read/write idiom.
+
+Give the probe's staleness horizon a config field —
+`providers.claude.stale_after_seconds`, default 1500 (twice the playbook's
+ten-minute cadence plus slack) — and have T5, T6 and T7 all read that one
+number, plus a separate `providers.codex_stale_after_seconds` (default 4h,
+since Codex only advances while a Codex session is live). Three
+independently hard-coded horizons would eventually disagree about what the
+same card means.
+
+### A8 — T4 contract details
+
+`EffectSubject` has no member that fits; add `PROVIDER_USAGE = "provider_usage"`
+to `src/commands/contracts/models.py` and use
+`CreateClause(subject=EffectSubject.PROVIDER_USAGE)`. A `PRESENTATIONS` entry
+is mandatory, not optional — `test_presentation_labels_name_real_fields`
+requires every `arg_labels`/`result_labels` key to name a real model field and
+every `subject_labels` key to name a subject the command's own clauses use.
+
+Make `unavailable` (the `claude` binary is missing or timed out) a **success**
+outcome alongside `probed` and `unparsed`. A box without the CLI is a fact
+about the box, not a broken playbook step, and a failing step every ten
+minutes would fill the run overlay with noise the operator cannot act on.

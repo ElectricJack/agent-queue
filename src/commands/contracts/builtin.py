@@ -356,6 +356,26 @@ class CiBaselineStatusValue(CommandValue):
     escalation_question: str | None = None
 
 
+class ProviderUsageProbeArgs(CommandArgs):
+    """``provider_usage_probe`` as a playbook step.
+
+    ``provider`` is optional because there is exactly one probeable provider
+    today; naming it in the shipped playbook keeps the step readable and
+    keeps a second provider from silently inheriting the first one's timer.
+    """
+
+    provider: str | None = None
+
+
+class ProviderUsageProbeValue(CommandValue):
+    outcome: str
+    provider: str
+    recorded: int = 0
+    unparsed: bool = False
+    snapshots: list[Any] = []
+    detail: str | None = None
+
+
 class MessageSendArgs(CommandArgs):
     """``message_send`` as a playbook step: queue one message on the substrate.
 
@@ -438,6 +458,9 @@ def _outcome_of(name: str, raw: dict[str, Any]) -> str:
             # missing task still does (``rejected``).
             return "not_running"
         return "rejected"
+    if name == "provider_usage_probe":
+        outcome = str(raw.get("outcome") or "")
+        return outcome if outcome in _PROBE_OUTCOMES else "rejected"
     if name == "ci_baseline_status":
         state = str(raw.get("state") or "unknown")
         if state == "red" and raw.get("escalated"):
@@ -486,7 +509,13 @@ def _adapter(name: str, value_type: type[CommandValue]):
             with principal_context(ctx):
                 raw = await _handler().execute(name, args.model_dump(exclude_none=True))
         outcome = _outcome_of(name, raw)
-        if outcome in {"rejected", "refused_routing_gate", "already_linked", "not_running"}:
+        if name == "provider_usage_probe" and outcome == "rejected":
+            value = value_type(
+                outcome=outcome,
+                provider=str(raw.get("provider") or getattr(args, "provider", None) or "claude"),
+                detail=raw.get("error"),
+            )
+        elif outcome in {"rejected", "refused_routing_gate", "already_linked", "not_running"}:
             value = value_type.model_construct()
         else:
             try:
@@ -505,6 +534,13 @@ def _adapter(name: str, value_type: type[CommandValue]):
 
 
 _ROUTE_OPTION_OUTCOMES = frozenset({"already_routed", "explicit", "undecided", "no_options"})
+#: Every outcome ``provider_usage_probe`` reports as a success.  A box
+#: without the CLI, an API-key account and a disabled probe are all facts
+#: about the install, not broken steps: a failing step every ten minutes
+#: would fill the run overlay with noise no operator can act on.
+_PROBE_OUTCOMES = frozenset(
+    {"probed", "unparsed", "not_applicable", "unavailable", "disabled"}
+)
 
 
 def _outcomes(*successes: str) -> tuple[OutcomeSpec, ...]:
@@ -795,6 +831,31 @@ PRESENTATIONS: dict[str, CommandPresentation] = {
         },
         subject_labels={},
     ),
+    "provider_usage_probe": CommandPresentation(
+        title="Probe a provider's remaining quota",
+        summary=(
+            "Ask a provider's own CLI what is left of the account's limit windows "
+            "and record the reading. Free to run and never billed against the quota "
+            "it reports."
+        ),
+        arg_labels={"provider": "Provider"},
+        outcome_labels={
+            "probed": "Probed",
+            "unparsed": "Output did not parse",
+            "not_applicable": "No subscription window",
+            "unavailable": "CLI not installed",
+            "disabled": "Probe disabled",
+            "rejected": "Rejected",
+        },
+        result_labels={
+            "outcome": "Outcome",
+            "provider": "Provider",
+            "recorded": "Snapshots written",
+            "unparsed": "Output did not parse",
+            "snapshots": "Readings",
+        },
+        subject_labels={"provider_usage": "the provider's recorded quota readings"},
+    ),
     "message_send": CommandPresentation(
         title="Send a message",
         summary="Queue one message to a session, task, profile, or user; delivery is asynchronous.",
@@ -1059,6 +1120,23 @@ def register_builtin_contracts(registry: ContractRegistry) -> None:
             SideEffectClass.READ,
             (),
             IdempotencySpec(mode="natural"),
+            True,
+        ),
+        (
+            "provider_usage_probe",
+            ProviderUsageProbeArgs,
+            ProviderUsageProbeValue,
+            (
+                OutcomeSpec(name="probed", classification=OutcomeClass.SUCCESS),
+                OutcomeSpec(name="unparsed", classification=OutcomeClass.SUCCESS),
+                OutcomeSpec(name="not_applicable", classification=OutcomeClass.SUCCESS),
+                OutcomeSpec(name="unavailable", classification=OutcomeClass.SUCCESS),
+                OutcomeSpec(name="disabled", classification=OutcomeClass.SUCCESS),
+                OutcomeSpec(name="rejected", classification=OutcomeClass.FAILURE),
+            ),
+            SideEffectClass.CREATE,
+            (CreateClause(subject=EffectSubject.PROVIDER_USAGE),),
+            IdempotencySpec(mode="none"),
             True,
         ),
         (

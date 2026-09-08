@@ -80,6 +80,7 @@ from src.commands.ops_commands import OpsCommandsMixin
 from src.commands.worktree_commands import WorktreeCommandsMixin
 from src.commands.git_commands import GitCommandsMixin
 from src.commands.ci_commands import CiCommandsMixin
+from src.commands.provider_commands import ProviderCommandsMixin
 
 # -- dv2 phase 6 mixins ---------------------------------------------------
 from src.commands.proposal_commands import TaskProposalCommandsMixin
@@ -355,6 +356,7 @@ class CommandHandler(
     # -- dv2 phase 2 mixins -----------------------------------------------
     GitCommandsMixin,
     CiCommandsMixin,
+    ProviderCommandsMixin,
     # -- dv2 phase 6 mixins -----------------------------------------------
     TaskProposalCommandsMixin,
     SpecCommandsMixin,

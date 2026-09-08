@@ -308,6 +308,7 @@ class TestVaultInstallation:
             "default-pipeline.md",
             "hierarchical-delivery.md",
             "memory-consolidation.md",
+            "provider-usage-probe.md",
             "root-integration-train.md",
         }
         installed = set(result["created"])

@@ -81,6 +81,7 @@ class TestRegistry:
         from src.doctor.pool_checks import pool_checks
         from src.doctor.profile_checks import profile_checks
         from src.doctor.project_checks import project_checks
+        from src.doctor.provider_checks import provider_checks
         from src.doctor.resource_checks import resource_checks
         from src.doctor.session_checks import session_checks
         from src.doctor.task_checks import task_checks
@@ -103,6 +104,7 @@ class TestRegistry:
             | {c.id for c in db_checks()}
             | {c.id for c in playbook_v2_checks()}
             | {c.id for c in project_checks()}
+            | {c.id for c in provider_checks()}
             | {c.id for c in session_checks()}
         )
         assert set(reg.ids()) == expected
