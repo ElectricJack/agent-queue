@@ -778,6 +778,11 @@ _CANONICAL_PAYLOADS["pool.lifecycle_changed"] = {
     "profile_id": "worker",
     "lifecycle": "pool",
 }
+_CANONICAL_PAYLOADS["pool.enabled_changed"] = {
+    "project_id": "proj-1",
+    "profile_id": "worker",
+    "enabled": False,
+}
 _CANONICAL_PAYLOADS["formula.cooked"] = {
     "container_id": "t-1",
     "project_id": "proj-1",

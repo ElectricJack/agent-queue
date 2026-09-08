@@ -80,8 +80,16 @@ beforeEach(() => {
   rollup = null;
   api.getAgent.mockImplementation(async ({ body }: { body: { agent_id: string } }) => ({ data: roster.find((a) => a.id === body.agent_id) }));
   api.editAgent.mockImplementation(async ({ body }: { body: Record<string, unknown> }) => {
+    // ``edit_agent`` applies only the fields it was given: the settings form
+    // sends the whole definition, the flock's enable/disable switch sends one
+    // boolean, and the row it returns carries the new state either way.
     roster = roster.map((row) => row.id === body.agent_id
-      ? { ...row, name: body.name as string, settings: { ...row.settings, ...body } }
+      ? {
+          ...row,
+          ...("name" in body ? { name: body.name as string } : {}),
+          ...("enabled" in body ? { enabled: body.enabled as boolean } : {}),
+          settings: { ...row.settings, ...body },
+        }
       : row);
     return { data: roster.find((row) => row.id === body.agent_id) };
   });
@@ -350,6 +358,47 @@ describe("Tiled agent workspace", () => {
     expect(within(window).getByRole("tab", { name: "Settings" })).toHaveAttribute("aria-selected", "true");
     fireEvent.click(within(window).getByRole("tab", { name: "Terminal" }));
     expect(TerminalSocketMock.instances.filter((source) => !source.closed)).toHaveLength(1);
+  });
+
+  it("disables a non-pooled agent from its flock row and shows what stays running", async () => {
+    renderFlock("/");
+    fireEvent.click(await screen.findByRole("switch", { name: "Disable Builder" }));
+
+    await waitFor(() => expect(api.editAgent).toHaveBeenCalledWith({
+      body: { agent_id: "b", enabled: false }, throwOnError: true,
+    }));
+    // The row keeps its place in the flock so it can be switched back on, and
+    // says what disabling does and does not stop.
+    expect(await screen.findByRole("switch", { name: "Enable Builder" })).toBeInTheDocument();
+    expect(screen.getByText(/no new task is assigned/i)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Open Builder" })).toBeInTheDocument();
+  });
+
+  it("re-enables a disabled agent from the same control", async () => {
+    roster[1] = { ...roster[1]!, enabled: false, state: "paused" };
+    renderFlock("/");
+    fireEvent.click(await screen.findByRole("switch", { name: "Enable Builder" }));
+
+    await waitFor(() => expect(api.editAgent).toHaveBeenCalledWith({
+      body: { agent_id: "b", enabled: true }, throwOnError: true,
+    }));
+  });
+
+  it("restores the shown state and reports the error when an agent update fails", async () => {
+    api.editAgent.mockRejectedValueOnce(new Error("Agent settings are read-only for this caller"));
+    renderFlock("/");
+    fireEvent.click(await screen.findByRole("switch", { name: "Disable Builder" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(/read-only/);
+    // Nothing was persisted, so the switch goes back to what the daemon says.
+    expect(screen.getByRole("switch", { name: "Disable Builder" })).toHaveAttribute("aria-checked", "true");
+  });
+
+  it("keeps the toggle out of the row's own click target", async () => {
+    renderFlock("/");
+    fireEvent.click(await screen.findByRole("switch", { name: "Disable Builder" }));
+    await waitFor(() => expect(api.editAgent).toHaveBeenCalled());
+    expect(screen.getByLabelText("Current location")).toHaveTextContent("/");
   });
 
   it("saves only individual configured overrides and refreshes the roster", async () => {

@@ -269,6 +269,7 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "pool_status": "pool",
     "pool_scale": "pool",
     "pool_set_lifecycle": "pool",
+    "pool_set_enabled": "pool",
     # NOTE: send_message, reply_to_user are intentionally NOT categorized —
     # they are "core" tools always available to the supervisor LLM.
     # NOTE: browse_tools / load_tools are intentionally NOT categorized —
@@ -5594,6 +5595,34 @@ _ALL_TOOL_DEFINITIONS = [
                 },
             },
             "required": ["profile_id"],
+        },
+    },
+    {
+        "name": "pool_set_enabled",
+        "description": (
+            "Turn a pool profile on or off on the system profile (it applies to every "
+            "project). A disabled pool keeps its definition and its pool_status row but "
+            "is handed no new work: idle workers drain, a worker mid-task finishes the "
+            "task it holds, and task_claim answers drain_requested. Backs "
+            "`aq pool set-enabled`."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "project_id": {
+                    "type": "string",
+                    "description": (
+                        "Deprecated and ignored — the switch is global. Accepted for one "
+                        "release so existing scripts keep working."
+                    ),
+                },
+                "profile_id": {"type": "string", "description": "Pool profile (agent-type) ID."},
+                "enabled": {
+                    "type": "boolean",
+                    "description": "True to accept new work, false to drain and stop claiming.",
+                },
+            },
+            "required": ["profile_id", "enabled"],
         },
     },
     {
