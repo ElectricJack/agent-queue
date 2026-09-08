@@ -68,6 +68,41 @@ CLAIM_PREPARATION_METADATA_KEYS = (
     PREPARE_BACKOFF_ATTEMPTS_KEY,
 )
 
+#: Matches exactly what PostgreSQL's ``double precision`` input accepts here:
+#: an optional sign, digits, and an optional fractional part.  Deliberately
+#: narrower than ``float8`` (no exponents, no ``NaN``/``Infinity``) because
+#: every writer of a numeric metadata value writes a plain timestamp.
+_NUMERIC_TEXT = r"^-?[0-9]+(\.[0-9]+)?$"
+
+
+def numeric_meta_value(column, *, default: str = "0"):
+    """``column`` cast to ``Float``, with non-numeric text read as *default*.
+
+    ``task_metadata.value`` is free-form JSON text: ``json.dumps`` writes a
+    bare ``0`` for the number and ``"0"`` -- quotes included -- for the
+    string, and nothing in the schema stops a caller storing either.  A bare
+    ``cast(value, Float)`` therefore raises
+    ``invalid input syntax for type double precision`` on the *whole
+    statement* the moment one malformed row is scanned.
+
+    That is not a hypothetical.  On 2026-09-07 two rows holding ``"0"`` made
+    every ``select_ready_for_profile`` call in one project raise for ~18
+    hours: no pool worker could claim anything, and because the failure was
+    a database error rather than an empty result, the queue looked idle
+    rather than broken.
+
+    The ``CASE`` is what makes this safe rather than merely likely to work:
+    PostgreSQL does not guarantee evaluation order between a regex guard and
+    a cast sitting in the same ``AND``, so the guard has to be *inside* the
+    expression being cast.  A malformed row then reads as *default* -- for a
+    backoff deadline, "expired", which fails open to claimable rather than
+    silently withholding work.
+    """
+    return cast(
+        case((column.op("~")(_NUMERIC_TEXT), column), else_=literal(default)),
+        Float,
+    )
+
 
 class ClaimQueryMixin:
     """Expects ``self._engine`` plus Task/Session/Workspace/Hierarchy mixins.
@@ -192,7 +227,7 @@ class ClaimQueryMixin:
             select(literal(1)).where(
                 task_metadata.c.task_id == tasks.c.id,
                 task_metadata.c.key == PREPARE_BACKOFF_UNTIL_KEY,
-                cast(task_metadata.c.value, Float) > time.time(),
+                numeric_meta_value(task_metadata.c.value) > time.time(),
             )
         )
         stmt = (

@@ -12,7 +12,7 @@ import pytest
 from src.commands.handler import CommandHandler
 from src.config import DatabaseConfig, AppConfig, DiscordConfig
 from src.database import Database
-from src.database.tables import task_branch_origins
+from src.database.tables import task_branch_origins, task_metadata
 from src.intelligence_classes import IntelligenceClass
 from src.integration.models import BranchKey
 from src.integration.ownership import BranchOwnership
@@ -416,6 +416,52 @@ class TestClaim:
         assert (data["task_id"], data["claim_epoch"], data["session_id"]) == ("t1", 1, sid)
         assert (await db.get_session(sid)).claim_phase == "active"
         assert "task.claimed" in emitted(handler) and "task.started" in emitted(handler)
+
+    @pytest.mark.parametrize("bad_value", ['"0"', '"1788823522.8"', '""', "null", "not-a-number"])
+    async def test_malformed_backoff_metadata_does_not_break_the_work_query(
+        self, handler, db, tmp_path, bad_value
+    ):
+        """One unparseable backoff value must not take the whole project down.
+
+        ``task_metadata.value`` is free-form JSON text, so a caller that
+        stores the *string* ``"0"`` where the number ``0`` was meant leaves a
+        row that ``cast(value, Float)`` cannot read.  The cast sits in a
+        correlated EXISTS over every candidate task, so before
+        :func:`numeric_meta_value` that single row raised
+        ``invalid input syntax for type double precision`` for the entire
+        statement -- every claim in the project failed for ~18 hours on
+        2026-09-07 while the queue reported no ready work.
+
+        A malformed deadline reads as expired: failing open to claimable is
+        right for a value whose only job is to *withhold* a task briefly.
+        """
+        await mktask(db, "t1", profile_id="worker")
+        async with db.immediate() as conn:
+            await conn.execute(
+                task_metadata.insert().values(
+                    task_id="t1", key="claim_prepare_backoff_until", value=bad_value
+                )
+            )
+        sid, _wd = await pool_session(db, tmp_path)
+        res = await scoped(handler, sid)._cmd_task_claim({"next": True})
+        assert res["result"] == "claimed"
+        assert res["task"]["id"] == "t1"
+
+    async def test_a_well_formed_backoff_deadline_still_withholds_the_task(
+        self, handler, db, tmp_path
+    ):
+        """The guard must not defeat the backoff it is guarding.
+
+        Companion to the test above: reading a malformed value as expired is
+        only safe if a *valid* future deadline is still honoured, otherwise
+        the fix would have quietly removed the hot-loop protection that
+        ``prepare_failed`` relies on.
+        """
+        await mktask(db, "t1", profile_id="worker")
+        await db.set_task_meta("t1", "claim_prepare_backoff_until", time.time() + 300)
+        sid, _wd = await pool_session(db, tmp_path)
+        res = await scoped(handler, sid)._cmd_task_claim({"next": True})
+        assert res["result"] == "no_ready_work"
 
     @pytest.mark.parametrize("live_class,live_model", [
         ("fast-low", "gpt-5.6-luna"),
