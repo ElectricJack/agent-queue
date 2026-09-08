@@ -5234,7 +5234,7 @@ _ALL_TOOL_DEFINITIONS = [
             "``probed``, ``unparsed`` (the CLI's wording moved), "
             "``not_applicable`` (an API-key account has no window), "
             "``unavailable`` (no CLI on this box) or ``disabled``; all five are "
-            "successes.  A timeout or a non-zero exit fails and writes nothing, "
+            "successes. A timeout is unavailable; a non-zero exit fails and writes nothing, "
             "so the last good reading survives."
         ),
         "input_schema": {

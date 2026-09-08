@@ -124,6 +124,7 @@ class ProviderCommandsMixin:
             "unparsed": bool(payload.get("unparsed")),
             "not_applicable": payload.get("outcome") == NOT_APPLICABLE,
             "error": payload.get("error"),
+            "detail": payload.get("detail"),
             "recorded": int(payload.get("recorded") or 0),
             "ts": time.time(),
         }

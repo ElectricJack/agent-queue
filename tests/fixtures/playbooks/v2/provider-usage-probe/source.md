@@ -43,9 +43,9 @@ There is no guard beyond the trigger. The rule performs one step and then ends.
 
 The rule has no retry: the next tick is ten minutes away and is a better
 retry than any the run could schedule. A failed step ends the run with a
-`failed` terminal so the run overlay shows what broke — a timeout, a non-zero
+`failed` terminal so the run overlay shows what broke — a non-zero
 exit, a body that was not the JSON envelope we asked for — and the next tick
-starts a fresh run.
+starts a fresh run. A timeout reports `unavailable` successfully, like a missing CLI.
 
 Nothing about a failure touches stored state. The last good snapshot survives
 every failure mode, and the API and the dashboard card label it stale from

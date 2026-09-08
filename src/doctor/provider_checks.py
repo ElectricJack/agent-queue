@@ -240,7 +240,7 @@ async def _check_claude_usage(ctx: DoctorContext) -> CheckResult:
     if outcome in _BENIGN_OUTCOMES:
         detail = str(health.get("detail") or "").strip()
         explain = {
-            "unavailable": "the claude CLI is not installed on this box",
+            "unavailable": "the claude CLI is unavailable on this box",
             "not_applicable": "this account has no subscription window to report",
         }[outcome]
         return CheckResult(

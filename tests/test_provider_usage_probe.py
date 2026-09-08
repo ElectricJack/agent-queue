@@ -179,6 +179,8 @@ async def test_a_timeout_is_unavailable_and_writes_nothing(handler, spawned, mon
     assert result["success"] is True
     assert result["outcome"] == probe_module.UNAVAILABLE
     assert "did not answer" in result["detail"]
+    health = await handler.db.read_probe_health("claude")
+    assert health["detail"] == result["detail"]
     assert await _snapshot_rows(handler) == []
     assert hung.killed, "an abandoned probe must be reaped, not left a zombie"
 

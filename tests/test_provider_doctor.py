@@ -331,7 +331,7 @@ async def test_a_box_without_the_cli_is_info(db):
     finding = await _run(db, _config())
 
     assert finding.severity is Severity.INFO
-    assert "not installed" in finding.detail
+    assert finding.data["outcome"] == "unavailable"
 
 
 async def test_an_api_key_account_is_info(db):
