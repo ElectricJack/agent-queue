@@ -557,6 +557,7 @@ class CIService:
                 integration_batches.c.lifecycle.in_(("testing", "repairing")),
             )
             .values(
+                lifecycle="testing",
                 tested_candidate_sha=subject.candidate_sha,
                 ci_evidence_id=aggregate_id,
                 updated_at=self.clock(),
