@@ -288,9 +288,8 @@ class TestClaimStatementBudgets:
     async def test_release_claim_statement_budget(self, any_db, tmp_path):
         """``release_claim`` on an active claim.
 
-        **Measured on SQLite with the ownership handoff guard: 11** (was 17) —
-        BEGIN, the session read, the attached/pending ownership read,
-        ``_apply_transition``'s pre-read, the
+        **Measured on SQLite after the task-11 trim: 10** (was 17) —
+        BEGIN, the session read, ``_apply_transition``'s pre-read, the
         status ``UPDATE … RETURNING`` (which also carries back the
         ``claim_epoch`` that used to be a separate read), the merged
         ``task.ready`` frontier ``INSERT … SELECT … RETURNING``, the
@@ -316,7 +315,7 @@ class TestClaimStatementBudgets:
                 sid, task_status=TaskStatus.READY, context="perf", now=time.time()
             )
         dialect = any_db._engine.dialect.name
-        budget = 11 if dialect == "sqlite" else 9
+        budget = 10 if dialect == "sqlite" else 9
         print(f"\nrelease_claim ({dialect}): {c['n']} statements (budget {budget})")
         assert c["n"] <= budget, f"{c['n']} statements > budget {budget}"
 
