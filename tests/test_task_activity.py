@@ -10,9 +10,10 @@ import pytest
 from sqlalchemy import insert, update
 
 from src.commands.task_commands import TaskCommandsMixin
-from src.database.adapters.sqlite import SQLiteDatabaseAdapter
+from src.database import Database
 from src.database.tables import archived_tasks, task_session_attempts, tasks
 from src.models import Project, Task, TaskCompletion
+from tests.db_fixtures import lease_dsn
 
 NOW = 1_000_000.0
 DAY = 24 * 3600.0
@@ -21,7 +22,7 @@ SINCE = NOW - DAY
 
 @pytest.fixture
 async def db(tmp_path):
-    database = SQLiteDatabaseAdapter(str(tmp_path / "activity.db"))
+    database = Database(lease_dsn("activity.db"))
     await database.initialize()
     await database.create_project(Project(id="p", name="Project"))
     await database.create_project(Project(id="other", name="Other"))
