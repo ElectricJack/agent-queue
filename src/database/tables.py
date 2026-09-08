@@ -1627,6 +1627,61 @@ metrics_samples = Table(
     Index("idx_metrics_samples_res_ts", "resolution", "bucket_ts"),
 )
 
+# ---------------------------------------------------------------------------
+# Provider quota snapshots.
+#
+# Append-only rather than latest-value: the question worth asking a week in is
+# "how fast are we burning the window", which needs the series.  Deliberately
+# not a ``metrics_samples`` series -- those are rates sampled once a second,
+# this is a gauge with a reset clock arriving irregularly from two unrelated
+# mechanisms (a Codex transcript line, a Claude probe).
+# ---------------------------------------------------------------------------
+
+provider_usage_snapshots = Table(
+    "provider_usage_snapshots",
+    metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    # "codex" | "claude".  Left unconstrained: a third provider must not need
+    # a migration before its first snapshot can land.
+    Column("provider", Text, nullable=False),
+    # Plan or limit id as the provider reports it ("pro", "codex").  Never our
+    # own account identity -- neither source names which account it measured.
+    Column("account_label", Text, nullable=False, server_default=""),
+    # "session" | "week" (Claude) or "primary" | "secondary" (Codex).
+    Column("window", Text, nullable=False),
+    # The parenthesised scope a plan reports ("all models", "Fable"), verbatim
+    # and never matched against a hard-coded model list; "" where there is none.
+    Column("scope", Text, nullable=False, server_default=""),
+    Column("used_percent", Float, nullable=False),
+    # Epoch of the window's reset, nullable: a percentage without a clock still
+    # beats no reading at all.
+    Column("resets_at", Float, nullable=True),
+    # When this value *first* appeared.  Never moves once written, so the
+    # series a sparkline draws is the history of the number, not of the reads.
+    Column("observed_at", Float, nullable=False),
+    # When this value was last *confirmed*.  A duplicate reading writes no row
+    # but does push this forward, which is what separates "the quota has not
+    # moved in six hours" from "we have not heard from the probe in six hours".
+    # Staleness is computed from here, never from observed_at.
+    Column("last_seen_at", Float, nullable=False),
+    Column("source", Text, nullable=False),
+    CheckConstraint(
+        "source IN ('transcript','probe')",
+        name="ck_provider_usage_snapshots_source",
+    ),
+)
+
+# Every read is "newest in this series", so the series key leads and the clock
+# trails it, descending.  Declared out of the Table() body because a DESC term
+# needs the Column object, which does not exist until the table does.
+Index(
+    "idx_provider_usage_snapshots_series",
+    provider_usage_snapshots.c.provider,
+    provider_usage_snapshots.c.window,
+    provider_usage_snapshots.c.scope,
+    provider_usage_snapshots.c.observed_at.desc(),
+)
+
 message_discord_receipts = Table(
     "message_discord_receipts",
     metadata,

@@ -1394,3 +1394,28 @@ class SessionRecord:
     #: insert, because it is a property of the argv this process was
     #: started with, not of whatever the harness file says today.
     hooks_provisioned: bool = False
+
+
+@dataclass
+class ProviderUsageSnapshot:
+    """One observation of one provider limit window.
+
+    ``(provider, window, scope)`` is the series key; everything else is the
+    reading.  The two sources are deliberately indistinguishable past this
+    point — a Codex ``rate_limits`` block off a transcript line and a parsed
+    ``claude -p "/usage"`` body both arrive here and nothing downstream
+    branches on which produced it, except ``source`` for staleness budgets.
+
+    ``scope`` is whatever the plan reported ("all models", "Fable") and is
+    never matched against a model list: a plan naming something we have never
+    seen must round-trip untouched.
+    """
+
+    provider: str
+    window: str
+    used_percent: float
+    observed_at: float
+    source: str
+    account_label: str = ""
+    scope: str = ""
+    resets_at: float | None = None
