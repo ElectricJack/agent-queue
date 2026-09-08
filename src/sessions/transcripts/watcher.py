@@ -43,6 +43,7 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from src.providers.snapshot import ProviderUsageSnapshot
 from src.sessions.transcripts import resolve_reader
 from src.sessions.transcripts.base import TranscriptEntry
 
@@ -199,13 +200,20 @@ class TranscriptWatcher:
 
         for entry in entries:
             await self._emit_entry(row, entry)
-            if entry.type == "assistant" and entry.usage:
-                if entry.uuid in state.charged_uuids:
-                    continue
-                if agent_id:
-                    await self._record_usage(row, entry, agent_id=agent_id)
-                state.charged_uuids.add(entry.uuid)
-                state.last_charged_uuid = entry.uuid
+            if entry.type != "assistant" or not (entry.usage or entry.rate_limits):
+                continue
+            if entry.uuid in state.charged_uuids:
+                continue
+            if entry.usage and agent_id:
+                await self._record_usage(row, entry, agent_id=agent_id)
+            if entry.rate_limits:
+                # Deliberately not gated on ``agent_id``: a provider quota is
+                # an account-wide fact, not this agent's spend, and dropping
+                # it because the session's agent row went missing would lose
+                # the only reading the fleet gets until the next Codex turn.
+                await self._record_provider_usage(entry)
+            state.charged_uuids.add(entry.uuid)
+            state.last_charged_uuid = entry.uuid
 
         # Before the activity write: the mark is what stops a relaunch from
         # replaying this batch, and it is worth more than a heartbeat.
@@ -305,7 +313,9 @@ class TranscriptWatcher:
         historical_usage = [
             entry
             for entry in fresh
-            if entry.type == "assistant" and entry.usage and entry.ts < daemon_cutoff
+            if entry.type == "assistant"
+            and (entry.usage or entry.rate_limits)
+            and entry.ts < daemon_cutoff
         ]
         if len(historical_usage) <= self._startup_replay_limit:
             return fresh
@@ -470,6 +480,48 @@ class TranscriptWatcher:
                 "transcript watcher: record_token_usage failed for %s",
                 row.id,
                 exc_info=True,
+            )
+
+    async def _record_provider_usage(self, entry: TranscriptEntry) -> None:
+        """Store the quota reading a ``token_count`` line carried.
+
+        ``observed_at`` is the transcript line's own timestamp, never the
+        wall clock: a tick that catches up on a minute of backlog must not
+        stamp an old reading as current, because staleness downstream is the
+        whole point of storing the time at all.
+
+        Deduplication is the store's job — an unchanged reading only pushes
+        ``last_seen_at`` forward — so this writes unconditionally and lets
+        :meth:`record_provider_usage` decide.  The snapshot type is the
+        storage-facing :class:`src.providers.snapshot.ProviderUsageSnapshot`, which is
+        what that method's own normaliser is written against.  Failures are logged and
+        swallowed for the same reason usage failures are: a transcript
+        ingest must not die over a metrics row.
+        """
+        try:
+            block = entry.rate_limits or {}
+            windows = block.get("windows") or []
+            if not windows:
+                return
+            observed_at = entry.ts or time.time()
+            account_label = str(block.get("account_label") or "")
+            snapshots = [
+                ProviderUsageSnapshot(
+                    provider="codex",
+                    window=str(window["window"]),
+                    used_percent=float(window["used_percent"]),
+                    observed_at=observed_at,
+                    source="transcript",
+                    scope="",
+                    account_label=account_label,
+                    resets_at=window.get("resets_at"),
+                )
+                for window in windows
+            ]
+            await self.db.record_provider_usage(snapshots)
+        except Exception:
+            logger.debug(
+                "transcript watcher: record_provider_usage failed", exc_info=True
             )
 
     async def _on_in_turn(self, row, *, now: float | None) -> None:
