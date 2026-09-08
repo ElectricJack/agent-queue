@@ -111,6 +111,23 @@ async def _pg_backend():
 
 
 @pytest.fixture
+def unpooled_postgres(monkeypatch):
+    """TestClient runs on another loop; asyncpg connections cannot cross loops."""
+    from sqlalchemy.pool import NullPool
+    from src.database import engine
+
+    create_engine = engine.create_async_engine
+
+    def create_unpooled_engine(*args, **kwargs):
+        for option in ("pool_size", "max_overflow", "pool_timeout"):
+            kwargs.pop(option, None)
+        kwargs["poolclass"] = NullPool
+        return create_engine(*args, **kwargs)
+
+    monkeypatch.setattr(engine, "create_async_engine", create_unpooled_engine)
+
+
+@pytest.fixture
 def disable_schema_cache(monkeypatch):
     """Force a test through the real Alembic chain instead of the template."""
     monkeypatch.setenv("AQ_SCHEMA_CACHE", "0")

@@ -4,12 +4,11 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from src.config import DatabaseConfig, AppConfig, DiscordConfig
+from src.config import AppConfig, DatabaseConfig, DiscordConfig
 from src.database import Database
 from src.models import Project, RepoConfig, RepoSourceType, Workspace
 from src.plugins.services import WorkspaceServiceImpl
 from tests.db_fixtures import lease_dsn
-from tests.pg_dsn import create_scratch_database
 
 
 @pytest.fixture
@@ -62,7 +61,7 @@ async def test_validate_path_rejects_sibling_prefix_directory(service, tmp_path)
 
 
 async def test_resolve_workspace_rejects_workspace_from_another_project(db, service, tmp_path):
-    path = await create_scratch_database("mig")
+    path = tmp_path / "other-project-workspace"
     path.mkdir()
     await db.create_project(Project(id="project-b", name="B"))
     await db.create_workspace(Workspace("ws", "project-b", str(path), RepoSourceType.LINK))

@@ -201,10 +201,10 @@ async def test_attempt_api_scope_and_archived_task(db, monkeypatch):
 
 async def test_get_show_and_explain_expose_operational_block(db, tmp_path):
     from src.commands.handler import CommandHandler
-    from src.config import AppConfig
+    from src.config import AppConfig, DatabaseConfig
     from src.orchestrator import Orchestrator
 
-    config = AppConfig(data_dir=str(tmp_path / "data"), workspace_dir=str(tmp_path / "workspace"))
+    config = AppConfig(database=DatabaseConfig(url=lease_dsn("history.db")), data_dir=str(tmp_path / "data"), workspace_dir=str(tmp_path / "workspace"))
     orch = Orchestrator(config)
     orch.db = db
     handler = CommandHandler(orch, config)

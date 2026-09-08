@@ -13,6 +13,8 @@ Covers all test cases from Roadmap 7.2.2:
 
 import pytest
 
+from tests.db_fixtures import lease_dsn
+
 from src.models import (
     Agent,
     AgentState,
@@ -358,7 +360,7 @@ async def db():
     """Create an in-memory database for command handler tests."""
     from src.database import Database
 
-    adapter = Database(":memory:")
+    adapter = Database(lease_dsn("constraints"))
     await adapter.initialize()
     yield adapter
     await adapter.close()

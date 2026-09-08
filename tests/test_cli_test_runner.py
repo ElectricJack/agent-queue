@@ -24,6 +24,7 @@ from src.cli.test_runner import (
 )
 from src.config import ResourcesConfig
 
+
 #: ``_compose_pytest_argv`` returns a full command line whose first three
 #: entries are ``<python> -m pytest``.  Everything the tests care about is
 #: what comes after, and slicing here keeps ``argv.index("-m")`` from
@@ -208,7 +209,7 @@ class TestCapResolution:
         monkeypatch.delenv("AQ_TEST_SLOTS", raising=False)
         monkeypatch.delenv("AQ_TEST_WORKERS", raising=False)
         res = ResourcesConfig(cores=24, max_concurrent_agents=8, test_slots=3)
-        slots, workers, markers, poll, timeout = _caps(res)
+        slots, workers, markers, _poll, _timeout = _caps(res)
         assert (slots, workers) == (3, 3)
         assert "not perf" in markers
 
@@ -256,7 +257,7 @@ class TestCommand:
         data_dir = tmp_path / "custom-data"
         config_path.write_text(
             f"data_dir: {data_dir}\n"
-            f"database_path: {tmp_path / 'aq.db'}\n"
+            "database:\n  url: postgresql+asyncpg://localhost/aq_test\n"
             "discord:\n"
             "  bot_token: test-token\n"
             "  guild_id: '1'\n"

@@ -10,7 +10,7 @@ from sqlalchemy import select
 
 from src.api.auth import RequestScope
 from src.commands.handler import CommandHandler
-from src.config import AppConfig
+from src.config import AppConfig, DatabaseConfig
 from src.database import Database
 from src.database.tables import messages
 from src.models import AgentProfile, Project, SessionRecord, Task, TaskStatus
@@ -44,7 +44,7 @@ async def env(tmp_path, request):
         )
     )
     await db.update_task("t", created_at=100)
-    config = AppConfig(data_dir=str(tmp_path / "data"), workspace_dir=str(tmp_path / "ws"))
+    config = AppConfig(database=DatabaseConfig(url=lease_dsn("recovery.db")), data_dir=str(tmp_path / "data"), workspace_dir=str(tmp_path / "ws"))
     orch = Orchestrator(config)
     orch.db = db
     orch.session_providers = SimpleNamespace(

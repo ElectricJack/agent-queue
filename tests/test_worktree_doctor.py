@@ -26,7 +26,6 @@ from src.models import (
     WorktreeSentinel,
 )
 from tests.db_fixtures import lease_dsn
-from tests.pg_dsn import create_scratch_database
 
 pytestmark = pytest.mark.asyncio
 
@@ -170,7 +169,7 @@ async def test_missing_sentinel_is_not_a_finding(db, slots_root):
 async def test_non_slot_workspaces_are_ignored(db, tmp_path):
     """A plain clone has no slot semantics — a stray sentinel there is not
     this check's business."""
-    path = await create_scratch_database("mig")
+    path = tmp_path / "external-workspace"
     path.mkdir()
     ws = Workspace(
         id="clone",

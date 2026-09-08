@@ -18,6 +18,7 @@ from sqlalchemy import Float, and_, case, cast, delete, exists, false, func, lit
 from src.database.queries.blocked_state import apply_label_filters
 from src.database.queries.hierarchy_queries import (
     container_flag_exists,
+    materialized_origin_when_hierarchical,
 )
 from src.database.queries.session_queries import _row_to_session
 from src.database.queries.task_queries import (
@@ -45,6 +46,7 @@ def _frontier_where(project_id: str):
         tasks.c.is_blocked == 0,
         tasks.c.assigned_agent_id.is_(None),
         tasks.c.is_plan_subtask == 0,
+        materialized_origin_when_hierarchical(),
         # A flagged container (spec §7) has no deliverable of its own: it is
         # released to IN_PROGRESS by the orchestrator and settles when its
         # children finish.  A worker holding it could never close it

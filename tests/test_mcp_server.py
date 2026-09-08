@@ -19,6 +19,8 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from tests.db_fixtures import lease_dsn
+
 from src.database import Database
 from src.models import (
     Agent,
@@ -58,7 +60,7 @@ except ImportError:
 @pytest.fixture
 async def db(tmp_path):
     """Create a fresh in-memory database for each test."""
-    db_path = str(tmp_path / "test.db")
+    db_path = lease_dsn("test.db")
     database = Database(db_path)
     await database.initialize()
     yield database

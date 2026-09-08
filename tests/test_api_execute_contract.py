@@ -18,6 +18,8 @@ from src.api import dependencies as deps
 from src.api.codegen import _make_input_model, _make_route_handler
 from src.api.execute import router as execute_router
 
+pytestmark = pytest.mark.usefixtures("unpooled_postgres")
+
 
 GRAPH_ERROR = {
     "error": "graph validation failed with 2 error(s)",

@@ -22,6 +22,8 @@ from src.database import Database
 from src.models import Project
 from tests.db_fixtures import lease_dsn
 
+pytestmark = pytest.mark.usefixtures("unpooled_postgres")
+
 
 @pytest.fixture
 async def handler(tmp_path):

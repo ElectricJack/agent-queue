@@ -25,6 +25,7 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from dataclasses import replace
 
 from src.commands.handler import CommandHandler
 from src.config import DatabaseConfig, AppConfig, DiscordConfig
@@ -64,6 +65,9 @@ _CLASSES = {
 async def db(request, tmp_path):
     database = Database(lease_dsn("test.db"))
     await database.initialize()
+    # These fixtures model independent clones; slot provisioning has its own tests.
+    kind = await database.resolve_workspace_kind("__system__", "project-repo")
+    await database.upsert_workspace_kind(replace(kind, mode="exclusive-clone"))
     await database.create_project(Project(id=PROJECT_ID, name="p"))
     await database.create_profile(
         AgentProfile(

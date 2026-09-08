@@ -21,7 +21,7 @@ from pathlib import Path
 
 import pytest
 
-from src.config import AppConfig
+from src.config import AppConfig, DatabaseConfig
 from src.database import Database
 from src.models import (
     KIND_MODE_WORKTREE,
@@ -95,7 +95,7 @@ async def env(tmp_path):
         )
     )
 
-    config = AppConfig(data_dir=str(tmp_path / "data"), workspace_dir=str(tmp_path / "ws"))
+    config = AppConfig(database=DatabaseConfig(url=lease_dsn("affinity.db")), data_dir=str(tmp_path / "data"), workspace_dir=str(tmp_path / "ws"))
     config.worktrees.enabled = True
     orch = Orchestrator(config)
     orch.db = db

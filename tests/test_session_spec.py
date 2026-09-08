@@ -5,7 +5,7 @@ See docs/specs/implementation/session-runtime.md §3.4 and §8.
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, replace
+from dataclasses import FrozenInstanceError, asdict, dataclass, replace
 
 import pytest
 
@@ -639,7 +639,7 @@ class TestEnvMarkers:
         assert spec.session_name == "n-supervisor--proj-1"
 
     def test_every_session_gets_database_isolation(self, builder):
-        """A slot's db tooling points at scratch, never at config.yaml.
+        """A slot's direct database tooling receives an explicit refusal sentinel.
 
         Both halves matter: ``AQ_DB_SCOPE`` is what makes
         ``src.database.migration_guard`` refuse a migration against the
@@ -649,7 +649,7 @@ class TestEnvMarkers:
         """
         env = _build(builder).env
         assert env["AQ_DB_SCOPE"] == "worker"
-        assert env["AQ_DATABASE_URL"] == "/wd/.aq/scratch.db"
+        assert env["AQ_DATABASE_URL"] == "aq-worker-no-direct-db://"
         assert env["AGENT_QUEUE_DB"] == env["AQ_DATABASE_URL"]
 
     def test_a_harness_may_pin_its_own_database_url(self, builder):
@@ -987,7 +987,7 @@ class TestSpecShape:
 
     def test_spec_is_frozen(self, builder):
         spec = _build(builder)
-        with pytest.raises(Exception):
+        with pytest.raises(FrozenInstanceError):
             spec.session_name = "other"
 
     def test_instance_token_rides_the_spec(self, builder):

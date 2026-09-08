@@ -14,7 +14,9 @@ import time
 
 import pytest
 
-from src.config import AppConfig
+from tests.db_fixtures import lease_dsn
+
+from src.config import AppConfig, DatabaseConfig
 from src.models import AgentProfile, Project, SessionRecord, Task
 from src.prime import PrimeRenderer
 from src.prime.models import PrimeDocument, PrimeSection
@@ -31,7 +33,7 @@ pytestmark = pytest.mark.asyncio
 async def db():
     from src.database import Database
 
-    adapter = Database(":memory:")
+    adapter = Database(lease_dsn("prime"))
     await adapter.initialize()
     yield adapter
     await adapter.close()
@@ -39,7 +41,7 @@ async def db():
 
 @pytest.fixture
 def config(tmp_path):
-    return AppConfig(data_dir=str(tmp_path / "data"))
+    return AppConfig(database=DatabaseConfig(url=lease_dsn("prime")), data_dir=str(tmp_path / "data"))
 
 
 @pytest.fixture

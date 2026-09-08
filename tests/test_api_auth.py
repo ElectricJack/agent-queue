@@ -11,6 +11,8 @@ from src.api.auth import LOCAL_SCOPE, RequestScope, SessionTokenStore, TOKEN_PRE
 from src.database import Database
 from tests.db_fixtures import lease_dsn
 
+pytestmark = pytest.mark.usefixtures("unpooled_postgres")
+
 
 class TestApiSessionTokenQueries:
     async def _db(self, tmp_path):

@@ -34,9 +34,9 @@ class ChatQueryMixin:
                     status="pending",
                     created_at=now,
                     context_snapshot=context_snapshot,
-                )
+                ).returning(cas.c.id)
             )
-            return result.lastrowid
+            return result.scalar_one()
 
     async def create_suppressed_chat_analyzer_suggestion(
         self,
@@ -76,9 +76,9 @@ class ChatQueryMixin:
                     created_at=now,
                     resolved_at=now,
                     context_snapshot=context_snapshot,
-                )
+                ).returning(cas.c.id)
             )
-            return result.lastrowid
+            return result.scalar_one()
 
     async def resolve_chat_analyzer_suggestion(
         self,

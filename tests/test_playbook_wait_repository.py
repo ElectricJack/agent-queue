@@ -7,10 +7,7 @@ boundary's own connection, so there is no interval in which a run is
 suspended and its wait is missing — nor one in which a wait outlives the
 boundary that failed to write it.
 
-Every concurrency case is parametrised over both backends.  On SQLite
-``immediate()``'s per-adapter ``asyncio.Lock`` serialises callers, so a green
-SQLite run proves the *result* is correct but not that the compare-and-set is
-what enforced it; only PostgreSQL proves the fence.
+Concurrency cases run against PostgreSQL to exercise the database fence.
 """
 
 from __future__ import annotations
@@ -48,6 +45,7 @@ from src.playbooks.waits import (
     WaitSpec,
     matches,
 )
+from tests.db_fixtures import lease_dsn
 from tests.pg_dsn import ensure_worker_postgres_dsn
 
 POSTGRES_TEST_DSN = ensure_worker_postgres_dsn()
@@ -84,7 +82,7 @@ async def db_factory(request, tmp_path):
     """
     opened: list[Any] = []
 
-    path = str(tmp_path / "test.db")
+    path = lease_dsn("wait_repository")
 
     async def factory():
         database = Database(path)

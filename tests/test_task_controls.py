@@ -7,7 +7,7 @@ import pytest
 
 from src.api.auth import RequestScope
 from src.commands.handler import CommandHandler
-from src.config import AppConfig
+from src.config import AppConfig, DatabaseConfig
 from src.database import Database
 from src.models import Agent, AgentProfile, Project, Task, TaskStatus
 from src.orchestrator import Orchestrator
@@ -41,7 +41,7 @@ async def env(tmp_path, request):
                 pr_url="https://example.invalid/pr/1",
             )
         )
-    config = AppConfig(data_dir=str(tmp_path / "data"), workspace_dir=str(tmp_path / "ws"))
+    config = AppConfig(database=DatabaseConfig(url=lease_dsn("controls.db")), data_dir=str(tmp_path / "data"), workspace_dir=str(tmp_path / "ws"))
     orch = Orchestrator(config)
     orch.db = db
     install_already_routed(orch)

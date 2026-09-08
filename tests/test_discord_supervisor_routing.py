@@ -31,7 +31,6 @@ from src.database import Database
 from src.models import Project
 from tests.db_fixtures import lease_dsn
 
-
 # ---------------------------------------------------------------------------
 # legacy_chat field removal
 # ---------------------------------------------------------------------------
@@ -57,7 +56,7 @@ def test_config_loader_ignores_legacy_chat_key(tmp_path):
         yaml.dump(
             {
                 "discord": {"bot_token": "test-token", "guild_id": "123"},
-                "database_path": str(tmp_path / "test.db"),
+                "database": {"url": "postgresql+asyncpg://localhost/aq_test"},
                 "supervisor_agent": {"enabled": False, "legacy_chat": False},
             }
         )
@@ -164,7 +163,7 @@ class TestMessageSendPath:
         """
         from src.discord.bot import AgentQueueBot
 
-        handler, bus = _make_handler_with_messages(db)
+        handler, _bus = _make_handler_with_messages(db)
         bot = AgentQueueBot.__new__(AgentQueueBot)
         bot.config = MagicMock()
         bot.config.supervisor_agent = SupervisorAgentConfig(enabled=True)
@@ -184,7 +183,7 @@ class TestMessageSendPath:
         async def _safe_api_call(coro, **_):
             try:
                 return await coro
-            except Exception:
+            except Exception:  # noqa: BLE001 — emulate the bot's API error boundary
                 return None
 
         bot._safe_api_call = AsyncMock(side_effect=_safe_api_call)
@@ -785,7 +784,6 @@ class TestMessageSentRenderer:
         project channel exactly once; the recorded receipt suppresses any
         repeat post for the same message."""
         import discord as discord_mod
-
         from src.discord.notification_handler import DiscordNotificationHandler
         from src.event_bus import EventBus
 
