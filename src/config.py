@@ -2507,6 +2507,7 @@ class AppConfig:
         updated.resources = fresh.resources
         updated.pricing = fresh.pricing
         updated.surface = fresh.surface
+        updated.providers = fresh.providers
 
         return updated
 
