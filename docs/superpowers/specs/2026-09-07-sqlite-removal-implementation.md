@@ -38,7 +38,7 @@ Measured on `main` at `34045993`.
 | Heaviest query modules | `hierarchy_queries.py` (6), `playbook_artifact_queries.py` (4), `playbook_run_queries.py` (4) |
 | `src/database/engine.py` | 605 lines, 34 sqlite references |
 | `src/database/adapters/sqlite.py` | 204 lines (mixin composition only) |
-| `src/database/migrate_sqlite_to_pg.py` + `scripts/` twin | 444 + 228 lines |
+| `src/database/legacy_sqlite_import.py` + `scripts/` twin | 444 + 228 lines |
 | `src/setup_wizard.py` | 26 sqlite references |
 | `tables.py` partial indexes | 14 `sqlite_where=` — **every one already paired with `postgresql_where=`** |
 | Alembic revisions | 113 total; 29 with dialect branches, 71 using `batch_alter_table` |
@@ -288,7 +288,7 @@ one-way import, and `--fix` rewrites the URL after a successful import.
 
 The one place SQLite code legitimately survives.
 
-- Move `src/database/migrate_sqlite_to_pg.py` → `src/database/legacy_sqlite_import.py`.
+- Move `src/database/legacy_sqlite_import.py` → `src/database/legacy_sqlite_import.py`.
 - Sever its dependency on the SQLite *adapter*: it needs only a raw
   `create_async_engine("sqlite+aiosqlite://…")` and `tables.py`. Inline the
   three lines of `create_sqlite_engine` it uses so T4 can delete that function.
@@ -296,7 +296,7 @@ The one place SQLite code legitimately survives.
   `[sqlite-import]` extra in `pyproject.toml`. The module imports it lazily and
   raises a clear "pip install agent-queue[sqlite-import]" on absence.
 - Surface it as `aq db import-sqlite <path>` (`src/cli/db.py`). Delete
-  `scripts/migrate_sqlite_to_pg.py` (duplicate).
+  `scripts/legacy_sqlite_import.py` (duplicate).
 - Reachable from the setup wizard when it finds a legacy `.db` file.
 
 **Deprecation:** keep for two minor releases, then delete the module and the
@@ -456,7 +456,7 @@ thought; the rest should be pure mechanical.
 
 | File | Action |
 |---|---|
-| `tests/test_migrate_sqlite_to_pg.py` | Rewrite against `legacy_sqlite_import` |
+| `tests/test_legacy_sqlite_import.py` | Rewrite against `legacy_sqlite_import` |
 | `tests/test_database_engine.py` (15 refs) | Delete SQLite-cache tests; keep PG engine tests |
 | `tests/test_database_backend_selection.py` | Rewrite: the only assertion left is "non-PG URL raises" |
 | `tests/test_migration_guard.py` (23 refs) | Re-point at PG scratch databases |

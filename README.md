@@ -57,7 +57,7 @@ are comfortable running coding-agent CLIs and inspecting the work they produce.
 The Python daemon owns scheduling, task state, workspace acquisition, session
 reconciliation, event delivery, and pipeline dispatch. A FastAPI application exposes
 the command surface, health endpoints, generated resource routes, and WebSocket streams
-used by the dashboard. SQLite is available for a local install; PostgreSQL is supported
+used by the dashboard. PostgreSQL is the only supported backend
 for the more concurrent path.
 
 The control path is deliberately mostly deterministic. Scheduling, dependency and gate

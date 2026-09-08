@@ -538,6 +538,14 @@ def _resolve_db_url() -> str:
     """
     env_url = os.environ.get("AGENT_QUEUE_DB") or os.environ.get("AQ_DATABASE_URL")
     if env_url:
+        from src.sessions.env import SCRATCH_DB_SENTINEL
+
+        if env_url == SCRATCH_DB_SENTINEL:
+            raise RuntimeError(
+                "direct database access is not available inside a worker session. "
+                "Use the aq CLI (which talks to the daemon's API), or run this "
+                "command from an operator shell outside a worktree slot."
+            )
         return env_url
 
     db_config = _resolve_db_config()
@@ -561,4 +569,6 @@ def _resolve_db_url() -> str:
         except Exception:
             pass
 
-    return os.path.join(config_dir, "agent-queue.db")
+    raise RuntimeError(
+        f"no database URL: set database.url in {config_file} to a PostgreSQL DSN."
+    )

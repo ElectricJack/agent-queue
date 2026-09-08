@@ -373,7 +373,7 @@ def _test_pg_dsn(dsn: str) -> bool:
         return False
 
 
-def _select_postgresql(existing_sqlite_path: str | None = None) -> dict:
+def _select_postgresql(legacy_sqlite_db: str | None = None) -> dict:
     """Interactive PostgreSQL selection sub-flow.
 
     Returns:
@@ -391,14 +391,14 @@ def _select_postgresql(existing_sqlite_path: str | None = None) -> dict:
             dsn = prompt("PostgreSQL DSN", default_dsn)
             if _test_pg_dsn(dsn):
                 success("Connected to PostgreSQL")
-                return _build_pg_config(dsn, existing_sqlite_path)
+                return _build_pg_config(dsn, legacy_sqlite_db)
             else:
                 warn("Could not connect. Enter a different DSN or check credentials.")
                 dsn = prompt("PostgreSQL DSN", dsn)
                 if not _test_pg_dsn(dsn):
                     error("Still cannot connect. Aborting PostgreSQL setup.")
                     raise SystemExit(1)
-                return _build_pg_config(dsn, existing_sqlite_path)
+                return _build_pg_config(dsn, legacy_sqlite_db)
 
     # No PG running — try Docker
     compose_file = _find_docker_compose()
@@ -417,7 +417,7 @@ def _select_postgresql(existing_sqlite_path: str | None = None) -> dict:
                 if _boot_docker_postgres(compose_file):
                     if _test_pg_dsn(default_dsn):
                         success("Connected to Docker PostgreSQL")
-                        return _build_pg_config(default_dsn, existing_sqlite_path)
+                        return _build_pg_config(default_dsn, legacy_sqlite_db)
                     else:
                         error("Container started but connection failed")
 
@@ -431,13 +431,13 @@ def _select_postgresql(existing_sqlite_path: str | None = None) -> dict:
         raise SystemExit(1)
     if _test_pg_dsn(dsn):
         success("Connected to PostgreSQL")
-        return _build_pg_config(dsn, existing_sqlite_path)
+        return _build_pg_config(dsn, legacy_sqlite_db)
     else:
         error("Cannot connect to PostgreSQL. Check your DSN and try again.")
         raise SystemExit(1)
 
 
-def _build_pg_config(dsn: str, existing_sqlite_path: str | None) -> dict:
+def _build_pg_config(dsn: str, legacy_sqlite_db: str | None) -> dict:
     """Build PG config dict and optionally migrate SQLite data."""
     config = {
         "backend": "postgresql",
@@ -446,12 +446,12 @@ def _build_pg_config(dsn: str, existing_sqlite_path: str | None) -> dict:
         "pool_max_size": 10,
     }
 
-    if existing_sqlite_path and os.path.exists(existing_sqlite_path):
+    if legacy_sqlite_db and os.path.exists(legacy_sqlite_db):
         print()
-        info(f"Existing SQLite database found at: {existing_sqlite_path}")
+        info(f"Existing SQLite database found at: {legacy_sqlite_db}")
         migrate = prompt_yes_no("Migrate existing data to PostgreSQL?")
         if migrate:
-            config["_migrate_from"] = existing_sqlite_path
+            config["_migrate_from"] = legacy_sqlite_db
 
     return config
 
@@ -496,7 +496,7 @@ def step_database(existing: dict) -> dict:
         if os.path.exists(default_db):
             info(f"Found a SQLite database from a previous release: {default_db}")
             info("SQLite is no longer supported; its data can be imported into PostgreSQL.")
-            return _select_postgresql(existing_sqlite_path=default_db)
+            return _select_postgresql(legacy_sqlite_db=default_db)
 
     step_header(1, "Database")
     return _select_postgresql()
@@ -1385,7 +1385,7 @@ def main():
     if migrate_from:
         info("Migrating data from SQLite to PostgreSQL...")
         try:
-            from src.database.migrate_sqlite_to_pg import migrate_sqlite_to_postgres
+            from src.database.legacy_sqlite_import import migrate_sqlite_to_postgres
 
             def _progress(table: str, count: int):
                 if count:

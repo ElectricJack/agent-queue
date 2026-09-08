@@ -335,18 +335,37 @@ class TestConftestRefusal:
 
 
 class TestWorkerSessionEnvironment:
-    def test_isolation_block_points_at_a_per_slot_scratch_file(self):
-        from src.sessions.env import session_db_isolation
+    def test_isolation_block_points_at_the_refusal_sentinel(self):
+        """It used to be a per-slot SQLite file that was never created.
+
+        A worker running a direct-DB command opened an *empty* database and
+        got a confidently wrong answer; now it gets an explanation.
+        """
+        from src.sessions.env import SCRATCH_DB_SENTINEL, session_db_isolation
 
         env = session_db_isolation("/slots/slot-3")
         assert env["AQ_DB_SCOPE"] == WORKER
-        assert env["AQ_DATABASE_URL"] == "/slots/slot-3/.aq/scratch.db"
+        assert env["AQ_DATABASE_URL"] == SCRATCH_DB_SENTINEL
         assert env["AGENT_QUEUE_DB"] == env["AQ_DATABASE_URL"]
 
-    def test_a_session_without_a_work_dir_still_gets_the_scope(self):
-        from src.sessions.env import session_db_isolation
+    def test_a_session_without_a_work_dir_gets_the_same_block(self):
+        """The sentinel does not depend on a work dir, so neither does this."""
+        from src.sessions.env import SCRATCH_DB_SENTINEL, session_db_isolation
 
-        assert session_db_isolation("") == {"AQ_DB_SCOPE": WORKER}
+        assert session_db_isolation("") == {
+            "AQ_DB_SCOPE": WORKER,
+            "AQ_DATABASE_URL": SCRATCH_DB_SENTINEL,
+            "AGENT_QUEUE_DB": SCRATCH_DB_SENTINEL,
+        }
+
+    def test_the_cli_refuses_the_sentinel_with_an_explanation(self, monkeypatch):
+        from src.cli.client import _resolve_db_url
+        from src.sessions.env import SCRATCH_DB_SENTINEL
+
+        monkeypatch.delenv("AGENT_QUEUE_DB", raising=False)
+        monkeypatch.setenv("AQ_DATABASE_URL", SCRATCH_DB_SENTINEL)
+        with pytest.raises(RuntimeError, match="not available inside a worker session"):
+            _resolve_db_url()
 
     def test_cli_resolves_the_scratch_url(self, monkeypatch, tmp_path):
         from src.cli.client import _resolve_db_url

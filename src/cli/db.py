@@ -130,3 +130,32 @@ def db_upgrade(yes: bool) -> None:
     with process_scope(OPERATOR):
         asyncio.run(_main())
     console.print(f"[green]schema at head[/] ({', '.join(_head_revisions())})")
+
+
+@db_group.command("import-sqlite")
+@click.argument("sqlite_path", type=click.Path(exists=True, dir_okay=False))
+@click.option("--yes", is_flag=True, default=False, help="Skip the confirmation prompt.")
+def db_import_sqlite(sqlite_path: str, yes: bool) -> None:
+    """Copy a pre-PostgreSQL SQLite database into the configured PostgreSQL one.
+
+    One-way and one-time: SQLite is no longer a backend, this only carries old
+    data across.  The target must be empty — importing over a live database
+    would interleave two histories.
+
+    Needs the optional reader: ``pip install "agent-queue[sqlite-import]"``.
+    """
+    config = _load_config()
+    target = config.database.url
+    console.print(f"[bold]Import[/] {sqlite_path}\n[bold]Into[/]   {_display_url(target)}")
+    if not yes and not click.confirm("Proceed?", default=False):
+        console.print("Aborted.")
+        return
+
+    from src.database.legacy_sqlite_import import migrate_sqlite_to_postgres
+
+    try:
+        asyncio.run(migrate_sqlite_to_postgres(sqlite_path, target))
+    except ImportError as exc:
+        console.print(f"[bold red]Error:[/] {exc}")
+        raise SystemExit(1) from None
+    console.print("[bold green]Import complete.[/]")

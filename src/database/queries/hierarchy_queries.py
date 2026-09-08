@@ -303,8 +303,6 @@ class HierarchyQueryMixin:
         transactions already use ``BEGIN IMMEDIATE``, so its database-wide
         writer lock provides the same exclusion.
         """
-        if conn.dialect.name != "postgresql":
-            return
         await conn.execute(
             select(
                 func.pg_advisory_xact_lock(
@@ -1108,8 +1106,7 @@ class HierarchyQueryMixin:
         stmt = select(sessions.c.id, sessions.c.task_id).where(
             and_(sessions.c.task_id.in_(ids), sessions.c.state.in_(LIVE_SESSION_STATES))
         )
-        if conn.dialect.name == "postgresql":
-            stmt = stmt.with_for_update()
+        stmt = stmt.with_for_update()
         rows = [(r[0], r[1]) for r in (await conn.execute(stmt)).fetchall()]
         # Deduplicate: a task may carry more than one session row, and the
         # caller reports one entry per (session, task) pair.
@@ -1151,8 +1148,7 @@ class HierarchyQueryMixin:
         if not ids:
             return TransitionResult()
         stmt = select(tasks.c.id, tasks.c.status).where(tasks.c.id.in_(ids))
-        if conn.dialect.name == "postgresql":
-            stmt = stmt.with_for_update()
+        stmt = stmt.with_for_update()
         rows = (await conn.execute(stmt)).fetchall()
         terminal = (TaskStatus.COMPLETED.value, TaskStatus.FAILED.value)
         # Deepest first so each container settles naturally after its children.

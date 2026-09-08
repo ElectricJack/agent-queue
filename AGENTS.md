@@ -40,7 +40,7 @@ stamped `alembic_version` with an unmerged branch's revision, after which the
 daemon refused to boot until an operator hand-wrote a merge revision.
 
 - Your session carries `AQ_DB_SCOPE=worker` and `AQ_DATABASE_URL` /
-  `AGENT_QUEUE_DB` pointing at a per-slot scratch SQLite file. Leave all
+  `AGENT_QUEUE_DB` set to a refusal sentinel. Leave all
   three alone. Tests build their own temporary databases and are unaffected.
 - `run_schema_setup` refuses to migrate the production URL from any scope but
   `daemon`/`operator`, and instead raises **"schema behind code; ask the

@@ -121,7 +121,7 @@ logger = logging.getLogger(__name__)
 #
 # This list must cover every table in ``tables.metadata`` — a missing table is
 # silently dropped data for anyone migrating a SQLite install to PostgreSQL.
-# ``tests/test_migrate_sqlite_to_pg.py`` asserts the two sets match so the list
+# ``tests/test_legacy_sqlite_import.py`` asserts the two sets match so the list
 # cannot drift when a new table is added to ``tables.py``.
 #
 # Circular and self-referential FKs are handled by inserting the offending

@@ -746,7 +746,7 @@ class HealthCheckConfig:
 #: is the form this repo's own tooling passes around (``POSTGRES_TEST_DSN``,
 #: ``alembic.ini``).  Matching only ``postgresql://`` made such a URL fall
 #: through to the SQLite branch, where it was treated as a *file path* — the
-#: daemon then silently ran on an empty SQLite database and
+#: daemon then silently ran on an empty database and
 #: :func:`src.main.run` created a directory literally named
 #: ``postgresql+asyncpg:/agent_queue:…@host:5533``.  Fail-fast is not
 #: possible here (a bare path is a legal value), so the scheme list has to
@@ -770,7 +770,7 @@ SYNC_ONLY_POSTGRES_SCHEMES: tuple[str, ...] = ("postgresql+psycopg2://",)
 
 
 def is_postgres_url(url: str) -> bool:
-    """True when *url* is a PostgreSQL DSN rather than a SQLite file path."""
+    """True when *url* is a PostgreSQL DSN rather than a bare path."""
     return str(url or "").startswith(POSTGRES_URL_SCHEMES)
 
 
@@ -781,11 +781,11 @@ class DatabaseConfig:
     The ``url`` field determines the backend automatically:
 
     - Any scheme in :data:`POSTGRES_URL_SCHEMES` → PostgreSQL (asyncpg)
-    - Anything else (file path or empty) → SQLite (aiosqlite)
+    - Anything else (a bare path, or empty) → rejected by ``validate()``
 
     Examples::
 
-        # SQLite (default — same as the legacy database_path field):
+        # PostgreSQL is the only supported backend:
         database:
           url: ~/.agent-queue/agent-queue.db
 
@@ -2148,7 +2148,7 @@ class AppConfig:
         default_factory=lambda: os.path.expanduser("~/agent-queue-workspaces")
     )
     project_roots: list[ProjectRoot] = field(default_factory=list)
-    database_path: str = ""  # Legacy SQLite path — use database.url instead
+    database_path: str = ""  # Deprecated alias for database.url; removed next release
     database: DatabaseConfig = field(default_factory=DatabaseConfig)
     profile: str = ""
     env: str = "production"
