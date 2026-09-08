@@ -228,7 +228,10 @@ class IntegrationAttestationService:
             if pending is None:
                 return {"outcome": "stale_subject"}
             trust, client = await self._load_trust(pending)
-            if pending["candidate_state"] != "green":
+            if (
+                pending["candidate_state"] != "green"
+                or pending["batch_lifecycle"] == "repairing"
+            ):
                 observed = await CIService(
                     self.db,
                     trust,
