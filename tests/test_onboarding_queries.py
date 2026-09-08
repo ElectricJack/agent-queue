@@ -12,15 +12,14 @@ from src.database import DatabaseBackend, Database
 from src.models import Project, RepoSourceType, Workspace
 from tests.pg_dsn import ensure_worker_postgres_dsn
 from tests.db_fixtures import lease_dsn
-from tests.pg_dsn import create_scratch_database
 
 POSTGRES_TEST_DSN = ensure_worker_postgres_dsn()
 
 
 def test_onboarding_retention_config_round_trips_and_validates(tmp_path):
-    path = await create_scratch_database("mig")
+    path = tmp_path / "config.yaml"
     path.write_text(
-        "database_path: test.db\n"
+        "database:\n  url: postgresql+asyncpg://test:test@localhost/test\n"
         "discord:\n"
         "  bot_token: test-token\n"
         "  guild_id: '1'\n"

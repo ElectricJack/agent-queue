@@ -30,7 +30,6 @@ if os.name != "posix":  # pragma: no cover
 from src.sessions import proctable
 from src.sessions.provider import DialogRule, SessionSpec
 from src.sessions.tmux import TmuxProvider
-from tests.pg_dsn import create_scratch_database
 
 pytestmark = pytest.mark.tmux
 
@@ -153,7 +152,7 @@ def provider(tmp_path):
 
 @pytest.fixture
 def stub_path(tmp_path) -> Path:
-    path = await create_scratch_database("mig")
+    path = tmp_path / "stub_agent.py"
     path.write_text(STUB, encoding="utf-8")
     return path
 

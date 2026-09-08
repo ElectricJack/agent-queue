@@ -161,7 +161,7 @@ class TestDoctorCheck:
                 name=f"n-{sid}",
                 lifecycle="task",
                 work_dir=work_dir,
-                epoch=1,
+                epoch="1",
                 instance_token="tok" + sid,
                 started_at=_now(),
                 state=state,

@@ -31,10 +31,11 @@ async def db(tmp_path):
 
 @asynccontextmanager
 async def count_statements(db):
-    counter = {"n": 0}
+    counter = {"n": 0, "statements": []}
 
     def _hook(conn, cursor, statement, parameters, context, executemany):
         counter["n"] += 1
+        counter["statements"].append(statement)
 
     event.listen(db._engine.sync_engine, "before_cursor_execute", _hook)
     try:

@@ -4,6 +4,7 @@ from __future__ import annotations
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from dataclasses import replace
 
 from src.config import DatabaseConfig, AppConfig, DiscordConfig
 from src.database import Database
@@ -18,6 +19,9 @@ from tests.db_fixtures import lease_dsn
 async def pool_routing(tmp_path):
     db = Database(lease_dsn("pool-routing.db"))
     await db.initialize()
+    # These fixtures model independent clones; slot provisioning has its own tests.
+    kind = await db.resolve_workspace_kind("__system__", "project-repo")
+    await db.upsert_workspace_kind(replace(kind, mode="exclusive-clone"))
     await db.create_project(Project(id="p", name="Project"))
     for profile in (
         AgentProfile(

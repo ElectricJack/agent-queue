@@ -12,18 +12,18 @@ from src.config import (
     AutoTaskConfig,
     ConfigError,
     ConfigValidationError,
+    DatabaseConfig,
     DiscordConfig,
-    LLMLoggingConfig,
     GitHubAppConfig,
-    ScratchProbeConfig,
+    LLMLoggingConfig,
     McpServerConfig,
     MemoryConfig,
     PauseRetryConfig,
     SchedulingConfig,
+    ScratchProbeConfig,
     load_config,
 )
 from tests.db_fixtures import lease_dsn
-from src.config import DatabaseConfig
 
 
 class TestGitHubAppConfigValidation:
@@ -37,7 +37,8 @@ class TestGitHubAppConfigValidation:
         config_file.write_text(
             f"""
 messaging_platform: none
-database_path: queue.db
+database:
+  url: postgresql+asyncpg://localhost/aq_test
 integration:
   github_app:
     client_id: {client_id}
@@ -83,7 +84,7 @@ integration:
             yaml.safe_dump(
                 {
                     "messaging_platform": "none",
-                    "database_path": "queue.db",
+                    "database": {"url": "postgresql+asyncpg://localhost/aq_test"},
                     "integration": {"github_app": github_app},
                 }
             )
@@ -122,7 +123,7 @@ integration:
     ):
         raw = {
             "messaging_platform": "none",
-            "database_path": "queue.db",
+            "database": {"url": "postgresql+asyncpg://localhost/aq_test"},
             "integration": {
                 "github_app": {
                     "client_id": "Iv1.example",
@@ -150,7 +151,8 @@ integration:
         config_file.write_text(
             """
 messaging_platform: none
-database_path: queue.db
+database:
+  url: postgresql+asyncpg://localhost/aq_test
 integration:
   github_app:
     client_id: Iv1.example
@@ -177,7 +179,8 @@ class TestScratchProbeConfigValidation:
         config_file.write_text(
             f"""
 messaging_platform: none
-database_path: queue.db
+database:
+  url: postgresql+asyncpg://localhost/aq_test
 integration:
   github_app:
     client_id: Iv1.positive
@@ -216,7 +219,7 @@ integration:
             yaml.safe_dump(
                 {
                     "messaging_platform": "none",
-                    "database_path": "queue.db",
+                    "database": {"url": "postgresql+asyncpg://localhost/aq_test"},
                     "integration": {
                         "scratch_probe": {
                             "repository_id": 303,
@@ -288,7 +291,8 @@ integration:
         config_file.write_text(
             """
 messaging_platform: none
-database_path: queue.db
+database:
+  url: postgresql+asyncpg://localhost/aq_test
 integration:
   github_app:
     client_id: Iv1.positive
@@ -570,7 +574,7 @@ class TestAppConfigValidation:
         cfg = AppConfig(
             data_dir=str(tmp_path / "data"),
             workspace_dir="",
-            database_path="",
+            database=DatabaseConfig(url=""),
             scheduling=SchedulingConfig(rolling_window_hours=0),
         )
         errors = cfg.validate()
@@ -648,7 +652,7 @@ class TestLoadConfigValidation:
             yaml.dump(
                 {
                     "discord": {"bot_token": "tok", "guild_id": "123"},
-                    "database_path": str(tmp_path / "test.db"),
+                    "database": {"url": "postgresql+asyncpg://localhost/aq_test"},
                 }
             )
         )
@@ -663,13 +667,13 @@ class TestParseArgs:
     def test_validate_config_flag(self):
         from src.main import _parse_args
 
-        config_path, profile, validate_only = _parse_args(["--validate-config"])
+        _config_path, _profile, validate_only = _parse_args(["--validate-config"])
         assert validate_only is True
 
     def test_validate_config_with_path(self):
         from src.main import _parse_args
 
-        config_path, profile, validate_only = _parse_args(
+        config_path, _profile, validate_only = _parse_args(
             ["--validate-config", "/some/config.yaml"]
         )
         assert validate_only is True
@@ -701,7 +705,7 @@ class TestValidateConfigOnly:
             yaml.dump(
                 {
                     "discord": {"bot_token": "tok", "guild_id": "123"},
-                    "database_path": str(tmp_path / "test.db"),
+                    "database": {"url": "postgresql+asyncpg://localhost/aq_test"},
                 }
             )
         )
@@ -778,7 +782,7 @@ class TestMcpServerConfigInjection:
             yaml.dump(
                 {
                     "discord": {"bot_token": "tok", "guild_id": "123"},
-                    "database_path": str(tmp_path / "test.db"),
+                    "database": {"url": "postgresql+asyncpg://localhost/aq_test"},
                     "mcp_server": {
                         "enabled": True,
                         "port": 8082,
@@ -835,9 +839,8 @@ class TestSessionsProviderIsBuildable:
 
     def test_a_disabled_daemon_does_not_care(self, monkeypatch):
         """The check is about launches; a flag that is off launches nothing."""
-        from src.config import SessionsConfig
-
         import src.sessions as sessions_pkg
+        from src.config import SessionsConfig
 
         real = sessions_pkg.default_session_registry
 
@@ -889,7 +892,7 @@ def test_transcript_startup_replay_limit_is_loaded_and_non_negative(tmp_path):
         yaml.dump(
             {
                 "discord": {"bot_token": "tok", "guild_id": "123"},
-                "database_path": str(tmp_path / "test.db"),
+                "database": {"url": "postgresql+asyncpg://localhost/aq_test"},
                 "sessions": {"transcript_startup_replay_limit": 17},
             }
         )
@@ -921,7 +924,7 @@ class TestSessionsEnabledDefault:
             yaml.dump(
                 {
                     "data_dir": str(tmp_path / "data"),
-                    "database_path": str(tmp_path / "test.db"),
+                    "database": {"url": "postgresql+asyncpg://localhost/aq_test"},
                     "discord": {"bot_token": "tok", "guild_id": "123"},
                     "sessions": {"lease_ttl_seconds": 90},
                 }
@@ -974,7 +977,7 @@ class TestSubstrateLoaderDefaults:
             yaml.dump(
                 {
                     "discord": {"bot_token": "tok", "guild_id": "123"},
-                    "database_path": str(tmp_path / "test.db"),
+                    "database": {"url": "postgresql+asyncpg://localhost/aq_test"},
                     **sections,
                 }
             )

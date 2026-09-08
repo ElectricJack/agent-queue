@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-
 import pytest
 import yaml
 
@@ -306,7 +305,6 @@ class TestUpdateConfigCommand:
         from src.commands.handler import CommandHandler
         from src.config import AppConfig
 
-        db_path = tmp_path / "test.db"
         cfg_path = tmp_path / "config.yaml"
         cfg_path.write_text(
             "discord:\n"
@@ -314,7 +312,7 @@ class TestUpdateConfigCommand:
             "  guild_id: '1'\n"
             "scheduling:\n"
             "  rolling_window_hours: 12\n"
-            f"database_path: {db_path}\n"
+            "database:\n  url: postgresql+asyncpg://localhost/aq_test\n"
         )
         config = AppConfig(data_dir=str(tmp_path / "data"))
         config._config_path = str(cfg_path)

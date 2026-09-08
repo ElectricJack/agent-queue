@@ -8,7 +8,6 @@ from src.state_machine import (
     InvalidTransition,
     VALID_TASK_TRANSITIONS,
 )
-from tests.pg_dsn import create_scratch_database
 
 ALL_STATUSES = list(TaskStatus)
 ALL_EVENTS = list(TaskEvent)
@@ -180,12 +179,12 @@ class TestEnforcementFlagContract:
     def test_flag_is_parsed_from_config_yaml(self, tmp_path):
         from src.config import load_config
 
-        path = await create_scratch_database("mig")
+        path = tmp_path / "config.yaml"
         d = tmp_path.as_posix()
         path.write_text(
             f"data_dir: {d}\n"
             f"workspace_dir: {d}/ws\n"
-            f"database:\n  url: {d}/aq.db\n"
+            "database:\n  url: postgresql+asyncpg://test:test@localhost/test\n"
             "discord:\n  bot_token: t\n  guild_id: '1'\n"
             "state_machine:\n  enforce: true\n",
             encoding="utf-8",

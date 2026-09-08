@@ -268,14 +268,12 @@ class TestClaimStatementBudgets:
     async def test_release_claim_statement_budget(self, any_db, tmp_path):
         """``release_claim`` on an active claim.
 
-        **Measured on SQLite after the task-11 trim: 10** (was 17) —
-        BEGIN, the session read, ``_apply_transition``'s pre-read, the
-        status ``UPDATE … RETURNING`` (which also carries back the
-        ``claim_epoch`` that used to be a separate read), the merged
-        ``task.ready`` frontier ``INSERT … SELECT … RETURNING``, the
-        workspace / agent / session writes, COMMIT — plus the ready
-        listener's one post-commit task read for the ``task.ready``
-        fan-out.
+        **Measured: PostgreSQL 9** — the session read,
+        integration-owner guard, status ``UPDATE … RETURNING``, merged
+        ``task.ready`` frontier ``INSERT … SELECT … RETURNING``, attempt
+        completion, workspace / agent / session writes, and the ready
+        listener's post-commit task read. Driver transaction boundaries
+        are not counted as SQL statements.
 
         The 5-statement blocked-state recompute is gone:
         IN_PROGRESS → READY is invisible to every clause of
@@ -295,7 +293,9 @@ class TestClaimStatementBudgets:
             )
         budget = 9
         print(f"\nrelease_claim: {c['n']} statements (budget {budget})")
-        assert c["n"] <= budget, f"{c['n']} statements > budget {budget}"
+        assert c["n"] <= budget, (
+            f"{c['n']} statements > budget {budget}:\n" + "\n".join(c["statements"])
+        )
 
     async def test_count_ready_by_profile_statement_budget(self, any_db):
         """``count_ready_by_profile`` is exactly one statement."""

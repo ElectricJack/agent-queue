@@ -20,7 +20,6 @@ import pytest
 import yaml
 
 from src.config import AppConfig, ConfigValidationError, load_config
-from tests.pg_dsn import create_scratch_database
 
 # YAML key for sections whose ``AppConfig`` attribute is spelled differently.
 SECTION_YAML_KEY = {"agents_config": "agents"}
@@ -28,6 +27,7 @@ SECTION_YAML_KEY = {"agents_config": "agents"}
 # Fields whose valid values are an enum: a mechanically "different" value
 # would be rejected by ``validate()`` rather than exercising the loader.
 NON_DEFAULT_VALUES = {
+    ("database", "url"): "postgresql+asyncpg://test:test@localhost/probe",
     ("playbooks", "v2_pending_event_on_overflow"): "reject_new",
     ("playbooks", "v2_pending_event_replay_on_activation"): "automatic",
     ("playbooks", "v1_admission"): "closed",
@@ -89,7 +89,7 @@ def _round_trip(tmp_path, section: str, subconfig) -> tuple[list[str], list[str]
         path.write_text(
             yaml.dump(
                 {
-                    "database_path": str(tmp_path / "test.db"),
+                    "database": {"url": "postgresql+asyncpg://test:test@localhost/test"},
                     "discord": {"bot_token": "t", "guild_id": "1"},
                     SECTION_YAML_KEY.get(section, section): dict(wanted),
                 }
@@ -130,11 +130,11 @@ def test_playbooks_section_reads_every_field_it_declares(tmp_path):
 
 
 def test_playbooks_cancellation_grace_seconds_loads_from_yaml(tmp_path):
-    path = await create_scratch_database("mig")
+    path = tmp_path / "config.yaml"
     path.write_text(
         yaml.dump(
             {
-                "database_path": str(tmp_path / "test.db"),
+                "database": {"url": "postgresql+asyncpg://test:test@localhost/test"},
                 "discord": {"bot_token": "t", "guild_id": "1"},
                 "playbooks": {"enabled": True, "cancellation_grace_seconds": 0},
             }
@@ -173,11 +173,11 @@ def test_streams_section_loads_from_yaml(tmp_path):
     deleted outright (prime-torrent-81); ``streams`` is the half that had a
     consumer, so it is the half this guards.
     """
-    path = await create_scratch_database("mig")
+    path = tmp_path / "config.yaml"
     path.write_text(
         yaml.dump(
             {
-                "database_path": str(tmp_path / "test.db"),
+                "database": {"url": "postgresql+asyncpg://test:test@localhost/test"},
                 "discord": {"bot_token": "t", "guild_id": "1"},
                 "streams": {
                     "buffer_max_lines": 100,
@@ -208,11 +208,11 @@ def test_partial_section_keeps_every_default_the_dataclass_declares(tmp_path):
     :class:`LoggingConfig` declared ``"dev"``.  Deriving the keywords from
     the dataclass leaves untouched keys to the dataclass by construction.
     """
-    path = await create_scratch_database("mig")
+    path = tmp_path / "config.yaml"
     path.write_text(
         yaml.dump(
             {
-                "database_path": str(tmp_path / "test.db"),
+                "database": {"url": "postgresql+asyncpg://test:test@localhost/test"},
                 "discord": {"bot_token": "t", "guild_id": "1"},
                 "logging": {"level": "DEBUG"},
                 "memory": {"embedding_api_key": "k"},
@@ -234,11 +234,11 @@ def test_partial_section_keeps_every_default_the_dataclass_declares(tmp_path):
 
 def test_tuple_fields_load_from_a_yaml_list(tmp_path):
     """``tuple[str, ...]`` fields keep their declared type, not YAML's list."""
-    path = await create_scratch_database("mig")
+    path = tmp_path / "config.yaml"
     path.write_text(
         yaml.dump(
             {
-                "database_path": str(tmp_path / "test.db"),
+                "database": {"url": "postgresql+asyncpg://test:test@localhost/test"},
                 "discord": {"bot_token": "t", "guild_id": "1"},
                 "memory": {"knowledge_topics": ["architecture", "gotchas"]},
             }
@@ -249,9 +249,9 @@ def test_tuple_fields_load_from_a_yaml_list(tmp_path):
 
 def test_a_key_written_with_no_value_leaves_the_default(tmp_path):
     """``level:`` alone on its line asserts nothing, so it must not win."""
-    path = await create_scratch_database("mig")
+    path = tmp_path / "config.yaml"
     path.write_text(
-        f"database_path: {tmp_path / 'test.db'}\n"
+        "database:\n  url: postgresql+asyncpg://test:test@localhost/test\n"
         "discord:\n  bot_token: t\n  guild_id: '1'\n"
         "logging:\n  level:\n  include_source: true\n"
     )

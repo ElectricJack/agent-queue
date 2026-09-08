@@ -89,12 +89,12 @@ async def _seeded_source(tmp_path) -> str:
     a self-FK parent pointer (tasks) and the agents⇄tasks circular FK."""
     from sqlalchemy import text
 
-    from src.database import Database
+    from sqlalchemy.ext.asyncio import create_async_engine
 
     path = str(tmp_path / "source.db")
-    source = Database(path)
-    await source.initialize()
-    async with source._engine.begin() as conn:
+    source = create_async_engine(f"sqlite+aiosqlite:///{path}")
+    async with source.begin() as conn:
+        await conn.run_sync(metadata.create_all)
         await conn.execute(text("INSERT INTO projects (id, name, created_at) VALUES ('x','x',0)"))
         await conn.execute(
             text("INSERT INTO agent_profiles (id, name, created_at, updated_at) "
@@ -138,7 +138,7 @@ async def _seeded_source(tmp_path) -> str:
                     f"VALUES ({i}, 'run', 't{i}', 'edge', 'cycle', '', 0)"
                 )
             )
-    await source.close()
+    await source.dispose()
     return path
 
 

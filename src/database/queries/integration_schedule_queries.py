@@ -10,6 +10,8 @@ from sqlalchemy.ext.asyncio import AsyncConnection
 
 from src.database.tables import project_integration_schedules
 
+INTEGRATION_LEASE_SECONDS = 300
+
 
 class IntegrationScheduleQueriesMixin:
     """Lock and mutate one schedule without opening an independent connection."""

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 from sqlalchemy import delete, insert, select, update
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import DBAPIError, IntegrityError
 
 from src.database import Database
 from src.database.tables import (
@@ -416,7 +416,7 @@ async def test_check_evidence_and_verification_links_are_append_only(db):
             )
             .values(evidence_id="changed"),
         ):
-            with pytest.raises(IntegrityError):
+            with pytest.raises(DBAPIError):
                 async with conn.begin_nested():
                     await conn.execute(statement)
 

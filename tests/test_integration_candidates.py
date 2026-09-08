@@ -2562,7 +2562,7 @@ async def test_persisted_pr_never_hides_diverged_candidate_ref(db, tmp_path):
 
 
 async def test_published_pr_identity_is_immutable_and_replay_is_canonical(db, tmp_path):
-    from sqlalchemy.exc import IntegrityError
+    from sqlalchemy.exc import DBAPIError
 
     from src.git.github_app import GitHubRepositoryBinding
     from src.integration.candidates import CandidateService
@@ -2584,7 +2584,7 @@ async def test_published_pr_identity_is_immutable_and_replay_is_canonical(db, tm
     built = await service.build("batch")
     replay = await service.build("batch")
     assert replay.pr_url == built.pr_url
-    with pytest.raises(IntegrityError):
+    with pytest.raises(DBAPIError):
         async with db.immediate() as conn:
             await conn.execute(
                 update(integration_candidate_publications)

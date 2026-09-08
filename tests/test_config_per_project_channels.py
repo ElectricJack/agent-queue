@@ -11,13 +11,14 @@ Covers:
 
 import pytest
 import yaml
-from src.config import load_config, PerProjectChannelsConfig
+
+from src.config import PerProjectChannelsConfig, load_config
 
 
 def _with_db(cfg):
     """Inject a dummy database section so the validator passes."""
     cfg = dict(cfg)
-    cfg.setdefault("database", {"url": "sqlite:///:memory:"})
+    cfg.setdefault("database", {"url": "postgresql+asyncpg://localhost/aq_test"})
     return cfg
 
 

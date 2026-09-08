@@ -16,7 +16,7 @@ from pathlib import Path
 
 import pytest
 
-from src.config import AgentProfileConfig, AppConfig, load_config
+from src.config import AgentProfileConfig, AppConfig, DatabaseConfig, load_config
 from src.database import Database
 from src.models import (
     Agent,
@@ -27,14 +27,13 @@ from src.models import (
 )
 from src.orchestrator import Orchestrator
 from src.profiles.parser import parse_profile
+from tests.db_fixtures import lease_dsn
 from tests.session_dispatch_helpers import (
     create_session_profile,
     create_session_project,
     drain_running_tasks,
     fake_provider,
 )
-from tests.db_fixtures import lease_dsn
-from src.config import DatabaseConfig
 
 
 @pytest.fixture
@@ -404,7 +403,7 @@ class TestConfigProfileLoading:
         config_path = tmp_path / "config.yaml"
         config_path.write_text("""
 database:
-  url: "sqlite:///:memory:"
+  url: "postgresql+asyncpg://localhost/aq_test"
 discord:
   bot_token: "test-token"
   guild_id: "123456"
@@ -446,7 +445,7 @@ agent_profiles:
     def test_no_profiles_section(self, tmp_path):
         config_path = tmp_path / "config.yaml"
         config_path.write_text(
-            'database:\n  url: "sqlite:///:memory:"\n'
+            'database:\n  url: "postgresql+asyncpg://localhost/aq_test"\n'
             "discord:\n  bot_token: test-token\n  guild_id: '123'\n"
             "scheduling:\n  rolling_window_hours: 48\n"
         )

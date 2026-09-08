@@ -24,7 +24,6 @@ from src.git import ci_gate
 from src.models import Project, RepoSourceType, Workspace
 from src.orchestrator import Orchestrator
 from tests.db_fixtures import lease_dsn
-from tests.pg_dsn import create_scratch_database
 
 PR = "https://github.com/o/r/pull/341"
 
@@ -417,12 +416,12 @@ def test_integration_config_rejects_a_non_list_of_check_names():
 def test_loader_reads_the_merge_ci_policy(tmp_path):
     from src.config import load_config
 
-    path = await create_scratch_database("mig")
+    path = tmp_path / "config.yaml"
     path.write_text(
         "discord:\n"
         "  bot_token: t\n"
         "  guild_id: '1'\n"
-        f"database_path: {tmp_path / 'x.db'}\n"
+        "database:\n  url: postgresql+asyncpg://test:test@localhost/test\n"
         "integration:\n"
         "  merge_ci_policy: required\n"
         "  merge_required_checks:\n"
@@ -436,12 +435,12 @@ def test_loader_reads_the_merge_ci_policy(tmp_path):
 def test_loader_accepts_a_single_check_name_as_a_bare_string(tmp_path):
     from src.config import load_config
 
-    path = await create_scratch_database("mig")
+    path = tmp_path / "config.yaml"
     path.write_text(
         "discord:\n"
         "  bot_token: t\n"
         "  guild_id: '1'\n"
-        f"database_path: {tmp_path / 'x.db'}\n"
+        "database:\n  url: postgresql+asyncpg://test:test@localhost/test\n"
         "integration:\n"
         "  merge_required_checks: Tests (default)\n"
     )
@@ -663,12 +662,12 @@ def test_up_to_date_is_required_by_default():
 def test_loader_reads_merge_require_up_to_date(tmp_path):
     from src.config import load_config
 
-    path = await create_scratch_database("mig")
+    path = tmp_path / "config.yaml"
     path.write_text(
         "discord:\n"
         "  bot_token: t\n"
         "  guild_id: '1'\n"
-        f"database_path: {tmp_path / 'x.db'}\n"
+        "database:\n  url: postgresql+asyncpg://test:test@localhost/test\n"
         "integration:\n"
         "  merge_require_up_to_date: false\n"
     )
