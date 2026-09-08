@@ -93,7 +93,10 @@ def _replace_json_section(markdown: str, heading: str, data: dict | list) -> str
     body = match.group(2)
     json_re = re.compile(r"```json\s*\n.*?```", re.DOTALL)
     if json_re.search(body):
-        replacement_body = json_re.sub(rendered, body, count=1)
+        # ``rendered`` is literal text, never a replacement template: a JSON
+        # payload containing a backslash escape (``\u2014``) would otherwise
+        # raise ``bad escape \u`` out of ``re``.
+        replacement_body = json_re.sub(lambda _m: rendered, body, count=1)
     else:
         replacement_body = body.rstrip() + "\n\n" + rendered + "\n"
     return markdown[: match.start(2)] + replacement_body + markdown[match.end(2) :]
@@ -110,14 +113,22 @@ def _patch_frontmatter_fields(markdown: str, updates: dict) -> str:
     end = close.end() + 3
     frontmatter = markdown[:end]
     for key, value in updates.items():
-        line_re = re.compile(rf"^{re.escape(key)}:[^\n]*(?:\n|$)", re.MULTILINE)
+        # A YAML scalar may wrap onto more-indented continuation lines
+        # (``yaml.safe_dump`` folds long descriptions).  Consuming only the
+        # first line leaves the remainder behind as orphaned frontmatter.
+        line_re = re.compile(
+            rf"^{re.escape(key)}:[^\n]*(?:\n|$)(?:[ \t]+[^\n]*(?:\n|$))*",
+            re.MULTILINE,
+        )
         if value in ("", None):
             frontmatter = line_re.sub("", frontmatter, count=1)
             continue
         # YAML renders quoting only where it is required, while changing no
         # unrelated metadata such as tags or operator-defined keys.
         rendered = yaml.safe_dump({key: value}, default_flow_style=False, sort_keys=False)
-        frontmatter = line_re.sub(rendered, frontmatter, count=1)
+        # Substituted as a literal, not a replacement template -- a YAML
+        # scalar may legitimately contain backslash escapes (``\u2014``).
+        frontmatter = line_re.sub(lambda _m, _r=rendered: _r, frontmatter, count=1)
         if not line_re.search(markdown[:end]):
             frontmatter = frontmatter[:-3].rstrip("\n") + "\n" + rendered + "---"
     return frontmatter + markdown[end:]
