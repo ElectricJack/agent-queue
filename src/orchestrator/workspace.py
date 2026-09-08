@@ -31,6 +31,13 @@ logger = logging.getLogger(__name__)
 # `checkout`, `worktree add`).
 _BRANCH_BUSY_MARKERS = ("already checked out", "already used by worktree")
 
+# Owner roles whose ``owner_id`` is a task id and whose reservation therefore
+# survives its writer session.  ``arelease_integration_writer_for_retry``
+# self-transfers one of these back to ``reserved``; ``collector`` (owned by an
+# operation/batch) and ``verifier`` (reused while still attached, see
+# ``RepairService._reuse_verifier_on``) are deliberately absent.
+RETRYABLE_INTEGRATION_OWNER_ROLES = frozenset({"worker", "repair"})
+
 
 def _is_branch_busy_error(exc: Exception) -> bool:
     """True when a git failure is "that branch lives in another worktree"."""
@@ -1242,6 +1249,109 @@ class WorkspaceMixin:
         released = await self.db.get_workspace(workspace.id)
         return released is not None and released.locked_by_task_id is None
 
+    async def aconfirm_integration_pool_owner_handoff(self, owner: dict) -> bool:
+        """Detach a **pool** writer's checkout and release its exact attachment.
+
+        :meth:`aconfirm_integration_owner_handoff` proves a push-model writer
+        gone by stopping its session.  That is not available here and is not
+        what a pool close means: the session is the worker loop itself, it
+        keeps its workspace agent-lock across tasks, and stopping it would
+        kill the loop mid-``aq task close``.  The pool equivalent of "the
+        writer let go" is the claim protocol -- the task-hold this close is
+        about to release, plus a checkout that is no longer on the branch.
+
+        So the proof is the Git half, taken while the claim evidence is still
+        readable: the same clean/pushed/``origin``-tip check and
+        ``switch --detach`` the push-model handoff performs, then a CAS that
+        moves the owner row to ``released`` with ``confirmed_workspace_id``.
+        The workspace lock, the agent row and the session are deliberately
+        untouched -- ``db.release_claim`` unwinds those a moment later, and
+        clearing them here would both race it and destroy the evidence this
+        very check reads.
+
+        Any unavailable proof returns ``False``, which keeps the row fenced
+        and (via ``arelease_integration_writer_for_retry``) makes the caller
+        retain the claim rather than close over an unprovable handoff.
+        """
+        session_id = owner.get("session_id")
+        workspace_id = owner.get("workspace_id")
+        from src.orchestrator.workspace_attachments import (
+            integration_handoff_release_is_confirmed,
+            mark_integration_pool_handoff_released,
+        )
+
+        if await integration_handoff_release_is_confirmed(self.db, owner):
+            return True
+        if not session_id or not workspace_id:
+            return False
+        session = await self.db.get_session(session_id)
+        workspace = await self.db.get_workspace(workspace_id)
+        repository = await self.db.get_repo(str(owner.get("repository_id") or ""))
+        task = await self.db.get_task(session.task_id) if session and session.task_id else None
+        if (
+            session is None
+            or workspace is None
+            or repository is None
+            or task is None
+            or session.lifecycle != "pool"
+            or owner.get("owner_role") not in {"worker", "repair"}
+            or task.id != owner.get("owner_id")
+            or workspace.locked_by_task_id != session.task_id
+            or workspace.project_id != repository.project_id
+            or session.project_id != repository.project_id
+            or task.project_id != repository.project_id
+            or task.repo_id != repository.id
+            or task.branch_name != owner.get("ref")
+            or os.path.realpath(session.work_dir) != os.path.realpath(workspace.workspace_path)
+        ):
+            return False
+
+        try:
+            from src.orchestrator.workspace_attachments import (
+                detach_slot_for_integration_handoff,
+                detach_workspace_for_integration_handoff,
+            )
+
+            if workspace.is_slot:
+                detached = await detach_slot_for_integration_handoff(
+                    self.db,
+                    self.git,
+                    self._git_mutex,
+                    workspace,
+                    expected_branch=str(owner["ref"]),
+                )
+            else:
+                detached = await detach_workspace_for_integration_handoff(
+                    self.git,
+                    self._git_mutex,
+                    workspace,
+                    expected_branch=str(owner["ref"]),
+                )
+            if not detached:
+                return False
+        except Exception:
+            logger.warning(
+                "Could not detach pool integration workspace %s",
+                workspace.id,
+                exc_info=True,
+            )
+            return False
+
+        current_workspace = await self.db.get_workspace(workspace.id)
+        current_session = await self.db.get_session(session.id)
+        if (
+            current_workspace is None
+            or current_session is None
+            or current_session.task_id != session.task_id
+            or current_session.instance_token != session.instance_token
+            or current_workspace.locked_by_task_id != session.task_id
+        ):
+            return False
+        return await mark_integration_pool_handoff_released(
+            self.db, owner, workspace=workspace, task_id=session.task_id,
+            session_instance_token=session.instance_token
+        )
+
     async def aconfirm_integration_owner_stopped_for_repair(
         self, owner: dict
     ) -> dict | None:
@@ -1335,13 +1445,38 @@ class WorkspaceMixin:
             "commit_proof": commit_proof,
         }
 
-    async def arelease_integration_writer_for_retry(self, task, *, reason: str) -> bool | None:
+    async def arelease_integration_writer_for_retry(
+        self, task, *, reason: str, pool: bool = False
+    ) -> bool | None:
         """Prove an enabled writer stopped, then restore its task reservation.
 
         ``None`` means the project is unmanaged and legacy cleanup applies.
         ``False`` means termination/detach is unknown, so the workspace lock
         must remain held.  ``True`` means the exact attachment was atomically
         released and the same task now owns a fresh reserved fence for retry.
+
+        ``pool=True`` selects :meth:`aconfirm_integration_pool_owner_handoff`,
+        which proves the *checkout* detached instead of stopping the session.
+        A pool session is the worker loop itself and survives its own close,
+        so the push-model stop proof would kill it; the claim release that
+        follows this call is the rest of the evidence, which is exactly why
+        the release has to happen here, before that evidence is erased.
+
+        The self-transfer keeps the owner's **own** role.  Restoring the
+        reservation is what every call site wants -- a failed session launch,
+        a suspended managed parent, and a repair delegate that closed
+        successfully all leave one task still legitimately owning its branch
+        with no live writer attached to it.  Hardcoding ``"worker"`` here made
+        the repair leg a silent no-op: a ``repair`` owner stayed
+        ``attached`` to a stopped session for good, and because
+        :meth:`aconfirm_integration_owner_handoff` needs the workspace lock
+        and the session/task binding that the close then tears down, no later
+        transfer could ever confirm it either -- every subsequent
+        ``BranchOwnership.transfer`` of that branch raised ``BranchBusy``
+        permanently and surfaced as ``prepare_failed`` / "branch not
+        reserved".  Only the roles a *task* can own are accepted;
+        ``collector`` and ``verifier`` handoffs keep the general rule
+        (design spec 9.1).
         """
         project = await self.db.get_project(task.project_id)
         if getattr(project, "hierarchical_integration_mode", "disabled") not in {
@@ -1354,16 +1489,24 @@ class WorkspaceMixin:
             return False
         target = BranchKey(repository_id=repository_id, branch=task.branch_name)
         ownership = BranchOwnership(
-            self.db, confirm_handoff=self.aconfirm_integration_owner_handoff
+            self.db,
+            confirm_handoff=(
+                self.aconfirm_integration_pool_owner_handoff
+                if pool
+                else self.aconfirm_integration_owner_handoff
+            ),
         )
         owner = await ownership.get_owner(target)
-        if owner is None or owner["owner_id"] != task.id or owner["owner_role"] != "worker":
+        if owner is None or owner["owner_id"] != task.id:
+            return False
+        role = str(owner["owner_role"] or "")
+        if role not in RETRYABLE_INTEGRATION_OWNER_ROLES:
             return False
         if owner["handoff_state"] == "reserved":
             return True
         fence = Fence(target=target, owner_id=task.id, token=int(owner["fence_token"]))
         try:
-            await ownership.transfer(fence, task.id, "worker")
+            await ownership.transfer(fence, task.id, role)
         except BranchOwnershipError:
             logger.warning(
                 "Task %s retains its integration workspace after %s: stop/detach unconfirmed",

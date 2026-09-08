@@ -33,6 +33,7 @@ from dataclasses import dataclass, field
 
 from src.claim_file import read_claim_file, remove_claim_file_if_matches
 from src.models import SessionRecord, TaskStatus
+from src.pool_claims import is_live_pool_claim_task_status
 from src.sessions.exit_classifier import ExitVerdict, Verdict, classify_exit
 from src.sessions.provider import (
     Cap,
@@ -1046,10 +1047,7 @@ class SessionReconciler:
                 continue  # an earlier step in this tick already handled it
             row = fresh
             task = await self.db.get_task(row.task_id) if row.task_id else None
-            still_open = task is not None and task.status in (
-                TaskStatus.IN_PROGRESS,
-                TaskStatus.ASSIGNED,
-            )
+            still_open = task is not None and is_live_pool_claim_task_status(task.status)
             if still_open:
                 continue
             if row.lifecycle == "pool":
@@ -1067,17 +1065,37 @@ class SessionReconciler:
                 release = await self.db.release_claim(
                     row.id,
                     task_status=task.status if task is not None else TaskStatus.READY,
-                    context="terminal_pool_release",
+                    context=(
+                        f"pool_claim_reclaimed:{task.status.value}"
+                        if task is not None
+                        else "pool_claim_reclaimed:missing"
+                    ),
                     now=now,
                     expected_task_id=row.task_id,
                     expected_claim_epoch=row.last_claim_epoch,
+                    expected_task_status=task.status if task is not None else None,
                     drain_after_release=self.config.swarm.fresh_context_per_task,
+                    # The pool process still owns this checkout until termination.
                 )
                 if release.released and row.work_dir:
                     remove_claim_file_if_matches(
                         row.work_dir,
                         row.task_id,
                         cleanup_epoch,
+                    )
+                if release.released:
+                    status = task.status.value if task is not None else "missing"
+                    await self.db.create_message(
+                        project_id=row.project_id,
+                        from_kind="system",
+                        from_id="session-reconciler",
+                        to_kind="session",
+                        to_id=row.id,
+                        subject="Pool claim reclaimed",
+                        body=(
+                            f"Your claim on task {row.task_id} was reclaimed because its "
+                            f"status is {status}. Run `aq task claim --next` for more work."
+                        ),
                     )
                 continue
             provider = self._provider_for(row)

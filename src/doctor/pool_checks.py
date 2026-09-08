@@ -60,11 +60,9 @@ from src.doctor.runner import apply_fix
 from src.git.manager import GitManager
 from src.models import AgentState, TaskStatus
 from src.orchestrator.worktree_manager import BRANCH_PREFIX
+from src.pool_claims import is_live_pool_claim_task_status
 
 OWNER = "swarm-work-model"
-
-_LIVE_TASK_STATUSES = (TaskStatus.IN_PROGRESS, TaskStatus.ASSIGNED)
-
 
 # ---------------------------------------------------------------------------
 # pools.stale_worktree_checkouts
@@ -181,7 +179,7 @@ async def _find_stuck_pool_sessions(ctx: DoctorContext):
         if not s.task_id:
             continue
         task = await ctx.db.get_task(s.task_id)
-        if task is None or task.status not in _LIVE_TASK_STATUSES:
+        if task is None or not is_live_pool_claim_task_status(task.status):
             bad.append((s, task))
     return bad
 
