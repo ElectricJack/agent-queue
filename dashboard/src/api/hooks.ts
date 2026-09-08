@@ -17,6 +17,7 @@ import {
   editWorkspace,
   getConfig,
   getConfigSchema,
+  getProviderUsageApiProvidersUsageGet,
   getMcpServer,
   getProfile,
   getProject,
@@ -128,6 +129,8 @@ import type {
   ProbeMcpServerResponse,
   ProfileDetail,
   ProfileSummary,
+  ProviderUsageResponse,
+  ProviderUsageSnapshot,
   ProjectSummary,
   ShowEffectiveProfileResponse,
   TaskDetail,
@@ -1444,3 +1447,32 @@ export function useReloadSystemConfig() {
     },
   });
 }
+
+// --- Provider usage -------------------------------------------------------
+//
+// Each provider's own quota, as it reports it: the newest reading per
+// ``(provider, window, scope)`` series.  ``stale`` and ``age_seconds`` are
+// computed server-side and used verbatim here — the horizon differs per
+// provider (a Codex number only advances while a Codex session is live) and
+// re-deriving it in the client is how two surfaces end up disagreeing about
+// the same card.
+//
+// Polled rather than pushed: these numbers move on a ten-minute probe and a
+// transcript tick, so a socket frame for them would carry nothing new 99% of
+// the time.
+
+export function useProviderUsage(options?: { refetchInterval?: number }) {
+  return useQuery({
+    queryKey: ["providers", "usage"],
+    queryFn: async ({ signal }) =>
+      (
+        await getProviderUsageApiProvidersUsageGet({ signal, throwOnError: true })
+      ).data as ProviderUsageResponse,
+    // An install that has never probed returns an empty list, which is a
+    // valid answer and not worth three backoff retries.
+    retry: 1,
+    refetchInterval: options?.refetchInterval ?? 60_000,
+  });
+}
+
+export type { ProviderUsageResponse, ProviderUsageSnapshot };
