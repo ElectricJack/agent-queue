@@ -203,6 +203,23 @@ async def _enable_with_route(
     )
 
 
+@pytest.fixture(autouse=True)
+async def managed_runtimes(db, monkeypatch):
+    """Stop every background dispatcher before its database is closed."""
+    runtimes = []
+    create_runtime = _runtime
+
+    def tracked_runtime(*args, **kwargs):
+        runtime = create_runtime(*args, **kwargs)
+        runtimes.append(runtime)
+        return runtime
+
+    monkeypatch.setattr(__name__ + "._runtime", tracked_runtime)
+    yield
+    for runtime in reversed(runtimes):
+        await runtime.shutdown()
+
+
 def _runtime(db, compiled_root) -> V2PlaybookRuntime:
     config = SimpleNamespace(
         compiled_root=str(compiled_root),
@@ -479,6 +496,9 @@ async def test_pending_row_stays_protected_until_every_selected_rule_has_a_run(d
     )
     runtime = _runtime(db, tmp_path / "compiled")
     await runtime.refresh()
+    # Exercise one dispatch directly without the reconciler claiming the same
+    # row or clearing last_error for its next retry before we inspect it.
+    await runtime.shutdown()
     pending_id = await db.retain_integration_event(
         playbook_id="integration-train",
         activation_id=activation_id,

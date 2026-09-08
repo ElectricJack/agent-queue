@@ -829,6 +829,27 @@ genuinely has to be read from its start again. A missed update falls through to
 an insert, and a racing writer's `IntegrityError` is swallowed: the conflict is
 itself proof the row now exists.
 
+### Table: `provider_usage_snapshots`
+
+Provider quota readings from transcripts and probes. Repeated readings update
+`last_seen_at` while preserving the original `observed_at` for usage history.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| id | INTEGER | Auto-increment primary key |
+| provider | TEXT | Provider identifier |
+| account_label | TEXT | Provider-reported plan or limit label; defaults to empty |
+| window | TEXT | Provider quota window |
+| scope | TEXT | Provider-reported model scope; defaults to empty |
+| used_percent | FLOAT | Observed quota utilization |
+| resets_at | FLOAT | Nullable reset time, Unix epoch seconds |
+| observed_at | FLOAT | First observation time, Unix epoch seconds |
+| last_seen_at | FLOAT | Latest confirmation time, Unix epoch seconds |
+| source | TEXT | `transcript` or `probe`, enforced by a check constraint |
+
+The series index covers `(provider, window, scope, observed_at DESC)`.
+This table has no foreign keys.
+
 ### Table: `metrics_samples`
 
 Fleet Metrics tab time-series buckets. Each row stores one JSON metric sample
