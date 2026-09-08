@@ -355,6 +355,12 @@ def start_daemon() -> bool:
                     if resp.status in (200, 503):
                         ready = True
                         break
+            except urllib.error.HTTPError as exc:
+                exc.close()
+                if exc.code == 503:
+                    console.print("[yellow]Daemon is running with degraded health; run aq doctor.[/]")
+                    ready = True
+                    break
             except (urllib.error.URLError, OSError):
                 pass  # not yet listening
             time.sleep(0.5)
