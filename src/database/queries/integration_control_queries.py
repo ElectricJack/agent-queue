@@ -7,7 +7,6 @@ from typing import Any
 
 from sqlalchemy import insert, literal, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
-from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from src.database.tables import (
@@ -182,7 +181,7 @@ class IntegrationControlQueriesMixin:
     ) -> bool:
         """Consume a matching waiver once without mutating its original record."""
         _digest(blocker_digest)
-        insert_fn = pg_insert if conn.dialect.name == "postgresql" else sqlite_insert
+        insert_fn = pg_insert
         matching = (
             select(
                 integration_history_waivers.c.id,
@@ -195,8 +194,7 @@ class IntegrationControlQueriesMixin:
             .select_from(
                 integration_history_waivers.join(
                     integration_rollout_transitions,
-                    integration_rollout_transitions.c.waiver_id
-                    == integration_history_waivers.c.id,
+                    integration_rollout_transitions.c.waiver_id == integration_history_waivers.c.id,
                 )
             )
             .where(
@@ -247,9 +245,7 @@ class IntegrationControlQueriesMixin:
             await conn.execute(
                 select(integration_history_waiver_consumptions.c.waiver_id)
                 .select_from(
-                    integration_history_waiver_consumptions.join(
-                        gates, gates.c.id == gate_id
-                    )
+                    integration_history_waiver_consumptions.join(gates, gates.c.id == gate_id)
                 )
                 .where(
                     integration_history_waiver_consumptions.c.waiver_id == waiver_id,
@@ -297,7 +293,7 @@ class IntegrationControlQueriesMixin:
         ).scalar_one_or_none()
         if project_generation != generation:
             raise ValueError("legacy suppression must match the current integration generation")
-        insert_fn = pg_insert if conn.dialect.name == "postgresql" else sqlite_insert
+        insert_fn = pg_insert
         values = {
             "generation": generation,
             "merge_sweep_suppressed": bool(merge_sweep_suppressed),
@@ -319,22 +315,30 @@ class IntegrationControlQueriesMixin:
     async def get_integration_legacy_suppression(self, project_id: str) -> dict | None:
         async with self._engine.connect() as conn:
             row = (
-                await conn.execute(
-                    select(integration_legacy_suppression).where(
-                        integration_legacy_suppression.c.project_id == project_id
+                (
+                    await conn.execute(
+                        select(integration_legacy_suppression).where(
+                            integration_legacy_suppression.c.project_id == project_id
+                        )
                     )
                 )
-            ).mappings().one_or_none()
+                .mappings()
+                .one_or_none()
+            )
         return dict(row) if row is not None else None
 
     async def list_integration_legacy_suppressions(self) -> list[dict]:
         """Return the small per-project routing predicate snapshot."""
         async with self._engine.connect() as conn:
             rows = (
-                await conn.execute(
-                    select(integration_legacy_suppression).order_by(
-                        integration_legacy_suppression.c.project_id
+                (
+                    await conn.execute(
+                        select(integration_legacy_suppression).order_by(
+                            integration_legacy_suppression.c.project_id
+                        )
                     )
                 )
-            ).mappings().all()
+                .mappings()
+                .all()
+            )
         return [dict(row) for row in rows]

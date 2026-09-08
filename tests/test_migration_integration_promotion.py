@@ -34,8 +34,8 @@ def _migrate(connection, revision: str, *, downgrade: bool = False) -> None:
 
 
 async def test_sqlite_promotion_revision_upgrade_downgrade_upgrade(tmp_path):
-    path = tmp_path / "promotion-migration.db"
-    database = Database(str(path))
+    path = await create_scratch_database("mig")
+    database = Database(path)
     await database.initialize()
     await database.close()
     engine = create_engine(f"sqlite:///{path}")

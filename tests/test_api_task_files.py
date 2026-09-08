@@ -15,6 +15,7 @@ from src.api.task_files import build_task_files_router
 from src.database import Database
 from src.git.manager import GitManager
 from src.models import Project, RepoSourceType, Task, TaskStatus, Workspace
+from tests.db_fixtures import lease_dsn
 
 
 def _run(cmd: list[str], cwd: Path) -> None:
@@ -43,7 +44,7 @@ def repo(tmp_path):
 @pytest.fixture
 async def wired(tmp_path, repo):
     """Yields (client_factory, db, repo) — httpx.ASGITransport, no TestClient."""
-    db = Database(str(tmp_path / "aq.db"))
+    db = Database(lease_dsn("aq.db"))
     await db.initialize()
     await db.create_project(Project(id="proj", name="P", repo_default_branch="main"))
     await db.create_task(Task(

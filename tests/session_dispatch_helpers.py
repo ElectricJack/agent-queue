@@ -27,13 +27,14 @@ import os
 from pathlib import Path
 from unittest.mock import AsyncMock
 
-from src.config import AppConfig
+from src.config import DatabaseConfig, AppConfig
 from src.intelligence_classes import IntelligenceClass
 from src.models import AgentProfile, Project, RepoSourceType, Workspace
 from src.orchestrator import Orchestrator
 from src.sessions.harness_parser import Harness
 from tests.assignment_routing_helpers import install_already_routed
 from tests.git_mock_helpers import stub_repo_root_identity
+from tests.db_fixtures import lease_dsn
 
 __all__ = [
     "SESSION_CLASSES",
@@ -64,7 +65,7 @@ async def drain_running_tasks(orch: Orchestrator) -> None:
 async def make_session_orch(tmp_path) -> Orchestrator:
     """An initialized orchestrator that dispatches the way production does."""
     config = AppConfig(
-        database_path=str(tmp_path / "test.db"),
+        database=DatabaseConfig(url=lease_dsn("test.db")),
         workspace_dir=str(tmp_path / "workspaces"),
         data_dir=str(tmp_path / "data"),
     )

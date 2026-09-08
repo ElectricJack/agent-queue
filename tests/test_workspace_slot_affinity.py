@@ -37,6 +37,7 @@ from src.models import (
 )
 from src.orchestrator import Orchestrator
 from src.orchestrator.worktree_manager import task_branch_name
+from tests.db_fixtures import lease_dsn
 
 pytestmark = pytest.mark.asyncio
 
@@ -70,7 +71,7 @@ async def env(tmp_path):
     _git(["commit", "-m", "init"], cwd=base_path)
     _git(["push", "origin", "main"], cwd=base_path)
 
-    db = Database(str(tmp_path / "affinity.db"))
+    db = Database(lease_dsn("affinity.db"))
     await db.initialize()
     await db.create_project(Project(id="p", name="p", max_concurrent_agents=2))
     await db.create_profile(AgentProfile(id="worker", name="Worker"))

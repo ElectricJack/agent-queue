@@ -93,7 +93,7 @@ The `[project].dependencies` list captures all packages required for a minimal
 daemon install. Dependencies fall into four broad groups:
 
 **Core infrastructure**
-- `aiosqlite>=0.20.0` — async SQLite driver
+- `asyncpg>=0.29.0` — async PostgreSQL driver (`aiosqlite` is now only in the `sqlite-import` extra)
 - `sqlalchemy[asyncio]>=2.0` — ORM / Core with async support
 - `alembic>=1.13` — schema migrations
 - `discord.py>=2.5.2,<2.6` — Discord bot framework. **Upper bound is

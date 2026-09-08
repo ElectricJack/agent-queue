@@ -17,6 +17,7 @@ from src.config import MessagesConfig
 from src.database import Database
 from src.event_schemas import validate_payload
 from src.models import Agent, AgentState, Message, Project, SessionRecord, Task, TaskStatus
+from tests.db_fixtures import lease_dsn
 
 
 class _RecordingBus:
@@ -36,7 +37,7 @@ class _RecordingBus:
 
 @pytest.fixture
 async def setup(tmp_path):
-    db = Database(str(tmp_path / "messages.db"))
+    db = Database(lease_dsn("messages.db"))
     await db.initialize()
     await db.create_project(Project(id="p1", name="test"))
 

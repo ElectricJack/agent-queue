@@ -9,6 +9,8 @@ from src.intelligence_classes import IntelligenceClass
 from src.models import Agent, AgentProfile, AgentState, Project, Task, TaskStatus
 from src.scheduler import Scheduler, SchedulerState
 from src.assignment_routing import EffectiveAssignmentRoute
+from tests.db_fixtures import lease_dsn
+from src.config import DatabaseConfig
 
 
 def routing_profiles():
@@ -249,7 +251,7 @@ async def routing_db(tmp_path):
     from src.database import Database
     from src.models import RepoSourceType, Workspace
 
-    db = Database(str(tmp_path / "routing.db"))
+    db = Database(lease_dsn("routing.db"))
     await db.initialize()
     for profile in routing_profiles().values():
         await db.create_profile(profile)
@@ -313,7 +315,7 @@ async def test_reconciler_reuses_matching_worker_without_changing_definition(rou
 
 
 async def test_prelaunch_recheck_rejects_task_without_effective_route(routing_db, tmp_path):
-    from src.config import AppConfig, DiscordConfig
+    from src.config import DatabaseConfig, AppConfig, DiscordConfig
     from src.orchestrator import Orchestrator
 
     agent = workers()[-1]
@@ -321,7 +323,7 @@ async def test_prelaunch_recheck_rejects_task_without_effective_route(routing_db
     task = replace(await routing_db.get_task("task"), intelligence_class=None)
     config = AppConfig(
         discord=DiscordConfig(bot_token="test", guild_id="1"),
-        database_path=str(tmp_path / "unused.db"),
+        database=DatabaseConfig(url=lease_dsn("unused.db")),
         data_dir=str(tmp_path / "data"),
         workspace_dir=str(tmp_path / "work"),
     )
@@ -353,7 +355,7 @@ async def test_orchestrator_snapshot_enforces_matching_and_live_terminal_ownersh
         ))
     config = AppConfig(
         discord=DiscordConfig(bot_token="test", guild_id="1"),
-        database_path=str(tmp_path / "unused.db"), data_dir=str(tmp_path / "data"),
+        database=DatabaseConfig(url=lease_dsn("unused.db")), data_dir=str(tmp_path / "data"),
         workspace_dir=str(tmp_path / "work"),
     )
     orch = Orchestrator(config)
@@ -396,7 +398,7 @@ async def test_orchestrator_leaves_an_unrouted_task_and_its_workers_alone(routin
     await routing_db.update_task("task", intelligence_class=None, profile_id=None)
     config = AppConfig(
         discord=DiscordConfig(bot_token="test", guild_id="1"),
-        database_path=str(tmp_path / "unused.db"), data_dir=str(tmp_path / "data"),
+        database=DatabaseConfig(url=lease_dsn("unused.db")), data_dir=str(tmp_path / "data"),
         workspace_dir=str(tmp_path / "work"),
     )
     orch = Orchestrator(config)

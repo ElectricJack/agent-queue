@@ -22,11 +22,12 @@ from src.doctor.models import Severity
 from src.doctor.models import DoctorContext
 from src.doctor.runner import run_doctor
 from src.models import Project, Task, TaskStatus
+from tests.db_fixtures import lease_dsn
 
 
 @pytest.fixture
 async def db(tmp_path):
-    d = Database(str(tmp_path / "doctor.db"))
+    d = Database(lease_dsn("doctor.db"))
     await d.initialize()
     await d.create_project(Project(id="p", name="P"))
     return d

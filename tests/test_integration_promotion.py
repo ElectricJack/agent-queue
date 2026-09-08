@@ -38,13 +38,14 @@ from src.git.manager import GitError, GitManager
 from src.integration.models import BranchKey, Fence, PromotionInput
 from src.integration.ownership import BranchOwnership
 from src.models import Project, RepoConfig, RepoSourceType, SessionRecord, Task, TaskStatus
+from tests.db_fixtures import lease_dsn
 
 _DEFAULT_INSTANCE = object()
 
 
 @pytest.fixture
 async def db(tmp_path):
-    database = Database(str(tmp_path / "promotion.db"))
+    database = Database(lease_dsn("promotion.db"))
     await database.initialize()
     await database.create_project(Project(id="project", name="Promotion project"))
     await database.create_repo(

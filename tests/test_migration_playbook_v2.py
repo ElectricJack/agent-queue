@@ -25,6 +25,7 @@ from alembic.config import Config
 from alembic.script import ScriptDirectory
 
 from tests.pg_dsn import ensure_worker_postgres_dsn
+from tests.pg_dsn import create_scratch_database
 
 pytestmark = pytest.mark.migration
 
@@ -550,7 +551,6 @@ async def test_partial_indexes_are_created_on_postgres():
         pytest.skip("POSTGRES_TEST_DSN not set")
     import asyncpg
 
-    from tests.pg_dsn import create_scratch_database
 
     dsn = await create_scratch_database("pbv2idx")
     result = _alembic_pg(dsn, "upgrade", "head")
@@ -589,7 +589,6 @@ async def test_upgrade_head_on_postgres():
         pytest.skip("POSTGRES_TEST_DSN not set")
     import asyncpg
 
-    from tests.pg_dsn import create_scratch_database
 
     dsn = await create_scratch_database("pbv2head")
     result = _alembic_pg(dsn, "upgrade", "head")

@@ -27,7 +27,7 @@ graph TD
     Plugins["Plugin Registry<br/><i>Modular extensibility</i>"]
     Adapter["Adapter<br/><i>(Claude Code)</i>"]
     Git["Git Manager"]
-    DB["Database<br/><i>(SQLite / PostgreSQL)</i>"]
+    DB["Database<br/><i>(PostgreSQL)</i>"]
     Memory["Memory V2<br/><i>Milvus-backed 4-tier knowledge</i>"]
     Extractor["Memory Extractor<br/><i>Auto-extracts from events</i>"]
     Workflows["Workflow Coordination<br/><i>Multi-agent pipelines</i>"]
@@ -126,9 +126,9 @@ Each module has a corresponding specification in the `specs/` directory. These s
 
 All I/O operations use `asyncio`. The main event loop runs the Discord bot, MCP server, scheduling cycle, playbook engine, and agent monitoring concurrently.
 
-### SQLite Persistence
+### PostgreSQL Persistence
 
-All state is persisted to SQLite via `aiosqlite`. The system survives restarts and picks up exactly where it left off. PostgreSQL supported for production deployments via SQLAlchemy Core dialect portability.
+All state is persisted to PostgreSQL via `asyncpg`. The system survives restarts and picks up exactly where it left off.
 
 ## Module Reference
 
@@ -140,7 +140,7 @@ All state is persisted to SQLite via `aiosqlite`. The system survives restarts a
 | `src/orchestrator.py` | Core task/agent lifecycle management ([[specs/orchestrator|spec]]) |
 | `src/commands/` | Unified command execution — 150+ commands ([[specs/command-handler|spec]]) |
 | `src/models.py` | Data models (Task, Agent, Project, Workflow, etc.) |
-| `src/database/` | SQLite/PostgreSQL persistence (21+ tables) ([[specs/database|spec]]) |
+| `src/database/` | PostgreSQL persistence (91 tables) ([[specs/database|spec]]) |
 | `src/config.py` | YAML config with env var substitution |
 | `src/scheduler.py` | Proportional deficit-based scheduling ([[specs/scheduler-and-budget|spec]]) |
 | `src/state_machine.py` | Task state transitions and DAG validation |

@@ -47,7 +47,7 @@ from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
 from src.commands.handler import CommandHandler
-from src.config import AppConfig
+from src.config import DatabaseConfig, AppConfig
 from src.models import (
     KIND_MODE_WORKTREE,
     SYSTEM_KIND_SCOPE,
@@ -67,6 +67,7 @@ from src.runtimes.base import Runtime
 from src.scheduler import AssignAction
 from src.sessions.harness_registry import load_from_vault
 from src.sessions.tmux import TmuxProvider
+from tests.db_fixtures import lease_dsn
 
 pytestmark = pytest.mark.tmux
 
@@ -205,7 +206,7 @@ async def orch(tmp_path: Path):
     """Primary orchestrator + observer teardown identical to C2."""
     config = AppConfig(
         data_dir=str(tmp_path / "data"),
-        database_path=str(tmp_path / "aq.db"),
+        database=DatabaseConfig(url=lease_dsn("aq.db")),
         workspace_dir=str(tmp_path / "workspaces"),
     )
     config.worktrees.enabled = True
@@ -727,7 +728,7 @@ class TestCheckpointC3:
             # rebuild its worldview from durable state.
             config2 = AppConfig(
                 data_dir=str(tmp_path / "data"),
-                database_path=str(tmp_path / "aq.db"),
+                database=DatabaseConfig(url=lease_dsn("aq.db")),
                 workspace_dir=str(tmp_path / "workspaces"),
             )
             config2.worktrees.enabled = True

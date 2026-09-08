@@ -9,7 +9,6 @@ from typing import Any
 
 from sqlalchemy import delete, insert, or_, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
-from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.ext.asyncio import AsyncConnection
 from sqlalchemy.exc import IntegrityError
 
@@ -77,9 +76,7 @@ async def freeze_destination_manifest(
                     manifest=tuple(dict(item) for item in existing),
                     cursor=int(row["acceptance_cursor"]),
                 )
-            artifact_shas = sorted(
-                {destination["artifact_sha256"] for destination in manifest}
-            )
+            artifact_shas = sorted({destination["artifact_sha256"] for destination in manifest})
             await conn.execute(
                 insert(integration_outbox_artifact_pins),
                 [
@@ -146,7 +143,7 @@ async def enqueue_integration_event(
     body["project_id"] = project_id
     body["event_id"] = event_id
 
-    insert_fn = pg_insert if conn.dialect.name == "postgresql" else sqlite_insert
+    insert_fn = pg_insert
     statement = insert_fn(integration_outbox).values(
         id=event_id,
         dedup_key=dedup_key,

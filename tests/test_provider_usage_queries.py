@@ -19,6 +19,7 @@ from src.database import Database
 from src.database.tables import provider_usage_snapshots
 from src.models import ProviderUsageSnapshot
 from tests.pg_dsn import ensure_worker_postgres_dsn
+from tests.db_fixtures import lease_dsn
 
 POSTGRES_DSN = ensure_worker_postgres_dsn()
 
@@ -35,7 +36,7 @@ async def any_db(request, tmp_path):
         await database.initialize()
         await database.reset_for_tests()
     else:
-        database = Database(str(tmp_path / "provider_usage.db"))
+        database = Database(lease_dsn("provider_usage.db"))
         await database.initialize()
     yield database
     await database.close()

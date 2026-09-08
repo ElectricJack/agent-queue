@@ -19,7 +19,7 @@ import os
 
 import pytest
 
-from src.config import AppConfig
+from src.config import DatabaseConfig, AppConfig
 from src.models import AgentProfile
 from src.orchestrator import Orchestrator
 from src.profiles.migration import (
@@ -32,6 +32,7 @@ from src.profiles.migration import (
     verify_round_trip,
 )
 from src.profiles.parser import parse_profile
+from tests.db_fixtures import lease_dsn
 
 
 # ---------------------------------------------------------------------------
@@ -44,7 +45,7 @@ async def db(tmp_path):
     """Create a fresh in-memory database for testing."""
     from src.database import Database
 
-    db = Database(str(tmp_path / "test.db"))
+    db = Database(lease_dsn("test.db"))
     await db.initialize()
     yield db
     await db.close()
@@ -551,7 +552,7 @@ class TestCommandHandlerMigrateProfiles:
         from src.commands.handler import CommandHandler
 
         config = AppConfig(
-            database_path=str(tmp_path / "test.db"),
+            database=DatabaseConfig(url=lease_dsn("test.db")),
             workspace_dir=str(tmp_path / "workspaces"),
             data_dir=str(tmp_path / "data"),
         )

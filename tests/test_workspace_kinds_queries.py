@@ -8,11 +8,12 @@ import pytest
 
 from src.database import Database
 from src.models import SYSTEM_KIND_SCOPE, WorkspaceKind
+from tests.db_fixtures import lease_dsn
 
 
 @pytest.fixture
 async def db(tmp_path):
-    database = Database(str(tmp_path / "test.db"))
+    database = Database(lease_dsn("test.db"))
     await database.initialize()
     yield database
     await database.close()

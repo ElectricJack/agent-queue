@@ -10,6 +10,7 @@ from src.api.auth import LOCAL_SCOPE, RequestScope
 from src.api.websocket import WebSocketManager
 from src.database import Database
 from src.event_bus import EventBus
+from tests.db_fixtures import lease_dsn
 
 
 QUESTION = {
@@ -88,7 +89,7 @@ async def test_replay_question_payload_is_redacted_and_project_scoped(
 ):
     from src.api import dependencies
 
-    db = Database(str(tmp_path / "replay.db"))
+    db = Database(lease_dsn("replay.db"))
     await db.initialize()
     # Audit log FKs are deliberately soft; only this isolated file is used.
     await db.log_event("agent.question.updated", payload=json.dumps(QUESTION))

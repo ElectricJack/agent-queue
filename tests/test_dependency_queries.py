@@ -8,8 +8,9 @@ from __future__ import annotations
 
 import pytest
 
-from src.database import SQLiteDatabaseAdapter
+from src.database import Database
 from src.models import DepType, Project, Task, TaskStatus
+from tests.db_fixtures import lease_dsn
 
 
 PROJECT = "p-dep"
@@ -17,7 +18,7 @@ PROJECT = "p-dep"
 
 @pytest.fixture
 async def db(tmp_path):
-    database = SQLiteDatabaseAdapter(str(tmp_path / "dep.db"))
+    database = Database(lease_dsn("dep.db"))
     await database.initialize()
     await database.create_project(Project(id=PROJECT, name="dep"))
     yield database

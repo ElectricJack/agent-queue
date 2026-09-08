@@ -16,11 +16,12 @@ from src.sessions import SessionProviderRegistry
 from src.sessions.fake import FakeProvider
 from src.sessions.provider import NudgeDeferred, SessionSpec
 from src.sessions.transcripts.base import TranscriptEntry
+from tests.db_fixtures import lease_dsn
 
 
 @pytest.fixture
 async def env(tmp_path):
-    db = Database(str(tmp_path / "questions.db"))
+    db = Database(lease_dsn("questions.db"))
     await db.initialize()
     await db.create_project(Project(id="p", name="Project"))
     await db.create_agent(

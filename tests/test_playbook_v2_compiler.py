@@ -18,12 +18,13 @@ from src.playbooks.validation import (
     RegistryContractLookup,
 )
 from tests.playbook_v2_helpers import FIXTURE_DIR, StubContracts, StubEvents, StubProfiles, twin
+from tests.pg_dsn import create_scratch_database
 
 LOWERING = FIXTURE_DIR / "lowering"
 
 
 def _source(tmp_path: Path) -> PlaybookSource:
-    path = tmp_path / "proposal.md"
+    path = await create_scratch_database("mig")
     path.write_text(
         "---\nid: demo\nscope: system\ntriggers:\n  - task.completed\n---\n"
         "Use `demo_command`, `project_id`, `done`, `worker`, `task_id`, and `review`.\n"
@@ -75,7 +76,7 @@ def test_compiled_against_records_a_delegated_profile(tmp_path):
 
     body = _body()
     body["steps"]["act"]["inputs"]["profile_id"] = {"type": "literal", "value": "reviewer"}
-    path = tmp_path / "delegating.md"
+    path = await create_scratch_database("mig")
     path.write_text(
         "---\nid: demo\nscope: system\ntriggers:\n  - task.completed\n---\n"
         "Use `demo_command`, `project_id`, `profile_id`, `done`, `worker`, "
@@ -103,7 +104,7 @@ def test_a_computed_profile_id_is_not_fingerprinted(tmp_path):
     """Only a literal can be snapshotted: a run-chosen profile has no compile-time value."""
     body = _body()
     body["steps"]["act"]["inputs"]["profile_id"] = {"type": "event_ref", "path": "project_id"}
-    path = tmp_path / "computed.md"
+    path = await create_scratch_database("mig")
     path.write_text(
         "---\nid: demo\nscope: system\ntriggers:\n  - task.completed\n---\n"
         "Use `demo_command`, `project_id`, `profile_id`, `done`, `worker`, "

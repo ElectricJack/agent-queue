@@ -20,11 +20,12 @@ from src.api.scope import (
     _TRIAGE_COMMANDS,
 )
 from src.commands.handler import CommandHandler
-from src.config import AppConfig, DiscordConfig
+from src.config import DatabaseConfig, AppConfig, DiscordConfig
 from src.database import Database
 from src.models import Agent, AgentProfile, AgentState, Project, SessionRecord, Task, TaskStatus
 from src.orchestrator import Orchestrator
 from src.vault import ensure_default_intelligence_classes
+from tests.db_fixtures import lease_dsn
 
 
 @pytest.fixture(scope="module")
@@ -34,13 +35,13 @@ def generated_routers():
 
 @pytest.fixture(params=["execute", "typed"])
 async def api(tmp_path, monkeypatch, request, generated_routers):
-    db = Database(str(tmp_path / "triage-auth.db"))
+    db = Database(lease_dsn("triage-auth.db"))
     await db.initialize()
     data_dir = str(tmp_path / "data")
     ensure_default_intelligence_classes(data_dir)
     config = AppConfig(
         discord=DiscordConfig(bot_token="test", guild_id="1"),
-        database_path=str(tmp_path / "triage-auth.db"),
+        database=DatabaseConfig(url=lease_dsn("triage-auth.db")),
         workspace_dir=str(tmp_path / "workspaces"),
         data_dir=data_dir,
     )

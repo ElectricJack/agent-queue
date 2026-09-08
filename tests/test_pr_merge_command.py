@@ -11,11 +11,12 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from src.commands.handler import CommandHandler
-from src.config import AppConfig, DiscordConfig
+from src.config import DatabaseConfig, AppConfig, DiscordConfig
 from src.database import Database
 from src.git.manager import GitError
 from src.models import Project, RepoConfig, RepoSourceType, Workspace
 from src.orchestrator import Orchestrator
+from tests.db_fixtures import lease_dsn
 
 # ---------------------------------------------------------------------------
 # GitManager.amerge_pr unit tests
@@ -917,7 +918,7 @@ async def test_direct_manager_merge_validates_and_pins_identity(monkeypatch):
 
 @pytest.fixture
 async def db(tmp_path):
-    d = Database(str(tmp_path / "pm.db"))
+    d = Database(lease_dsn("pm.db"))
     await d.initialize()
     await d.create_project(Project(id="p1", name="P1"))
     await d.create_workspace(
@@ -937,7 +938,7 @@ def config(tmp_path):
     return AppConfig(
         discord=DiscordConfig(bot_token="t", guild_id="1"),
         workspace_dir=str(tmp_path / "w"),
-        database_path=str(tmp_path / "pm.db"),
+        database=DatabaseConfig(url=lease_dsn("pm.db")),
         data_dir=str(tmp_path / "d"),
     )
 

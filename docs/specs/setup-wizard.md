@@ -82,7 +82,7 @@ The wizard uses ANSI color codes for terminal formatting:
 `step_directories(existing)` configures two paths:
 
 - **Workspace directory** — where agent working copies live (default: `~/agent-queue-workspaces`)
-- **Database path** — SQLite file location (default: `~/.agent-queue/agent-queue.db`)
+- **Database URL** — PostgreSQL DSN (default: the docker-compose instance on :5533)
 
 **Skip logic:** The step is skipped entirely (no prompts) if either:
 - Both `WORKSPACE_DIR` and `DATABASE_PATH` are already saved in config/env, OR

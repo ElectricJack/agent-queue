@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from src.commands.handler import CommandHandler
-from src.config import AppConfig
+from src.config import DatabaseConfig, AppConfig
 from src.database import Database
 from src.models import (
     Agent,
@@ -28,11 +28,12 @@ from src.models import (
 from src.orchestrator import Orchestrator
 from src.orchestrator.worktree_manager import EXCLUDE_BLOCK
 from src.runtimes.base import Runtime
+from tests.db_fixtures import lease_dsn
 
 
 @pytest.fixture
 async def setup(tmp_path):
-    db = Database(str(tmp_path / "test.db"))
+    db = Database(lease_dsn("test.db"))
     await db.initialize()
     await db.create_project(Project(id="p1", name="test", repo_url=""))
 
@@ -194,7 +195,7 @@ def base_repo_for_wt(tmp_path):
 async def worktree_handler(tmp_path, base_repo_for_wt):
     config = AppConfig(
         data_dir=str(tmp_path / "data"),
-        database_path=str(tmp_path / "aq.db"),
+        database=DatabaseConfig(url=lease_dsn("aq.db")),
         workspace_dir=str(tmp_path / "workspaces"),
     )
     config.worktrees.enabled = True
@@ -249,7 +250,7 @@ async def test_resumed_exclusive_clone_handoff_excludes_daemon_bookkeeping(
 
     config = AppConfig(
         data_dir=str(tmp_path / "data"),
-        database_path=str(tmp_path / "aq.db"),
+        database=DatabaseConfig(url=lease_dsn("aq.db")),
         workspace_dir=str(tmp_path / "workspaces"),
     )
     config.worktrees.enabled = False

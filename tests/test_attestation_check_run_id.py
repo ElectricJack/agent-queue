@@ -6,6 +6,7 @@ from src.database.tables import integration_attestation_publications
 
 
 from tests.pg_dsn import ensure_worker_postgres_dsn
+from tests.pg_dsn import create_scratch_database
 
 POSTGRES_DSN = ensure_worker_postgres_dsn()
 GITHUB_CHECK_RUN_ID = 101845954535
@@ -72,7 +73,6 @@ def test_sqlite_migration_preserves_and_widens_ids(tmp_path):
 
 async def test_postgres_migration_preserves_and_widens_ids():
     import pytest
-    from tests.pg_dsn import create_scratch_database
     from src.database.engine import create_postgres_engine
 
     if not POSTGRES_DSN:

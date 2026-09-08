@@ -40,6 +40,7 @@ from src.git.github_app import GitHubRepositoryBinding
 from src.models import Project, RepoConfig, RepoSourceType
 from src.profiles.capabilities import CapabilityPolicy
 from tests.pg_dsn import create_scratch_database, ensure_worker_postgres_dsn
+from tests.db_fixtures import lease_dsn
 
 
 BASE = "a" * 40
@@ -53,7 +54,7 @@ POSTGRES_DSN = ensure_worker_postgres_dsn()
 
 @pytest.fixture
 async def release_db(tmp_path, request):
-    db = Database(str(tmp_path / "release.db"))
+    db = Database(lease_dsn("release.db"))
     await db.initialize()
     await db.create_project(Project(id="p", name="project"))
     await db.create_repo(

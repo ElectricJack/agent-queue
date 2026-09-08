@@ -14,10 +14,11 @@ from unittest.mock import MagicMock
 import pytest
 
 from src.commands.handler import CommandHandler
-from src.config import AppConfig, DiscordConfig
+from src.config import DatabaseConfig, AppConfig, DiscordConfig
 from src.database import Database
 from src.models import Project, Task, TaskStatus
 from src.orchestrator import Orchestrator
+from tests.db_fixtures import lease_dsn
 
 
 PROJECT_ID = "proj"
@@ -42,7 +43,7 @@ def _task(
 
 @pytest.fixture
 async def db(tmp_path):
-    database = Database(str(tmp_path / "test.db"))
+    database = Database(lease_dsn("test.db"))
     await database.initialize()
     await database.create_project(Project(id=PROJECT_ID, name="Test Project"))
     yield database
@@ -54,7 +55,7 @@ def config(tmp_path):
     return AppConfig(
         discord=DiscordConfig(bot_token="test-token", guild_id="123"),
         workspace_dir=str(tmp_path / "workspaces"),
-        database_path=str(tmp_path / "test.db"),
+        database=DatabaseConfig(url=lease_dsn("test.db")),
         data_dir=str(tmp_path / "data"),
     )
 

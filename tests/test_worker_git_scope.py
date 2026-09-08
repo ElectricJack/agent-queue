@@ -29,13 +29,14 @@ from src.models import (
     Task,
     TaskStatus,
 )
+from tests.db_fixtures import lease_dsn
 
 pytestmark = pytest.mark.asyncio
 
 
 @pytest.fixture(params=["task", "pool"])
 async def env(tmp_path, request):
-    db = Database(str(tmp_path / "worker-git.db"))
+    db = Database(lease_dsn("worker-git.db"))
     await db.initialize()
     await db.create_project(Project(id="p", name="p", repo_default_branch="main"))
     await db.create_project(Project(id="other", name="other"))

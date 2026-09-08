@@ -1,7 +1,7 @@
 import os
 import pytest
 import yaml
-from src.config import load_config
+from src.config import DatabaseConfig, load_config
 
 
 @pytest.fixture
@@ -19,7 +19,7 @@ class TestConfigLoading:
                         "bot_token": "test-token",
                         "guild_id": "123",
                     },
-                    "database_path": str(config_dir / "test.db"),
+                    "database": {"url": "postgresql://u:p@localhost:5533/aq_cfg_test"},
                 }
             )
         )
@@ -37,7 +37,7 @@ class TestConfigLoading:
                         "bot_token": "${TEST_BOT_TOKEN}",
                         "guild_id": "123",
                     },
-                    "database_path": str(config_dir / "test.db"),
+                    "database": {"url": "postgresql://u:p@localhost:5533/aq_cfg_test"},
                 }
             )
         )
@@ -48,7 +48,7 @@ class TestConfigLoading:
         config_file = config_dir / "config.yaml"
         config_file.write_text(yaml.dump({
             "discord": {"bot_token": "x", "guild_id": "1"},
-            "database_path": str(config_dir / "test.db"),
+            "database": {"url": "postgresql://u:p@localhost:5533/aq_cfg_test"},
         }))
         config = load_config(str(config_file))
         assert config.scheduling.rolling_window_hours == 24
@@ -63,7 +63,7 @@ class TestConfigLoading:
                 {
                     "workspace_dir": "/custom/path",
                     "discord": {"bot_token": "x", "guild_id": "1"},
-                    "database_path": str(config_dir / "test.db"),
+                    "database": {"url": "postgresql://u:p@localhost:5533/aq_cfg_test"},
                 }
             )
         )
@@ -127,7 +127,7 @@ def test_streams_config_validate_accepts_defaults():
     ],
 )
 def test_database_backend_detects_every_postgres_scheme(url):
-    from src.config import DatabaseConfig, is_postgres_url
+    from src.config import is_postgres_url
 
     assert is_postgres_url(url) is True
     assert DatabaseConfig(url=url).backend == "postgresql"
@@ -137,16 +137,24 @@ def test_database_backend_detects_every_postgres_scheme(url):
     "url",
     ["", "~/.agent-queue/agent-queue.db", "/var/lib/aq/aq.db", "sqlite+aiosqlite:///x.db"],
 )
-def test_database_backend_treats_everything_else_as_sqlite(url):
-    from src.config import DatabaseConfig, is_postgres_url
+def test_a_non_postgres_url_is_a_validation_error(url):
+    """It used to fall through to SQLite; now it is refused.
+
+    The old behaviour is the failure this replaces: a typo'd DSN was treated
+    as a file path, so the daemon came up healthy on an empty SQLite database
+    while the real one sat untouched.
+    """
+    from src.config import AppConfig, is_postgres_url
 
     assert is_postgres_url(url) is False
-    assert DatabaseConfig(url=url).backend == "sqlite"
+    errors = AppConfig(database=DatabaseConfig(url=url)).validate()
+    assert any(
+        e.section == "database" and "PostgreSQL DSN is required" in e.message for e in errors
+    ), errors
 
 
 def test_asyncpg_dsn_is_pooled_like_any_other_postgres_url():
     """The pool bounds are only validated on the PostgreSQL branch."""
-    from src.config import DatabaseConfig
 
     cfg = DatabaseConfig(url="postgresql+asyncpg://u:p@h/db", pool_min_size=0)
     assert [e.field for e in cfg.validate()] == ["pool_min_size"]
@@ -160,7 +168,6 @@ def test_psycopg2_dsn_is_rejected_at_load():
     dialect not being async.  Config validation says it at load, with the
     fix in the text.
     """
-    from src.config import DatabaseConfig
 
     cfg = DatabaseConfig(url="postgresql+psycopg2://u:p@h/db")
     errors = cfg.validate()
@@ -170,7 +177,6 @@ def test_psycopg2_dsn_is_rejected_at_load():
 
 def test_psycopg3_dsn_is_accepted():
     """psycopg *3* is async-capable, unlike psycopg2 — it stays legal."""
-    from src.config import DatabaseConfig
 
     assert DatabaseConfig(url="postgresql+psycopg://u:p@h/db").validate() == []
 
@@ -181,7 +187,7 @@ def test_graph_layout_config_defaults_and_parse(tmp_path):
     p = tmp_path / "c.yaml"
     p.write_text(yaml.dump({
         "discord": {"bot_token": "t", "guild_id": "1"},
-        "database_path": str(tmp_path / "test.db"),
+        "database": {"url": "postgresql://u:p@localhost:5533/aq_cfg_test"},
         "dashboard": {"graph_layout": {"enabled": False, "incremental_debounce_ms": 250}},
     }))
     cfg = load_config(str(p))
@@ -197,7 +203,7 @@ def test_graph_layout_config_defaults_when_absent(tmp_path):
     p = tmp_path / "c.yaml"
     p.write_text(yaml.dump({
         "discord": {"bot_token": "t", "guild_id": "1"},
-        "database_path": str(tmp_path / "test.db"),
+        "database": {"url": "postgresql://u:p@localhost:5533/aq_cfg_test"},
     }))
     cfg = load_config(str(p))
     # On by default since design §10 step 3 removed the dashboard's grid fallback.
@@ -223,7 +229,7 @@ def test_graph_layout_config_reads_top_level_block(tmp_path):
     p = tmp_path / "c.yaml"
     p.write_text(yaml.dump({
         "discord": {"bot_token": "t", "guild_id": "1"},
-        "database_path": str(tmp_path / "test.db"),
+        "database": {"url": "postgresql://u:p@localhost:5533/aq_cfg_test"},
         "graph_layout": {"enabled": False, "tidy_job_budget_seconds": 5},
     }))
     cfg = load_config(str(p))
@@ -238,7 +244,7 @@ def test_graph_layout_nested_block_wins_over_top_level(tmp_path):
     p = tmp_path / "c.yaml"
     p.write_text(yaml.dump({
         "discord": {"bot_token": "t", "guild_id": "1"},
-        "database_path": str(tmp_path / "test.db"),
+        "database": {"url": "postgresql://u:p@localhost:5533/aq_cfg_test"},
         "dashboard": {"graph_layout": {"incremental_debounce_ms": 250}},
         "graph_layout": {"incremental_debounce_ms": 999},
     }))
@@ -315,7 +321,7 @@ def test_a_leftover_chat_analyzer_block_still_loads(config_dir):
         yaml.dump(
             {
                 "discord": {"bot_token": "t", "guild_id": "1"},
-                "database_path": str(config_dir / "test.db"),
+                "database": {"url": "postgresql://u:p@localhost:5533/aq_cfg_test"},
                 "chat_analyzer": {
                     "min_confidence": 0.25,
                     "in_flight_min_confidence": 0.95,
@@ -347,7 +353,7 @@ def test_hot_reload_round_trip_does_not_touch_the_retired_section(config_dir):
         yaml.dump(
             {
                 "discord": {"bot_token": "t", "guild_id": "1"},
-                "database_path": str(config_dir / "test.db"),
+                "database": {"url": "postgresql://u:p@localhost:5533/aq_cfg_test"},
                 "chat_analyzer": {"min_confidence": 0.25},
                 "scheduling": {"min_task_guarantee": 3},
             }
@@ -360,7 +366,7 @@ def test_hot_reload_round_trip_does_not_touch_the_retired_section(config_dir):
         yaml.dump(
             {
                 "discord": {"bot_token": "t", "guild_id": "1"},
-                "database_path": str(config_dir / "test.db"),
+                "database": {"url": "postgresql://u:p@localhost:5533/aq_cfg_test"},
                 "chat_analyzer": {"min_confidence": 0.25},
                 "scheduling": {"min_task_guarantee": 9},
             }

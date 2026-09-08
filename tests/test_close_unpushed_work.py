@@ -20,7 +20,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from src.commands.handler import CommandHandler
-from src.config import AppConfig, DiscordConfig
+from src.config import DatabaseConfig, AppConfig, DiscordConfig
 from src.database import Database
 from src.git.manager import GitManager
 from src.models import (
@@ -32,6 +32,7 @@ from src.models import (
 )
 from src.orchestrator import Orchestrator
 from tests.pg_dsn import ensure_worker_postgres_dsn
+from tests.db_fixtures import lease_dsn
 
 POSTGRES_DSN = ensure_worker_postgres_dsn()
 
@@ -67,28 +68,19 @@ def repo(tmp_path):
     return {"origin": origin, "clone": clone}
 
 
-@pytest.fixture(params=["sqlite", "postgres"])
+@pytest.fixture
 async def handler(request, tmp_path, repo):
     """SQLite always; PostgreSQL when ``POSTGRES_TEST_DSN`` is set (CI).
 
     The close path writes task metadata and a completion row, so both
     dialects are exercised rather than assumed equivalent.
     """
-    if request.param == "postgres":
-        if not POSTGRES_DSN:
-            pytest.skip("POSTGRES_TEST_DSN not set")
-        from src.database.adapters.postgresql import PostgreSQLDatabaseAdapter
-
-        db = PostgreSQLDatabaseAdapter(POSTGRES_DSN)
-        await db.initialize()
-        await db.reset_for_tests()
-    else:
-        db = Database(str(tmp_path / "close.db"))
-        await db.initialize()
+    db = Database(lease_dsn("close.db"))
+    await db.initialize()
     cfg = AppConfig(
         discord=DiscordConfig(bot_token="t", guild_id="1"),
         workspace_dir=str(tmp_path / "w"),
-        database_path=str(tmp_path / "close.db"),
+        database=DatabaseConfig(url=lease_dsn("close.db")),
         data_dir=str(tmp_path / "d"),
     )
     orch = Orchestrator(cfg)
@@ -98,8 +90,9 @@ async def handler(request, tmp_path, repo):
     orch.bus.emit = AsyncMock()
     orch.command_handler = CommandHandler(orch, cfg)
 
-    async def _noop_release(task_id, *, agent_id=None, workspace_path=None,
-                            expect_claim_epoch=None):
+    async def _noop_release(
+        task_id, *, agent_id=None, workspace_path=None, expect_claim_epoch=None
+    ):
         return None
 
     orch.release_session_task_resources = _noop_release

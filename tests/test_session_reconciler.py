@@ -40,6 +40,8 @@ from src.sessions.reconciler import (
     META_STALL_NUDGES,
     SessionReconciler,
 )
+from tests.db_fixtures import lease_dsn
+from src.config import DatabaseConfig
 
 NOW = 1_000_000.0
 
@@ -65,7 +67,7 @@ class _Bus:
 
 @pytest.fixture
 async def db(tmp_path):
-    database = Database(str(tmp_path / "t.db"))
+    database = Database(lease_dsn("t.db"))
     await database.initialize()
     await database.create_project(Project(id="p1", name="P1"))
     yield database
@@ -74,7 +76,7 @@ async def db(tmp_path):
 
 @pytest.fixture
 def config():
-    cfg = AppConfig()
+    cfg = AppConfig(database=DatabaseConfig(url=lease_dsn("reconciler")))
     cfg.sessions.enabled = True
     cfg.sessions.provider = "fake"
     cfg.sessions.lease_ttl_seconds = 480

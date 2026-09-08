@@ -13,6 +13,7 @@ from src.database.tables import task_dependencies as task_dependencies_t, tasks 
 from src.models import Project, Task, TaskStatus
 from src.task_graph import parse_graph
 from src.task_graph.creator import build_plan, write_plan
+from tests.db_fixtures import lease_dsn
 
 pytestmark = pytest.mark.perf
 
@@ -21,7 +22,7 @@ PROJECT_ID = "proj"
 
 @pytest.fixture
 async def db(tmp_path):
-    database = Database(str(tmp_path / "perf.db"))
+    database = Database(lease_dsn("perf.db"))
     await database.initialize()
     await database.create_project(Project(id=PROJECT_ID, name="p"))
     yield database

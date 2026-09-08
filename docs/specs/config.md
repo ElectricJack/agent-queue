@@ -71,7 +71,7 @@ These fields appear at the root of the YAML document and map directly to scalar 
 | YAML key | Type | Default | Description |
 |---|---|---|---|
 | `workspace_dir` | `str` | `~/agent-queue-workspaces` (home-expanded at class instantiation time) | Filesystem path to the directory where agent workspaces are stored. |
-| `database_path` | `str` | `~/.agent-queue/agent-queue.db` (home-expanded at class instantiation time) | Filesystem path to the SQLite database file. Legacy field — prefer using the `database` section for new setups. |
+| `database_path` | `str` | `""` | Deprecated alias for `database.url`. Removed next release — set `database.url` instead. |
 | `global_token_budget_daily` | `int` or `None` | `None` | Daily token budget across all agents. `None` means no global cap is enforced. |
 
 ### 4.1.1 `project_roots`
@@ -97,25 +97,21 @@ workspaces.
 
 ### 4.1.2 `database` Section
 
-Maps to `DatabaseConfig`. The YAML key is `database`. This section configures the database backend. The backend (SQLite or PostgreSQL) is inferred automatically from the URL scheme.
+Maps to `DatabaseConfig`. The YAML key is `database`. **PostgreSQL is the only supported backend** (SQLite was removed 2026-09-07).
 
 | YAML key | Type | Default | Description |
 |---|---|---|---|
-| `url` | `str` | `""` | Database connection URL. A `postgresql://` or `postgres://` prefix selects PostgreSQL (asyncpg). Anything else is treated as a SQLite file path. |
+| `url` | `str` | `""` | PostgreSQL DSN (`postgresql://` or `postgres://`, driven by asyncpg). Anything else is a validation error — it used to be read as a SQLite file path, so a typo brought the daemon up on an empty database while the real one sat untouched. |
 | `pool_min_size` | `int` | `2` | Minimum connection pool size (PostgreSQL only). |
 | `pool_max_size` | `int` | `10` | Maximum connection pool size (PostgreSQL only). |
 
-**Backward compatibility:** If no `database` section is present, the top-level `database_path` field is used as the `url` value (SQLite). New installations using the setup wizard will write the appropriate section automatically.
+**Upgrading from a SQLite install:** `aq db import-sqlite <path>` copies an old database into PostgreSQL one way, and `aq doctor --check db.backend_is_postgres` names a config still pointing at a file.
 
-**Deprecation:** PostgreSQL is the production backend. SQLite remains supported for the test suite and single-user experiments, but it is deprecated for real deployments: since the swarm work model, every SQLite transaction opens its own connection (`NullPool`, required so a concurrent writer cannot commit a claim transaction mid-flight), which makes claim/release latency roughly an order of magnitude worse than on PostgreSQL (~900 ms vs ~45 ms p99 at 5,000 tasks). Performance budgets are asserted against PostgreSQL.
+**Why only PostgreSQL:** the deciding factor was concurrency, not preference. Under the swarm work model every SQLite transaction opened its own connection (`NullPool`, required so a concurrent writer cannot commit a claim transaction mid-flight), putting claim/release latency roughly an order of magnitude behind PostgreSQL (~900 ms vs ~45 ms p99 at 5,000 tasks). SQLite also silently ignored the `FOR UPDATE` locking the integration paths depend on.
 
 **Examples:**
 
 ```yaml
-# SQLite (default):
-database_path: ~/.agent-queue/agent-queue.db
-
-# PostgreSQL:
 database:
   url: postgresql://agent_queue:mypassword@localhost:5432/agent_queue
   pool_min_size: 2

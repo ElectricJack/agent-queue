@@ -47,24 +47,16 @@ from tests.playbook_v2_engine_helpers import (
     event,
     load_artifact,
 )
+from tests.db_fixtures import lease_dsn
 
 POSTGRES_TEST_DSN = ensure_worker_postgres_dsn()
 NOW = 1_000_000.0
 
 
-@pytest.fixture(params=["sqlite", "postgres"])
+@pytest.fixture
 async def db(request, tmp_path):
-    if request.param == "postgres":
-        if not POSTGRES_TEST_DSN:
-            pytest.skip("POSTGRES_TEST_DSN not set")
-        from src.database.adapters.postgresql import PostgreSQLDatabaseAdapter
-
-        database = PostgreSQLDatabaseAdapter(POSTGRES_TEST_DSN)
-        await database.initialize()
-        await database.reset_for_tests()
-    else:
-        database = Database(str(tmp_path / "test.db"))
-        await database.initialize()
+    database = Database(lease_dsn("test.db"))
+    await database.initialize()
     yield database
     await database.close()
 
@@ -145,10 +137,7 @@ async def test_a_dispatch_persists_one_run_and_its_receipts_per_rule(db):
         receipts = await db.list_receipts(run_id)
         assert receipts
         # Every attempt of the run is receipted, each with its own identity.
-        keys = [
-            (r.step_id, r.iteration, r.attempt, r.turn_index, r.receipt_kind)
-            for r in receipts
-        ]
+        keys = [(r.step_id, r.iteration, r.attempt, r.turn_index, r.receipt_kind) for r in receipts]
         assert len(keys) == len(set(keys))
 
 
@@ -168,9 +157,7 @@ async def test_external_work_is_fenced_before_the_executor_returns(db):
     adapter.queue.append(asyncio.CancelledError())
 
     with pytest.raises(asyncio.CancelledError):
-        await engine.run_rule(
-            ref, "review", event("task-completed-code"), TRUSTED_LOCAL
-        )
+        await engine.run_rule(ref, "review", event("task-completed-code"), TRUSTED_LOCAL)
 
     [stored] = await db.list_runs(playbook_id=ref.playbook_id)
     assert stored.context["_in_flight_attempt"]["step_id"] == "ensure-review-task"
@@ -395,9 +382,7 @@ async def test_a_suspension_writes_the_wait_row_in_the_same_boundary(db):
 async def test_resuming_a_wait_clears_its_row_and_advances_the_run(db):
     engine, _adapter, ref = await build_for(db, "wait-kinds.artifact.json")
     outcome = await engine.run_rule(ref, "gate", event("task-completed-code"), TRUSTED_LOCAL)
-    resumed = await engine.resume(
-        outcome.run_id, HumanDecision(decision="approve"), TRUSTED_LOCAL
-    )
+    resumed = await engine.resume(outcome.run_id, HumanDecision(decision="approve"), TRUSTED_LOCAL)
     assert resumed.lifecycle is RunLifecycle.COMPLETED
     assert await db.list_active(outcome.run_id) == []
     stored = await db.load_run(outcome.run_id)
@@ -432,9 +417,7 @@ async def test_an_expired_wait_claim_is_recovered_after_scheduler_restart(db):
     [recovered] = await db.expire_due(NOW + 32)
     assert recovered.wait_id == first.wait_id
 
-    resumed = await engine.resume(
-        recovered.run_id, TimerFired(recovered.wait_id), TRUSTED_LOCAL
-    )
+    resumed = await engine.resume(recovered.run_id, TimerFired(recovered.wait_id), TRUSTED_LOCAL)
     assert resumed.lifecycle is RunLifecycle.COMPLETED
     assert await db.expire_due(NOW + 60) == []
 

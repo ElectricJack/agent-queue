@@ -27,6 +27,7 @@ from alembic.config import Config
 from sqlalchemy import create_engine
 
 from tests.pg_dsn import ensure_worker_postgres_dsn
+from tests.pg_dsn import create_scratch_database
 
 HOOKS_REVISION = "33bdb059ceff"
 PRIOR_REVISION = "009793fbb800"
@@ -93,7 +94,6 @@ async def test_postgres_upgrade_and_downgrade_use_a_boolean_default():
     """Run this revision's real DDL against PostgreSQL, not just offline SQL."""
     import asyncpg
 
-    from tests.pg_dsn import create_scratch_database
 
     dsn = await create_scratch_database("session_hooks_migration")
     cfg = _alembic_config(dsn)

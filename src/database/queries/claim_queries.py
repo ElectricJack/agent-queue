@@ -18,11 +18,13 @@ from sqlalchemy import Float, and_, case, cast, delete, exists, false, func, lit
 from src.database.queries.blocked_state import apply_label_filters
 from src.database.queries.hierarchy_queries import (
     container_flag_exists,
-    materialized_origin_when_hierarchical,
 )
 from src.database.queries.session_queries import _row_to_session
 from src.database.queries.task_queries import (
-    ManualPauseActive, TransitionResult, _not_manually_paused, supports_returning,
+    ManualPauseActive,
+    TransitionResult,
+    _not_manually_paused,
+    supports_returning,
 )
 from src.database.tables import (
     agents,
@@ -43,7 +45,6 @@ def _frontier_where(project_id: str):
         tasks.c.is_blocked == 0,
         tasks.c.assigned_agent_id.is_(None),
         tasks.c.is_plan_subtask == 0,
-        materialized_origin_when_hierarchical(),
         # A flagged container (spec §7) has no deliverable of its own: it is
         # released to IN_PROGRESS by the orchestrator and settles when its
         # children finish.  A worker holding it could never close it
@@ -167,12 +168,22 @@ class ClaimQueryMixin:
         )
 
     async def select_ready_for_profile(
-        self, conn, *, project_id, profile_id, default_profile_id, agent_id, task_id=None,
-        enforce_routing=False, intelligence_class=None, llm_provider=None, options_hash=None,
+        self,
+        conn,
+        *,
+        project_id,
+        profile_id,
+        default_profile_id,
+        agent_id,
+        task_id=None,
+        enforce_routing=False,
+        intelligence_class=None,
+        llm_provider=None,
+        options_hash=None,
     ) -> str | None:
         """The §10 work query.  Postgres takes the row FOR UPDATE SKIP LOCKED."""
         profile_ok = tasks.c.profile_id == profile_id
-        if default_profile_id == profile_id:
+        if default_profile_id == profile_id and not enforce_routing:
             profile_ok = (tasks.c.profile_id == profile_id) | tasks.c.profile_id.is_(None)
         req = task_workspace_requirements.alias("req")
         prepare_backoff_active = exists(
@@ -189,7 +200,10 @@ class ClaimQueryMixin:
                 profile_ok,
                 ~exists(
                     select(literal(1)).where(
-                        and_(req.c.task_id == tasks.c.id, req.c.kind_id != "project-repo")
+                        and_(
+                            req.c.task_id == tasks.c.id,
+                            req.c.kind_id.notin_(("project-repo", "vault")),
+                        )
                     )
                 ),
                 ~prepare_backoff_active,
@@ -212,8 +226,7 @@ class ClaimQueryMixin:
             )
         if task_id is not None:
             stmt = stmt.where(tasks.c.id == task_id)
-        if conn.dialect.name == "postgresql":
-            stmt = stmt.with_for_update(of=tasks, skip_locked=True)
+        stmt = stmt.with_for_update(of=tasks, skip_locked=True)
         row = (await conn.execute(stmt)).fetchone()
         return row[0] if row else None
 
@@ -250,7 +263,9 @@ class ClaimQueryMixin:
             .values(state=AgentState.BUSY.value, current_task_id=task_id)
         )
         if supports_returning(conn):
-            reserved = (await conn.execute(reserve.returning(agents.c.id))).scalar_one_or_none() is not None
+            reserved = (
+                await conn.execute(reserve.returning(agents.c.id))
+            ).scalar_one_or_none() is not None
         else:
             reserved = (await conn.execute(reserve)).rowcount == 1
         if not reserved:
@@ -381,7 +396,10 @@ class ClaimQueryMixin:
             task_id, {"claimed_by_session": session_id, "work_dir": work_dir}, conn=conn
         )
         await self._start_task_session_attempt(
-            conn, session_id, started_at=now, work_dir=work_dir,
+            conn,
+            session_id,
+            started_at=now,
+            work_dir=work_dir,
         )
         return slot
 
@@ -399,17 +417,30 @@ class ClaimQueryMixin:
         async def _run(c):
             # Claims and release acquire the session before the task. Keep
             # activation in that order as well to avoid a PostgreSQL deadlock.
-            holder = (await c.execute(select(sessions.c.id).where(
-                sessions.c.id == session_id,
-            ).with_for_update())).scalar_one_or_none()
+            holder = (
+                await c.execute(
+                    select(sessions.c.id)
+                    .where(
+                        sessions.c.id == session_id,
+                    )
+                    .with_for_update()
+                )
+            ).scalar_one_or_none()
             if holder is None:
                 return None
             # Share the task row lock with pause. An EXISTS predicate alone
             # can observe a pre-pause PostgreSQL statement snapshot.
-            claim = (await c.execute(select(tasks.c.id).where(
-                tasks.c.id == task_id, tasks.c.status == TaskStatus.IN_PROGRESS.value,
-                tasks.c.claim_epoch == epoch,
-            ).with_for_update())).scalar_one_or_none()
+            claim = (
+                await c.execute(
+                    select(tasks.c.id)
+                    .where(
+                        tasks.c.id == task_id,
+                        tasks.c.status == TaskStatus.IN_PROGRESS.value,
+                        tasks.c.claim_epoch == epoch,
+                    )
+                    .with_for_update()
+                )
+            ).scalar_one_or_none()
             if claim is None:
                 return None
             stmt = (
@@ -479,7 +510,11 @@ class ClaimQueryMixin:
         end_reason=None,
     ) -> TransitionResult:
         row = (
-            (await conn.execute(select(sessions).where(sessions.c.id == session_id).with_for_update()))
+            (
+                await conn.execute(
+                    select(sessions).where(sessions.c.id == session_id).with_for_update()
+                )
+            )
             .mappings()
             .fetchone()
         )
@@ -599,8 +634,11 @@ class ClaimQueryMixin:
                 )
         if task_id:
             await self.finish_task_session_attempt(
-                session_id, task_id=task_id, ended_at=now,
-                end_reason=end_reason or needs_attention or context, conn=conn,
+                session_id,
+                task_id=task_id,
+                ended_at=now,
+                end_reason=end_reason or needs_attention or context,
+                conn=conn,
             )
         if agent_id:
             # Clear the task lock unconditionally — even a session that held no
@@ -631,9 +669,7 @@ class ClaimQueryMixin:
         if drain_after_release:
             session_values["desired_state"] = "stopped"
         await conn.execute(
-            update(sessions)
-            .where(sessions.c.id == session_id)
-            .values(**session_values)
+            update(sessions).where(sessions.c.id == session_id).values(**session_values)
         )
         out.released = True
         return out
@@ -736,25 +772,16 @@ class ClaimQueryMixin:
         ids = sorted(set(task_ids))
         if not ids:
             return {}
-        if conn.dialect.name == "postgresql":
-            project_id = await conn.scalar(
-                select(tasks.c.project_id).where(tasks.c.id == anchor_id)
-            )
-            if project_id is None:
-                return {}
-            await self.lock_hierarchy_project(conn, project_id)
-            stmt = (
-                select(tasks.c.id, tasks.c.parent_task_id)
-                .where(tasks.c.id.in_(ids))
-                .order_by(tasks.c.id)
-                .with_for_update()
-            )
-        else:
-            stmt = (
-                select(tasks.c.id, tasks.c.parent_task_id)
-                .where(tasks.c.id.in_(ids))
-                .order_by(tasks.c.id)
-            )
+        project_id = await conn.scalar(select(tasks.c.project_id).where(tasks.c.id == anchor_id))
+        if project_id is None:
+            return {}
+        await self.lock_hierarchy_project(conn, project_id)
+        stmt = (
+            select(tasks.c.id, tasks.c.parent_task_id)
+            .where(tasks.c.id.in_(ids))
+            .order_by(tasks.c.id)
+            .with_for_update()
+        )
         rows = (await conn.execute(stmt)).fetchall()
         return {r.id: r.parent_task_id for r in rows if r.id in ids}
 

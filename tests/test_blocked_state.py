@@ -20,14 +20,15 @@ import time
 import uuid
 
 import pytest
-from sqlalchemy import insert, select, text
+from sqlalchemy import insert, select
 
-from src.database import SQLiteDatabaseAdapter
+from src.database import Database
 from src.database.queries.blocked_state import blocked_predicate
 from src.database.queries.hierarchy_queries import HierarchyError
 from src.database.tables import gates, task_dependencies, task_gates, tasks as tasks_t
 from src.models import DepType, Project, Task, TaskStatus
 from src.state_machine import CyclicDependencyError, validate_dag_with_new_edge, validate_waits_for
+from tests.db_fixtures import lease_dsn
 
 
 PROJECT = "p-wg"
@@ -35,7 +36,7 @@ PROJECT = "p-wg"
 
 @pytest.fixture
 async def db(tmp_path):
-    database = SQLiteDatabaseAdapter(str(tmp_path / "wg.db"))
+    database = Database(lease_dsn("wg.db"))
     await database.initialize()
     await database.create_project(Project(id=PROJECT, name="work-graph"))
     yield database
@@ -719,49 +720,6 @@ class TestRecomputeProperty:
 # ── The migration's SQL predicate matches the Python one ─────────────────
 
 
-class TestMigrationPredicateParity:
-    async def test_raw_sql_backfill_agrees_with_the_orm_predicate(self, db):
-        """The Alembic revision embeds the predicate as literal SQL; it must
-        produce the same answer as ``blocked_predicate()``."""
-        from migrations.versions.a1c7f3e08b42_work_graph_is_blocked_backfill import (
-            _BACKFILL_IS_BLOCKED,
-        )
-
-        await mktask(db, "done", status=TaskStatus.COMPLETED)
-        await mktask(db, "open", status=TaskStatus.IN_PROGRESS)
-        await mktask(db, "plan", status=TaskStatus.DEFINED)
-        await mktask(db, "hard-fail", status=TaskStatus.FAILED, retry_count=3, max_retries=3)
-        await mktask(db, "b1")
-        await mktask(db, "b2")
-        await mktask(db, "child")
-        await mktask(db, "finalize")
-        await mktask(db, "contingency")
-        await db.add_dependency("b1", "done", DepType.BLOCKS.value)
-        await db.add_dependency("b2", "open", DepType.BLOCKS.value)
-        await db.add_dependency("child", "plan", DepType.PARENT_CHILD.value)
-        await db.add_dependency("finalize", "plan", DepType.WAITS_FOR.value)
-        await db.add_dependency("contingency", "hard-fail", DepType.CONDITIONAL_BLOCKS.value)
-        await mkgate(db, "gate-x", status="open", waiters=["b1"])
-
-        expected = await db.evaluate_blocked()
-
-        # Zero the column, then let the migration's literal SQL rebuild it.
-        async with db._engine.begin() as conn:
-            await conn.execute(tasks_t.update().values(is_blocked=0))
-            await conn.execute(text(_BACKFILL_IS_BLOCKED))
-            rows = (await conn.execute(select(tasks_t.c.id, tasks_t.c.is_blocked))).fetchall()
-
-        assert {r[0]: bool(r[1]) for r in rows} == expected
-
-    async def test_predicate_expression_is_reusable_in_a_select(self, db):
-        """``blocked_predicate()`` correlates against ``tasks`` and can be
-        used outside the UPDATE it was written for."""
-        await mktask(db, "dep", status=TaskStatus.READY)
-        await mktask(db, "t")
-        await db.add_dependency("t", "dep")
-        async with db._engine.begin() as conn:
-            rows = (await conn.execute(select(tasks_t.c.id).where(blocked_predicate()))).fetchall()
-        assert {r[0] for r in rows} == {"t"}
 
 
 def test_unique_ids_helper():

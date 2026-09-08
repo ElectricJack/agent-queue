@@ -11,7 +11,7 @@ import pytest
 from sqlalchemy import insert
 
 from src.commands.claim_commands import write_claim_file
-from src.config import AppConfig, DiscordConfig
+from src.config import DatabaseConfig, AppConfig, DiscordConfig
 from src.database import Database
 from src.database.tables import integration_branch_owners
 from src.doctor.models import Severity
@@ -32,13 +32,14 @@ from src.sessions import SessionProviderRegistry
 from src.sessions.exit_classifier import ExitVerdict, Verdict
 from src.sessions.fake import FakeProvider
 from src.sessions.reconciler import META_STALL_LAST_ACTION, META_STALL_NUDGES, SessionReconciler
+from tests.db_fixtures import lease_dsn
 
 PROJECT_ID = "proj"
 
 
 @pytest.fixture
 async def db(tmp_path):
-    database = Database(str(tmp_path / "test.db"))
+    database = Database(lease_dsn("test.db"))
     await database.initialize()
     await database.create_project(Project(id=PROJECT_ID, name="p"))
     await database.create_profile(AgentProfile(id="worker", name="w", harness="claude"))
@@ -65,7 +66,7 @@ async def orch(db, tmp_path, registry):
     cfg = AppConfig(
         discord=DiscordConfig(bot_token="t", guild_id="1"),
         workspace_dir=str(tmp_path / "ws"),
-        database_path=str(tmp_path / "test.db"),
+        database=DatabaseConfig(url=lease_dsn("test.db")),
         data_dir=str(tmp_path / "data"),
     )
     cfg.sessions.enabled = True

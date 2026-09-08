@@ -4,6 +4,7 @@ import pytest
 from alembic import command
 from alembic.config import Config
 from sqlalchemy import create_engine, text
+from tests.pg_dsn import create_scratch_database
 
 PRIOR = "d37b821a6f04"
 REVISION = "e8b39a10c572"
@@ -12,7 +13,7 @@ pytestmark = pytest.mark.migration
 
 
 def test_legacy_backfill_is_conservative_and_idempotent(tmp_path):
-    path = tmp_path / "legacy.db"
+    path = await create_scratch_database("mig")
     config = Config("alembic.ini")
     config.set_main_option("sqlalchemy.url", f"sqlite+aiosqlite:///{path}")
     command.upgrade(config, PRIOR)
@@ -61,7 +62,7 @@ def test_legacy_backfill_is_conservative_and_idempotent(tmp_path):
 
 
 def test_legacy_import_rejects_old_incarnation_and_wrong_project_but_keeps_pool_claim(tmp_path):
-    path = tmp_path / "incarnation.db"
+    path = await create_scratch_database("mig")
     config = Config("alembic.ini")
     config.set_main_option("sqlalchemy.url", f"sqlite+aiosqlite:///{path}")
     command.upgrade(config, PRIOR)

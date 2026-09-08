@@ -12,13 +12,14 @@ import pytest
 
 from src.database import Database
 from src.models import Project
+from tests.db_fixtures import lease_dsn
 
 PATH = "/home/x/.claude/projects/work/abc.jsonl"
 
 
 @pytest.fixture
 async def db(tmp_path):
-    database = Database(str(tmp_path / "cp.db"))
+    database = Database(lease_dsn("cp.db"))
     await database.initialize()
     await database.create_project(Project(id="p1", name="P1"))
     yield database

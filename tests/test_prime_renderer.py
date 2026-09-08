@@ -29,9 +29,9 @@ pytestmark = pytest.mark.asyncio
 
 @pytest.fixture
 async def db():
-    from src.database.adapters.sqlite import SQLiteDatabaseAdapter
+    from src.database import Database
 
-    adapter = SQLiteDatabaseAdapter(":memory:")
+    adapter = Database(":memory:")
     await adapter.initialize()
     yield adapter
     await adapter.close()

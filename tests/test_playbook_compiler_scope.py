@@ -10,6 +10,7 @@ from src.api.auth import RequestScope
 from src.api.scope import check_request_scope
 from src.database import Database
 from src.models import Agent, AgentProfile, AgentState, Project, SessionRecord, Task, TaskStatus
+from tests.db_fixtures import lease_dsn
 
 pytestmark = pytest.mark.asyncio
 
@@ -21,7 +22,7 @@ COMPILER_COMMANDS = [
 
 @pytest.fixture
 async def compiler(tmp_path):
-    db = Database(str(tmp_path / "compiler-scope.db"))
+    db = Database(lease_dsn("compiler-scope.db"))
     await db.initialize()
     await db.create_project(Project(id="p", name="Project"))
     for profile_id in ("playbook-compiler", "worker"):

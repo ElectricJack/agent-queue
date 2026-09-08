@@ -42,6 +42,7 @@ from src.profiles.sync import (
     sync_profile_to_db,
 )
 from src.vault_watcher import VaultChange, VaultWatcher
+from tests.db_fixtures import lease_dsn
 
 
 # ---------------------------------------------------------------------------
@@ -182,7 +183,7 @@ class ChangeCollector:
 
 @pytest.fixture
 async def db(tmp_path):
-    database = Database(str(tmp_path / "test.db"))
+    database = Database(lease_dsn("test.db"))
     await database.initialize()
     yield database
     await database.close()

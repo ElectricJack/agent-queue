@@ -18,6 +18,7 @@ from src.commands.handler import CommandHandler
 from src.config import AppConfig
 from src.database import Database
 from src.models import AgentProfile, Project, Task, TaskStatus
+from tests.db_fixtures import lease_dsn
 
 
 # ---------------------------------------------------------------------------
@@ -42,7 +43,7 @@ class _StubOrchestrator:
 
 @pytest.fixture
 async def db(tmp_path):
-    database = Database(str(tmp_path / "t2.db"))
+    database = Database(lease_dsn("t2.db"))
     await database.initialize()
     yield database
     await database.close()

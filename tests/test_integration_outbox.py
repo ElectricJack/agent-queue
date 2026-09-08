@@ -35,6 +35,7 @@ from src.playbooks.artifact_store import ArtifactStore
 from src.playbooks.definition import PlaybookDefinition
 from src.playbooks import runtime as runtime_module
 from src.playbooks.runtime import V2PlaybookRuntime
+from tests.db_fixtures import lease_dsn
 
 
 NOW = 1_789_000_000.0
@@ -42,7 +43,7 @@ NOW = 1_789_000_000.0
 
 @pytest.fixture
 async def db(tmp_path):
-    database = Database(str(tmp_path / "integration-outbox.db"))
+    database = Database(lease_dsn("integration-outbox.db"))
     await database.initialize()
     await database.create_project(Project(id="p", name="integration project"))
     yield database

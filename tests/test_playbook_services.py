@@ -4,6 +4,8 @@ from src.llm import LLMClient
 from src.llm.fake import FakeProvider
 from src.playbooks.services import PlaybookServices
 from src.tools.registry import ToolRegistry
+from tests.db_fixtures import lease_dsn
+from src.config import DatabaseConfig
 
 T = lambda n: {"name": n, "description": n, "input_schema": {"type": "object", "properties": {}}}  # noqa: E731
 
@@ -60,7 +62,7 @@ def test_orchestrator_playbook_services(tmp_path):
     from src.orchestrator import Orchestrator
 
     cfg = AppConfig(discord=DiscordConfig(bot_token="t", guild_id="1"),
-                    workspace_dir=str(tmp_path / "w"), database_path=str(tmp_path / "t.db"),
+                    workspace_dir=str(tmp_path / "w"), database=DatabaseConfig(url=lease_dsn("t.db")),
                     data_dir=str(tmp_path / "d"))
     o = Orchestrator(cfg)
     with pytest.raises(RuntimeError, match="command handler"):

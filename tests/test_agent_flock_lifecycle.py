@@ -19,11 +19,13 @@ from src.models import (
 )
 from src.orchestrator.agent_reconciler import AgentReconciler
 from src.scheduler import Scheduler, SchedulerState
+from tests.db_fixtures import lease_dsn
+from src.config import DatabaseConfig
 
 
 @pytest.fixture
 async def db(tmp_path):
-    database = Database(str(tmp_path / "flock.db"))
+    database = Database(lease_dsn("flock.db"))
     await database.initialize()
     yield database
     await database.close()
@@ -162,12 +164,12 @@ async def test_assignment_refuses_worker_with_live_session(db):
 
 async def test_restart_preserves_orphan_and_retired_definitions(db, tmp_path):
     from unittest.mock import AsyncMock
-    from src.config import AppConfig, DiscordConfig
+    from src.config import DatabaseConfig, AppConfig, DiscordConfig
     from src.orchestrator import Orchestrator
 
     config = AppConfig(
         discord=DiscordConfig(bot_token="t", guild_id="1"),
-        database_path=str(tmp_path / "other.db"),
+        database=DatabaseConfig(url=lease_dsn("other.db")),
         data_dir=str(tmp_path / "data"),
         workspace_dir=str(tmp_path / "ws"),
     )
@@ -199,7 +201,7 @@ async def test_existing_worker_supplies_its_default_without_project_reprofile(db
     assert await db.assign_task_to_agent("t-p1", "a1")
     config = AppConfig(
         discord=DiscordConfig(bot_token="t", guild_id="1"),
-        database_path=str(tmp_path / "unused.db"),
+        database=DatabaseConfig(url=lease_dsn("unused.db")),
         workspace_dir=str(tmp_path / "ws"),
         data_dir=str(tmp_path / "data"),
     )

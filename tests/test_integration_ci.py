@@ -35,6 +35,7 @@ from src.integration.ci import (
     select_trusted_attestation,
 )
 from src.models import Project, RepoConfig, RepoSourceType, Task, TaskStatus
+from tests.db_fixtures import lease_dsn
 
 
 SHA = "a" * 40
@@ -704,7 +705,7 @@ async def test_publish_rejects_loose_numeric_app_identity(malformed_app_id):
 
 @pytest.fixture
 async def ci_db(tmp_path):
-    database = Database(str(tmp_path / "ci.db"))
+    database = Database(lease_dsn("ci.db"))
     await database.initialize()
     await database.create_project(Project(id="p", name="project"))
     await database.create_repo(

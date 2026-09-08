@@ -136,8 +136,8 @@ def _exercise_upgrade_downgrade_upgrade(connection) -> None:
 
 
 async def test_sqlite_cleanup_hardening_migration_round_trip(tmp_path):
-    path = tmp_path / "cleanup-hardening.db"
-    database = Database(str(path))
+    path = await create_scratch_database("mig")
+    database = Database(path)
     await database.initialize()
     await database.close()
     engine = create_engine(f"sqlite:///{path}")

@@ -8,7 +8,6 @@ from typing import Any
 
 from sqlalchemy import delete, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
-from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 from src.database.tables import plugin_data, plugins
 
@@ -33,7 +32,7 @@ class PluginQueryMixin:
     ) -> None:
         """Insert a new plugin record."""
         now = time.time()
-        _insert = pg_insert if self._engine.dialect.name == "postgresql" else sqlite_insert
+        _insert = pg_insert
         stmt = _insert(plugins).values(
             id=plugin_id,
             version=version,
@@ -109,7 +108,7 @@ class PluginQueryMixin:
         """Insert or update a plugin data value."""
         now = time.time()
         json_value = json.dumps(value)
-        _insert = pg_insert if self._engine.dialect.name == "postgresql" else sqlite_insert
+        _insert = pg_insert
         stmt = _insert(plugin_data).values(
             plugin_id=plugin_id,
             key=key,

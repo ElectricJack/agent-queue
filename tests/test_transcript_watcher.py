@@ -11,6 +11,7 @@ import pytest
 from src.database import Database
 from src.models import Agent, AgentState, Project, SessionRecord, Task, TaskStatus
 from src.sessions.transcripts.watcher import TranscriptWatcher
+from tests.db_fixtures import lease_dsn
 
 
 class _Bus:
@@ -29,7 +30,7 @@ class _Bus:
 
 @pytest.fixture
 async def db(tmp_path):
-    database = Database(str(tmp_path / "t.db"))
+    database = Database(lease_dsn("t.db"))
     await database.initialize()
     await database.create_project(Project(id="p1", name="P1"))
     yield database

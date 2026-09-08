@@ -22,6 +22,8 @@ from src.config import (
     SchedulingConfig,
     load_config,
 )
+from tests.db_fixtures import lease_dsn
+from src.config import DatabaseConfig
 
 
 class TestGitHubAppConfigValidation:
@@ -556,7 +558,7 @@ class TestAppConfigValidation:
     def test_valid_config_no_errors(self, tmp_path):
         cfg = AppConfig(
             data_dir=str(tmp_path / "data"),
-            database_path=str(tmp_path / "test.db"),
+            database=DatabaseConfig(url=lease_dsn("test.db")),
             discord=DiscordConfig(bot_token="tok", guild_id="123"),
         )
         errors = cfg.validate()
@@ -932,7 +934,7 @@ class TestSessionsEnabledDefault:
     def test_disabling_sessions_warns_that_nothing_can_be_dispatched(self, tmp_path):
         cfg = AppConfig(
             data_dir=str(tmp_path / "data"),
-            database_path=str(tmp_path / "test.db"),
+            database=DatabaseConfig(url=lease_dsn("test.db")),
             discord=DiscordConfig(bot_token="tok", guild_id="123"),
         )
         cfg.sessions.enabled = False
@@ -946,7 +948,7 @@ class TestSessionsEnabledDefault:
         """It stays an expressible mode — an API/Discord-only daemon, and the suite."""
         cfg = AppConfig(
             data_dir=str(tmp_path / "data"),
-            database_path=str(tmp_path / "test.db"),
+            database=DatabaseConfig(url=lease_dsn("test.db")),
             discord=DiscordConfig(bot_token="tok", guild_id="123"),
         )
         cfg.sessions.enabled = False
@@ -955,7 +957,7 @@ class TestSessionsEnabledDefault:
     def test_enabled_sessions_are_not_flagged(self, tmp_path):
         cfg = AppConfig(
             data_dir=str(tmp_path / "data"),
-            database_path=str(tmp_path / "test.db"),
+            database=DatabaseConfig(url=lease_dsn("test.db")),
             discord=DiscordConfig(bot_token="tok", guild_id="123"),
         )
         assert cfg.sessions.enabled is True

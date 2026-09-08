@@ -24,7 +24,7 @@ from pathlib import Path
 
 import pytest
 
-from src.config import AppConfig
+from src.config import DatabaseConfig, AppConfig
 from src.models import (
     Agent,
     Project,
@@ -35,6 +35,7 @@ from src.models import (
 )
 from src.orchestrator import Orchestrator
 from src.orchestrator.worktree_manager import EXCLUDE_BEGIN, EXCLUDE_END
+from tests.db_fixtures import lease_dsn
 
 
 def _git(args: list[str], cwd: str) -> str:
@@ -76,7 +77,7 @@ def git_repo(tmp_path):
 async def orch(tmp_path):
     config = AppConfig(
         data_dir=str(tmp_path / "data"),
-        database_path=str(tmp_path / "test.db"),
+        database=DatabaseConfig(url=lease_dsn("test.db")),
         workspace_dir=str(tmp_path / "workspaces"),
     )
     # The defect is specific to the exclusive-clone path.
