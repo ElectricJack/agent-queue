@@ -8,15 +8,17 @@ from unittest.mock import AsyncMock
 import pytest
 
 from src.config import EventsConfig, load_config
-from src.database import Database, DatabaseBackend, Database
+from src.database import DatabaseBackend, Database
 from src.models import Project, RepoSourceType, Workspace
 from tests.pg_dsn import ensure_worker_postgres_dsn
+from tests.db_fixtures import lease_dsn
+from tests.pg_dsn import create_scratch_database
 
 POSTGRES_TEST_DSN = ensure_worker_postgres_dsn()
 
 
 def test_onboarding_retention_config_round_trips_and_validates(tmp_path):
-    path = tmp_path / "config.yaml"
+    path = await create_scratch_database("mig")
     path.write_text(
         "database_path: test.db\n"
         "discord:\n"
@@ -38,7 +40,7 @@ def test_database_protocol_exposes_onboarding_queries():
 
 @pytest.fixture
 async def db(request, tmp_path):
-    database = Database(str(tmp_path / "onboarding.db"))
+    database = Database(lease_dsn("onboarding.db"))
     await database.initialize()
     yield database
     await database.close()

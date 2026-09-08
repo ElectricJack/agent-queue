@@ -27,6 +27,7 @@ from src.models import Agent, AgentState, Project, SessionRecord, Task, TaskStat
 from src.sessions.provider import NudgeDeferred
 from src.sessions.transcripts.watcher import TranscriptWatcher
 from tests.pg_dsn import ensure_worker_postgres_dsn
+from tests.db_fixtures import lease_dsn
 
 POSTGRES_DSN = ensure_worker_postgres_dsn()
 
@@ -58,7 +59,7 @@ class Terminal:
 async def flow(tmp_path, request):
     from src.sessions.questions import AgentQuestionService
 
-    db = Database(str(tmp_path / "questions.db"))
+    db = Database(lease_dsn("questions.db"))
     await db.initialize()
     await db.create_project(Project(id="p", name="Project"))
     await db.create_agent(

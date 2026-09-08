@@ -11,23 +11,24 @@ import pytest
 
 from src.api.websocket import WebSocketManager
 from src.commands.handler import CommandHandler
-from src.config import AppConfig
+from src.config import DatabaseConfig, AppConfig
 from src.database import Database
 from src.event_bus import EventBus
 from src.models import Project, Task, TaskStatus
 from src.orchestrator import Orchestrator
+from tests.db_fixtures import lease_dsn
 
 
 @pytest.fixture
 async def setup(tmp_path):
-    db = Database(str(tmp_path / "graph.db"))
+    db = Database(lease_dsn("graph.db"))
     await db.initialize()
     await db.create_project(Project(id="p1", name="One"))
     await db.create_project(Project(id="p2", name="Two"))
     config = AppConfig(
         data_dir=str(tmp_path / "data"),
         workspace_dir=str(tmp_path / "workspaces"),
-        database_path=str(tmp_path / "graph.db"),
+        database=DatabaseConfig(url=lease_dsn("graph.db")),
     )
     orch = Orchestrator(config)
     orch.db = db

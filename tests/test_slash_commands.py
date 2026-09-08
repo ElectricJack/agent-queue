@@ -30,6 +30,8 @@ from src.discord.slash_commands import (
     command_resolves,
     setup_commands,
 )
+from tests.db_fixtures import lease_dsn
+from src.config import DatabaseConfig
 
 
 # ---------------------------------------------------------------------------
@@ -117,7 +119,7 @@ class FakeInteraction:
 def real_handler(tmp_path):
     """A real ``CommandHandler`` — no DB touched, only method lookup."""
     config = AppConfig(
-        database_path=str(tmp_path / "t.db"),
+        database=DatabaseConfig(url=lease_dsn("t.db")),
         workspace_dir=str(tmp_path / "ws"),
         data_dir=str(tmp_path / "data"),
         messaging_platform="none",

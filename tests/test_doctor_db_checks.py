@@ -26,6 +26,7 @@ from src.doctor.db_checks import (
 )
 from src.doctor.models import DoctorContext, Severity
 from src.doctor.runner import apply_fix
+from tests.pg_dsn import create_scratch_database
 
 #: ``src.doctor`` re-exports a *function* named ``db_checks``, which shadows
 #: the submodule of the same name for a plain ``import`` — same convention as
@@ -50,7 +51,6 @@ async def ctx(tmp_path):
     A scratch database of its own, not a pooled lease: these tests stamp
     ``alembic_version`` at a bogus revision and run repairs against it.
     """
-    from tests.pg_dsn import create_scratch_database
 
     dsn = await create_scratch_database("doctor_db")
     db = Database(dsn)

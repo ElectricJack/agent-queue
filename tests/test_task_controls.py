@@ -13,6 +13,7 @@ from src.models import Agent, AgentProfile, Project, Task, TaskStatus
 from src.orchestrator import Orchestrator
 from tests.assignment_routing_helpers import install_already_routed
 from tests.pg_dsn import ensure_worker_postgres_dsn
+from tests.db_fixtures import lease_dsn
 
 pytestmark = pytest.mark.asyncio
 POSTGRES_TEST_DSN = ensure_worker_postgres_dsn()
@@ -20,7 +21,7 @@ POSTGRES_TEST_DSN = ensure_worker_postgres_dsn()
 
 @pytest.fixture
 async def env(tmp_path, request):
-    db = Database(str(tmp_path / "controls.db"))
+    db = Database(lease_dsn("controls.db"))
     await db.initialize()
     for pid in ("p", "other"):
         await db.create_project(Project(id=pid, name=pid))

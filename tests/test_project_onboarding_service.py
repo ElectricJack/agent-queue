@@ -16,7 +16,7 @@ from src.commands.contracts.project_onboarding import (
     parse_onboard_project_request,
 )
 from src.commands.handler import CommandHandler
-from src.config import AppConfig, ProjectRoot
+from src.config import DatabaseConfig, AppConfig, ProjectRoot
 from src.database import Database
 from src.git.manager import GitError, GitManager
 from src.models import Project, RepoSourceType, Workspace
@@ -24,6 +24,7 @@ from src.orchestrator import Orchestrator
 from src.projects.github import GhClient
 from src.projects.onboarding import ProjectOnboardingService
 from tests.pg_dsn import ensure_worker_postgres_dsn
+from tests.db_fixtures import lease_dsn
 
 
 FAKE_GH = Path(__file__).parent / "fixtures" / "fake_gh" / "gh"
@@ -204,7 +205,7 @@ async def onboarding(request, tmp_path: Path):
     config = AppConfig(
         project_roots=[ProjectRoot(id="dev", label="Development", path=str(root))],
         data_dir=str(data_dir),
-        database_path=str(tmp_path / "onboarding.db"),
+        database=DatabaseConfig(url=lease_dsn("onboarding.db")),
     )
     database = Database(config.database_path)
     await database.initialize()

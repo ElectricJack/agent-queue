@@ -1,7 +1,7 @@
 import os
 import pytest
 import yaml
-from src.config import load_config
+from src.config import DatabaseConfig, load_config
 
 
 @pytest.fixture
@@ -127,7 +127,7 @@ def test_streams_config_validate_accepts_defaults():
     ],
 )
 def test_database_backend_detects_every_postgres_scheme(url):
-    from src.config import DatabaseConfig, is_postgres_url
+    from src.config import is_postgres_url
 
     assert is_postgres_url(url) is True
     assert DatabaseConfig(url=url).backend == "postgresql"
@@ -144,7 +144,7 @@ def test_a_non_postgres_url_is_a_validation_error(url):
     as a file path, so the daemon came up healthy on an empty SQLite database
     while the real one sat untouched.
     """
-    from src.config import AppConfig, DatabaseConfig, is_postgres_url
+    from src.config import AppConfig, is_postgres_url
 
     assert is_postgres_url(url) is False
     errors = AppConfig(database=DatabaseConfig(url=url)).validate()
@@ -155,7 +155,6 @@ def test_a_non_postgres_url_is_a_validation_error(url):
 
 def test_asyncpg_dsn_is_pooled_like_any_other_postgres_url():
     """The pool bounds are only validated on the PostgreSQL branch."""
-    from src.config import DatabaseConfig
 
     cfg = DatabaseConfig(url="postgresql+asyncpg://u:p@h/db", pool_min_size=0)
     assert [e.field for e in cfg.validate()] == ["pool_min_size"]
@@ -169,7 +168,6 @@ def test_psycopg2_dsn_is_rejected_at_load():
     dialect not being async.  Config validation says it at load, with the
     fix in the text.
     """
-    from src.config import DatabaseConfig
 
     cfg = DatabaseConfig(url="postgresql+psycopg2://u:p@h/db")
     errors = cfg.validate()
@@ -179,7 +177,6 @@ def test_psycopg2_dsn_is_rejected_at_load():
 
 def test_psycopg3_dsn_is_accepted():
     """psycopg *3* is async-capable, unlike psycopg2 — it stays legal."""
-    from src.config import DatabaseConfig
 
     assert DatabaseConfig(url="postgresql+psycopg://u:p@h/db").validate() == []
 

@@ -19,9 +19,10 @@ import pytest
 from sqlalchemy import event
 
 from src.commands.handler import CommandHandler
-from src.config import AppConfig
+from src.config import DatabaseConfig, AppConfig
 from src.models import DepType, Project, Task, TaskStatus
 from src.orchestrator import Orchestrator
+from tests.db_fixtures import lease_dsn
 
 
 @pytest.fixture
@@ -29,7 +30,7 @@ async def orch(tmp_path):
     workspace = tmp_path / "workspaces"
     workspace.mkdir()
     config = AppConfig(
-        database_path=str(tmp_path / "test.db"),
+        database=DatabaseConfig(url=lease_dsn("test.db")),
         workspace_dir=str(workspace),
         data_dir=str(tmp_path / "data"),
     )

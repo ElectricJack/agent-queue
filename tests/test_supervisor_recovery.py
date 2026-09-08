@@ -16,6 +16,7 @@ from src.database.tables import messages
 from src.models import AgentProfile, Project, SessionRecord, Task, TaskStatus
 from src.orchestrator import Orchestrator
 from tests.pg_dsn import ensure_worker_postgres_dsn
+from tests.db_fixtures import lease_dsn
 
 pytestmark = pytest.mark.asyncio
 POSTGRES_TEST_DSN = ensure_worker_postgres_dsn()
@@ -23,7 +24,7 @@ POSTGRES_TEST_DSN = ensure_worker_postgres_dsn()
 
 @pytest.fixture
 async def env(tmp_path, request):
-    db = Database(str(tmp_path / "recovery.db"))
+    db = Database(lease_dsn("recovery.db"))
     await db.initialize()
     await db.create_project(Project(id="p", name="Project"))
     await db.create_project(Project(id="other", name="Other"))

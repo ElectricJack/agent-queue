@@ -45,6 +45,7 @@ from src.database.queries.playbook_run_queries import (
 )
 from src.playbooks.run_state import PendingEventQuotaExceeded
 from tests.pg_dsn import ensure_worker_postgres_dsn
+from tests.db_fixtures import lease_dsn
 
 POSTGRES_TEST_DSN = ensure_worker_postgres_dsn()
 
@@ -57,7 +58,7 @@ DAY = 86_400.0
 
 @pytest.fixture
 async def db(request, tmp_path):
-    database = Database(str(tmp_path / "test.db"))
+    database = Database(lease_dsn("test.db"))
     await database.initialize()
     try:
         yield database

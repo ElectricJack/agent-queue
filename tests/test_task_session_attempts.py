@@ -11,11 +11,12 @@ from src.database import Database
 from src.database.tables import agents, tasks
 from src.models import Agent, Project, SessionRecord, Task, TaskStatus
 from tests.perf.test_hierarchy_statements import count_statements
+from tests.db_fixtures import lease_dsn
 
 
 @pytest.fixture
 async def db(tmp_path):
-    database = Database(str(tmp_path / "history.db"))
+    database = Database(lease_dsn("history.db"))
     await database.initialize()
     await database.create_project(Project(id="p", name="Project"))
     await database.create_agent(Agent(id="a", name="Original worker", profile_id="worker"))

@@ -10,11 +10,12 @@ from src.models import (
     Workspace,
     WorkspaceMode,
 )
+from tests.db_fixtures import lease_dsn
 
 
 @pytest.fixture
 async def db(tmp_path):
-    database = Database(str(tmp_path / "test.db"))
+    database = Database(lease_dsn("test.db"))
     await database.initialize()
     yield database
     await database.close()
@@ -1405,7 +1406,7 @@ async def test_layout_tables_exist(tmp_path):
     from sqlalchemy import inspect
     from src.database import Database
 
-    db = Database(str(tmp_path / "layout.db"))
+    db = Database(lease_dsn("layout.db"))
     await db.initialize()
     async with db._engine.connect() as conn:
         names = await conn.run_sync(lambda c: inspect(c).get_table_names())

@@ -20,7 +20,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from src.commands.handler import CommandHandler
-from src.config import AppConfig, DiscordConfig
+from src.config import DatabaseConfig, AppConfig, DiscordConfig
 from src.database import Database
 from src.git.manager import GitManager
 from src.models import (
@@ -32,6 +32,7 @@ from src.models import (
 )
 from src.orchestrator import Orchestrator
 from tests.pg_dsn import ensure_worker_postgres_dsn
+from tests.db_fixtures import lease_dsn
 
 POSTGRES_DSN = ensure_worker_postgres_dsn()
 
@@ -74,12 +75,12 @@ async def handler(request, tmp_path, repo):
     The close path writes task metadata and a completion row, so both
     dialects are exercised rather than assumed equivalent.
     """
-    db = Database(str(tmp_path / "close.db"))
+    db = Database(lease_dsn("close.db"))
     await db.initialize()
     cfg = AppConfig(
         discord=DiscordConfig(bot_token="t", guild_id="1"),
         workspace_dir=str(tmp_path / "w"),
-        database_path=str(tmp_path / "close.db"),
+        database=DatabaseConfig(url=lease_dsn("close.db")),
         data_dir=str(tmp_path / "d"),
     )
     orch = Orchestrator(cfg)

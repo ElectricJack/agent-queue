@@ -23,6 +23,8 @@ from src.profiles.retired_defaults import (
     unretire_default,
 )
 from src.vault import ensure_default_profiles
+from tests.db_fixtures import lease_dsn
+from src.config import DatabaseConfig
 
 
 @pytest.fixture
@@ -188,7 +190,7 @@ async def handler(tmp_path):
     from src.orchestrator import Orchestrator
 
     config = AppConfig(
-        database_path=str(tmp_path / "test.db"),
+        database=DatabaseConfig(url=lease_dsn("test.db")),
         workspace_dir=str(tmp_path / "workspaces"),
         data_dir=str(tmp_path / "data"),
     )

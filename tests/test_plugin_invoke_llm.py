@@ -4,15 +4,16 @@ from __future__ import annotations
 
 from unittest.mock import AsyncMock
 
-from src.config import AppConfig, DiscordConfig
+from src.config import DatabaseConfig, AppConfig, DiscordConfig
 from src.llm import LLMClient
 from src.llm.fake import FakeProvider
 from src.orchestrator import Orchestrator
+from tests.db_fixtures import lease_dsn
 
 
 def _orch(tmp_path, fake):
     cfg = AppConfig(discord=DiscordConfig(bot_token="t", guild_id="1"),
-                    workspace_dir=str(tmp_path / "w"), database_path=str(tmp_path / "t.db"),
+                    workspace_dir=str(tmp_path / "w"), database=DatabaseConfig(url=lease_dsn("t.db")),
                     data_dir=str(tmp_path / "d"))
     o = Orchestrator(cfg)
     o.llm = LLMClient.with_provider(fake)

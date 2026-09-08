@@ -17,19 +17,20 @@ from __future__ import annotations
 import pytest
 
 from src.commands.handler import CommandHandler
-from src.config import AppConfig
+from src.config import DatabaseConfig, AppConfig
 from src.messaging.factory import create_messaging_adapter
 from src.messaging.null_adapter import NullMessagingAdapter
 from src.orchestrator import Orchestrator
 from src.tools.registry import ToolRegistry
 from src.runtimes import default_registry
+from tests.db_fixtures import lease_dsn
 
 
 @pytest.mark.asyncio
 async def test_daemon_boots_and_schedules_with_none_platform(tmp_path):
     """messaging_platform: 'none' — no adapter, daemon still boots and schedules."""
     config = AppConfig(
-        database_path=str(tmp_path / "test.db"),
+        database=DatabaseConfig(url=lease_dsn("test.db")),
         workspace_dir=str(tmp_path / "workspaces"),
         data_dir=str(tmp_path / "data"),
         messaging_platform="none",

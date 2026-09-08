@@ -29,12 +29,13 @@ import time
 import pytest
 
 from src.commands.handler import CommandHandler
-from src.config import AppConfig
+from src.config import DatabaseConfig, AppConfig
 from src.models import AgentProfile, Project, SessionRecord, Task, TaskStatus
 from src.orchestrator import Orchestrator
 from src.runtimes.base import Runtime
 from src.sessions.provider import SessionSpec
 from src.sessions.spec import named_session_name
+from tests.db_fixtures import lease_dsn
 
 
 # ---------------------------------------------------------------------------
@@ -55,7 +56,7 @@ class _NullRuntimeFactory:
 @pytest.fixture
 async def orch(tmp_path):
     config = AppConfig(
-        database_path=str(tmp_path / "aq.db"),
+        database=DatabaseConfig(url=lease_dsn("aq.db")),
         workspace_dir=str(tmp_path / "workspaces"),
         data_dir=str(tmp_path / "data"),
     )

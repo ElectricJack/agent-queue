@@ -14,7 +14,7 @@ from sqlalchemy import text
 from unittest.mock import MagicMock
 
 from src.commands.handler import CommandHandler
-from src.config import AppConfig, ArchiveConfig, DiscordConfig
+from src.config import DatabaseConfig, AppConfig, ArchiveConfig, DiscordConfig
 from src.database import Database
 from src.models import (
     Agent,
@@ -29,6 +29,7 @@ from src.models import (
 )
 from src.orchestrator import Orchestrator
 from tests.pg_dsn import ensure_worker_postgres_dsn
+from tests.db_fixtures import lease_dsn
 
 POSTGRES_TEST_DSN = ensure_worker_postgres_dsn()
 
@@ -40,7 +41,7 @@ POSTGRES_TEST_DSN = ensure_worker_postgres_dsn()
 
 @pytest.fixture
 async def db(tmp_path, request):
-    database = Database(str(tmp_path / "test.db"))
+    database = Database(lease_dsn("test.db"))
     await database.initialize()
     yield database
     await database.close()
@@ -356,7 +357,7 @@ class TestArchiveCommands:
             discord=DiscordConfig(bot_token="test-token", guild_id="123"),
             workspace_dir=ws_dir,
             data_dir=str(tmp_path / "data"),
-            database_path=str(tmp_path / "test.db"),
+            database=DatabaseConfig(url=lease_dsn("test.db")),
         )
         orchestrator = Orchestrator(config)
         orchestrator.db = db
@@ -524,7 +525,7 @@ class TestArchiveMarkdownNotes:
             discord=DiscordConfig(bot_token="test-token", guild_id="123"),
             workspace_dir=ws_dir,
             data_dir=str(tmp_path / "data"),
-            database_path=str(tmp_path / "test.db"),
+            database=DatabaseConfig(url=lease_dsn("test.db")),
         )
         orchestrator = Orchestrator(config)
         orchestrator.db = db
@@ -789,7 +790,7 @@ class TestAutoArchive:
             data_dir=str(tmp_path / "data"),
             discord=DiscordConfig(bot_token="test-token", guild_id="123"),
             workspace_dir=str(tmp_path / "workspaces"),
-            database_path=str(tmp_path / "test.db"),
+            database=DatabaseConfig(url=lease_dsn("test.db")),
             archive=ArchiveConfig(
                 enabled=True,
                 after_hours=1.0,

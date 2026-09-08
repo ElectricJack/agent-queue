@@ -17,6 +17,7 @@ from __future__ import annotations
 import pytest
 
 from tests.pg_dsn import ensure_worker_postgres_dsn
+from tests.db_fixtures import lease_dsn
 
 #: Per-xdist-worker DSN (tests/pg_dsn.py) -- this suite and
 #: tests/test_claim_queries.py / tests/test_database_postgresql.py each get
@@ -29,7 +30,7 @@ POSTGRES_TEST_DSN = ensure_worker_postgres_dsn()
 async def any_db(request, tmp_path):
     from src.database import Database
 
-    db = Database(str(tmp_path / "perf.db"))
+    db = Database(lease_dsn("perf.db"))
     await db.initialize()
     yield db
     await db.close()

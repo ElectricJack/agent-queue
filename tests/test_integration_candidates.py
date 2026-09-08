@@ -39,6 +39,7 @@ from src.integration.models import (
     RequiredCheckSet,
 )
 from src.models import AgentProfile, Project, RepoConfig, RepoSourceType, SessionRecord
+from tests.db_fixtures import lease_dsn
 
 
 BASE = "a" * 40
@@ -119,7 +120,7 @@ def _policy() -> dict:
 
 @pytest.fixture
 async def db(tmp_path):
-    database = Database(str(tmp_path / "candidates.db"))
+    database = Database(lease_dsn("candidates.db"))
     await database.initialize()
     await database.create_profile(AgentProfile(id="repairer", name="Repairer"))
     await database.create_profile(AgentProfile(id="debugger", name="Debugger"))

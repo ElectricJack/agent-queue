@@ -33,6 +33,7 @@ from sqlalchemy.schema import CreateTable
 from src.database import Database
 from src.database.tables import metadata, playbook_activations, playbook_artifacts
 from tests.pg_dsn import ensure_worker_postgres_dsn
+from tests.db_fixtures import lease_dsn
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 
@@ -114,7 +115,7 @@ def test_emitted_ddl_has_no_doubly_quoted_default(dialect_factory):
 
 @pytest.fixture
 async def db(request, tmp_path):
-    database = Database(str(tmp_path / "string-defaults.db"))
+    database = Database(lease_dsn("string-defaults.db"))
     await database.initialize()
     yield database
     await database.close()

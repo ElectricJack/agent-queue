@@ -14,7 +14,7 @@ import pytest
 from sqlalchemy import insert
 
 from src.commands.claim_commands import CLAIM_FILE, write_claim_file
-from src.config import AppConfig, DiscordConfig
+from src.config import DatabaseConfig, AppConfig, DiscordConfig
 from src.database import Database
 from src.database.tables import integration_branch_owners
 from src.intelligence_classes import IntelligenceClass
@@ -29,6 +29,7 @@ from src.models import (
 )
 from src.orchestrator import Orchestrator
 from src.sessions.harness_parser import Harness
+from tests.db_fixtures import lease_dsn
 
 PROJECT_ID = "proj"
 
@@ -63,7 +64,7 @@ class _FakeSlotManager:
 
 @pytest.fixture
 async def db(tmp_path):
-    database = Database(str(tmp_path / "test.db"))
+    database = Database(lease_dsn("test.db"))
     await database.initialize()
     await database.create_project(Project(id=PROJECT_ID, name="p"))
     await database.create_profile(
@@ -90,7 +91,7 @@ async def orch(db, tmp_path):
     cfg = AppConfig(
         discord=DiscordConfig(bot_token="t", guild_id="1"),
         workspace_dir=str(tmp_path / "ws"),
-        database_path=str(tmp_path / "test.db"),
+        database=DatabaseConfig(url=lease_dsn("test.db")),
         data_dir=str(tmp_path / "data"),
     )
     cfg.sessions.enabled = True

@@ -25,6 +25,7 @@ from src.integration.ci import ATTESTATION_CHECK_NAME, AttestationPayload
 from src.integration.main_promotion import RootAttestationSubject
 from src.integration.repair import RepairService
 from src.models import Project, RepoConfig, RepoSourceType
+from tests.db_fixtures import lease_dsn
 
 
 SHA = "a" * 40
@@ -113,7 +114,7 @@ def attestation_payload() -> AttestationPayload:
 
 @pytest.fixture
 async def attestation_db(tmp_path):
-    db = Database(str(tmp_path / "attestation.db"))
+    db = Database(lease_dsn("attestation.db"))
     await db.initialize()
     await db.create_project(Project(id="p", name="project"))
     await db.create_repo(

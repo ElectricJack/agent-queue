@@ -15,11 +15,13 @@ from sqlalchemy import create_engine, inspect
 from sqlalchemy import text as sqltext
 
 from src.commands.handler import CommandHandler
-from src.config import AppConfig, DiscordConfig
+from src.config import DatabaseConfig, AppConfig, DiscordConfig
 from src.database import Database, hierarchy_migration as hm
 from src.models import Project
 from src.orchestrator import Orchestrator
 from tests.pg_dsn import ensure_worker_postgres_dsn
+from tests.db_fixtures import lease_dsn
+from tests.pg_dsn import create_scratch_database
 
 
 # Full Alembic history and downgrade compatibility are exercised explicitly,
@@ -61,7 +63,6 @@ async def test_hierarchy_revision_pair_round_trips_on_postgres():
     """
     if not POSTGRES_DSN:
         pytest.skip("POSTGRES_TEST_DSN not set")
-    from tests.pg_dsn import create_scratch_database
 
     dsn = await create_scratch_database("hierpair")
     res = _alembic_pg(dsn, "upgrade", "a1b2c3d4e5f6")
@@ -137,7 +138,6 @@ async def test_hierarchy_revision_b_postgres_reject_report_is_committed_before_f
     """
     if not POSTGRES_DSN:
         pytest.skip("POSTGRES_TEST_DSN not set")
-    from tests.pg_dsn import create_scratch_database
 
     dsn = await create_scratch_database("rejwin")
     assert _alembic_pg(dsn, "upgrade", "a1b2c3d4e5f6").returncode == 0
@@ -443,7 +443,7 @@ class TestRevisionB:
 class TestPreflightCommand:
     @pytest.fixture
     async def db(self, tmp_path):
-        database = Database(str(tmp_path / "test.db"))
+        database = Database(lease_dsn("test.db"))
         await database.initialize()
         await database.create_project(Project(id=PROJECT_ID, name="Test Project"))
         yield database
@@ -454,7 +454,7 @@ class TestPreflightCommand:
         return AppConfig(
             discord=DiscordConfig(bot_token="test-token", guild_id="123"),
             workspace_dir=str(tmp_path / "workspaces"),
-            database_path=str(tmp_path / "test.db"),
+            database=DatabaseConfig(url=lease_dsn("test.db")),
             data_dir=str(tmp_path / "data"),
         )
 

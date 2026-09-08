@@ -17,13 +17,14 @@ from sqlalchemy import text
 
 from src.database import Database
 from src.models import Project, Task, TaskStatus
+from tests.db_fixtures import lease_dsn
 
 PROJECT_ID = "proj"
 
 
 @pytest.fixture
 async def db(tmp_path):
-    database = Database(str(tmp_path / "immediate.db"))
+    database = Database(lease_dsn("immediate.db"))
     await database.initialize()
     await database.create_project(Project(id=PROJECT_ID, name="p"))
     yield database
@@ -94,8 +95,8 @@ async def test_immediate_rolls_back_every_write_after_exception(db):
 
 
 async def test_file_sqlite_adapters_serialize_immediate_writers_without_cross_commit(tmp_path):
-    first = Database(str(tmp_path / "shared.db"))
-    second = Database(str(tmp_path / "shared.db"))
+    first = Database(lease_dsn("shared.db"))
+    second = Database(lease_dsn("shared.db"))
     await first.initialize()
     await second.initialize()
     try:

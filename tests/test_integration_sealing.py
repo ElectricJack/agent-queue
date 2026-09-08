@@ -47,6 +47,7 @@ from src.integration.models import (
 from src.models import Project, RepoConfig, RepoSourceType, TaskStatus
 from src.profiles.capabilities import CapabilityPolicy
 from tests.pg_dsn import ensure_worker_postgres_dsn
+from tests.db_fixtures import lease_dsn
 
 
 BASE_SHA = "a" * 40
@@ -99,7 +100,7 @@ def _policy() -> dict:
 
 @pytest.fixture
 async def db(tmp_path):
-    database = Database(str(tmp_path / "integration-sealing.db"))
+    database = Database(lease_dsn("integration-sealing.db"))
     await database.initialize()
     await database.create_project(Project(id="p", name="integration project"))
     await database.create_repo(
@@ -116,7 +117,7 @@ async def db(tmp_path):
 
 @pytest.fixture
 async def concurrent_db(request, tmp_path):
-    database = Database(str(tmp_path / "integration-sealing-concurrent.db"))
+    database = Database(lease_dsn("integration-sealing-concurrent.db"))
     await database.initialize()
     await database.create_project(Project(id="p", name="integration project"))
     await database.create_repo(

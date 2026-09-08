@@ -14,18 +14,19 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from src.commands.handler import CommandHandler
-from src.config import AppConfig, DiscordConfig
+from src.config import DatabaseConfig, AppConfig, DiscordConfig
 from src.database import Database
 from src.git.manager import GitError
 from src.models import Project, RepoSourceType, Workspace
 from src.orchestrator import Orchestrator
+from tests.db_fixtures import lease_dsn
 
 WS = "/tmp/p1"
 
 
 @pytest.fixture
 async def db(tmp_path):
-    d = Database(str(tmp_path / "sdb.db"))
+    d = Database(lease_dsn("sdb.db"))
     await d.initialize()
     await d.create_project(Project(id="p1", name="P1", repo_default_branch="main"))
     await d.create_project(Project(id="p2", name="P2", repo_default_branch="main"))
@@ -41,7 +42,7 @@ def config(tmp_path):
     return AppConfig(
         discord=DiscordConfig(bot_token="t", guild_id="1"),
         workspace_dir=str(tmp_path / "w"),
-        database_path=str(tmp_path / "sdb.db"),
+        database=DatabaseConfig(url=lease_dsn("sdb.db")),
         data_dir=str(tmp_path / "d"),
     )
 

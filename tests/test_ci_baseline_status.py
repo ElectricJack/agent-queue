@@ -19,11 +19,12 @@ from src.commands.ci_commands import (
 )
 from src.commands.contracts.builtin import _outcome_of
 from src.commands.handler import CommandHandler
-from src.config import AppConfig, DiscordConfig
+from src.config import DatabaseConfig, AppConfig, DiscordConfig
 from src.database import Database
 from src.git.manager import GitManager
 from src.models import Project, Task, TaskStatus
 from src.orchestrator import Orchestrator
+from tests.db_fixtures import lease_dsn
 
 PROJECT = "proj-ci"
 REPO = "https://github.com/example/widgets.git"
@@ -51,7 +52,7 @@ FAILED_TESTS = ["tests/test_a.py::test_one", "tests/test_b.py::TestX::test_two"]
 
 @pytest.fixture
 async def db(tmp_path):
-    database = Database(str(tmp_path / "ci.db"))
+    database = Database(lease_dsn("ci.db"))
     await database.initialize()
     await database.create_project(Project(id=PROJECT, name="CI", repo_url=REPO))
     yield database
@@ -73,7 +74,7 @@ async def handler(db, git, tmp_path):
     config = AppConfig(
         discord=DiscordConfig(bot_token="test-token", guild_id="123"),
         workspace_dir=str(tmp_path / "workspaces"),
-        database_path=str(tmp_path / "test.db"),
+        database=DatabaseConfig(url=lease_dsn("test.db")),
         data_dir=str(tmp_path / "data"),
     )
     orch = Orchestrator(config)

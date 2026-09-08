@@ -8,6 +8,7 @@ from sqlalchemy import select
 from src.database import Database
 from src.database.tables import playbook_activations
 from tests.pg_dsn import ensure_worker_postgres_dsn
+from tests.db_fixtures import lease_dsn
 
 #: Re-activation writes an INSERT that can violate
 #: ``uq_playbook_activations_scope``.  On PostgreSQL a constraint violation
@@ -20,7 +21,7 @@ POSTGRES_TEST_DSN = ensure_worker_postgres_dsn()
 
 @pytest.fixture
 async def db(request, tmp_path):
-    database = Database(str(tmp_path / "playbook-activation.db"))
+    database = Database(lease_dsn("playbook-activation.db"))
     await database.initialize()
     yield database
     await database.close()

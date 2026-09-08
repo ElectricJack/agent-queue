@@ -12,11 +12,12 @@ from src.api.graph_layout import build_graph_layout_router
 from src.database import Database
 from src.models import Agent, AgentState, Project, Task, TaskStatus
 from src.task_graph.layout.driver import LayoutDriver
+from tests.db_fixtures import lease_dsn
 
 
 @pytest.fixture
 async def db(tmp_path):
-    d = Database(str(tmp_path / "gl.db"))
+    d = Database(lease_dsn("gl.db"))
     await d.initialize()
     await d.create_project(Project(id="p1", name="P1"))
     yield d

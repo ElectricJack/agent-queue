@@ -40,6 +40,7 @@ from src.playbooks.run_state import (
 )
 from src.playbooks.waits import WaitChangeSet, WaitSpec
 from tests.pg_dsn import ensure_worker_postgres_dsn
+from tests.db_fixtures import lease_dsn
 
 POSTGRES_TEST_DSN = ensure_worker_postgres_dsn()
 
@@ -49,7 +50,7 @@ NOW = 1_000_000.0
 
 @pytest.fixture
 async def db(request, tmp_path):
-    database = Database(str(tmp_path / "test.db"))
+    database = Database(lease_dsn("test.db"))
     await database.initialize()
     await seed_artifact(database, ARTIFACT)
     yield database

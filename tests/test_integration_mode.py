@@ -13,7 +13,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from src.config import AppConfig
+from src.config import DatabaseConfig, AppConfig
 from src.git.manager import GitError
 from src.models import (
     Agent,
@@ -30,6 +30,7 @@ from src.models import (
     Workspace,
 )
 from src.orchestrator import Orchestrator
+from tests.db_fixtures import lease_dsn
 
 
 class _NullRuntimeFactory:
@@ -40,7 +41,7 @@ class _NullRuntimeFactory:
 @pytest.fixture
 async def orch(tmp_path):
     config = AppConfig(
-        database_path=str(tmp_path / "test.db"),
+        database=DatabaseConfig(url=lease_dsn("test.db")),
         workspace_dir=str(tmp_path / "workspaces"),
         data_dir=str(tmp_path / "data"),
     )
@@ -137,7 +138,7 @@ class TestExecutionRulesByMode:
 
     def test_orchestrator_constructs_without_a_session_command_import_cycle(self, tmp_path):
         config = AppConfig(
-            database_path=str(tmp_path / "x.db"),
+            database=DatabaseConfig(url=lease_dsn("x.db")),
             workspace_dir=str(tmp_path / "w"),
             data_dir=str(tmp_path / "d"),
         )
@@ -148,7 +149,7 @@ class TestExecutionRulesByMode:
 
     def test_pr_mode_instructs_push_and_pr_never_merge(self, tmp_path):
         config = AppConfig(
-            database_path=str(tmp_path / "x.db"),
+            database=DatabaseConfig(url=lease_dsn("x.db")),
             workspace_dir=str(tmp_path / "w"),
             data_dir=str(tmp_path / "d"),
         )
@@ -166,7 +167,7 @@ class TestExecutionRulesByMode:
 
     def test_direct_mode_instructs_merge_to_default(self, tmp_path):
         config = AppConfig(
-            database_path=str(tmp_path / "x.db"),
+            database=DatabaseConfig(url=lease_dsn("x.db")),
             workspace_dir=str(tmp_path / "w"),
             data_dir=str(tmp_path / "d"),
         )

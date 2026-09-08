@@ -39,6 +39,8 @@ from src.models import (
 )
 from src.intelligence_classes import IntelligenceClass
 from tests.perf.test_hierarchy_statements import count_statements, seed_scale
+from tests.db_fixtures import lease_dsn
+from src.config import DatabaseConfig
 
 pytestmark = pytest.mark.perf
 
@@ -48,13 +50,13 @@ NOW = time.time()
 
 async def build_handler(any_db, tmp_path):
     from src.commands.handler import CommandHandler
-    from src.config import AppConfig, DiscordConfig
+    from src.config import DatabaseConfig, AppConfig, DiscordConfig
     from src.orchestrator import Orchestrator
 
     cfg = AppConfig(
         discord=DiscordConfig(bot_token="t", guild_id="1"),
         workspace_dir=str(tmp_path / "ws"),
-        database_path=str(tmp_path / "test.db"),
+        database=DatabaseConfig(url=lease_dsn("test.db")),
         data_dir=str(tmp_path / "data"),
     )
     cfg.sessions.enabled = True
@@ -356,7 +358,7 @@ class TestClaimStatementBudgets:
         cfg = AppConfig(
             discord=DiscordConfig(bot_token="t", guild_id="1"),
             workspace_dir=str(tmp_path / "ws"),
-            database_path=str(tmp_path / "test.db"),
+            database=DatabaseConfig(url=lease_dsn("test.db")),
             data_dir=str(tmp_path / "data"),
         )
         cfg.sessions.enabled = True

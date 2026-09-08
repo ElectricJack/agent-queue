@@ -22,6 +22,8 @@ from src.doctor.models import (
     Severity,
 )
 from src.doctor.runner import DoctorRegistry, exit_code_for, run_doctor
+from tests.db_fixtures import lease_dsn
+from tests.pg_dsn import create_scratch_database
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -404,7 +406,7 @@ class TestConfigParseCheck:
         assert result.severity is Severity.INFO
 
     async def test_broken_config_is_error(self, tmp_path):
-        path = tmp_path / "config.yaml"
+        path = await create_scratch_database("mig")
         path.write_text("this: [is: not: valid yaml", encoding="utf-8")
         config = AppConfig(data_dir=str(tmp_path))
         config._config_path = str(path)
@@ -415,7 +417,7 @@ class TestConfigParseCheck:
 
     async def test_valid_config_is_ok(self, tmp_path):
         d = tmp_path.as_posix()
-        path = tmp_path / "config.yaml"
+        path = await create_scratch_database("mig")
         path.write_text(
             f"data_dir: {d}\n"
             f"workspace_dir: {d}/ws\n"
@@ -435,7 +437,7 @@ class TestDbChecks:
     async def test_connect_ok_on_real_db(self, tmp_path):
         from src.database import Database
 
-        db = Database(str(tmp_path / "t.db"))
+        db = Database(lease_dsn("t.db"))
         await db.initialize()
         try:
             config = AppConfig(data_dir=str(tmp_path))
@@ -453,7 +455,7 @@ class TestDbChecks:
     async def test_migrations_at_head_on_fresh_db(self, tmp_path):
         from src.database import Database
 
-        db = Database(str(tmp_path / "t.db"))
+        db = Database(lease_dsn("t.db"))
         await db.initialize()
         try:
             config = AppConfig(data_dir=str(tmp_path))
@@ -470,7 +472,7 @@ class TestDbChecks:
 
         from src.database import Database
 
-        db = Database(str(tmp_path / "t.db"))
+        db = Database(lease_dsn("t.db"))
         await db.initialize()
         try:
             async with db._engine.begin() as conn:
@@ -849,7 +851,7 @@ class TestFixIdempotency:
     async def test_double_run_on_pristine_state(self, tmp_path):
         from src.database import Database
 
-        db = Database(str(tmp_path / "t.db"))
+        db = Database(lease_dsn("t.db"))
         await db.initialize()
         try:
             config = AppConfig(data_dir=str(tmp_path))

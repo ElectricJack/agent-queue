@@ -11,6 +11,7 @@ from starlette.datastructures import Headers, URL
 
 from src.api.auth import RequestScope
 from src.models import Agent, AgentState, SessionRecord
+from tests.db_fixtures import lease_dsn
 
 
 def module():
@@ -480,7 +481,7 @@ async def test_explicit_trusted_custom_hostname_can_attach(setup):
 
 async def test_older_tmux_observation_cannot_overwrite_silent_input_activity(setup, tmp_path):
     from src.database import Database
-    db = Database(str(tmp_path / "activity.db"))
+    db = Database(lease_dsn("activity.db"))
     await db.initialize()
     try:
         await db.create_session(replace(setup.db.row, agent_id=None, last_activity=None))

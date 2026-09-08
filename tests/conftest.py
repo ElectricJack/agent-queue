@@ -10,6 +10,8 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from src.models import TaskContext  # noqa: F401  (re-exported for test modules)
+from src.config import DatabaseConfig
+from tests.db_fixtures import lease_dsn
 
 # Fresh per-test SQLite databases use the migration template cache. Individual
 # migration tests can request ``disable_schema_cache`` to exercise Alembic.
@@ -64,33 +66,32 @@ _PG_BASE_DSN: str | None = _resolve_base_dsn()
 
 
 @pytest.fixture(autouse=True)
-async def _pg_backend(request):
-    from tests import pg_backend_shim
+async def _pg_backend():
+    """Arm this test's pool of leasable Postgres databases.
 
-    if not pg_backend_shim.enabled():
-        yield
-        return
-
+    ``lease_dsn("name")`` hands out one database per distinct name, and each
+    is reset on teardown.  This replaces the ``Database(str(tmp_path /
+    "x.db"))`` idiom the suite grew under SQLite: there is no file to name any
+    more, so the name is just a key.
+    """
     global _PG_POOL, _PG_POOL_DSNS
     from tests import db_fixtures
     from tests.db_fixtures import POOL_SIZE, LeasePool
 
     if _PG_POOL is None:
         if not _PG_BASE_DSN:
-            pytest.fail("AQ_TEST_BACKEND=postgres but POSTGRES_TEST_DSN is not set")
+            pytest.fail("POSTGRES_TEST_DSN is not set; the suite needs a PostgreSQL server")
         _PG_POOL = LeasePool(_PG_BASE_DSN, os.environ.get("PYTEST_XDIST_WORKER", "master"))
         _PG_POOL_DSNS = [await _PG_POOL.acquire() for _ in range(POOL_SIZE)]
 
-    pg_backend_shim.ROUTER.reset(_PG_POOL_DSNS)
-    pg_backend_shim.install()
+    db_fixtures.begin_test(_PG_POOL_DSNS)
     try:
         yield
     finally:
-        pg_backend_shim.uninstall()
         # Truncate *and* replay the migration seed rows: the built-in
         # workspace_kinds live in the template, and a bare truncate would
         # leave every test after the first without them.
-        for leased in pg_backend_shim.ROUTER.leased:
+        for leased in db_fixtures.leased():
             await db_fixtures.truncate_all(leased)
             if db_fixtures._SEED:
                 await db_fixtures.restore_seed(leased, db_fixtures._SEED)
@@ -287,7 +288,7 @@ async def internal_plugins_handler(tmp_path: Path):
     from unittest.mock import create_autospec
 
     from src.commands.handler import CommandHandler
-    from src.config import AppConfig, DiscordConfig
+    from src.config import DatabaseConfig, AppConfig, DiscordConfig
     from src.database import Database
     from src.event_bus import EventBus
     from src.git.manager import GitManager
@@ -302,7 +303,7 @@ async def internal_plugins_handler(tmp_path: Path):
             config = AppConfig(
                 discord=DiscordConfig(bot_token="test-token", guild_id="123"),
                 workspace_dir=str(tmp_path / "workspaces"),
-                database_path=str(tmp_path / "plugins-handler.db"),
+                database=DatabaseConfig(url=lease_dsn("plugins-handler.db")),
                 data_dir=str(tmp_path / "data"),
             )
         if db is None:
@@ -384,12 +385,12 @@ def command_handler_factory(tmp_path: Path):
         from src.database import Database
         from src.orchestrator import Orchestrator
 
-        db = Database(str(tmp_path / "test.db"))
+        db = Database(lease_dsn("test.db"))
         await db.initialize()
         cfg = AppConfig(
             discord=DiscordConfig(bot_token="t", guild_id="1"),
             workspace_dir=str(tmp_path / "w"),
-            database_path=str(tmp_path / "test.db"),
+            database=DatabaseConfig(url=lease_dsn("test.db")),
             data_dir=str(tmp_path / "d"),
         )
         o = Orchestrator(cfg)
@@ -431,12 +432,12 @@ def orchestrator_factory(tmp_path: Path):
         from src.database import Database
         from src.orchestrator import Orchestrator
 
-        db = Database(str(tmp_path / "orch.db"))
+        db = Database(lease_dsn("orch.db"))
         await db.initialize()
         cfg = AppConfig(
             discord=DiscordConfig(bot_token="t", guild_id="1"),
             workspace_dir=str(tmp_path / "w"),
-            database_path=str(tmp_path / "orch.db"),
+            database=DatabaseConfig(url=lease_dsn("orch.db")),
             data_dir=str(tmp_path / "d"),
         )
         o = Orchestrator(cfg)

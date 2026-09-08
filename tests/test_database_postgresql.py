@@ -28,6 +28,7 @@ from src.models import (
     Workspace,
 )
 from tests.pg_dsn import ensure_worker_postgres_dsn
+from tests.pg_dsn import create_scratch_database
 
 #: Per-xdist-worker DSN (tests/pg_dsn.py) -- this suite's own database,
 #: separate from tests/perf and tests/test_claim_queries.py's, so
@@ -126,7 +127,6 @@ async def test_postgres_head_window_downgrade_reupgrade_preserves_and_transforms
     """
     import asyncpg
 
-    from tests.pg_dsn import create_scratch_database
 
     dsn = await create_scratch_database("window")
     plain_dsn = dsn.replace("postgresql+asyncpg://", "postgresql://")

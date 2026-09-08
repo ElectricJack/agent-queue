@@ -10,7 +10,7 @@ import pytest
 from sqlalchemy import event, insert, select
 
 from src.commands.handler import CommandHandler
-from src.config import AppConfig, DiscordConfig
+from src.config import DatabaseConfig, AppConfig, DiscordConfig
 from src.database import Database
 from src.database.queries.hierarchy_queries import HierarchyError
 from src.database.tables import task_dependencies, task_metadata
@@ -29,6 +29,7 @@ from src.models import (
 )
 from src.orchestrator import Orchestrator
 from tests.pg_dsn import ensure_worker_postgres_dsn
+from tests.db_fixtures import lease_dsn
 
 PROJECT_ID = "proj"
 POSTGRES_DSN = ensure_worker_postgres_dsn()
@@ -36,7 +37,7 @@ POSTGRES_DSN = ensure_worker_postgres_dsn()
 
 @pytest.fixture
 async def db(tmp_path):
-    database = Database(str(tmp_path / "test.db"))
+    database = Database(lease_dsn("test.db"))
     await database.initialize()
     await database.create_project(Project(id=PROJECT_ID, name="Test Project"))
     yield database
@@ -51,7 +52,7 @@ async def any_db(request, tmp_path):
     suite fast; the tests below assert the guards whose SQL genuinely
     differs per dialect (FOR UPDATE, recursive CTEs) on both backends.
     """
-    database = Database(str(tmp_path / "any.db"))
+    database = Database(lease_dsn("any.db"))
     await database.initialize()
     await database.create_project(Project(id=PROJECT_ID, name="Test Project"))
     yield database
@@ -63,7 +64,7 @@ def config(tmp_path):
     return AppConfig(
         discord=DiscordConfig(bot_token="test-token", guild_id="123"),
         workspace_dir=str(tmp_path / "workspaces"),
-        database_path=str(tmp_path / "test.db"),
+        database=DatabaseConfig(url=lease_dsn("test.db")),
         data_dir=str(tmp_path / "data"),
     )
 

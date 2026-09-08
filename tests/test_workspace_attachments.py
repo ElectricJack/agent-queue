@@ -24,13 +24,14 @@ from src.orchestrator.workspace_attachments import (
     effective_requirements,
 )
 from tests.pg_dsn import ensure_worker_postgres_dsn
+from tests.db_fixtures import lease_dsn
 
 POSTGRES_DSN = ensure_worker_postgres_dsn()
 
 
 @pytest.fixture
 async def db(tmp_path):
-    database = Database(str(tmp_path / "test.db"))
+    database = Database(lease_dsn("test.db"))
     await database.initialize()
     await database.create_project(Project(id="p1", name="test"))
     # In production, the workspaces-v2 migration provisions a vault workspace

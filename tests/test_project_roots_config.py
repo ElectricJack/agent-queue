@@ -19,12 +19,13 @@ from src.doctor.models import DoctorContext, Severity
 from src.doctor.project_checks import project_checks
 from src.doctor import default_registry
 from src.event_bus import EventBus
+from tests.pg_dsn import create_scratch_database
 
 
 def _write_config(tmp_path, roots) -> str:
     workspaces = tmp_path / "workspaces"
     workspaces.mkdir(exist_ok=True)
-    path = tmp_path / "config.yaml"
+    path = await create_scratch_database("mig")
     path.write_text(
         yaml.safe_dump(
             {

@@ -34,12 +34,13 @@ from unittest.mock import MagicMock
 import pytest
 
 from src.database import Database
+from tests.db_fixtures import lease_dsn
 
 
 @pytest.fixture
 async def db(tmp_path):
     """Provide an initialized Database."""
-    database = Database(str(tmp_path / "metrics.db"))
+    database = Database(lease_dsn("metrics.db"))
     await database.initialize()
     yield database
     await database.close()

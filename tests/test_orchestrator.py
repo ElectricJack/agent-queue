@@ -18,11 +18,12 @@ from src.models import (
     Workspace,
 )
 from src.runtimes.base import Runtime
-from src.config import AppConfig, AutoTaskConfig, GitHubAppConfig
+from src.config import DatabaseConfig, AppConfig, AutoTaskConfig, GitHubAppConfig
 from src.intelligence_classes import IntelligenceClass
 from src.sessions.harness_parser import Harness
 from src.git.manager import GitManager
 from tests.assignment_routing_helpers import install_already_routed
+from tests.db_fixtures import lease_dsn
 
 
 class MockAdapter(Runtime):
@@ -119,7 +120,7 @@ async def test_configured_orchestrator_installs_repository_bound_candidate_trans
     from src.git.github_cli import GitHubCLIClient
 
     config = AppConfig(
-        database_path=str(tmp_path / "test.db"),
+        database=DatabaseConfig(url=lease_dsn("test.db")),
         workspace_dir=str(tmp_path / "workspaces"),
         data_dir=str(tmp_path / "data"),
     )
@@ -156,7 +157,7 @@ async def test_configured_orchestrator_installs_repository_bound_candidate_trans
 @pytest.fixture
 async def orch(tmp_path):
     config = AppConfig(
-        database_path=str(tmp_path / "test.db"),
+        database=DatabaseConfig(url=lease_dsn("test.db")),
         workspace_dir=str(tmp_path / "workspaces"),
         data_dir=str(tmp_path / "data"),
     )
@@ -218,7 +219,7 @@ async def session_orch(tmp_path):
     fixture and the ``fake`` session provider instead.
     """
     config = AppConfig(
-        database_path=str(tmp_path / "test.db"),
+        database=DatabaseConfig(url=lease_dsn("test.db")),
         workspace_dir=str(tmp_path / "workspaces"),
         data_dir=str(tmp_path / "data"),
     )
@@ -765,7 +766,7 @@ class TestPlanApprovalBlocking:
         workspace = tmp_path / "workspaces"
         workspace.mkdir()
         config = AppConfig(
-            database_path=str(tmp_path / "test.db"),
+            database=DatabaseConfig(url=lease_dsn("test.db")),
             workspace_dir=str(workspace),
             data_dir=str(tmp_path / "data"),
         )
@@ -940,7 +941,7 @@ class TestIsLastSubtask:
         workspace = tmp_path / "workspaces"
         workspace.mkdir()
         config = AppConfig(
-            database_path=str(tmp_path / "test.db"),
+            database=DatabaseConfig(url=lease_dsn("test.db")),
             workspace_dir=str(workspace),
             data_dir=str(tmp_path / "data"),
         )
@@ -1056,7 +1057,7 @@ class TestPrepareWorkspaceCleanDefault:
         workspace.mkdir(parents=True)
 
         config = AppConfig(
-            database_path=str(tmp_path / "test.db"),
+            database=DatabaseConfig(url=lease_dsn("test.db")),
             workspace_dir=str(tmp_path / "workspaces"),
             data_dir=str(tmp_path / "data"),
         )
@@ -1220,7 +1221,7 @@ class TestPhaseVerifyNormalTask:
     async def pipeline_orch(self, tmp_path):
         """Orchestrator with mocked git for verification tests."""
         config = AppConfig(
-            database_path=str(tmp_path / "test.db"),
+            database=DatabaseConfig(url=lease_dsn("test.db")),
             workspace_dir=str(tmp_path / "workspaces"),
             data_dir=str(tmp_path / "data"),
         )
@@ -1637,7 +1638,7 @@ class TestPhaseVerifyApprovalTask:
     async def pipeline_orch(self, tmp_path):
         """Orchestrator with mocked git for approval verification tests."""
         config = AppConfig(
-            database_path=str(tmp_path / "test.db"),
+            database=DatabaseConfig(url=lease_dsn("test.db")),
             workspace_dir=str(tmp_path / "workspaces"),
             data_dir=str(tmp_path / "data"),
         )
@@ -1830,7 +1831,7 @@ class TestPhaseVerifyIntermediateSubtask:
     async def pipeline_orch(self, tmp_path):
         """Orchestrator with parent + 2 subtasks for intermediate verification."""
         config = AppConfig(
-            database_path=str(tmp_path / "test.db"),
+            database=DatabaseConfig(url=lease_dsn("test.db")),
             workspace_dir=str(tmp_path / "workspaces"),
             data_dir=str(tmp_path / "data"),
         )
@@ -1977,7 +1978,7 @@ class TestCleanupWorkspaceForNextTask:
     async def cleanup_orch(self, tmp_path):
         """Orchestrator with mocked git for workspace cleanup tests."""
         config = AppConfig(
-            database_path=str(tmp_path / "test.db"),
+            database=DatabaseConfig(url=lease_dsn("test.db")),
             workspace_dir=str(tmp_path / "workspaces"),
             data_dir=str(tmp_path / "data"),
         )
@@ -2048,7 +2049,7 @@ class TestVerificationReopen:
     async def pipeline_orch(self, tmp_path):
         """Orchestrator with a task for reopen testing."""
         config = AppConfig(
-            database_path=str(tmp_path / "test.db"),
+            database=DatabaseConfig(url=lease_dsn("test.db")),
             workspace_dir=str(tmp_path / "workspaces"),
             data_dir=str(tmp_path / "data"),
             auto_task=AutoTaskConfig(max_verification_retries=2),
@@ -2152,7 +2153,7 @@ class TestCompletionPipelineVerify:
     async def pipeline_orch(self, tmp_path):
         """Orchestrator with mocked git for pipeline tests."""
         config = AppConfig(
-            database_path=str(tmp_path / "test.db"),
+            database=DatabaseConfig(url=lease_dsn("test.db")),
             workspace_dir=str(tmp_path / "workspaces"),
             data_dir=str(tmp_path / "data"),
         )

@@ -29,6 +29,7 @@ from src.commands.handler import CommandHandler
 from src.config import MessagesConfig, SupervisorAgentConfig
 from src.database import Database
 from src.models import Project
+from tests.db_fixtures import lease_dsn
 
 
 # ---------------------------------------------------------------------------
@@ -91,7 +92,7 @@ def _make_handler_with_messages(db, enabled=True):
 @pytest.fixture
 async def db(tmp_path):
     """Real Database with one project."""
-    d = Database(str(tmp_path / "cutover.db"))
+    d = Database(lease_dsn("cutover.db"))
     await d.initialize()
     await d.create_project(Project(id="p1", name="test"))
     yield d

@@ -17,6 +17,7 @@ from src.database.tables import (
 from src.integration.models import BranchKey, Fence, RepairPolicy, RequiredCheckSet
 from src.models import Project, Task
 from tests.pg_dsn import ensure_worker_postgres_dsn
+from tests.db_fixtures import lease_dsn
 
 POSTGRES_TEST_DSN = ensure_worker_postgres_dsn()
 
@@ -31,7 +32,7 @@ TASK8A_PRIOR_HEADS = frozenset({"c7d8e9f0a1b2", "4e7d1c9b2a55"})
 
 @pytest.fixture
 async def db(request, tmp_path):
-    database = Database(str(tmp_path / "integration-state.db"))
+    database = Database(lease_dsn("integration-state.db"))
     await database.initialize()
     await database.create_project(Project(id="p", name="integration project"))
     yield database
@@ -1107,7 +1108,7 @@ async def test_upgrade_from_prior_schema_creates_every_integration_table(
     tmp_path, disable_schema_cache
 ):
     """The disposable migration path, not metadata.create_all, owns this DDL."""
-    database = Database(str(tmp_path / "upgrade.db"))
+    database = Database(lease_dsn("upgrade.db"))
     await database.initialize()
     try:
         async with database._engine.connect() as conn:

@@ -46,8 +46,8 @@ def _assert_schema(connection) -> None:
 
 
 async def test_sqlite_candidate_authority_upgrade_downgrade_upgrade(tmp_path):
-    path = tmp_path / "candidate-authority.db"
-    database = Database(str(path))
+    path = await create_scratch_database("mig")
+    database = Database(path)
     await database.initialize()
     await database.close()
     engine = create_engine(f"sqlite:///{path}")

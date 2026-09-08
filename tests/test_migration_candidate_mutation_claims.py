@@ -231,8 +231,8 @@ def _bind_live_handoff(connection) -> None:
 
 
 async def test_sqlite_candidate_mutation_claim_upgrade_downgrade_upgrade(tmp_path):
-    path = tmp_path / "candidate-mutations.db"
-    database = Database(str(path))
+    path = await create_scratch_database("mig")
+    database = Database(path)
     await database.initialize()
     workspace = tmp_path / "legacy-workspace"
     workspace.mkdir()

@@ -29,6 +29,7 @@ from src.models import (
     TaskStatus,
     Workspace,
 )
+from tests.db_fixtures import lease_dsn
 
 # ``src/doctor/__init__.py`` does ``from src.doctor.pool_checks import
 # pool_checks`` (the factory function) to build ``default_registry()`` --
@@ -49,7 +50,7 @@ PROJECT_ID = "proj"
 async def db(tmp_path):
     from src.database import Database
 
-    database = Database(str(tmp_path / "test.db"))
+    database = Database(lease_dsn("test.db"))
     await database.initialize()
     await database.create_project(Project(id=PROJECT_ID, name="p"))
     await database.create_profile(AgentProfile(id="worker", name="w", lifecycle="pool"))

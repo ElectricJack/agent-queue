@@ -317,3 +317,43 @@ class LeasePool:
 def base_dsn() -> str | None:
     """This worker's Postgres DSN, or ``None`` when the suite has no Postgres."""
     return ensure_worker_postgres_dsn()
+
+
+# ── Explicit per-test database leases ───────────────────────────────────────
+#: Set by the ``_pg_backend`` fixture in conftest for the duration of a test.
+_LEASES: dict[str, str] = {}
+_FREE: list[str] = []
+_TAKEN: list[str] = []
+
+
+def begin_test(pool_dsns: list[str]) -> None:
+    """Arm :func:`lease_dsn` with this test's pool of leasable databases."""
+    _LEASES.clear()
+    _FREE[:] = list(pool_dsns)
+    _TAKEN.clear()
+
+
+def leased() -> list[str]:
+    """The databases this test actually took, for the teardown reset."""
+    return list(_TAKEN)
+
+
+def lease_dsn(name: str = "test") -> str:
+    """A Postgres database for this test, keyed by *name*.
+
+    Replaces the ``Database(lease_dsn("test.db"))`` idiom the suite grew
+    under SQLite.  Asking twice for the same *name* within one test returns
+    the same database, so tests that reopen a path to check persistence keep
+    working; different names get different databases.
+    """
+    if name in _LEASES:
+        return _LEASES[name]
+    if not _FREE:
+        raise RuntimeError(
+            f"this test asked for more distinct databases than the pool holds "
+            f"({len(_TAKEN)} already leased). Raise AQ_TEST_DB_POOL_SIZE."
+        )
+    dsn = _FREE.pop()
+    _LEASES[name] = dsn
+    _TAKEN.append(dsn)
+    return dsn

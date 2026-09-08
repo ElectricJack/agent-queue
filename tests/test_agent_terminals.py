@@ -21,6 +21,7 @@ from src.sessions.harness_parser import Harness, ResumeSpec
 from src.sessions.harness_registry import HarnessRegistry
 from src.sessions.provider import Cap, SessionHandle
 from src.sessions.spec import SessionSpecBuilder
+from tests.db_fixtures import lease_dsn
 
 
 class InteractiveFake(FakeProvider):
@@ -29,7 +30,7 @@ class InteractiveFake(FakeProvider):
 
 @pytest.fixture
 async def handler(tmp_path):
-    db = Database(str(tmp_path / "terminals.db"))
+    db = Database(lease_dsn("terminals.db"))
     await db.initialize()
     config = AppConfig(
         discord=DiscordConfig(bot_token="test", guild_id="1"),

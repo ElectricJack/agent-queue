@@ -285,7 +285,7 @@ async def test_sqlite_upgrade_rejects_incompatible_legacy_root_identity(
     tmp_path, invalid, message
 ):
     path = tmp_path / f"legacy-{invalid}.db"
-    database = Database(str(path))
+    database = Database(path)
     await database.initialize()
     await database.close()
     engine = create_engine(f"sqlite:///{path}")
@@ -310,8 +310,8 @@ async def test_sqlite_upgrade_rejects_incompatible_legacy_root_identity(
 
 
 async def test_sqlite_root_promotion_schema_and_guarded_round_trip(tmp_path):
-    path = tmp_path / "root-promotion.db"
-    database = Database(str(path))
+    path = await create_scratch_database("mig")
+    database = Database(path)
     await database.initialize()
     await database.close()
     engine = create_engine(f"sqlite:///{path}")

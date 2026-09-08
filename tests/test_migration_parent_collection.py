@@ -104,8 +104,8 @@ def _assert_parent_schema(connection) -> None:
 
 
 async def test_sqlite_parent_collection_upgrade_downgrade_upgrade(tmp_path):
-    path = tmp_path / "parent-collection-migration.db"
-    database = Database(str(path))
+    path = await create_scratch_database("mig")
+    database = Database(path)
     await database.initialize()
     await database.close()
     engine = create_engine(f"sqlite:///{path}")

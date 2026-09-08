@@ -22,11 +22,12 @@ import sys
 import pytest
 
 import src.doctor  # noqa: F401 -- side effect: populates sys.modules
-from src.config import AppConfig, DiscordConfig
+from src.config import DatabaseConfig, AppConfig, DiscordConfig
 from src.database import Database
 from src.doctor.models import Severity
 from src.models import Project, RepoSourceType, Workspace
 from tests.pg_dsn import ensure_worker_postgres_dsn
+from tests.db_fixtures import lease_dsn
 
 pool_checks = sys.modules["src.doctor.pool_checks"]
 
@@ -80,7 +81,7 @@ def config(tmp_path):
     return AppConfig(
         discord=DiscordConfig(bot_token="t", guild_id="1"),
         workspace_dir=str(tmp_path / "w"),
-        database_path=str(tmp_path / "d.db"),
+        database=DatabaseConfig(url=lease_dsn("d.db")),
         data_dir=str(tmp_path / "data"),
     )
 
@@ -88,7 +89,7 @@ def config(tmp_path):
 @pytest.fixture
 async def any_db(request, tmp_path, repo):
     """SQLite always; PostgreSQL when ``POSTGRES_TEST_DSN`` is set (CI)."""
-    database = Database(str(tmp_path / "doctor.db"))
+    database = Database(lease_dsn("doctor.db"))
     await database.initialize()
     await database.create_project(Project(id=PROJECT_ID, name="P", repo_default_branch="main"))
     await database.create_workspace(

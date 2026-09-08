@@ -24,6 +24,7 @@ from src.sessions.harness_parser import Harness
 from src.sessions.harness_registry import HarnessRegistry
 from src.sessions.provider import SessionHandle
 from src.sessions.spec import SessionSpecBuilder
+from tests.db_fixtures import lease_dsn
 
 
 def _supervisor_address(project_id: str) -> str:
@@ -58,7 +59,7 @@ def _supervisor_runtime_name(project_id: str) -> str:
 async def db(tmp_path):
     from src.database import Database
 
-    database = Database(str(tmp_path / "test.db"))
+    database = Database(lease_dsn("test.db"))
     await database.initialize()
     await database.create_project(Project(id="proj1", name="Proj1"))
     yield database

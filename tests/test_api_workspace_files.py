@@ -13,6 +13,7 @@ from src.api.auth import RequestScope
 from src.api.workspace_files import build_workspace_files_router
 from src.database import Database
 from src.models import Project, RepoSourceType, Workspace
+from tests.db_fixtures import lease_dsn
 
 
 @pytest.fixture
@@ -27,7 +28,7 @@ def repo(tmp_path):
 
 @pytest.fixture
 async def wired(tmp_path, repo):
-    db = Database(str(tmp_path / "aq.db"))
+    db = Database(lease_dsn("aq.db"))
     await db.initialize()
     await db.create_project(Project(id="proj", name="P", repo_default_branch="main"))
     await db.create_project(Project(id="other", name="O", repo_default_branch="main"))

@@ -24,6 +24,7 @@ import sys
 import pytest
 
 from tests.pg_dsn import ensure_worker_postgres_dsn
+from tests.pg_dsn import create_scratch_database
 
 pytestmark = [pytest.mark.migration, pytest.mark.integration]
 
@@ -52,7 +53,6 @@ async def test_upgrade_head_applies_the_whole_chain_on_postgres():
     """Empty database -> head, on real PostgreSQL, with no manual repair."""
     if not POSTGRES_DSN:
         pytest.skip("POSTGRES_TEST_DSN not set")
-    from tests.pg_dsn import create_scratch_database
 
     dsn = await create_scratch_database("uphead")
     res = _alembic_pg(dsn, "upgrade", "head")
@@ -79,7 +79,6 @@ async def test_boolean_columns_added_by_migrations_default_correctly_on_postgres
     """
     if not POSTGRES_DSN:
         pytest.skip("POSTGRES_TEST_DSN not set")
-    from tests.pg_dsn import create_scratch_database
 
     dsn = await create_scratch_database("upheadbool")
     res = _alembic_pg(dsn, "upgrade", "head")
@@ -131,7 +130,6 @@ async def test_autogenerate_against_a_fresh_head_database_is_empty():
     from sqlalchemy.ext.asyncio import create_async_engine
 
     from src.database.tables import metadata
-    from tests.pg_dsn import create_scratch_database
 
     dsn = await create_scratch_database("updrift")
     res = _alembic_pg(dsn, "upgrade", "head")

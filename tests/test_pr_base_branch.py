@@ -21,7 +21,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from src.commands.handler import CommandHandler
-from src.config import AppConfig, DiscordConfig
+from src.config import DatabaseConfig, AppConfig, DiscordConfig
 from src.database import Database
 from src.git.manager import GitError, PullRequestIdentity
 from src.models import (
@@ -34,6 +34,7 @@ from src.models import (
 )
 from src.orchestrator import Orchestrator
 from tests.pg_dsn import ensure_worker_postgres_dsn
+from tests.db_fixtures import lease_dsn
 
 POSTGRES_DSN = ensure_worker_postgres_dsn()
 
@@ -58,12 +59,12 @@ async def orch(request, tmp_path):
     Both halves write through the database — task metadata on the merge,
     gate rows on the sweep — so both dialects run.
     """
-    db = Database(str(tmp_path / "base.db"))
+    db = Database(lease_dsn("base.db"))
     await db.initialize()
     cfg = AppConfig(
         discord=DiscordConfig(bot_token="t", guild_id="1"),
         workspace_dir=str(tmp_path / "w"),
-        database_path=str(tmp_path / "base.db"),
+        database=DatabaseConfig(url=lease_dsn("base.db")),
         data_dir=str(tmp_path / "d"),
     )
     o = Orchestrator(cfg)

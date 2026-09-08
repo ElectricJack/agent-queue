@@ -47,6 +47,7 @@ from tests.playbook_v2_engine_helpers import (
     event,
     load_artifact,
 )
+from tests.db_fixtures import lease_dsn
 
 POSTGRES_TEST_DSN = ensure_worker_postgres_dsn()
 NOW = 1_000_000.0
@@ -54,7 +55,7 @@ NOW = 1_000_000.0
 
 @pytest.fixture
 async def db(request, tmp_path):
-    database = Database(str(tmp_path / "test.db"))
+    database = Database(lease_dsn("test.db"))
     await database.initialize()
     yield database
     await database.close()

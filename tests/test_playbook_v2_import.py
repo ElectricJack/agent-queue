@@ -29,6 +29,7 @@ from src.playbooks.validation import RegisteredEventLookup, RegistryContractLook
 from src.profiles.capabilities import CapabilityPolicy
 from src.tools.definitions import _ALL_TOOL_DEFINITIONS, _TOOL_CATEGORIES
 from tests.pg_dsn import ensure_worker_postgres_dsn
+from tests.db_fixtures import lease_dsn
 
 
 POSTGRES_TEST_DSN = ensure_worker_postgres_dsn()
@@ -46,7 +47,7 @@ PLAYBOOK_IDS = (
 
 @pytest.fixture
 async def db(request, tmp_path):
-    database = Database(str(tmp_path / "reviewed-import.db"))
+    database = Database(lease_dsn("reviewed-import.db"))
     await database.initialize()
     yield database
     await database.close()

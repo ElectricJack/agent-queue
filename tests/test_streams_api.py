@@ -14,6 +14,7 @@ from src.api.auth import RequestScope
 from src.api.streams import StreamRegistry, build_streams_router
 from src.database import Database
 from src.models import Project
+from tests.db_fixtures import lease_dsn
 
 
 class _FakeStreamsConfig:
@@ -34,7 +35,7 @@ class _FakeAppConfig:
 
 @pytest.fixture
 async def db(tmp_path):
-    database = Database(str(tmp_path / "t.db"))
+    database = Database(lease_dsn("t.db"))
     await database.initialize()
     await database.create_project(Project(id="demo", name="Demo"))
     yield database
