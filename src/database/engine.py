@@ -196,6 +196,40 @@ def _is_stamped_at_head(sync_connection) -> bool:
     return bool(current) and current == set(alembic_head_revisions())
 
 
+def _stamp_legacy_database(sync_connection) -> bool:
+    """Stamp a pre-squash database forward, rather than replaying the baseline.
+
+    On 2026-09-07 the 117-revision chain was collapsed into
+    ``a00000000001_squashed_baseline``.  A database stamped at the pre-squash
+    head already *has* that exact schema, so it must be re-stamped, never
+    migrated: running the baseline would try to ``create_all`` over live tables.
+
+    Only the pre-squash head qualifies.  A database stamped anywhere earlier
+    has an incomplete schema, and this returns False so the caller raises the
+    ordinary "unknown revision" diagnostic — the operator must bring it to the
+    pre-squash head on the previous release first.  Guessing there would mark
+    a half-migrated database as current.
+    """
+    from alembic.migration import MigrationContext
+
+    from migrations.versions.a00000000001_squashed_baseline import LEGACY_HEAD
+
+    current = set(MigrationContext.configure(sync_connection).get_current_heads())
+    if current != {LEGACY_HEAD}:
+        return False
+    logger.info(
+        "database is at the pre-squash head %s; stamping forward to the "
+        "squashed baseline without replaying it",
+        LEGACY_HEAD,
+    )
+    sync_connection.exec_driver_sql("DELETE FROM alembic_version")
+    sync_connection.exec_driver_sql(
+        "INSERT INTO alembic_version (version_num) VALUES ('a00000000001')"
+    )
+    sync_connection.commit()
+    return True
+
+
 def _stamp_alembic_baseline(sync_connection) -> None:
     """Stamp an existing database at the baseline migration.
 
@@ -260,6 +294,9 @@ async def _run_schema_setup_without_cache(engine: AsyncEngine) -> None:
             # Reflection opened an implicit transaction — end it so Alembic
             # can own the per-revision boundaries.
             sync_conn.commit()
+
+            if has_alembic and _stamp_legacy_database(sync_conn):
+                return
 
             if has_alembic and _is_stamped_at_head(sync_conn):
                 # Already at head: `alembic upgrade head` would be a no-op, but
