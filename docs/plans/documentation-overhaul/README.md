@@ -1,5 +1,7 @@
 # Agent Queue documentation overhaul
 
+AQ epic: `solid-grove`; children `solid-grove.1` through `solid-grove.24`. Created in project `agent-queue` with 69 dependency edges.
+
 Write for a person who has never used AQ. Explain the user workflow first, then progressively expose internals. This plan creates documentation work; it does not claim the documentation is already updated.
 
 ## Intended navigation
