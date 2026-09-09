@@ -121,13 +121,8 @@ def test_step_write_config_persists_env_references_and_migration_without_plainte
     discord_cfg = {
         "bot_token": "discord-secret-token",
         "guild_id": "424242",
-        "channels": {
-            "control": "control",
-            "notifications": "notifications",
-            "agent_questions": "agent-questions",
-        },
+        "channel_id": "123456789012345678",
         "authorized_users": [],
-        "per_project_channels": {},
     }
     agents_cfg = {"claude": {"from_env": False, "api_key": "sk-test-secret"}}
     sched_cfg = {
@@ -148,6 +143,8 @@ def test_step_write_config_persists_env_references_and_migration_without_plainte
 
     # YAML references secrets via ${...}; the values live only in .env.
     assert "bot_token: ${DISCORD_BOT_TOKEN}" in yaml_text
+    assert 'channel_id: "123456789012345678"' in yaml_text
+    assert "per_project_channels" not in yaml_text
     assert "discord-secret-token" not in yaml_text
     assert "sk-test-secret" not in yaml_text
     assert "DISCORD_BOT_TOKEN=discord-secret-token" in env_text

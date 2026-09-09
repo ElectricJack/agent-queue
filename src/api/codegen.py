@@ -25,6 +25,7 @@ from pydantic import BaseModel, Field, create_model
 from src.api.auth import LOCAL_SCOPE, RequestScope
 from src.api.dependencies import get_command_handler
 from src.api.models import get_all_response_models
+from src.api.models.escalation import EscalationErrorResponse
 from src.api.models.system import EditIntelligenceClassConflictResponse
 from src.api.scope import check_request_scope
 from src.commands.principal import SERVER_OWNED_ARG_KEYS
@@ -44,7 +45,6 @@ logger = logging.getLogger(__name__)
 # would otherwise reach the same commands through the back door.
 API_EXCLUDED = {
     "load_tools",
-    "send_message",
     "reply_to_user",
     # Runs an LLM-authored string through /bin/sh on the daemon host
     # (trust-and-ops §2.5).  Already out of MCP and the CLI; the API is the
@@ -248,6 +248,14 @@ def _make_route_handler(cmd_name: str, input_model: type[BaseModel]):
                 "search_github_repositories",
                 "onboard_project",
                 "get_project_onboarding",
+                "escalation_create",
+                "escalation_list",
+                "escalation_get",
+                "escalation_reply",
+                "escalation_update",
+                "escalation_apply_reply",
+                "digest_preview",
+                "digest_status",
             }:
                 return JSONResponse(result, status_code=422)
             return JSONResponse(
@@ -353,14 +361,14 @@ def build_category_routers() -> list[APIRouter]:
                         }} if cmd_name == "edit_intelligence_class" else {}),
                         422: {
                             "description": "Command error",
-                            "content": {
+                            **({"model": EscalationErrorResponse} if cmd_name.startswith(("escalation_", "digest_")) else {"content": {
                                 "application/json": {
                                     "schema": {
                                         "type": "object",
                                         "properties": {"error": {"type": "string"}},
                                     }
                                 }
-                            },
+                            }}),
                         },
                     },
                 )

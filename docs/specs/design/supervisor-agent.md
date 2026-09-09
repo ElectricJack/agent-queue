@@ -4,7 +4,9 @@ tags: [design, supervisor, sessions, messages, planning, multi-project]
 
 # Supervisor as a Configured Agent
 
-**Status:** Draft — approved direction (2026-08-19)
+**Status:** Approved direction (2026-08-19), amended by [[../messaging/discord]]:
+Discord now reaches the supervisor only through durable escalation threads;
+the project-channel chat and task-thread routes described below are retired.
 **Principles:** [[guiding-design-principles]] (#1 files as source of truth, #2 visible and editable, #3 structure guides / intelligence decides, #5 reduce effort not judgment, #7 events not coupling)
 **Related:** [[session-runtime]] (owns session mechanics), [[work-graph]] (owns ids, gates, dep types), [[aq-surface]] (owns `aq prime` assembly), [[profiles]], [[workspaces-v2]], `docs/analysis/framework-overhaul-todo.md` (§4 Workstream B, §3b, §1)
 
@@ -23,8 +25,8 @@ promotion, gate sweeping, leases, worktrees, and merges remain deterministic Pyt
 supervisor becomes a **configured agent**: a shipped markdown profile
 (`vault/agent-types/supervisor/profile.md`) running as a long-lived named session under
 the session runtime, acting on the orchestration layer exclusively through the `aq` CLI
-and a slim MCP allowlist, talking to users through the Discord project channel and the
-dashboard chat, authoring specs into the vault and turning them into task graphs.
+and a slim MCP allowlist, talking to users through dashboard chat and durable
+Discord escalations, authoring specs into the vault and turning them into task graphs.
 
 Anything a human can do to the supervisor's behavior, they do with a text editor — role,
 rules, tool surface, and lifecycle live in one per-project-overridable profile file.
@@ -44,7 +46,7 @@ not revisited here:
 | S3 | `harness: claude`, `lifecycle: named`, `wake_mode: resume`. Session mechanics (named-session reconciliation, wake/sleep, `--resume`) are owned by the session-runtime spec. |
 | S4 | **One supervisor per project, `mode: on_demand`** — wakes on the first message, sleeps after `idle_timeout`, `--resume` preserves its conversation. An install-wide shared instance stays possible later as pure config. |
 | S5 | No repo worktree. The supervisor gets the `vault` kind plus a **read-only** project directory. It never edits code. |
-| S6 | It acts only through `aq` / slim MCP; it talks to users via the Discord project channel and dashboard chat. |
+| S6 | It acts only through `aq` / slim MCP; it talks to users via dashboard chat and durable Discord escalation threads. |
 | S7 | A new `messages` table carries all user↔session and session↔session traffic; delivery is nudge-when-idle (a message arriving mid-turn waits for the next idle observation), prime-inject at session start. |
 | S8 | Specs live at `vault/projects/<pid>/specs/<slug>.md`; graphs are created via `aq task create --graph` / `--from-spec` in a single transaction; `task_context.type='spec_ref'` links tasks to spec sections. |
 | S9 | **Superseded (2026-08-30):** old code — `Supervisor.chat()`, `src/runtimes/supervisor.py`, `src/chat_providers/` — was **deleted**, not left dormant. There is no `supervisor` runtime value; the profile `runtime` key is rejected. See `docs/superpowers/specs/2026-08-30-llm-direct-path-design.md` and §10 below. |
@@ -55,7 +57,7 @@ not revisited here:
 
 | Algorithmic orchestrator (Python, zero LLM) | Supervisor agent (a profile, a named session) |
 |---|---|
-| Smart cascade, scheduler (fair-share, affinity, caps), typed-edge readiness, gate sweep, leases and the stall ladder, exit classification, session adoption, worktree lifecycle, merge slot, token ledger, EventBus | Reads state (`aq task list/explain`, `aq project ready`), acts on the orchestration layer (`aq task create --graph`, `dep add`, `label`, `priority`, `gate resolve`, `session nudge`, `task reopen --feedback`), talks to users (project channel / dashboard chat → its session, replies via `aq reply`), authors specs and turns them into task graphs with context and dependencies |
+| Smart cascade, scheduler (fair-share, affinity, caps), typed-edge readiness, gate sweep, leases and the stall ladder, exit classification, session adoption, worktree lifecycle, merge slot, token ledger, EventBus | Reads state (`aq task list/explain`, `aq project ready`), acts on the orchestration layer (`aq task create --graph`, `dep add`, `label`, `priority`, `gate resolve`, `session nudge`, `task reopen --feedback`), talks to users (dashboard chat or durable escalation → its session, replies via `aq reply`), authors specs and turns them into task graphs with context and dependencies |
 
 The line is mechanical: decisions computable from rows and edges belong to the
 orchestrator; decisions requiring prose, intent, or a human belong to an agent — and the
@@ -188,11 +190,10 @@ Routing rules — all inbound chat becomes a `messages` row (§6), never a direc
 
 | Source | Route |
 |---|---|
-| Discord **project channel** message (channel mapped by `projects.discord_channel_id`, resolved via the bot's `_channel_to_project` map) | `messages` row → `to_kind=session, to_id=supervisor-<pid>`, `thread_id=discord:<channel_id>` |
 | Dashboard **project chat** page | `POST /api/sessions/supervisor-<pid>/message` → same row |
 | `aq chat <project>` REPL | same API endpoint |
-| Discord **task thread** reply | `to_kind=task, to_id=<task_id>` — delivered to whatever session owns that task (Workstream F.1; same table, same engine) |
-| Supervisor → user | `to_kind=user` row → `message.sent` event → Discord adapter posts to the originating thread/channel; dashboard shows it in chat |
+| Discord **escalation thread** reply | verified reply evidence for the durable escalation → supervisor-owned delivery |
+| Supervisor → user | durable escalation delivery or dashboard chat response; arbitrary Discord messages are not supported |
 | Agent ↔ agent notes (handoffs, review requests) | `to_kind=session\|task\|profile` rows; `to_kind=profile` delivers to the next session that runs under that profile via prime |
 
 **Multi-project behavior.** A supervisor sees only its project: task queries, gates,

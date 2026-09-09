@@ -839,13 +839,22 @@ def task_set(
 @task.command("comment")
 @click.argument("task_id")
 @click.option("--body", required=True, help="Progress, evidence, a decision, or a blocker (up to 16,000 characters)")
+@click.option(
+    "--kind",
+    type=click.Choice(["note", "progress"]),
+    default="note",
+    show_default=True,
+    help="'progress' records that work actually advanced and is the only comment kind the hourly digest reports; 'note' is ordinary history",
+)
 @claim_epoch_option
 @click.pass_context
 @_handle_errors
-def task_comment(ctx: click.Context, task_id: str, body: str, claim_epoch: int | None) -> None:
+def task_comment(
+    ctx: click.Context, task_id: str, body: str, kind: str, claim_epoch: int | None
+) -> None:
     """Append an attributed comment to a task's durable history."""
     api_url = ctx.obj.get("api_url") if ctx.obj else None
-    args: dict[str, Any] = {"task_id": task_id, "body": body}
+    args: dict[str, Any] = {"task_id": task_id, "body": body, "kind": kind}
     epoch = resolve_claim_epoch(claim_epoch)
     if epoch is not None:
         args["claim_epoch"] = epoch
@@ -884,7 +893,9 @@ def task_comments(ctx: click.Context, task_id: str, limit: int, offset: int) -> 
             if isinstance(timestamp, (int, float)):
                 timestamp = datetime.fromtimestamp(timestamp, timezone.utc).isoformat()
             author = f"{_getval(row, 'author_kind', '')}:{_getval(row, 'author_id', '')}"
-            console.print(f"\n{author} · {timestamp}", markup=False)
+            kind = _getval(row, "kind", "note")
+            label = "" if kind == "note" else f" [{kind}]"
+            console.print(f"\n{author}{label} · {timestamp}", markup=False)
             console.print(_getval(row, "body", ""), markup=False, highlight=False)
 
     emit(ctx, _run(_comments()), entity="task_comments", render=_render)

@@ -101,6 +101,148 @@ Durable questions raised by worker turns. Session identity, instance token and c
 
 Indexes: `idx_agent_questions_pending` (`state`, `created_at`), `idx_agent_questions_session` (`session_id`, `instance_token`).
 
+Question reads also project a nullable `escalation_id` from the durable escalation whose
+`source_kind='question'` and `source_identity` matches the question ID. This is a derived link,
+not a mutable question column, so it cannot disagree with the escalation's authoritative source
+binding.
+
+### Table: `escalations`
+
+Transport-neutral, supervisor-owned human incidents. The unique project/incident key makes source replay idempotent while `source_identity` distinguishes separate attempts. Task and source references are soft audit identity so an incident survives task archival. Conversation changes compare and increment `revision`; terminal states retain an explicit outcome and optional structured evidence.
+
+| Column | Type | Constraints |
+|---|---|---|
+| `id` | TEXT | PRIMARY KEY |
+| `project_id` | TEXT | NOT NULL, REFERENCES projects(id) ON DELETE CASCADE |
+| `task_id` | TEXT | nullable soft reference |
+| `source_kind` | TEXT | NOT NULL |
+| `source_identity` | TEXT | NOT NULL |
+| `incident_key` | TEXT | NOT NULL |
+| `supervisor_owner` | TEXT | NOT NULL logical recipient |
+| `task_title` | TEXT | nullable bounded snapshot |
+| `task_status` | TEXT | nullable bounded snapshot |
+| `summary` | TEXT | NOT NULL |
+| `investigation` | TEXT | NOT NULL |
+| `decision_requested` | TEXT | NOT NULL |
+| `choices` | JSON | nullable |
+| `severity` | TEXT | critical, high, medium or low |
+| `state` | TEXT | needs_human, reply_received, resolving, resolved, cancelled or stale |
+| `revision` | INTEGER | NOT NULL, monotone CAS revision |
+| `terminal_outcome` | TEXT | required in terminal states |
+| `terminal_evidence` | JSON | nullable |
+| `created_at` | FLOAT | NOT NULL |
+| `updated_at` | FLOAT | NOT NULL |
+| `terminal_at` | FLOAT | required in terminal states |
+
+Unique: (`project_id`, `incident_key`) and (`project_id`, `source_kind`, `source_identity`). Indexes: `idx_escalations_project_state`, `idx_escalations_task`.
+
+### Table: `escalation_messages`
+
+Immutable inbound and outbound conversation facts. Verified actor identity is supplied by a trusted command boundary. Transport/external-message uniqueness collapses replay. For an accepted open reply, `supervisor_message_id` points to the supervisor notice inserted in the same transaction.
+
+| Column | Type | Constraints |
+|---|---|---|
+| `id` | TEXT | PRIMARY KEY |
+| `escalation_id` | TEXT | NOT NULL, REFERENCES escalations(id) ON DELETE CASCADE |
+| `direction` | TEXT | inbound or outbound |
+| `transport` | TEXT | NOT NULL |
+| `verified_actor` | TEXT | NOT NULL |
+| `text` | TEXT | NOT NULL, 1–16000 characters |
+| `external_message_id` | TEXT | nullable |
+| `received_sequence` | BIGINT | nullable |
+| `received_at` | FLOAT | NOT NULL |
+| `supervisor_message_id` | TEXT | nullable, REFERENCES messages(id) |
+| `created_at` | FLOAT | NOT NULL |
+
+Unique: (`transport`, `external_message_id`). Index: `idx_escalation_messages_history`.
+
+### Table: `escalation_actions`
+
+Durable at-most-once reservations for applying a verified inbound human reply through an
+action-specific supervisor service. The reply foreign key is the human-evidence binding;
+the executor remains the authenticated supervisor. A processing reservation is created
+before the external action and completed with its exact outcome, so replay never repeats
+task recovery.
+
+| Column | Type | Constraints |
+|---|---|---|
+| `id` | TEXT | PRIMARY KEY |
+| `escalation_id` | TEXT | NOT NULL, REFERENCES escalations(id) ON DELETE CASCADE |
+| `reply_id` | TEXT | NOT NULL, REFERENCES escalation_messages(id) ON DELETE RESTRICT |
+| `idempotency_key` | TEXT | NOT NULL |
+| `action_kind` | TEXT | question_answer, gate_resolve or task_recover |
+| `target_id` | TEXT | NOT NULL |
+| `parameters` | JSON | NOT NULL |
+| `executor` | TEXT | NOT NULL authenticated supervisor identity |
+| `started_revision` | INTEGER | NOT NULL CAS revision after reservation |
+| `status` | TEXT | processing, succeeded or failed |
+| `outcome` | TEXT | nullable until completion |
+| `result` | JSON | nullable action-specific result |
+| `error` | TEXT | nullable failure detail |
+| `created_at` | FLOAT | NOT NULL |
+| `completed_at` | FLOAT | required after completion |
+
+Unique: (`escalation_id`, `idempotency_key`). Index: `idx_escalation_actions_history`.
+
+### Table: `escalation_deliveries`
+
+External send ownership and receipts, deliberately independent of conversation state. Pending and retry rows are claimable at `next_attempt_at`; expired sending leases are recoverable. An ambiguous external result becomes `unknown` and is not blindly reclaimed.
+
+| Column | Type | Constraints |
+|---|---|---|
+| `id` | TEXT | PRIMARY KEY |
+| `escalation_id` | TEXT | NOT NULL, REFERENCES escalations(id) ON DELETE CASCADE |
+| `escalation_message_id` | TEXT | nullable, REFERENCES escalation_messages(id) ON DELETE CASCADE |
+| `dedup_key` | TEXT | NOT NULL UNIQUE |
+| `kind` | TEXT | NOT NULL |
+| `payload` | JSON | NOT NULL |
+| `priority` | INTEGER | NOT NULL DEFAULT 10 |
+| `generation` | INTEGER | NOT NULL DEFAULT 0 |
+| `status` | TEXT | pending, sending, sent, retry or unknown |
+| `attempt_count` | INTEGER | NOT NULL DEFAULT 0 |
+| `next_attempt_at` | FLOAT | NOT NULL |
+| `lease_owner` | TEXT | present only while sending |
+| `lease_expires_at` | FLOAT | present only while sending |
+| `channel_id` | TEXT | nullable |
+| `root_message_id` | TEXT | nullable |
+| `thread_id` | TEXT | nullable |
+| `external_receipt_id` | TEXT | required when sent |
+| `receipt_confirmed_at` | FLOAT | required when sent |
+| `last_error` | TEXT | nullable |
+| `created_at` | FLOAT | NOT NULL |
+| `updated_at` | FLOAT | NOT NULL |
+
+Indexes: `idx_escalation_deliveries_due`, `idx_escalation_deliveries_escalation`.
+
+### Table: `digest_windows`
+
+One installation-wide durable evaluation per destination/configuration generation/window, including suppressed idle windows. The activity cursor and output hash make restart/catch-up processing deterministic; delivery uses the same recoverable lease and confirmed-receipt semantics as escalation sends.
+
+| Column | Type | Constraints |
+|---|---|---|
+| `id` | TEXT | PRIMARY KEY |
+| `destination` | TEXT | NOT NULL |
+| `config_generation` | INTEGER | NOT NULL |
+| `window_start` | FLOAT | NOT NULL |
+| `window_end` | FLOAT | NOT NULL and greater than window_start |
+| `activity_cursor` | JSON | nullable |
+| `due_at` | FLOAT | NOT NULL |
+| `is_catchup` | BOOLEAN | NOT NULL DEFAULT false |
+| `output_hash` | TEXT | nullable |
+| `payload` | JSON | nullable |
+| `send_status` | TEXT | pending, suppressed, sending, sent, retry or unknown |
+| `suppression_reason` | TEXT | required when suppressed |
+| `attempt_count` | INTEGER | NOT NULL DEFAULT 0 |
+| `lease_owner` | TEXT | present only while sending |
+| `lease_expires_at` | FLOAT | present only while sending |
+| `external_receipt_id` | TEXT | required when sent |
+| `receipt_confirmed_at` | FLOAT | required when sent |
+| `last_error` | TEXT | nullable |
+| `created_at` | FLOAT | NOT NULL |
+| `updated_at` | FLOAT | NOT NULL |
+
+Unique: (`destination`, `config_generation`, `window_start`, `window_end`). Index: `idx_digest_windows_due`.
+
 ### Table: `message_discord_receipts`
 
 Records successful Discord delivery per AQ message. The message ID is the primary key so repeated event processing does not repost an acknowledged reply.

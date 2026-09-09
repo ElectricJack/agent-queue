@@ -555,9 +555,7 @@ class ExecutionMixin:
         except Exception:
             pass
 
-        # Notify that work is starting via typed event.
-        # The DiscordNotificationHandler stores the returned message for
-        # later deletion and handles embed/view creation.
+        # Notify transport-neutral consumers that work is starting.
         start_msg = format_task_started(task, agent, workspace=ws_obj)
         if not _is_reopened:
             await self._emit_notify(
@@ -1677,11 +1675,10 @@ class ExecutionMixin:
                     task.id,
                     exc_info=True,
                 )
-        # The ``notify.*`` transports (Discord today) lost their task-outcome
-        # feed when the legacy execution tail was deleted: that tail was the
+        # The ``notify.*`` consumers lost their task-outcome feed when the
+        # legacy execution tail was deleted: that tail was the
         # only emitter of ``notify.task_completed`` / ``notify.task_failed`` /
-        # ``notify.task_blocked``, so ``DiscordNotificationHandler`` kept the
-        # subscriptions but never heard from any of them again.  Session close
+        # ``notify.task_blocked``, so subscribers never heard from them again. Session close
         # is now the only place an ordinary task reaches a terminal state, so
         # the pairing is restored here with the tail's own mapping: retryable
         # failure -> task_failed, retries spent -> task_blocked.  Best-effort,

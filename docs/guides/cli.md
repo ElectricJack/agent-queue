@@ -4,8 +4,9 @@ tags: [cli, interface]
 
 # AgentQueue CLI
 
-A modern, interactive terminal interface for AgentQueue that mirrors Discord
-slash commands with rich formatting, interactive menus, and fuzzy search.
+A modern, interactive terminal interface for AgentQueue with rich formatting,
+interactive menus, and fuzzy search. The CLI and dashboard are the operator
+control surfaces; Discord is notification-only.
 
 For evidence-backed support status per command, see the maintained
 [CLI command inventory](../reference/cli-command-inventory.md) and the

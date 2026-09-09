@@ -211,7 +211,7 @@ Acceptance requires one-channel behavior, the eligibility table above, an uninte
 
 ## 12. Delivery plan
 
-The embedded graph is the executable work breakdown. Dependencies gate consumers on stable schemas/contracts and gate legacy removal on replacement readiness. Each child has scoped acceptance criteria and a spec reference. Final acceptance depends on resilience tests and migration/operations documentation. The spec is mirrored into the project's vault so workers can read it before the repository document is committed; changes must update both copies together until the repository version is published.
+The embedded graph is the executable work breakdown. Dependencies gate consumers on stable schemas/contracts and gate legacy removal on replacement readiness. Each child has scoped acceptance criteria and a spec reference. Final acceptance depends on resilience tests and migration/operations documentation. The repository copy at `docs/superpowers/specs/2026-09-08-discord-simplification-implementation.md` is published and canonical. The project vault keeps a byte-identical mirror at `vault/projects/agent-queue/specs/discord-simplification-implementation.md` so a worker can read the spec without a checkout; any change must update both copies in the same pass.
 
 
 ```aq-graph

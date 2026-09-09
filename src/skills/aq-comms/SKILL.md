@@ -44,8 +44,9 @@ Use `aq session nudge` only for low-level diagnostics; it is not a reliable
 supervisor-to-worker delivery surface.
 
 ```bash
-# To the human via the project's Discord / dashboard channel.  The canonical
-# human-operator recipient is user:dashboard:
+# To the human operator.  `user:dashboard` is the canonical recipient — the
+# dashboard is the human's surface; Discord only mirrors decisions that were
+# escalated, and it is never addressed directly:
 aq message send --to user:dashboard --project <pid> \
   --body "Blocked on the API key rotation — details in task xyz."
 
@@ -80,6 +81,38 @@ aq message send --to user:dashboard --project <pid> --body "Blocked: should I us
 
 Include the task id and the decision needed in the message body so the
 supervisor or human can respond through the supported message flow.
+
+## Escalations: when a human decision is required
+
+A message to `user:dashboard` is how you *tell* a human something. It is not how
+a blocking decision gets tracked. When work is genuinely stopped until a person
+chooses, the durable record is an **escalation**, and creating one is the owning
+project supervisor's job, not a worker's:
+
+- A worker reports the blocker (message, task comment, or a `fail` outcome with
+  the reason) and stops. The blocked-task playbook routes it to
+  `session:supervisor-<pid>`.
+- The supervisor investigates, and only if a human must decide does it call
+  `escalation_create`.
+- The human replies — in the dashboard, or in the Discord thread the escalation
+  opened. Either way the reply is persisted as verified human evidence and
+  queued back to the supervisor.
+- The supervisor applies that evidence with `escalation_apply_reply` and records
+  the outcome.
+
+Two consequences for you as a worker: a Discord reply never reaches your
+terminal directly, and `question_answer` refuses a *human* caller outright —
+a person replies with `escalation_reply` instead. The owning supervisor may
+answer a narrow factual question itself; anything needing a person goes up with
+`aq question escalate <question-id> --reason "…"`, which creates or reuses the
+durable escalation for that question.
+
+```bash
+aq escalation list --states needs_human,reply_received   # waiting on a person
+aq escalation get --escalation-id <id>                   # conversation and history
+```
+
+See `docs/guides/escalations.md` for the full model.
 
 ## Message delivery model (why messages are reliable)
 

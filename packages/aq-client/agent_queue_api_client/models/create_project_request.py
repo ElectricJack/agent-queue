@@ -20,9 +20,6 @@ class CreateProjectRequest:
         max_concurrent_agents (int | Unset): Max agents working on this project simultaneously Default: 2.
         repo_url (None | str | Unset): Git repository URL for this project (optional)
         default_branch (str | Unset): Default branch name (default: main) Default: 'main'.
-        auto_create_channels (bool | None | Unset): If true, auto-create dedicated Discord channels for this project
-            after creation.  If false, skip channel creation.  When omitted, falls back to the global
-            per_project_channels.auto_create config setting.
         default_profile_id (None | str | Unset): Agent profile used for tasks in this project that don't specify their
             own profile_id.  When omitted, a system default is chosen automatically by src/profiles/default_selection.py
             (PREFERRED_DEFAULT_PROFILE_IDS, then any remaining general-purpose profile alphabetically).  Run `aq agent list-
@@ -34,7 +31,6 @@ class CreateProjectRequest:
     max_concurrent_agents: int | Unset = 2
     repo_url: None | str | Unset = UNSET
     default_branch: str | Unset = "main"
-    auto_create_channels: bool | None | Unset = UNSET
     default_profile_id: None | str | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
@@ -52,12 +48,6 @@ class CreateProjectRequest:
             repo_url = self.repo_url
 
         default_branch = self.default_branch
-
-        auto_create_channels: bool | None | Unset
-        if isinstance(self.auto_create_channels, Unset):
-            auto_create_channels = UNSET
-        else:
-            auto_create_channels = self.auto_create_channels
 
         default_profile_id: None | str | Unset
         if isinstance(self.default_profile_id, Unset):
@@ -80,8 +70,6 @@ class CreateProjectRequest:
             field_dict["repo_url"] = repo_url
         if default_branch is not UNSET:
             field_dict["default_branch"] = default_branch
-        if auto_create_channels is not UNSET:
-            field_dict["auto_create_channels"] = auto_create_channels
         if default_profile_id is not UNSET:
             field_dict["default_profile_id"] = default_profile_id
 
@@ -107,15 +95,6 @@ class CreateProjectRequest:
 
         default_branch = d.pop("default_branch", UNSET)
 
-        def _parse_auto_create_channels(data: object) -> bool | None | Unset:
-            if data is None:
-                return data
-            if isinstance(data, Unset):
-                return data
-            return cast(bool | None | Unset, data)
-
-        auto_create_channels = _parse_auto_create_channels(d.pop("auto_create_channels", UNSET))
-
         def _parse_default_profile_id(data: object) -> None | str | Unset:
             if data is None:
                 return data
@@ -131,7 +110,6 @@ class CreateProjectRequest:
             max_concurrent_agents=max_concurrent_agents,
             repo_url=repo_url,
             default_branch=default_branch,
-            auto_create_channels=auto_create_channels,
             default_profile_id=default_profile_id,
         )
 

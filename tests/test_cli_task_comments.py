@@ -47,8 +47,24 @@ def test_comment_uses_claim_file_and_does_not_supply_author(tmp_path):
         result = CliRunner().invoke(cli, ["--json", "task", "comment", "t-1", "--body", "Evidence\n[red]literal[/red]"])
     assert result.exit_code == 0, result.output
     client.execute.assert_awaited_once_with("task_comment", {
-        "task_id": "t-1", "body": "Evidence\n[red]literal[/red]", "claim_epoch": 7})
+        "task_id": "t-1", "body": "Evidence\n[red]literal[/red]", "kind": "note",
+        "claim_epoch": 7})
     assert json.loads(result.output)["data"]["comment"]["id"] == "c-1"
+
+
+def test_comment_kind_progress_is_opt_in_and_validated():
+    """Progress is a claim about work, so the CLI never infers it."""
+    client = client_for({"comment": {"id": "c-1", "body": "65 tests green"}})
+    with patch("src.cli.tasks._get_client", return_value=client):
+        result = CliRunner().invoke(cli, ["--json", "task", "comment", "t-1",
+                                          "--body", "65 tests green", "--kind", "progress"])
+    assert result.exit_code == 0, result.output
+    client.execute.assert_awaited_once_with(
+        "task_comment", {"task_id": "t-1", "body": "65 tests green", "kind": "progress"})
+
+    rejected = CliRunner().invoke(cli, ["task", "comment", "t-1", "--body", "x",
+                                        "--kind", "milestone"])
+    assert rejected.exit_code != 0
 
 
 def test_comments_paginates_and_renders_untrusted_markup_literally():

@@ -29,6 +29,7 @@ import shutil
 import signal
 import sys
 import time
+from typing import Any
 
 from src.config import ConfigValidationError, load_config
 from src.database.migration_guard import DAEMON, set_process_scope
@@ -276,19 +277,14 @@ async def run(config_path: str, profile: str | None = None) -> bool:
             failed_task.cancel()
             raise
 
-        # Register the event-driven notification handler.
-        # The handler subscribes to notify.* events on the orchestrator's
-        # EventBus and routes them to the messaging platform (Discord embeds,
-        # threads, interactive views, etc.).
+        # The legacy Discord notification handler is intentionally not
+        # registered. Shared notify.* events remain on the EventBus for the
+        # dashboard/plugins, while Discord receives only durable escalations
+        # and eligible hourly digests below.
         bot = getattr(adapter, "bot", None)
-        if bot is not None:
-            from src.discord.notification_handler import DiscordNotificationHandler
-
-            _notification_handler = DiscordNotificationHandler(bot, orch.bus)
-            logger.info("Discord notification handler registered on EventBus")
-        else:
+        if bot is None:
             logger.info(
-                "No bot instance on adapter (%s) — notification handler not registered",
+                "No bot instance on adapter (%s) — Discord transports not registered",
                 adapter.platform_name,
             )
 
@@ -302,6 +298,59 @@ async def run(config_path: str, profile: str | None = None) -> bool:
         adapter_handler = adapter.get_command_handler()
         if adapter_handler is not None:
             orch.set_command_handler(adapter_handler)
+
+        # Escalation delivery (discord-simplification §7): one channel post
+        # and one thread per incident, driven from the durable delivery
+        # outbox.  It is attached only when a real transport exists — with no
+        # bot, or with ``discord.escalation.enabled`` false, the core
+        # escalation records, the supervisor loop and the dashboard inbox are
+        # unaffected, which is the §9 promise about disabling the external
+        # surface.
+        cutover_report = getattr(bot, "_cutover_report", None)
+        cutover_ready = cutover_report is not None and cutover_report.status == "complete"
+        if bot is not None and config.discord.channel_id and cutover_ready:
+            from src.discord.escalation_transport import DiscordEscalationTransport
+            from src.escalations import EscalationDeliveryService
+
+            handler = orch._get_handler()
+            base_url = (
+                config.health_check.base_url or f"http://localhost:{config.health_check.port}"
+            )
+            orch.escalation_delivery = EscalationDeliveryService(
+                orch.db,
+                DiscordEscalationTransport(bot, config),
+                config=config,
+                lease_owner=f"daemon-{os.getpid()}",
+                base_url=base_url,
+                rate_guard=_bot_rate_guard(bot),
+                on_status=(
+                    handler.emit_escalation_delivery_status if handler is not None else None
+                ),
+            )
+            logger.info("Escalation delivery service wired to the Discord transport")
+
+            # Hourly digest (discord-simplification §8).  It shares the
+            # transport, the rate guard and the destination with escalations
+            # but keeps its own durable outbox, and it stands down whenever an
+            # escalation is still owed a send.
+            from src.digest import DigestScheduleService
+
+            orch.digest_schedule = DigestScheduleService(
+                orch.db,
+                DiscordEscalationTransport(bot, config),
+                config=config,
+                lease_owner=f"daemon-{os.getpid()}",
+                base_url=base_url,
+                rate_guard=_bot_rate_guard(bot),
+                escalation_priority=orch.db.count_due_escalation_deliveries,
+            )
+            logger.info("Digest scheduler wired to the Discord transport")
+        elif bot is not None:
+            logger.warning(
+                "Discord cutover is not ready or has no explicit shared channel; core "
+                "escalations and dashboard access remain active, but external delivery "
+                "is disabled"
+            )
 
         await _run_scheduler_cycles(orch, shutdown_event)
 
@@ -350,6 +399,19 @@ async def run(config_path: str, profile: str | None = None) -> bool:
         await orch.shutdown()
 
     return restart
+
+
+def _bot_rate_guard(bot: Any):
+    """Let the escalation pump defer while the invalid-request guard is hot.
+
+    The guard is the bot's, not a second counter: an escalation is critical
+    traffic, so it is held rather than dropped, and the delivery row simply
+    retries after backoff (§7 keeps the existing rate guard).
+    """
+    tracker = getattr(bot, "_rate_tracker", None)
+    if tracker is None:
+        return None
+    return lambda: tracker.should_allow(critical=True)
 
 
 async def _health_checks(orch: Orchestrator, adapter: MessagingAdapter) -> dict:
@@ -405,6 +467,13 @@ async def _health_checks(orch: Orchestrator, adapter: MessagingAdapter) -> dict:
         "platform": adapter.platform_name,
         "connected": connected,
     }
+    bot = getattr(adapter, "bot", None)
+    cutover = getattr(bot, "_cutover_report", None)
+    if cutover is not None:
+        checks["discord_cutover"] = {
+            "ok": cutover.status == "complete",
+            **cutover.as_dict(),
+        }
 
     # Discord rate guard — tracks invalid requests (401/403/429) toward
     # the 10,000 / 10 min Cloudflare ban threshold.

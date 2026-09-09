@@ -111,42 +111,24 @@ When prompted, values are saved to `.env` immediately via `_save_env_value`.
 - Saves to `.env` immediately
 - Required — exits with `sys.exit(1)` if empty
 
-### Channel Names
-Pre-filled from existing config with defaults:
-- `control` → `"control"`
-- `notifications` → `"notifications"`
-- `agent_questions` → `"agent-questions"`
+### Shared Channel ID
+The wizard reads an existing `discord.channel_id` or asks for the numeric ID
+of the one channel used for digests and escalation roots.
 
 ### Connectivity Test
-`_test_discord(token, guild_id, channels)` verifies the bot can connect:
-
-- Creates a temporary `discord.Client` with `message_content` intent
-- Connects with a 15-second timeout
-- Checks the guild is visible to the bot
-- Verifies all configured channel names exist as text channels in the guild
-- Returns `(success, missing_channel_names)`
-- Handles specific errors: `LoginFailure` (bad token), `PrivilegedIntentsRequired` (missing Message Content Intent), `TimeoutError`
-- If `discord.py` is not installed, returns `(False, [])` with a warning
-
-**Retry loop:** On failure, the wizard offers different recovery paths:
-- If the bot connected but channels are missing: offers to update channel names, then retests
-- If connection-level failure: shows debugging tips, offers to retry
+`_test_discord(token, guild_id, channel_id)` verifies that the bot can connect,
+see the configured guild and resolve the shared channel ID. The retry flow can
+replace the ID but never creates a channel. Required permissions are Send
+Messages, Read Message History, Create Public Threads and Send Messages in
+Threads.
 
 ### Authorized Users
-Optional — prompts for Discord user IDs one per line (empty line to finish).
+Optional Discord user IDs allowed to reply inside bound escalation threads.
+This setting does not grant general bot commands because the simplified bot has
+none.
 
-### Per-Project Channels
-`_step_per_project_channels(existing, discord_ok)` configures automatic channel creation:
-
-- Asks whether to enable auto-creation (default from existing config, or False)
-- If declined: shows manual channel management commands (`/create-channel`, `/set-channel`, `/channel-map`) and returns disabled config
-- If enabled:
-  - Collects naming convention (must contain `{project_id}`, resets to default if missing)
-  - Collects optional Discord category name for organizing project channels
-  - Asks whether channels should be private (default: yes) — private channels are only visible to the bot and users granted access
-  - Shows summary of configured settings
-
-Returns a dict with `auto_create`, `naming_convention`, `category_name`, and `private`.
+The wizard does not configure per-project channels, separate question/control
+channels, slash commands, or automatic channel provisioning.
 
 ---
 
@@ -227,7 +209,7 @@ Written to `~/.agent-queue/.env` with mode `0o600`:
 ### config.yaml File
 Written to `~/.agent-queue/config.yaml`. Includes:
 - `workspace_dir` and `database_path`
-- `discord` section: bot token as `${DISCORD_BOT_TOKEN}`, guild ID (quoted), channel names, optional authorized users, optional per-project channel config (includes `private` flag)
+- `discord` section: bot token as `${DISCORD_BOT_TOKEN}`, guild ID and one explicit shared `channel_id` (quoted), plus optional authorized users
 - `llm` section: fixed `provider: anthropic`, `default_class: fast-medium` (see note in §9 above)
 - `global_token_budget_daily`: only written if set
 - `scheduling` section: rolling window hours, min_task_guarantee always true

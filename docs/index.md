@@ -8,7 +8,7 @@ tags: [overview, index]
 
 Agent Queue manages task queues across multiple projects, coordinates multi-agent workflows through executable playbooks, accumulates knowledge via a 4-tier memory architecture, and continuously improves through automated reflection. Every completed task feeds insights back into the system — the longer it runs, the better it gets.
 
-You manage everything from Discord on your phone, your terminal, or any MCP-compatible client. Queue up a week's worth of tasks before you leave the house. Come back to a stack of completed PRs and a system that knows more about your codebase than it did yesterday.
+You manage everything from the dashboard, your terminal, or any MCP-compatible client, and Discord keeps you in the loop on your phone with an hourly activity digest and a thread whenever a decision actually needs you. Queue up a week's worth of tasks before you leave the house. Come back to a stack of completed PRs and a system that knows more about your codebase than it did yesterday.
 
 <table>
 <tr>
@@ -19,11 +19,11 @@ You manage everything from Discord on your phone, your terminal, or any MCP-comp
 
 ## How it works
 
-Agent Queue runs as a background daemon. You talk to it through Discord, the CLI, or an MCP client. A **Supervisor** (LLM-powered conversation interface) understands context, remembers what you were working on, and acts. Behind the scenes, a deterministic **Orchestrator** manages the task lifecycle — scheduling, dependencies, retries — without spending a single LLM token.
+Agent Queue runs as a background daemon. You talk to it through the dashboard, the CLI, or an MCP client; Discord is a notification surface, not a command one. A **Supervisor** (LLM-powered conversation interface) understands context, remembers what you were working on, and acts. Behind the scenes, a deterministic **Orchestrator** manages the task lifecycle — scheduling, dependencies, retries — without spending a single LLM token.
 
 What makes it different: the system **learns from every task**. A reflection engine reviews completed work, extracts generalizable insights, and writes them to scoped memory. Future agents receive those insights through a 4-tier prompt assembly pipeline. Playbooks automate multi-step workflows — from code quality gates to full feature development pipelines with review cycles. The system gets measurably better the longer it runs.
 
-![Agent working in a task thread — reading code, fixing bugs, running tests, committing](img/task-thread.png)
+![An agent at work — reading code, fixing bugs, running tests, committing](img/task-thread.png)
 
 ## Features
 
@@ -36,7 +36,7 @@ What makes it different: the system **learns from every task**. A reflection eng
 ### Orchestration
 - **Parallel agents.** Multiple Claude Code agents work simultaneously across projects, each in its own workspace with your existing environment (`.env`, `venv`, `node_modules`).
 - **Full task lifecycle.** Created → assigned → branched → worked → tested → completed. Retries on failure, escalates when stuck, never silently drops work.
-- **Live streaming.** Each task gets a Discord thread. Watch agents work in real time. Reply to unblock them.
+- **Live streaming.** Watch any agent work in real time in the dashboard's session view — transcript, terminal and recorded attempts. Message a running worker to unblock it.
 - **Rate limit recovery.** When an agent hits the throttle, the task auto-pauses. When the window resets, it auto-resumes. While one agent is throttled, others keep working.
 - **Proportional scheduling.** Weight projects by priority. The deficit-based scheduler distributes work fairly across a rolling window — all deterministic, zero LLM overhead.
 
@@ -61,7 +61,7 @@ What makes it different: the system **learns from every task**. A reflection eng
 - **Scoped knowledge.** System → Agent-Type → Project hierarchy. Knowledge flows from broad to specific. Automatic deduplication and LLM-powered merging.
 
 ### Extensibility
-- **Plugin system.** 5 internal plugins ship by default. Install third-party plugins from git repos. Plugins register tools, events, cron jobs, CLI commands, and Discord slash commands.
+- **Plugin system.** 5 internal plugins ship by default. Install third-party plugins from git repos. Plugins register tools, events, cron jobs, CLI commands, and their own Discord slash commands (Agent Queue itself registers none).
 - **Agent profiles.** Configure agent behavior, tools, and MCP servers via markdown profiles. Assign per-project or per-task.
 - **MCP server.** ~150 tools auto-exposed via Model Context Protocol. Connect from Claude Code, Cursor, or any MCP client.
 - **Multi-provider.** Anthropic direct, AWS Bedrock, Google Vertex AI, Gemini, or Ollama.
@@ -82,7 +82,7 @@ What makes it different: the system **learns from every task**. A reflection eng
 - **Transparent.** Everything is markdown files in a vault. Nothing is hidden in opaque databases or API calls. Browse with Obsidian, edit with vim, diff with git.
 - **Development-specific.** Git branches, test verification, merge conflict handling, workspace isolation, code quality gates. Built for software development, not calendar automation.
 - **Lightweight.** One Python process, SQLite. Runs on a Raspberry Pi. No Redis, no Kubernetes. PostgreSQL supported for production deployments.
-- **You're in control.** Nothing merges, nothing deploys without you seeing it. Discord notifications keep you in the loop from your phone.
+- **You're in control.** Nothing merges, nothing deploys without you seeing it. An hourly Discord digest keeps you in the loop from your phone, and anything needing a decision opens its own thread — silence means nothing needs you.
 
 ## Getting started
 
@@ -106,24 +106,7 @@ To uninstall, run `./uninstall.sh` from the repo root. It returns the repo to a 
 
 ### First steps
 
-Once the bot is online, everything happens through conversation in your control channel:
-
-```
-You:  link ~/code/my-app as my-app
-Bot:  ✓ Linked. Repo "my-app" registered.
-
-You:  create a project called my-app
-Bot:  ✓ Project my-app created.
-
-You:  create agent claude-1 and assign it to my-app
-Bot:  ✓ Agent claude-1 created.
-
-You:  add a task to add rate limiting to the API
-Bot:  Created task `task-1` — "Add rate limiting to API"
-      Assigned to claude-1. I'll post updates in the thread.
-```
-
-Or use the CLI:
+Use the CLI or dashboard for project and task operations. Discord is an optional notification surface for the hourly digest and durable human-escalation threads; it is not a general chat or command interface:
 
 ```bash
 aq status                                 # system overview
@@ -137,7 +120,9 @@ Or connect via MCP from Claude Code, Cursor, or any MCP-compatible client for pr
 
 **Guides:**
 - [[guides/getting-started|Getting Started]] — Installation and setup
-- [[guides/discord-commands|Discord Commands]] — Slash commands and chat interactions
+- [[guides/discord-commands|Discord Notifications]] — Digest and escalation behavior
+- [[guides/discord-migration|Discord Migration]] — Operator runbook for the single-channel cutover, settings, health and rollback
+- [[guides/escalations|Human Escalations]] — Durable incidents, supervisor-owned replies and delivery
 - [[guides/architecture|Architecture]] — How the system is designed
 - [[guides/cli|CLI]] — Terminal interface reference
 - [[guides/agent-tools|Agent Tools]] — Tool reference for AI agents

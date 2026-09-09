@@ -1,4 +1,4 @@
-"""Project commands mixin — CRUD, pause/resume, channel management."""
+"""Project commands mixin — CRUD, scheduling and workspace management."""
 
 from __future__ import annotations
 
@@ -19,9 +19,9 @@ class ProjectCommandsMixin:
     """Project command methods mixed into CommandHandler."""
 
     # -----------------------------------------------------------------------
-    # Project commands -- CRUD, pause/resume, and Discord channel management.
+    # Project commands -- CRUD and pause/resume.
     # Projects are the top-level grouping: each project has its own workspace
-    # directory, scheduling weight, and optional dedicated Discord channel.
+    # directory and scheduling weight.
     # -----------------------------------------------------------------------
 
     async def _cmd_get_status(self, args: dict) -> dict:
@@ -75,8 +75,6 @@ class ProjectCommandsMixin:
             }
             if p.repo_url:
                 info["repo_url"] = p.repo_url
-            if p.discord_channel_id:
-                info["discord_channel_id"] = p.discord_channel_id
             if p.assignment_playbook_id:
                 info["assignment_playbook_id"] = p.assignment_playbook_id
             result.append(info)
@@ -119,29 +117,9 @@ class ProjectCommandsMixin:
 
         ensure_project_storage(self.config.data_dir, project_id)
 
-        # Determine whether auto-channel creation should happen.
-        # An explicit ``auto_create_channels`` arg takes precedence;
-        # otherwise fall back to the per-project-channels config flag.
-        explicit = args.get("auto_create_channels")
-        if explicit is not None:
-            should_auto_create = bool(explicit)
-        else:
-            ppc = self.config.discord.per_project_channels
-            should_auto_create = ppc.auto_create
-
-        # Notify listeners (e.g. Discord bot) so they can create channels.
-        if self._on_project_created:
-            try:
-                await self._on_project_created(project_id, should_auto_create)
-            except Exception:
-                logger.warning(
-                    "on_project_created callback failed for %s", project_id, exc_info=True,
-                )
-
         return {
             "created": project_id,
             "name": project.name,
-            "auto_create_channels": should_auto_create,
             "default_profile_id": default_profile_id,
         }
 
@@ -354,8 +332,6 @@ class ProjectCommandsMixin:
             updates["max_concurrent_agents"] = args["max_concurrent_agents"]
         if "budget_limit" in args:
             updates["budget_limit"] = args["budget_limit"]
-        if "discord_channel_id" in args:
-            updates["discord_channel_id"] = args["discord_channel_id"]
         if "default_profile_id" in args:
             dpid = args["default_profile_id"]
             if dpid is not None:
@@ -382,28 +358,12 @@ class ProjectCommandsMixin:
             return {
                 "error": (
                     "No fields to update. Provide name, credit_weight, "
-                    "max_concurrent_agents, budget_limit, discord_channel_id, "
+                    "max_concurrent_agents, budget_limit, "
                     "default_profile_id, assignment_playbook_id, or repo_default_branch."
                 )
             }
         await self.db.update_project(pid, **updates)
         return {"updated": pid, "fields": list(updates.keys())}
-
-    async def _cmd_set_project_channel(self, args: dict) -> dict:
-        """Link an existing Discord channel to a project."""
-        pid = args["project_id"]
-        project = await self.db.get_project(pid)
-        if not project:
-            return {"error": f"Project '{pid}' not found"}
-
-        channel_id = args["channel_id"]
-        await self.db.update_project(pid, discord_channel_id=channel_id)
-
-        return {
-            "project_id": pid,
-            "channel_id": channel_id,
-            "status": "linked",
-        }
 
     async def _cmd_set_default_branch(self, args: dict) -> dict:
         """Set (or change) a project's default branch.
@@ -495,56 +455,6 @@ class ProjectCommandsMixin:
             result["branch_created"] = True
         return result
 
-    async def _cmd_set_control_interface(self, args: dict) -> dict:
-        """Set a project's channel by channel *name* (string lookup).
-
-        Resolves the channel name within the guild, then delegates to
-        ``_cmd_set_project_channel``.
-        Requires ``guild_channels`` to be supplied by the caller (the Discord
-        command layer passes the guild's text channels so this layer stays
-        Discord-import-free).
-        """
-        pid = args.get("project_id") or args.get("project_name")
-        if not pid:
-            return {"error": "project_id (or project_name) is required"}
-        channel_name: str | None = args.get("channel_name")
-        if not channel_name:
-            return {"error": "channel_name is required"}
-
-        # Normalise: strip leading '#' if the user included one.
-        channel_name = channel_name.lstrip("#").strip()
-
-        # --- Resolve channel name → ID ---
-        # Option A: The caller already looked up the ID (Discord slash command).
-        channel_id: str | None = args.get("_resolved_channel_id")
-
-        if not channel_id:
-            # Option B: guild_channels list supplied (list of {id, name} dicts).
-            guild_channels = args.get("guild_channels")
-            if guild_channels:
-                for ch in guild_channels:
-                    if ch["name"] == channel_name:
-                        channel_id = str(ch["id"])
-                        break
-                if not channel_id:
-                    return {"error": f"No text channel named '{channel_name}' found in this server"}
-            else:
-                return {
-                    "error": (
-                        "Cannot resolve channel name without guild context. "
-                        "Use set_project_channel with a channel_id instead, "
-                        "or invoke this command from Discord."
-                    )
-                }
-
-        # Delegate to the existing set_project_channel handler.
-        return await self._cmd_set_project_channel(
-            {
-                "project_id": pid,
-                "channel_id": channel_id,
-            }
-        )
-
     async def _cmd_get_project(self, args: dict) -> dict:
         """Return full details for a single project."""
         pid = args["project_id"]
@@ -567,51 +477,11 @@ class ProjectCommandsMixin:
         }
         if project.budget_limit is not None:
             info["budget_limit"] = project.budget_limit
-        if project.discord_channel_id:
-            info["discord_channel_id"] = project.discord_channel_id
         if project.default_profile_id:
             info["default_profile_id"] = project.default_profile_id
         if project.assignment_playbook_id:
             info["assignment_playbook_id"] = project.assignment_playbook_id
         return info
-
-    async def _cmd_get_project_channels(self, args: dict) -> dict:
-        """Return the Discord channel ID configured for a project."""
-        pid = args["project_id"]
-        project = await self.db.get_project(pid)
-        if not project:
-            return {"error": f"Project '{pid}' not found"}
-        return {
-            "project_id": pid,
-            "channel_id": project.discord_channel_id,
-        }
-
-    async def _cmd_get_project_for_channel(self, args: dict) -> dict:
-        """Reverse lookup: find which project a Discord channel belongs to.
-
-        Scans all projects and checks ``discord_channel_id``.
-        Returns the first match, or ``project_id: null`` if no project
-        is linked to the channel.
-        """
-        channel_id = args.get("channel_id")
-        if not channel_id:
-            return {"error": "channel_id is required"}
-
-        channel_id = str(channel_id)
-        projects = await self.db.list_projects()
-        for project in projects:
-            if project.discord_channel_id == channel_id:
-                return {
-                    "channel_id": channel_id,
-                    "project_id": project.id,
-                    "project_name": project.name,
-                }
-
-        return {
-            "channel_id": channel_id,
-            "project_id": None,
-            "project_name": None,
-        }
 
     async def _cmd_delete_project(self, args: dict) -> dict:
         pid = args["project_id"]
@@ -637,24 +507,5 @@ class ProjectCommandsMixin:
                 "Stop them first."
             }
 
-        # Capture channel ID before the DB cascade removes it.
-        channel_ids: dict[str, str] = {}
-        if project.discord_channel_id:
-            channel_ids["channel"] = project.discord_channel_id
-
         await self.db.delete_project(pid)
-
-        # Notify listeners (e.g. Discord bot) so they can purge in-memory
-        # channel caches, notes-thread mappings, etc.
-        if self._on_project_deleted:
-            self._on_project_deleted(pid)
-
-        result: dict = {"deleted": pid, "name": project.name}
-        if channel_ids:
-            result["channel_ids"] = channel_ids
-        # Pass through the caller's archive preference so the Discord layer
-        # can act on it.
-        archive = args.get("archive_channels", False)
-        if archive:
-            result["archive_channels"] = True
-        return result
+        return {"deleted": pid, "name": project.name}

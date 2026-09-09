@@ -55,8 +55,6 @@ export default function ProjectOverview() {
   const repoBranch = (project as { repo_default_branch?: string } | undefined)
     ?.repo_default_branch;
   const workspace = (project as { workspace?: string | null } | undefined)?.workspace;
-  const discordChannelId = (project as { discord_channel_id?: string | null } | undefined)
-    ?.discord_channel_id;
   const creditWeight = (project as { credit_weight?: number } | undefined)?.credit_weight;
   const maxAgents = (project as { max_concurrent_agents?: number } | undefined)
     ?.max_concurrent_agents;
@@ -151,12 +149,11 @@ export default function ProjectOverview() {
             icon={<Squares2X2Icon className="h-4 w-4" />}
             label="Open task graph"
           />
-          {discordChannelId && (
-            <ExternalLink
-              href={`https://discord.com/channels/@me/${discordChannelId}`}
-              label="Open Discord channel"
-            />
-          )}
+          <ActionButton
+            to="/settings/messaging"
+            icon={<ExclamationTriangleIcon className="h-4 w-4" />}
+            label="Open messaging settings"
+          />
           <p className="mt-2 text-xs text-gray-500">
             Build & dev-server launch coming with per-project config.
           </p>

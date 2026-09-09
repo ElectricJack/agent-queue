@@ -96,6 +96,11 @@ def test_the_message_names_the_task_and_tells_the_supervisor_to_read_the_log_tai
     assert "max_retries" in body and "tests kept failing" in body and "agent-7" in body
     assert "aq session logs" in body and "aq session list" in body
     assert "aq task explain task-1" in body
+    assert "only a supervisor triage notice" in body
+    assert "ordinary dependency waits" in body and "active retry legs" in body
+    assert "aq escalation create" in body
+    assert "task-recovery:<incident-id>" in body
+    assert "aq escalation apply-reply" in body
 
 
 def test_optional_event_fields_render_with_fallbacks_instead_of_failing() -> None:

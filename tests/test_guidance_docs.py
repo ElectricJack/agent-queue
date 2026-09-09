@@ -33,8 +33,18 @@ from pathlib import Path
 import click
 import pytest
 
-SKILLS_DIR = Path(__file__).resolve().parents[1] / "src" / "skills"
-PRIME_TEMPLATES_DIR = Path(__file__).resolve().parents[1] / "src" / "prime" / "templates"
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+SKILLS_DIR = _REPO_ROOT / "src" / "skills"
+PRIME_TEMPLATES_DIR = _REPO_ROOT / "src" / "prime" / "templates"
+#: Operator runbooks are the same contract aimed at a human: the reader copies
+#: the line into a terminal.  The Discord cutover retired a whole command
+#: surface, so these are the guides most likely to name something that is gone.
+OPERATOR_DOCS = (
+    _REPO_ROOT / "docs" / "guides" / "discord-migration.md",
+    _REPO_ROOT / "docs" / "guides" / "discord-commands.md",
+    _REPO_ROOT / "docs" / "guides" / "discord-replacement-checklist.md",
+    _REPO_ROOT / "docs" / "guides" / "escalations.md",
+)
 
 _FENCE = re.compile(r"^```(\w*)\s*$")
 _INLINE = re.compile(r"`([^`]+)`")
@@ -169,14 +179,20 @@ def _problems(source: str, lineno: int, command: str) -> list[str]:
 
 
 def _guidance_files() -> list[Path]:
-    """Every static document that hands an agent a command line to run."""
-    return sorted(SKILLS_DIR.glob("*/SKILL.md")) + sorted(PRIME_TEMPLATES_DIR.rglob("*.md"))
+    """Every static document that hands a reader a command line to run."""
+    return (
+        sorted(SKILLS_DIR.glob("*/SKILL.md"))
+        + sorted(PRIME_TEMPLATES_DIR.rglob("*.md"))
+        + [path for path in OPERATOR_DOCS if path.exists()]
+    )
 
 
 def _label(path: Path) -> str:
     if path.name == "SKILL.md":
         return f"src/skills/{path.parent.name}/SKILL.md"
-    return f"src/prime/templates/{path.relative_to(PRIME_TEMPLATES_DIR)}"
+    if path.is_relative_to(PRIME_TEMPLATES_DIR):
+        return f"src/prime/templates/{path.relative_to(PRIME_TEMPLATES_DIR)}"
+    return str(path.relative_to(_REPO_ROOT))
 
 
 def test_both_guidance_trees_are_where_we_think_they_are():
@@ -184,6 +200,8 @@ def test_both_guidance_trees_are_where_we_think_they_are():
     labels = [_label(path) for path in _guidance_files()]
     assert any(label.startswith("src/skills/") for label in labels), SKILLS_DIR
     assert any(label.startswith("src/prime/templates/") for label in labels), PRIME_TEMPLATES_DIR
+    for path in OPERATOR_DOCS:
+        assert path.exists(), f"{path} moved; the operator-runbook scan would be a no-op"
 
 
 @pytest.mark.parametrize("path", _guidance_files(), ids=_label)

@@ -11,6 +11,10 @@ from src.database.tables import archived_tasks, sessions, task_comments, tasks
 
 MAX_COMMENT_BODY = 16000
 
+#: A comment is ordinary history unless its author says otherwise. Only
+#: ``progress`` is explicit recorded progress; see ``task_comments.kind``.
+COMMENT_KINDS = ("note", "progress")
+
 
 class TaskFindingsConflict(Exception):
     """The task, description, or authorizing claim changed before the write."""
@@ -91,6 +95,7 @@ class TaskCommentQueriesMixin:
         *,
         author_kind: str,
         author_id: str,
+        kind: str = "note",
         fence: dict | None = None,
     ) -> dict:
         """Append a server-authored comment; the caller derives identity from scope."""
@@ -100,12 +105,15 @@ class TaskCommentQueriesMixin:
             )
         if author_kind not in {"user", "agent", "supervisor"} or not author_id:
             raise ValueError("invalid comment author")
+        if kind not in COMMENT_KINDS:
+            raise ValueError(f"kind must be one of {', '.join(COMMENT_KINDS)}")
         comment = {
             "id": "comment-" + uuid.uuid4().hex,
             "task_id": task_id,
             "body": body,
             "author_kind": author_kind,
             "author_id": author_id,
+            "kind": kind,
             "created_at": time.time(),
         }
         async with self._engine.begin() as conn:

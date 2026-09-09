@@ -1,0 +1,123 @@
+"""Escalation delivery: one channel post and one thread per incident.
+
+The core owns the incident (:mod:`src.database.queries.escalation_queries`);
+this package owns nothing but presentation and transport.  It is split so the
+interesting rules stay testable without a gateway:
+
+* :mod:`src.escalations.facts` — the value objects, including the mention
+  policy that is the only source of a ping this feature may emit;
+* :mod:`src.escalations.render` — every message Discord ever sees, with
+  authored text neutralised on the way in;
+* :mod:`src.escalations.plan` — which deliveries an incident's current state
+  implies, as a pure function of durable rows;
+* :mod:`src.escalations.transport` — the narrow port, its honest fault
+  taxonomy and the in-memory sink the tests use;
+* :mod:`src.escalations.dispatch` — the pump that leases a delivery, sends it
+  once, reconciles an ambiguous send and records the receipt;
+* :mod:`src.escalations.intake` — the mirror of the planner: which inbound
+  transport messages are allowed to become a verified human reply.
+
+The Discord implementation of the port lives in
+:mod:`src.discord.escalation_transport`.
+"""
+
+from src.escalations.dispatch import EscalationDeliveryService, TickReport
+from src.escalations.facts import (
+    DELIVERY_KINDS,
+    KIND_ACK,
+    KIND_RELAY,
+    KIND_RESOLUTION,
+    KIND_ROOT,
+    PRIORITY_DIGEST,
+    PRIORITY_FOLLOWUP,
+    PRIORITY_RESOLUTION,
+    PRIORITY_ROOT,
+    EscalationFacts,
+    MentionPolicy,
+    TransportBinding,
+)
+from src.escalations.intake import (
+    ACTION_ACCEPT,
+    ACTION_CLOSED,
+    ACTION_IGNORE,
+    InboundMessage,
+    IntakeDecision,
+    classify_inbound,
+)
+from src.escalations.plan import (
+    DeliveryPlan,
+    PlannedDelivery,
+    binding_from_deliveries,
+    plan_deliveries,
+    plan_replacement,
+)
+from src.escalations.render import (
+    escalation_url,
+    marker_for,
+    render_ack,
+    render_relay,
+    render_resolution,
+    render_resolved_root,
+    render_root,
+    render_thread_opener,
+    sanitise,
+    thread_name,
+)
+from src.escalations.supervisor import SupervisorDeliveryWatchdog
+from src.escalations.transport import (
+    EscalationTransport,
+    SendOutcome,
+    SinkTransport,
+    TransportAmbiguous,
+    TransportError,
+    TransportMissing,
+    TransportRetryable,
+    TransportUnavailable,
+)
+
+__all__ = [
+    "ACTION_ACCEPT",
+    "ACTION_CLOSED",
+    "ACTION_IGNORE",
+    "DELIVERY_KINDS",
+    "KIND_ACK",
+    "KIND_RELAY",
+    "KIND_RESOLUTION",
+    "KIND_ROOT",
+    "PRIORITY_DIGEST",
+    "PRIORITY_FOLLOWUP",
+    "PRIORITY_RESOLUTION",
+    "PRIORITY_ROOT",
+    "DeliveryPlan",
+    "EscalationDeliveryService",
+    "EscalationFacts",
+    "EscalationTransport",
+    "InboundMessage",
+    "IntakeDecision",
+    "MentionPolicy",
+    "PlannedDelivery",
+    "SendOutcome",
+    "SinkTransport",
+    "SupervisorDeliveryWatchdog",
+    "TickReport",
+    "TransportAmbiguous",
+    "TransportBinding",
+    "TransportError",
+    "TransportMissing",
+    "TransportRetryable",
+    "TransportUnavailable",
+    "binding_from_deliveries",
+    "classify_inbound",
+    "escalation_url",
+    "marker_for",
+    "plan_deliveries",
+    "plan_replacement",
+    "render_ack",
+    "render_relay",
+    "render_resolution",
+    "render_resolved_root",
+    "render_root",
+    "render_thread_opener",
+    "sanitise",
+    "thread_name",
+]

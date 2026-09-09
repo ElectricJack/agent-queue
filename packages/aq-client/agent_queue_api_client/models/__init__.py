@@ -130,14 +130,20 @@ from .delete_profile_response_422 import DeleteProfileResponse422
 from .delete_project_request import DeleteProjectRequest
 from .delete_project_response import DeleteProjectResponse
 from .delete_project_response_422 import DeleteProjectResponse422
-from .delete_project_response_channel_ids_type_0 import DeleteProjectResponseChannelIdsType0
 from .delete_task_request import DeleteTaskRequest
 from .delete_task_response import DeleteTaskResponse
 from .delete_task_response_422 import DeleteTaskResponse422
 from .deleted_branch import DeletedBranch
-from .discord_cleanup_threads_request import DiscordCleanupThreadsRequest
-from .discord_cleanup_threads_response import DiscordCleanupThreadsResponse
-from .discord_cleanup_threads_response_422 import DiscordCleanupThreadsResponse422
+from .digest_escalation_settings import DigestEscalationSettings
+from .digest_preview_request import DigestPreviewRequest
+from .digest_preview_response import DigestPreviewResponse
+from .digest_schedule_settings import DigestScheduleSettings
+from .digest_status_request import DigestStatusRequest
+from .digest_status_response import DigestStatusResponse
+from .digest_status_response_delivery_health import DigestStatusResponseDeliveryHealth
+from .digest_window_bounds import DigestWindowBounds
+from .digest_window_record import DigestWindowRecord
+from .discord_cutover_status import DiscordCutoverStatus
 from .discord_purge_channel_request import DiscordPurgeChannelRequest
 from .discord_purge_channel_response import DiscordPurgeChannelResponse
 from .discord_purge_channel_response_422 import DiscordPurgeChannelResponse422
@@ -190,6 +196,28 @@ from .ensure_task_request import EnsureTaskRequest
 from .ensure_task_response import EnsureTaskResponse
 from .ensure_task_response_422 import EnsureTaskResponse422
 from .env_var_reference import EnvVarReference
+from .escalation_action import EscalationAction
+from .escalation_action_parameters import EscalationActionParameters
+from .escalation_action_result_type_0 import EscalationActionResultType0
+from .escalation_apply_reply_request import EscalationApplyReplyRequest
+from .escalation_apply_reply_response import EscalationApplyReplyResponse
+from .escalation_apply_reply_response_action_result_type_0 import EscalationApplyReplyResponseActionResultType0
+from .escalation_create_request import EscalationCreateRequest
+from .escalation_create_response import EscalationCreateResponse
+from .escalation_delivery import EscalationDelivery
+from .escalation_error_response import EscalationErrorResponse
+from .escalation_get_request import EscalationGetRequest
+from .escalation_get_response import EscalationGetResponse
+from .escalation_list_request import EscalationListRequest
+from .escalation_list_response import EscalationListResponse
+from .escalation_message import EscalationMessage
+from .escalation_record import EscalationRecord
+from .escalation_record_terminal_evidence_type_0 import EscalationRecordTerminalEvidenceType0
+from .escalation_reply_request import EscalationReplyRequest
+from .escalation_reply_response import EscalationReplyResponse
+from .escalation_update_request import EscalationUpdateRequest
+from .escalation_update_request_terminal_evidence_type_0 import EscalationUpdateRequestTerminalEvidenceType0
+from .escalation_update_response import EscalationUpdateResponse
 from .event_group_dto import EventGroupDTO
 from .event_trigger import EventTrigger
 from .execute_request import ExecuteRequest
@@ -303,12 +331,6 @@ from .get_profile_request import GetProfileRequest
 from .get_profile_response import GetProfileResponse
 from .get_profile_response_422 import GetProfileResponse422
 from .get_profile_response_install import GetProfileResponseInstall
-from .get_project_channels_request import GetProjectChannelsRequest
-from .get_project_channels_response import GetProjectChannelsResponse
-from .get_project_channels_response_422 import GetProjectChannelsResponse422
-from .get_project_for_channel_request import GetProjectForChannelRequest
-from .get_project_for_channel_response import GetProjectForChannelResponse
-from .get_project_for_channel_response_422 import GetProjectForChannelResponse422
 from .get_project_onboarding_request import GetProjectOnboardingRequest
 from .get_project_onboarding_response import GetProjectOnboardingResponse
 from .get_project_onboarding_response_422 import GetProjectOnboardingResponse422
@@ -908,8 +930,6 @@ from .session_token_response import SessionTokenResponse
 from .session_token_response_422 import SessionTokenResponse422
 from .session_wake_request import SessionWakeRequest
 from .session_wake_response_422 import SessionWakeResponse422
-from .set_control_interface_request import SetControlInterfaceRequest
-from .set_control_interface_response_422 import SetControlInterfaceResponse422
 from .set_default_branch_request import SetDefaultBranchRequest
 from .set_default_branch_response import SetDefaultBranchResponse
 from .set_default_branch_response_422 import SetDefaultBranchResponse422
@@ -917,9 +937,6 @@ from .set_playbook_activation_response import SetPlaybookActivationResponse
 from .set_playbook_enabled_request import SetPlaybookEnabledRequest
 from .set_playbook_enabled_response import SetPlaybookEnabledResponse
 from .set_playbook_enabled_response_422 import SetPlaybookEnabledResponse422
-from .set_project_channel_request import SetProjectChannelRequest
-from .set_project_channel_response import SetProjectChannelResponse
-from .set_project_channel_response_422 import SetProjectChannelResponse422
 from .set_project_constraint_request import SetProjectConstraintRequest
 from .set_project_constraint_request_max_agents_by_type_type_0 import SetProjectConstraintRequestMaxAgentsByTypeType0
 from .set_project_constraint_response import SetProjectConstraintResponse
@@ -1012,6 +1029,7 @@ from .task_comment_delete_response import TaskCommentDeleteResponse
 from .task_comment_delete_response_422 import TaskCommentDeleteResponse422
 from .task_comment_edit_request import TaskCommentEditRequest
 from .task_comment_edit_response_422 import TaskCommentEditResponse422
+from .task_comment_kind import TaskCommentKind
 from .task_comment_request import TaskCommentRequest
 from .task_comment_response import TaskCommentResponse
 from .task_comment_response_422 import TaskCommentResponse422
@@ -1246,13 +1264,19 @@ __all__ = (
     "DeleteProjectRequest",
     "DeleteProjectResponse",
     "DeleteProjectResponse422",
-    "DeleteProjectResponseChannelIdsType0",
     "DeleteTaskRequest",
     "DeleteTaskResponse",
     "DeleteTaskResponse422",
-    "DiscordCleanupThreadsRequest",
-    "DiscordCleanupThreadsResponse",
-    "DiscordCleanupThreadsResponse422",
+    "DigestEscalationSettings",
+    "DigestPreviewRequest",
+    "DigestPreviewResponse",
+    "DigestScheduleSettings",
+    "DigestStatusRequest",
+    "DigestStatusResponse",
+    "DigestStatusResponseDeliveryHealth",
+    "DigestWindowBounds",
+    "DigestWindowRecord",
+    "DiscordCutoverStatus",
     "DiscordPurgeChannelRequest",
     "DiscordPurgeChannelResponse",
     "DiscordPurgeChannelResponse422",
@@ -1303,6 +1327,28 @@ __all__ = (
     "EnsureTaskResponse",
     "EnsureTaskResponse422",
     "EnvVarReference",
+    "EscalationAction",
+    "EscalationActionParameters",
+    "EscalationActionResultType0",
+    "EscalationApplyReplyRequest",
+    "EscalationApplyReplyResponse",
+    "EscalationApplyReplyResponseActionResultType0",
+    "EscalationCreateRequest",
+    "EscalationCreateResponse",
+    "EscalationDelivery",
+    "EscalationErrorResponse",
+    "EscalationGetRequest",
+    "EscalationGetResponse",
+    "EscalationListRequest",
+    "EscalationListResponse",
+    "EscalationMessage",
+    "EscalationRecord",
+    "EscalationRecordTerminalEvidenceType0",
+    "EscalationReplyRequest",
+    "EscalationReplyResponse",
+    "EscalationUpdateRequest",
+    "EscalationUpdateRequestTerminalEvidenceType0",
+    "EscalationUpdateResponse",
     "EventGroupDTO",
     "EventTrigger",
     "ExecuteRequest",
@@ -1416,12 +1462,6 @@ __all__ = (
     "GetProfileResponse",
     "GetProfileResponse422",
     "GetProfileResponseInstall",
-    "GetProjectChannelsRequest",
-    "GetProjectChannelsResponse",
-    "GetProjectChannelsResponse422",
-    "GetProjectForChannelRequest",
-    "GetProjectForChannelResponse",
-    "GetProjectForChannelResponse422",
     "GetProjectOnboardingRequest",
     "GetProjectOnboardingResponse",
     "GetProjectOnboardingResponse422",
@@ -2013,8 +2053,6 @@ __all__ = (
     "SessionTokenResponse422",
     "SessionWakeRequest",
     "SessionWakeResponse422",
-    "SetControlInterfaceRequest",
-    "SetControlInterfaceResponse422",
     "SetDefaultBranchRequest",
     "SetDefaultBranchResponse",
     "SetDefaultBranchResponse422",
@@ -2022,9 +2060,6 @@ __all__ = (
     "SetPlaybookEnabledRequest",
     "SetPlaybookEnabledResponse",
     "SetPlaybookEnabledResponse422",
-    "SetProjectChannelRequest",
-    "SetProjectChannelResponse",
-    "SetProjectChannelResponse422",
     "SetProjectConstraintRequest",
     "SetProjectConstraintRequestMaxAgentsByTypeType0",
     "SetProjectConstraintResponse",
@@ -2115,6 +2150,7 @@ __all__ = (
     "TaskCommentDeleteResponse422",
     "TaskCommentEditRequest",
     "TaskCommentEditResponse422",
+    "TaskCommentKind",
     "TaskCommentRequest",
     "TaskCommentResponse",
     "TaskCommentResponse422",

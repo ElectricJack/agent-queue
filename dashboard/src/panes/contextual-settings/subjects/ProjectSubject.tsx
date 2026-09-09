@@ -43,7 +43,6 @@ export default function ProjectSubject({ args, setToolbar }: PaneViewProps<Args>
       max_concurrent_agents: parseOptionalInt(form.max_concurrent_agents),
       credit_weight: parseOptionalFloat(form.credit_weight),
       budget_limit: parseOptionalFloat(form.budget_limit),
-      discord_channel_id: form.discord_channel_id.trim() || null,
     });
     resetBaseline(form);
   };
@@ -150,18 +149,6 @@ export default function ProjectSubject({ args, setToolbar }: PaneViewProps<Args>
             placeholder="(no limit)"
             value={form.budget_limit}
             onChange={(e) => set("budget_limit", e.target.value)}
-            className="w-full rounded-md border border-gray-700 bg-gray-950 px-3 py-1.5 text-gray-200 focus:border-indigo-500 focus:outline-none"
-          />
-        </Field>
-      </Section>
-
-      <Section title="Discord">
-        <Field label="Channel id">
-          <input
-            aria-label="Channel id"
-            value={form.discord_channel_id}
-            onChange={(e) => set("discord_channel_id", e.target.value)}
-            placeholder="(channel id)"
             className="w-full rounded-md border border-gray-700 bg-gray-950 px-3 py-1.5 text-gray-200 focus:border-indigo-500 focus:outline-none"
           />
         </Field>

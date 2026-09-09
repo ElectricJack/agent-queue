@@ -3192,6 +3192,16 @@ class TaskCommandsMixin:
         reason = args.get("reason")
         if decision not in ("retry", "hold") or not isinstance(reason, str) or not 1 <= len(reason.strip()) <= 4000:
             return {"error": "Provide decision retry|hold and a reason of 1 to 4000 characters"}
+        repair_operation = await self.db.get_active_integration_repair_for_task(task_id)
+        verifier_operation = await self.db.get_active_integration_verifier_for_task(task_id)
+        if repair_operation is not None or verifier_operation is not None:
+            operation = repair_operation or verifier_operation
+            return {
+                "error": (
+                    "Task recovery is owned by integration operation "
+                    f"{operation['id']}; use the integration operation's existing controls and budgets"
+                )
+            }
         scope = self._current_scope or {}
         stopped_session = None
         if decision == "retry":

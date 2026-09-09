@@ -170,7 +170,6 @@ def project_details(ctx: click.Context, project_id: str) -> None:
         lines = [Text(f"Status: {status}", style=status_style), Text("")]
         fields = [
             ("Name", _getval(p, "name", "—")),
-            ("Channel", _getval(p, "discord_channel_id", "—") or "—"),
             ("Max Agents", str(_getval(p, "max_concurrent_agents", "—"))),
             ("Credit Weight", str(_getval(p, "credit_weight", "—"))),
         ]
@@ -227,11 +226,10 @@ def project_set(
     expected_integration_generation: int | None,
     reason: str | None,
 ) -> None:
-    """Set a project property. e.g. aq project set myproj channel 123456"""
+    """Set a project property. e.g. aq project set myproj max-agents 4"""
     api_url = ctx.obj.get("api_url") if ctx.obj else None
 
     KEY_MAP = {
-        "channel": "discord_channel_id",
         "name": "name",
         "max-agents": "max_concurrent_agents",
         "credit-weight": "credit_weight",
@@ -288,9 +286,6 @@ def project_set(
     if field == "default_branch":
         cmd = "set_default_branch"
         args = {"project_id": project_id, "branch": value}
-    elif field == "discord_channel_id":
-        cmd = "set_project_channel"
-        args = {"project_id": project_id, "channel_id": value}
     else:
         cmd = "edit_project"
         args = {"project_id": project_id, field: coerced}
