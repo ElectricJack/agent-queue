@@ -375,7 +375,12 @@ def _load_plugin_config_from_db(plugin_id: str) -> dict | None:
         ) from exc
 
 
-def _configure_plugin_on_invoke(plugin_id: str, instance: object) -> None:
+def _configure_plugin_on_invoke(
+    plugin_id: str,
+    instance: object,
+    *,
+    config_loader=None,
+) -> None:
     """Merge persisted config immediately before a plugin command runs.
 
     Plugin CLI extensions historically fell back to their declared defaults
@@ -383,8 +388,9 @@ def _configure_plugin_on_invoke(plugin_id: str, instance: object) -> None:
     behaviour, but make the fallback visible and actionable instead of
     swallowing every exception during module import.
     """
+    config_loader = config_loader or _load_plugin_config_from_db
     try:
-        db_config = _load_plugin_config_from_db(plugin_id)
+        db_config = config_loader(plugin_id)
     except Exception as exc:
         click.echo(
             f"Warning: could not load saved config for plugin '{plugin_id}': {exc}. "
@@ -402,12 +408,18 @@ def _configure_plugin_on_invoke(plugin_id: str, instance: object) -> None:
     instance.config = {**current, **db_config}
 
 
-def _defer_plugin_config(plugin_id: str, instance: object, group: click.Group) -> None:
+def _defer_plugin_config(
+    plugin_id: str,
+    instance: object,
+    group: click.Group,
+    *,
+    config_loader=None,
+) -> None:
     """Attach lazy configuration to *group* without affecting help paths."""
     original_callback = group.callback
 
     def configured_callback(*args, **kwargs):
-        _configure_plugin_on_invoke(plugin_id, instance)
+        _configure_plugin_on_invoke(plugin_id, instance, config_loader=config_loader)
         if original_callback is not None:
             return original_callback(*args, **kwargs)
         return None
@@ -437,13 +449,39 @@ def _broken_plugin_group(plugin_id: str, exc: Exception) -> click.Group:
     return broken
 
 
-def _load_plugin_cli_groups() -> None:
-    """Dynamically register CLI groups from installed aq.plugins entry points."""
-    try:
-        from importlib.metadata import entry_points
+def _tag_plugin_cli_tree(command: click.Command, plugin_name: str) -> None:
+    """Mark an external plugin's Click tree for inventory provenance."""
+    command._aq_registration = "plugin-extension"  # type: ignore[attr-defined]
+    command._aq_owner_kind = "external-plugin"  # type: ignore[attr-defined]
+    command._aq_owner = plugin_name  # type: ignore[attr-defined]
+    if isinstance(command, click.Group):
+        for child in command.commands.values():
+            _tag_plugin_cli_tree(child, plugin_name)
 
-        for ep in entry_points(group="aq.plugins"):
-            if ep.name in cli.commands:
+
+def _load_plugin_cli_groups(
+    cli_group: click.Group | None = None,
+    *,
+    entry_point_provider=None,
+    config_loader=None,
+) -> list[str]:
+    """Register installed plugin CLI groups without allowing core shadowing.
+
+    The injectable providers keep plugin-present and plugin-absent startup
+    behavior testable without installing packages or contacting a database.
+    Returns the names that were successfully mounted.
+    """
+    cli_group = cli_group or cli
+    config_loader = config_loader or _load_plugin_config_from_db
+    mounted: list[str] = []
+    try:
+        if entry_point_provider is None:
+            from importlib.metadata import entry_points
+
+            entry_point_provider = entry_points
+
+        for ep in entry_point_provider(group="aq.plugins"):
+            if ep.name in cli_group.commands:
                 logger.warning(
                     "Plugin CLI entry point '%s' conflicts with an existing command; skipped",
                     ep.name,
@@ -454,13 +492,23 @@ def _load_plugin_cli_groups() -> None:
                 instance = cls()
                 group = instance.cli_group()
                 if group is not None:
-                    _defer_plugin_config(ep.name, instance, group)
-                    cli.add_command(group, ep.name)
+                    _defer_plugin_config(
+                        ep.name,
+                        instance,
+                        group,
+                        config_loader=config_loader,
+                    )
+                    _tag_plugin_cli_tree(group, ep.name)
+                    cli_group.add_command(group, ep.name)
+                    mounted.append(ep.name)
             except Exception as exc:
                 logger.warning("Plugin CLI entry point '%s' failed: %s", ep.name, exc)
-                cli.add_command(_broken_plugin_group(ep.name, exc), ep.name)
+                group = _broken_plugin_group(ep.name, exc)
+                _tag_plugin_cli_tree(group, ep.name)
+                cli_group.add_command(group, ep.name)
     except Exception as exc:
         logger.warning("Plugin CLI entry-point discovery failed: %s", exc)
+    return mounted
 
 
 _load_plugin_cli_groups()

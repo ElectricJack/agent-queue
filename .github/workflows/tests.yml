@@ -180,6 +180,8 @@ jobs:
       fail-fast: false
       matrix:
         suite:
+          - name: cli-conformance
+            command: aq test tests/test_cli_inventory.py tests/test_cli_conformance.py
           - name: default
             command: pytest tests/ -n auto --dist loadfile
           - name: migration-and-slow
