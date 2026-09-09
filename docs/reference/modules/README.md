@@ -36,7 +36,7 @@ own modules; this page is only the index.
 | `plugins.md` | `plugins` | 24 | — | `guides/plugins-and-mcp.md` |
 | [`communications.md`](communications.md) | `communications` | 38 | — | `concepts/messaging.md`, `guides/escalations.md` |
 | `operations.md` | `operations` | 24 | — | `guides/operations.md` |
-| `contributing.md` | `contributing` | 0 | — | — |
+| [`contributing.md`](contributing.md) | `contributing` | 0 | — | `contributing/README.md`, `contributing/setup.md`, `contributing/testing.md`, `contributing/repo-map.md`, `contributing/codegen.md`, `contributing/checks.md`, `contributing/scripts.md`, `contributing/ci.md`, `contributing/pull-requests.md`, `contributing/releases.md` |
 
 `contributing` carries no production modules: it documents the 81 supporting
 files — scripts, CI workflows, packaging and build configuration — and the test
