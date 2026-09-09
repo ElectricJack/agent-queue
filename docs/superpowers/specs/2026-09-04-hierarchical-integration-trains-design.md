@@ -622,6 +622,7 @@ outcomes:
 | `integration_mutate_hierarchy` | Apply hierarchy/disposition changes and invalidate affected generations | `updated`, `sealed`, `delivery_target_fixed`, `reopen_required`, `invalid` |
 | `integration_resolve_conflict` | Immutably reserve exact resolved head/tree/range plus original repair-session provenance before a remote write | `reserved`, `already_reserved`, `unauthorized`, `stale`, `invariant_error` |
 | `integration_push_conflict_resolution` | Under the current live repair session and fenced mutation exclusion, push only the immutable reserved resolution OIDs | `pushed`, `already_applied`, `target_moved`, `stale`, `unauthorized`, `runtime_error` |
+| `integration_resolve_candidate_member` | Derive the current conflicted root member and writer fence from the authenticated repair claim, reserve and publish its exact linear repair, accept only remote-observed server lineage, and resume construction | `accepted`, `already_accepted`, `wait`, `stale`, `unauthorized`, `invariant_error`, `runtime_error` |
 | `integration_reconcile_promotion` | Reconcile a durable intent against remote ancestry and finalize its receipt | `applied`, `not_applied`, `invariant_error` |
 | `integration_promote_main` | Expected-base fast-forward with exact-SHA green attestation | `promoted`, `already_promoted`, `base_moved`, `ci_missing`, `non_fast_forward` |
 | `integration_release` | Reconcile cleanup, release lease, and emit a deduplicated due event when needed | `released`, `cleanup_pending`, `not_owner`, `invariant_error` |

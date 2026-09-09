@@ -8,6 +8,7 @@ there are intentionally no optimistic success stubs.
 from __future__ import annotations
 
 import inspect
+import json
 import time
 from typing import Any
 
@@ -450,7 +451,9 @@ class IntegrationCommandsMixin:
             ),
         )
 
-    async def _integration_candidate_service(self, batch: dict[str, Any]):
+    async def _integration_candidate_service(
+        self, batch: dict[str, Any], *, repair_session=None
+    ):
         service = getattr(self.orchestrator, "integration_candidate_service", None)
         if service is not None:
             return service
@@ -472,12 +475,25 @@ class IntegrationCommandsMixin:
                 app_client = app_client_factory(binding)
                 if inspect.isawaitable(app_client):
                     app_client = await app_client
+        branch_ownership = None
+        if repair_session is not None:
+            callback_name = (
+                "aconfirm_integration_pool_owner_handoff"
+                if repair_session.lifecycle == "pool"
+                else "aconfirm_integration_owner_stopped_for_repair"
+            )
+            branch_ownership = BranchOwnership(
+                self.db,
+                confirm_handoff=getattr(self.orchestrator, callback_name, None),
+            )
         return CandidateService(
             self.db,
             data_dir=self.config.data_dir,
             git_manager=self.orchestrator.git,
             app_client=app_client,
             forge_provider=app_client,
+            repair_service=self._integration_repair_service(),
+            branch_ownership=branch_ownership,
         )
 
     def _integration_release_service(self):
@@ -1319,6 +1335,252 @@ class IntegrationCommandsMixin:
         except (PromotionInvariantError, PromotionSourceMoved, PromotionRuntimeError) as exc:
             return _failure("runtime_error", str(exc))
         return self._promotion_result("already_applied" if replay else "pushed", value)
+
+    async def _cmd_integration_resolve_candidate_member(self, args: dict) -> dict:
+        """Resolve only the candidate conflict assigned to the authenticated writer.
+
+        Candidate identity and every authority-bearing value are derived from
+        the current session attachment.  The request carries only Git object
+        evidence plus the pool claim fence; in particular it cannot select a
+        batch/member/operation or supply trusted lineage/a branch fence.
+        """
+        from dataclasses import replace
+
+        from pydantic import ValidationError
+        from sqlalchemy import select
+
+        from src.commands.contracts.integration import IntegrationResolveCandidateMemberArgs
+        from src.commands.principal import ExecutionPrincipal, principal_context
+        from src.database.tables import (
+            integration_candidate_member_results,
+            integration_candidate_resolutions,
+            integration_candidate_revisions,
+        )
+        from src.integration.candidates import (
+            CandidateAuthorizationError,
+            CandidateResolutionInput,
+            CandidateStaleAuthority,
+        )
+
+        try:
+            request = IntegrationResolveCandidateMemberArgs.model_validate(args)
+        except ValidationError as exc:
+            return _failure("invariant_error", f"invalid candidate member repair: {exc}")
+
+        principal = current_principal()
+        if (
+            principal is None
+            or principal.kind is not PrincipalKind.SESSION
+            or principal.session_id is None
+            or principal.session_instance_token is None
+        ):
+            return _failure(
+                "unauthorized", "candidate member repair requires an authenticated session"
+            )
+        session = await self.db.get_session(principal.session_id)
+        task_id = getattr(session, "task_id", None) if session is not None else None
+        if (
+            session is None
+            or task_id is None
+            or session.state not in {"starting", "running", "draining"}
+            or session.instance_token != principal.session_instance_token
+            or request.task_id not in (None, task_id)
+            or request.session_id not in (None, principal.session_id)
+            or request.project_id not in (None, session.project_id)
+            or principal.task_id not in (None, task_id)
+            or principal.project_id not in (None, session.project_id)
+        ):
+            return _failure("unauthorized", "candidate repair session identity is stale")
+
+        claim_error = await self._assert_session_owns(
+            task_id,
+            session_id=principal.session_id,
+            claim_epoch=request.claim_epoch,
+        )
+        if claim_error is not None:
+            outcome = "stale" if claim_error.get("result") == "stale_claim" else "unauthorized"
+            return _failure(outcome, str(claim_error.get("error") or "claim is stale"))
+        task = await self.db.get_task(task_id)
+        if (
+            task is None
+            or (session.lifecycle == "pool" and session.last_claim_epoch is None)
+            or (
+                session.last_claim_epoch is not None
+                and int(session.last_claim_epoch) != int(task.claim_epoch)
+            )
+        ):
+            return _failure("stale", "candidate repair claim is no longer current")
+
+        exact_principal: ExecutionPrincipal = replace(principal, task_id=task_id)
+        exact_values = {
+            "repair_task_id": task_id,
+            "repair_session_id": principal.session_id,
+            "repair_session_instance_token": principal.session_instance_token,
+            "resolved_head_sha": request.resolved_head_sha,
+            "resolved_tree_sha": request.resolved_tree_sha,
+        }
+        async with self.db._engine.connect() as conn:
+            exact_rows = (
+                await conn.execute(
+                    select(integration_candidate_resolutions).where(
+                        *(
+                            integration_candidate_resolutions.c[key] == value
+                            for key, value in exact_values.items()
+                        )
+                    )
+                )
+            ).mappings().all()
+        exact_rows = [
+            dict(row)
+            for row in exact_rows
+            if tuple(row["repair_commit_shas"]) == request.repair_commit_shas
+            and (
+                session.lifecycle != "pool"
+                or session.claim_phase_at is not None
+                and float(row["created_at"]) >= float(session.claim_phase_at)
+            )
+        ]
+        if len(exact_rows) > 1:
+            return _failure("invariant_error", "candidate repair identity is ambiguous")
+
+        scope = await self.db.get_repair_filing_scope(
+            task_id, session_id=principal.session_id
+        )
+        reservation = exact_rows[0] if exact_rows else None
+        if reservation is not None and reservation["state"] in {"pushed", "accepted"}:
+            batch = await self.db.get_integration_batch(reservation["batch_id"])
+            if batch is None:
+                return _failure("stale", "candidate repair batch is absent")
+            service = await self._integration_candidate_service(batch, repair_session=session)
+            try:
+                with principal_context(exact_principal):
+                    accepted = await service.accept_repair(reservation["id"])
+                continuation = None
+                if accepted.outcome in {"accepted", "already_accepted"}:
+                    continuation = await service.build(batch["id"])
+            except CandidateAuthorizationError as exc:
+                return _failure("unauthorized", str(exc))
+            except (CandidateStaleAuthority, StaleFence, BranchBusy) as exc:
+                return _failure("stale", str(exc))
+            except ValueError as exc:
+                return _failure("invariant_error", str(exc))
+            except (GitError, RuntimeError) as exc:
+                return _failure("runtime_error", str(exc))
+            return {
+                "success": accepted.outcome in {"accepted", "already_accepted"},
+                "outcome": accepted.outcome,
+                "reservation_id": reservation["id"],
+                "batch_id": reservation["batch_id"],
+                "revision": int(reservation["revision"]),
+                "member_ordinal": int(reservation["member_ordinal"]),
+                "partial_head_sha": reservation["partial_head_sha"],
+                "continuation": (
+                    continuation.model_dump(mode="json")
+                    if continuation is not None
+                    else None
+                ),
+            }
+
+        if (
+            scope is None
+            or not scope["active"]
+            or scope["writer_kind"] != "repair_delegate"
+            or scope["target_kind"] != "batch"
+            or scope["fence_token"] is None
+        ):
+            return _failure("unauthorized", "candidate repair writer authority is stale")
+
+        operation = await self.db.get_integration_operation(scope["operation_id"])
+        batch = (
+            await self.db.get_integration_batch(operation["batch_id"])
+            if operation is not None and operation.get("batch_id")
+            else None
+        )
+        if batch is None or batch["project_id"] != session.project_id:
+            return _failure("unauthorized", "candidate repair batch is outside the session")
+
+        async with self.db._engine.connect() as conn:
+            revision = (
+                await conn.execute(
+                    select(integration_candidate_revisions).where(
+                        integration_candidate_revisions.c.batch_id == batch["id"],
+                        integration_candidate_revisions.c.revision
+                        == batch["current_revision"],
+                    )
+                )
+            ).mappings().one_or_none()
+            member = None
+            if revision is not None:
+                member = (
+                    await conn.execute(
+                        select(integration_candidate_member_results).where(
+                            integration_candidate_member_results.c.batch_id == batch["id"],
+                            integration_candidate_member_results.c.revision
+                            == revision["revision"],
+                            integration_candidate_member_results.c.member_ordinal
+                            == revision["next_member_ordinal"],
+                        )
+                    )
+                ).mappings().one_or_none()
+        evidence = member["conflict_evidence"] if member is not None else None
+        if (
+            revision is None
+            or member is None
+            or member["result"] != "conflict"
+            or not evidence
+            or evidence.get("operation_id") != scope["operation_id"]
+            or int(evidence.get("revision", -1)) != int(revision["revision"])
+            or int(evidence.get("ordinal", -1)) != int(member["member_ordinal"])
+        ):
+            return _failure("stale", "the assigned candidate member is no longer conflicted")
+
+        fence = Fence(
+            target=BranchKey(
+                repository_id=batch["repository_id"], branch=batch["integration_branch"]
+            ),
+            owner_id=task_id,
+            token=int(scope["fence_token"]),
+        )
+        candidate_request = CandidateResolutionInput(
+            batch_id=batch["id"],
+            revision=int(revision["revision"]),
+            member_ordinal=int(member["member_ordinal"]),
+            operation_id=scope["operation_id"],
+            resolved_head_sha=request.resolved_head_sha,
+            resolved_tree_sha=request.resolved_tree_sha,
+            repair_commit_shas=request.repair_commit_shas,
+            fence=fence,
+        )
+        service = await self._integration_candidate_service(batch, repair_session=session)
+        try:
+            with principal_context(exact_principal):
+                reservation_id = await service.reserve_repair(candidate_request)
+                await service.push_repair(reservation_id, fence)
+                accepted = await service.accept_repair(reservation_id)
+            continuation = None
+            if accepted.outcome in {"accepted", "already_accepted"}:
+                continuation = await service.build(batch["id"])
+        except CandidateAuthorizationError as exc:
+            return _failure("unauthorized", str(exc))
+        except (CandidateStaleAuthority, StaleFence, BranchBusy) as exc:
+            return _failure("stale", str(exc))
+        except ValueError as exc:
+            return _failure("invariant_error", str(exc))
+        except (GitError, RuntimeError) as exc:
+            return _failure("runtime_error", str(exc))
+
+        return {
+            "success": accepted.outcome in {"accepted", "already_accepted"},
+            "outcome": accepted.outcome,
+            "reservation_id": reservation_id,
+            "batch_id": accepted.batch_id,
+            "revision": accepted.revision,
+            "member_ordinal": accepted.member_ordinal,
+            "partial_head_sha": evidence["partial_head_sha"],
+            "continuation": (
+                continuation.model_dump(mode="json") if continuation is not None else None
+            ),
+        }
 
     async def _cmd_delivery_receipts(self, args: dict) -> dict:
         from pydantic import ValidationError

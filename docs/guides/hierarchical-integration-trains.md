@@ -271,6 +271,33 @@ fallback.
 Successful integration/source branches are deleted by the default cleanup
 policy. Failed forensic work is retained for `604800` seconds by default.
 
+### Candidate-member conflict repair
+
+When ordered candidate construction conflicts on a reviewed member, the repair
+delegate's task description records the exact batch, candidate revision, member
+ordinal, partial head, and reviewed source range. Start from that partial head,
+resolve only the named member, and commit a linear non-merge repair. Do not push
+the integration branch directly. Instead, record the resolved head, tree, and
+ordered commit range and let AQ perform the reserved remote mutation and guarded
+handoff:
+
+```bash
+git rev-parse HEAD
+git rev-parse 'HEAD^{tree}'
+git rev-list --reverse PARTIAL_HEAD..HEAD
+aq integration resolve-candidate-member \
+  --resolved-head-sha RESOLVED_HEAD_SHA \
+  --resolved-tree-sha RESOLVED_TREE_SHA \
+  --repair-commit-sha REPAIR_COMMIT_SHA
+```
+
+Repeat `--repair-commit-sha` in the order printed by `git rev-list`. Inside a
+pool session the command reads the claim epoch from `.aq/claim.json`. Batch,
+revision, member, operation, workspace, partial head, and fence are deliberately
+not command options: the daemon derives them from the authenticated live repair
+assignment, verifies the exact remote resolution, and then continues with later
+batch members under the collector's next fence.
+
 ## 5. Human controls and rollback
 
 Status lists `repair`, `promotion`, `reconciliation`, and `cleanup_pending`

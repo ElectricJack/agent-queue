@@ -20,6 +20,7 @@ from src.database.tables import (
     integration_candidate_member_results,
     integration_candidate_publications,
     integration_candidate_ref_mutations,
+    integration_candidate_resolutions,
     integration_candidate_revisions,
     integration_repair_operations,
     integration_repair_stages,
@@ -2515,6 +2516,231 @@ async def test_instance_bound_repair_reservation_push_and_accept_once(
         assert rebuilt.outcome in {"built", "already_built"}
         assert _git(origin, "show", f"{rebuilt.head_sha}:shared.txt") == "first and second"
         assert _git(origin, "rev-parse", "refs/heads/root-1") == source_before
+
+
+async def test_command_handler_resolves_exact_assigned_candidate_member_and_replays(
+    command_handler_factory, tmp_path
+):
+    """The public command derives authority, accepts once, then resumes later members."""
+    from src.commands.principal import ExecutionPrincipal, PrincipalKind, principal_context
+    from src.git.github_app import GitHubRepositoryBinding
+    from src.integration.candidates import CandidateService
+    from src.integration.models import BranchKey, Fence
+    from src.integration.ownership import BranchOwnership
+    from src.integration.repair import RepairService
+    from src.models import TaskStatus
+    from src.profiles.capabilities import CapabilityPolicy
+
+    handler = await command_handler_factory()
+    db = handler.db
+    await db.create_profile(AgentProfile(id="repairer", name="Repairer"))
+    await db.create_profile(AgentProfile(id="debugger", name="Debugger"))
+    await db.create_project(Project(id="p", name="project"))
+    origin, work, base, members = _make_conflicting_origin(tmp_path)
+    await db.create_repo(
+        RepoConfig(
+            id="repo",
+            project_id="p",
+            source_type=RepoSourceType.CLONE,
+            url=str(origin),
+            default_branch="main",
+        )
+    )
+    await db.update_project(
+        "p",
+        hierarchical_integration_mode="train",
+        integration_repository_id="repo",
+        hierarchical_integration_policy=_policy(),
+    )
+    async with db.immediate() as conn:
+        await conn.execute(
+            insert(playbook_artifacts).values(
+                **_artifact().model_dump(),
+                scope="project",
+                scope_identifier="p",
+                profile_fingerprint="",
+                path="/tmp/task9b1-command-artifact",
+                size_bytes=1,
+                validation="{}",
+                created_at=1.0,
+            )
+        )
+    await _seed_batch(db, members=members, base_sha=base)
+    app = _AppClient(origin)
+    app.repository = GitHubRepositoryBinding(repository_id=9, full_name="example/repo")
+
+    async def release_like_orchestrator(row: dict) -> bool:
+        async with db.immediate() as conn:
+            changed = await conn.execute(
+                update(integration_branch_owners)
+                .where(
+                    integration_branch_owners.c.id == row["id"],
+                    integration_branch_owners.c.fence_token == row["fence_token"],
+                    integration_branch_owners.c.handoff_state == "handoff_pending",
+                )
+                .values(
+                    handoff_state="released",
+                    session_id=None,
+                    workspace_id=None,
+                    confirmed_workspace_id=row["workspace_id"],
+                )
+            )
+        return changed.rowcount == 1
+
+    ownership = BranchOwnership(db, confirm_handoff=release_like_orchestrator)
+    service = CandidateService(
+        db,
+        data_dir=tmp_path / "command-data",
+        git_manager=_LocalPushGit(origin),
+        forge_provider=_AuditForge(),
+        app_client=app,
+        repair_service=RepairService(db, route_validator=lambda *_: True),
+        branch_ownership=ownership,
+        clock=lambda: 100.0,
+    )
+    conflict = await service.build("batch")
+    assert conflict.outcome == "conflict"
+    repair_task_id = "repair-repair-batch-batch-0"
+    repair_task = await db.get_task(repair_task_id)
+    assert "## Candidate member conflict" in repair_task.description
+    assert "Batch: batch" in repair_task.description
+    assert "Candidate revision: 0" in repair_task.description
+    assert "Member ordinal: 1" in repair_task.description
+    assert f"Partial head: {conflict.head_sha}" in repair_task.description
+    assert "aq integration resolve-candidate-member" in repair_task.description
+    await db.transition_task(repair_task_id, TaskStatus.IN_PROGRESS)
+    workspace_id = "command-candidate-repair-workspace"
+    session_id = "command-candidate-repair-session"
+    async with db.immediate() as conn:
+        await conn.execute(
+            insert(workspaces).values(
+                id=workspace_id,
+                project_id="p",
+                workspace_path=str(work),
+                source_type="link",
+                locked_by_task_id=repair_task_id,
+                enabled=True,
+                created_at=100.0,
+            )
+        )
+        await conn.execute(
+            update(integration_batches)
+            .where(integration_batches.c.id == "batch")
+            .values(tested_candidate_sha=conflict.head_sha)
+        )
+    await db.create_session(
+        SessionRecord(
+            id=session_id,
+            task_id=repair_task_id,
+            project_id="p",
+            profile_id="repairer",
+            harness="fake",
+            provider="fake",
+            name="candidate-command-repair",
+            lifecycle="pool",
+            state="running",
+            work_dir=str(work),
+            epoch="test",
+            instance_token="instance-1",
+            started_at=100.0,
+            claim_phase="active",
+            claim_phase_at=99.0,
+            last_claim_epoch=repair_task.claim_epoch,
+        )
+    )
+    owner = await ownership.get_owner(BranchKey(repository_id="repo", branch=conflict.branch))
+    repair_fence = Fence(
+        target={"repository_id": "repo", "branch": conflict.branch},
+        owner_id=repair_task_id,
+        token=owner["fence_token"],
+    )
+    await ownership.attach(repair_fence, session_id, workspace_id, expected_role="repair")
+    _git(work, "fetch", str(origin), conflict.branch)
+    _git(work, "switch", "--detach", "FETCH_HEAD")
+    (work / "shared.txt").write_text("first and second\n")
+    _git(work, "add", "shared.txt")
+    _git(work, "commit", "-m", "resolve exact command candidate conflict")
+    resolved = _git(work, "rev-parse", "HEAD")
+    tree = _git(work, "rev-parse", "HEAD^{tree}")
+    args = {
+        "resolved_head_sha": resolved,
+        "resolved_tree_sha": tree,
+        "repair_commit_shas": [resolved],
+        "claim_epoch": repair_task.claim_epoch,
+    }
+    policy = CapabilityPolicy.from_namespaces(
+        aq_commands=["integration_resolve_candidate_member"]
+    )
+    principal = ExecutionPrincipal(
+        kind=PrincipalKind.SESSION,
+        policy=policy,
+        session_id=session_id,
+        session_instance_token="instance-1",
+        task_id=None,
+        project_id="p",
+        profile_id="repairer",
+    )
+    handler.orchestrator.integration_candidate_service = service
+
+    local = await handler.execute("integration_resolve_candidate_member", args)
+    with principal_context(replace(principal, session_instance_token="wrong-instance")):
+        wrong_instance = await handler.execute("integration_resolve_candidate_member", args)
+    with principal_context(principal):
+        wrong_epoch = await handler.execute(
+            "integration_resolve_candidate_member",
+            args | {"claim_epoch": repair_task.claim_epoch + 1},
+        )
+        supplied_fence = await handler.execute(
+            "integration_resolve_candidate_member",
+            args | {"fence": repair_fence.model_dump(mode="json")},
+        )
+        accepted = await handler.execute("integration_resolve_candidate_member", args)
+        replay = await handler.execute("integration_resolve_candidate_member", args)
+        async with db.immediate() as conn:
+            await conn.execute(
+                update(tasks)
+                .where(tasks.c.id == repair_task_id)
+                .values(claim_epoch=repair_task.claim_epoch + 1)
+            )
+            await conn.execute(
+                update(sessions)
+                .where(sessions.c.id == session_id)
+                .values(
+                    last_claim_epoch=repair_task.claim_epoch + 1,
+                    claim_phase_at=101.0,
+                )
+            )
+        old_claim_reuse = await handler.execute(
+            "integration_resolve_candidate_member",
+            args | {"claim_epoch": repair_task.claim_epoch + 1},
+        )
+
+    assert local["outcome"] == "unauthorized"
+    assert wrong_instance["outcome"] == "unauthorized"
+    assert wrong_epoch["outcome"] == "stale"
+    assert supplied_fence["outcome"] == "invariant_error"
+    assert accepted["outcome"] == "accepted"
+    assert replay["outcome"] == "already_accepted"
+    assert old_claim_reuse["outcome"] == "unauthorized"
+    assert accepted["reservation_id"] == replay["reservation_id"]
+    assert accepted["batch_id"] == "batch"
+    assert accepted["member_ordinal"] == 1
+    assert accepted["partial_head_sha"] == conflict.head_sha
+    assert accepted["continuation"]["outcome"] in {"built", "already_built"}
+    assert accepted["continuation"]["revision"] == 1
+    for member in members:
+        _git(origin, "merge-base", "--is-ancestor", member[1], accepted["continuation"]["head_sha"])
+    batch = await db.get_integration_batch("batch")
+    assert batch["tested_candidate_sha"] is None
+    async with db._engine.connect() as conn:
+        resolution = (
+            await conn.execute(select(integration_candidate_resolutions))
+        ).mappings().one()
+    assert resolution["state"] == "accepted"
+    assert resolution["repair_task_id"] == repair_task_id
+    assert resolution["repair_session_id"] == session_id
+    assert resolution["repair_session_instance_token"] == "instance-1"
+    await db.close()
 
 
 async def test_nonempty_build_requires_authenticated_repository_dependencies(db, tmp_path):

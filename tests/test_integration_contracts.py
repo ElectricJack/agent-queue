@@ -252,6 +252,7 @@ def test_unimplemented_integration_operations_are_not_registered():
         "integration_reconcile_promotion",
         "integration_resolve_conflict",
         "integration_push_conflict_resolution",
+        "integration_resolve_candidate_member",
         "integration_promote_main",
         "integration_build_candidate",
         "integration_ci_evidence",
@@ -446,6 +447,27 @@ def test_promotion_contracts_declare_retry_and_domain_identity():
         "stale",
     }
     assert set(push.args_model.model_fields) == {"intent_id", "fence"}
+    candidate_member = registry.require(
+        "integration_resolve_candidate_member"
+    ).contract.execution
+    assert candidate_member.idempotency.mode == "natural"
+    assert candidate_member.retry_safe is True
+    assert set(candidate_member.args_model.model_fields) == {
+        "resolved_head_sha",
+        "resolved_tree_sha",
+        "repair_commit_shas",
+        "claim_epoch",
+        "task_id",
+        "session_id",
+        "project_id",
+    }
+    assert {outcome.name for outcome in candidate_member.outcomes} == {
+        "accepted",
+        "already_accepted",
+        "wait",
+        "stale",
+        "invariant_error",
+    }
     root = registry.require("integration_promote_main").contract.execution
     assert root.idempotency.mode == "natural"
     assert set(root.args_model.model_fields) == {"batch_id", "revision"}
