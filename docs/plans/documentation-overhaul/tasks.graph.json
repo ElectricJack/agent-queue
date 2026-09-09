@@ -1,0 +1,440 @@
+{
+  "version": 1,
+  "parent": {
+    "title": "Epic: Complete beginner-friendly GitHub documentation and module reference",
+    "description": "Overhaul all Agent Queue documentation for new users with no prior project knowledge. Deliver a coherent hierarchy, practical onboarding, accurate current-behavior guides and exhaustive source-module coverage. Plan: docs/plans/documentation-overhaul/README.md. All child work uses standard-high without pinned profiles. Documentation changes must be delivered through configured AQ integration; no legacy per-task/final-review tickets.",
+    "priority": 60
+  },
+  "nodes": [
+    {
+      "key": "foundation",
+      "title": "Define beginner documentation hierarchy and complete module coverage inventory",
+      "description": "Audience: new users who know nothing about AQ. Explain purpose and terminology before implementation details; include a realistic example, inputs/outputs, state ownership, common failures/recovery, related pages, source links and focused test references. Describe implemented behavior on current main, distinguishing configured local policy, shipped defaults, optional compatibility and proposed work. Use GitHub-rendered Markdown, relative links and Mermaid where helpful. Never present old review/triage/Discord-control flows as current defaults. Do not change runtime behavior as part of this documentation ticket. Use focused local documentation checks; no full application test suite or repeated CI runs. Follow the foundation ticket's page ownership and navigation contract; write your own module-coverage shard rather than competing over shared indexes. Each production module in your scope must have a named catalog entry with purpose, source path, owning component and documentation link, even when private helpers share a component page. Include nested modules, not just top-level packages. Re-read source when implementing because main is active. Use standard-high without a provider/profile pin.\n\nScope: All tracked production modules in src/, dashboard/src/, packages/, plus migrations/, scripts/, configuration, shipped prompts and GitHub workflows. Inventory current docs, broken links, duplicate pages and removed features. Planning snapshot is docs/plans/documentation-overhaul/module-inventory.json; refresh it against implementation HEAD.\n\nDeliverables: docs/README.md skeleton; documentation map and page ownership contract; exhaustive module-to-page/child-owner manifest; glossary; style and runnable-example rules. Top-level navigation: Start here \u2192 First task \u2192 Core concepts \u2192 How-to guides \u2192 Reference/module catalog \u2192 Contributing \u2192 Historical material.",
+      "acceptance": [
+        "Every tracked production module has an assigned documentation owner; nested modules and root-level helpers are included, with no unassigned catch-all left unexplained.",
+        "Publish a browsable tree and beginner reading order; separate user workflows from contributor internals and historical specs.",
+        "Assign distinct page paths and coverage shards to sibling tickets; final navigation assembly owns shared indexes after the foundation.",
+        "Record current inaccuracies, including automatic reviewer creation, old triage workflow, Discord control commands and obsolete runtime/migration instructions."
+      ],
+      "needs": [],
+      "intelligence_class": "standard-high",
+      "task_type": "docs",
+      "priority": 60
+    },
+    {
+      "key": "quickstart",
+      "title": "Write installation and first-task tutorial for a completely new user",
+      "description": "Audience: new users who know nothing about AQ. Explain purpose and terminology before implementation details; include a realistic example, inputs/outputs, state ownership, common failures/recovery, related pages, source links and focused test references. Describe implemented behavior on current main, distinguishing configured local policy, shipped defaults, optional compatibility and proposed work. Use GitHub-rendered Markdown, relative links and Mermaid where helpful. Never present old review/triage/Discord-control flows as current defaults. Do not change runtime behavior as part of this documentation ticket. Use focused local documentation checks; no full application test suite or repeated CI runs. Follow the foundation ticket's page ownership and navigation contract; write your own module-coverage shard rather than competing over shared indexes. Each production module in your scope must have a named catalog entry with purpose, source path, owning component and documentation link, even when private helpers share a component page. Include nested modules, not just top-level packages. Re-read source when implementing because main is active. Use standard-high without a provider/profile pin.\n\nScope: Prerequisites, supported operating systems and WSL boundaries, PostgreSQL setup, provider/harness authentication, setup wizard, starting/stopping AQ, dashboard access, project onboarding and first isolated task.\n\nDeliverables: docs/tutorials/install.md and first-task.md, including a small disposable example repository and expected output.",
+      "acceptance": [
+        "A new user can install, launch, create a project/task, observe a worker, inspect results and understand delivery without reading internal specs.",
+        "Explain credentials and where data is stored without publishing operator secrets, absolute personal paths or unsafe worker database commands.",
+        "Verify steps against CLI help/current configuration in an isolated environment; document prerequisites, expected output and cleanup."
+      ],
+      "needs": [
+        "foundation"
+      ],
+      "intelligence_class": "standard-high",
+      "task_type": "docs",
+      "priority": 60
+    },
+    {
+      "key": "readme",
+      "title": "Rewrite GitHub README and newcomer overview around current behavior",
+      "description": "Audience: new users who know nothing about AQ. Explain purpose and terminology before implementation details; include a realistic example, inputs/outputs, state ownership, common failures/recovery, related pages, source links and focused test references. Describe implemented behavior on current main, distinguishing configured local policy, shipped defaults, optional compatibility and proposed work. Use GitHub-rendered Markdown, relative links and Mermaid where helpful. Never present old review/triage/Discord-control flows as current defaults. Do not change runtime behavior as part of this documentation ticket. Use focused local documentation checks; no full application test suite or repeated CI runs. Follow the foundation ticket's page ownership and navigation contract; write your own module-coverage shard rather than competing over shared indexes. Each production module in your scope must have a named catalog entry with purpose, source path, owning component and documentation link, even when private helpers share a component page. Include nested modules, not just top-level packages. Re-read source when implementing because main is active. Use standard-high without a provider/profile pin.\n\nScope: README.md, project positioning, screenshots/diagrams, supported surfaces, prerequisites, navigation and current feature limitations.\n\nDeliverables: A short GitHub landing page with one clear start link, current workflow diagram and links to authoritative deeper pages.",
+      "acceptance": [
+        "Remove stale default per-task/final reviews, triage-task routing, Discord command creation and SQLite implications.",
+        "Explain what AQ does, who it is for, and what happens from task creation through integration in plain language.",
+        "Link to the verified quickstart, glossary and hierarchical documentation home; avoid duplicating long reference content."
+      ],
+      "needs": [
+        "foundation",
+        "quickstart"
+      ],
+      "intelligence_class": "standard-high",
+      "task_type": "docs",
+      "priority": 60
+    },
+    {
+      "key": "architecture",
+      "title": "Document system architecture, startup and service boundaries",
+      "description": "Audience: new users who know nothing about AQ. Explain purpose and terminology before implementation details; include a realistic example, inputs/outputs, state ownership, common failures/recovery, related pages, source links and focused test references. Describe implemented behavior on current main, distinguishing configured local policy, shipped defaults, optional compatibility and proposed work. Use GitHub-rendered Markdown, relative links and Mermaid where helpful. Never present old review/triage/Discord-control flows as current defaults. Do not change runtime behavior as part of this documentation ticket. Use focused local documentation checks; no full application test suite or repeated CI runs. Follow the foundation ticket's page ownership and navigation contract; write your own module-coverage shard rather than competing over shared indexes. Each production module in your scope must have a named catalog entry with purpose, source path, owning component and documentation link, even when private helpers share a component page. Include nested modules, not just top-level packages. Re-read source when implementing because main is active. Use standard-high without a provider/profile pin.\n\nScope: src/main.py, src/services/, src/runtimes/, src/_compat.py, composition, daemon startup/shutdown and cross-component contracts.\n\nDeliverables: docs/concepts/architecture.md; module reference for startup/services/runtime registry; architecture and sequence diagrams.",
+      "acceptance": [
+        "Explain command \u2192 durable state \u2192 scheduler/session \u2192 integration flow and distinguish daemon, worker, supervisor and user responsibilities.",
+        "Document each module in scope and injected extension seams; explicitly note that the runtime registry is not evidence of in-tree runtime implementations.",
+        "Link diagrams to actual modules and cover startup recovery/shutdown behavior and service ownership."
+      ],
+      "needs": [
+        "foundation"
+      ],
+      "intelligence_class": "standard-high",
+      "task_type": "docs",
+      "priority": 60
+    },
+    {
+      "key": "tasks",
+      "title": "Document task lifecycle, epics, dependencies, formulas and graph layout",
+      "description": "Audience: new users who know nothing about AQ. Explain purpose and terminology before implementation details; include a realistic example, inputs/outputs, state ownership, common failures/recovery, related pages, source links and focused test references. Describe implemented behavior on current main, distinguishing configured local policy, shipped defaults, optional compatibility and proposed work. Use GitHub-rendered Markdown, relative links and Mermaid where helpful. Never present old review/triage/Discord-control flows as current defaults. Do not change runtime behavior as part of this documentation ticket. Use focused local documentation checks; no full application test suite or repeated CI runs. Follow the foundation ticket's page ownership and navigation contract; write your own module-coverage shard rather than competing over shared indexes. Each production module in your scope must have a named catalog entry with purpose, source path, owning component and documentation link, even when private helpers share a component page. Include nested modules, not just top-level packages. Re-read source when implementing because main is active. Use standard-high without a provider/profile pin.\n\nScope: src/task_graph/ (including layout and formulas), src/state_machine.py, src/deliverables.py, src/task_names.py, src/task_summary.py, src/explain.py and task lifecycle concepts.\n\nDeliverables: Task/epic tutorial, state/dependency reference, graph/formula/layout module pages and worked task-graph examples.",
+      "acceptance": [
+        "Explain READY versus assigned/preparing/active versus completed versus delivered; distinguish paused, blocked, failed and archived/deleted.",
+        "Provide practical create/edit/dependency/close/retry examples and describe deliverables evidence, deletion and branch preservation.",
+        "Map every graph/layout module and show hierarchy versus execution dependencies without implying every parent must run as a worker."
+      ],
+      "needs": [
+        "foundation"
+      ],
+      "intelligence_class": "standard-high",
+      "task_type": "docs",
+      "priority": 60
+    },
+    {
+      "key": "scheduler",
+      "title": "Document scheduling, worker pools and resource limits",
+      "description": "Audience: new users who know nothing about AQ. Explain purpose and terminology before implementation details; include a realistic example, inputs/outputs, state ownership, common failures/recovery, related pages, source links and focused test references. Describe implemented behavior on current main, distinguishing configured local policy, shipped defaults, optional compatibility and proposed work. Use GitHub-rendered Markdown, relative links and Mermaid where helpful. Never present old review/triage/Discord-control flows as current defaults. Do not change runtime behavior as part of this documentation ticket. Use focused local documentation checks; no full application test suite or repeated CI runs. Follow the foundation ticket's page ownership and navigation contract; write your own module-coverage shard rather than competing over shared indexes. Each production module in your scope must have a named catalog entry with purpose, source path, owning component and documentation link, even when private helpers share a component page. Include nested modules, not just top-level packages. Re-read source when implementing because main is active. Use standard-high without a provider/profile pin.\n\nScope: src/orchestrator/, src/scheduler.py, src/schedule.py, src/timer_service.py, src/pool_claims.py, src/resources/. Workspace-specific internals cross-link to workspaces ticket.\n\nDeliverables: Scheduling/pools concepts and operator guide; full orchestrator/resource module catalog.",
+      "acceptance": [
+        "Explain fleet versus project limits, desired versus running capacity, manual roster sizing, claim preparation and backoff.",
+        "Show why work can be READY with no running worker, how to diagnose it and which recovery path applies.",
+        "Document test-slot/resource gating and throughput constraints without claiming hundreds of tasks/day were benchmarked."
+      ],
+      "needs": [
+        "foundation"
+      ],
+      "intelligence_class": "standard-high",
+      "task_type": "docs",
+      "priority": 60
+    },
+    {
+      "key": "routing",
+      "title": "Document agents, profiles, intelligence classes and assignment routing",
+      "description": "Audience: new users who know nothing about AQ. Explain purpose and terminology before implementation details; include a realistic example, inputs/outputs, state ownership, common failures/recovery, related pages, source links and focused test references. Describe implemented behavior on current main, distinguishing configured local policy, shipped defaults, optional compatibility and proposed work. Use GitHub-rendered Markdown, relative links and Mermaid where helpful. Never present old review/triage/Discord-control flows as current defaults. Do not change runtime behavior as part of this documentation ticket. Use focused local documentation checks; no full application test suite or repeated CI runs. Follow the foundation ticket's page ownership and navigation contract; write your own module-coverage shard rather than competing over shared indexes. Each production module in your scope must have a named catalog entry with purpose, source path, owning component and documentation link, even when private helpers share a component page. Include nested modules, not just top-level packages. Re-read source when implementing because main is active. Use standard-high without a provider/profile pin.\n\nScope: src/agents/, src/profiles/, src/intelligence_classes/, src/assignment_routing.py, src/agent_names.py, override precedence and capability resolution.\n\nDeliverables: User guide to workers/profiles/classes; routing decision diagram; profile and class reference with examples.",
+      "acceptance": [
+        "Explain that intelligence class, harness, provider, model, agent identity and task profile pin are different concepts.",
+        "Show standard-high as current operator development policy, exceptionally justified deep-high, trivial-work exceptions, explicit pins and how clearing pins reroutes.",
+        "Document class/profile compatibility, disabled pools, roster reuse, project defaults and local versus shipped policy; inventory every module."
+      ],
+      "needs": [
+        "foundation"
+      ],
+      "intelligence_class": "standard-high",
+      "task_type": "docs",
+      "priority": 60
+    },
+    {
+      "key": "sessions",
+      "title": "Document worker sessions, harnesses, terminals and claim recovery",
+      "description": "Audience: new users who know nothing about AQ. Explain purpose and terminology before implementation details; include a realistic example, inputs/outputs, state ownership, common failures/recovery, related pages, source links and focused test references. Describe implemented behavior on current main, distinguishing configured local policy, shipped defaults, optional compatibility and proposed work. Use GitHub-rendered Markdown, relative links and Mermaid where helpful. Never present old review/triage/Discord-control flows as current defaults. Do not change runtime behavior as part of this documentation ticket. Use focused local documentation checks; no full application test suite or repeated CI runs. Follow the foundation ticket's page ownership and navigation contract; write your own module-coverage shard rather than competing over shared indexes. Each production module in your scope must have a named catalog entry with purpose, source path, owning component and documentation link, even when private helpers share a component page. Include nested modules, not just top-level packages. Re-read source when implementing because main is active. Use standard-high without a provider/profile pin.\n\nScope: src/sessions/ including transcripts/default harnesses, src/panes/, src/claim_file.py, src/env_scrub.py and dashboard terminal integration.\n\nDeliverables: Session lifecycle and troubleshooting guide, harness reference, terminal/claim module pages.",
+      "acceptance": [
+        "Explain process/session/attempt/claim identity and epoch fencing in beginner terms with source links for contributors.",
+        "Cover adoption on restart, idle loops, pause/drain/stop, checkpoint preservation, stale ownership and slot_reset_failed recovery using current commands.",
+        "Describe platform/harness differences and transcript privacy; do not imply a DB state alone always proves a process stopped."
+      ],
+      "needs": [
+        "foundation"
+      ],
+      "intelligence_class": "standard-high",
+      "task_type": "docs",
+      "priority": 60
+    },
+    {
+      "key": "workspaces",
+      "title": "Document projects, Git branches, workspaces and worktree slots",
+      "description": "Audience: new users who know nothing about AQ. Explain purpose and terminology before implementation details; include a realistic example, inputs/outputs, state ownership, common failures/recovery, related pages, source links and focused test references. Describe implemented behavior on current main, distinguishing configured local policy, shipped defaults, optional compatibility and proposed work. Use GitHub-rendered Markdown, relative links and Mermaid where helpful. Never present old review/triage/Discord-control flows as current defaults. Do not change runtime behavior as part of this documentation ticket. Use focused local documentation checks; no full application test suite or repeated CI runs. Follow the foundation ticket's page ownership and navigation contract; write your own module-coverage shard rather than competing over shared indexes. Each production module in your scope must have a named catalog entry with purpose, source path, owning component and documentation link, even when private helpers share a component page. Include nested modules, not just top-level packages. Re-read source when implementing because main is active. Use standard-high without a provider/profile pin.\n\nScope: src/projects/, src/git/, src/workspace_names.py, src/workspace_spec_watcher.py and workspace/worktree portions of src/orchestrator/.\n\nDeliverables: Project/workspace setup guide and source-module reference, with diagrams of base repo, slot, task branch and integration target.",
+      "acceptance": [
+        "Explain project/repository/workspace/kind/slot/branch distinctions and supported platform paths.",
+        "Cover resume baselines, conflicts, branch preservation, safe detach/reuse, ownership, cleanup and recovery with concrete examples.",
+        "Verify public inventory/doctor/release/reap command syntax; no blind resets or deleting unpublished work."
+      ],
+      "needs": [
+        "foundation"
+      ],
+      "intelligence_class": "standard-high",
+      "task_type": "docs",
+      "priority": 60
+    },
+    {
+      "key": "integration",
+      "title": "Document development integration and optional strict modes accurately",
+      "description": "Audience: new users who know nothing about AQ. Explain purpose and terminology before implementation details; include a realistic example, inputs/outputs, state ownership, common failures/recovery, related pages, source links and focused test references. Describe implemented behavior on current main, distinguishing configured local policy, shipped defaults, optional compatibility and proposed work. Use GitHub-rendered Markdown, relative links and Mermaid where helpful. Never present old review/triage/Discord-control flows as current defaults. Do not change runtime behavior as part of this documentation ticket. Use focused local documentation checks; no full application test suite or repeated CI runs. Follow the foundation ticket's page ownership and navigation contract; write your own module-coverage shard rather than competing over shared indexes. Each production module in your scope must have a named catalog entry with purpose, source path, owning component and documentation link, even when private helpers share a component page. Include nested modules, not just top-level packages. Re-read source when implementing because main is active. Use standard-high without a provider/profile pin.\n\nScope: src/integration/, src/integrations/, integration policies, durable journals, source manifests, local validation, publication and recovery.\n\nDeliverables: Beginner integration guide; complete integration module reference; troubleshooting and migration pages.",
+      "acceptance": [
+        "Explain source completion versus delivery, focused validation, ancestry-preserving publication and what happens on conflicts or crashes.",
+        "Describe development mode as the configured path; label hierarchy/train and old verifier/repair flows as optional compatibility rather than default requirements.",
+        "Document adoption/cancel-preserving, stopped-writer preservation, bounded slot-reset retries and recovery commands; never fabricate CI evidence."
+      ],
+      "needs": [
+        "foundation"
+      ],
+      "intelligence_class": "standard-high",
+      "task_type": "docs",
+      "priority": 60
+    },
+    {
+      "key": "playbooks",
+      "title": "Document Playbooks V2, events, gates and authoring",
+      "description": "Audience: new users who know nothing about AQ. Explain purpose and terminology before implementation details; include a realistic example, inputs/outputs, state ownership, common failures/recovery, related pages, source links and focused test references. Describe implemented behavior on current main, distinguishing configured local policy, shipped defaults, optional compatibility and proposed work. Use GitHub-rendered Markdown, relative links and Mermaid where helpful. Never present old review/triage/Discord-control flows as current defaults. Do not change runtime behavior as part of this documentation ticket. Use focused local documentation checks; no full application test suite or repeated CI runs. Follow the foundation ticket's page ownership and navigation contract; write your own module-coverage shard rather than competing over shared indexes. Each production module in your scope must have a named catalog entry with purpose, source path, owning component and documentation link, even when private helpers share a component page. Include nested modules, not just top-level packages. Re-read source when implementing because main is active. Use standard-high without a provider/profile pin.\n\nScope: src/playbooks/ including executors, src/event_bus.py, src/event_schemas.py, src/workflow_pipeline_view.py, src/workflow_stage_resume_handler.py, src/orphan_workflow_recovery.py and shipped playbook sources/artifacts.\n\nDeliverables: Playbook concepts, authoring tutorial, event/step/activation reference and module catalog.",
+      "acceptance": [
+        "Explain source versus compiled artifact versus activation versus run, and show validation/import/activation and debugging.",
+        "Document current default assignment routing and spec/proposal pipeline; automatic per-task/final reviews are removed from configured default policy.",
+        "Distinguish human gates from task dependencies, legacy workflow compatibility from V2 and example playbooks from installed active policy."
+      ],
+      "needs": [
+        "foundation"
+      ],
+      "intelligence_class": "standard-high",
+      "task_type": "docs",
+      "priority": 60
+    },
+    {
+      "key": "cli",
+      "title": "Document the full AQ CLI, command layer, contracts and agent-facing tools",
+      "description": "Audience: new users who know nothing about AQ. Explain purpose and terminology before implementation details; include a realistic example, inputs/outputs, state ownership, common failures/recovery, related pages, source links and focused test references. Describe implemented behavior on current main, distinguishing configured local policy, shipped defaults, optional compatibility and proposed work. Use GitHub-rendered Markdown, relative links and Mermaid where helpful. Never present old review/triage/Discord-control flows as current defaults. Do not change runtime behavior as part of this documentation ticket. Use focused local documentation checks; no full application test suite or repeated CI runs. Follow the foundation ticket's page ownership and navigation contract; write your own module-coverage shard rather than competing over shared indexes. Each production module in your scope must have a named catalog entry with purpose, source path, owning component and documentation link, even when private helpers share a component page. Include nested modules, not just top-level packages. Re-read source when implementing because main is active. Use standard-high without a provider/profile pin.\n\nScope: src/cli/, src/commands/ including contracts, src/tools/, src/prime/, src/known_tools.py, src/surface_schema.py and command discovery.\n\nDeliverables: CLI quick reference and full command-group reference, examples, exit/error semantics, command/contract/tool module catalog.",
+      "acceptance": [
+        "Cover every currently exposed command group and link its canonical --help or generated inventory; identify obsolete aliases.",
+        "Explain scope/authority, JSON envelopes, null-clearing flags, long-running commands, useful recovery commands and worker versus operator workflows.",
+        "Validate command examples via current help/schema and disposable smoke cases; reconcile docs/reference/cli-command-inventory.*."
+      ],
+      "needs": [
+        "foundation"
+      ],
+      "intelligence_class": "standard-high",
+      "task_type": "docs",
+      "priority": 60
+    },
+    {
+      "key": "api",
+      "title": "Document REST, WebSocket and generated Python/TypeScript clients",
+      "description": "Audience: new users who know nothing about AQ. Explain purpose and terminology before implementation details; include a realistic example, inputs/outputs, state ownership, common failures/recovery, related pages, source links and focused test references. Describe implemented behavior on current main, distinguishing configured local policy, shipped defaults, optional compatibility and proposed work. Use GitHub-rendered Markdown, relative links and Mermaid where helpful. Never present old review/triage/Discord-control flows as current defaults. Do not change runtime behavior as part of this documentation ticket. Use focused local documentation checks; no full application test suite or repeated CI runs. Follow the foundation ticket's page ownership and navigation contract; write your own module-coverage shard rather than competing over shared indexes. Each production module in your scope must have a named catalog entry with purpose, source path, owning component and documentation link, even when private helpers share a component page. Include nested modules, not just top-level packages. Re-read source when implementing because main is active. Use standard-high without a provider/profile pin.\n\nScope: src/api/ including models/routers, openapi.json, packages/aq-client/, packages/aq-ts-client/ and dashboard API transport integration.\n\nDeliverables: API overview, authentication/error/pagination/events guide, SDK quickstarts and module/package catalog.",
+      "acceptance": [
+        "Provide minimal working read/create/status examples using current public API and generated clients.",
+        "Map every API module and SDK resource/model family to authoritative generated schema without hand-editing generated code.",
+        "Explain source-of-truth generation, regeneration and version compatibility; separate WebSocket events from REST requests."
+      ],
+      "needs": [
+        "foundation"
+      ],
+      "intelligence_class": "standard-high",
+      "task_type": "docs",
+      "priority": 60
+    },
+    {
+      "key": "dashboard",
+      "title": "Document the dashboard for users and its frontend modules for contributors",
+      "description": "Audience: new users who know nothing about AQ. Explain purpose and terminology before implementation details; include a realistic example, inputs/outputs, state ownership, common failures/recovery, related pages, source links and focused test references. Describe implemented behavior on current main, distinguishing configured local policy, shipped defaults, optional compatibility and proposed work. Use GitHub-rendered Markdown, relative links and Mermaid where helpful. Never present old review/triage/Discord-control flows as current defaults. Do not change runtime behavior as part of this documentation ticket. Use focused local documentation checks; no full application test suite or repeated CI runs. Follow the foundation ticket's page ownership and navigation contract; write your own module-coverage shard rather than competing over shared indexes. Each production module in your scope must have a named catalog entry with purpose, source path, owning component and documentation link, even when private helpers share a component page. Include nested modules, not just top-level packages. Re-read source when implementing because main is active. Use standard-high without a provider/profile pin.\n\nScope: dashboard/src/ pages/components/hooks/api/ws/shell/panes, src/editor/ and build/dev entry points.\n\nDeliverables: Dashboard tour with current images where useful; frontend architecture, page/component catalog and troubleshooting.",
+      "acceptance": [
+        "Walk through projects, tasks/graph, workers/terminals, files/diffs, playbooks, metrics and settings using current UI labels.",
+        "Map every frontend production module to a page/component family with its role, API dependencies and tests.",
+        "Explain backend versus Vite/production assets, rebuilding, refreshing and diagnosing a stale dashboard."
+      ],
+      "needs": [
+        "foundation"
+      ],
+      "intelligence_class": "standard-high",
+      "task_type": "docs",
+      "priority": 60
+    },
+    {
+      "key": "database",
+      "title": "Document database schema, query modules, migrations and data lifecycle",
+      "description": "Audience: new users who know nothing about AQ. Explain purpose and terminology before implementation details; include a realistic example, inputs/outputs, state ownership, common failures/recovery, related pages, source links and focused test references. Describe implemented behavior on current main, distinguishing configured local policy, shipped defaults, optional compatibility and proposed work. Use GitHub-rendered Markdown, relative links and Mermaid where helpful. Never present old review/triage/Discord-control flows as current defaults. Do not change runtime behavior as part of this documentation ticket. Use focused local documentation checks; no full application test suite or repeated CI runs. Follow the foundation ticket's page ownership and navigation contract; write your own module-coverage shard rather than competing over shared indexes. Each production module in your scope must have a named catalog entry with purpose, source path, owning component and documentation link, even when private helpers share a component page. Include nested modules, not just top-level packages. Re-read source when implementing because main is active. Use standard-high without a provider/profile pin.\n\nScope: src/database/ including queries/adapters, src/models.py, migrations/ and schema setup/guard mechanisms.\n\nDeliverables: Database concepts/ER diagrams, table-family reference, per-query-module catalog and operator migration guide.",
+      "acceptance": [
+        "Explain durable task/session/integration/message state and which command owns writes; document all query modules, adapters and schema families.",
+        "Use current squashed PostgreSQL migrations; distinguish worker test DBs from operator DB upgrades and provide backup/restore guidance.",
+        "Cover deletion/archive semantics, retained history and known foreign-key cleanup limitations accurately; never prescribe direct production SQL mutation."
+      ],
+      "needs": [
+        "foundation"
+      ],
+      "intelligence_class": "standard-high",
+      "task_type": "docs",
+      "priority": 60
+    },
+    {
+      "key": "vault",
+      "title": "Document configuration, vault, knowledge files and prompt assembly",
+      "description": "Audience: new users who know nothing about AQ. Explain purpose and terminology before implementation details; include a realistic example, inputs/outputs, state ownership, common failures/recovery, related pages, source links and focused test references. Describe implemented behavior on current main, distinguishing configured local policy, shipped defaults, optional compatibility and proposed work. Use GitHub-rendered Markdown, relative links and Mermaid where helpful. Never present old review/triage/Discord-control flows as current defaults. Do not change runtime behavior as part of this documentation ticket. Use focused local documentation checks; no full application test suite or repeated CI runs. Follow the foundation ticket's page ownership and navigation contract; write your own module-coverage shard rather than competing over shared indexes. Each production module in your scope must have a named catalog entry with purpose, source path, owning component and documentation link, even when private helpers share a component page. Include nested modules, not just top-level packages. Re-read source when implementing because main is active. Use standard-high without a provider/profile pin.\n\nScope: src/config.py, config_editor.py, setup_wizard.py, src/vault*.py, file_watcher.py, wiki_links.py, facts_handler.py, facts_parser.py, prompt_builder.py, prompt_manager.py, override_handler.py, readme_handler.py, reference_stub_enricher.py and shipped templates.\n\nDeliverables: Configuration/vault guide, precedence and reload reference, prompt/data-flow diagram and helper module catalog.",
+      "acceptance": [
+        "Explain configuration versus vault content versus database state, file locations and precedence with portable examples.",
+        "Document each root helper, watchers, indexing, facts and prompt assembly; distinguish in-tree knowledge support from optional external memory plugin.",
+        "Use current settings and safe example values; separate startup-required settings from live reload."
+      ],
+      "needs": [
+        "foundation"
+      ],
+      "intelligence_class": "standard-high",
+      "task_type": "docs",
+      "priority": 60
+    },
+    {
+      "key": "providers",
+      "title": "Document LLM providers, usage accounting, tokens and budgets",
+      "description": "Audience: new users who know nothing about AQ. Explain purpose and terminology before implementation details; include a realistic example, inputs/outputs, state ownership, common failures/recovery, related pages, source links and focused test references. Describe implemented behavior on current main, distinguishing configured local policy, shipped defaults, optional compatibility and proposed work. Use GitHub-rendered Markdown, relative links and Mermaid where helpful. Never present old review/triage/Discord-control flows as current defaults. Do not change runtime behavior as part of this documentation ticket. Use focused local documentation checks; no full application test suite or repeated CI runs. Follow the foundation ticket's page ownership and navigation contract; write your own module-coverage shard rather than competing over shared indexes. Each production module in your scope must have a named catalog entry with purpose, source path, owning component and documentation link, even when private helpers share a component page. Include nested modules, not just top-level packages. Re-read source when implementing because main is active. Use standard-high without a provider/profile pin.\n\nScope: src/llm/ including providers/adapters, src/providers/, src/tokens/, src/llm_logger.py and provider-usage snapshot flow.\n\nDeliverables: Provider setup/usage guide, model/class mapping concepts, accounting/budget module reference.",
+      "acceptance": [
+        "Trace transcript/probe/API usage observations through normalization/storage to the dashboard; distinguish estimated, observed and unavailable data.",
+        "Explain direct LLM calls versus external coding harness sessions, retries/errors, budgets and configuration.",
+        "Avoid stale hard-coded model/pricing claims; explain where operators inspect configured values and current provider capabilities."
+      ],
+      "needs": [
+        "foundation"
+      ],
+      "intelligence_class": "standard-high",
+      "task_type": "docs",
+      "priority": 60
+    },
+    {
+      "key": "plugins",
+      "title": "Document plugins, MCP and extension development",
+      "description": "Audience: new users who know nothing about AQ. Explain purpose and terminology before implementation details; include a realistic example, inputs/outputs, state ownership, common failures/recovery, related pages, source links and focused test references. Describe implemented behavior on current main, distinguishing configured local policy, shipped defaults, optional compatibility and proposed work. Use GitHub-rendered Markdown, relative links and Mermaid where helpful. Never present old review/triage/Discord-control flows as current defaults. Do not change runtime behavior as part of this documentation ticket. Use focused local documentation checks; no full application test suite or repeated CI runs. Follow the foundation ticket's page ownership and navigation contract; write your own module-coverage shard rather than competing over shared indexes. Each production module in your scope must have a named catalog entry with purpose, source path, owning component and documentation link, even when private helpers share a component page. Include nested modules, not just top-level packages. Re-read source when implementing because main is active. Use standard-high without a provider/profile pin.\n\nScope: src/plugins/ including every internal plugin, src/embedded_mcp.py, src/mcp_interfaces.py, src/mcp_registration.py, src/aq_uri.py and profile MCP registry/probe/catalog integration.\n\nDeliverables: User plugin/MCP setup guide, extension tutorial and complete module/plugin catalog.",
+      "acceptance": [
+        "Distinguish AQ exposing commands through MCP from a worker connecting to an external MCP server.",
+        "Document installation/configuration/capabilities/authorization, discovery and troubleshooting with a minimal extension example.",
+        "Catalog shipped versus external plugins, including optional memory integration; identify removed APIs instead of encouraging their use."
+      ],
+      "needs": [
+        "foundation"
+      ],
+      "intelligence_class": "standard-high",
+      "task_type": "docs",
+      "priority": 60
+    },
+    {
+      "key": "communications",
+      "title": "Document messaging, Discord digests and escalation workflows",
+      "description": "Audience: new users who know nothing about AQ. Explain purpose and terminology before implementation details; include a realistic example, inputs/outputs, state ownership, common failures/recovery, related pages, source links and focused test references. Describe implemented behavior on current main, distinguishing configured local policy, shipped defaults, optional compatibility and proposed work. Use GitHub-rendered Markdown, relative links and Mermaid where helpful. Never present old review/triage/Discord-control flows as current defaults. Do not change runtime behavior as part of this documentation ticket. Use focused local documentation checks; no full application test suite or repeated CI runs. Follow the foundation ticket's page ownership and navigation contract; write your own module-coverage shard rather than competing over shared indexes. Each production module in your scope must have a named catalog entry with purpose, source path, owning component and documentation link, even when private helpers share a component page. Include nested modules, not just top-level packages. Re-read source when implementing because main is active. Use standard-high without a provider/profile pin.\n\nScope: src/messages/, src/messaging/, src/notifications/, src/discord/, src/digest/, src/escalations/.\n\nDeliverables: Messaging user guide, hourly digest/escalation walkthrough, delivery and correlation diagrams and all module references.",
+      "acceptance": [
+        "Explain the configured single channel, quiet-when-idle digest, escalation threads and user reply \u2192 supervisor recovery path.",
+        "Cover inbox/session/user/task recipients, delivery records, deduplication, ambiguous sends, permissions and troubleshooting.",
+        "Clearly retire Discord task creation, slash-command control and old notification dashboards from current docs."
+      ],
+      "needs": [
+        "foundation"
+      ],
+      "intelligence_class": "standard-high",
+      "task_type": "docs",
+      "priority": 60
+    },
+    {
+      "key": "operations",
+      "title": "Document diagnostics, observability, recovery and day-to-day operation",
+      "description": "Audience: new users who know nothing about AQ. Explain purpose and terminology before implementation details; include a realistic example, inputs/outputs, state ownership, common failures/recovery, related pages, source links and focused test references. Describe implemented behavior on current main, distinguishing configured local policy, shipped defaults, optional compatibility and proposed work. Use GitHub-rendered Markdown, relative links and Mermaid where helpful. Never present old review/triage/Discord-control flows as current defaults. Do not change runtime behavior as part of this documentation ticket. Use focused local documentation checks; no full application test suite or repeated CI runs. Follow the foundation ticket's page ownership and navigation contract; write your own module-coverage shard rather than competing over shared indexes. Each production module in your scope must have a named catalog entry with purpose, source path, owning component and documentation link, even when private helpers share a component page. Include nested modules, not just top-level packages. Re-read source when implementing because main is active. Use standard-high without a provider/profile pin.\n\nScope: src/doctor/, src/metrics/, src/logging_config.py, operational health/status/inspection commands and system recovery workflows.\n\nDeliverables: Operator handbook with symptom-to-command troubleshooting, recovery runbooks, metrics reference and module catalog.",
+      "acceptance": [
+        "Cover READY-but-idle, missing compatible agents, prepare failures, stale owners, stuck integration, disconnected dashboards and restart adoption.",
+        "Differentiate task/project/pool/daemon health and identify actual blockers instead of treating all warnings as fatal.",
+        "Provide safe evidence-first runbooks with expected outcomes, rollback/preservation and verification; distinguish automated repair from manual operator action."
+      ],
+      "needs": [
+        "foundation"
+      ],
+      "intelligence_class": "standard-high",
+      "task_type": "docs",
+      "priority": 60
+    },
+    {
+      "key": "contributing",
+      "title": "Document contributor setup, testing, builds and release tooling",
+      "description": "Audience: new users who know nothing about AQ. Explain purpose and terminology before implementation details; include a realistic example, inputs/outputs, state ownership, common failures/recovery, related pages, source links and focused test references. Describe implemented behavior on current main, distinguishing configured local policy, shipped defaults, optional compatibility and proposed work. Use GitHub-rendered Markdown, relative links and Mermaid where helpful. Never present old review/triage/Discord-control flows as current defaults. Do not change runtime behavior as part of this documentation ticket. Use focused local documentation checks; no full application test suite or repeated CI runs. Follow the foundation ticket's page ownership and navigation contract; write your own module-coverage shard rather than competing over shared indexes. Each production module in your scope must have a named catalog entry with purpose, source path, owning component and documentation link, even when private helpers share a component page. Include nested modules, not just top-level packages. Re-read source when implementing because main is active. Use standard-high without a provider/profile pin.\n\nScope: tests/ layout/fixtures/markers, scripts/, pyproject/package manifests, GitHub workflows, development environments and release/build tooling.\n\nDeliverables: docs/contributing/ guides for setup, repo map, focused tests, codegen, checks, PRs and releases.",
+      "acceptance": [
+        "A new contributor can change one backend/frontend module and run relevant local checks without launching the full suite.",
+        "Document aq test resource gating, temporary PostgreSQL fixtures, marker defaults, API regeneration and frontend builds.",
+        "Inventory scripts/workflows by purpose, inputs, side effects and invocation; distinguish historical scripts and supported automation."
+      ],
+      "needs": [
+        "foundation"
+      ],
+      "intelligence_class": "standard-high",
+      "task_type": "docs",
+      "priority": 60
+    },
+    {
+      "key": "reference",
+      "title": "Build maintainable configuration, command and module reference checks",
+      "description": "Audience: new users who know nothing about AQ. Explain purpose and terminology before implementation details; include a realistic example, inputs/outputs, state ownership, common failures/recovery, related pages, source links and focused test references. Describe implemented behavior on current main, distinguishing configured local policy, shipped defaults, optional compatibility and proposed work. Use GitHub-rendered Markdown, relative links and Mermaid where helpful. Never present old review/triage/Discord-control flows as current defaults. Do not change runtime behavior as part of this documentation ticket. Use focused local documentation checks; no full application test suite or repeated CI runs. Follow the foundation ticket's page ownership and navigation contract; write your own module-coverage shard rather than competing over shared indexes. Each production module in your scope must have a named catalog entry with purpose, source path, owning component and documentation link, even when private helpers share a component page. Include nested modules, not just top-level packages. Re-read source when implementing because main is active. Use standard-high without a provider/profile pin.\n\nScope: Documentation coverage/link/anchor validation, configuration and CLI reference generation, existing docs tooling and schema inventory.\n\nDeliverables: Lightweight local docs-check command and maintained reference indexes; automate only stable facts from source/schema.",
+      "acceptance": [
+        "Check internal Markdown links/anchors and exhaustive module coverage, including renamed/new modules and intentional exclusions with reasons.",
+        "Support practical focused local verification without requiring a full app test/CI run or an LLM review task.",
+        "Document regeneration workflow and ownership; do not create duplicated hand-maintained command/settings lists."
+      ],
+      "needs": [
+        "foundation",
+        "cli",
+        "api",
+        "vault"
+      ],
+      "intelligence_class": "standard-high",
+      "task_type": "docs",
+      "priority": 60
+    },
+    {
+      "key": "legacy",
+      "title": "Reconcile all existing documentation and clearly separate historical material",
+      "description": "Audience: new users who know nothing about AQ. Explain purpose and terminology before implementation details; include a realistic example, inputs/outputs, state ownership, common failures/recovery, related pages, source links and focused test references. Describe implemented behavior on current main, distinguishing configured local policy, shipped defaults, optional compatibility and proposed work. Use GitHub-rendered Markdown, relative links and Mermaid where helpful. Never present old review/triage/Discord-control flows as current defaults. Do not change runtime behavior as part of this documentation ticket. Use focused local documentation checks; no full application test suite or repeated CI runs. Follow the foundation ticket's page ownership and navigation contract; write your own module-coverage shard rather than competing over shared indexes. Each production module in your scope must have a named catalog entry with purpose, source path, owning component and documentation link, even when private helpers share a component page. Include nested modules, not just top-level packages. Re-read source when implementing because main is active. Use standard-high without a provider/profile pin.\n\nScope: All existing docs/, root documentation, examples/specs/reports/reviews and code-adjacent READMEs, except explicitly immutable historical evidence.\n\nDeliverables: A disposition ledger (current/update/redirect/archive/historical); repaired links and historical banners/indexes.",
+      "acceptance": [
+        "Every existing documentation file has a recorded disposition; preserve useful design history and audit evidence instead of deleting it indiscriminately.",
+        "Retire contradictory current guidance for review tickets, old tiered integration defaults, V1 playbooks, Discord control, SQLite and obsolete runtimes.",
+        "Maintain old-path links or clear replacement pointers, and make the current guide obvious to a newcomer."
+      ],
+      "needs": [
+        "foundation",
+        "quickstart",
+        "readme",
+        "architecture",
+        "tasks",
+        "scheduler",
+        "routing",
+        "sessions",
+        "workspaces",
+        "integration",
+        "playbooks",
+        "cli",
+        "api",
+        "dashboard",
+        "database",
+        "vault",
+        "providers",
+        "plugins",
+        "communications",
+        "operations",
+        "contributing"
+      ],
+      "intelligence_class": "standard-high",
+      "task_type": "docs",
+      "priority": 60
+    },
+    {
+      "key": "acceptance",
+      "title": "Verify complete module coverage and publish the unified GitHub documentation view",
+      "description": "Audience: new users who know nothing about AQ. Explain purpose and terminology before implementation details; include a realistic example, inputs/outputs, state ownership, common failures/recovery, related pages, source links and focused test references. Describe implemented behavior on current main, distinguishing configured local policy, shipped defaults, optional compatibility and proposed work. Use GitHub-rendered Markdown, relative links and Mermaid where helpful. Never present old review/triage/Discord-control flows as current defaults. Do not change runtime behavior as part of this documentation ticket. Use focused local documentation checks; no full application test suite or repeated CI runs. Follow the foundation ticket's page ownership and navigation contract; write your own module-coverage shard rather than competing over shared indexes. Each production module in your scope must have a named catalog entry with purpose, source path, owning component and documentation link, even when private helpers share a component page. Include nested modules, not just top-level packages. Re-read source when implementing because main is active. Use standard-high without a provider/profile pin.\n\nScope: Final documentation navigation, module coverage, terminology, cross-links and independent newcomer walkthrough across the completed overhaul.\n\nDeliverables: Finished README \u2192 docs hierarchy, complete module catalog, final coverage/disposition report and documented local verification evidence merged through AQ.",
+      "acceptance": [
+        "No production module is unassigned or undocumented: verify the current tracked-file inventory against all coverage shards; generated code has authoritative resource-family coverage.",
+        "A reader can navigate from the GitHub README to any feature/module and back, with consistent breadcrumbs, glossary and reading order.",
+        "Walk through install \u2192 first task \u2192 monitor \u2192 deliver \u2192 recover in a disposable environment, verify links/examples and record remaining limitations honestly.",
+        "Verify final documentation changes are delivered to GitHub main through configured AQ integration; do not add a review/verifier ticket or a full-suite gate."
+      ],
+      "needs": [
+        "foundation",
+        "quickstart",
+        "readme",
+        "architecture",
+        "tasks",
+        "scheduler",
+        "routing",
+        "sessions",
+        "workspaces",
+        "integration",
+        "playbooks",
+        "cli",
+        "api",
+        "dashboard",
+        "database",
+        "vault",
+        "providers",
+        "plugins",
+        "communications",
+        "operations",
+        "contributing",
+        "reference",
+        "legacy"
+      ],
+      "intelligence_class": "standard-high",
+      "task_type": "docs",
+      "priority": 60
+    }
+  ]
+}
