@@ -132,6 +132,33 @@ async def reconcile_closed_integration_owners(
             or os.path.realpath(session.work_dir) != os.path.realpath(workspace.workspace_path)
         ):
             continue
+        # An expired pool claim can still have its original task/workspace
+        # attachment. Let the same public confirmer recover that exact
+        # stopped writer; it has the stronger CAS that refuses a reused
+        # worker, workspace, or successor claim. The older reconciliation
+        # below remains for already-released pool claims (task_id is None).
+        if session.lifecycle == "pool" and session.task_id == owner["owner_id"]:
+            confirmer = getattr(orch, "aconfirm_integration_owner_handoff", None)
+            if confirmer is not None:
+                try:
+                    from src.integration.models import BranchKey, Fence
+                    from src.integration.ownership import BranchOwnership
+
+                    ownership = BranchOwnership(db, confirm_handoff=confirmer)
+                    confirmed = await ownership.confirm_transfer(Fence(
+                        target=BranchKey(repository_id=owner["repository_id"], branch=owner["ref"]),
+                        owner_id=owner["owner_id"], token=int(owner["fence_token"]),
+                    ))
+                    if confirmed["handoff_state"] == "released":
+                        released.append(owner["owner_id"])
+                        continue
+                except Exception:
+                    logger.warning(
+                        "Could not confirm stopped pool integration owner %s",
+                        owner["owner_id"],
+                        exc_info=True,
+                    )
+                    continue
         try:
             provider = orch.session_providers.create(session.provider, orch.config)
             if not await provider.confirm_stopped(

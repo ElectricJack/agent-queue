@@ -1025,6 +1025,224 @@ async def test_pool_proof_is_refused_once_the_session_dropped_the_task(
     assert events == []
 
 
+async def _stopped_stale_pool_orchestrator(
+    orchestrator_factory, tmp_path, *, handoff_state="attached"
+):
+    """Make the exact teardown race: old epoch 1, requeued task epoch 3."""
+    orchestrator = await _pool_orchestrator(
+        orchestrator_factory, tmp_path, handoff_state=handoff_state
+    )
+    async with orchestrator.db.immediate() as conn:
+        await conn.execute(
+            update(sessions)
+            .where(sessions.c.id == "session")
+            .values(
+                state="stopped",
+                desired_state="stopped",
+                last_claim_epoch=1,
+                last_claim_result="claimed",
+            )
+        )
+        await conn.execute(
+            update(tasks)
+            .where(tasks.c.id == "task")
+            .values(status=TaskStatus.READY.value, assigned_agent_id=None, claim_epoch=3)
+        )
+        await conn.execute(
+            update(agents)
+            .where(agents.c.id == "agent")
+            .values(state=AgentState.RETIRED.value, current_task_id="task")
+        )
+    return orchestrator
+
+
+async def test_public_transfer_recovers_a_stopped_stale_pool_writer(
+    orchestrator_factory, tmp_path, monkeypatch
+):
+    """A requeued epoch must remain intact while its old writer is released."""
+    orchestrator = await _stopped_stale_pool_orchestrator(orchestrator_factory, tmp_path)
+    await orchestrator.db.create_task(
+        Task(
+            id="next",
+            project_id="p",
+            repo_id="repo",
+            branch_name="aq/parent",
+            title="Successor",
+            description="",
+        )
+    )
+    events: list[str] = []
+    provider = SimpleNamespace(
+        confirm_stopped=AsyncMock(side_effect=lambda _handle: events.append("confirm") or True)
+    )
+    monkeypatch.setattr(orchestrator.session_providers, "create", lambda *_args: provider)
+    current_branch, run = _clean_git(events, already_detached=True)
+    orchestrator.git.aget_current_branch = AsyncMock(side_effect=current_branch)
+    orchestrator.git._arun_unlocked = AsyncMock(side_effect=run)
+
+    result = await orchestrator.command_handler.execute(
+        "integration_transfer_owner",
+        {
+            "target": {"repository_id": "repo", "branch": "aq/parent"},
+            "expected_token": 4,
+            "next_owner_id": "next",
+            "next_role": "worker",
+        },
+    )
+
+    assert result["outcome"] == "transferred"
+    assert events == ["confirm", "clean-check", "fetch"]
+    stale_task = await orchestrator.db.get_task("task")
+    assert stale_task.status is TaskStatus.READY
+    assert stale_task.assigned_agent_id is None
+    assert stale_task.claim_epoch == 3
+    assert (await orchestrator.db.get_session("session")).task_id is None
+    assert (await orchestrator.db.get_workspace("slot")).locked_by_task_id is None
+    agent = await orchestrator.db.get_agent("agent")
+    assert agent.state is AgentState.IDLE and agent.current_task_id is None
+
+
+async def test_background_recovery_enters_pending_before_releasing_stale_pool_writer(
+    orchestrator_factory, tmp_path, monkeypatch
+):
+    from src.integration.completion_recovery import reconcile_closed_integration_owners
+
+    orchestrator = await _stopped_stale_pool_orchestrator(orchestrator_factory, tmp_path)
+    await orchestrator.db.update_project(
+        "p", hierarchical_integration_mode="hierarchy", integration_repository_id="repo"
+    )
+    events = []
+    provider = SimpleNamespace(confirm_stopped=AsyncMock(return_value=True))
+    monkeypatch.setattr(orchestrator.session_providers, "create", lambda *_args: provider)
+    current_branch, run = _clean_git(events, already_detached=True)
+    orchestrator.git.aget_current_branch = AsyncMock(side_effect=current_branch)
+    orchestrator.git._arun_unlocked = AsyncMock(side_effect=run)
+
+    assert await reconcile_closed_integration_owners(orchestrator, "p", ready_only=True) == ["task"]
+    assert (await orchestrator.db.get_session("session")).task_id is None
+    assert (await orchestrator.db.get_workspace("slot")).locked_by_task_id is None
+    task = await orchestrator.db.get_task("task")
+    assert task.status is TaskStatus.READY and task.claim_epoch == 3
+    owner = await BranchOwnership(orchestrator.db).get_owner(
+        BranchKey(repository_id="repo", branch="aq/parent")
+    )
+    assert owner["handoff_state"] == "released" and owner["fence_token"] == 4
+
+
+async def test_stopped_pool_recovery_refuses_a_reused_agent_before_git_proof(
+    orchestrator_factory, tmp_path, monkeypatch
+):
+    """A successor session is evidence that the stale attachment is untouchable."""
+    orchestrator = await _stopped_stale_pool_orchestrator(
+        orchestrator_factory, tmp_path, handoff_state="handoff_pending"
+    )
+    await orchestrator.db.create_session(
+        SessionRecord(
+            id="successor-session",
+            task_id=None,
+            agent_id="agent",
+            project_id="p",
+            profile_id="worker",
+            harness="codex",
+            provider="fake",
+            name="s-successor",
+            lifecycle="pool",
+            work_dir=str(tmp_path / "slot"),
+            epoch="successor",
+            instance_token="successor-instance",
+            started_at=time.time() + 1,
+            state="stopped",
+        )
+    )
+    events: list[str] = []
+    monkeypatch.setattr(
+        orchestrator.session_providers,
+        "create",
+        lambda *_args: (_ for _ in ()).throw(AssertionError("must not probe reused agent")),
+    )
+    current_branch, run = _clean_git(events, already_detached=True)
+    orchestrator.git.aget_current_branch = AsyncMock(side_effect=current_branch)
+    orchestrator.git._arun_unlocked = AsyncMock(side_effect=run)
+
+    assert await orchestrator.aconfirm_integration_owner_handoff(_owner(handoff_state="attached")) is False
+    assert events == []
+    assert (await orchestrator.db.get_session("session")).task_id == "task"
+    assert (await orchestrator.db.get_workspace("slot")).locked_by_task_id == "task"
+    assert (await orchestrator.db.get_task("task")).claim_epoch == 3
+
+
+async def test_stopped_pool_recovery_refuses_a_reused_workspace_before_git_proof(
+    orchestrator_factory, tmp_path, monkeypatch
+):
+    """The old release may not unlock a slot or agent now held by a successor."""
+    orchestrator = await _stopped_stale_pool_orchestrator(
+        orchestrator_factory, tmp_path, handoff_state="handoff_pending"
+    )
+    await orchestrator.db.create_task(
+        Task(
+            id="replacement",
+            project_id="p",
+            repo_id="repo",
+            branch_name="aq/replacement",
+            title="Replacement",
+            description="",
+        )
+    )
+    async with orchestrator.db.immediate() as conn:
+        await conn.execute(
+            update(tasks)
+            .where(tasks.c.id == "replacement")
+            .values(status=TaskStatus.IN_PROGRESS.value, assigned_agent_id="agent")
+        )
+        await conn.execute(
+            update(agents)
+            .where(agents.c.id == "agent")
+            .values(state=AgentState.BUSY.value, current_task_id="replacement")
+        )
+        await conn.execute(
+            update(workspaces)
+            .where(workspaces.c.id == "slot")
+            .values(locked_by_task_id="replacement", locked_by_agent_id="agent")
+        )
+    events: list[str] = []
+    monkeypatch.setattr(
+        orchestrator.session_providers,
+        "create",
+        lambda *_args: (_ for _ in ()).throw(AssertionError("must not probe reused workspace")),
+    )
+
+    assert await orchestrator.aconfirm_integration_owner_handoff(_owner(handoff_state="attached")) is False
+    assert events == []
+    replacement = await orchestrator.db.get_task("replacement")
+    assert replacement.status is TaskStatus.IN_PROGRESS
+    assert replacement.assigned_agent_id == "agent"
+    slot = await orchestrator.db.get_workspace("slot")
+    assert slot.locked_by_task_id == "replacement" and slot.locked_by_agent_id == "agent"
+
+
+async def test_stopped_pool_recovery_refuses_dirty_published_evidence(
+    orchestrator_factory, tmp_path, monkeypatch
+):
+    """Cleanliness remains mandatory even after the old process is stopped."""
+    orchestrator = await _stopped_stale_pool_orchestrator(
+        orchestrator_factory, tmp_path, handoff_state="handoff_pending"
+    )
+    events: list[str] = []
+    provider = SimpleNamespace(
+        confirm_stopped=AsyncMock(side_effect=lambda _handle: events.append("confirm") or True)
+    )
+    monkeypatch.setattr(orchestrator.session_providers, "create", lambda *_args: provider)
+    current_branch, run = _clean_git(events, already_detached=True, dirty=True)
+    orchestrator.git.aget_current_branch = AsyncMock(side_effect=current_branch)
+    orchestrator.git._arun_unlocked = AsyncMock(side_effect=run)
+
+    assert await orchestrator.aconfirm_integration_owner_handoff(_owner(handoff_state="attached")) is False
+    assert events == ["confirm", "clean-check"]
+    assert (await orchestrator.db.get_session("session")).task_id == "task"
+    assert (await orchestrator.db.get_workspace("slot")).locked_by_task_id == "task"
+    assert (await orchestrator.db.get_task("task")).claim_epoch == 3
+
+
 async def test_pool_writer_release_restores_a_reserved_fence_for_the_parent(
     orchestrator_factory, tmp_path, monkeypatch
 ):
@@ -1213,8 +1431,9 @@ async def test_full_root_ref_handoff_proves_and_detaches_short_git_branch(
     assert 'detach' in events
 
 
+@pytest.mark.parametrize("writer_state", ["running", "stopped"])
 async def test_stopped_pool_writer_handoff_releases_its_exact_active_claim(
-    orchestrator_factory, tmp_path, monkeypatch
+    orchestrator_factory, tmp_path, monkeypatch, writer_state
 ):
     """The stop-path handoff cannot leave a dead pool claim behind."""
     orchestrator = await _pool_orchestrator(orchestrator_factory, tmp_path)
@@ -1232,7 +1451,7 @@ async def test_stopped_pool_writer_handoff_releases_its_exact_active_claim(
             update(sessions)
             .where(sessions.c.id == "session")
             .values(
-                state="stopped",
+                state=writer_state,
                 desired_state="stopped",
                 claim_phase="active",
                 last_claim_epoch=7,
@@ -1255,6 +1474,8 @@ async def test_stopped_pool_writer_handoff_releases_its_exact_active_claim(
     assert session.claims == 0
     assert workspace.locked_by_task_id is None and workspace.locked_by_agent_id is None
     assert agent.state is AgentState.IDLE and agent.current_task_id is None
+
+    assert events.index("stop") < events.index("confirm") < events.index("detach")
 
 
 async def _seed_damaged_stopped_pool_handoff(orchestrator):
