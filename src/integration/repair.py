@@ -968,7 +968,12 @@ class RepairService:
         )
         if head_sha == revision["head_sha"]:
             return
-        if revision["state"] not in {"built", "testing", "red"}:
+        # Main can advance after candidate CI is already green. Its frozen
+        # rebuild conflict still requires a new revision and fresh CI below.
+        constructed_states = {"built", "testing", "red"}
+        if rebuild_conflict is not None:
+            constructed_states.add("green")
+        if revision["state"] not in constructed_states:
             raise ValueError("batch CI repair requires a fully constructed candidate")
         members = (
             (
