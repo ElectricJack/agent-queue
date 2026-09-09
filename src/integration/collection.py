@@ -159,7 +159,11 @@ class CollectionService:
                         .where(
                             integration_promotion_intents.c.repository_id == parent.repo_id,
                             integration_promotion_intents.c.target_branch == parent.branch_name,
-                            integration_promotion_intents.c.state != "committed",
+                            (integration_promotion_intents.c.state != "committed")
+                            | (
+                                (integration_promotion_intents.c.source_task_id == child.id)
+                                & (integration_promotion_intents.c.source_head == source_head)
+                            ),
                         )
                         .limit(1)
                     )

@@ -921,7 +921,7 @@ async def test_never_run_container_starts_collection_only_at_untouched_origin(db
 
 
 @pytest.mark.parametrize("review_state", [
-    "approved", "missing", "rejected", "stale", "conflict", "delivered",
+    "approved", "missing", "rejected", "stale", "conflict", "delivered", "committed",
 ])
 async def test_collector_queues_only_current_approved_child_once(db, hierarchy, review_state):
     from src.integration.collection import CollectionService
@@ -950,12 +950,14 @@ async def test_collector_queues_only_current_approved_child_once(db, hierarchy, 
             ))
     await hierarchy.bootstrap_container_collection("epic")
     async with db.immediate() as conn:
-        if review_state == "conflict":
+        if review_state in {"conflict", "committed"}:
             await conn.execute(insert(integration_promotion_intents).values(
                 id="unresolved", domain_key="unresolved", receipt_id="unresolved",
-                source_head=NEXT, source_base=BASE, repository_id="repo",
+                source_task_id="epic.1", source_head=NEXT, source_base=BASE, repository_id="repo",
                 target_branch="aq/epic", expected_target=BASE,
-                fence_owner_id="collector", fence_token=1, state="conflict",
+                fence_owner_id="collector", fence_token=1, state=review_state,
+                committed_at=2.0 if review_state == "committed" else None,
+                remote_evidence={"head": NEXT} if review_state == "committed" else None,
                 created_at=1.0, updated_at=1.0,
             ))
         if review_state == "delivered":
