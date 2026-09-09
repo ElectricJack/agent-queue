@@ -427,14 +427,26 @@ async def test_repair_generation_budget_stops_recursive_dispatch(setup):
     previous = "original"
     for generation in range(1, 4):
         previous = await service.ensure_repair(
-            "p", "r", [{"task_id": previous, "source_sha": "a" * 40}], "b" * 40,
+            "p",
+            "r",
+            [{"task_id": previous, "source_sha": "a" * 40}],
+            "b" * 40,
             reason="validation failed",
         )
-        assert f"Development repair generation: {generation}" in (await db.get_task(previous)).description
-    assert await service.ensure_repair(
-        "p", "r", [{"task_id": previous, "source_sha": "a" * 40}], "b" * 40,
-        reason="validation failed",
-    ) is None
+        assert (
+            f"Development repair generation: {generation}"
+            in (await db.get_task(previous)).description
+        )
+    assert (
+        await service.ensure_repair(
+            "p",
+            "r",
+            [{"task_id": previous, "source_sha": "a" * 40}],
+            "b" * 40,
+            reason="validation failed",
+        )
+        is None
+    )
 
 
 def test_development_prime_omits_strict_review_protocol():
@@ -449,6 +461,31 @@ def test_development_prime_omits_strict_review_protocol():
 async def test_untracked_test_output_does_not_block_publication(setup):
     _db, service, _source, _remote, _repo = setup
     await feature(setup, "artifact")
-    await service.configure("p", {"commands": ["mkdir -p test-cache; echo generated > test-cache/output"]},
-                            reason="test artifacts are not candidate source", operator_id="operator")
+    await service.configure(
+        "p",
+        {"commands": ["mkdir -p test-cache; echo generated > test-cache/output"]},
+        reason="test artifacts are not candidate source",
+        operator_id="operator",
+    )
     assert (await service.sweep("p"))["outcome"] == "delivered"
+
+
+async def test_later_consolidation_resolves_conflict_without_starting_repair(setup):
+    from sqlalchemy import select
+
+    from src.database.tables import tasks
+
+    db, service, source, _remote, _repo = setup
+    await feature(setup, "one", filename="shared", content="one")
+    await feature(setup, "two", filename="shared", content="two")
+    await feature(setup, "consolidation")
+    git(source, "merge", "--no-edit", "one")
+    git(source, "merge", "-s", "ours", "--no-edit", "two")
+    git(source, "push", "origin", "consolidation")
+    assert (await service.sweep("p"))["outcome"] == "delivered"
+    async with db._engine.connect() as conn:
+        assert (
+            await conn.scalar(select(tasks.c.id).where(tasks.c.id.like("development-repair-%")))
+            is None
+        )
+    assert not [row for row in await service.rows("p") if row["state"] == "parked"]

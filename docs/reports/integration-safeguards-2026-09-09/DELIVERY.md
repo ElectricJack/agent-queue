@@ -70,3 +70,11 @@ Every listed tip must be reachable from the final AQ main before this delivery i
 `aq integration sweep matter-engine-cpp` delivered main `dc8a61acdd78bfebd62de4499162ece70a6d20c8`, journal `7e59dfcc-1fec-4f20-89af-ba92caec689f`. A fresh origin fetch reports zero unmerged remote branches. Project remains paused and unimplemented feature children remain open.
 
 Final additions: the completed CLI inventory gate correction (`keen-harbor`, `457bb44f`) is included; its seven focused inventory tests pass. Source scanning now uses one fetched ref snapshot instead of one GitHub request per historical task; all 18 development tests pass. The persisted local check runner is `/home/jkern/.agent-queue/operator-checks/isolated-tests.py` and uses the existing isolated PostgreSQL test container, never the operator database.
+
+## Verified AQ publication and final repair reconciliation
+
+The live publisher delivered the full consolidation at `b39f084f6ffa3ba2639327b35285d8a533721c0e` after focused validation (sweep journal recorded 32 source members). The only branch produced during that validation was `development-repair-44cca023b41e35b58fd2`, a merge-only reconciliation already covered by the delivered tree; its ancestry is retained in the final follow-up.
+
+The live run exposed unnecessary early repair dispatch: a source could conflict early in a batch and be absorbed by a later consolidation. Repair dispatch now waits until the complete batch decision, resolves parked rows by delivered source ancestry, and starts workers only for remaining failures. All 19 development integration tests pass, including this exact regression. Two redundant repair workers were paused with their work preserved before operator reconciliation.
+
+Strict compatibility, retained workspaces and unrelated pre-existing daemon health warnings remain. This delivery does not claim the broader reliability goal or full Matter Engine feature roadmap is complete.
