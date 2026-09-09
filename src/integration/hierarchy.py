@@ -23,6 +23,8 @@ from src.database.tables import (
     task_branch_origins,
     task_delivery_receipts,
     task_integration_checkpoints,
+    task_metadata,
+    task_session_attempts,
     tasks,
     workspaces,
 )
@@ -513,9 +515,9 @@ class HierarchyIntegration:
         task.id = await fresh_root_id(conn)
         task.parent_task_id = None
         task.repo_id = repo.id
-        # This root has no branch yet. Let origin bootstrap resolve the
-        # repository's default branch; adoption of existing roots still
-        # resolves their recorded branch in _ensure_origin_chain.
+        # A freshly filed root has no remote task branch yet.  Resolve its
+        # immutable origin from the repository default branch, then record
+        # the canonical branch identity for materialization.
         task.branch_name = None
         await self.db.create_task(task, conn=conn)
         await self._write_task_extras(
@@ -531,7 +533,14 @@ class HierarchyIntegration:
         return {"task_id": task.id, "generation": 0, "gate_id": gate_id}
 
     async def bootstrap_container_collection(self, task_id: str) -> dict:
-        """Checkpoint a never-run container at its confirmed, untouched origin."""
+        """Checkpoint an affirmatively untouched container at its pinned origin.
+
+        A released graph container legitimately has a nonzero ``claim_epoch``:
+        the release itself traverses READY -> IN_PROGRESS without assigning a
+        worker.  Epoch alone therefore cannot distinguish it from a prior
+        writer.  This path instead requires positive evidence that the *current
+        task incarnation* has never acquired a session or workspace.
+        """
         from src.integration.models import Fence
 
         async with self.db._engine.connect() as conn:
@@ -562,16 +571,39 @@ class HierarchyIntegration:
             workspace = (await conn.execute(select(workspaces.c.id).where(
                 workspaces.c.locked_by_task_id == task_id
             ).limit(1))).scalar_one_or_none()
-            if (origin is None or not origin["materialized"] or not origin["reserved"]
-                or children is None or live is not None or workspace is not None
-                or task["assigned_agent_id"] is not None
-                or task["claim_epoch"] != 0 or task["branch_name"] != target.branch
-                or task["status"] not in {"IN_PROGRESS", "PAUSED"}
-                or (task["status"] == "PAUSED" and checkpoint["episode_id"] is None)):
-                return {"outcome": "waiting", "task_id": task_id}
+            attempt = (await conn.execute(select(task_session_attempts.c.id).where(
+                task_session_attempts.c.task_id == task_id,
+                task_session_attempts.c.started_at >= task["created_at"],
+            ).limit(1))).scalar_one_or_none()
+            manually_paused = (await conn.execute(select(task_metadata.c.value).where(
+                task_metadata.c.task_id == task_id,
+                task_metadata.c.key == "manual_pause",
+            ).limit(1))).scalar_one_or_none()
+
+            reason = None
+            if origin is None or not origin["materialized"] or not origin["reserved"]:
+                reason = "origin_pending"
+            elif children is None:
+                reason = "not_a_container"
+            elif live is not None or task["assigned_agent_id"] is not None:
+                reason = "live_claim"
+            elif workspace is not None:
+                reason = "workspace_attached"
+            elif attempt is not None:
+                reason = "current_incarnation_attempt"
+            elif manually_paused is not None:
+                reason = "manual_pause"
+            elif task["branch_name"] != target.branch:
+                reason = "branch_identity"
+            elif task["status"] not in {"IN_PROGRESS", "PAUSED"}:
+                reason = "container_not_released"
+            elif task["status"] == "PAUSED" and checkpoint["episode_id"] is None:
+                reason = "unexplained_pause"
+            if reason is not None:
+                return {"outcome": "waiting", "task_id": task_id, "reason": reason}
             head = await self._resolve_head(repo, target.branch)
             if head != origin["base_sha"] or checkpoint["checkpoint_sha"] != head:
-                return {"outcome": "waiting", "task_id": task_id}
+                return {"outcome": "waiting", "task_id": task_id, "reason": "origin_changed"}
             operation = await self.parent_completion.reserve_episode_on(
                 conn, parent=task, project=project, checkpoint=checkpoint,
                 pre_collection_sha=head,

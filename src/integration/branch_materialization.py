@@ -37,6 +37,7 @@ from src.database.tables import (
     projects,
     task_branch_origins,
     task_integration_checkpoints,
+    task_session_attempts,
     tasks,
 )
 
@@ -146,10 +147,18 @@ class BranchMaterializationService:
                 .join(integration_branch_owners,
                     (integration_branch_owners.c.owner_id == tasks.c.id)
                     & (integration_branch_owners.c.ref == tasks.c.branch_name))
-                .where(tasks.c.claim_epoch == 0,
-                       tasks.c.status.in_(("IN_PROGRESS", "PAUSED")),
+                .where(tasks.c.status.in_(("IN_PROGRESS", "PAUSED")),
                        integration_branch_owners.c.owner_role == "worker",
-                       integration_branch_owners.c.handoff_state == "reserved")
+                       integration_branch_owners.c.handoff_state == "reserved",
+                       # ``claim_epoch`` advances when a graph container is
+                       # released without a worker.  It is a fence, not proof
+                       # that this incarnation ever had a writer.  Conversely,
+                       # an attempt from a deleted older task with this id is
+                       # not evidence about the current task row.
+                       ~select(task_session_attempts.c.id).where(
+                           task_session_attempts.c.task_id == tasks.c.id,
+                           task_session_attempts.c.started_at >= tasks.c.created_at,
+                       ).exists())
                 .order_by(tasks.c.created_at, tasks.c.id).limit(limit)
             )).scalars().all()
         for task_id in containers:

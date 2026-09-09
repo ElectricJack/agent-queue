@@ -535,6 +535,12 @@ class WorkspaceMixin:
         self, task: Task, project, *, preparing_session_id=None, preparing_workspace_id=None
     ) -> tuple[dict, Fence, str]:
         """Resolve exact origin/target and the server-derived current role."""
+        # Claim selection and workspace preparation are separated by Git and
+        # slot acquisition. Re-check receipt-backed sibling prerequisites at
+        # this second boundary so a reopened prerequisite cannot race a child
+        # into a checkout that no longer contains its delivered work.
+        if not await self.db.is_hierarchy_task_runnable(task.id):
+            raise ValueError("hierarchy prerequisite delivery is not current")
         repository_id = getattr(project, "integration_repository_id", None)
         if not repository_id or task.repo_id != repository_id:
             raise ValueError("task is not bound to the designated repository")
@@ -609,6 +615,14 @@ class WorkspaceMixin:
         origin = await self.db.get_task_branch_origin_for_promotion(subject_id, repository_id)
         if origin is None or not origin.get("reserved") or not origin.get("materialized"):
             raise ValueError("exact branch origin is not materialized")
+        prerequisite_head = await self.db.hierarchy_prerequisite_delivery_head(task.id)
+        if prerequisite_head is not None:
+            # This does not mutate the reserved origin.  A delivery receipt is
+            # the parent collector's proof that this descendant head contains
+            # the reviewed prerequisite; preparing from it makes the child's
+            # first push a fast-forward from its immutable origin rather than
+            # a copied sibling tree or an arbitrary local merge.
+            origin = dict(origin) | {"base_sha": prerequisite_head}
         branch = subject.branch_name or ""
         if branch != f"aq/{subject_id}" or task.branch_name != branch:
             raise ValueError("task branch does not match its canonical origin")
