@@ -2594,6 +2594,48 @@ async def test_published_pr_identity_is_immutable_and_replay_is_canonical(db, tm
     assert replay.head_sha == built.head_sha
 
 
+async def test_completed_candidate_publication_is_adopted_after_stage_fence_advances(db, tmp_path):
+    """A completed exact ref write survives a deadline-stage collector fence change."""
+    from src.git.github_app import GitHubRepositoryBinding
+    from src.integration.candidates import CandidateService
+    from src.integration.models import BranchKey, Fence
+    from src.integration.ownership import BranchOwnership
+
+    origin, _work, base, members = _make_origin(tmp_path)
+    await db.update_repo("repo", url=str(origin))
+    await _seed_batch(db, members=members[:1], base_sha=base)
+    app = _AppClient(origin)
+    app.repository = GitHubRepositoryBinding(repository_id=9, full_name="example/repo")
+    service = CandidateService(
+        db,
+        data_dir=tmp_path / "data",
+        git_manager=_LocalPushGit(origin),
+        forge_provider=_AuditForge(),
+        app_client=app,
+        clock=lambda: 131.0,
+    )
+    built = await service.build("batch")
+    assert built.branch is not None
+    target = BranchKey(repository_id="repo", branch=built.branch)
+    owner = await BranchOwnership(db).get_owner(target)
+    assert owner is not None
+    await service.repair.expire("repair-batch-batch", 0, now=161.0)
+    await BranchOwnership(db).transfer(
+        Fence(
+            target=target,
+            owner_id=owner["owner_id"],
+            token=int(owner["fence_token"]),
+        ),
+        "repair-batch-batch",
+        "collector",
+    )
+
+    replay = await service.build("batch")
+
+    assert replay.outcome == "already_built"
+    assert replay.head_sha == built.head_sha
+
+
 def _make_divergent_source_bases(tmp_path: Path):
     origin = tmp_path / "origin.git"
     work = tmp_path / "work"
