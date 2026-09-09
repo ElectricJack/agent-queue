@@ -14,6 +14,7 @@ from collections.abc import Callable
 from sqlalchemy import select, update
 
 from src.database.tables import agents, integration_branch_owners, sessions, workspaces
+from src.integration.models import REQUEUE_INTEGRATION_OWNER_ROLES
 from src.models import (
     AgentState,
     ResolvedRequirement,
@@ -219,7 +220,11 @@ async def mark_integration_pool_handoff_released(
             or owner_row["fence_token"] != owner.get("fence_token")
             or owner_row["owner_id"] != owner.get("owner_id")
             or owner_row["owner_id"] != task_id
-            or owner_row["owner_role"] not in {"worker", "repair"}
+            # Every task-owned writer role: a re-queued ``verifier`` reaches
+            # here through the same pool detach proof as a worker or repair
+            # delegate (fair-willow).  ``collector`` is owned by an operation,
+            # so it never has the claim this CAS reads.
+            or owner_row["owner_role"] not in REQUEUE_INTEGRATION_OWNER_ROLES
             or owner_row["handoff_state"] != "handoff_pending"
             or owner_row["session_id"] != owner.get("session_id")
             or owner_row["workspace_id"] != workspace.id

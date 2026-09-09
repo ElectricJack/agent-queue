@@ -487,6 +487,21 @@ release that follows; only the ownership row moves. The ordering is the load-bea
 release must run inside the close, while the session/task binding and the workspace's task-hold
 still exist, because the claim release erases precisely the evidence any proof reads.
 
+A close that returns the task to the frontier is the same handoff, not a lesser one. Git
+verification that finds only fixable issues and no live session to hand them back to, and a
+transient failure still inside the retry budget, both re-queue the task READY while its ownership
+row is still `attached`. That row has to go back to `reserved` inside the close for exactly the
+reason above — the claim release that follows erases the evidence any later proof would read —
+and every subsequent claim of that same task requires a `reserved` reservation, so an attached
+row left behind fails all of them with "canonical branch is not reserved by this task" and burns
+a pool worker on each one. The re-queue is a *self*-transfer: same `owner_id`, same `owner_role`,
+no successor, so the transfer rule this section states is not engaged and every task-owned role is
+admissible — `worker`, `repair`, and also `verifier`, which is excluded from the ordinary
+close-time release only because a verifier that is still `attached` to a *live* session with an
+ASSIGNED/IN_PROGRESS task may be rebound as a repair stage's existing writer. A re-queued verifier
+is none of those things. `collector` remains excluded everywhere: its owner is an operation, not a
+task, so it has no claim for the proof to read.
+
 Failed proof is terminal for the *release*, never for the resources. A writer that cannot be
 proven stopped or detached keeps its workspace, its claim and its session binding, and the close
 records `needs_attention` instead: releasing them on a database unlock alone is what would admit

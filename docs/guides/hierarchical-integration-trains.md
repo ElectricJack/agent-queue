@@ -41,13 +41,30 @@ aq db upgrade
 aq restart
 ```
 
-Then inspect both schema and integration state. The integration checks are
+Then inspect both schema and integration state. These integration checks are
 report-only: `--fix` never changes a rollout mode, credentials, Git refs,
 cleanup work, or schema.
 
 ```bash
 aq doctor --check db.migrations --check integration.operational --check integration.unreviewed_prs
 ```
+
+`integration.stranded_fences` is the one integration check whose `--fix` writes:
+
+```bash
+aq doctor --check integration.stranded_fences        # report
+aq doctor --check integration.stranded_fences --fix  # repair
+```
+
+It names branches whose ownership row is still held `attached` (or
+`handoff_pending`) for a task that has no writer left — no live session, no
+workspace lock, and not ASSIGNED/IN_PROGRESS. That row blocks every subsequent
+claim of the owning task with *"canonical branch is not reserved by this
+task"*, and because the task stays READY the scheduler keeps offering it, so
+the failure repeats silently until an operator intervenes. The `--fix` is a
+self-transfer — same owner, same role, fresh fence token — so it grants no
+second writer anything; it refuses any row that still has a session, a
+workspace lock, or a running task behind it.
 
 Do not change database backends during this release. Both
 `src/database/migrate_sqlite_to_pg.py` and `scripts/migrate_sqlite_to_pg.py`

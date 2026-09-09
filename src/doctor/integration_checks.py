@@ -385,6 +385,183 @@ async def _fix_branch_discards(ctx: DoctorContext) -> CheckResult:
     )
 
 
+#: Handoff states that mean "a writer is (or was) holding this branch".  A
+#: ``reserved`` row is exactly what the next claim needs and a ``released`` one
+#: is already finished, so neither can be stranded.
+_HELD_HANDOFF_STATES = ("attached", "handoff_pending")
+
+#: Task statuses that mean the owning task is actually being worked.  A row
+#: held for one of these has a live writer and is none of doctor's business.
+_RUNNING_TASK_STATUSES = (TaskStatus.ASSIGNED.value, TaskStatus.IN_PROGRESS.value)
+
+
+async def _find_stranded_fences(ctx: DoctorContext) -> list[dict]:
+    """Ownership rows still held for a task that has no writer left.
+
+    A close that returns a task to the frontier is supposed to put its
+    ownership row back to ``reserved`` before the claim release erases the
+    evidence any handoff proof reads.  When that does not happen -- the bug
+    fair-willow fixes, and any future one shaped like it -- the row stays
+    ``attached`` with nothing attached to it, and because
+    ``_integration_owner_fence`` requires ``reserved``, *every* subsequent
+    claim of that same task dies with "canonical branch is not reserved by
+    this task" and burns a pool worker.  The task stays READY, so the
+    scheduler keeps offering it: the cost repeats until someone notices.
+
+    A row qualifies only when there is provably no writer: no live session for
+    the owning task, no workspace still locked by it, and the task itself is
+    not ASSIGNED/IN_PROGRESS (or is gone entirely).  ``collector`` rows are
+    excluded -- their owner is an operation, not a task, so none of those
+    questions are even askable of them.
+    """
+    from sqlalchemy import select
+
+    from src.database.tables import integration_branch_owners, sessions, tasks, workspaces
+
+    async with ctx.db._engine.connect() as conn:
+        rows = (
+            (
+                await conn.execute(
+                    select(integration_branch_owners)
+                    .where(
+                        integration_branch_owners.c.handoff_state.in_(_HELD_HANDOFF_STATES),
+                        integration_branch_owners.c.owner_role != "collector",
+                    )
+                    .order_by(integration_branch_owners.c.updated_at.desc())
+                    .limit(50)
+                )
+            )
+            .mappings()
+            .all()
+        )
+        stranded = []
+        for row in rows:
+            task = (
+                await conn.execute(select(tasks).where(tasks.c.id == row["owner_id"]))
+            ).mappings().one_or_none()
+            if task is not None and task["status"] in _RUNNING_TASK_STATUSES:
+                continue
+            live_session = (
+                await conn.execute(
+                    select(sessions.c.id)
+                    .where(sessions.c.task_id == row["owner_id"], sessions.c.state != "stopped")
+                    .limit(1)
+                )
+            ).scalar_one_or_none()
+            if live_session is not None:
+                continue
+            held_workspace = (
+                await conn.execute(
+                    select(workspaces.c.id)
+                    .where(workspaces.c.locked_by_task_id == row["owner_id"])
+                    .limit(1)
+                )
+            ).scalar_one_or_none()
+            if held_workspace is not None:
+                continue
+            stranded.append(
+                {
+                    "owner_row_id": row["id"],
+                    "repository_id": row["repository_id"],
+                    "ref": row["ref"],
+                    "task_id": row["owner_id"],
+                    "owner_role": row["owner_role"],
+                    "fence_token": int(row["fence_token"]),
+                    "handoff_state": row["handoff_state"],
+                    "task_status": task["status"] if task is not None else None,
+                }
+            )
+    return stranded
+
+
+async def _check_stranded_fences(ctx: DoctorContext) -> CheckResult:
+    if ctx.db is None:
+        return CheckResult(
+            id="integration.stranded_fences",
+            severity=Severity.INFO,
+            detail="database not initialised — branch ownership state unknown",
+        )
+    stranded = await _find_stranded_fences(ctx)
+    if not stranded:
+        return CheckResult(
+            id="integration.stranded_fences",
+            severity=Severity.OK,
+            detail="no integration branch is held by a writer that is gone",
+        )
+    first = stranded[0]
+    return CheckResult(
+        id="integration.stranded_fences",
+        severity=Severity.WARN,
+        detail=(
+            f"{len(stranded)} integration branch(es) are held '{first['handoff_state']}' by a "
+            f"writer that no longer exists — e.g. {first['ref']} for task "
+            f"{first['task_id']} ({first['owner_role']}, task status "
+            f"{first['task_status'] or 'gone'}). Every claim of that task fails "
+            "'canonical branch is not reserved by this task'. Return them to their own "
+            "reserved fence with `aq doctor --check integration.stranded_fences --fix`"
+        ),
+        fixable=True,
+        data={"count": len(stranded), "fences": stranded},
+    )
+
+
+async def _fix_stranded_fences(ctx: DoctorContext) -> CheckResult:
+    """Return each dead row to a fresh ``reserved`` fence for its own owner.
+
+    This is a self-transfer, not a handoff: the owner and the role do not
+    change, so no second writer is granted anything.  The fence token is bumped
+    anyway, so that if a writer somehow *were* still alive against the old
+    token its next fenced write loses rather than racing.  The CAS re-checks
+    the exact row and state that was diagnosed, so a row that came back to life
+    between the check and the fix is left alone.
+    """
+    from sqlalchemy import update
+
+    from src.database.tables import integration_branch_owners
+
+    stranded = await _find_stranded_fences(ctx)
+    if not stranded:
+        return CheckResult(
+            id="integration.stranded_fences",
+            severity=Severity.OK,
+            detail="no integration branch is held by a writer that is gone",
+        )
+    repaired = []
+    async with ctx.db.immediate() as conn:
+        for row in stranded:
+            result = await conn.execute(
+                update(integration_branch_owners)
+                .where(
+                    integration_branch_owners.c.id == row["owner_row_id"],
+                    integration_branch_owners.c.owner_id == row["task_id"],
+                    integration_branch_owners.c.owner_role == row["owner_role"],
+                    integration_branch_owners.c.fence_token == row["fence_token"],
+                    integration_branch_owners.c.handoff_state == row["handoff_state"],
+                )
+                .values(
+                    handoff_state="reserved",
+                    session_id=None,
+                    workspace_id=None,
+                    confirmed_workspace_id=None,
+                    fence_token=row["fence_token"] + 1,
+                    updated_at=time.time(),
+                )
+            )
+            if result.rowcount == 1:
+                repaired.append(row)
+    return CheckResult(
+        id="integration.stranded_fences",
+        severity=Severity.OK if len(repaired) == len(stranded) else Severity.WARN,
+        detail=(
+            f"returned {len(repaired)} of {len(stranded)} stranded fence(s) to a fresh "
+            "reserved reservation for their own owner"
+        ),
+        fixable=True,
+        fix_applied=True,
+        data={"count": len(repaired), "fences": repaired},
+    )
+
+
 def integration_checks() -> list[DoctorCheck]:
     return [
         DoctorCheck(
@@ -413,6 +590,16 @@ def integration_checks() -> list[DoctorCheck]:
             id="integration.branch_discards",
             run=_check_branch_discards,
             fix=_fix_branch_discards,
+            owner=OWNER,
+        ),
+        # Fixable because the repair is a self-transfer with no successor: the
+        # row goes back to ``reserved`` for the owner it already names, and
+        # only after the check has established that no session, no workspace
+        # lock and no running task still refer to it.
+        DoctorCheck(
+            id="integration.stranded_fences",
+            run=_check_stranded_fences,
+            fix=_fix_stranded_fences,
             owner=OWNER,
         ),
     ]
