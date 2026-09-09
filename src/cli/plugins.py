@@ -6,7 +6,7 @@ import os
 
 import click
 
-from .app import cli, console, _run
+from .app import _json_mode, _run, cli, console
 
 
 def _get_plugin_client():
@@ -361,16 +361,58 @@ def plugin_config(name: str, key_values: tuple[str, ...]) -> None:
         raise SystemExit(1)
 
 
+# Guidance for the retired ``aq plugin logs`` stub. Defined once so the human
+# and ``--json`` paths cannot drift apart.
+_PLUGIN_LOGS_REMOVED_WHY = (
+    "`aq plugin logs` has been removed: the hook engine it read is gone, "
+    "so there is no plugin hook execution history to return."
+)
+# Each entry is (what you actually want, the command that gives it). Kept as
+# short standalone lines because Rich hard-wraps human output at terminal
+# width, and a wrapped paragraph splits a command mid-name.
+_PLUGIN_LOGS_REPLACEMENTS = (
+    ("Recent automation runs (playbooks replaced hooks)", "aq playbook list-runs"),
+    ("One run in detail", "aq playbook inspect-run <run-id>"),
+    ("A plugin's own diagnostic output - daemon logging, not hook history",
+     "aq logs --grep <plugin-name>"),
+)
+
+PLUGIN_LOGS_REMOVED_MESSAGE = " ".join(
+    (_PLUGIN_LOGS_REMOVED_WHY,)
+    + tuple(f"{what}: `{cmd}`." for what, cmd in _PLUGIN_LOGS_REPLACEMENTS)
+)
+
+
 @plugin.command("logs")
 @click.argument("name")
-@click.option("--limit", default=20, help="Number of recent runs to show")
-def plugin_logs(name: str, limit: int) -> None:
-    """View plugin execution history (deprecated — hooks have been removed)."""
-    console.print(
-        "[yellow]Plugin hook execution logs are no longer available.[/]\n"
-        "The hook engine has been removed. Automation is now handled by playbooks.\n"
-        "Use [bold]aq playbook list[/] to view playbook-based automation."
-    )
+@click.option(
+    "--limit",
+    default=None,
+    type=int,
+    hidden=True,
+    help="Accepted and ignored; retained so legacy invocations reach this message.",
+)
+def plugin_logs(name: str, limit: int | None) -> None:
+    """Removed - plugin hook execution history no longer exists.
+
+    This stub is deliberately an error, not an empty success: a command
+    named ``logs`` that exits 0 with no rows reads as "this plugin has no
+    history", which is a different (and false) claim from "the history this
+    command read no longer exists". The legacy paging option stays
+    accepted-and-ignored so an old script lands on this guidance instead of
+    a Click usage error.
+    """
+    from .envelope import emit_error
+
+    if _json_mode():
+        emit_error("command_error", PLUGIN_LOGS_REMOVED_MESSAGE)
+    else:
+        console.print(f"[bold red]Error:[/] {_PLUGIN_LOGS_REMOVED_WHY}")
+        console.print("Use instead:")
+        for what, cmd in _PLUGIN_LOGS_REPLACEMENTS:
+            console.print(f"  [bold]{cmd}[/]", highlight=False, soft_wrap=True)
+            console.print(f"    [dim]{what}[/]")
+    raise SystemExit(1)
 
 
 @plugin.command("prompts")
