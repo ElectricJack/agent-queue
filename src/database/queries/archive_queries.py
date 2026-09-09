@@ -12,6 +12,8 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from src.database.tables import (
     agents,
     archived_tasks,
+    integration_repair_operations,
+    integration_repair_stages,
     sessions,
     task_comments,
     task_completion_records,
@@ -45,6 +47,17 @@ class ArchiveQueryMixin:
             ids = await self.subtree_ids(task_id, conn=conn)
             if not ids:
                 return False
+            repair = (await conn.execute(
+                select(integration_repair_operations.c.id)
+                .join(integration_repair_stages,
+                      integration_repair_stages.c.operation_id == integration_repair_operations.c.id)
+                .where(integration_repair_stages.c.repair_task_id.in_(ids),
+                       integration_repair_operations.c.state.in_(
+                           ("active", "escalated", "human_required")))
+                .limit(1)
+            )).scalar_one_or_none()
+            if repair is not None:
+                raise HierarchyError("integration_owned", f"active repair operation {repair}")
             # Follow the existing sessions-before-tasks lock order. A task
             # can be terminal while its worker is still draining.
             live = await self.live_descendant_sessions(task_id, conn=conn)

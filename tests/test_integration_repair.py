@@ -4,13 +4,14 @@ from __future__ import annotations
 
 import asyncio
 import subprocess
-import pytest
 from types import SimpleNamespace
-from sqlalchemy import insert, select, update
 from unittest.mock import AsyncMock
 
-from src.database import Database
+import pytest
+from sqlalchemy import insert, select, update
+
 from src.commands.principal import ExecutionPrincipal, PrincipalKind, principal_context
+from src.database import Database
 from src.database.tables import (
     integration_batches,
     integration_branch_owners,
@@ -25,12 +26,14 @@ from src.database.tables import (
     integration_repair_stages,
     playbook_artifacts,
     sessions,
-    task_integration_checkpoints,
     task_branch_origins,
     task_delivery_receipts,
+    task_integration_checkpoints,
     tasks,
     workspaces,
 )
+from src.git.manager import GitManager, RemoteRefResult, RemoteRefState
+from src.integration.controls import IntegrationControlService
 from src.integration.models import (
     ArtifactSnapshot,
     BranchKey,
@@ -41,9 +44,7 @@ from src.integration.models import (
     RepairPolicy,
     RequiredCheckSet,
 )
-from src.integration.controls import IntegrationControlService
 from src.integration.ownership import BranchOwnership
-from src.git.manager import GitManager, RemoteRefResult, RemoteRefState
 from src.models import (
     Agent,
     AgentProfile,
@@ -56,10 +57,9 @@ from src.models import (
     TaskStatus,
     Workspace,
 )
-from src.scheduler import AssignAction
 from src.profiles.capabilities import CapabilityPolicy
+from src.scheduler import AssignAction
 from tests.db_fixtures import lease_dsn
-
 
 STARTING_SHA = "a" * 40
 
@@ -290,7 +290,8 @@ async def test_start_activates_reserved_parent_operation_once(db):
     assert stage["writer_kind"] is None
 
 
-async def test_start_accepts_only_exact_persisted_conflict_trigger(db):
+@pytest.mark.parametrize("trigger_id", ["conflict-intent", "operation"])
+async def test_start_accepts_only_exact_persisted_conflict_trigger(db, trigger_id):
     """A caller's trigger string is not proof without the conflicted intent."""
     from src.integration.repair import RepairService
 
@@ -318,9 +319,18 @@ async def test_start_accepts_only_exact_persisted_conflict_trigger(db):
             )
         )
     started = await RepairService(db).start(
-        "operation", STARTING_SHA, "conflict-intent", now=100.0
+        "operation", STARTING_SHA, trigger_id, now=100.0
     )
     assert started["outcome"] == "started"
+    replay = await RepairService(db).start("operation", STARTING_SHA, trigger_id, now=200.0)
+    assert replay["outcome"] == "already_started"
+    async with db._engine.connect() as conn:
+        stage = (await conn.execute(select(integration_repair_stages).where(
+            integration_repair_stages.c.operation_id == "operation",
+            integration_repair_stages.c.ordinal == 0,
+        ))).mappings().one()
+    assert stage["trigger_id"] == "conflict-intent"
+    assert stage["started_at"] == 100.0
 
 
 @pytest.mark.parametrize("corruption", ["policy", "checkpoint", "batch_revision"])
@@ -2160,8 +2170,8 @@ async def test_scheduler_launches_retained_debug_in_exact_workspace(
 ):
     """The real scheduler preparation and launch attach the retained checkout."""
     from src.git.manager import GitManager
-    from src.intelligence_classes import IntelligenceClass
     from src.integration.repair import RepairService
+    from src.intelligence_classes import IntelligenceClass
     from tests.session_dispatch_helpers import fake_provider
 
     db = session_orch.db
@@ -3757,3 +3767,125 @@ async def test_delegate_close_retains_everything_when_the_handoff_is_unproven(
     assert (await handler.db.get_session("close-session")).task_id == repair_task_id
     if lifecycle == "pool":
         assert closed["retain_claim"] is True
+
+
+async def test_active_repair_delegate_cannot_archive_and_legacy_archive_is_restored(db):
+    from src.database.queries.hierarchy_queries import HierarchyError
+    from src.database.tables import archived_tasks
+    from src.integration.repair import RepairService
+
+    await _seed_parent_operation(db)
+    async with db.immediate() as conn:
+        await conn.execute(insert(integration_branch_owners).values(
+            id="archive-owner", repository_id="repo", ref="aq/parent",
+            owner_id="operation", owner_role="collector", fence_token=1,
+            handoff_state="reserved", created_at=1.0, updated_at=1.0,
+        ))
+    service = RepairService(db, confirm_handoff=lambda _owner: True,
+                            route_validator=lambda _ic, _profile: True)
+    await service.start("operation", STARTING_SHA, "failed-check", now=100.0)
+    dispatched = await service.dispatch("operation", 0)
+    task_id = dispatched["repair_task_id"]
+    async with db.immediate() as conn:
+        await conn.execute(update(tasks).where(tasks.c.id == task_id).values(status="COMPLETED"))
+    with pytest.raises(HierarchyError, match="active repair operation"):
+        await db.archive_task(task_id)
+    # Reproduce the historical archive, before that guard existed.
+    async with db.immediate() as conn:
+        task = await db._get_task_conn(task_id, conn=conn)
+        await db._archive_one(task, conn=conn)
+        before = (await conn.execute(select(integration_repair_stages).where(
+            integration_repair_stages.c.operation_id == "operation"
+        ))).mappings().one()
+    assert await db.get_task(task_id) is None
+    restored = await service.dispatch("operation", 0)
+    assert restored["outcome"] in {"dispatched", "already_dispatched"}
+    assert restored["repair_task_id"] == task_id
+    assert (await db.get_task(task_id)).status is TaskStatus.READY
+    async with db._engine.connect() as conn:
+        assert (await conn.execute(select(archived_tasks.c.id).where(
+            archived_tasks.c.id == task_id
+        ))).scalar_one_or_none() is None
+        after = (await conn.execute(select(integration_repair_stages).where(
+            integration_repair_stages.c.operation_id == "operation"
+        ))).mappings().one()
+    assert after["attempts"] == before["attempts"]
+    assert after["deadline_at"] == before["deadline_at"]
+
+
+@pytest.mark.parametrize("resolution", ["conflict", "reserved", "wrong_head", "observed", "none"])
+async def test_parent_delegate_close_requires_recorded_resolution(db, monkeypatch, resolution):
+    from src.integration.repair import RepairService
+
+    await _seed_parent_operation(db)
+    head = "d" * 40
+    if resolution != "none":
+        values = {
+            "id": "close-intent", "domain_key": "close-domain", "operation_key": "operation",
+            "project_id": "p", "receipt_id": "close-receipt", "source_task_id": "child",
+            "target_task_id": "parent", "source_head": "b" * 40, "source_base": "c" * 40,
+            "repository_id": "repo", "target_branch": "aq/parent", "expected_target": STARTING_SHA,
+            "fence_owner_id": "operation", "fence_token": 1, "state": "conflict",
+            "created_at": 1.0, "updated_at": 1.0,
+        }
+        if resolution != "conflict":
+            values.update(
+                state="resolution_reserved", resolution_head_sha=head,
+                resolution_tree_sha="e" * 40, resolution_commit_shas=[head],
+                resolution_operation_id="operation", resolution_stage_ordinal=0,
+                resolution_task_id="parent", resolution_session_id="session",
+                resolution_session_instance_token="instance", resolution_workspace_id="workspace",
+                resolution_fence_owner_id="parent", resolution_fence_token=2,
+                resolution_push_evidence=(None if resolution == "reserved" else {
+                    "kind": "exact_resolution_push_observed",
+                    "remote_sha": head if resolution == "observed" else "f" * 40,
+                }),
+            )
+        async with db.immediate() as conn:
+            await conn.execute(insert(integration_promotion_intents).values(**values))
+    scope = {
+        "active": True, "operation_id": "operation", "stage": 0, "writer_kind": "repair_delegate",
+        "session_id": "session", "instance_token": "instance", "workspace_id": "workspace",
+        "fence_token": 2, "target_kind": "parent", "project_id": "p",
+    }
+    monkeypatch.setattr(db, "get_repair_filing_scope", AsyncMock(return_value=scope))
+    transition = AsyncMock(return_value=SimpleNamespace(flipped=[], settled=[], ready=[]))
+    monkeypatch.setattr(db, "_apply_transition", transition)
+    service = RepairService(db)
+    bind = AsyncMock()
+    monkeypatch.setattr(service, "bind_current_parent_subject_on", bind)
+    result = await service.complete_delegate(
+        "parent", operation_id="operation", stage=0, session_id="session",
+        instance_token="instance", workspace_id="workspace", fence_token=2,
+        head_sha=head, now=110.0,
+    )
+    if resolution in {"observed", "none"}:
+        assert result["outcome"] == "completed"
+        transition.assert_awaited_once()
+        bind.assert_awaited_once()
+    else:
+        assert result["outcome"] == "resolution_required"
+        assert result["intent_id"] == "close-intent"
+        assert "integration-push-conflict-resolution" in result["feedback"]
+        transition.assert_not_awaited()
+        bind.assert_not_awaited()
+    async with db._engine.connect() as conn:
+        events = (await conn.execute(select(integration_outbox).where(
+            integration_outbox.c.event_type == "integration.repair_delegate_closed"
+        ))).all()
+    assert len(events) == (1 if resolution in {"observed", "none"} else 0)
+
+
+async def test_legacy_handoff_agent_state_loads_and_normalizes(db):
+    from src.database.tables import agents
+
+    await db.create_agent(Agent(id='legacy', name='Legacy', profile_id='repairer'))
+    async with db.immediate() as conn:
+        await conn.execute(update(agents).where(agents.c.id == 'legacy').values(state='idle'))
+    assert (await db.get_agent('legacy')).state is AgentState.IDLE
+    await db.normalize_agent_state_casing()
+    await db.normalize_agent_state_casing()
+    async with db._engine.connect() as conn:
+        assert (await conn.execute(select(agents.c.state).where(
+            agents.c.id == 'legacy'
+        ))).scalar_one() == 'IDLE'

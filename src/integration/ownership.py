@@ -264,6 +264,24 @@ class BranchOwnership:
             raise BranchBusy("branch has a live external mutation claim")
         return await self._claim_released(conn, current, fence.target, next_owner_id, next_role)
 
+    async def transfer_detached_on(self, conn, fence: Fence, next_owner_id: str,
+                                   next_role: str) -> Fence:
+        """Transfer a detached reservation alongside the caller's eligibility checks."""
+        self._validate_identity(fence.target, next_owner_id, next_role)
+        current = await self._locked_row(conn, fence.target)
+        self._require_current(current, fence)
+        if (current["handoff_state"] not in {"reserved", "released"}
+                or current["session_id"] is not None or current["workspace_id"] is not None):
+            raise BranchBusy("branch still has an attached writer")
+        mutation = await conn.execute(select(integration_candidate_ref_mutations.c.id).where(
+            integration_candidate_ref_mutations.c.repository_id == fence.target.repository_id,
+            integration_candidate_ref_mutations.c.branch == fence.target.branch,
+            integration_candidate_ref_mutations.c.state == "reserved",
+        ).limit(1))
+        if mutation.first() is not None:
+            raise BranchBusy("branch has a live external mutation claim")
+        return await self._claim_released(conn, current, fence.target, next_owner_id, next_role)
+
     async def assert_current(self, fence: Fence, *, expected_role: str | None = None) -> None:
         """Raise unless *fence* remains the current write authority."""
         async with self._db.immediate() as conn:

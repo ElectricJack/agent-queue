@@ -1,0 +1,119 @@
+{
+  "version": 1,
+  "parent": {
+    "title": "Epic: Procedural authoring feedback and agent automation",
+    "description": "Build on precise selection to expose source provenance, regeneration jobs, scene diffs and repeatable agent workflows for a code-driven procedural engine. Exercise a second AQ epic and cross-epic dependencies.",
+    "priority": 45
+  },
+  "nodes": [
+    {
+      "key": "provenance",
+      "title": "Trace inspected objects to procedural source and generation inputs",
+      "description": "Use the existing MatterEditor app-thread CommandRegistry, FIFO transport, SelectionSet, picker and procedural authoring model. Read CLAUDE.md and docs/agent/control-surface.md plus qa-cookbook.md first. Native Windows acceptance uses tools/build-windows-from-wsl.sh and the MSVC CMake graph, not MinGW. Preserve existing FIFO verbs and machine-readable stdout. Reuse source-of-truth libraries; no copied or symlinked sibling sources. Work only in the AQ-assigned branch/workspace. Record exact checks, resulting Git head, PR, and unresolved limitations on the AQ task. This graph is a real acceptance workload for recursive feature-branch integration: no direct main push or ad hoc merge of sibling branches. If a prerequisite artifact has not reached your branch, report the exact missing revision through AQ instead of silently copying it.\n\nExpose the provenance the engine can actually establish: authored entity/module identity, generation lineage, parameters/seed hashes and source locations where recorded. Build on the scene inspection contract.",
+      "acceptance": [
+        "Distinguish authored source, generated instances, baked roots and runtime-only objects; preserve typed IDs and revision scope.",
+        "Return module/file identity and generation inputs only when known, with explicit unavailable reasons otherwise.",
+        "Provide bounded parent/child and dependency traversal suitable for locating code to edit.",
+        "Test deterministic repeated generation, deleted/replaced modules and objects without source mappings."
+      ],
+      "needs": [
+        "nimble-dune"
+      ],
+      "profile": "deep-high-codex",
+      "intelligence_class": "deep-high",
+      "task_type": "feature",
+      "priority": 40
+    },
+    {
+      "key": "jobs",
+      "title": "Expose bounded regeneration job control and diagnostics",
+      "description": "Use the existing MatterEditor app-thread CommandRegistry, FIFO transport, SelectionSet, picker and procedural authoring model. Read CLAUDE.md and docs/agent/control-surface.md plus qa-cookbook.md first. Native Windows acceptance uses tools/build-windows-from-wsl.sh and the MSVC CMake graph, not MinGW. Preserve existing FIFO verbs and machine-readable stdout. Reuse source-of-truth libraries; no copied or symlinked sibling sources. Work only in the AQ-assigned branch/workspace. Record exact checks, resulting Git head, PR, and unresolved limitations on the AQ task. This graph is a real acceptance workload for recursive feature-branch integration: no direct main push or ad hoc merge of sibling branches. If a prerequisite artifact has not reached your branch, report the exact missing revision through AQ instead of silently copying it.\n\nExpose existing reload/evaluation/bake work as observable jobs rather than making agents guess from sleeps or log fragments. Reuse the actual engine job lifecycle.",
+      "acceptance": [
+        "Provide start/reload, status, bounded wait, diagnostics/result and cancellation only where the backend supports it.",
+        "Correlate jobs to source/parameter/seed digest and resulting scene revision; preserve file/line script diagnostics.",
+        "Report accepted, running, completed, failed, cancelled and unsupported-cancel distinctly; no false success on timeout.",
+        "Test overlapping reloads, superseded results, script failure, shutdown and deterministic seeded regeneration."
+      ],
+      "needs": [
+        "provenance"
+      ],
+      "profile": "deep-high-codex",
+      "intelligence_class": "deep-high",
+      "task_type": "feature",
+      "priority": 40
+    },
+    {
+      "key": "parameters",
+      "title": "Validate and apply procedural parameter changes with preview",
+      "description": "Use the existing MatterEditor app-thread CommandRegistry, FIFO transport, SelectionSet, picker and procedural authoring model. Read CLAUDE.md and docs/agent/control-surface.md plus qa-cookbook.md first. Native Windows acceptance uses tools/build-windows-from-wsl.sh and the MSVC CMake graph, not MinGW. Preserve existing FIFO verbs and machine-readable stdout. Reuse source-of-truth libraries; no copied or symlinked sibling sources. Work only in the AQ-assigned branch/workspace. Record exact checks, resulting Git head, PR, and unresolved limitations on the AQ task. This graph is a real acceptance workload for recursive feature-branch integration: no direct main push or ad hoc merge of sibling branches. If a prerequisite artifact has not reached your branch, report the exact missing revision through AQ instead of silently copying it.\n\nProvide typed updates to declared procedural parameters, using existing editor properties or authored parameter interfaces. Preserve the code-first source of truth; document whether changes are session-only or persisted.",
+      "acceptance": [
+        "Discover parameter schemas, ranges and ownership; reject unsupported/untyped edits explicitly.",
+        "Support validate/dry-run before apply, expected source/scene revision and an atomic update boundary.",
+        "Return changed parameters, persistence mode and regeneration job identity; do not silently rewrite arbitrary JS source.",
+        "Test range/type errors, stale revisions, multi-parameter failure rollback and deterministic seed handling."
+      ],
+      "needs": [
+        "jobs"
+      ],
+      "profile": "deep-high-codex",
+      "intelligence_class": "deep-high",
+      "task_type": "feature",
+      "priority": 40
+    },
+    {
+      "key": "diff",
+      "title": "Compare generated scene revisions and query spatial results",
+      "description": "Use the existing MatterEditor app-thread CommandRegistry, FIFO transport, SelectionSet, picker and procedural authoring model. Read CLAUDE.md and docs/agent/control-surface.md plus qa-cookbook.md first. Native Windows acceptance uses tools/build-windows-from-wsl.sh and the MSVC CMake graph, not MinGW. Preserve existing FIFO verbs and machine-readable stdout. Reuse source-of-truth libraries; no copied or symlinked sibling sources. Work only in the AQ-assigned branch/workspace. Record exact checks, resulting Git head, PR, and unresolved limitations on the AQ task. This graph is a real acceptance workload for recursive feature-branch integration: no direct main push or ad hoc merge of sibling branches. If a prerequisite artifact has not reached your branch, report the exact missing revision through AQ instead of silently copying it.\n\nAdd bounded structured scene diffs and spatial filters to let agents verify what a code or parameter change actually produced.",
+      "acceptance": [
+        "Compare compatible snapshots/revisions for added, removed and changed typed objects, bounds and known generation inputs.",
+        "Support bounded name/kind/provenance and region queries using existing spatial infrastructure where appropriate.",
+        "Distinguish stable logical identity from generated incarnation; label incomparable snapshots instead of guessing correspondence.",
+        "Test no-op regeneration, seeded change, deletions, unloaded data and pagination on large procedural scenes."
+      ],
+      "needs": [
+        "parameters"
+      ],
+      "profile": "deep-high-codex",
+      "intelligence_class": "deep-high",
+      "task_type": "feature",
+      "priority": 40
+    },
+    {
+      "key": "automation",
+      "title": "Provide a reusable agent CLI client and bounded command batches",
+      "description": "Use the existing MatterEditor app-thread CommandRegistry, FIFO transport, SelectionSet, picker and procedural authoring model. Read CLAUDE.md and docs/agent/control-surface.md plus qa-cookbook.md first. Native Windows acceptance uses tools/build-windows-from-wsl.sh and the MSVC CMake graph, not MinGW. Preserve existing FIFO verbs and machine-readable stdout. Reuse source-of-truth libraries; no copied or symlinked sibling sources. Work only in the AQ-assigned branch/workspace. Record exact checks, resulting Git head, PR, and unresolved limitations on the AQ task. This graph is a real acceptance workload for recursive feature-branch integration: no direct main push or ad hoc merge of sibling branches. If a prerequisite artifact has not reached your branch, report the exact missing revision through AQ instead of silently copying it.\n\nPolish the scriptable client established by the selection epic: machine-readable discovery/results, request correlation and sequential batches with explicit stop-on-error behavior.",
+      "acceptance": [
+        "Support persistent-session targeting, documented exit codes, JSON output, timeouts and reconnect without duplicate destructive execution.",
+        "Batch ordered inspect/edit/regenerate/wait/capture steps with individual results and explicit partial completion; do not claim transactionality across unsupported commands.",
+        "Use direct structured inspection for routine queries; leave procedural code edits in normal source-control workflows.",
+        "Provide agent-oriented examples inspired by Blender MCP scene/object inspection and viewport capture, adapted to Matter Engine procedural generation."
+      ],
+      "needs": [
+        "diff"
+      ],
+      "profile": "deep-high-codex",
+      "intelligence_class": "deep-high",
+      "task_type": "feature",
+      "priority": 40
+    },
+    {
+      "key": "accept",
+      "title": "Run procedural agent workflow and AQ cross-epic acceptance",
+      "description": "Use the existing MatterEditor app-thread CommandRegistry, FIFO transport, SelectionSet, picker and procedural authoring model. Read CLAUDE.md and docs/agent/control-surface.md plus qa-cookbook.md first. Native Windows acceptance uses tools/build-windows-from-wsl.sh and the MSVC CMake graph, not MinGW. Preserve existing FIFO verbs and machine-readable stdout. Reuse source-of-truth libraries; no copied or symlinked sibling sources. Work only in the AQ-assigned branch/workspace. Record exact checks, resulting Git head, PR, and unresolved limitations on the AQ task. This graph is a real acceptance workload for recursive feature-branch integration: no direct main push or ad hoc merge of sibling branches. If a prerequisite artifact has not reached your branch, report the exact missing revision through AQ instead of silently copying it.\n\nRun a code-driven procedural iteration with typed selection, source tracing, parameter validation, regeneration, scene diff and screenshot evidence. Measure command overhead and demonstrate actual AQ dependency/review/delivery handling.",
+      "acceptance": [
+        "Use the canonical MSVC build and repeatable fixture; record command transcripts, exact scene/source revisions, timings and artifacts.",
+        "Exercise a bounded large-scene command workload and report median/tail command latency and output sizes; keep engine metrics distinct from AQ tasks/day.",
+        "Prove the dependent epic starts only when its prerequisite artifacts are available through the intended feature-branch pipeline.",
+        "Verify both Matter Engine epics remain isolated from main until their configured aggregate checks and review pass.",
+        "Publish a working/broken/unsupported capability matrix and reconcile every task acceptance item; no blanket success from a narrow smoke test."
+      ],
+      "needs": [
+        "automation"
+      ],
+      "profile": "deep-high-codex",
+      "intelligence_class": "deep-high",
+      "task_type": "feature",
+      "priority": 40
+    }
+  ]
+}

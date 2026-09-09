@@ -901,8 +901,9 @@ async def test_clean_promotion_is_retained_attributed_pushed_and_reconciled(db, 
         assert expected_route.items() <= delivery["payload"].items()
 
 
+@pytest.mark.parametrize("pool_token", [False, True])
 async def test_conflict_resolution_push_reconcile_writes_original_receipt_and_events(
-    db, conflict_resolution_case, command_handler_factory
+    db, conflict_resolution_case, command_handler_factory, pool_token
 ):
     from src.commands.principal import principal_context
     from src.integration.promotion import PromotionService
@@ -914,7 +915,7 @@ async def test_conflict_resolution_push_reconcile_writes_original_receipt_and_ev
     handler.orchestrator.promotion_service = PromotionService(
         db, data_dir=case["data_dir"], git_manager=GitManager()
     )
-    principal = _resolution_principal()
+    principal = _resolution_principal(task_id=None if pool_token else "repair-task")
     reserve_args = {
         "intent_id": case["intent_id"],
         "operation_id": "resolution-op",
@@ -1045,6 +1046,51 @@ async def test_resolution_push_rejects_merge_commit_range(db, conflict_resolutio
     assert (
         _git(["ls-remote", "origin", "refs/heads/aq/parent"], work).split()[0]
         == case["target"]
+    )
+
+
+@pytest.mark.parametrize("merge_shape", ["reviewed", "reversed", "extra_parent"])
+async def test_resolution_preserves_only_the_exact_reviewed_child_ancestry(
+    db, conflict_resolution_case, merge_shape
+):
+    from src.commands.principal import principal_context
+    from src.integration.promotion import PromotionInvariantError, PromotionService
+
+    case = conflict_resolution_case
+    work = case["work"]
+    parents = [case["target"], case["source"]]
+    if merge_shape == "reversed":
+        parents.reverse()
+    elif merge_shape == "extra_parent":
+        parents.append(case["resolved_head"])
+    merged = _git([
+        "commit-tree", case["resolved_tree"],
+        *[arg for parent in parents for arg in ("-p", parent)],
+        "-m", "Resolve and retain reviewed child",
+    ], work)
+    _git(["reset", "--hard", merged], work)
+    (work / "repair.txt").write_text("verified follow-up repair\n")
+    _git(["commit", "-am", "Follow-up repair"], work)
+    head = _git(["rev-parse", "HEAD"], work)
+    request = _resolution_request(
+        case, resolved_head_sha=head,
+        resolved_tree_sha=_git(["rev-parse", "HEAD^{tree}"], work),
+        repair_commit_shas=tuple(_git([
+            "rev-list", "--reverse", f"{case['target']}..{head}",
+        ], work).splitlines()),
+    )
+    service = PromotionService(db, data_dir=case["data_dir"], git_manager=GitManager())
+    with principal_context(_resolution_principal()):
+        await service.reserve_resolution(request)
+        if merge_shape != "reviewed":
+            with pytest.raises(PromotionInvariantError, match="first-parent|merge commit"):
+                await service.push_resolution(case["intent_id"], request.fence)
+            assert _git(["ls-remote", "origin", "refs/heads/aq/parent"], work).split()[0] == case["target"]
+            return
+        await service.push_resolution(case["intent_id"], request.fence)
+    assert _git(["ls-remote", "origin", "refs/heads/aq/parent"], work).split()[0] == head
+    assert _git(["show", "-s", "--format=%P", merged], work) == (
+        f"{case['target']} {case['source']}"
     )
 
 
@@ -2390,3 +2436,28 @@ async def test_playbook_project_scope_cannot_be_mixed_with_another_promotion(
 
     assert result["outcome"] == "unauthorized"
     handler.orchestrator.promotion_service.prepare.assert_not_awaited()
+
+
+@pytest.mark.parametrize("mismatch", ["session", "instance", "project", "task"])
+async def test_pool_resolution_rejects_mismatched_live_authority(
+    db, conflict_resolution_case, mismatch
+):
+    from dataclasses import replace
+
+    from src.commands.principal import principal_context
+    from src.integration.promotion import PromotionService, PromotionTargetMoved
+
+    case = conflict_resolution_case
+    principal = _resolution_principal(task_id=None)
+    fields = {
+        "session": {"session_id": "unrelated-session"},
+        "instance": {"session_instance_token": "expired-instance"},
+        "project": {"project_id": "another-project"},
+        "task": {"task_id": "another-task"},
+    }
+    service = PromotionService(db, data_dir=case["data_dir"], git_manager=GitManager())
+    with (
+        principal_context(replace(principal, **fields[mismatch])),
+        pytest.raises(PromotionTargetMoved),
+    ):
+        await service.reserve_resolution(_resolution_request(case))

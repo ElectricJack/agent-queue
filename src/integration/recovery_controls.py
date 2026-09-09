@@ -304,6 +304,25 @@ class IntegrationRecoveryControls:
                     integration_branch_owners.c.workspace_id.is_(None),
                 )
             )
+        if allow_reserved_delegate and operation["batch_id"] is not None:
+            # A detached collector is the daemon's reservation, not a live
+            # worker. Applied writes are checked separately below; retain all
+            # ambiguity guards for attached collectors and other targets.
+            exact_target = select(integration_batches.c.id).where(
+                integration_batches.c.id == operation["batch_id"],
+                integration_batches.c.repository_id == integration_branch_owners.c.repository_id,
+                integration_batches.c.integration_branch == integration_branch_owners.c.ref,
+            ).exists()
+            writer = writer.where(
+                ~and_(
+                    integration_branch_owners.c.owner_id == operation_id,
+                    integration_branch_owners.c.owner_role == "collector",
+                    exact_target,
+                    integration_branch_owners.c.handoff_state == "reserved",
+                    integration_branch_owners.c.session_id.is_(None),
+                    integration_branch_owners.c.workspace_id.is_(None),
+                )
+            )
         statements = {
             "ref_mutation": select(integration_candidate_ref_mutations.c.id).where(
                 integration_candidate_ref_mutations.c.operation_id == operation_id,

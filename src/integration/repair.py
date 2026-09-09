@@ -7,16 +7,17 @@ import time
 from collections.abc import Awaitable, Callable
 from typing import Any
 
-from sqlalchemy import insert, select, update
+from sqlalchemy import delete, insert, select, update
 
 from src.database.tables import (
     agents,
-    integration_batches,
+    archived_tasks,
     integration_attestation_publications,
+    integration_batches,
     integration_branch_owners,
-    integration_candidate_revisions,
     integration_candidate_member_results,
     integration_candidate_ref_mutations,
+    integration_candidate_revisions,
     integration_check_evidence,
     integration_operation_artifact_pins,
     integration_promotion_intents,
@@ -26,16 +27,15 @@ from src.database.tables import (
     playbook_artifacts,
     projects,
     sessions,
-    task_integration_checkpoints,
     task_delivery_receipts,
+    task_integration_checkpoints,
     tasks,
     workspaces,
 )
 from src.git.manager import is_valid_git_oid
-from src.integration.models import HierarchicalIntegrationPolicy, RepairPolicy
-from src.integration.models import BranchKey, Fence
-from src.integration.ownership import BranchBusy, BranchOwnership, StaleFence
+from src.integration.models import BranchKey, Fence, HierarchicalIntegrationPolicy, RepairPolicy
 from src.integration.outbox import enqueue_integration_event
+from src.integration.ownership import BranchBusy, BranchOwnership, StaleFence
 from src.models import Task, TaskStatus
 from src.playbooks.artifact_ref import ArtifactRef
 
@@ -203,6 +203,26 @@ class RepairService:
                     )
                 )
             ).mappings().one_or_none()
+            # The shipped parent policy passes its operation key on a merge
+            # conflict. Resolve that alias to the exact durable intent, never
+            # treat the operation ID itself as failure evidence. Older pinned
+            # policy artifacts must keep working for their entire episode.
+            if trigger_id == operation_id and operation["target_kind"] == "parent":
+                matches = select(integration_promotion_intents.c.id).where(
+                    integration_promotion_intents.c.operation_key == operation_id,
+                    integration_promotion_intents.c.target_task_id == operation["parent_task_id"],
+                    integration_promotion_intents.c.expected_target == starting_sha,
+                )
+                if existing is None:
+                    matches = matches.where(integration_promotion_intents.c.state == "conflict")
+                else:
+                    matches = matches.where(
+                        integration_promotion_intents.c.id == existing["trigger_id"]
+                    )
+                intent_ids = (await conn.execute(matches.limit(2))).scalars().all()
+                if len(intent_ids) != 1:
+                    return {"outcome": "stale", "operation_id": operation_id}
+                trigger_id = intent_ids[0]
             if existing is not None:
                 if (
                     existing["starting_sha"] != starting_sha
@@ -455,6 +475,10 @@ class RepairService:
                         select(tasks).where(tasks.c.id == repair_task_id).with_for_update()
                     )
                 ).mappings().one_or_none()
+                if task is None and repair_stage["writer_kind"] == "repair_delegate":
+                    task = await self._restore_archived_delegate_on(
+                        conn, repair_task_id, operation, repair_stage, target, project_id
+                    )
                 if task is None or repair_stage["writer_kind"] != "repair_delegate":
                     return self._dispatch_value(
                         "human_required",
@@ -748,6 +772,37 @@ class RepairService:
             if actual != expected:
                 return {"outcome": "stale"}
             if scope["target_kind"] == "parent":
+                # A pushed Git commit alone does not complete the delivery
+                # protocol. Keep the live writer attached until its exact
+                # resolution has a durable, fenced push observation.
+                pending = (await conn.execute(
+                    select(integration_promotion_intents).where(
+                        integration_promotion_intents.c.operation_key == operation_id,
+                        integration_promotion_intents.c.state.in_(
+                            ["conflict", "resolution_reserved"]
+                        ),
+                    ).with_for_update()
+                )).mappings().all()
+                for intent in pending:
+                    evidence = intent["resolution_push_evidence"] or {}
+                    if (
+                        intent["state"] != "resolution_reserved"
+                        or intent["resolution_head_sha"] != head_sha
+                        or evidence.get("kind") != "exact_resolution_push_observed"
+                        or evidence.get("remote_sha") != head_sha
+                    ):
+                        return {
+                            "outcome": "resolution_required",
+                            "intent_id": intent["id"],
+                            "feedback": (
+                                f"Conflict intent {intent['id']} has no recorded push "
+                                "of this exact resolution. While retaining this claim, "
+                                "run aq system integration-resolve-conflict and then "
+                                "aq system integration-push-conflict-resolution with "
+                                "the current repair fence (see --help), then close again. "
+                                "A direct Git push alone does not record delivery."
+                            ),
+                        }
                 await self.bind_current_parent_subject_on(
                     conn,
                     operation_id,
@@ -1609,7 +1664,7 @@ class RepairService:
                         agents.c.id == old_task["assigned_agent_id"],
                         agents.c.current_task_id == old_task_id,
                     )
-                    .values(state="idle", current_task_id=None)
+                    .values(state="IDLE", current_task_id=None)
                 )
             old_status = (
                 TaskStatus.PAUSED
@@ -1632,6 +1687,35 @@ class RepairService:
             ):
                 raise RuntimeError("retained repair handoff lost its compare-and-swap")
         return Fence(target=target, owner_id=debug_task_id, token=new_token)
+
+    async def _restore_archived_delegate_on(
+        self, conn, task_id, operation, stage, target, project_id
+    ):
+        """Recover a legacy archive of this still-active stage's exact delegate."""
+        archived = (await conn.execute(
+            select(archived_tasks).where(archived_tasks.c.id == task_id).with_for_update()
+        )).mappings().one_or_none()
+        if archived is None or archived["status"] not in {"COMPLETED", "FAILED", "BLOCKED"}:
+            return None
+        candidate = dict(archived) | {"status": TaskStatus.PAUSED.value}
+        if not self._delegate_task_matches(candidate, operation, target, project_id):
+            return None
+        if not await self._route_is_valid(stage["intelligence_class"], stage["profile_id"]):
+            return None
+        # The operation/stage locks precede this restore. The normal dispatch
+        # handoff still fences the branch before this task can become READY.
+        await self.db.create_task(Task(
+            id=task_id, project_id=project_id, title=archived["title"],
+            description=archived["description"] + "\n\n" + self._delegate_description(operation, stage),
+            status=TaskStatus.PAUSED, priority=archived["priority"],
+            repo_id=target.repository_id, branch_name=target.branch,
+            retry_count=archived["retry_count"], max_retries=archived["max_retries"],
+            profile_id=stage["profile_id"], intelligence_class=stage["intelligence_class"],
+            created_by_kind="integration_repair", created_by_id=operation["id"],
+            created_at=archived["created_at"],
+        ), conn=conn)
+        await conn.execute(delete(archived_tasks).where(archived_tasks.c.id == task_id))
+        return (await conn.execute(select(tasks).where(tasks.c.id == task_id))).mappings().one()
 
     @staticmethod
     def _delegate_task_matches(task, operation, target, project_id: str) -> bool:

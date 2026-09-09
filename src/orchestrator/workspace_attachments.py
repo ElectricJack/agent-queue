@@ -396,6 +396,7 @@ async def detach_workspace_for_integration_handoff(
 
     checkout = workspace.workspace_path
     mutex_path = mutex_path or checkout
+    expected_branch = expected_branch.removeprefix("refs/heads/")
     branch_ref = f"refs/heads/{expected_branch}"
     remote_ref = f"refs/remotes/origin/{expected_branch}"
     async with git_mutex(mutex_path):
