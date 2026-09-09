@@ -7,16 +7,17 @@ import time
 from collections.abc import Awaitable, Callable
 from typing import Any
 
-from sqlalchemy import insert, select, update
+from sqlalchemy import delete, insert, select, update
 
 from src.database.tables import (
     agents,
-    integration_batches,
+    archived_tasks,
     integration_attestation_publications,
+    integration_batches,
     integration_branch_owners,
-    integration_candidate_revisions,
     integration_candidate_member_results,
     integration_candidate_ref_mutations,
+    integration_candidate_revisions,
     integration_check_evidence,
     integration_operation_artifact_pins,
     integration_promotion_intents,
@@ -26,16 +27,15 @@ from src.database.tables import (
     playbook_artifacts,
     projects,
     sessions,
-    task_integration_checkpoints,
     task_delivery_receipts,
+    task_integration_checkpoints,
     tasks,
     workspaces,
 )
 from src.git.manager import is_valid_git_oid
-from src.integration.models import HierarchicalIntegrationPolicy, RepairPolicy
-from src.integration.models import BranchKey, Fence
-from src.integration.ownership import BranchBusy, BranchOwnership, StaleFence
+from src.integration.models import BranchKey, Fence, HierarchicalIntegrationPolicy, RepairPolicy
 from src.integration.outbox import enqueue_integration_event
+from src.integration.ownership import BranchBusy, BranchOwnership, StaleFence
 from src.models import Task, TaskStatus
 from src.playbooks.artifact_ref import ArtifactRef
 
@@ -455,6 +455,10 @@ class RepairService:
                         select(tasks).where(tasks.c.id == repair_task_id).with_for_update()
                     )
                 ).mappings().one_or_none()
+                if task is None and repair_stage["writer_kind"] == "repair_delegate":
+                    task = await self._restore_archived_delegate_on(
+                        conn, repair_task_id, operation, repair_stage, target, project_id
+                    )
                 if task is None or repair_stage["writer_kind"] != "repair_delegate":
                     return self._dispatch_value(
                         "human_required",
@@ -1632,6 +1636,35 @@ class RepairService:
             ):
                 raise RuntimeError("retained repair handoff lost its compare-and-swap")
         return Fence(target=target, owner_id=debug_task_id, token=new_token)
+
+    async def _restore_archived_delegate_on(
+        self, conn, task_id, operation, stage, target, project_id
+    ):
+        """Recover a legacy archive of this still-active stage's exact delegate."""
+        archived = (await conn.execute(
+            select(archived_tasks).where(archived_tasks.c.id == task_id).with_for_update()
+        )).mappings().one_or_none()
+        if archived is None or archived["status"] not in {"COMPLETED", "FAILED", "BLOCKED"}:
+            return None
+        candidate = dict(archived) | {"status": TaskStatus.PAUSED.value}
+        if not self._delegate_task_matches(candidate, operation, target, project_id):
+            return None
+        if not await self._route_is_valid(stage["intelligence_class"], stage["profile_id"]):
+            return None
+        # The operation/stage locks precede this restore. The normal dispatch
+        # handoff still fences the branch before this task can become READY.
+        await self.db.create_task(Task(
+            id=task_id, project_id=project_id, title=archived["title"],
+            description=archived["description"] + "\n\n" + self._delegate_description(operation, stage),
+            status=TaskStatus.PAUSED, priority=archived["priority"],
+            repo_id=target.repository_id, branch_name=target.branch,
+            retry_count=archived["retry_count"], max_retries=archived["max_retries"],
+            profile_id=stage["profile_id"], intelligence_class=stage["intelligence_class"],
+            created_by_kind="integration_repair", created_by_id=operation["id"],
+            created_at=archived["created_at"],
+        ), conn=conn)
+        await conn.execute(delete(archived_tasks).where(archived_tasks.c.id == task_id))
+        return (await conn.execute(select(tasks).where(tasks.c.id == task_id))).mappings().one()
 
     @staticmethod
     def _delegate_task_matches(task, operation, target, project_id: str) -> bool:

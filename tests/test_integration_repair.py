@@ -4,13 +4,14 @@ from __future__ import annotations
 
 import asyncio
 import subprocess
-import pytest
 from types import SimpleNamespace
-from sqlalchemy import insert, select, update
 from unittest.mock import AsyncMock
 
-from src.database import Database
+import pytest
+from sqlalchemy import insert, select, update
+
 from src.commands.principal import ExecutionPrincipal, PrincipalKind, principal_context
+from src.database import Database
 from src.database.tables import (
     integration_batches,
     integration_branch_owners,
@@ -25,12 +26,14 @@ from src.database.tables import (
     integration_repair_stages,
     playbook_artifacts,
     sessions,
-    task_integration_checkpoints,
     task_branch_origins,
     task_delivery_receipts,
+    task_integration_checkpoints,
     tasks,
     workspaces,
 )
+from src.git.manager import GitManager, RemoteRefResult, RemoteRefState
+from src.integration.controls import IntegrationControlService
 from src.integration.models import (
     ArtifactSnapshot,
     BranchKey,
@@ -41,9 +44,7 @@ from src.integration.models import (
     RepairPolicy,
     RequiredCheckSet,
 )
-from src.integration.controls import IntegrationControlService
 from src.integration.ownership import BranchOwnership
-from src.git.manager import GitManager, RemoteRefResult, RemoteRefState
 from src.models import (
     Agent,
     AgentProfile,
@@ -56,10 +57,9 @@ from src.models import (
     TaskStatus,
     Workspace,
 )
-from src.scheduler import AssignAction
 from src.profiles.capabilities import CapabilityPolicy
+from src.scheduler import AssignAction
 from tests.db_fixtures import lease_dsn
-
 
 STARTING_SHA = "a" * 40
 
@@ -2160,8 +2160,8 @@ async def test_scheduler_launches_retained_debug_in_exact_workspace(
 ):
     """The real scheduler preparation and launch attach the retained checkout."""
     from src.git.manager import GitManager
-    from src.intelligence_classes import IntelligenceClass
     from src.integration.repair import RepairService
+    from src.intelligence_classes import IntelligenceClass
     from tests.session_dispatch_helpers import fake_provider
 
     db = session_orch.db
@@ -3757,3 +3757,47 @@ async def test_delegate_close_retains_everything_when_the_handoff_is_unproven(
     assert (await handler.db.get_session("close-session")).task_id == repair_task_id
     if lifecycle == "pool":
         assert closed["retain_claim"] is True
+
+
+async def test_active_repair_delegate_cannot_archive_and_legacy_archive_is_restored(db):
+    from src.database.queries.hierarchy_queries import HierarchyError
+    from src.database.tables import archived_tasks
+    from src.integration.repair import RepairService
+
+    await _seed_parent_operation(db)
+    async with db.immediate() as conn:
+        await conn.execute(insert(integration_branch_owners).values(
+            id="archive-owner", repository_id="repo", ref="aq/parent",
+            owner_id="operation", owner_role="collector", fence_token=1,
+            handoff_state="reserved", created_at=1.0, updated_at=1.0,
+        ))
+    service = RepairService(db, confirm_handoff=lambda _owner: True,
+                            route_validator=lambda _ic, _profile: True)
+    await service.start("operation", STARTING_SHA, "failed-check", now=100.0)
+    dispatched = await service.dispatch("operation", 0)
+    task_id = dispatched["repair_task_id"]
+    async with db.immediate() as conn:
+        await conn.execute(update(tasks).where(tasks.c.id == task_id).values(status="COMPLETED"))
+    with pytest.raises(HierarchyError, match="active repair operation"):
+        await db.archive_task(task_id)
+    # Reproduce the historical archive, before that guard existed.
+    async with db.immediate() as conn:
+        task = await db._get_task_conn(task_id, conn=conn)
+        await db._archive_one(task, conn=conn)
+        before = (await conn.execute(select(integration_repair_stages).where(
+            integration_repair_stages.c.operation_id == "operation"
+        ))).mappings().one()
+    assert await db.get_task(task_id) is None
+    restored = await service.dispatch("operation", 0)
+    assert restored["outcome"] in {"dispatched", "already_dispatched"}
+    assert restored["repair_task_id"] == task_id
+    assert (await db.get_task(task_id)).status is TaskStatus.READY
+    async with db._engine.connect() as conn:
+        assert (await conn.execute(select(archived_tasks.c.id).where(
+            archived_tasks.c.id == task_id
+        ))).scalar_one_or_none() is None
+        after = (await conn.execute(select(integration_repair_stages).where(
+            integration_repair_stages.c.operation_id == "operation"
+        ))).mappings().one()
+    assert after["attempts"] == before["attempts"]
+    assert after["deadline_at"] == before["deadline_at"]
