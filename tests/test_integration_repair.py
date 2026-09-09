@@ -1816,6 +1816,91 @@ async def test_resume_continues_current_parent_conflict_before_playbook_dispatch
     await handler.db.close()
 
 
+async def test_first_human_resume_continues_current_parent_conflict_before_playbook_dispatch(
+    command_handler_factory,
+):
+    """One human resume refreshes a completed delegate for the current conflict."""
+    from src.integration.repair import RepairService
+
+    handler = await command_handler_factory()
+    await _configure_db(handler.db)
+    current_head = await _seed_repeated_parent_conflict(handler.db, deadline_at=149.0)
+    async with handler.db.immediate() as conn:
+        await conn.execute(
+            update(tasks)
+            .where(tasks.c.id == "parent")
+            .values(status=TaskStatus.BLOCKED.value)
+        )
+        await conn.execute(
+            update(integration_repair_operations)
+            .where(integration_repair_operations.c.id == "operation")
+            .values(state="human_required")
+        )
+        await conn.execute(
+            update(integration_repair_stages)
+            .where(
+                integration_repair_stages.c.operation_id == "operation",
+                integration_repair_stages.c.ordinal == 1,
+            )
+            .values(state="expired", completed_at=149.0)
+        )
+    await handler.db.set_task_meta(
+        "parent", "blocked_terminal", "integration_repair_exhausted"
+    )
+    before = await _repair_stage(handler.db, "operation", 1)
+
+    resumed = await IntegrationControlService(
+        handler.db, clock=lambda: 150.0
+    ).resume("operation")
+
+    assert resumed == {
+        "outcome": "resumed",
+        "operation_id": "operation",
+        "project_id": "p",
+        "state": "escalated",
+        "stage": 1,
+        "deadline_at": 210.0,
+    }
+    stage = await _repair_stage(handler.db, "operation", 1)
+    assert stage["starting_sha"] == current_head
+    assert stage["trigger_id"] == "second-conflict"
+    assert stage["current_subject"] == {
+        "kind": "parent",
+        "generation": 3,
+        "head_sha": current_head,
+    }
+    assert stage["dossier"]["current_conflict"]["intent_id"] == "second-conflict"
+    for field in ("attempts", "policy"):
+        assert stage[field] == before[field]
+    assert stage["dossier"]["budget"] == before["dossier"]["budget"]
+    assert stage["started_at"] == 150.0
+    assert stage["deadline_at"] == 210.0
+    assert stage["completed_at"] is None
+    assert stage["deadline_event_id"].startswith("repair-deadline-operation-resume-")
+    assert (await handler.db.get_task("parent")).status is TaskStatus.PAUSED
+    assert (await handler.db.get_task("repair-operation-1")).status is TaskStatus.PAUSED
+
+    handler.orchestrator.repair_service = RepairService(
+        handler.db,
+        route_validator=lambda _intelligence_class, _profile_id: True,
+    )
+    principal = ExecutionPrincipal(
+        kind=PrincipalKind.PLAYBOOK,
+        policy=CapabilityPolicy.from_namespaces(
+            aq_commands=["integration_repair_dispatch"]
+        ),
+        project_id="p",
+    )
+    with principal_context(principal):
+        dispatched = await handler.execute(
+            "integration_repair_dispatch", {"operation_id": "operation", "stage": 1}
+        )
+    assert dispatched["outcome"] == "dispatched"
+    assert dispatched["repair_task_id"] == "repair-operation-1"
+    assert (await handler.db.get_task("repair-operation-1")).status is TaskStatus.READY
+    await handler.db.close()
+
+
 @pytest.mark.parametrize("corruption", ["wrong_episode", "unrelated_block", "manual_pause", "advanced_generation"])
 async def test_parent_resume_rejects_non_current_or_operator_held_collection(db, corruption):
     """Only this operation's exhausted parent episode may be restored."""

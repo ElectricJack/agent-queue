@@ -146,25 +146,6 @@ class IntegrationRecoveryControls:
             elif operation["state"] != "human_required" or stage["state"] not in {"failed", "expired", "cancelled"}:
                 return self._state_result("invalid_state", operation, project_id)
             else:
-                _, delegate_recovery = await self._restore_completed_delegate_on(
-                    conn, operation, stage, validate_only=True
-                )
-                if delegate_recovery is not None:
-                    return self._state_result(delegate_recovery, operation, project_id)
-                transition, recovery = await self._restore_parent_collection_on(
-                    conn, operation, allow_paused=False
-                )
-                if recovery is not None:
-                    return self._state_result(recovery, operation, project_id)
-                if transition is not None:
-                    transitions.append(transition)
-                delegate_transition, delegate_recovery = await self._restore_completed_delegate_on(
-                    conn, operation, stage
-                )
-                if delegate_recovery is not None:
-                    return self._state_result(delegate_recovery, operation, project_id)
-                if delegate_transition is not None:
-                    transitions.append(delegate_transition)
                 policy = RepairPolicy.model_validate(stage["policy"])
                 timeout = (
                     policy.primary_seconds
@@ -172,6 +153,52 @@ class IntegrationRecoveryControls:
                     else policy.debug_seconds
                 )
                 deadline_event_id = f"repair-deadline-{operation_id}-resume-{uuid4().hex}"
+                resumed_state = "active" if int(stage["ordinal"]) == 0 else "escalated"
+
+                # Validate the current conflict against the state this human
+                # resume will create, before restoring the parent, rearming
+                # its clock, or reopening the completed delegate. A current
+                # parent conflict requires an active stage, but this branch is
+                # intentionally still human_required until every durable
+                # ownership and episode proof has been checked.
+                from src.integration.repair import RepairService
+
+                prospective_operation = dict(operation) | {"state": resumed_state}
+                prospective_stage = dict(stage) | {
+                    "state": "active",
+                    "started_at": now,
+                    "deadline_at": now + timeout,
+                    "deadline_event_id": deadline_event_id,
+                    "completed_at": None,
+                }
+                repair = RepairService(self.db)
+                continuation = await repair.continue_current_parent_conflict_on(
+                    conn,
+                    prospective_operation,
+                    prospective_stage,
+                    project_id=project_id,
+                    now=now,
+                    validate_only=True,
+                )
+                if continuation["outcome"] == "stale":
+                    return self._state_result("stale", operation, project_id)
+                _, delegate_recovery = await self._restore_completed_delegate_on(
+                    conn, operation, stage, validate_only=True
+                )
+                if delegate_recovery is not None:
+                    return self._state_result(delegate_recovery, operation, project_id)
+                _, recovery = await self._restore_parent_collection_on(
+                    conn, operation, allow_paused=False, validate_only=True
+                )
+                if recovery is not None:
+                    return self._state_result(recovery, operation, project_id)
+                transition, recovery = await self._restore_parent_collection_on(
+                    conn, operation, allow_paused=False
+                )
+                if recovery is not None:
+                    raise RuntimeError("parent recovery changed during resume")
+                if transition is not None:
+                    transitions.append(transition)
                 await conn.execute(
                     update(integration_repair_stages)
                     .where(
@@ -192,7 +219,6 @@ class IntegrationRecoveryControls:
                         completed_at=None,
                     )
                 )
-                resumed_state = "active" if int(stage["ordinal"]) == 0 else "escalated"
                 await conn.execute(
                     update(integration_repair_operations)
                     .where(
@@ -201,6 +227,25 @@ class IntegrationRecoveryControls:
                     )
                     .values(state=resumed_state, updated_at=now)
                 )
+                if continuation["outcome"] == "ready":
+                    continued = await repair.continue_current_parent_conflict_on(
+                        conn,
+                        prospective_operation,
+                        prospective_stage,
+                        project_id=project_id,
+                        now=now,
+                    )
+                    if continued["outcome"] != "continued":
+                        raise RuntimeError("repair continuation changed during human resume")
+                    transitions.append(continued["transition"])
+                else:
+                    delegate_transition, delegate_recovery = await self._restore_completed_delegate_on(
+                        conn, operation, stage
+                    )
+                    if delegate_recovery is not None:
+                        raise RuntimeError("delegate recovery changed during resume")
+                    if delegate_transition is not None:
+                        transitions.append(delegate_transition)
                 if operation["target_kind"] == "batch":
                     await conn.execute(
                         update(integration_batches)
@@ -241,6 +286,7 @@ class IntegrationRecoveryControls:
         operation: dict[str, Any],
         *,
         allow_paused: bool,
+        validate_only: bool = False,
     ) -> tuple[Any | None, str | None]:
         """Restore only the terminally blocked parent for this exact episode.
 
@@ -307,6 +353,8 @@ class IntegrationRecoveryControls:
             or terminal_context != "integration_repair_exhausted"
         ):
             return None, "invalid_state"
+        if validate_only:
+            return None, None
         transition = await self.db._apply_transition(
             conn,
             operation["parent_task_id"],
