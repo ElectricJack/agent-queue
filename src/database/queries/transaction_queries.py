@@ -1,36 +1,31 @@
-"""Explicit write-transaction helper shared by both adapters.
+"""The caller-owned write transaction shared by every query mixin.
 
-SQLite's default deferred transaction takes the write lock at the *first*
-write statement, so a read-then-write sequence can be interleaved by another
-writer and lose the race with ``database is locked``.  Commands that read a
-guard condition and then act on it (cascade delete, subtree abandon) need the
-write lock from the very first statement — that is ``BEGIN IMMEDIATE``.
+Most query methods open their own short transaction.  A method that reads a
+guard condition and then acts on it must not: the read and the write have to
+be one unit.  Those methods take a ``conn`` argument and let the caller own
+the boundary with ``db.immediate()``::
 
-PostgreSQL has no such hazard (its default read-committed transaction already
-takes row locks as needed), so there ``immediate()`` is exactly
-``engine.begin()``.
+    async with db.immediate() as conn:
+        if await db.open_children(task_id, conn=conn):
+            raise Refused("hierarchy.open_children")
+        await db.delete_task(task_id, cascade=True, conn=conn)
 
-The engine uses ``NullPool`` (one fresh DBAPI connection per transaction),
-so an ``immediate()`` block
-and any concurrent plain ``engine.begin()`` writer are isolated from each
-other by SQLite's own writer lock, with ``PRAGMA busy_timeout`` bounding
-the wait.  The ``asyncio.Lock`` below is kept on top of that: it serialises
-concurrent ``immediate()`` callers (swarm-work-model §10 claim attempts) in
-process so they queue on a cheap async lock instead of busy-waiting on the
-database's writer lock and burning the busy_timeout budget.
+PostgreSQL is the only backend, so ``immediate()`` is exactly
+``engine.begin()``: a read-committed transaction that takes row locks as
+needed, which is all a read-then-write sequence requires.  The name is a
+leftover from the SQLite era, where the same guarantee needed an explicit
+``BEGIN IMMEDIATE`` to grab the write lock before the first read.
 
-Only ``:memory:`` databases still share one connection (``StaticPool``) —
-a private in-memory database does not survive its connection closing — and
-there the lock is what keeps concurrent ``immediate()`` callers from
-issuing nested ``BEGIN`` on the same raw connection.
+A method that takes ``conn`` never commits — the block does.  Post-commit
+work (settled-container notifications, ready-frontier entries) is fired by
+the caller *after* the block exits, never inside it.
 """
 
 from __future__ import annotations
 
-import asyncio
 import logging
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from typing import AsyncIterator
 
 from sqlalchemy.ext.asyncio import AsyncConnection
 
@@ -38,32 +33,14 @@ logger = logging.getLogger(__name__)
 
 
 class TransactionQueryMixin:
-    """Provides :meth:`immediate` — a write-locked transaction context."""
-
-    def _get_immediate_lock(self) -> asyncio.Lock:
-        """Return the mixin's shared ``asyncio.Lock``, creating it lazily.
-
-        Lazy construction avoids binding the lock to an event loop at
-        ``__init__`` time, before any loop is running.  The lock is bound
-        to whichever loop is running on first use and then persists on
-        the instance for the rest of its lifetime — fine here because one
-        adapter instance is used from one event loop at a time (a fresh
-        loop per test, the daemon's single loop in production).
-        """
-        lock = getattr(self, "_immediate_lock", None)
-        if lock is None:
-            lock = asyncio.Lock()
-            self._immediate_lock = lock
-        return lock
+    """Provides :meth:`immediate` — the caller-owned write transaction."""
 
     @asynccontextmanager
     async def immediate(self) -> AsyncIterator[AsyncConnection]:
-        """Yield a connection inside a transaction that holds the write lock.
+        """Yield a connection inside one committed-on-exit transaction.
 
-        On SQLite this issues ``BEGIN IMMEDIATE`` on an AUTOCOMMIT connection
-        (so the driver does not open its own implicit transaction) and commits
-        or rolls back explicitly.  On every other dialect it delegates to
-        ``engine.begin()``.
+        Delegates to ``engine.begin()``: the block commits on a clean exit
+        and rolls back on any exception.
         """
         engine = self._engine
         if engine is None:  # pragma: no cover - defensive
@@ -71,19 +48,3 @@ class TransactionQueryMixin:
 
         async with engine.begin() as conn:
             yield conn
-        return
-
-        async with self._get_immediate_lock():
-            conn = await engine.connect()
-            try:
-                await conn.execution_options(isolation_level="AUTOCOMMIT")
-                await conn.exec_driver_sql("BEGIN IMMEDIATE")
-                try:
-                    yield conn
-                except BaseException:
-                    await conn.exec_driver_sql("ROLLBACK")
-                    raise
-                else:
-                    await conn.exec_driver_sql("COMMIT")
-            finally:
-                await conn.close()
