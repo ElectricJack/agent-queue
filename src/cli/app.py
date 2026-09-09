@@ -370,26 +370,60 @@ def _load_plugin_config_from_db(plugin_id: str) -> dict | None:
         return None
 
 
-def _load_plugin_cli_groups() -> None:
-    """Dynamically register CLI groups from installed aq.plugins entry points."""
-    try:
-        from importlib.metadata import entry_points
+def _tag_plugin_cli_tree(command: click.Command, plugin_name: str) -> None:
+    """Mark an external plugin's Click tree for inventory provenance."""
+    command._aq_registration = "plugin-extension"  # type: ignore[attr-defined]
+    command._aq_owner_kind = "external-plugin"  # type: ignore[attr-defined]
+    command._aq_owner = plugin_name  # type: ignore[attr-defined]
+    if isinstance(command, click.Group):
+        for child in command.commands.values():
+            _tag_plugin_cli_tree(child, plugin_name)
 
-        for ep in entry_points(group="aq.plugins"):
+
+def _load_plugin_cli_groups(
+    cli_group: click.Group | None = None,
+    *,
+    entry_point_provider=None,
+    config_loader=None,
+) -> list[str]:
+    """Register installed plugin CLI groups without allowing core shadowing.
+
+    The injectable providers keep plugin-present and plugin-absent startup
+    behavior testable without installing packages or contacting a database.
+    Returns the names that were successfully mounted.
+    """
+    cli_group = cli_group or cli
+    config_loader = config_loader or _load_plugin_config_from_db
+    mounted: list[str] = []
+    try:
+        if entry_point_provider is None:
+            from importlib.metadata import entry_points
+
+            entry_point_provider = entry_points
+
+        for ep in entry_point_provider(group="aq.plugins"):
             try:
+                # A plugin is an extension, never a replacement for an aq
+                # command.  Click's add_command otherwise silently overwrites
+                # an existing top-level group with the same name.
+                if ep.name in cli_group.commands:
+                    continue
                 cls = ep.load()
                 instance = cls()
                 # Load saved config from DB so CLI commands use the right defaults
-                db_config = _load_plugin_config_from_db(ep.name)
+                db_config = config_loader(ep.name)
                 if db_config:
                     instance.config = {**instance.config, **db_config}
                 group = instance.cli_group()
                 if group is not None:
-                    cli.add_command(group, ep.name)
+                    _tag_plugin_cli_tree(group, ep.name)
+                    cli_group.add_command(group, ep.name)
+                    mounted.append(ep.name)
             except Exception:
                 pass
     except Exception:
         pass
+    return mounted
 
 
 _load_plugin_cli_groups()

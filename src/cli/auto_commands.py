@@ -366,6 +366,9 @@ def _make_auto_command(
     cli_name: str,
     tool_def: dict,
     console: Console,
+    *,
+    owner_kind: str = "core",
+    owner: str = "agent-queue",
 ) -> click.Command:
     """Build a Click command from a tool definition."""
     input_schema = tool_def.get("input_schema", {})
@@ -382,7 +385,8 @@ def _make_auto_command(
             params.append(
                 click.Option(
                     [option_name + "/--no-" + prop_name.replace("_", "-")],
-                    default=None,
+                    required=prop_name in required,
+                    **({} if prop_name in required else {"default": None}),
                     help=description,
                 )
             )
@@ -392,7 +396,7 @@ def _make_auto_command(
                     [option_name],
                     type=click_type,
                     required=prop_name in required,
-                    default=None,
+                    **({} if prop_name in required else {"default": None}),
                     help=description,
                 )
             )
@@ -468,12 +472,22 @@ def _make_auto_command(
 
         return callback
 
-    return click.Command(
+    command = click.Command(
         name=cli_name.replace("_", "-"),
         callback=_make_callback(cmd_name),
         params=params,
         help=tool_def.get("description", f"Execute the {cmd_name} command."),
     )
+    # Machine-readable provenance for the maintained CLI inventory.  Callback
+    # introspection alone only says ``src.cli.auto_commands.callback`` and
+    # cannot distinguish a core CommandHandler operation from an internal or
+    # external plugin provider.  Keep these as Click-compatible private
+    # attributes so inventory generation never changes command behaviour.
+    command._aq_registration = "generated"  # type: ignore[attr-defined]
+    command._aq_backend_command = cmd_name  # type: ignore[attr-defined]
+    command._aq_owner_kind = owner_kind  # type: ignore[attr-defined]
+    command._aq_owner = owner  # type: ignore[attr-defined]
+    return command
 
 
 def register_auto_commands(cli_group: click.Group, console: Console) -> None:
@@ -497,6 +511,7 @@ def register_auto_commands(cli_group: click.Group, console: Console) -> None:
 
     # Collect internal plugin tool definitions (no daemon needed)
     plugin_categories: dict[str, str] = {}
+    plugin_owners: dict[str, str] = {}
     try:
         from src.plugins.internal import collect_internal_tool_definitions
 
@@ -507,6 +522,12 @@ def register_auto_commands(cli_group: click.Group, console: Console) -> None:
                     tool_map[name] = defn
                 if name not in _TOOL_CATEGORIES and name not in _CLI_CATEGORY_OVERRIDES:
                     plugin_categories[name] = category
+                plugin_owners[name] = {
+                    "files": "aq-files",
+                    "git": "aq-git",
+                    "notes": "aq-notes",
+                    "vibecop": "aq-vibecop",
+                }.get(category, f"internal:{category}")
     except Exception:
         pass
 
@@ -562,7 +583,15 @@ def register_auto_commands(cli_group: click.Group, console: Console) -> None:
                 continue
 
             try:
-                auto_cmd = _make_auto_command(cmd_name, stripped, defn, console)
+                owner = plugin_owners.get(cmd_name)
+                auto_cmd = _make_auto_command(
+                    cmd_name,
+                    stripped,
+                    defn,
+                    console,
+                    owner_kind="internal-plugin" if owner else "core",
+                    owner=owner or "agent-queue",
+                )
                 target_group.add_command(auto_cmd)
             except Exception:
                 pass
@@ -586,7 +615,15 @@ def register_auto_commands(cli_group: click.Group, console: Console) -> None:
                 if hasattr(system_group, "commands") and click_name in system_group.commands:
                     continue
                 try:
-                    auto_cmd = _make_auto_command(cmd_name, cmd_name, defn, console)
+                    owner = plugin_owners.get(cmd_name)
+                    auto_cmd = _make_auto_command(
+                        cmd_name,
+                        cmd_name,
+                        defn,
+                        console,
+                        owner_kind="internal-plugin" if owner else "core",
+                        owner=owner or "agent-queue",
+                    )
                     system_group.add_command(auto_cmd)
                 except Exception:
                     pass
