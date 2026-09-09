@@ -78,6 +78,7 @@ class AuditPullRequest(BaseModel):
     repository_numeric_id: int
     repository_full_name: str
     idempotency_key: str
+    state: Literal["open", "closed"] = "open"
 
 
 class CandidateRepairLineage(BaseModel):
@@ -225,14 +226,16 @@ class CandidateService:
             revision = await self._ensure_revision(state, revision_number, batch["base_sha"])
         except CandidateStaleAuthority:
             return CandidateBuildResult(outcome="wait", batch_id=batch_id, revision=revision_number)
-        was_built = revision["state"] == "built"
+        was_built = revision["state"] in {"built", "green"}
         operation_id = state["operation"]["id"]
         # Only stage zero is activated from the construction base. An escalated
         # stage already has its own frozen starting SHA and finite budget;
         # replaying the initial start would reject that valid continuation.
         # Subsequent publication guards still validate current stage authority.
-        if (revision.get("repair_parent_revision") is None
-                and int(state["operation"]["active_stage"]) == 0):
+        if (
+            revision.get("repair_parent_revision") is None
+            and int(state["operation"]["active_stage"]) == 0
+        ):
             started = await self.repair.start(
                 operation_id,
                 revision["construction_base_sha"],
@@ -272,8 +275,6 @@ class CandidateService:
             if new_base is None:
                 return self._result("base_moved", state, revision, operation_id)
             return await self.rebuild(batch_id, revision_number, new_base)
-        if revision["state"] == "green":
-            return self._result("already_built", state, revision, operation_id)
         outcome = "already_built" if was_built or batch["pr_url"] else "built"
         pushed = await self._publish(state, revision, store)
         if pushed.get("publication_wait"):
@@ -1798,6 +1799,13 @@ class CandidateService:
             or pr.idempotency_key != publication_key
         ):
             raise ValueError("audit PR identity does not match candidate")
+        if pr.state == "closed":
+            # GitHub closes an audit PR with no diff.  That is an audit record,
+            # not a request to fabricate work or reopen an empty PR: it is safe
+            # only when the exact candidate is already the current base head.
+            base_head = await self.app_client.exact_head_ref(repository.default_branch)
+            if base_head != revision["head_sha"]:
+                return {**revision, "publication_wait": True}
         async with self.db.immediate() as conn:
             await self.db.lock_hierarchy_project(conn, batch["project_id"])
             await self._validate_authority_on(conn, state, revision=int(revision["revision"]))

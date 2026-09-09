@@ -2828,6 +2828,105 @@ async def test_published_pr_identity_is_immutable_and_replay_is_canonical(db, tm
     assert replay.head_sha == built.head_sha
 
 
+@pytest.mark.parametrize("base_is_candidate", [True, False])
+async def test_green_candidate_resumes_reserved_closed_noop_audit_pr(
+    db, tmp_path, base_is_candidate
+):
+    """A closed no-diff audit PR is usable only for the exact current base.
+
+    This is the recovery shape left by a daemon loss after the external audit
+    PR was created: the final ref mutation is immutable under its original
+    collector fence, while a repair-stage deadline may advance that fence
+    before the exact-green retry reaches publication.
+    """
+    from src.git.github_app import GitHubRepositoryBinding
+    from src.integration.candidates import CandidateService
+    from src.integration.models import BranchKey, Fence
+
+    origin, _work, base, members = _make_origin(tmp_path)
+    await db.update_repo("repo", url=str(origin))
+    await _seed_batch(db, members=members[:1], base_sha=base)
+    app = _AppClient(origin)
+    app.repository = GitHubRepositoryBinding(repository_id=9, full_name="example/repo")
+    git, forge = _LocalPushGit(origin), _AuditForge()
+    crashed = CandidateService(
+        db,
+        data_dir=tmp_path / "data",
+        git_manager=git,
+        forge_provider=forge,
+        app_client=app,
+        crash_hook=_CrashOnce("after_audit_pr_create"),
+        clock=lambda: 100.0,
+    )
+    with pytest.raises(RuntimeError, match="crash at after_audit_pr_create"):
+        await crashed.build("batch")
+    async with db._engine.connect() as conn:
+        revision = (
+            await conn.execute(select(integration_candidate_revisions))
+        ).mappings().one()
+    candidate_sha = revision["head_sha"]
+    assert candidate_sha is not None
+    forge.backing["result"] = forge.backing["result"].model_copy(update={"state": "closed"})
+    if base_is_candidate:
+        _git(origin, "update-ref", "refs/heads/main", candidate_sha)
+    async with db.immediate() as conn:
+        await conn.execute(
+            update(integration_candidate_revisions)
+            .where(integration_candidate_revisions.c.batch_id == "batch")
+            .values(state="green", updated_at=101.0)
+        )
+        await conn.execute(
+            update(integration_batches)
+            .where(integration_batches.c.id == "batch")
+            .values(tested_candidate_sha=candidate_sha, updated_at=101.0)
+        )
+
+    # Advance the collector fence after the final mutation was applied.  A
+    # replay must use its immutable exact proof, not try to reserve it again.
+    target = BranchKey(repository_id="repo", branch=(await db.get_integration_batch("batch"))["integration_branch"])
+    owner = await crashed.ownership.get_owner(target)
+    assert owner is not None
+    await crashed.repair.expire("repair-batch-batch", 0, now=131.0)
+    await crashed.ownership.transfer(
+        Fence(target=target, owner_id=owner["owner_id"], token=int(owner["fence_token"])),
+        "repair-batch-batch",
+        "collector",
+    )
+
+    replay = await CandidateService(
+        db,
+        data_dir=tmp_path / "data",
+        git_manager=git,
+        forge_provider=forge,
+        app_client=app,
+        clock=lambda: 100.0,
+    ).build("batch")
+    async with db._engine.connect() as conn:
+        publication = (
+            await conn.execute(select(integration_candidate_publications))
+        ).mappings().one()
+        mutation = (
+            await conn.execute(
+                select(integration_candidate_ref_mutations).where(
+                    integration_candidate_ref_mutations.c.purpose == "candidate_final"
+                )
+            )
+        ).mappings().one()
+    if base_is_candidate:
+        assert replay.outcome == "already_built"
+        assert publication["state"] == "pr_published"
+        assert publication["pr_url"] == "https://github.com/example/repo/pull/9"
+    else:
+        assert replay.outcome == "wait"
+        assert publication["state"] == "pr_reserved"
+        assert publication["pr_number"] is None
+    assert mutation["state"] == "applied"
+    assert mutation["remote_sha"] == candidate_sha
+    assert mutation["branch_fence_token"] < (await crashed.ownership.get_owner(target))["fence_token"]
+    assert len(git.pushes) == 1
+    assert len(forge.calls) == 1
+
+
 async def test_completed_candidate_publication_is_adopted_after_stage_fence_advances(db, tmp_path):
     """A completed exact ref write survives a deadline-stage collector fence change."""
     from src.git.github_app import GitHubRepositoryBinding
