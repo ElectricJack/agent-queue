@@ -448,6 +448,31 @@ class TestReconcilerInterplay:
         detail = next(r["detail"] for r in res["reasons"] if r["code"] == "awaiting_pool_session")
         assert "worker" in detail
 
+    async def test_explain_uses_fleet_occupancy_for_global_pool_cap(self, orch, db, handler):
+        from src.models import SessionRecord
+
+        await ready(db, "waiting")
+        await db.create_project(Project(id="other-project", name="Other"))
+        for project_id, task_id in ((PROJECT_ID, "busy-local"), ("other-project", "busy-other")):
+            await db.create_task(Task(
+                id=task_id, project_id=project_id, title=task_id, description="busy worker",
+                profile_id="worker", status=TaskStatus.IN_PROGRESS,
+            ))
+            await db.create_session(SessionRecord(
+                id=task_id, project_id=project_id, profile_id="worker",
+                harness="claude", provider="fake", name=task_id, lifecycle="pool",
+                work_dir="/tmp/unused-pool-explain", epoch="test", instance_token=task_id,
+                started_at=time.time(), task_id=task_id, state="running",
+            ))
+
+        result = await handler._cmd_explain_task({"task_id": "waiting"})
+        detail = next(r["detail"] for r in result["reasons"]
+                      if r["code"] == "awaiting_pool_session")
+        assert "project: 1 busy, 0 idle, 0 starting" in detail
+        assert "fleet: 2 busy, 0 idle, 0 starting" in detail
+        assert "max_active=2" in detail
+        assert "at max_active with no idle worker" in detail
+
     async def test_explain_names_the_quarantine_as_the_blocker(self, orch, db, handler):
         await ready(db, "t1")
         orch._quarantine_pool(PROJECT_ID, "worker", "unknown harness 'nope'")
