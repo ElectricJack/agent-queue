@@ -1320,6 +1320,135 @@ async def test_resumed_event_redispatches_established_repair_delegate(db):
     ]
 
 
+async def test_human_resume_rearms_exact_live_unstarted_resolution_writer(db):
+    """Only the frozen live writer may resume before its first push attempt."""
+    from src.integration.repair import RepairService
+
+    await _seed_parent_operation(db)
+    await _add_parent_evidence(db, "failed-check-2", run_id="run-2", conclusion="failure")
+    await _add_parent_evidence(db, "debug-failed", run_id="run-debug", conclusion="failure")
+    await db.create_agent(Agent(id="resolution-agent", name="Resolution", profile_id="debugger"))
+    async with db.immediate() as conn:
+        await conn.execute(
+            insert(integration_branch_owners).values(
+                id="resolution-owner", repository_id="repo", ref="aq/parent",
+                owner_id="operation", owner_role="collector", fence_token=11,
+                handoff_state="reserved", created_at=1.0, updated_at=1.0,
+            )
+        )
+    repair = RepairService(db, route_validator=lambda *_args: True)
+    await repair.start("operation", STARTING_SHA, "failed-check", now=100.0)
+    await repair.record_result("operation", "failed-check", now=101.0)
+    await repair.record_result("operation", "failed-check-2", now=102.0)
+    dispatched = await repair.dispatch("operation", 1)
+    repair_task_id = dispatched["repair_task_id"]
+
+    await db.create_workspace(
+        Workspace(
+            id="resolution-workspace", project_id="p", workspace_path="/tmp/resolution",
+            source_type=RepoSourceType.LINK, locked_by_agent_id="resolution-agent",
+            locked_by_task_id=repair_task_id,
+        )
+    )
+    await db.create_session(
+        SessionRecord(
+            id="resolution-session", task_id=repair_task_id, project_id="p",
+            profile_id="debugger", harness="fake", provider="fake", name="resolution",
+            lifecycle="task", state="running", work_dir="/tmp/resolution", epoch="epoch",
+            instance_token="resolution-instance", started_at=103.0,
+            agent_id="resolution-agent", last_claim_epoch=7,
+        )
+    )
+    async with db.immediate() as conn:
+        await conn.execute(
+            update(tasks).where(tasks.c.id == repair_task_id).values(
+                status="IN_PROGRESS", assigned_agent_id="resolution-agent", claim_epoch=7
+            )
+        )
+        await conn.execute(
+            update(integration_branch_owners)
+            .where(integration_branch_owners.c.id == "resolution-owner")
+            .values(
+                owner_id=repair_task_id, owner_role="repair", handoff_state="attached",
+                session_id="resolution-session", workspace_id="resolution-workspace",
+            )
+        )
+        await conn.execute(
+            update(integration_repair_operations)
+            .where(integration_repair_operations.c.id == "operation")
+            .values(state="human_required")
+        )
+        await conn.execute(
+            update(integration_repair_stages)
+            .where(
+                integration_repair_stages.c.operation_id == "operation",
+                integration_repair_stages.c.ordinal == 1,
+            )
+            .values(state="expired", completed_at=103.0)
+        )
+
+    intent = await db.reserve_integration_promotion_intent(
+        {
+            "id": "resolution-intent", "domain_key": "resolution-domain",
+            "operation_key": "operation", "project_id": "p", "receipt_id": "receipt",
+            "source_task_id": "child", "target_task_id": "parent", "source_head": "b" * 40,
+            "source_base": "a" * 40, "repository_id": "repo", "origin_url": "/remote.git",
+            "target_branch": "aq/parent", "expected_target": "c" * 40,
+            "fence_owner_id": "operation", "fence_token": 10,
+            "review_evidence": {"reviewed_tree_sha": "d" * 40}, "authors": [],
+            "provenance": {}, "commit_metadata": {}, "created_at": 103.0,
+        }
+    )
+    await db.mark_integration_promotion_conflict(intent["id"], {"paths": ["shared"]})
+    async with db.immediate() as conn:
+        await db.reserve_integration_conflict_resolution(
+            conn,
+            intent["id"],
+            {
+                "resolved_head_sha": "e" * 40, "resolved_tree_sha": "f" * 40,
+                "repair_commit_shas": ["e" * 40], "operation_id": "operation",
+                "stage_ordinal": 1, "repair_task_id": repair_task_id,
+                "repair_session_id": "resolution-session",
+                "repair_session_instance_token": "resolution-instance",
+                "repair_workspace_id": "resolution-workspace",
+                "fence_owner_id": repair_task_id, "fence_token": dispatched["fence"]["token"],
+            },
+        )
+
+    resumed = await IntegrationControlService(db, clock=lambda: 200.0).resume("operation")
+    assert resumed == {
+        "outcome": "resumed", "operation_id": "operation", "project_id": "p",
+        "state": "escalated", "stage": 1, "deadline_at": 260.0,
+    }
+    assert await repair.dispatch("operation", 1) == dispatched | {"outcome": "already_dispatched"}
+    assert (await db.get_task(repair_task_id)).claim_epoch == 7
+
+    # A durable start marker intentionally turns the otherwise identical
+    # state into an ambiguity: the remote write may have begun before a crash.
+    async with db.immediate() as conn:
+        await conn.execute(
+            update(integration_repair_operations)
+            .where(integration_repair_operations.c.id == "operation")
+            .values(state="human_required")
+        )
+        await conn.execute(
+            update(integration_repair_stages)
+            .where(
+                integration_repair_stages.c.operation_id == "operation",
+                integration_repair_stages.c.ordinal == 1,
+            )
+            .values(state="expired", completed_at=201.0)
+        )
+        await conn.execute(
+            update(integration_promotion_intents)
+            .where(integration_promotion_intents.c.id == intent["id"])
+            .values(resolution_push_started_at=201.0)
+        )
+    ambiguous = await IntegrationControlService(db, clock=lambda: 202.0).resume("operation")
+    assert ambiguous["outcome"] == "ambiguous"
+    assert {blocker["ref"] for blocker in ambiguous["blockers"]} == {"promotion", "writer"}
+
+
 async def test_repair_dispatch_command_derives_current_stage_with_real_service(
     command_handler_factory,
 ):

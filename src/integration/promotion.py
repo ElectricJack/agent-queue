@@ -430,30 +430,12 @@ class PromotionService:
         self._assert_resolution_repository(intent, repository)
 
         await self._crash("before_resolution_authority_recheck")
+        # First establish whether a remote write is needed and, if it is,
+        # commit an intent marker *before* reaching git.  The marker is the
+        # recovery boundary: no marker proves no resolution push was tried;
+        # a marker without evidence is deliberately ambiguous.
         async with self.db.immediate() as conn:
-            scope = await self.db.get_repair_filing_scope(
-                principal.task_id, session_id=principal.session_id, conn=conn
-            )
-            if (
-                scope is None
-                or not scope["active"]
-                or scope["operation_id"] != intent["resolution_operation_id"]
-                or scope["target_kind"] != "parent"
-                or scope["parent_task_id"] != intent["target_task_id"]
-                or scope["project_id"] != intent["project_id"]
-                or scope["repository_id"] != intent["repository_id"]
-                or scope["writer_kind"] != "repair_delegate"
-                or scope["session_id"] != principal.session_id
-                or scope["workspace_id"] is None
-                or scope["workspace_path"] is None
-                or not scope["instance_token"]
-                or not matches_session_instance(principal, scope["instance_token"])
-                or scope["fence_token"] != fence.token
-                or fence.owner_id != principal.task_id
-                or scope["deadline_at"] is None
-                or self.clock() >= float(scope["deadline_at"])
-            ):
-                raise PromotionTargetMoved("repair resolution push authority is stale")
+            scope = await self._resolution_push_scope_on(conn, intent, fence, principal)
             if intent["state"] == "committed":
                 return self._value(intent), True
             async with self.ownership.mutation_exclusion_on(
@@ -474,42 +456,108 @@ class PromotionService:
                     if remote.state is RemoteRefState.ABSENT:
                         raise PromotionTargetMoved("target branch is absent")
                     already_applied = remote.oid == intent["resolution_head_sha"]
+                    if already_applied:
+                        recorded = await self._record_resolution_push_on(
+                            conn, intent_id, intent, scope, fence, principal
+                        )
+                        return self._value(recorded), True
+                    if remote.oid != intent["expected_target"]:
+                        raise PromotionTargetMoved(
+                            "target branch moved from the resolution old tip"
+                        )
+                    if intent["resolution_push_started_at"] is not None:
+                        raise PromotionInvariantError(
+                            "resolution push may already be in flight; reconcile it first"
+                        )
+                    # Keep the existing crash point before the marker: it is
+                    # still a provably unstarted push and safe to replay.
+                    await self._crash("before_resolution_push")
+                    intent = await self.db.mark_integration_resolution_push_started_on(
+                        conn, intent_id, started_at=self.clock()
+                    )
+
+        # The preceding transaction committed the marker.  Recheck every
+        # identity after reacquiring the branch fence; an authority change in
+        # this gap is ambiguous rather than a license to push.
+        async with self.db.immediate() as conn:
+            scope = await self._resolution_push_scope_on(conn, intent, fence, principal)
+            async with self.ownership.mutation_exclusion_on(
+                conn, fence, state="attached", expected_role="repair"
+            ):
+                workspace = Path(scope["workspace_path"])
+                async with self.git.arepository_transaction(str(workspace)):
+                    await self._assert_exact_resolution(workspace, intent)
+                    remote = await self.git.als_remote_ref(
+                        str(workspace), intent["target_branch"], remote=intent["origin_url"]
+                    )
+                    if remote.state is RemoteRefState.ERROR:
+                        raise PromotionRuntimeError(remote.error or "target remote state is unknown")
+                    if remote.state is RemoteRefState.ABSENT:
+                        raise PromotionTargetMoved("target branch is absent")
+                    already_applied = remote.oid == intent["resolution_head_sha"]
                     if not already_applied:
                         if remote.oid != intent["expected_target"]:
                             raise PromotionTargetMoved(
                                 "target branch moved from the resolution old tip"
                             )
-                        await self._crash("before_resolution_push")
                         try:
                             await self.git.apush_expected_delivery(
-                                str(workspace),
-                                intent["expected_target"],
-                                intent["resolution_head_sha"],
-                                intent["target_branch"],
-                                intent["expected_target"],
-                                lock_held=True,
+                                str(workspace), intent["expected_target"],
+                                intent["resolution_head_sha"], intent["target_branch"],
+                                intent["expected_target"], lock_held=True,
                                 remote=intent["origin_url"],
                             )
                         except GitError as exc:
                             raise PromotionRuntimeError(str(exc)) from exc
                         await self._crash("after_resolution_push")
-                await self.db.record_integration_resolution_push_on(
-                    conn,
-                    intent_id,
-                    {
-                        "kind": "exact_resolution_push_observed",
-                        "remote_sha": intent["resolution_head_sha"],
-                        "operation_id": scope["operation_id"],
-                        "stage_ordinal": scope["stage"],
-                        "repair_task_id": principal.task_id,
-                        "repair_session_id": principal.session_id,
-                        "repair_session_instance_token": scope["instance_token"],
-                        "repair_workspace_id": scope["workspace_id"],
-                        "fence_owner_id": fence.owner_id,
-                        "fence_token": fence.token,
-                    },
-                )
-        return self._value(intent), already_applied
+            recorded = await self._record_resolution_push_on(
+                conn, intent_id, intent, scope, fence, principal
+            )
+        return self._value(recorded), already_applied
+
+    async def _resolution_push_scope_on(self, conn, intent, fence, principal):
+        scope = await self.db.get_repair_filing_scope(
+            principal.task_id, session_id=principal.session_id, conn=conn
+        )
+        if (
+            scope is None
+            or not scope["active"]
+            or scope["operation_id"] != intent["resolution_operation_id"]
+            or scope["target_kind"] != "parent"
+            or scope["parent_task_id"] != intent["target_task_id"]
+            or scope["project_id"] != intent["project_id"]
+            or scope["repository_id"] != intent["repository_id"]
+            or scope["writer_kind"] != "repair_delegate"
+            or scope["session_id"] != principal.session_id
+            or scope["workspace_id"] is None
+            or scope["workspace_path"] is None
+            or not scope["instance_token"]
+            or not matches_session_instance(principal, scope["instance_token"])
+            or scope["fence_token"] != fence.token
+            or fence.owner_id != principal.task_id
+            or scope["deadline_at"] is None
+            or self.clock() >= float(scope["deadline_at"])
+        ):
+            raise PromotionTargetMoved("repair resolution push authority is stale")
+        return scope
+
+    async def _record_resolution_push_on(self, conn, intent_id, intent, scope, fence, principal):
+        return await self.db.record_integration_resolution_push_on(
+            conn,
+            intent_id,
+            {
+                "kind": "exact_resolution_push_observed",
+                "remote_sha": intent["resolution_head_sha"],
+                "operation_id": scope["operation_id"],
+                "stage_ordinal": scope["stage"],
+                "repair_task_id": principal.task_id,
+                "repair_session_id": principal.session_id,
+                "repair_session_instance_token": scope["instance_token"],
+                "repair_workspace_id": scope["workspace_id"],
+                "fence_owner_id": fence.owner_id,
+                "fence_token": fence.token,
+            },
+        )
 
     async def reconcile(self, intent_id: str) -> PromotionValue:
         intent = await self._intent(intent_id)

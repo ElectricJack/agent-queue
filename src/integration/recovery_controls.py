@@ -20,7 +20,11 @@ from src.database.tables import (
     integration_promotion_intents,
     integration_repair_operations,
     integration_repair_stages,
+    sessions,
+    task_integration_checkpoints,
+    task_metadata,
     tasks,
+    workspaces,
 )
 from src.integration.models import RepairPolicy
 from src.integration.outbox import enqueue_integration_event
@@ -42,14 +46,22 @@ class IntegrationRecoveryControls:
             project_id = await self._project_id_on(conn, operation)
             if operation["state"] != "human_required":
                 return self._state_result("invalid_state", operation, project_id)
-            blockers = await self._ambiguous_writes_on(
-                conn, operation, allow_reserved_delegate=True
-            )
-            if blockers:
-                return self._ambiguous_result(operation, project_id, blockers)
             stage = await self._locked_stage_on(conn, operation)
             if stage is None or stage["state"] not in {"failed", "expired", "cancelled"}:
                 return self._state_result("invalid_state", operation, project_id)
+            live_resolution = await self._safe_live_resolution_resume_on(
+                conn, operation, stage, project_id
+            )
+            blockers = await self._ambiguous_writes_on(
+                conn, operation, allow_reserved_delegate=not live_resolution
+            )
+            if live_resolution:
+                # The helper proved these two otherwise-ambiguous rows are
+                # the same live delegate and the same never-started frozen
+                # resolution.  Every other mutation remains a hard stop.
+                blockers = [item for item in blockers if item not in {"promotion", "writer"}]
+            if blockers:
+                return self._ambiguous_result(operation, project_id, blockers)
             policy = RepairPolicy.model_validate(stage["policy"])
             timeout = policy.primary_seconds if int(stage["ordinal"]) == 0 else policy.debug_seconds
             await conn.execute(
@@ -259,6 +271,149 @@ class IntegrationRecoveryControls:
         if project_id is None:
             raise ValueError("operation target has no owning project")
         return str(project_id)
+
+    @staticmethod
+    async def _safe_live_resolution_resume_on(
+        conn: Any,
+        operation: dict[str, Any],
+        stage: dict[str, Any],
+        project_id: str,
+    ) -> bool:
+        """Recognize one proven, never-started resolution push.
+
+        This is intentionally narrower than ordinary resume.  It admits no
+        replacement writer and no general attached-writer exception: the
+        original delegate, claim epoch, workspace, branch fence and frozen
+        reservation must still describe precisely one live actor.  A durable
+        pre-push marker makes even a remote write that *might* have started
+        ineligible.
+        """
+        if (
+            operation["target_kind"] != "parent"
+            or stage["state"] != "expired"
+            or stage["writer_kind"] != "repair_delegate"
+            or not stage["repair_task_id"]
+        ):
+            return False
+        repair_task_id = stage["repair_task_id"]
+        parent = (
+            await conn.execute(
+                select(tasks)
+                .where(tasks.c.id == operation["parent_task_id"])
+                .with_for_update()
+            )
+        ).mappings().one_or_none()
+        delegate = (
+            await conn.execute(select(tasks).where(tasks.c.id == repair_task_id).with_for_update())
+        ).mappings().one_or_none()
+        if (
+            parent is None
+            or delegate is None
+            or parent["project_id"] != project_id
+            or delegate["project_id"] != project_id
+            or delegate["repo_id"] != parent["repo_id"]
+            or delegate["branch_name"] != parent["branch_name"]
+            or delegate["status"] != "IN_PROGRESS"
+            or delegate["assigned_agent_id"] is None
+        ):
+            return False
+        checkpoint = (
+            await conn.execute(
+                select(task_integration_checkpoints.c.episode_id)
+                .where(task_integration_checkpoints.c.task_id == parent["id"])
+                .with_for_update()
+            )
+        ).scalar_one_or_none()
+        if checkpoint != operation["episode_id"]:
+            return False
+        if (
+            await conn.execute(
+                select(task_metadata.c.task_id).where(
+                    task_metadata.c.task_id == repair_task_id,
+                    task_metadata.c.key == "manual_pause",
+                )
+            )
+        ).scalar_one_or_none() is not None:
+            return False
+        owner = (
+            await conn.execute(
+                select(integration_branch_owners)
+                .where(
+                    integration_branch_owners.c.repository_id == parent["repo_id"],
+                    integration_branch_owners.c.ref == parent["branch_name"],
+                )
+                .with_for_update()
+            )
+        ).mappings().one_or_none()
+        if (
+            owner is None
+            or owner["owner_id"] != repair_task_id
+            or owner["owner_role"] != "repair"
+            or owner["handoff_state"] != "attached"
+            or not owner["session_id"]
+            or not owner["workspace_id"]
+        ):
+            return False
+        session = (
+            await conn.execute(select(sessions).where(sessions.c.id == owner["session_id"]).with_for_update())
+        ).mappings().one_or_none()
+        workspace = (
+            await conn.execute(
+                select(workspaces).where(workspaces.c.id == owner["workspace_id"]).with_for_update()
+            )
+        ).mappings().one_or_none()
+        if (
+            session is None
+            or workspace is None
+            or session["task_id"] != repair_task_id
+            or session["project_id"] != project_id
+            or session["state"] not in {"starting", "running", "draining"}
+            or session["agent_id"] != delegate["assigned_agent_id"]
+            or session["last_claim_epoch"] != delegate["claim_epoch"]
+            or workspace["project_id"] != project_id
+            or workspace["locked_by_task_id"] != repair_task_id
+            or workspace["locked_by_agent_id"] != session["agent_id"]
+            or not workspace["enabled"]
+            or session["work_dir"] != workspace["workspace_path"]
+        ):
+            return False
+        intents = (
+            await conn.execute(
+                select(integration_promotion_intents)
+                .where(
+                    (
+                        integration_promotion_intents.c.operation_key == operation["id"]
+                    )
+                    | (
+                        integration_promotion_intents.c.resolution_operation_id
+                        == operation["id"]
+                    ),
+                    integration_promotion_intents.c.state.not_in(
+                        ("committed", "conflict", "superseded")
+                    ),
+                )
+                .with_for_update()
+            )
+        ).mappings().all()
+        if len(intents) != 1:
+            return False
+        intent = intents[0]
+        return bool(
+            intent["state"] == "resolution_reserved"
+            and intent["operation_key"] == operation["id"]
+            and intent["resolution_operation_id"] == operation["id"]
+            and intent["resolution_stage_ordinal"] == stage["ordinal"]
+            and intent["resolution_task_id"] == repair_task_id
+            and intent["repository_id"] == parent["repo_id"]
+            and intent["target_branch"] == parent["branch_name"]
+            and intent["resolution_session_id"] == session["id"]
+            and intent["resolution_session_instance_token"] == session["instance_token"]
+            and intent["resolution_workspace_id"] == workspace["id"]
+            and intent["resolution_fence_owner_id"] == repair_task_id
+            and intent["resolution_fence_token"] == owner["fence_token"]
+            and intent["resolution_push_started_at"] is None
+            and intent["resolution_push_evidence"] is None
+        )
 
     @staticmethod
     async def _ambiguous_writes_on(

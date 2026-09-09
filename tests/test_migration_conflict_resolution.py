@@ -20,6 +20,7 @@ RESOLUTION_COLUMNS = {
     "resolution_workspace_id",
     "resolution_fence_owner_id",
     "resolution_fence_token",
+    "resolution_push_started_at",
     "resolution_push_evidence",
 }
 RESOLUTION_CONSTRAINTS = {
