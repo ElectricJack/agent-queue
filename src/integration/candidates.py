@@ -32,9 +32,12 @@ from src.database.tables import (
     project_integration_leases,
     projects,
     tasks,
+
+    sessions,
+    workspaces,
 )
 from src.git.manager import GitManager, is_valid_git_oid
-from src.integration.models import BranchKey, Fence
+from src.integration.models import BranchKey, Fence, RepairPolicy
 from src.integration.ownership import BranchBusy, BranchOwnership, StaleFence
 from src.integration.repair import RepairService
 
@@ -107,10 +110,14 @@ class CandidateStaleAuthority(RuntimeError):
 class CandidateRepairResult(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid", strict=True)
 
-    outcome: Literal["accepted", "already_accepted", "stale", "wait"]
+    outcome: Literal["accepted", "already_accepted", "rejected", "stale", "wait"]
     batch_id: str
     revision: int
     member_ordinal: int
+    # ``stale`` deliberately covers a changed authority snapshot as well as a
+    # rejected frozen Git proof.  Keep the latter observable: an operator
+    # cannot safely recover a pushed reservation from an opaque stale result.
+    invariant: str | None = None
 
 
 class CandidateResolutionInput(BaseModel):
@@ -640,10 +647,26 @@ class CandidateService:
         ):
             if not is_valid_git_oid(oid):
                 raise ValueError("candidate repair contains a non-OID")
+        # The former member-only identity made a rejected, pushed reservation
+        # permanently occupy this frozen member.  Bind a reservation to the
+        # exact session instance and fence instead: retries by that writer are
+        # idempotent, while a later fenced writer can reserve a fresh repair
+        # after an operator has retained the old push as rejected evidence.
         reservation_id = str(
             uuid.uuid5(
                 uuid.UUID("afe86ae2-2723-4c36-9933-91e4dc4cae7a"),
-                f"{request.batch_id}:{request.revision}:{request.member_ordinal}",
+                ":".join(
+                    (
+                        request.batch_id,
+                        str(request.revision),
+                        str(request.member_ordinal),
+                        request.operation_id,
+                        principal.task_id,
+                        principal.session_id,
+                        principal.session_instance_token,
+                        str(request.fence.token),
+                    )
+                ),
             )
         )
         target_branch = f"refs/heads/aq/integration-repairs/{reservation_id}"
@@ -855,8 +878,9 @@ class CandidateService:
             resolved_head_sha=reservation["resolved_head_sha"],
             repair_commit_shas=tuple(reservation["repair_commit_shas"]),
         )
-        if not await self._valid_repair_lineage(store, repair_lineage):
-            return self._repair_result("stale", reservation)
+        lineage_failure = await self._repair_lineage_failure(store, repair_lineage)
+        if lineage_failure is not None:
+            return self._repair_result("stale", reservation, invariant=lineage_failure)
         resolved_tree = await self.git.arun_git_result(
             ["rev-parse", f"{reservation['resolved_head_sha']}^{{tree}}"], cwd=str(store)
         )
@@ -907,6 +931,203 @@ class CandidateService:
         await self._crash("after_handoff_push")
         await self._crash("before_repair_acceptance")
         return await self._accept_repair_result(state, reservation)
+
+    async def recover_repair(self, reservation_id: str) -> CandidateRepairResult:
+        """Resolve a pushed reservation from the LOCAL recovery surface only.
+
+        A valid frozen push may be accepted after its bounded stage expired.
+        An invalid one is retained verbatim and terminally rejected, which
+        makes a subsequent normal ``integration resume`` safe to dispatch a
+        freshly fenced writer.  This method never changes the integration
+        branch or removes the private pushed ref.
+        """
+        reservation = await self._resolution(reservation_id)
+        if reservation is None:
+            raise CandidateAuthorizationError("candidate repair reservation does not exist")
+        if reservation["state"] == "accepted":
+            return self._repair_result("already_accepted", reservation)
+        if reservation["state"] == "rejected":
+            evidence = reservation.get("rejection_evidence") or {}
+            return self._repair_result("rejected", reservation, invariant=evidence.get("invariant"))
+        if reservation["state"] != "pushed":
+            raise CandidateAuthorizationError("candidate repair reservation has not been pushed")
+        repository = await self._repository(reservation["repository_id"])
+        store = await self._ensure_store(repository)
+        await self._fetch_oid(
+            store, reservation["resolved_head_sha"], f"refs/aq/integration-resolutions/{reservation_id}"
+        )
+        lineage = CandidateRepairLineage(
+            batch_id=reservation["batch_id"], revision=int(reservation["revision"]),
+            member_ordinal=int(reservation["member_ordinal"]), operation_id=reservation["operation_id"],
+            operation_stage=int(reservation["stage_ordinal"]),
+            partial_head_sha=reservation["partial_head_sha"], source_base_sha=reservation["source_base_sha"],
+            source_head_sha=reservation["source_head_sha"],
+            resolved_head_sha=reservation["resolved_head_sha"],
+            repair_commit_shas=tuple(reservation["repair_commit_shas"]),
+        )
+        invariant = await self._repair_lineage_failure(store, lineage)
+        if invariant is None:
+            # A terminal stage cannot be resumed while this pushed proof is
+            # still a blocker.  Re-arm only this exact frozen stage, then
+            # immediately run the ordinary fenced acceptance path; no attempt
+            # budget or member identity is replaced.
+            if not await self._arm_terminal_recovery(reservation):
+                return self._repair_result("stale", reservation)
+            return await self.accept_repair(reservation_id)
+        return await self._reject_pushed_repair(reservation, invariant)
+
+    async def _arm_terminal_recovery(self, reservation) -> bool:
+        now = self.clock()
+        async with self.db.immediate() as conn:
+            await self.db.lock_hierarchy_project(conn, reservation["project_id"])
+            canonical = await self._resolution_on(conn, reservation["id"])
+            operation = (
+                await conn.execute(select(integration_repair_operations).where(
+                    integration_repair_operations.c.id == reservation["operation_id"]
+                ).with_for_update())
+            ).mappings().one_or_none()
+            stage = (
+                await conn.execute(select(integration_repair_stages).where(
+                    integration_repair_stages.c.operation_id == reservation["operation_id"],
+                    integration_repair_stages.c.ordinal == reservation["stage_ordinal"],
+                ).with_for_update())
+            ).mappings().one_or_none()
+            if (
+                canonical is None or canonical["state"] != "pushed" or operation is None
+                or stage is None or operation["state"] != "human_required"
+                or int(operation["active_stage"]) != int(reservation["stage_ordinal"])
+                or stage["state"] not in {"failed", "expired", "cancelled"}
+            ):
+                return False
+            policy = RepairPolicy.model_validate(stage["policy"])
+            timeout = policy.primary_seconds if int(stage["ordinal"]) == 0 else policy.debug_seconds
+            resumed_state = "active" if int(stage["ordinal"]) == 0 else "escalated"
+            changed = await conn.execute(update(integration_repair_stages).where(
+                integration_repair_stages.c.operation_id == reservation["operation_id"],
+                integration_repair_stages.c.ordinal == reservation["stage_ordinal"],
+                integration_repair_stages.c.state == stage["state"],
+            ).values(
+                # A recovery must be a new bounded stage, even when the
+                # immediately-following handoff returns ``wait``. Retaining
+                # the terminal clock would strand an active operation.
+                state="active",
+                started_at=now,
+                deadline_at=now + timeout,
+                deadline_event_id=(
+                    f"repair-deadline-{reservation['operation_id']}-recover-{uuid.uuid4().hex}"
+                ),
+                completed_at=None,
+            ))
+            if changed.rowcount != 1:
+                return False
+            await conn.execute(update(integration_repair_operations).where(
+                integration_repair_operations.c.id == reservation["operation_id"],
+                integration_repair_operations.c.state == "human_required",
+            ).values(state=resumed_state, updated_at=now))
+            await conn.execute(update(integration_batches).where(
+                integration_batches.c.id == reservation["batch_id"],
+                integration_batches.c.lifecycle == "human_blocked",
+            ).values(lifecycle="repairing", updated_at=now))
+        return True
+
+    async def _reject_pushed_repair(self, reservation, invariant: str) -> CandidateRepairResult:
+        """Retain one invalid pushed proof only after its writer is no longer live."""
+        # Historical mutation evidence cannot prove the remote stayed put.
+        # Reject only after a fresh authenticated read of the exact repair ref.
+        remote_sha = await self.app_client.exact_head_ref(
+            reservation["target_branch"].removeprefix("refs/heads/")
+        )
+        if remote_sha != reservation["resolved_head_sha"]:
+            return self._repair_result("stale", reservation, invariant=invariant)
+        now = self.clock()
+        async with self.db.immediate() as conn:
+            await self.db.lock_hierarchy_project(conn, reservation["project_id"])
+            canonical = await self._resolution_on(conn, reservation["id"])
+            operation = (
+                await conn.execute(
+                    select(integration_repair_operations)
+                    .where(integration_repair_operations.c.id == reservation["operation_id"])
+                    .with_for_update()
+                )
+            ).mappings().one_or_none()
+            stage = (
+                await conn.execute(
+                    select(integration_repair_stages).where(
+                        integration_repair_stages.c.operation_id == reservation["operation_id"],
+                        integration_repair_stages.c.ordinal == reservation["stage_ordinal"],
+                    ).with_for_update()
+                )
+            ).mappings().one_or_none()
+            session = (
+                await conn.execute(select(sessions).where(
+                    sessions.c.id == reservation["repair_session_id"]
+                ).with_for_update())
+            ).mappings().one_or_none()
+            owner = (
+                await conn.execute(select(integration_branch_owners).where(
+                    integration_branch_owners.c.repository_id == reservation["repository_id"],
+                    integration_branch_owners.c.ref == reservation["branch"],
+                ).with_for_update())
+            ).mappings().one_or_none()
+            workspace = (
+                await conn.execute(select(workspaces).where(
+                    workspaces.c.id == reservation["repair_workspace_id"]
+                ).with_for_update())
+            ).mappings().one_or_none()
+            mutation = (
+                await conn.execute(select(integration_candidate_ref_mutations.c.id).where(
+                    integration_candidate_ref_mutations.c.resolution_id == reservation["id"],
+                    integration_candidate_ref_mutations.c.purpose == "repair_resolution",
+                    integration_candidate_ref_mutations.c.state == "applied",
+                    integration_candidate_ref_mutations.c.remote_sha == reservation["resolved_head_sha"],
+                ))
+            ).scalar_one_or_none()
+            if canonical is None or canonical["state"] == "rejected":
+                evidence = (canonical or {}).get("rejection_evidence") or {}
+                return self._repair_result("rejected", canonical or reservation, invariant=evidence.get("invariant"))
+            if (
+                canonical["state"] != "pushed" or mutation is None or operation is None or stage is None
+                or operation["state"] != "human_required"
+                or int(operation["active_stage"]) != int(reservation["stage_ordinal"])
+                or stage["state"] not in {"failed", "expired", "cancelled"}
+                # Reject only the exact stopped writer that made this push.
+                # A same-task successor with another fence or checkout stays
+                # ambiguous until its own handoff finishes.
+                or owner is None
+                or owner["owner_id"] != reservation["repair_task_id"]
+                or owner["owner_role"] != "repair"
+                or int(owner["fence_token"]) != int(reservation["fence_token"])
+                or owner["handoff_state"] != "attached"
+                or owner["session_id"] != reservation["repair_session_id"]
+                or owner["workspace_id"] != reservation["repair_workspace_id"]
+                or session is None
+                or session["task_id"] != reservation["repair_task_id"]
+                or session["project_id"] != reservation["project_id"]
+                or session["instance_token"] != reservation["repair_session_instance_token"]
+                or session["state"] != "stopped"
+                or session["desired_state"] != "stopped"
+                or session["work_dir"] != reservation["repair_workspace_path"]
+                or workspace is None
+                or workspace["project_id"] != reservation["project_id"]
+                or workspace["locked_by_task_id"] != reservation["repair_task_id"]
+                or workspace["workspace_path"] != reservation["repair_workspace_path"]
+            ):
+                return self._repair_result("stale", reservation, invariant=invariant)
+            changed = await conn.execute(
+                update(integration_candidate_resolutions)
+                .where(
+                    integration_candidate_resolutions.c.id == reservation["id"],
+                    integration_candidate_resolutions.c.state == "pushed",
+                )
+                .values(
+                    state="rejected",
+                    rejection_evidence={"invariant": invariant, "rejected_at": now},
+                    updated_at=now,
+                )
+            )
+            if changed.rowcount != 1:
+                return self._repair_result("wait", reservation)
+        return self._repair_result("rejected", reservation, invariant=invariant)
 
     async def _accept_repair_result(self, state, reservation):
         now = self.clock()
@@ -2804,12 +3025,23 @@ class CandidateService:
         }
 
     async def _valid_repair_lineage(self, store: Path, lineage: CandidateRepairLineage):
+        """Whether a frozen repair has the one permitted Git shape.
+
+        ``_accepted_parent_repair`` only needs a boolean.  Keep that compact
+        internal contract while ``accept_repair`` uses the companion failure
+        reason for its public, operator-actionable stale result.
+        """
+        return await self._repair_lineage_failure(store, lineage) is None
+
+    async def _repair_lineage_failure(
+        self, store: Path, lineage: CandidateRepairLineage
+    ) -> str | None:
         if not lineage.repair_commit_shas:
-            return False
+            return "repair_commit_lineage_missing"
         if not await self.git.ais_ancestor(
             str(store), lineage.partial_head_sha, lineage.resolved_head_sha, strict=True
         ):
-            return False
+            return "partial_head_is_not_a_strict_ancestor"
         commits = await self.git.arun_git_result(
             [
                 "rev-list",
@@ -2819,20 +3051,35 @@ class CandidateService:
             cwd=str(store),
         )
         if commits.returncode != 0 or tuple(commits.stdout.split()) != lineage.repair_commit_shas:
-            return False
+            return "repair_commit_lineage_does_not_match"
         changed = await self.git.arun_git_result(
             ["diff", "--name-status", lineage.source_base_sha, lineage.source_head_sha],
             cwd=str(store),
         )
         if changed.returncode != 0 or not changed.stdout.strip():
-            return False
+            return "reviewed_source_delta_is_unavailable"
         intended_paths = {line.split("\t", 1)[1] for line in changed.stdout.splitlines()}
         repaired = await self.git.arun_git_result(
             ["diff", "--name-only", lineage.partial_head_sha, lineage.resolved_head_sha],
             cwd=str(store),
         )
-        if repaired.returncode != 0 or set(repaired.stdout.splitlines()) != intended_paths:
-            return False
+        if repaired.returncode != 0:
+            return "resolved_delta_is_unavailable"
+        source_already_contained = await self.git.ais_ancestor(
+            str(store), lineage.source_head_sha, lineage.partial_head_sha
+        )
+        if source_already_contained:
+            # This is a persisted conflict that predates the contained-member
+            # construction guard.  The reviewed source is already in the
+            # frozen partial candidate, so accepting a repair that changes a
+            # path would manufacture a second, unreviewed edit.  An empty-tree
+            # repair commit is still required: it binds the exact pushed
+            # resolution to the writer's immutable reservation without asking
+            # an operator to create a fake source-path edit.
+            if repaired.stdout.strip():
+                return "contained_source_repair_changes_the_candidate"
+        elif set(repaired.stdout.splitlines()) != intended_paths:
+            return "resolved_paths_do_not_match_reviewed_source"
         merges = await self.git.arun_git_result(
             [
                 "rev-list",
@@ -2842,7 +3089,9 @@ class CandidateService:
             cwd=str(store),
         )
         if merges.returncode != 0 or merges.stdout.strip():
-            return False
+            return "repair_lineage_contains_a_merge"
+        if source_already_contained:
+            return None
         for line in changed.stdout.splitlines():
             status, path = line.split("\t", 1)
             source_blob = await self._blob(store, lineage.source_head_sha, path)
@@ -2850,12 +3099,12 @@ class CandidateService:
             partial_blob = await self._blob(store, lineage.partial_head_sha, path)
             if status.startswith("D"):
                 if resolved_blob is not None:
-                    return False
+                    return "deleted_reviewed_path_was_restored"
             elif resolved_blob is None or resolved_blob == partial_blob:
-                return False
+                return "reviewed_path_was_not_resolved"
             elif status.startswith("A") and resolved_blob != source_blob:
-                return False
-        return True
+                return "added_reviewed_path_does_not_match_source"
+        return None
 
     async def _blob(self, store: Path, commit: str, path: str) -> str | None:
         result = await self.git.arun_git_result(["rev-parse", f"{commit}:{path}"], cwd=str(store))
@@ -2882,19 +3131,21 @@ class CandidateService:
         return tree.returncode == 0 and tree.stdout.strip() == member["reviewed_tree_sha"]
 
     @staticmethod
-    def _repair_result(outcome, lineage):
+    def _repair_result(outcome, lineage, *, invariant: str | None = None):
         if isinstance(lineage, dict):
             return CandidateRepairResult(
                 outcome=outcome,
                 batch_id=lineage["batch_id"],
                 revision=int(lineage["revision"]),
                 member_ordinal=int(lineage["member_ordinal"]),
+                invariant=invariant,
             )
         return CandidateRepairResult(
             outcome=outcome,
             batch_id=lineage.batch_id,
             revision=lineage.revision,
             member_ordinal=lineage.member_ordinal,
+            invariant=invariant,
         )
 
     async def _resolution(self, reservation_id: str):

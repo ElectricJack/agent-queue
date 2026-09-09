@@ -29,6 +29,11 @@ def _assert_schema(connection) -> None:
         "fk_integration_candidate_resolutions_session",
         "fk_integration_candidate_resolutions_workspace",
     } <= resolution_fks
+    checks = {check["name"] for check in schema.get_check_constraints("integration_candidate_resolutions")}
+    assert "ck_integration_candidate_resolutions_rejection" in checks
+    assert "uq_integration_candidate_resolutions_current_member" in {
+        index["name"] for index in schema.get_indexes("integration_candidate_resolutions")
+    }
 
 
 async def test_baseline_candidate_authority_schema():

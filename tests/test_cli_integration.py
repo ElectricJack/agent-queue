@@ -101,6 +101,11 @@ def _client(result):
             "integration_retry_cleanup",
             {"batch_id": "batch-1"},
         ),
+        (
+            ["recover-candidate-member", "frozen-resolution"],
+            "integration_recover_candidate_member",
+            {"reservation_id": "frozen-resolution"},
+        ),
     ],
 )
 def test_integration_commands_use_generic_execute_and_json_envelope(argv, command, args):
@@ -232,6 +237,7 @@ def test_integration_cli_is_handcrafted_and_has_no_deferred_probe_command():
         "abort",
         "retry-cleanup",
         "resolve-candidate-member",
+        "recover-candidate-member",
     ):
         assert command in result.output
     assert "probe" not in result.output
@@ -301,6 +307,7 @@ def test_operator_guide_uses_only_real_operational_commands_and_options():
         "abort",
         "retry-cleanup",
         "resolve-candidate-member",
+        "recover-candidate-member",
     ):
         result = CliRunner().invoke(cli, ["integration", leaf, "--help"])
         assert result.exit_code == 0, (leaf, result.output)

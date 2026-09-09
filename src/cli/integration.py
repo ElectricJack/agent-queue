@@ -195,3 +195,12 @@ def integration_abort(ctx: click.Context, operation_id: str, reason: str) -> Non
 def integration_retry_cleanup(ctx: click.Context, batch_id: str) -> None:
     """Requeue the exact safe cleanup items for BATCH_ID."""
     _execute(ctx, "integration_retry_cleanup", {"batch_id": batch_id})
+
+
+@integration.command("recover-candidate-member")
+@click.argument("reservation_id")
+@click.pass_context
+@_handle_errors
+def integration_recover_candidate_member(ctx: click.Context, reservation_id: str) -> None:
+    """Resolve one pushed frozen candidate-member repair reservation."""
+    _execute(ctx, "integration_recover_candidate_member", {"reservation_id": reservation_id})

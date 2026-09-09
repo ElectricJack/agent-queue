@@ -270,6 +270,7 @@ def test_unimplemented_integration_operations_are_not_registered():
         "integration_resume",
         "integration_abort",
         "integration_retry_cleanup",
+        "integration_recover_candidate_member",
     }
     assert registry.names() & DESIGN_INTEGRATION_COMMANDS == implemented
     assert not (registry.names() & (DESIGN_INTEGRATION_COMMANDS - implemented))
@@ -317,6 +318,7 @@ def test_repair_contracts_expose_exact_typed_public_protocol():
     dispatch = registry.require("integration_repair_dispatch").contract.execution
     record = registry.require("integration_record_repair").contract.execution
     timeout = registry.require("integration_repair_timeout").contract.execution
+    candidate_member = registry.require("integration_recover_candidate_member").contract.execution
 
     assert {row.name for row in start.outcomes} == {
         "started",
@@ -345,6 +347,12 @@ def test_repair_contracts_expose_exact_typed_public_protocol():
         "already_terminal",
         "stale",
     }
+    assert {row.name for row in candidate_member.outcomes} == {
+        "accepted", "already_accepted", "rejected", "stale", "wait"
+    }
+    assert candidate_member.args_model(reservation_id="frozen-resolution").reservation_id == (
+        "frozen-resolution"
+    )
     assert start.side_effect.value == "composite"
     assert dispatch.side_effect.value == "composite"
     assert start.idempotency.mode == dispatch.idempotency.mode == "natural"

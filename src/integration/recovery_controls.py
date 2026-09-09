@@ -26,6 +26,7 @@ from src.database.tables import (
     sessions,
     task_integration_checkpoints,
     task_metadata,
+
     tasks,
     workspaces,
 )
@@ -971,6 +972,46 @@ class IntegrationRecoveryControls:
                     integration_branch_owners.c.workspace_id.is_(None),
                 )
             )
+            # A rejected reservation excuses only the exact stopped writer
+            # that created it. A successor with the same task id is a live
+            # ambiguous writer until its own handoff completes.
+            resolution = integration_candidate_resolutions.c
+            owner = integration_branch_owners.c
+            exact_rejected_writer = select(resolution.id).select_from(
+                integration_candidate_resolutions.join(
+                    sessions, sessions.c.id == resolution.repair_session_id
+                ).join(
+                    workspaces, workspaces.c.id == resolution.repair_workspace_id
+                ).join(
+                    integration_repair_stages,
+                    (integration_repair_stages.c.operation_id == resolution.operation_id)
+                    & (integration_repair_stages.c.ordinal == resolution.stage_ordinal),
+                )
+            ).where(
+                resolution.operation_id == operation_id,
+                resolution.stage_ordinal == operation["active_stage"],
+                resolution.state == "rejected",
+                integration_repair_stages.c.repair_task_id == resolution.repair_task_id,
+                integration_repair_stages.c.writer_kind == "repair_delegate",
+                owner.owner_id == resolution.repair_task_id,
+                owner.owner_role == "repair",
+                owner.fence_token == resolution.fence_token,
+                owner.handoff_state == "attached",
+                owner.session_id == resolution.repair_session_id,
+                owner.workspace_id == resolution.repair_workspace_id,
+                sessions.c.task_id == resolution.repair_task_id,
+                sessions.c.project_id == resolution.project_id,
+                sessions.c.instance_token == resolution.repair_session_instance_token,
+                sessions.c.state == "stopped",
+                sessions.c.desired_state == "stopped",
+                sessions.c.work_dir == resolution.repair_workspace_path,
+                workspaces.c.project_id == resolution.project_id,
+                workspaces.c.locked_by_task_id == resolution.repair_task_id,
+                workspaces.c.workspace_path == resolution.repair_workspace_path,
+            ).correlate(integration_branch_owners).exists()
+            writer = writer.where(
+                ~exact_rejected_writer
+            )
         if allow_reserved_delegate and operation["batch_id"] is not None:
             # A detached collector is the daemon's reservation, not a live
             # worker. Applied writes are checked separately below; retain all
@@ -1057,8 +1098,18 @@ class IntegrationRecoveryControls:
             )
         blockers = []
         for kind, statement in statements.items():
-            if (await conn.execute(statement.limit(1))).scalar_one_or_none() is not None:
-                blockers.append(kind)
+            value = (await conn.execute(statement.limit(1))).scalar_one_or_none()
+            if value is not None:
+                # A pushed repair is deliberately not collapsed into an
+                # anonymous generic write.  It is frozen external evidence,
+                # and the public recovery refusal must tell the operator that
+                # it needs exact lineage acceptance rather than a retry that
+                # could create a competing writer.
+                blockers.append(
+                    f"resolution:{value}"
+                    if kind == "resolution"
+                    else kind
+                )
         return sorted(blockers)
 
     @staticmethod
@@ -1095,6 +1146,14 @@ class IntegrationRecoveryControls:
     def _ambiguous_result(
         operation: dict[str, Any], project_id: str, blockers: list[str]
     ) -> dict[str, Any]:
+        def detail(ref: str) -> str:
+            if ref.startswith("resolution:"):
+                return (
+                    "a pushed candidate repair is frozen; accept it only after its exact "
+                    "repair lineage validates"
+                )
+            return "operation has unresolved external mutation evidence"
+
         return {
             "outcome": "ambiguous",
             "operation_id": operation["id"],
@@ -1103,7 +1162,7 @@ class IntegrationRecoveryControls:
             "blockers": [
                 {
                     "code": "ambiguous_external_write",
-                    "detail": "operation has unresolved external mutation evidence",
+                    "detail": detail(blocker),
                     "ref": blocker,
                 }
                 for blocker in blockers

@@ -96,6 +96,7 @@ HANDCRAFTED_COVERAGE = {
     "integration_abort",
     "integration_retry_cleanup",
     "integration_resolve_candidate_member",
+    "integration_recover_candidate_member",
     # plugins.py (all plugin commands are hand-crafted with direct-DB access)
     "plugin_list",
     "plugin_info",

@@ -429,6 +429,46 @@ class IntegrationCommandsMixin:
             return _failure("not_found", "batch_id is required")
         return await self._integration_control_service().retry_cleanup(batch_id)
 
+    async def _cmd_integration_recover_candidate_member(self, args: dict) -> dict:
+        """LOCAL-only recovery for a durable pushed root-candidate repair."""
+        from pydantic import ValidationError
+        from sqlalchemy import select
+
+        from src.commands.contracts.integration import IntegrationRecoverCandidateMemberArgs
+        from src.database.tables import integration_candidate_resolutions
+        from src.integration.candidates import CandidateAuthorizationError
+
+        authorized, _operator_id = self._integration_local_operator()
+        if not authorized:
+            return _failure(
+                "unauthorized", "candidate recovery controls require LOCAL operator authority"
+            )
+        try:
+            request = IntegrationRecoverCandidateMemberArgs.model_validate(args)
+        except ValidationError as exc:
+            return _failure("stale", f"invalid candidate member recovery: {exc}")
+        async with self.db._engine.connect() as conn:
+            reservation = (
+                await conn.execute(
+                    select(integration_candidate_resolutions).where(
+                        integration_candidate_resolutions.c.id == request.reservation_id
+                    )
+                )
+            ).mappings().one_or_none()
+        if reservation is None:
+            return _failure("stale", "candidate repair reservation does not exist")
+        batch = await self.db.get_integration_batch(reservation["batch_id"])
+        if batch is None:
+            return _failure("stale", "candidate repair batch does not exist")
+        try:
+            result = await (await self._integration_candidate_service(batch)).recover_repair(
+                request.reservation_id
+            )
+        except CandidateAuthorizationError as exc:
+            return _failure("stale", str(exc))
+        return {"success": result.outcome in {"accepted", "already_accepted", "rejected"},
+                **result.model_dump(mode="json")}
+
     def _integration_train_service(self):
         service = getattr(self.orchestrator, "integration_train_service", None)
         if service is not None:

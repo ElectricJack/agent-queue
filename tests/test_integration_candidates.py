@@ -2113,6 +2113,9 @@ async def test_direct_caller_repair_lineage_is_not_authoritative(db, tmp_path):
         ("exact", "accepted", 0, "after_handoff_transfer"),
         ("exact", "accepted", 0, "after_handoff_push"),
         ("exact", "accepted", 0, "before_repair_acceptance"),
+        ("exact", "accepted", 1, "operator_recovery"),
+        ("exact", "wait", 1, "operator_recovery_wait"),
+        ("extra", "rejected", 1, "operator_reject"),
         ("exact", "accepted", 0, "overlap"),
         ("exact", "accepted", 1, None),
         ("reserved", "stale", 0, None),
@@ -2160,6 +2163,7 @@ async def test_instance_bound_repair_reservation_push_and_accept_once(
 
     ownership = BranchOwnership(db, confirm_handoff=release_like_orchestrator)
     repair = RepairService(db, route_validator=lambda *_: True)
+    recovery_clock = [100.0]
     service = CandidateService(
         db,
         data_dir=tmp_path / "data",
@@ -2168,7 +2172,7 @@ async def test_instance_bound_repair_reservation_push_and_accept_once(
         app_client=app,
         repair_service=repair,
         branch_ownership=ownership,
-        clock=lambda: 100.0,
+        clock=lambda: recovery_clock[0],
     )
     conflict = await service.build("batch")
     if stage == 1:
@@ -2360,11 +2364,147 @@ async def test_instance_bound_repair_reservation_push_and_accept_once(
                 app_client=app,
                 repair_service=repair,
                 branch_ownership=ownership,
-                clock=lambda: 100.0,
+                clock=lambda: recovery_clock[0],
             )
         assert await service.push_repair(reservation_id, repair_fence) == reservation_id
-    await db.update_session(session_id, state="stopped")
-    if handoff_crash == "overlap":
+    await db.update_session(session_id, state="stopped", desired_state="stopped")
+    if handoff_crash in {"operator_recovery", "operator_recovery_wait"}:
+        expired = await repair.expire("repair-batch-batch", stage, now=300.0)
+        assert expired["outcome"] == "expired"
+        recovery_clock[0] = 300.0
+        if handoff_crash == "operator_recovery_wait":
+            ownership._confirm_handoff = lambda _row: False
+        accepted = await service.recover_repair(reservation_id)
+        if handoff_crash == "operator_recovery_wait":
+            assert accepted.outcome == "wait"
+            async with db._engine.connect() as conn:
+                recovered_stage = (
+                    await conn.execute(
+                        select(integration_repair_stages).where(
+                            integration_repair_stages.c.operation_id == "repair-batch-batch",
+                            integration_repair_stages.c.ordinal == stage,
+                        )
+                    )
+                ).mappings().one()
+            assert recovered_stage["state"] == "active"
+            assert recovered_stage["started_at"] == 300.0
+            assert recovered_stage["deadline_at"] == 360.0
+            assert recovered_stage["deadline_event_id"] != "repair-deadline-repair-batch-batch-1"
+            timed_out = await repair.expire("repair-batch-batch", stage, now=361.0)
+            assert timed_out["outcome"] == "expired"
+        replay = await service.recover_repair(reservation_id)
+    elif handoff_crash == "operator_reject":
+        expired = await repair.expire("repair-batch-batch", stage, now=300.0)
+        assert expired["outcome"] == "expired"
+        recovery_clock[0] = 300.0
+
+        class ChangedRemoteApp(_AppClient):
+            async def exact_head_ref(self, branch):
+                return "f" * 40
+
+        original_app = service.app_client
+        changed_remote = ChangedRemoteApp(origin)
+        changed_remote.repository = app.repository
+        service.app_client = changed_remote
+        stale_remote = await service.recover_repair(reservation_id)
+        assert stale_remote.outcome == "stale"
+        service.app_client = original_app
+        accepted = await service.recover_repair(reservation_id)
+        replay = await service.recover_repair(reservation_id)
+        assert accepted.invariant == "resolved_paths_do_not_match_reviewed_source"
+        from src.integration.recovery_controls import IntegrationRecoveryControls
+
+        controls = IntegrationRecoveryControls(db, clock=lambda: 400.0)
+        # Rejecting external evidence does not release a claim or authorize
+        # a second writer. Normal stopped-claim cleanup and handoff come first.
+        assert (await controls.resume("repair-batch-batch"))["outcome"] == "invalid_state"
+        async with db.immediate() as conn:
+            await conn.execute(update(tasks).where(tasks.c.id == repair_task).values(
+                status="READY", assigned_agent_id=None
+            ))
+            await conn.execute(update(workspaces).where(workspaces.c.id == workspace_id).values(
+                locked_by_task_id=None, locked_by_agent_id=None
+            ))
+            await conn.execute(update(sessions).where(sessions.c.id == session_id).values(
+                task_id=None, claim_phase=None
+            ))
+        await ownership.transfer(repair_fence, repair_task, "repair")
+        resumed = await controls.resume("repair-batch-batch")
+        assert resumed["outcome"] == "resumed"
+        async with db.immediate() as conn:
+            await conn.execute(
+                update(integration_repair_operations)
+                .where(integration_repair_operations.c.id == "repair-batch-batch")
+                .values(state="human_required")
+            )
+            await conn.execute(
+                update(integration_repair_stages)
+                .where(
+                    integration_repair_stages.c.operation_id == "repair-batch-batch",
+                    integration_repair_stages.c.ordinal == stage,
+                )
+                .values(state="expired", completed_at=201.0)
+            )
+            await conn.execute(
+                update(integration_batches)
+                .where(integration_batches.c.id == "batch")
+                .values(lifecycle="human_blocked")
+            )
+            await conn.execute(
+                update(integration_branch_owners)
+                .where(integration_branch_owners.c.repository_id == "repo")
+                .values(
+                    fence_token=repair_fence.token + 1,
+                    session_id="candidate-successor-session",
+                    workspace_id="candidate-successor-workspace",
+                    handoff_state="attached",
+                )
+            )
+            await conn.execute(
+                insert(workspaces).values(
+                    id="candidate-successor-workspace",
+                    project_id="p",
+                    workspace_path=str(tmp_path / "successor-workspace"),
+                    source_type="link",
+                    locked_by_task_id=repair_task,
+                    enabled=True,
+                    created_at=200.0,
+                )
+            )
+        successor_path = tmp_path / "successor-workspace"
+        successor_path.mkdir()
+        await db.create_session(
+            SessionRecord(
+                id="candidate-successor-session",
+                task_id=repair_task,
+                project_id="p",
+                profile_id="repairer",
+                harness="fake",
+                provider="fake",
+                name="candidate-successor",
+                lifecycle="task",
+                state="running",
+                work_dir=str(successor_path),
+                epoch="test",
+                instance_token="instance-successor",
+                started_at=200.0,
+            )
+        )
+        blocked_successor = await controls.resume("repair-batch-batch")
+        assert blocked_successor["outcome"] == "ambiguous"
+        assert [blocker["ref"] for blocker in blocked_successor["blockers"]] == ["writer"]
+        async with db._engine.connect() as conn:
+            rejected = (
+                await conn.execute(
+                    select(integration_candidate_resolutions).where(
+                        integration_candidate_resolutions.c.id == reservation_id
+                    )
+                )
+            ).mappings().one()
+        assert rejected["state"] == "rejected"
+        assert rejected["push_evidence"]["remote_sha"] == resolved
+        assert rejected["rejection_evidence"]["invariant"] == accepted.invariant
+    elif handoff_crash == "overlap":
         service.crash_hook = _CrashOnce("after_handoff_reservation")
         with pytest.raises(RuntimeError, match="crash at after_handoff_reservation"):
             await service.accept_repair(reservation_id)
@@ -2494,8 +2634,16 @@ async def test_instance_bound_repair_reservation_push_and_accept_once(
         accepted = await service.accept_repair(reservation_id)
         replay = await service.accept_repair(reservation_id)
     assert accepted.outcome == expected
-    assert replay.outcome == ("already_accepted" if expected == "accepted" else "stale")
-    if repair_change == "exact" and stage == 0:
+    assert replay.outcome == (
+        "already_accepted"
+        if expected == "accepted"
+        else "rejected"
+        if expected == "rejected"
+        else "wait"
+        if handoff_crash == "operator_recovery_wait"
+        else "stale"
+    )
+    if repair_change == "exact" and (stage == 0 or handoff_crash == "operator_recovery"):
         resumed = await service.build("batch")
         assert resumed.outcome in {"built", "already_built"}
         assert resumed.revision == 1
@@ -3324,3 +3472,60 @@ async def test_member_already_contained_in_base_applies_as_noop(db, tmp_path):
     assert [row["result"] for row in rows] == ["applied", "applied"]
     assert rows[0]["generated_squash_sha"] == base
     assert rows[1]["generated_squash_sha"] == result.head_sha
+
+async def test_contained_frozen_member_allows_only_an_empty_repair_tree(db, tmp_path):
+    """A pre-guard conflict can be accepted without inventing a source-path edit."""
+    from src.integration.candidates import CandidateRepairLineage, CandidateService
+
+    origin = tmp_path / "contained-repair-origin.git"
+    work = tmp_path / "contained-repair-work"
+    _git(tmp_path, "init", "--bare", "--initial-branch=main", str(origin))
+    _git(tmp_path, "clone", str(origin), str(work))
+    _git(work, "config", "user.name", "Candidate Repair")
+    _git(work, "config", "user.email", "repair@example.test")
+    (work / "shared.txt").write_text("base\n")
+    _git(work, "add", "shared.txt")
+    _git(work, "commit", "-m", "base")
+    source_base = _git(work, "rev-parse", "HEAD")
+    _git(work, "switch", "-c", "reviewed")
+    (work / "shared.txt").write_text("reviewed source\n")
+    _git(work, "commit", "-am", "reviewed source")
+    source_head = _git(work, "rev-parse", "HEAD")
+    _git(work, "switch", "main")
+    _git(work, "merge", "--no-ff", "-m", "land reviewed source", source_head)
+    (work / "shared.txt").write_text("main moved beyond reviewed source\n")
+    _git(work, "commit", "-am", "main advances")
+    partial = _git(work, "rev-parse", "HEAD")
+    _git(work, "commit", "--allow-empty", "-m", "record contained-member resolution")
+    resolved = _git(work, "rev-parse", "HEAD")
+    store = tmp_path / "contained-repair-store"
+    _git(tmp_path, "clone", "--bare", str(work), str(store))
+
+    lineage = CandidateRepairLineage(
+        batch_id="batch",
+        revision=0,
+        member_ordinal=0,
+        operation_id="repair-batch-batch",
+        operation_stage=1,
+        partial_head_sha=partial,
+        source_base_sha=source_base,
+        source_head_sha=source_head,
+        resolved_head_sha=resolved,
+        repair_commit_shas=(resolved,),
+    )
+    service = CandidateService(db, data_dir=tmp_path / "data")
+
+    assert await service._repair_lineage_failure(store, lineage) is None
+    assert await service._valid_repair_lineage(store, lineage)
+
+    (work / "shared.txt").write_text("unreviewed repair edit\n")
+    _git(work, "commit", "-am", "must not change contained repair")
+    changed = _git(work, "rev-parse", "HEAD")
+    _git(store, "fetch", str(work), changed)
+    changed_lineage = lineage.model_copy(
+        update={"resolved_head_sha": changed, "repair_commit_shas": (resolved, changed)}
+    )
+    assert (
+        await service._repair_lineage_failure(store, changed_lineage)
+        == "contained_source_repair_changes_the_candidate"
+    )
