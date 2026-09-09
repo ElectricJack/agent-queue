@@ -11,6 +11,7 @@ from __future__ import annotations
 from sqlalchemy import and_, delete, or_, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
+from src.database.queries.blocked_state import unmet_dependency_predicate
 from src.database.tables import task_dependencies, tasks
 from src.models import BLOCKING_DEP_TYPES, DepType, Task, TaskStatus
 
@@ -426,24 +427,24 @@ class DependencyQueryMixin:
         project on cross-project edges (design §3.3).
         """
         async with self._engine.begin() as conn:
+            depends_on = tasks.alias("depends_on")
             result = await conn.execute(
                 select(
-                    tasks.c.id,
-                    tasks.c.title,
-                    tasks.c.status,
+                    depends_on.c.id,
+                    depends_on.c.title,
+                    depends_on.c.status,
                     task_dependencies.c.dep_type,
-                    tasks.c.project_id,
+                    depends_on.c.project_id,
                 )
                 .select_from(
                     task_dependencies.join(
-                        tasks, tasks.c.id == task_dependencies.c.depends_on_task_id
+                        depends_on, depends_on.c.id == task_dependencies.c.depends_on_task_id
                     )
                 )
                 .where(
                     and_(
                         task_dependencies.c.task_id == task_id,
-                        _dep_type_filter(None),
-                        tasks.c.status != TaskStatus.COMPLETED.value,
+                        unmet_dependency_predicate(task_dependencies, depends_on),
                     )
                 )
             )
