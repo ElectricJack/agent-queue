@@ -53,13 +53,12 @@ class IntegrationRecoveryControls:
                 conn, operation, stage, project_id
             )
             blockers = await self._ambiguous_writes_on(
-                conn, operation, allow_reserved_delegate=not live_resolution
+                conn,
+                operation,
+                allow_reserved_delegate=not live_resolution,
+                allowed_writer_id=(live_resolution or {}).get("writer_id"),
+                allowed_promotion_intent_id=(live_resolution or {}).get("promotion_intent_id"),
             )
-            if live_resolution:
-                # The helper proved these two otherwise-ambiguous rows are
-                # the same live delegate and the same never-started frozen
-                # resolution.  Every other mutation remains a hard stop.
-                blockers = [item for item in blockers if item not in {"promotion", "writer"}]
             if blockers:
                 return self._ambiguous_result(operation, project_id, blockers)
             policy = RepairPolicy.model_validate(stage["policy"])
@@ -278,7 +277,7 @@ class IntegrationRecoveryControls:
         operation: dict[str, Any],
         stage: dict[str, Any],
         project_id: str,
-    ) -> bool:
+    ) -> dict[str, str] | None:
         """Recognize one proven, never-started resolution push.
 
         This is intentionally narrower than ordinary resume.  It admits no
@@ -294,7 +293,7 @@ class IntegrationRecoveryControls:
             or stage["writer_kind"] != "repair_delegate"
             or not stage["repair_task_id"]
         ):
-            return False
+            return None
         repair_task_id = stage["repair_task_id"]
         parent = (
             await conn.execute(
@@ -316,7 +315,7 @@ class IntegrationRecoveryControls:
             or delegate["status"] != "IN_PROGRESS"
             or delegate["assigned_agent_id"] is None
         ):
-            return False
+            return None
         checkpoint = (
             await conn.execute(
                 select(task_integration_checkpoints.c.episode_id)
@@ -325,7 +324,7 @@ class IntegrationRecoveryControls:
             )
         ).scalar_one_or_none()
         if checkpoint != operation["episode_id"]:
-            return False
+            return None
         if (
             await conn.execute(
                 select(task_metadata.c.task_id).where(
@@ -334,7 +333,7 @@ class IntegrationRecoveryControls:
                 )
             )
         ).scalar_one_or_none() is not None:
-            return False
+            return None
         owner = (
             await conn.execute(
                 select(integration_branch_owners)
@@ -353,7 +352,7 @@ class IntegrationRecoveryControls:
             or not owner["session_id"]
             or not owner["workspace_id"]
         ):
-            return False
+            return None
         session = (
             await conn.execute(select(sessions).where(sessions.c.id == owner["session_id"]).with_for_update())
         ).mappings().one_or_none()
@@ -376,7 +375,7 @@ class IntegrationRecoveryControls:
             or not workspace["enabled"]
             or session["work_dir"] != workspace["workspace_path"]
         ):
-            return False
+            return None
         intents = (
             await conn.execute(
                 select(integration_promotion_intents)
@@ -396,9 +395,9 @@ class IntegrationRecoveryControls:
             )
         ).mappings().all()
         if len(intents) != 1:
-            return False
+            return None
         intent = intents[0]
-        return bool(
+        if not (
             intent["state"] == "resolution_reserved"
             and intent["operation_key"] == operation["id"]
             and intent["resolution_operation_id"] == operation["id"]
@@ -413,7 +412,12 @@ class IntegrationRecoveryControls:
             and intent["resolution_fence_token"] == owner["fence_token"]
             and intent["resolution_push_started_at"] is None
             and intent["resolution_push_evidence"] is None
-        )
+        ):
+            return None
+        # The recovery exception is for these exact durable rows only.  A
+        # second owner for the same task on another ref is still a writer and
+        # a second intent remains a promotion blocker.
+        return {"writer_id": str(owner["id"]), "promotion_intent_id": str(intent["id"])}
 
     @staticmethod
     async def _ambiguous_writes_on(
@@ -421,6 +425,8 @@ class IntegrationRecoveryControls:
         operation: dict[str, Any],
         *,
         allow_reserved_delegate: bool = False,
+        allowed_writer_id: str | None = None,
+        allowed_promotion_intent_id: str | None = None,
     ) -> list[str]:
         operation_id = operation["id"]
         writer = select(integration_branch_owners.c.id).where(
@@ -459,6 +465,23 @@ class IntegrationRecoveryControls:
                     integration_branch_owners.c.workspace_id.is_(None),
                 )
             )
+        if allowed_writer_id is not None:
+            writer = writer.where(integration_branch_owners.c.id != allowed_writer_id)
+        promotion = select(integration_promotion_intents.c.id).where(
+            (
+                integration_promotion_intents.c.operation_key == operation_id
+            )
+            | (
+                integration_promotion_intents.c.resolution_operation_id == operation_id
+            ),
+            integration_promotion_intents.c.state.not_in(
+                ("committed", "conflict", "superseded")
+            ),
+        )
+        if allowed_promotion_intent_id is not None:
+            promotion = promotion.where(
+                integration_promotion_intents.c.id != allowed_promotion_intent_id
+            )
         statements = {
             "ref_mutation": select(integration_candidate_ref_mutations.c.id).where(
                 integration_candidate_ref_mutations.c.operation_id == operation_id,
@@ -472,18 +495,7 @@ class IntegrationRecoveryControls:
                 integration_attestation_publications.c.operation_id == operation_id,
                 integration_attestation_publications.c.state == "reserved",
             ),
-            "promotion": select(integration_promotion_intents.c.id).where(
-                (
-                    integration_promotion_intents.c.operation_key == operation_id
-                )
-                | (
-                    integration_promotion_intents.c.resolution_operation_id
-                    == operation_id
-                ),
-                integration_promotion_intents.c.state.not_in(
-                    ("committed", "conflict", "superseded")
-                ),
-            ),
+            "promotion": promotion,
             "writer": writer,
         }
         if operation["batch_id"] is not None:

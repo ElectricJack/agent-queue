@@ -1423,9 +1423,74 @@ async def test_human_resume_rearms_exact_live_unstarted_resolution_writer(db):
     assert await repair.dispatch("operation", 1) == dispatched | {"outcome": "already_dispatched"}
     assert (await db.get_task(repair_task_id)).claim_epoch == 7
 
+    # A distinct, non-released owner for the same delegate remains an
+    # ambiguity.  The safe recovery exception can waive only the exact owner
+    # of the frozen resolution, never every owner associated with that task.
+    async with db.immediate() as conn:
+        await conn.execute(
+            update(integration_repair_operations)
+            .where(integration_repair_operations.c.id == "operation")
+            .values(state="human_required")
+        )
+        await conn.execute(
+            update(integration_repair_stages)
+            .where(
+                integration_repair_stages.c.operation_id == "operation",
+                integration_repair_stages.c.ordinal == 1,
+            )
+            .values(state="expired", completed_at=201.0)
+        )
+        await conn.execute(
+            insert(integration_branch_owners).values(
+                id="stale-resolution-owner", repository_id="repo", ref="aq/stale-resolution",
+                owner_id=repair_task_id, owner_role="repair", fence_token=12,
+                handoff_state="attached", session_id="resolution-session",
+                workspace_id="resolution-workspace", created_at=201.0, updated_at=201.0,
+            )
+        )
+    async with db._engine.connect() as conn:
+        before_duplicate = (
+            await conn.execute(
+                select(integration_repair_operations).where(
+                    integration_repair_operations.c.id == "operation"
+                )
+            )
+        ).mappings().one()
+    duplicate_writer = await IntegrationControlService(db, clock=lambda: 201.0).resume(
+        "operation"
+    )
+    async with db._engine.connect() as conn:
+        after_duplicate = (
+            await conn.execute(
+                select(integration_repair_operations).where(
+                    integration_repair_operations.c.id == "operation"
+                )
+            )
+        ).mappings().one()
+    assert duplicate_writer["outcome"] == "ambiguous"
+    assert {blocker["ref"] for blocker in duplicate_writer["blockers"]} == {"writer"}
+    assert after_duplicate["state"] == before_duplicate["state"] == "human_required"
+    assert after_duplicate["updated_at"] == before_duplicate["updated_at"]
+    async with db._engine.connect() as conn:
+        stage_after_duplicate = (
+            await conn.execute(
+                select(integration_repair_stages).where(
+                    integration_repair_stages.c.operation_id == "operation",
+                    integration_repair_stages.c.ordinal == 1,
+                )
+            )
+        ).mappings().one()
+    assert stage_after_duplicate["state"] == "expired"
+    assert stage_after_duplicate["deadline_at"] == 260.0
+
     # A durable start marker intentionally turns the otherwise identical
     # state into an ambiguity: the remote write may have begun before a crash.
     async with db.immediate() as conn:
+        await conn.execute(
+            update(integration_branch_owners)
+            .where(integration_branch_owners.c.id == "stale-resolution-owner")
+            .values(handoff_state="released", updated_at=201.0)
+        )
         await conn.execute(
             update(integration_repair_operations)
             .where(integration_repair_operations.c.id == "operation")
