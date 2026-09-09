@@ -651,3 +651,27 @@ classification remains to be verified. Do not equate the doctor timeout with a
 stopped operation. Matter Engine CI34336931646 is now completed/success at6c3edde6;
 its batch promotion is not yet verified. Doctor evidence:
 /tmp/aq-routing-contained-doctor.json.
+
+
+### 2026-09-09 10:17 UTC — stale writer root cause and live no-op reconstruction
+
+Root batch stage-0 session a3326da2 is absent from tmux and now stopped/stopped,
+but retains its active claim. Public integration-transfer-owner token2 to the
+collector refused confirmed-stop/detach proof. Its workspace is clean, detached,
+and HEAD/local branch/independently observed remote all equal9e8f0650. Agent is
+RETIRED; session last_claim_epoch1 differs from READY task claim_epoch3, whose
+assignment is NULL. The stopped handoff helper requires BUSY/IN_PROGRESS at the
+old epoch, while pool teardown has already retired that agent. This cannot be
+fixed safely by weakening the epoch check or forcing the task back in progress.
+Filed priority1 wise-nexus on enabled standard-high-codex with exact reproduction,
+stale-session-only release requirements, successor/reuse refusal tests, and
+focused plus isolated-swarm validation. brisk-crest also retains an old attached
+draining owner, causing its reopened task preparation to fail; the task includes
+that related recovery case. No ownership rows were edited manually.
+
+Matter duplicate batch b5798e8c advanced from green revision0 at6c3edde6 through
+moved-main reconstruction to built revision1 at7a39e65a (already-delivered main).
+This is live evidence that the contained-reviewed-head guard avoids replay and
+keeps the candidate unchanged when all members are already present. Old tested
+SHA and CI evidence were cleared, as required; new-revision CI/promotion remains
+pending. The batch is not counted as a second feature delivery.
