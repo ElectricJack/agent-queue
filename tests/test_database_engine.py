@@ -18,6 +18,7 @@ from src.database.engine import (
     _schema_cache_inputs,
     create_sqlite_engine,
     run_schema_setup,
+    run_startup_data_migrations,
 )
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -69,6 +70,41 @@ async def test_startup_data_migrations_are_idempotent_and_preserve_same_project_
             assert (
                 await conn.execute(text("SELECT version_num FROM alembic_version"))
             ).scalar() is not None
+    finally:
+        await engine.dispose()
+
+
+async def test_startup_data_migration_copies_the_first_legacy_repo_to_project(tmp_path):
+    """The legacy repo backfill is deterministic and portable to PostgreSQL."""
+    engine = create_sqlite_engine(str(tmp_path / "legacy-repos.db"))
+    try:
+        await run_schema_setup(engine)
+        async with engine.begin() as conn:
+            await conn.execute(
+                text("INSERT INTO projects (id, name, repo_url, created_at) VALUES ('p', 'P', '', 0)")
+            )
+            for repo_id, url, branch in (
+                ("a", "https://example.test/first", "main"),
+                ("z", "https://example.test/later", "trunk"),
+            ):
+                await conn.execute(
+                    text(
+                        "INSERT INTO repos "
+                        "(id, project_id, url, default_branch, checkout_base_path) "
+                        "VALUES (:id, 'p', :url, :branch, '')"
+                    ),
+                    {"id": repo_id, "url": url, "branch": branch},
+                )
+
+        await run_startup_data_migrations(engine)
+
+        async with engine.connect() as conn:
+            row = (
+                await conn.execute(
+                    text("SELECT repo_url, repo_default_branch FROM projects WHERE id = 'p'")
+                )
+            ).one()
+        assert row == ("https://example.test/first", "main")
     finally:
         await engine.dispose()
 

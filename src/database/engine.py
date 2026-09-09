@@ -23,11 +23,12 @@ try:
 except ImportError:  # pragma: no cover - Windows
     fcntl = None
 
-from sqlalchemy import event, inspect, text
+from sqlalchemy import event, inspect, select, text
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 from sqlalchemy.pool import NullPool, StaticPool
 
 from src.database.migration_guard import VERIFY, migration_decision
+from src.database.tables import projects, repos
 
 logger = logging.getLogger(__name__)
 
@@ -489,14 +490,19 @@ async def run_startup_data_migrations(engine: AsyncEngine) -> None:
 async def _migrate_repos_to_projects(conn) -> None:
     """Copy first repo's url/default_branch into project columns (idempotent)."""
     try:
+        legacy_repo = repos.alias("legacy_repo")
+        first_repo_id = (
+            select(legacy_repo.c.id)
+            .where(legacy_repo.c.project_id == projects.c.id)
+            .order_by(legacy_repo.c.id)
+            .limit(1)
+            .scalar_subquery()
+        )
         result = await conn.execute(
-            text(
-                "SELECT p.id, r.url, r.default_branch "
-                "FROM projects p "
-                "JOIN repos r ON r.project_id = p.id "
-                "WHERE (p.repo_url IS NULL OR p.repo_url = '') "
-                "GROUP BY p.id"
-            )
+            select(projects.c.id, repos.c.url, repos.c.default_branch)
+            .select_from(projects)
+            .join(repos, repos.c.id == first_repo_id)
+            .where((projects.c.repo_url.is_(None)) | (projects.c.repo_url == ""))
         )
         rows = result.mappings().fetchall()
         for row in rows:
