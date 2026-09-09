@@ -1065,6 +1065,193 @@ class TestActiveClaimWithDeletedTask:
         assert "no longer exists" in res["reason"]
 
 
+class TestStaleClaimBinding:
+    """A binding whose task left IN_PROGRESS must never be re-served.
+
+    ``take_claim_slot`` decides "already active" from ``sessions.task_id``
+    alone.  A release that did not land (an attached integration owner
+    vetoes ``_release_claim_on``) leaves the session naming a task that is
+    back on the frontier, and the old ``active`` branch handed it straight
+    back as ``claimed`` -- a task the worker could neither comment on nor
+    close, re-offered on every claim until the lease reaper killed it.
+    """
+
+    @staticmethod
+    async def _strand(db, sid, tid):
+        """Move the held task off IN_PROGRESS without releasing the session."""
+        await db.transition_task(
+            tid, TaskStatus.READY, context="test", force=True, assigned_agent_id=None
+        )
+        assert (await db.get_session(sid)).task_id == tid
+
+    async def test_stale_binding_is_released_and_the_task_reclaimed(
+        self, handler, db, tmp_path
+    ):
+        handler.config.swarm.fresh_context_per_task = False  # let the same session re-claim
+        await mktask(db, "t1", profile_id="worker")
+        sid, wd = await pool_session(db, tmp_path)
+        h = scoped(handler, sid)
+        first = await h._cmd_task_claim({"next": True})
+        assert first["result"] == "claimed"
+        await self._strand(db, sid, "t1")
+
+        again = await h._cmd_task_claim({"next": True})
+
+        # A real claim, not the old phantom: fresh epoch, IN_PROGRESS task,
+        # and a claim file the fence commands can read.
+        assert again["result"] == "claimed"
+        assert again["claim_epoch"] > first["claim_epoch"]
+        task = await db.get_task("t1")
+        assert task.status == TaskStatus.IN_PROGRESS
+        assert task.assigned_agent_id == "agent-1"
+        assert json.loads((wd / ".aq" / "claim.json").read_text())["claim_epoch"] == (
+            again["claim_epoch"]
+        )
+
+    async def test_stale_binding_reports_no_ready_work_when_nothing_is_ready(
+        self, handler, db, tmp_path
+    ):
+        handler.config.swarm.fresh_context_per_task = False
+        await mktask(db, "t1", profile_id="worker")
+        sid, _ = await pool_session(db, tmp_path)
+        h = scoped(handler, sid)
+        assert (await h._cmd_task_claim({"next": True}))["result"] == "claimed"
+        await db.transition_task(
+            "t1", TaskStatus.BLOCKED, context="test", force=True, assigned_agent_id=None
+        )
+
+        res = await h._cmd_task_claim({"next": True})
+
+        assert res["result"] == "no_ready_work"
+        session = await db.get_session(sid)
+        assert (session.task_id, session.claim_phase) == (None, None)
+
+    async def test_stale_binding_retires_a_fresh_context_worker(
+        self, handler, db, tmp_path
+    ):
+        """The default one-claim-per-session cap turns the repair into an exit.
+
+        ``fresh_context_per_task`` caps the session at a single claim, which
+        the stranded task already spent.  ``session_exhausted`` is what the
+        pool loop is told to exit on, so the worker leaves cleanly instead of
+        spinning on a task it cannot close.
+        """
+        assert handler.config.swarm.fresh_context_per_task is True
+        await mktask(db, "t1", profile_id="worker")
+        sid, _ = await pool_session(db, tmp_path)
+        h = scoped(handler, sid)
+        assert (await h._cmd_task_claim({"next": True}))["result"] == "claimed"
+        await self._strand(db, sid, "t1")
+
+        res = await h._cmd_task_claim({"next": True})
+
+        assert res["result"] == "session_exhausted"
+        session = await db.get_session(sid)
+        assert (session.task_id, session.desired_state) == (None, "stopped")
+
+    async def test_vetoed_release_drains_instead_of_re_serving(
+        self, handler, db, tmp_path
+    ):
+        """The integration-owner veto is evidence, not something to erase.
+
+        ``release_claim`` refuses while an attached owner still names this
+        session/workspace pair, so the binding cannot be unwound here.  The
+        claim must stop the loop rather than hand back an unclosable task;
+        the stall stays visible on the task and the reconciler owns cleanup.
+        """
+        from src.database.queries.task_queries import TransitionResult
+
+        await mktask(db, "t1", profile_id="worker")
+        sid, wd = await pool_session(db, tmp_path)
+        h = scoped(handler, sid)
+        await h._cmd_task_claim({"next": True})
+        await self._strand(db, sid, "t1")
+        db.release_claim = AsyncMock(return_value=TransitionResult())
+
+        res = await h._cmd_task_claim({"next": True})
+
+        assert res["result"] == "drain_requested"
+        assert "t1" in res["reason"]
+        assert (await db.get_session(sid)).desired_state == "stopped"
+        assert await db.get_task_meta("t1", "needs_attention") == "claim_binding_stale"
+        # The claim file is the handoff's evidence: it stays put.
+        assert (wd / ".aq" / "claim.json").exists()
+
+    async def test_a_reclaim_between_observation_and_release_is_left_alone(
+        self, handler, db, tmp_path
+    ):
+        """The repair must not clobber the worker that legitimately took over.
+
+        ``_attempt_claim`` reads the stranded task in one transaction and
+        ``_recover_stale_binding`` releases it in a later one.  In between,
+        the task is READY on the frontier and any pool worker may claim it.
+        The release replays a status/epoch it no longer holds, so it must
+        match nothing: the new owner keeps the task IN_PROGRESS, keeps its
+        ``assigned_agent_id``, and this session drains instead.
+        """
+        await mktask(db, "t1", profile_id="worker")
+        sid, _ = await pool_session(db, tmp_path)
+        await pool_session(db, tmp_path, sid="s2", agent_id="agent-2")
+        h = scoped(handler, sid)
+        assert (await h._cmd_task_claim({"next": True}))["result"] == "claimed"
+        await self._strand(db, sid, "t1")
+
+        real_release = db.release_claim
+
+        async def claim_from_under_us(*a, **kw):
+            # Exactly the interleaving: the other worker's claim commits
+            # between our observation and our release transaction.
+            async with db.immediate() as conn:
+                assert await db.take_task(conn, "t1", agent_id="agent-2", now=time.time())
+            db.release_claim = real_release
+            return await real_release(*a, **kw)
+
+        db.release_claim = claim_from_under_us
+
+        res = await h._cmd_task_claim({"next": True})
+
+        assert res["result"] == "drain_requested"
+        task = await db.get_task("t1")
+        assert task.status == TaskStatus.IN_PROGRESS
+        assert task.assigned_agent_id == "agent-2"
+        # The other worker's task is not flagged for a stall that is ours.
+        assert await db.get_task_meta("t1", "needs_attention") is None
+        assert (await db.get_session(sid)).desired_state == "stopped"
+
+    async def test_a_task_reclaimed_before_the_claim_is_never_re_served(
+        self, handler, db, tmp_path
+    ):
+        """The same binding, one step on: IN_PROGRESS under someone else.
+
+        ``take_claim_slot`` still answers ``active`` from ``sessions.task_id``,
+        and the task is IN_PROGRESS again -- so an IN_PROGRESS check alone
+        would hand a second session the task agent-2 is working.  Nothing
+        about the task may be touched here.
+        """
+        await mktask(db, "t1", profile_id="worker")
+        sid, _ = await pool_session(db, tmp_path)
+        await pool_session(db, tmp_path, sid="s2", agent_id="agent-2")
+        h = scoped(handler, sid)
+        assert (await h._cmd_task_claim({"next": True}))["result"] == "claimed"
+        await self._strand(db, sid, "t1")
+        async with db.immediate() as conn:
+            assert await db.take_task(conn, "t1", agent_id="agent-2", now=time.time())
+        before = await db.get_task("t1")
+
+        res = await h._cmd_task_claim({"next": True})
+
+        assert res["result"] == "drain_requested"
+        assert "agent-2" in res["reason"]
+        after = await db.get_task("t1")
+        assert (after.status, after.assigned_agent_id, after.claim_epoch) == (
+            TaskStatus.IN_PROGRESS,
+            "agent-2",
+            before.claim_epoch,
+        )
+        assert (await db.get_session(sid)).desired_state == "stopped"
+
+
+
 class TestEventWaiter:
     async def test_waiter_subscribes_before_check(self):
         from src.event_bus import EventBus
