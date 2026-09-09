@@ -5,7 +5,11 @@ from __future__ import annotations
 import logging
 from types import SimpleNamespace
 
-from src.database.queries.task_comment_queries import MAX_COMMENT_BODY, TaskFindingsConflict
+from src.database.queries.task_comment_queries import (
+    COMMENT_KINDS,
+    MAX_COMMENT_BODY,
+    TaskFindingsConflict,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -128,6 +132,12 @@ class TaskCommentCommandsMixin:
             }
         if any(key in args for key in ("author_kind", "author_id", "created_at", "id")):
             return {"error": "Comment author, id, and timestamp are assigned by the server"}
+        # ``progress`` is a claim about work, not a formatting choice: the
+        # hourly digest treats it as the only comment-shaped evidence that a
+        # window is eligible, so it must be asked for explicitly.
+        kind = args.get("kind", "note")
+        if kind not in COMMENT_KINDS:
+            return {"error": f"kind must be one of {', '.join(COMMENT_KINDS)}"}
         task = await self.db.get_task(task_id)
         if task is None:
             return {"error": f"Task '{task_id}' not found"}
@@ -147,6 +157,7 @@ class TaskCommentCommandsMixin:
                 body,
                 author_kind=author_kind,
                 author_id=author_id,
+                kind=kind,
                 fence=fence,
             )
         except TaskFindingsConflict as error:

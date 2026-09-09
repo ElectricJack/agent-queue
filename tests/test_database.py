@@ -1402,6 +1402,105 @@ class TestTokenLedgerPricingColumns:
         assert current in script.get_heads()
 
 
+class TestTaskCommentKind:
+    """``task_comments.kind`` — the durable meaningful-progress marker.
+
+    The hourly digest may only report explicitly recorded progress, so a
+    comment says what it *is* rather than leaving the digest to guess from
+    prose (discord-simplification §8).
+    """
+
+    def test_declared_in_metadata_with_a_named_check(self):
+        from src.database.tables import task_comments
+
+        cols = {c.name: c for c in task_comments.columns}
+        assert "kind" in cols
+        assert cols["kind"].nullable is False
+        checks = {c.name for c in task_comments.constraints if hasattr(c, "sqltext")}
+        assert "ck_task_comment_kind" in checks
+
+    async def test_present_in_a_migrated_database_and_defaults_to_note(self, db):
+        from sqlalchemy import inspect, text
+
+        def _cols(sync_conn):
+            return {c["name"]: c for c in inspect(sync_conn).get_columns("task_comments")}
+
+        async with db._engine.begin() as conn:
+            cols = await conn.run_sync(_cols)
+            assert "kind" in cols
+            # A row written without the column still lands as ordinary
+            # history, which is what keeps legacy comments out of the digest.
+            await conn.execute(
+                text(
+                    "INSERT INTO task_comments "
+                    "(id, task_id, project_id, body, author_kind, author_id, created_at) "
+                    "VALUES ('c1','t','p','hi','user','local',1)"
+                )
+            )
+            kind = (
+                await conn.execute(text("SELECT kind FROM task_comments WHERE id='c1'"))
+            ).scalar()
+        assert kind == "note"
+
+    async def test_an_unknown_kind_is_refused_by_the_database(self, db):
+        from sqlalchemy import text
+        from sqlalchemy.exc import IntegrityError
+
+        with pytest.raises(IntegrityError):
+            async with db._engine.begin() as conn:
+                await conn.execute(
+                    text(
+                        "INSERT INTO task_comments "
+                        "(id, task_id, project_id, body, author_kind, author_id, kind, "
+                        "created_at) VALUES ('c2','t','p','hi','user','local','milestone',1)"
+                    )
+                )
+
+    @pytest.mark.migration
+    @pytest.mark.integration
+    async def test_upgrade_adds_the_column_to_a_pre_column_database(self):
+        """The ALTER path: only a database built before the column needs it.
+
+        A fresh database gets the column from the squashed baseline's
+        ``metadata.create_all``, so this shape is the only one that exercises
+        ``a00000000005``'s conditional ``add_column`` at all.
+        """
+        from sqlalchemy import inspect, text
+
+        from src.database.engine import create_postgres_engine, run_schema_setup
+        from src.database.tables import metadata
+        from tests.pg_dsn import create_scratch_database, ensure_worker_postgres_dsn
+
+        if not ensure_worker_postgres_dsn():
+            pytest.skip("POSTGRES_TEST_DSN not set")
+
+        dsn = await create_scratch_database("task_comment_kind_upgrade")
+        engine = create_postgres_engine(dsn)
+        try:
+            async with engine.begin() as conn:
+                await conn.run_sync(metadata.create_all)
+                await conn.execute(text("ALTER TABLE task_comments DROP COLUMN kind"))
+                await conn.execute(text("CREATE TABLE alembic_version (version_num VARCHAR(32))"))
+                await conn.execute(text("INSERT INTO alembic_version VALUES ('a00000000003')"))
+
+            await run_schema_setup(engine)
+
+            def _cols(sync_conn):
+                return {c["name"] for c in inspect(sync_conn).get_columns("task_comments")}
+
+            def _checks(sync_conn):
+                return {c["name"] for c in inspect(sync_conn).get_check_constraints("task_comments")}
+
+            async with engine.begin() as conn:
+                assert "kind" in await conn.run_sync(_cols)
+                assert "ck_task_comment_kind" in await conn.run_sync(_checks)
+            # Idempotent: a second pass over an already-upgraded database is
+            # a no-op rather than a duplicate-column failure.
+            await run_schema_setup(engine)
+        finally:
+            await engine.dispose()
+
+
 class TestAgentProfilesMinPerProject:
     """``agent_profiles.min_per_project`` (global-worker-pools §2.1).
 

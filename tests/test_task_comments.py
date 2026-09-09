@@ -160,6 +160,29 @@ async def test_description_validation_precedes_all_mutations(env, description, e
     assert (await env.db.get_task("t")).branch_name is None
 
 
+async def test_a_comment_is_an_ordinary_note_unless_progress_is_asked_for(env):
+    """``kind`` is the digest's only comment-shaped progress evidence.
+
+    Defaulting to ``note`` is what keeps a question or a plan from waking an
+    hourly digest and being reported as work (implementation spec §8).
+    """
+    plain = await run(env, "task_comment", {"task_id": "t", "body": "Any update?"})
+    assert plain["comment"]["kind"] == "note"
+    recorded = await run(
+        env, "task_comment", {"task_id": "t", "body": "65 tests green", "kind": "progress"}
+    )
+    assert recorded["comment"]["kind"] == "progress"
+    page = await run(env, "task_comments", {"task_id": "t"})
+    assert [c["kind"] for c in page["comments"]] == ["progress", "note"]
+
+
+@pytest.mark.parametrize("kind", ["milestone", "", None, 1, "NOTE"])
+async def test_comment_kind_validation(env, kind):
+    result = await run(env, "task_comment", {"task_id": "t", "body": "x", "kind": kind})
+    assert "error" in result
+    assert (await run(env, "task_comments", {"task_id": "t"}))["total"] == 0
+
+
 @pytest.mark.parametrize("body", ["", "  \n", "x" * 16001, 123, None])
 async def test_comment_body_validation(env, body):
     result = await run(env, "task_comment", {"task_id": "t", "body": body})

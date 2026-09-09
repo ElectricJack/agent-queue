@@ -31,6 +31,7 @@ from src.database.queries.blocked_state import BlockedStateMixin
 from src.database.queries.chat_queries import ChatQueryMixin
 from src.database.queries.claim_queries import ClaimQueryMixin
 from src.database.queries.dependency_queries import DependencyQueryMixin
+from src.database.queries.digest_queries import DigestQueryMixin
 from src.database.queries.event_queries import EventQueryMixin
 from src.database.queries.gate_queries import GateQueriesMixin
 from src.database.queries.hierarchy_queries import HierarchyQueryMixin
@@ -101,6 +102,7 @@ class PostgreSQLDatabaseAdapter(
     SubagentQueriesMixin,
     TaskSessionQueryMixin,
     ActivityQueryMixin,
+    DigestQueryMixin,
     TokenQueryMixin,
     TranscriptQueryMixin,
     ResultQueryMixin,
