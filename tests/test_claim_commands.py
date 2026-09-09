@@ -673,6 +673,99 @@ class TestClaim:
         restore.assert_awaited_once_with(slot, task_id="t1")
         assert (await db.get_session(sid)).task_id is None
 
+    async def test_pool_close_skips_the_slot_restore_the_release_already_ran(
+        self, handler, db, tmp_path
+    ):
+        """A failing close is restored inside ``complete_session_task``.
+
+        Its integration-writer release needs a clean tree to prove the
+        handoff, so it cannot wait for this call.  Salvaging the same slot a
+        second time re-walks the archive path for nothing.
+        """
+        await mktask(db, "t1", profile_id="worker")
+        sid, _ = await pool_session(db, tmp_path)
+        h = scoped(handler, sid)
+        claimed = await h._cmd_task_claim({"next": True})
+        handler.orchestrator.complete_session_task = AsyncMock(
+            return_value={"status": TaskStatus.READY.value, "slot_restored": True}
+        )
+        slot = MagicMock()
+        handler.orchestrator._slot_workspace_at = AsyncMock(return_value=slot)
+        restore = AsyncMock()
+        handler.orchestrator._worktree_slots.return_value.restore_slot_after_task = restore
+
+        closed = await h._cmd_task_close(
+            {"outcome": "fail", "summary": "no", "claim_epoch": claimed["claim_epoch"]}
+        )
+
+        assert closed["success"] is True
+        restore.assert_not_awaited()
+        assert (await db.get_session(sid)).task_id is None
+
+    async def test_pool_close_reports_a_claim_release_it_could_not_make(
+        self, handler, db, tmp_path
+    ):
+        """``_release_claim_on`` declines silently; the close must not.
+
+        An integration owner still attached to this session makes the release
+        a no-op, which left ``sessions.task_id`` and ``claim_phase='active'``
+        set on a task already back on the frontier — with the claim file
+        deleted and every surface reporting ``success: true`` (brisk-delta).
+        """
+        from src.database.queries.task_queries import TransitionResult
+
+        await mktask(db, "t1", profile_id="worker")
+        sid, wd = await pool_session(db, tmp_path)
+        h = scoped(handler, sid)
+        claimed = await h._cmd_task_claim({"next": True})
+        handler.orchestrator._slot_workspace_at = AsyncMock(return_value=None)
+        db.release_claim = AsyncMock(return_value=TransitionResult())
+
+        closed = await h._cmd_task_close(
+            {"outcome": "fail", "summary": "no", "claim_epoch": claimed["claim_epoch"]}
+        )
+
+        assert closed["claim_released"] is False
+        assert closed["needs_attention"] == "claim_release_declined"
+        assert await db.get_task_meta("t1", "needs_attention") == "claim_release_declined"
+        # The session really does still hold the task, so its proof of that
+        # must survive: deleting the claim file here is what made the stall
+        # invisible to the worker loop as well.
+        assert (wd / ".aq" / "claim.json").exists()
+
+    async def test_pool_close_stays_quiet_when_a_reconciler_already_released_it(
+        self, handler, db, tmp_path
+    ):
+        """The other reason ``_release_claim_on`` declines is benign.
+
+        A pool reconciler can release the hold and the session can claim again
+        before an old close resumes; the guarded write skipping that close is
+        exactly what it is for.  The session no longer holds this task, so
+        this is not the stuck hold above and must not be reported as one.
+        """
+        from src.database.queries.task_queries import TransitionResult
+
+        await mktask(db, "t1", profile_id="worker")
+        sid, wd = await pool_session(db, tmp_path)
+        h = scoped(handler, sid)
+        claimed = await h._cmd_task_claim({"next": True})
+        handler.orchestrator._slot_workspace_at = AsyncMock(return_value=None)
+
+        async def release_but_report_nothing(*args, **kwargs):
+            await db.update_session(sid, task_id=None)
+            return TransitionResult()
+
+        db.release_claim = release_but_report_nothing
+
+        closed = await h._cmd_task_close(
+            {"outcome": "fail", "summary": "no", "claim_epoch": claimed["claim_epoch"]}
+        )
+
+        assert "claim_released" not in closed
+        assert closed.get("needs_attention") != "claim_release_declined"
+        assert await db.get_task_meta("t1", "needs_attention") is None
+        assert not (wd / ".aq" / "claim.json").exists()
+
     async def test_duplicate_claim_is_idempotent_once_active(self, handler, db, tmp_path):
         await mktask(db, "t1", profile_id="worker")
         sid, _ = await pool_session(db, tmp_path)
