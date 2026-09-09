@@ -42,6 +42,11 @@ class IntegrationRecoveryControls:
         self.clock = clock
 
     async def resume(self, operation_id: str) -> dict[str, Any]:
+        # An older handoff could record its detached workspace proof and then
+        # stop before clearing a pool session's active claim.  Recover only
+        # the stage's exact delegate before evaluating the normal bounded
+        # resume flow; the recovery helper refuses any live/reused holder.
+        await self._recover_stopped_delegate_claim(operation_id)
         now = self.clock()
         transitions = []
         async with self.db.immediate() as conn:
@@ -184,6 +189,23 @@ class IntegrationRecoveryControls:
             await self.db._notify_settled(transition.settled)
             await self.db._notify_ready(transition.ready)
         return result
+
+    async def _recover_stopped_delegate_claim(self, operation_id: str) -> bool:
+        async with self.db._engine.connect() as conn:
+            repair_task_id = (
+                await conn.execute(
+                    select(integration_repair_stages.c.repair_task_id)
+                    .where(integration_repair_stages.c.operation_id == operation_id)
+                    .where(integration_repair_stages.c.repair_task_id.is_not(None))
+                    .order_by(integration_repair_stages.c.ordinal.desc())
+                    .limit(1)
+                )
+            ).scalar_one_or_none()
+        if repair_task_id is None:
+            return False
+        from src.orchestrator.workspace_attachments import recover_stopped_integration_pool_claim
+
+        return await recover_stopped_integration_pool_claim(self.db, repair_task_id)
 
     @staticmethod
     def _has_operator_resume_evidence(
