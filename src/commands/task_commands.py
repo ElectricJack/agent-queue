@@ -3963,8 +3963,16 @@ class TaskCommandsMixin:
         reasons: list[Reason] = []
         needs_attention = await self.db.get_task_meta(str(task_id), "needs_attention")
         if needs_attention:
+            detail = str(needs_attention)
+            if needs_attention == "slot_reset_failed":
+                failure = await self.db.get_task_meta(str(task_id), "slot_reset_failure")
+                if isinstance(failure, dict):
+                    detail += (f": {failure.get('reason', 'unknown reset error')} "
+                               f"(attempt {failure.get('attempt')}; "
+                               f"{failure.get('retry', 'automatic')} retry). "
+                               f"After fixing the cause: aq task resume --task-id {task_id}")
             reasons.append(Reason(
-                code="needs_attention", detail=str(needs_attention), ref=str(task_id),
+                code="needs_attention", detail=detail, ref=str(task_id),
             ))
         # A terminal close (hard failure, retry budget spent, pipeline stop,
         # timeout, operator stop).  The promotion cascade deliberately skips

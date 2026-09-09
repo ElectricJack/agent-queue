@@ -683,6 +683,69 @@ class TestClaim:
         assert again["result"] == "no_ready_work"
         assert "pool.prepare_failed" in handler.orchestrator.bus.seen_event_types
 
+    @pytest.mark.parametrize("proof", ["ended", "missing", "successor"])
+    async def test_retire_stopped_slot_claim_after_binding_cleared(self, handler, db, tmp_path, proof):
+        from sqlalchemy import delete, update
+        from src.database.tables import sessions, task_session_attempts, workspaces
+        from src.claim_file import read_claim_file
+        from src.orchestrator.workspace_claim_recovery import retire_stopped_slot_claim
+
+        await mktask(db, "t1", profile_id="worker")
+        sid, wd = await pool_session(db, tmp_path)
+        await db.create_workspace(Workspace(
+            id="base", project_id=PROJECT_ID, workspace_path=str(tmp_path),
+            source_type=RepoSourceType.LINK,
+        ))
+        async with db.immediate() as conn:
+            await conn.execute(update(workspaces).where(workspaces.c.id == "ws-agent-1").values(
+                base_workspace_id="base",
+            ))
+        assert (await scoped(handler, sid)._cmd_task_claim({"next": True}))["result"] == "claimed"
+        await db.release_claim(sid, task_status=TaskStatus.READY, context="test", now=time.time(),
+                               release_workspace_lock=True)
+        await db.update_session(sid, state="stopped", desired_state="stopped")
+        if proof == "missing":
+            async with db.immediate() as conn:
+                await conn.execute(delete(task_session_attempts).where(task_session_attempts.c.session_id == sid))
+        if proof == "successor":
+            other, _ = await pool_session(db, tmp_path, sid="s2", agent_id="agent-2")
+            async with db.immediate() as conn:
+                await conn.execute(update(sessions).where(sessions.c.id == other).values(work_dir=str(wd)))
+        assert read_claim_file(wd) is not None
+        assert await retire_stopped_slot_claim(db, str(wd)) is (proof == "ended")
+        assert (read_claim_file(wd) is None) is (proof == "ended")
+
+    async def test_slot_reset_retry_preserves_unrelated_attention(self, db):
+        await mktask(db, "t1", profile_id="worker")
+        await db.set_task_meta("t1", "slot_reset_failure", {"reason": "old reset failure"})
+        await db.set_task_meta("t1", "needs_attention", "operator_investigation")
+        await db.set_task_meta("t1", "claim_prepare_backoff_until", time.time() + 300)
+        await db.resume_task("t1")
+        assert await db.get_task_meta("t1", "needs_attention") == "operator_investigation"
+        assert await db.get_task_meta("t1", "claim_prepare_backoff_until") is None
+
+    async def test_slot_reset_recovery_is_bounded_and_resume_retries(self, handler, db, tmp_path):
+        await mktask(db, "t1", profile_id="worker")
+        sid, _wd = await pool_session(db, tmp_path)
+        reset = handler.orchestrator._worktree_slots.return_value.reset_slot_for_task
+        reset.side_effect = RuntimeError("branch held by stopped slot")
+        for attempt in range(1, 4):
+            result = await scoped(handler, sid)._cmd_task_claim({"next": True})
+            assert result["result"] == "prepare_failed"
+            failure = await db.get_task_meta("t1", "slot_reset_failure")
+            assert failure["attempt"] == attempt
+            assert failure["reason"] == "branch held by stopped slot"
+            assert failure["retry"] == ("manual" if attempt == 3 else "automatic")
+            await db.set_task_meta("t1", "claim_prepare_backoff_until", time.time() - 1)
+        assert (await db.get_task("t1")).status == TaskStatus.BLOCKED
+        assert (await scoped(handler, sid)._cmd_task_claim({"next": True}))["result"] == "no_ready_work"
+        reset.side_effect = None
+        await db.resume_task("t1")
+        assert (await scoped(handler, sid)._cmd_task_claim({"next": True}))["result"] == "claimed"
+        assert await db.get_task_meta("t1", "slot_reset_failure") is None
+        assert await db.get_task_meta("t1", "needs_attention") is None
+        assert await db.get_task_meta("t1", "claim_prepare_backoff_attempts") is None
+
     async def test_claim_file_write_failure_releases_and_reports(
         self, handler, db, tmp_path, monkeypatch
     ):

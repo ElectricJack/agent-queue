@@ -79,6 +79,7 @@ CLAIM_PREPARATION_METADATA_KEYS = (
     "manual_pause_checkpoint",
     PREPARE_BACKOFF_UNTIL_KEY,
     PREPARE_BACKOFF_ATTEMPTS_KEY,
+    "slot_reset_failure",
 )
 
 #: Matches exactly what PostgreSQL's ``double precision`` input accepts here:
@@ -209,6 +210,13 @@ class ClaimQueryMixin:
                     task_metadata.c.key.in_(CLAIM_PREPARATION_METADATA_KEYS),
                 )
             )
+            await conn.execute(delete(task_metadata).where(
+                task_metadata.c.task_id == task_id,
+                task_metadata.c.key == "needs_attention",
+                task_metadata.c.value.in_([
+                    json.dumps("slot_reset_failed"), json.dumps("integration_prepare_failed"),
+                ]),
+            ))
 
     async def release_claim_slot(self, conn, session_id: str) -> None:
         await conn.execute(

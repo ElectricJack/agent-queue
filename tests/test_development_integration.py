@@ -334,6 +334,7 @@ async def test_stopped_writer_preserves_dirty_checkout_before_unlock(setup, conf
     agent = await db.get_agent("a")
     assert agent.state.value == ("IDLE" if recovered and attachment == "detached" else "BUSY")
     assert dirty.read_text() == "irreplaceable work\n"
+    assert git(source, "branch", "--show-current") == ("" if recovered else "old")
     async with db._engine.connect() as conn:
         workspace = (
             (await conn.execute(select(workspaces).where(workspaces.c.id == "w"))).mappings().one()

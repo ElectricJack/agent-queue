@@ -590,10 +590,32 @@ class TaskQueryMixin:
             row = await self._lock_task_row(conn, task_id)
             if row is None:
                 raise ValueError(f"Task '{task_id}' not found")
-            if row["status"] != TaskStatus.PAUSED.value:
-                raise ValueError(f"Task is not paused (status: {row['status']})")
-            encoded = await self._read_manual_pause(conn, task_id)
-            result = await self._resume_locked(conn, task_id, encoded)
+            failure = (await conn.execute(select(task_metadata.c.value).where(
+                task_metadata.c.task_id == task_id,
+                task_metadata.c.key == "slot_reset_failure",
+            ))).scalar_one_or_none()
+            if row["status"] in {"READY", "BLOCKED"} and failure:
+                holder = (await conn.execute(select(sessions.c.id).where(
+                    sessions.c.task_id == task_id,
+                ).limit(1))).scalar_one_or_none()
+                if row["assigned_agent_id"] or holder:
+                    raise ValueError("Slot reset recovery must wait for the old claim to release")
+                await conn.execute(delete(task_metadata).where(
+                    task_metadata.c.task_id == task_id,
+                    task_metadata.c.key.in_([
+                        "claim_prepare_backoff_until", "claim_prepare_backoff_attempts",
+                    ]) | ((task_metadata.c.key == "needs_attention")
+                          & (task_metadata.c.value == json.dumps("slot_reset_failed"))),
+                ))
+                result = await self._apply_transition(
+                    conn, task_id, TaskStatus.READY, force=True,
+                    context="slot_reset_retry", returning=True,
+                )
+            else:
+                if row["status"] != TaskStatus.PAUSED.value:
+                    raise ValueError(f"Task is not paused (status: {row['status']})")
+                encoded = await self._read_manual_pause(conn, task_id)
+                result = await self._resume_locked(conn, task_id, encoded)
         await self.log_blocked_flips(result.flipped)
         await self._notify_ready(result.ready)
         return await self.get_task(task_id)

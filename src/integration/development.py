@@ -1148,6 +1148,10 @@ class DevelopmentIntegration:
                 elif (session["task_id"] != owner["owner_id"]
                       or workspace["locked_by_task_id"] != owner["owner_id"]):
                     continue
+                # Retaining a checkout must not keep its branch checked out:
+                # Git otherwise refuses the next worker in a different slot.
+                # Detach at the existing HEAD; never reset or clean preserved work.
+                await self.git._arun(["switch", "--detach"], cwd=workspace["workspace_path"])
                 now = time.time()
                 # Disable before unlocking: allocation cannot recycle this dirty checkout.
                 await conn.execute(

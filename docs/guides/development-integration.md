@@ -45,3 +45,21 @@ For a READY task with no worker, inspect `aq task explain --task-id <id>` and
 manual roster sizing can disable automatic agent creation, and a stale BUSY
 definition can leave no compatible idle agent. Preserve unpublished work before
 releasing ownership; do not repeatedly reset the slot or create review tasks.
+
+## Slot reset failures
+
+A failed pool-slot preparation releases its claim and records `slot_reset_failure`
+with the actual error, workspace, session, attempt count and retry mode. AQ retries
+automatically with the existing 120–300 second backoff. After three consecutive
+failures the task becomes BLOCKED instead of repeating indefinitely; other ready
+work remains claimable. `aq task explain --task-id <id>` shows the concrete error
+and recovery command. After fixing the cause, `aq task resume --task-id <id>`
+retries a READY/BLOCKED reset failure immediately and starts a fresh retry cycle.
+Dependency and approval checks still apply. Successful preparation clears both
+the retry metadata and its stale attention flag.
+
+Stopped-workspace preservation detaches at the existing HEAD before disabling the
+slot, retaining all files and commits while freeing the branch for another slot.
+A leftover claim file whose session task link has already cleared can be retired
+only with matching claim epoch and ended session-incarnation evidence, no lock,
+and no live successor in that checkout. A live holder is never detached.

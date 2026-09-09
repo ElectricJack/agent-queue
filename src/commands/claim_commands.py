@@ -800,9 +800,20 @@ class ClaimCommandsMixin:
                     )
                 self._resolve_claim_waiters(session.id, epoch, "prepare_failed")
                 return self._simple(ClaimResult.PREPARE_FAILED, str(exc), row, cap)
+            prior = await self.db.get_task_meta(task.id, "claim_prepare_backoff_attempts")
+            try:
+                attempt = max(0, int(prior or 0)) + 1
+            except (TypeError, ValueError):
+                attempt = 1
+            await self.db.set_task_meta(task.id, "slot_reset_failure", {
+                "reason": str(exc)[:2000], "attempt": attempt,
+                "workspace_id": slot.id if slot else None,
+                "session_id": session.id, "failed_at": time.time(),
+                "retry": "manual" if attempt >= 3 else "automatic",
+            })
             await self.db.release_claim(
                 session.id,
-                task_status=TaskStatus.READY,
+                task_status=TaskStatus.BLOCKED if attempt >= 3 else TaskStatus.READY,
                 context="slot_reset_failed",
                 now=time.time(),
                 result="prepare_failed",
