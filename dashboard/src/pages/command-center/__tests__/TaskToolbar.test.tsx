@@ -15,6 +15,18 @@ const mocks = vi.hoisted(() => ({
 vi.mock("../../../api/hooks", () => ({
   useProjects: () => ({ data: mocks.projects, isLoading: false, error: null }),
   useCreateTask: () => ({ mutate: mocks.create, isPending: false, error: mocks.error }),
+  // CreateTaskModal requires an intelligence class, so the toolbar's create
+  // form does not render without this hook.
+  useIntelligenceClasses: () => ({
+    data: {
+      success: true,
+      classes: [
+        { id: "fast-low", name: "fast-low", description: "quick edits", revision: "", mapping: {} },
+      ],
+    },
+    isLoading: false,
+    error: null,
+  }),
 }));
 vi.mock("../../../api/graphLayout", () => ({
   useTidyLayout: () => ({ mutate: mocks.tidy, isPending: false, isError: mocks.tidyFailed }),
@@ -82,8 +94,9 @@ describe("shared Command Center task controls", () => {
     await userEvent.click(screen.getByRole("button", { name: /Add task/ }));
     expect(screen.getByRole("combobox", { name: "Project" })).toHaveValue("beta");
     await userEvent.type(screen.getByRole("textbox", { name: /Title/ }), "  My new task  ");
+    await userEvent.selectOptions(screen.getByRole("combobox", { name: /Intelligence class/ }), "fast-low");
     fireEvent.submit(screen.getByRole("form", { name: "Create task" }));
-    expect(mocks.create).toHaveBeenCalledWith(expect.objectContaining({ title: "My new task", project_id: "beta" }), expect.any(Object));
+    expect(mocks.create).toHaveBeenCalledWith(expect.objectContaining({ title: "My new task", project_id: "beta", intelligence_class: "fast-low" }), expect.any(Object));
   });
 
   it("does not trigger N while typing, but opens creation from the workspace", async () => {
@@ -101,6 +114,7 @@ describe("shared Command Center task controls", () => {
     mount("/projects/alpha/graph?q=old&status=FAILED");
     await userEvent.click(screen.getByRole("button", { name: /Add task/ }));
     await userEvent.type(screen.getByRole("textbox", { name: /Title/ }), "New work");
+    await userEvent.selectOptions(screen.getByRole("combobox", { name: /Intelligence class/ }), "fast-low");
     fireEvent.submit(screen.getByRole("form", { name: "Create task" }));
     expect(mocks.open).toHaveBeenCalledWith("task-detail", { taskId: "new-task" });
     expect(screen.getByRole("searchbox", { name: "Search tasks" })).toHaveValue("");

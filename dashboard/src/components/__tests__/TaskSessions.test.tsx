@@ -13,6 +13,7 @@ const fixture = vi.hoisted(() => ({
 vi.mock("../../api/hooks", () => ({
   useTask: () => ({ data: fixture }),
   useProfiles: () => ({ data: [] }),
+  useIntelligenceClasses: () => ({ data: { success: true, classes: [] }, isLoading: false, error: null }),
   useEditTask: () => ({}), useGates: () => ({ data: [] }),
   useResolveGate: () => ({}), useDeleteTask: () => ({}), useReopenWithFeedback: () => ({}),
   useTaskAttachments: () => ({ data: { success: true, attachments: [] } }),

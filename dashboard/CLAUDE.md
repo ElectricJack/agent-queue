@@ -68,6 +68,17 @@ npx vitest run                              # from dashboard/
 worktree it does not exist, and without it most test files fail to import
 `@aq/ts-client` — generate it once before the first run.
 
+`npm install` is also not optional in a worktree whose `node_modules` predates
+a newly added dependency. Node then resolves that package from an *ancestor*
+checkout's `node_modules`, and a package resolved from there resolves its own
+`react` from there too — two React copies in one render, which surfaces as
+`TypeError: Cannot read properties of null (reading 'useReducer')` deep inside
+the dependency (it hit `@tanstack/react-virtual` in `command-center/Tasks.tsx`).
+A stack frame pointing at `../../../../node_modules/` is the tell. `resolve.dedupe`
+does not fix it: Vitest externalizes `node_modules` deps and loads them through
+native `require`, which never reaches Vite's resolver. Run `npm install` from the
+repo root instead.
+
 Two invariants keep the suite deterministic; don't undo them without reading
 `docs/superpowers/specs/2026-09-01-dashboard-vitest-flakiness.md`:
 
