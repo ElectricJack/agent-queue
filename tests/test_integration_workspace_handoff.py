@@ -842,6 +842,90 @@ async def test_pool_handoff_replay_is_idempotent_and_touches_no_git(
     assert events == []
 
 
+async def test_completed_pool_claim_recovery_releases_only_a_quiescent_exact_writer(
+    orchestrator_factory, tmp_path, monkeypatch
+):
+    """A lost close response can be recovered without replaying COMPLETED."""
+    from src.integration.completion_recovery import recover_completed_pool_claims
+
+    orchestrator = await _pool_orchestrator(
+        orchestrator_factory, tmp_path, handoff_state="attached"
+    )
+    db = orchestrator.db
+    await db.update_project(
+        "p", hierarchical_integration_mode="hierarchy", integration_repository_id="repo"
+    )
+    await db.update_task("task", status=TaskStatus.COMPLETED, claim_epoch=7)
+    await db.update_session("session", last_claim_epoch=7, claim_phase="active")
+    events: list[str] = []
+    current_branch, run = _clean_git(events)
+    orchestrator.git.aget_current_branch = AsyncMock(side_effect=current_branch)
+    orchestrator.git._arun_unlocked = AsyncMock(side_effect=run)
+    provider = SimpleNamespace(
+        process_alive=AsyncMock(return_value=False), confirm_stopped=AsyncMock(return_value=True)
+    )
+    monkeypatch.setattr(orchestrator.session_providers, "create", lambda *_args: provider)
+
+    assert await recover_completed_pool_claims(orchestrator, "p") == ["task"]
+    # The public replay sees no attached owner and therefore cannot disturb
+    # the released session, its branch evidence, or a future replacement.
+    assert await recover_completed_pool_claims(orchestrator, "p") == []
+    assert events == ["clean-check", "fetch", "detach"]
+    assert (await db.get_task("task")).status is TaskStatus.COMPLETED
+    session = await db.get_session("session")
+    assert (session.state, session.desired_state, session.task_id) == ("stopped", "stopped", None)
+    workspace = await db.get_workspace("slot")
+    assert workspace.locked_by_agent_id is None and workspace.locked_by_task_id is None
+    owner = await BranchOwnership(db).get_owner(BranchKey(repository_id="repo", branch="aq/parent"))
+    assert owner["handoff_state"] == "released"
+    assert owner["confirmed_workspace_id"] == "slot"
+
+
+@pytest.mark.parametrize("refusal", ["live", "dirty", "unpushed", "stale", "reused"])
+async def test_completed_pool_claim_recovery_refuses_unsafe_or_reused_holders(
+    orchestrator_factory, tmp_path, monkeypatch, refusal
+):
+    """No terminal recovery may detach a live, unpublished, or successor holder."""
+    from src.integration.completion_recovery import recover_completed_pool_claims
+
+    orchestrator = await _pool_orchestrator(
+        orchestrator_factory, tmp_path, handoff_state="attached"
+    )
+    db = orchestrator.db
+    await db.update_project(
+        "p", hierarchical_integration_mode="hierarchy", integration_repository_id="repo"
+    )
+    await db.update_task("task", status=TaskStatus.COMPLETED, claim_epoch=7)
+    await db.update_session("session", last_claim_epoch=7, claim_phase="active")
+    if refusal == "stale":
+        await db.update_session("session", last_claim_epoch=8)
+    elif refusal == "reused":
+        await db.create_task(
+            Task(id="successor", project_id="p", title="Successor", description="")
+        )
+        await db.update_session("session", task_id="successor", last_claim_epoch=8)
+    events: list[str] = []
+    current_branch, run = _clean_git(
+        events, dirty=refusal == "dirty", pushed=refusal != "unpushed"
+    )
+    orchestrator.git.aget_current_branch = AsyncMock(side_effect=current_branch)
+    orchestrator.git._arun_unlocked = AsyncMock(side_effect=run)
+    provider = SimpleNamespace(
+        process_alive=AsyncMock(return_value=refusal == "live"),
+        confirm_stopped=AsyncMock(return_value=True),
+    )
+    monkeypatch.setattr(orchestrator.session_providers, "create", lambda *_args: provider)
+
+    assert await recover_completed_pool_claims(orchestrator, "p") == []
+    assert (await db.get_task("task")).status is TaskStatus.COMPLETED
+    session = await db.get_session("session")
+    assert session.task_id == ("successor" if refusal == "reused" else "task")
+    workspace = await db.get_workspace("slot")
+    assert workspace.locked_by_task_id == "task"
+    owner = await BranchOwnership(db).get_owner(BranchKey(repository_id="repo", branch="aq/parent"))
+    assert owner["handoff_state"] in {"attached", "handoff_pending"}
+
+
 async def test_pool_handoff_refuses_a_dirty_slot(
     orchestrator_factory, tmp_path, monkeypatch
 ):
