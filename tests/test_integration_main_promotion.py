@@ -41,7 +41,7 @@ from src.git.github_app import GitHubRepositoryBinding
 from src.git.manager import GitError, GitManager
 from src.integration.attestation import IntegrationAttestationService
 from src.integration.candidates import CandidateBuildResult, CandidateService
-from src.integration.ci import ATTESTATION_CHECK_NAME, AttestationPayload
+from src.integration.ci import ATTESTATION_CHECK_NAME, AttestationPayload, CIReceiptPayload
 from src.integration.main_promotion import (
     RootAttestationProof,
     RootPromotionInvariantError,
@@ -393,6 +393,42 @@ def _root_attestation_payload() -> AttestationPayload:
             "workflow_runs": [
                 {"workflow_run_id": 31 + index, "run_attempt": 1,
                  "check_suite_id": 21 + index, "head_sha": HEAD, "conclusion": "success"}
+                for index in range(2)
+            ],
+        }
+    )
+
+
+def _root_ci_receipt_payload() -> CIReceiptPayload:
+    return CIReceiptPayload.model_validate(
+        {
+            "schema": "aq.integration-ci-receipt.v1",
+            "canonical_repository_id": "repo",
+            "repository_id": 99,
+            "full_name": "acme/widgets",
+            "producer_id": "404",
+            "head_sha": HEAD,
+            "required_check_set_version": "checks-v1",
+            "checks": [
+                {
+                    "name": name,
+                    "check_run_id": 11 + index,
+                    "check_suite_id": 21 + index,
+                    "producer_app_id": 404,
+                    "producer_id": "404",
+                    "head_sha": HEAD,
+                    "conclusion": "success",
+                }
+                for index, name in enumerate(("unit", "postgres"))
+            ],
+            "workflow_runs": [
+                {
+                    "workflow_run_id": 31 + index,
+                    "run_attempt": 1,
+                    "check_suite_id": 21 + index,
+                    "head_sha": HEAD,
+                    "conclusion": "success",
+                }
                 for index in range(2)
             ],
         }
@@ -1042,6 +1078,98 @@ async def test_exact_green_ci_reclaims_only_unclaimed_delegate_and_promotes(prep
         git_manager=GitHubCLIPushGit(provider),
         app_client=provider,
         attestation_resolver=receipt.resolve,
+        clock=lambda: 10.0,
+    ).promote("batch", 0)
+
+    assert result.outcome == "promoted"
+    assert provider.remote == HEAD
+
+
+@pytest.mark.asyncio
+async def test_already_green_candidate_retry_reclaims_unclaimed_delegate_and_promotes(prepared_db):
+    """Retry recovery does not depend on observing CI again in this process."""
+    db, data_dir = prepared_db
+    delegate_id = await _escalate_to_unclaimed_root_delegate(db)
+    async with db.immediate() as conn:
+        await conn.execute(
+            insert(integration_check_evidence).values(
+                id="ci-retry-green",
+                operation_id="root-op",
+                batch_id="batch",
+                candidate_revision=0,
+                producer_id="404",
+                workflow_id="aggregate:retry",
+                run_id=_root_ci_receipt_payload().external_id,
+                attempt=0,
+                required_check_version="checks-v1",
+                checks={"unit": "success", "postgres": "success"},
+                conclusion="success",
+                classification="conclusive",
+                observed_at=10.0,
+            )
+        )
+        await conn.execute(
+            update(integration_batches)
+            .where(integration_batches.c.id == "batch")
+            .values(
+                tested_candidate_sha=HEAD,
+                ci_evidence_id="ci-retry-green",
+                lifecycle="testing",
+            )
+        )
+        await conn.execute(
+            update(integration_candidate_revisions)
+            .where(
+                integration_candidate_revisions.c.batch_id == "batch",
+                integration_candidate_revisions.c.revision == 0,
+            )
+            .values(state="green", ci_evidence_id="ci-retry-green")
+        )
+        await conn.execute(
+            update(integration_repair_stages)
+            .where(
+                integration_repair_stages.c.operation_id == "root-op",
+                integration_repair_stages.c.ordinal == 1,
+            )
+            .values(
+                state="awaiting_completion",
+                current_subject={"kind": "batch", "revision": 0, "candidate_sha": HEAD},
+                success_subject={"kind": "batch", "revision": 0, "candidate_sha": HEAD},
+                success_evidence_id="ci-retry-green",
+            )
+        )
+
+    provider = GitHubCLIRootProvider()
+    retry = IntegrationAttestationService(
+        db,
+        data_dir=data_dir,
+        git_manager=RootTrustGit(),
+        app_client_factory=lambda _binding: provider,
+        clock=lambda: 10.0,
+    )
+    observed = await retry.handle_candidate_ci(
+        {"operation_id": "root-op", "batch_id": "batch", "revision": 0, "candidate_sha": HEAD},
+        10.0,
+    )
+    async with db._engine.connect() as conn:
+        owner = (
+            await conn.execute(
+                select(integration_branch_owners.c.owner_id).where(
+                    integration_branch_owners.c.id == "branch-owner-row"
+                )
+            )
+        ).scalar_one()
+
+    assert observed["outcome"] == "published"
+    assert owner == "root-op"
+    assert (await db.get_task(delegate_id)).status is TaskStatus.PAUSED
+
+    result = await _RootPromotionService(
+        db,
+        data_dir=data_dir,
+        git_manager=GitHubCLIPushGit(provider),
+        app_client=provider,
+        attestation_resolver=retry.resolve,
         clock=lambda: 10.0,
     ).promote("batch", 0)
 
