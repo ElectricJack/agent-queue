@@ -50,6 +50,7 @@ DESIGN_INTEGRATION_COMMANDS = frozenset(
         "integration_reconcile_promotion",
         "integration_resolve_conflict",
         "integration_push_conflict_resolution",
+        "integration_recover_unwritten_resolution",
         "integration_promote_main",
         "integration_release",
         "integration_cleanup",
@@ -216,6 +217,12 @@ class IntegrationResolveConflictArgs(CommandArgs):
 class IntegrationPushConflictResolutionArgs(CommandArgs):
     intent_id: str
     fence: Fence
+
+
+class IntegrationRecoverUnwrittenResolutionArgs(CommandArgs):
+    """Operator recovery of a malformed reservation which never wrote remotely."""
+
+    intent_id: str = Field(min_length=1)
 
 
 class IntegrationPromoteMainArgs(CommandArgs):
@@ -904,6 +911,33 @@ INTEGRATION_PUSH_CONFLICT_RESOLUTION = CommandContract(
 )
 
 
+INTEGRATION_RECOVER_UNWRITTEN_RESOLUTION = CommandContract(
+    execution=ExecutionContract(
+        name="integration_recover_unwritten_resolution",
+        args_model=IntegrationRecoverUnwrittenResolutionArgs,
+        result_model=PromotionCommandValue,
+        outcomes=(
+            OutcomeSpec(name="recovered", classification=OutcomeClass.SUCCESS),
+            OutcomeSpec(name="already_recovered", classification=OutcomeClass.SUCCESS),
+            OutcomeSpec(name="not_recoverable", classification=OutcomeClass.FAILURE),
+        ),
+        capability="integration_recover_unwritten_resolution",
+        side_effect=SideEffectClass.COMPOSITE,
+        idempotency=IdempotencySpec(mode="keyed", key_field="intent_id"),
+        retry_safe=True,
+        effects=(
+            UpdateClause(subject=EffectSubject.BRANCH_OWNERSHIP),
+            UpdateClause(subject=EffectSubject.INTEGRATION_OPERATION),
+        ),
+        receipt_projection=("intent_id", "receipt_id"),
+    ),
+    presentation=CommandPresentation(
+        title="Recover unwritten conflict resolution",
+        summary="Supersede a malformed reservation only after an operator proves no remote write occurred.",
+    ),
+)
+
+
 INTEGRATION_PROMOTE_MAIN = CommandContract(
     execution=ExecutionContract(
         name="integration_promote_main",
@@ -1347,6 +1381,18 @@ async def _push_conflict_resolution_adapter(
     )
 
 
+async def _recover_unwritten_resolution_adapter(
+    args: IntegrationRecoverUnwrittenResolutionArgs, ctx: CommandContext | None
+) -> CommandResult:
+    return await _invoke_adapter(
+        "integration_recover_unwritten_resolution",
+        args,
+        ctx,
+        PromotionCommandValue,
+        {"recovered", "already_recovered", "not_recoverable"},
+    )
+
+
 async def _promote_main_adapter(
     args: IntegrationPromoteMainArgs, ctx: CommandContext | None
 ) -> CommandResult:
@@ -1722,6 +1768,7 @@ def register_integration_contracts(registry: ContractRegistry) -> None:
         (INTEGRATION_RECONCILE_PROMOTION, _reconcile_adapter),
         (INTEGRATION_RESOLVE_CONFLICT, _resolve_conflict_adapter),
         (INTEGRATION_PUSH_CONFLICT_RESOLUTION, _push_conflict_resolution_adapter),
+        (INTEGRATION_RECOVER_UNWRITTEN_RESOLUTION, _recover_unwritten_resolution_adapter),
         (INTEGRATION_PROMOTE_MAIN, _promote_main_adapter),
         (INTEGRATION_CLEANUP, _cleanup_adapter),
         (INTEGRATION_BUILD_CANDIDATE, _build_candidate_adapter),

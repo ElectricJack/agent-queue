@@ -8,6 +8,7 @@ there are intentionally no optimistic success stubs.
 from __future__ import annotations
 
 import inspect
+import json
 import time
 from typing import Any
 
@@ -1269,6 +1270,8 @@ class IntegrationCommandsMixin:
         from src.integration.promotion import (
             PromotionAuthorizationError,
             PromotionInvariantError,
+            PromotionSourceMoved,
+            PromotionRuntimeError,
             PromotionTargetMoved,
         )
 
@@ -1284,8 +1287,10 @@ class IntegrationCommandsMixin:
             return _failure("unauthorized", str(exc))
         except (PromotionTargetMoved, StaleFence, BranchBusy) as exc:
             return _failure("stale", str(exc))
-        except (PromotionInvariantError, ValueError) as exc:
+        except (PromotionInvariantError, PromotionSourceMoved, ValueError) as exc:
             return _failure("invariant_error", str(exc))
+        except (PromotionRuntimeError, GitError) as exc:
+            return _failure("runtime_error", str(exc))
         return self._promotion_result("already_reserved" if replay else "reserved", value)
 
     async def _cmd_integration_push_conflict_resolution(self, args: dict) -> dict:
@@ -1319,6 +1324,38 @@ class IntegrationCommandsMixin:
         except (PromotionInvariantError, PromotionSourceMoved, PromotionRuntimeError) as exc:
             return _failure("runtime_error", str(exc))
         return self._promotion_result("already_applied" if replay else "pushed", value)
+
+    async def _cmd_integration_recover_unwritten_resolution(self, args: dict) -> dict:
+        """Operator-only recovery for a malformed reservation with no write attempt."""
+        from pydantic import ValidationError
+
+        from src.commands.contracts.integration import IntegrationRecoverUnwrittenResolutionArgs
+        from src.integration.ownership import BranchBusy, StaleFence
+        from src.integration.promotion import (
+            PromotionAuthorizationError,
+            PromotionInvariantError,
+            PromotionRuntimeError,
+            PromotionTargetMoved,
+        )
+
+        try:
+            parsed = IntegrationRecoverUnwrittenResolutionArgs.model_validate(args)
+        except ValidationError as exc:
+            return _failure("not_recoverable", f"invalid resolution recovery: {exc}")
+        authorized, _operator_id = self._integration_local_operator()
+        if not authorized:
+            return _failure(
+                "unauthorized", "resolution recovery requires LOCAL operator authority"
+            )
+        try:
+            value, replay = await self._integration_promotion_service().recover_unwritten_resolution(
+                parsed.intent_id
+            )
+        except (PromotionAuthorizationError, PromotionInvariantError, PromotionTargetMoved, StaleFence, BranchBusy) as exc:
+            return _failure("not_recoverable", str(exc))
+        except (PromotionRuntimeError, GitError) as exc:
+            return _failure("runtime_error", str(exc))
+        return self._promotion_result("already_recovered" if replay else "recovered", value)
 
     async def _cmd_delivery_receipts(self, args: dict) -> dict:
         from pydantic import ValidationError

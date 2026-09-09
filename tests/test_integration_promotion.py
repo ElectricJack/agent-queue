@@ -985,8 +985,90 @@ async def test_conflict_resolution_push_reconcile_writes_original_receipt_and_ev
     assert "integration.cleanup_pending" in events
 
 
+async def test_operator_recovers_malformed_unwritten_resolution_with_fresh_successor(
+    db, conflict_resolution_case, command_handler_factory
+):
+    """Recovery preserves the bad reservation and makes a new one pushable."""
+    from src.commands.principal import principal_context
+    from src.integration.promotion import PromotionService
+
+    case = conflict_resolution_case
+    service = PromotionService(db, data_dir=case["data_dir"], git_manager=GitManager())
+    request = _resolution_request(case)
+    with principal_context(_resolution_principal()):
+        await service.reserve_resolution(request)
+    malformed = "f" * 40
+    async with db.immediate() as conn:
+        await conn.execute(
+            update(integration_promotion_intents)
+            .where(integration_promotion_intents.c.id == case["intent_id"])
+            .values(resolution_head_sha=malformed, resolution_commit_shas=[malformed])
+        )
+
+    handler = await command_handler_factory()
+    await handler.orchestrator.db.close()
+    handler.orchestrator.db = db
+    handler.orchestrator.promotion_service = service
+    recovered = await handler.execute(
+        "integration_recover_unwritten_resolution", {"intent_id": case["intent_id"]}
+    )
+    assert recovered["outcome"] == "recovered"
+    successor_id = recovered["intent_id"]
+    assert successor_id != case["intent_id"]
+    old = await db.get_integration_promotion_intent(case["intent_id"])
+    successor = await db.get_integration_promotion_intent(successor_id)
+    assert old["state"] == "superseded"
+    assert old["resolution_head_sha"] == malformed
+    assert old["superseded_by_intent_id"] == successor_id
+    assert successor["state"] == "conflict"
+    assert successor["supersedes_intent_id"] == case["intent_id"]
+    assert successor["resolution_head_sha"] is None
+    assert (
+        _git(["ls-remote", "origin", "refs/heads/aq/parent"], case["work"]).split()[0]
+        == case["target"]
+    )
+
+    successor_request = request.model_copy(update={"intent_id": successor_id})
+    with principal_context(_resolution_principal()):
+        await service.reserve_resolution(successor_request)
+        await service.push_resolution(successor_id, successor_request.fence)
+    await service.reconcile(successor_id)
+    assert (
+        _git(["ls-remote", "origin", "refs/heads/aq/parent"], case["work"]).split()[0]
+        == case["resolved_head"]
+    )
+
+
+@pytest.mark.parametrize("blocker", ["push_started", "remote_moved"])
+async def test_operator_recovery_refuses_ambiguous_resolution(
+    db, conflict_resolution_case, blocker
+):
+    from src.commands.principal import principal_context
+    from src.integration.promotion import PromotionInvariantError, PromotionService, PromotionTargetMoved
+
+    case = conflict_resolution_case
+    service = PromotionService(db, data_dir=case["data_dir"], git_manager=GitManager())
+    with principal_context(_resolution_principal()):
+        await service.reserve_resolution(_resolution_request(case))
+    if blocker == "push_started":
+        async with db.immediate() as conn:
+            await conn.execute(
+                update(integration_promotion_intents)
+                .where(integration_promotion_intents.c.id == case["intent_id"])
+                .values(resolution_push_started_at=1.0)
+            )
+        error = PromotionInvariantError
+    else:
+        _git(["push", "origin", "HEAD:aq/parent"], case["work"])
+        error = PromotionTargetMoved
+    with pytest.raises(error):
+        await service.recover_unwritten_resolution(case["intent_id"])
+    intent = await db.get_integration_promotion_intent(case["intent_id"])
+    assert intent["state"] == "resolution_reserved"
+
+
 @pytest.mark.parametrize("invalid_proof", ["wrong_tree", "unlisted_commit"])
-async def test_resolution_push_rejects_changed_reserved_git_proof(
+async def test_resolution_reservation_rejects_changed_git_proof(
     db, conflict_resolution_case, invalid_proof
 ):
     from src.commands.principal import principal_context
@@ -1002,9 +1084,8 @@ async def test_resolution_push_rejects_changed_reserved_git_proof(
     service = PromotionService(db, data_dir=case["data_dir"], git_manager=GitManager())
 
     with principal_context(_resolution_principal()):
-        await service.reserve_resolution(request)
         with pytest.raises(PromotionInvariantError, match="resolution (tree|commit range)"):
-            await service.push_resolution(case["intent_id"], request.fence)
+            await service.reserve_resolution(request)
 
     assert (
         _git(["ls-remote", "origin", "refs/heads/aq/parent"], case["work"]).split()[0]
@@ -1012,7 +1093,30 @@ async def test_resolution_push_rejects_changed_reserved_git_proof(
     )
 
 
-async def test_resolution_push_rejects_merge_commit_range(db, conflict_resolution_case):
+async def test_nonexistent_resolution_does_not_poison_reservation(db, conflict_resolution_case):
+    from src.commands.principal import principal_context
+    from src.integration.promotion import PromotionSourceMoved, PromotionService
+
+    case = conflict_resolution_case
+    service = PromotionService(db, data_dir=case["data_dir"], git_manager=GitManager())
+    request = _resolution_request(case)
+    invalid = request.model_copy(
+        update={"resolved_head_sha": "f" * 40, "repair_commit_shas": ("f" * 40,)}
+    )
+    with principal_context(_resolution_principal()):
+        with pytest.raises(PromotionSourceMoved, match="commit object"):
+            await service.reserve_resolution(invalid)
+        intent = await service._intent(case["intent_id"])
+        assert intent["state"] == "conflict"
+        await service.reserve_resolution(request)
+        await service.push_resolution(case["intent_id"], request.fence)
+    assert (
+        _git(["ls-remote", "origin", "refs/heads/aq/parent"], case["work"]).split()[0]
+        == request.resolved_head_sha
+    )
+
+
+async def test_resolution_reservation_rejects_merge_commit_range(db, conflict_resolution_case):
     from src.commands.principal import principal_context
     from src.integration.promotion import PromotionInvariantError, PromotionService
 
@@ -1038,9 +1142,8 @@ async def test_resolution_push_rejects_merge_commit_range(db, conflict_resolutio
     service = PromotionService(db, data_dir=case["data_dir"], git_manager=GitManager())
 
     with principal_context(_resolution_principal()):
-        await service.reserve_resolution(request)
         with pytest.raises(PromotionInvariantError, match="merge commit"):
-            await service.push_resolution(case["intent_id"], request.fence)
+            await service.reserve_resolution(request)
 
     assert (
         _git(["ls-remote", "origin", "refs/heads/aq/parent"], work).split()[0]
@@ -2185,6 +2288,8 @@ async def _seed_conflict_resolution_writer(handler) -> tuple[dict, object]:
 async def test_resolve_conflict_command_is_session_only_and_replays_exact_identity(
     command_handler_factory,
 ):
+    from unittest.mock import AsyncMock
+
     from src.commands.principal import principal_context
     from src.integration.promotion import PromotionService
 
@@ -2193,6 +2298,7 @@ async def test_resolve_conflict_command_is_session_only_and_replays_exact_identi
     handler.orchestrator.promotion_service = PromotionService(
         handler.db, data_dir=handler.config.data_dir
     )
+    handler.orchestrator.promotion_service._assert_exact_resolution = AsyncMock()
 
     local = await handler.execute("integration_resolve_conflict", args)
     with principal_context(principal):

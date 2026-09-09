@@ -1936,7 +1936,15 @@ integration_promotion_intents = Table(
     Column("resolution_workspace_id", Text, nullable=True),
     Column("resolution_fence_owner_id", Text, nullable=True),
     Column("resolution_fence_token", Integer, nullable=True),
+    # A durable pre-write marker makes a crashed/failed external push
+    # deliberately ambiguous.  Only reservations with no marker can be
+    # replaced by the operator recovery path.
+    Column("resolution_push_started_at", Float, nullable=True),
     Column("resolution_push_evidence", JSON, nullable=True),
+    # Recovery never rewrites a frozen resolution.  It links an immutable
+    # superseded record to a fresh conflict intent instead.
+    Column("supersedes_intent_id", Text, nullable=True),
+    Column("superseded_by_intent_id", Text, nullable=True),
     Column("remote_evidence", JSON, nullable=True),
     Column("committed_at", Float, nullable=True),
     Column("created_at", Float, nullable=False),
@@ -1995,13 +2003,15 @@ integration_promotion_intents = Table(
         "resolution_stage_ordinal IS NULL AND resolution_task_id IS NULL AND "
         "resolution_session_id IS NULL AND resolution_session_instance_token IS NULL AND "
         "resolution_workspace_id IS NULL AND resolution_fence_owner_id IS NULL AND "
-        "resolution_fence_token IS NULL AND resolution_push_evidence IS NULL) OR "
+        "resolution_fence_token IS NULL AND resolution_push_started_at IS NULL AND "
+        "resolution_push_evidence IS NULL) OR "
         "(resolution_head_sha IS NOT NULL AND resolution_tree_sha IS NOT NULL AND "
         "resolution_commit_shas IS NOT NULL AND resolution_operation_id IS NOT NULL AND "
         "resolution_stage_ordinal IS NOT NULL AND resolution_task_id IS NOT NULL AND "
         "resolution_session_id IS NOT NULL AND resolution_session_instance_token IS NOT NULL AND "
         "resolution_workspace_id IS NOT NULL AND resolution_fence_owner_id IS NOT NULL AND "
-        "resolution_fence_token IS NOT NULL AND state IN ('resolution_reserved', 'committed'))",
+        "resolution_fence_token IS NOT NULL AND state IN "
+        "('resolution_reserved', 'committed', 'superseded'))",
         name="ck_integration_promotion_intents_resolution_binding",
     ),
     CheckConstraint(

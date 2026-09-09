@@ -20,7 +20,7 @@ from src.commands.principal import (
     matches_session_instance,
 )
 from src.git.manager import GitError, GitManager, RemoteRefState
-from src.integration.models import ConflictResolutionInput, Fence, PromotionInput, PromotionValue
+from src.integration.models import BranchKey, ConflictResolutionInput, Fence, PromotionInput, PromotionValue
 from src.integration.ownership import BranchOwnership
 from src.models import RepoConfig, RepoSourceType
 from src.playbooks.invocation import current_invocation
@@ -385,6 +385,16 @@ class PromotionService:
             async with self.ownership.mutation_exclusion_on(
                 conn, request.fence, state="attached", expected_role="repair"
             ):
+                # Reject malformed local evidence before freezing its immutable identity.
+                # Keep the attached writer fence across proof and reservation,
+                # and serialize Git inspection; push repeats the proof.
+                async with self.git.arepository_transaction(scope["workspace_path"]):
+                    await self._assert_exact_resolution(Path(scope["workspace_path"]), {
+                        **intent,
+                        "resolution_head_sha": request.resolved_head_sha,
+                        "resolution_tree_sha": request.resolved_tree_sha,
+                        "resolution_commit_shas": list(request.repair_commit_shas),
+                    })
                 reserved = await self.db.reserve_integration_conflict_resolution(
                     conn,
                     request.intent_id,
@@ -403,6 +413,100 @@ class PromotionService:
                     },
                 )
         return self._value(reserved), bool(reserved.get("_resolution_replayed"))
+
+    async def recover_unwritten_resolution(self, intent_id: str) -> tuple[PromotionValue, bool]:
+        """Create a fresh successor after proving a bad reservation never wrote.
+
+        This is deliberately an operator-only service entry point.  It does
+        not repair the old row: audit evidence and frozen identity remain on
+        that row, which becomes ``superseded``.  A later repair writer must
+        reserve the successor under a fresh ownership fence.
+        """
+        principal = current_principal() or TRUSTED_LOCAL
+        if principal.kind is not PrincipalKind.LOCAL:
+            raise PromotionAuthorizationError("resolution recovery requires LOCAL operator authority")
+        intent = await self._intent(intent_id)
+        if intent["state"] == "superseded":
+            successor_id = intent.get("superseded_by_intent_id")
+            if not successor_id:
+                raise PromotionInvariantError("superseded resolution has no recovery successor")
+            return self._value(await self._intent(successor_id)), True
+        if intent["state"] != "resolution_reserved":
+            raise PromotionInvariantError("only a reserved conflict resolution can be recovered")
+        if intent["resolution_push_started_at"] is not None:
+            raise PromotionInvariantError("resolution push may have started; recovery is ambiguous")
+        if intent["resolution_push_evidence"] is not None:
+            raise PromotionInvariantError("resolution push already has durable evidence")
+        repository = await self._resolve_repository(intent["repository_id"])
+        self._assert_resolution_repository(intent, repository)
+        await self._ensure_retained_repository(repository)
+
+        target = BranchKey(repository_id=intent["repository_id"], branch=intent["target_branch"])
+        owner = await self.ownership.get_owner(target)
+        if owner is None:
+            raise PromotionTargetMoved("resolution writer ownership is absent")
+        exact_writer = (
+            owner["owner_id"] == intent["resolution_fence_owner_id"]
+            and int(owner["fence_token"]) == int(intent["resolution_fence_token"])
+            and owner["owner_role"] == "repair"
+            and owner["handoff_state"] == "attached"
+            and owner.get("session_id") == intent["resolution_session_id"]
+            and owner.get("workspace_id") == intent["resolution_workspace_id"]
+        )
+        coordinated_retained_owner = (
+            owner["owner_id"] == intent["resolution_operation_id"]
+            and owner["owner_role"] == "collector"
+            and owner["handoff_state"] == "reserved"
+        )
+        if not exact_writer and not coordinated_retained_owner:
+            raise PromotionTargetMoved(
+                "resolution writer is neither the exact quiescent writer nor a coordinated retained owner"
+            )
+        recovery_fence = Fence(
+            target=target, owner_id=owner["owner_id"], token=int(owner["fence_token"])
+        )
+        successor_id = f"recovery-{uuid.uuid5(_IDENTITY_NAMESPACE, 'resolution:' + intent_id)}"
+        successor_domain_key = hashlib.sha256(
+            f"resolution-recovery:{intent['domain_key']}:{intent_id}".encode("utf-8")
+        ).hexdigest()
+        expected_role = "repair" if exact_writer else "collector"
+        expected_state = "attached" if exact_writer else "reserved"
+        async with self.db.immediate() as conn:
+            async with self.ownership.mutation_exclusion_on(
+                conn, recovery_fence, state=expected_state, expected_role=expected_role
+            ):
+                locked = await self.db._locked_intent(conn, intent_id)
+                if locked["state"] == "superseded":
+                    successor = await self.db.recover_unwritten_conflict_resolution_on(
+                        conn,
+                        intent_id,
+                        successor_id=successor_id,
+                        successor_domain_key=successor_domain_key,
+                    )
+                    return self._value(successor), True
+                if locked["resolution_push_started_at"] is not None:
+                    raise PromotionInvariantError("resolution push may have started; recovery is ambiguous")
+                if locked["resolution_push_evidence"] is not None:
+                    raise PromotionInvariantError("resolution push already has durable evidence")
+                async with self.git.arepository_transaction(str(repository.retained_git_dir)):
+                    remote = await self.git.als_remote_ref(
+                        str(repository.retained_git_dir),
+                        locked["target_branch"],
+                        remote=locked["origin_url"],
+                    )
+                if remote.state is RemoteRefState.ERROR:
+                    raise PromotionRuntimeError(remote.error or "target remote state is unknown")
+                if remote.state is RemoteRefState.ABSENT:
+                    raise PromotionTargetMoved("target branch is absent")
+                if remote.oid != locked["expected_target"]:
+                    raise PromotionTargetMoved("target branch is not the exact reserved old tip")
+                successor = await self.db.recover_unwritten_conflict_resolution_on(
+                    conn,
+                    intent_id,
+                    successor_id=successor_id,
+                    successor_domain_key=successor_domain_key,
+                )
+        return self._value(successor), False
 
     async def push_resolution(
         self, intent_id: str, fence: Fence
@@ -479,6 +583,13 @@ class PromotionService:
                             raise PromotionTargetMoved(
                                 "target branch moved from the resolution old tip"
                             )
+                        # This marker is written only after both local object
+                        # proof and the authenticated exact-old remote proof.
+                        # A recovery may replace a reservation only while it
+                        # remains absent.
+                        await self.db.mark_integration_resolution_push_started_on(
+                            conn, intent_id
+                        )
                         await self._crash("before_resolution_push")
                         try:
                             await self.git.apush_expected_delivery(

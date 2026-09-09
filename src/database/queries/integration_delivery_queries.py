@@ -328,6 +328,92 @@ class IntegrationDeliveryQueriesMixin:
             raise ValueError("promotion conflict changed during resolution reservation")
         return intent | frozen | {"state": "resolution_reserved"}
 
+    async def recover_unwritten_conflict_resolution_on(
+        self, conn, intent_id: str, *, successor_id: str, successor_domain_key: str
+    ) -> dict:
+        """Supersede one never-written resolution and create its fresh successor.
+
+        The caller has already proved the live remote still equals the old
+        target while holding its current ownership fence.  This helper only
+        performs the durable, append-only-shaped transition under that lock.
+        """
+        intent = await self._locked_intent(conn, intent_id)
+        if intent["state"] == "superseded":
+            successor = (
+                await conn.execute(
+                    select(integration_promotion_intents).where(
+                        integration_promotion_intents.c.supersedes_intent_id == intent_id
+                    )
+                )
+            ).mappings().one_or_none()
+            if successor is None:
+                raise ValueError("superseded resolution has no recovery successor")
+            return dict(successor)
+        if intent["state"] != "resolution_reserved":
+            raise ValueError("only a reserved conflict resolution can be recovered")
+        if intent["resolution_push_started_at"] is not None:
+            raise ValueError("resolution push may have started; recovery is ambiguous")
+        if intent["resolution_push_evidence"] is not None:
+            raise ValueError("resolution push already has durable evidence")
+
+        successor_values = dict(intent)
+        successor_values.update(
+            id=successor_id,
+            domain_key=successor_domain_key,
+            state="conflict",
+            supersedes_intent_id=intent_id,
+            superseded_by_intent_id=None,
+            resolution_head_sha=None,
+            resolution_tree_sha=None,
+            resolution_operation_id=None,
+            resolution_stage_ordinal=None,
+            resolution_task_id=None,
+            resolution_session_id=None,
+            resolution_session_instance_token=None,
+            resolution_workspace_id=None,
+            resolution_fence_owner_id=None,
+            resolution_fence_token=None,
+            resolution_push_started_at=None,
+            updated_at=time.time(),
+        )
+        # SQLAlchemy JSON serializes an explicit ``None`` as JSON ``null``;
+        # the binding guard intentionally requires database NULL for absent
+        # resolution fields, so omit the two JSON columns entirely.
+        successor_values.pop("resolution_commit_shas", None)
+        successor_values.pop("resolution_push_evidence", None)
+        await conn.execute(insert(integration_promotion_intents).values(**successor_values))
+        changed = await conn.execute(
+            update(integration_promotion_intents)
+            .where(integration_promotion_intents.c.id == intent_id)
+            .where(integration_promotion_intents.c.state == "resolution_reserved")
+            .where(integration_promotion_intents.c.resolution_push_started_at.is_(None))
+            .where(integration_promotion_intents.c.resolution_push_evidence.is_(None))
+            .values(
+                state="superseded",
+                superseded_by_intent_id=successor_id,
+                updated_at=time.time(),
+            )
+        )
+        if changed.rowcount != 1:  # pragma: no cover - locked row guards this
+            raise ValueError("resolution changed during recovery")
+        return successor_values
+
+    async def mark_integration_resolution_push_started_on(self, conn, intent_id: str) -> None:
+        """Durably mark an attempted resolution write before invoking Git."""
+        intent = await self._locked_intent(conn, intent_id)
+        if intent["state"] not in {"resolution_reserved", "committed"}:
+            raise ValueError("promotion has no reserved conflict resolution")
+        if intent["resolution_push_started_at"] is not None:
+            return
+        changed = await conn.execute(
+            update(integration_promotion_intents)
+            .where(integration_promotion_intents.c.id == intent_id)
+            .where(integration_promotion_intents.c.resolution_push_started_at.is_(None))
+            .values(resolution_push_started_at=time.time(), updated_at=time.time())
+        )
+        if changed.rowcount != 1:
+            raise ValueError("resolution push marker changed during write")
+
     async def record_integration_resolution_push_on(
         self, conn, intent_id: str, evidence: dict[str, Any]
     ) -> dict:
@@ -657,7 +743,11 @@ class IntegrationDeliveryQueriesMixin:
                     select(integration_promotion_intents)
                     .where(integration_promotion_intents.c.repository_id == repository_id)
                     .where(integration_promotion_intents.c.target_branch == branch)
-                    .where(integration_promotion_intents.c.state.not_in(("committed", "conflict")))
+                    .where(
+                        integration_promotion_intents.c.state.not_in(
+                            ("committed", "conflict", "superseded")
+                        )
+                    )
                     .with_for_update()
                 )
             )
