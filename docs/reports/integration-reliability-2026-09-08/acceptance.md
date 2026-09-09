@@ -521,3 +521,14 @@ contains approved sharp-nexus head a1aa1999 and built candidate
 The native baseline review evidence is review-0b078d2b-7266-5ccf-8e9f-a94d55216620;
 the task PR link was recovered through public flush. Feature holds remain until
 candidate promotion. Neither original epic nor sustained throughput is complete.
+
+The next root batch2c484c0890ebecbbf98b0b12fd5469ff has20 reviewed members,
+including swift-journey/operator fixes, calm-dune, clear-quest and sound-apex.
+Construction applied ordinals0/1 and reached ordinal2's bold-orbit33c8411a
+conflict at partial head9e8f06509b4af43ca9ba5a28a23adaf1c3a33b4d.
+CandidateService.reserve_repair/accept_repair implement fenced member recovery,
+but production call-site search found no command caller; parent promotion's
+resolve-conflict command is a different protocol. Filed priority2 quick-falcon
+to expose/test the actual CLI path and continuation, and recorded guidance on
+repair-repair-batch-integration-batch-2c484c0890ebecbbf98b0b12fd5469ff-0.
+This next-batch conflict remains open; the prior verified main delivery stands.
