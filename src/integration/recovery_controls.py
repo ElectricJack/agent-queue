@@ -10,6 +10,7 @@ from uuid import uuid4
 
 from sqlalchemy import and_, select, update
 
+from src.database.queries.task_queries import TERMINAL_BLOCKED_META_KEY
 from src.database.tables import (
     integration_attestation_publications,
     integration_batches,
@@ -18,17 +19,16 @@ from src.database.tables import (
     integration_candidate_ref_mutations,
     integration_candidate_resolutions,
     integration_cleanup_items,
-    integration_promotion_intents,
     integration_parent_episodes,
+    integration_promotion_intents,
     integration_repair_operations,
     integration_repair_stages,
+    sessions,
     task_integration_checkpoints,
     task_metadata,
-    sessions,
-    workspaces,
     tasks,
+    workspaces,
 )
-from src.database.queries.task_queries import TERMINAL_BLOCKED_META_KEY
 from src.integration.models import RepairPolicy
 from src.integration.outbox import enqueue_integration_event
 from src.models import TaskStatus
@@ -50,11 +50,23 @@ class IntegrationRecoveryControls:
         now = self.clock()
         transitions = []
         async with self.db.immediate() as conn:
+            hint = (
+                await conn.execute(
+                    select(integration_repair_operations).where(
+                        integration_repair_operations.c.id == operation_id
+                    )
+                )
+            ).mappings().one_or_none()
+            if hint is None:
+                return {"outcome": "not_found", "operation_id": operation_id}
+            project_id = await self._project_id_on(conn, hint)
+            # Match collection and repair-start: project before operation.
+            await self.db.lock_hierarchy_project(conn, project_id)
             operation = await self._locked_operation_on(conn, operation_id)
             if operation is None:
                 return {"outcome": "not_found", "operation_id": operation_id}
-            project_id = await self._project_id_on(conn, operation)
-            await self.db.lock_hierarchy_project(conn, project_id)
+            if await self._project_id_on(conn, operation) != project_id:
+                return self._state_result("stale", operation, project_id)
             blockers = await self._ambiguous_writes_on(
                 conn, operation, allow_reserved_delegate=True
             )
@@ -136,9 +148,7 @@ class IntegrationRecoveryControls:
                     "stage": int(stage["ordinal"]),
                     "deadline_at": float(stage["deadline_at"]),
                 }
-            elif operation["state"] != "human_required":
-                return self._state_result("invalid_state", operation, project_id)
-            elif stage["state"] not in {"failed", "expired", "cancelled"}:
+            elif operation["state"] != "human_required" or stage["state"] not in {"failed", "expired", "cancelled"}:
                 return self._state_result("invalid_state", operation, project_id)
             else:
                 _, delegate_recovery = await self._restore_completed_delegate_on(

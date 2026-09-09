@@ -1730,7 +1730,6 @@ async def test_resume_continues_current_parent_conflict_before_playbook_dispatch
     handler = await command_handler_factory()
     await _configure_db(handler.db)
     current_head = await _seed_repeated_parent_conflict(handler.db)
-    before = await _repair_stage(handler.db, "operation", 1)
     async with handler.db.immediate() as conn:
         await conn.execute(
             update(tasks)
@@ -1748,6 +1747,8 @@ async def test_resume_continues_current_parent_conflict_before_playbook_dispatch
     await handler.db.set_task_meta(
         "parent", "blocked_terminal", "integration_repair_exhausted"
     )
+
+    before = await _repair_stage(handler.db, "operation", 1)
 
     resumed = await IntegrationControlService(
         handler.db, clock=lambda: 150.0
