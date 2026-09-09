@@ -155,6 +155,19 @@ commands (`aq chat` without `--once`, `aq task select`, and `aq system config ed
 JSON mode with a `usage_error` envelope instead of prompting. Process passthrough commands
 such as `aq test` retain the child process's stdout/stderr and exit status.
 
+Core-owned `aq plugin` wrappers are ordinary command results even though they use direct
+database and filesystem operations: list/detail/config/prompt reads and every mutation route
+through the same envelope. A missing plugin uses `not_found`; direct database, loader, git,
+and filesystem failures use `command_error`/exit 1. Confirmation-requiring mutations demand
+`--yes` in JSON mode and otherwise return `usage_error`/exit 2 without prompting. Plugin names,
+URLs, paths, prompt names, and diff lines are treated as literal Rich text in human mode.
+
+Local operator workflows (`aq start|stop|restart`, `aq db *`, and `aq vault *`) are currently
+human-only because they own multi-step process/migration progress and interactive safeguards;
+with global `--json` they fail before any side effect with one `usage_error` envelope. CLI
+groups supplied by third-party `aq.plugins` entry points are an extension boundary rather than
+core-owned wrappers, so their structured-output behavior remains defined by that plugin.
+
 ### 4.2 `--brief` lite projections
 
 `--brief` trims each entity to a fixed projection so agents can list cheaply:

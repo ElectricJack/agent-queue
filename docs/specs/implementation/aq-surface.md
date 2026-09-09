@@ -276,6 +276,19 @@ usage failures before invocation and emits the same error envelope with exit 2 i
 `legacy_data=` lets generated list commands restore their exact pre-envelope backend wrapper
 under `AQ_JSON_LEGACY=1`.
 
+`src/cli/plugins.py` passes a context to every core-owned plugin command and uses `emit()` for
+read and mutation successes. Its direct database/loader/filesystem exception paths use
+`emit_error()` with `command_error` or `not_found`; JSON mutations never display Click
+confirmation prompts and require `--yes`. Human renderers build `Text` nodes for all
+plugin-controlled values so Rich markup cannot consume or restyle their contents.
+
+`reject_json_mode()` is the explicit boundary for local operator workflows whose output is
+multi-step process or migration progress (`start|stop|restart`, `db *`, `vault *`). It runs
+before work or prompting and returns one `usage_error` envelope. The only pass-through surfaces
+owned by core are documented protocol/process exceptions (`logs --json`, `prime --hook-json`,
+and `test`); CLI groups loaded from third-party `aq.plugins` entry points own their own output
+contract.
+
 ### 5.3 New command modules
 
 Registered by importing them in `src/cli/app.py` **before** `register_auto_commands(cli,

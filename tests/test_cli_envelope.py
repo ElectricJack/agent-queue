@@ -435,6 +435,29 @@ class TestCrossFamilySuccessContract:
         assert json.loads(result.stdout)["error"]["code"] == "usage_error"
         assert result.stderr == ""
 
+    @pytest.mark.parametrize(
+        "args, command",
+        [
+            (["vault", "migrate"], "aq vault"),
+            (["db", "current"], "aq db"),
+            (["start"], "aq start"),
+            (["stop"], "aq stop"),
+            (["restart"], "aq restart"),
+        ],
+    )
+    def test_local_operator_workflows_reject_json_before_side_effects(self, runner, args, command):
+        """Human-only local operations still honor the one-document rule."""
+        from src.cli.app import cli
+
+        result = runner.invoke(cli, ["--json", *args])
+
+        assert result.exit_code == 2
+        assert result.stderr == ""
+        assert result.stdout.count("\n") == 1
+        payload = json.loads(result.stdout)
+        assert payload["error"]["code"] == "usage_error"
+        assert payload["error"]["message"].startswith(f"{command} does not support --json")
+
 
 # ---------------------------------------------------------------------------
 # aq task list|show|set|details — routed through emit()
@@ -551,21 +574,25 @@ class TestTaskShowSetListDetailsCLI:
                     "status": "IN_PROGRESS",
                     "priority": 100,
                     "description": "d",
-                    "depends_on": [{
-                        "id": "origin",
-                        "title": "Origin",
-                        "status": "COMPLETED",
-                        "dep_type": "blocks",
-                        "reason": "The new task consumes the origin's schema",
-                    }],
+                    "depends_on": [
+                        {
+                            "id": "origin",
+                            "title": "Origin",
+                            "status": "COMPLETED",
+                            "dep_type": "blocks",
+                            "reason": "The new task consumes the origin's schema",
+                        }
+                    ],
                     "blocks": [],
-                    "provenance": [{
-                        "id": "discovery",
-                        "title": "Discovery",
-                        "status": "IN_PROGRESS",
-                        "dep_type": "discovered-from",
-                        "reason": "A failing integration test revealed the follow-up",
-                    }],
+                    "provenance": [
+                        {
+                            "id": "discovery",
+                            "title": "Discovery",
+                            "status": "IN_PROGRESS",
+                            "dep_type": "discovered-from",
+                            "reason": "A failing integration test revealed the follow-up",
+                        }
+                    ],
                     "context": [],
                     "labels": ["urgent"],
                 }
@@ -590,21 +617,25 @@ class TestTaskShowSetListDetailsCLI:
                     "status": "IN_PROGRESS",
                     "priority": 100,
                     "description": "d",
-                    "depends_on": [{
-                        "id": "origin",
-                        "title": "Origin",
-                        "status": "COMPLETED",
-                        "dep_type": "blocks",
-                        "reason": "The new task consumes the origin's schema",
-                    }],
+                    "depends_on": [
+                        {
+                            "id": "origin",
+                            "title": "Origin",
+                            "status": "COMPLETED",
+                            "dep_type": "blocks",
+                            "reason": "The new task consumes the origin's schema",
+                        }
+                    ],
                     "blocks": [],
-                    "provenance": [{
-                        "id": "discovery",
-                        "title": "Discovery",
-                        "status": "IN_PROGRESS",
-                        "dep_type": "discovered-from",
-                        "reason": "A failing integration test revealed the follow-up",
-                    }],
+                    "provenance": [
+                        {
+                            "id": "discovery",
+                            "title": "Discovery",
+                            "status": "IN_PROGRESS",
+                            "dep_type": "discovered-from",
+                            "reason": "A failing integration test revealed the follow-up",
+                        }
+                    ],
                     "context": [],
                     "labels": ["urgent"],
                 }

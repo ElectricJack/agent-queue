@@ -128,11 +128,7 @@ def to_jsonable(value: Any) -> Any:
     if isinstance(value, (Path, UUID)):
         return str(value)
     if isinstance(value, Mapping):
-        return {
-            str(key): to_jsonable(item)
-            for key, item in value.items()
-            if not _is_unset(item)
-        }
+        return {str(key): to_jsonable(item) for key, item in value.items() if not _is_unset(item)}
     if isinstance(value, (list, tuple, set, frozenset)):
         return [to_jsonable(item) for item in value if not _is_unset(item)]
     if hasattr(value, "to_dict"):
@@ -234,6 +230,20 @@ def emit_error(code: str, message: str, details: Any = None) -> None:
     (``aq reply``, ``aq inbox``) depend on this staying machine-readable.
     """
     click.echo(json.dumps(to_jsonable(error_envelope(code, message, details)), ensure_ascii=False))
+
+
+def reject_json_mode(ctx: click.Context, command: str, reason: str) -> None:
+    """Reject a human-only command without leaking its output into JSON stdout.
+
+    Local operator workflows can own interactive prompts, subprocess progress,
+    or multi-step diagnostics that are not a single command result.  They must
+    make that boundary explicit before doing work when the global ``--json``
+    flag is present.
+    """
+    if not bool((ctx.obj or {}).get("json")):
+        return
+    emit_error("usage_error", f"{command} does not support --json: {reason}")
+    raise SystemExit(2)
 
 
 def emit(
