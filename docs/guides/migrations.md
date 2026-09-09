@@ -54,6 +54,24 @@ aq db current    # read-only: stamped revision(s) vs. this checkout's head
 aq db upgrade    # the one sanctioned migration path (refuses inside a slot)
 ```
 
+### Legacy conflict-resolution reservations
+
+Revision `a00000000005` treats a pre-marker `resolution_reserved` intent as
+an uncertain external write; the upgrade records a `0.0` unknown-start
+sentinel rather than treating its missing marker as proof that it was never
+pushed. For the known legacy receipt, first reconcile only the frozen remote
+identity:
+
+```bash
+aq system integration-reconcile-promotion \
+  --intent-id receipt-71755ac2-3bca-5bfe-8221-11fd243860fc
+```
+
+`applied` means the remote exactly matches the reserved head and the existing
+receipt path can complete. `not_applied` or `invariant_error` means the write
+remains uncertain; `aq integration resume operation81d0aaee-0c3a-482c-b04c-d3afe6631cbe`
+will deliberately return `ambiguous` and must not be used to replay the push.
+
 ### When production is already stamped with an orphan
 
 ```bash
