@@ -59,9 +59,10 @@ def test_deprecated_plugin_logs_command_explains_the_supported_replacement():
     from src.cli.app import cli
 
     result = CliRunner().invoke(cli, ["plugin", "logs", "example"])
-    assert result.exit_code == 0
-    assert "no longer available" in result.output
-    assert "aq playbook list" in result.output
+    assert result.exit_code == 1
+    assert "has been removed" in result.output
+    assert "aq playbook list-runs" in result.output
+    assert "aq playbook inspect-run --run-id <run-id>" in result.output
 
 
 def test_unimplemented_operations_must_be_classified_and_removed_commands_stay_absent():

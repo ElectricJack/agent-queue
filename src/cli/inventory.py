@@ -28,7 +28,7 @@ SUPPORTED_ALIASES: dict[str, str] = {
 }
 
 DEPRECATED_COMMANDS: dict[str, str] = {
-    "aq plugin logs": "Plugin hook logs were removed; use `aq playbook list`.",
+    "aq plugin logs": "Plugin hook logs were removed; use `aq playbook list-runs`.",
 }
 
 # These definitions are intentionally advertised even though their provider is

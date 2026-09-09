@@ -4313,7 +4313,7 @@
       "callback": "src.cli.plugins.plugin_logs",
       "support": "deprecated",
       "alias_for": null,
-      "deprecation": "Plugin hook logs were removed; use `aq playbook list`.",
+      "deprecation": "Plugin hook logs were removed; use `aq playbook list-runs`.",
       "unsupported_reason": null,
       "evidence_level": "behavioral",
       "evidence": [
