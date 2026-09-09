@@ -97,13 +97,16 @@ async def materialize_exact_branch(git, checkout: str, branch: str, base_sha: st
 async def resolve_workspace_checkpoint(db, git, task: dict, repo: RepoConfig) -> str:
     """Return an owned writer workspace's clean, exactly-pushed current HEAD."""
     workspace = await db.get_workspace_for_task(task["id"])
-    if (
-        workspace is None
-        or workspace.locked_by_task_id != task["id"]
-        or task["repo_id"] != repo.id
-        or not task["branch_name"]
-    ):
+    # Each condition below refuses for a different reason and has a different
+    # remedy, so each names itself.  Folded into one "no exact owned
+    # integration workspace" message they read as a lock problem even when the
+    # lock is correct and only the recorded branch is missing.
+    if workspace is None or workspace.locked_by_task_id != task["id"]:
         raise HierarchyError("dirty", "task has no exact owned integration workspace")
+    if task["repo_id"] != repo.id:
+        raise HierarchyError("dirty", "task is not bound to the integration repository")
+    if not task["branch_name"]:
+        raise HierarchyError("dirty", "task has no recorded delivery branch")
     checkout = workspace.workspace_path
     branch = await git.aget_current_branch(checkout, strict=True)
     if branch != task["branch_name"].removeprefix("refs/heads/"):
