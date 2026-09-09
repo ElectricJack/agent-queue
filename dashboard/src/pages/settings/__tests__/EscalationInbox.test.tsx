@@ -96,7 +96,7 @@ describe("Escalation inbox", () => {
     fireEvent.click(screen.getByRole("button", { name: "Send to supervisor" }));
 
     await waitFor(() => expect(api.reply).toHaveBeenCalledTimes(1));
-    const payload = api.reply.mock.calls[0][0] as Record<string, string>;
+    const payload = api.reply.mock.calls[0]![0] as Record<string, string>;
     expect(payload.escalation_id).toBe("esc-1");
     expect(payload.text).toBe("Pin it to 2.4.1");
     expect(payload.external_message_id).toMatch(/^dashboard:esc-1:\d+$/);
