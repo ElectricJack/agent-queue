@@ -1715,6 +1715,17 @@ class Orchestrator(
             self.db, candidate_service_factory=candidate_service_for_row,
             attestation=self.integration_attestation_service,
         )
+        from src.integration.development import DevelopmentIntegration
+        async def development_confirm_stopped(session):
+            from src.sessions.provider import SessionHandle
+            provider = self.session_providers.create(session["provider"], self.config)
+            return await provider.confirm_stopped(SessionHandle(
+                name=session["name"], provider=session["provider"], instance_token=session["instance_token"]))
+
+        self.development_integration = DevelopmentIntegration(
+            self.db, data_dir=self.config.data_dir, git=self.git,
+            confirm_stopped=development_confirm_stopped,
+        )
         self.integration_service = IntegrationService(
             self.db,
             self.integration_scheduler,
@@ -1723,6 +1734,7 @@ class Orchestrator(
             candidate_ci_handler=candidate_ci.handle,
             parent_ci_handler=parent_ci.tick,
             collection_handler=collection.tick,
+            development_handler=self.development_integration.tick,
             unresolved_intent_handler=reconcile_root_intent,
             cleanup_handler=self.integration_cleanup_service.handle_item,
             drain_handler=self.integration_control_service.reconcile_drains,

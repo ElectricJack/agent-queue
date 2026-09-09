@@ -204,3 +204,52 @@ def integration_retry_cleanup(ctx: click.Context, batch_id: str) -> None:
 def integration_recover_candidate_member(ctx: click.Context, reservation_id: str) -> None:
     """Resolve one pushed frozen candidate-member repair reservation."""
     _execute(ctx, "integration_recover_candidate_member", {"reservation_id": reservation_id})
+
+
+@integration.command("develop")
+@click.argument("project_id")
+@click.option("--validation", type=click.Choice(["focused", "advisory", "none"]), default="focused")
+@click.option("--command", "commands", multiple=True, help="Local validation command; repeatable.")
+@click.option("--interval-seconds", type=click.IntRange(min=1), default=300)
+@click.option("--reason", required=True)
+@click.pass_context
+@_handle_errors
+def integration_develop(ctx, project_id, validation, commands, interval_seconds, reason):
+    """Use automatic development batches with explicit local validation."""
+    _execute(ctx, "integration_develop", {"project_id": project_id, "reason": reason,
+        "policy": {"validation": validation, "commands": list(commands), "interval_seconds": interval_seconds}})
+
+
+@integration.command("adopt")
+@click.argument("project_id")
+@click.option("--task", "task_ids", multiple=True, required=True)
+@click.option("--target-ref", default="refs/heads/main")
+@click.option("--head-sha", required=True)
+@click.option("--accept-equivalent", is_flag=True, help="Explicitly accept operator-edited or evidence-only delivery.")
+@click.option("--reason", required=True)
+@click.pass_context
+@_handle_errors
+def integration_adopt(ctx, project_id, task_ids, target_ref, head_sha, accept_equivalent, reason):
+    """Record already-delivered work without replaying old repair checkpoints."""
+    _execute(ctx, "integration_adopt", {"project_id": project_id, "task_ids": list(task_ids),
+        "target_ref": target_ref, "head_sha": head_sha, "accept_equivalent": accept_equivalent, "reason": reason})
+
+
+@integration.command("sweep")
+@click.argument("project_id")
+@click.option("--retry", is_flag=True, help="Retry parked source revisions.")
+@click.pass_context
+@_handle_errors
+def integration_development_sweep(ctx, project_id, retry):
+    """Build and publish a development batch now."""
+    _execute(ctx, "integration_development_sweep", {"project_id": project_id, "retry": retry})
+
+
+@integration.command("cancel-preserving")
+@click.argument("operation_id")
+@click.option("--reason", required=True)
+@click.pass_context
+@_handle_errors
+def integration_cancel_preserving(ctx, operation_id, reason):
+    """Cancel obsolete repair scheduling while retaining refs and attached workspaces."""
+    _execute(ctx, "integration_cancel_preserving", {"operation_id": operation_id, "reason": reason})

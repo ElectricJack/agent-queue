@@ -62,6 +62,10 @@ DESIGN_INTEGRATION_COMMANDS = frozenset(
         "integration_waive_history",
         "integration_resume",
         "integration_abort",
+        "integration_develop",
+        "integration_adopt",
+        "integration_development_sweep",
+        "integration_cancel_preserving",
         "integration_retry_cleanup",
         "integration_resolve_candidate_member",
     }
@@ -122,7 +126,36 @@ class IntegrationRecoverCandidateMemberValue(CommandValue):
     invariant: str | None = None
 
 
+class IntegrationDevelopArgs(CommandArgs):
+    project_id: str = Field(min_length=1)
+    policy: dict[str, Any]
+    reason: str = Field(min_length=1)
+
+
+class IntegrationAdoptArgs(CommandArgs):
+    project_id: str = Field(min_length=1)
+    task_ids: list[str] = Field(min_length=1)
+    target_ref: str = Field(min_length=1)
+    head_sha: str = Field(pattern=r"^[0-9a-f]{40}$")
+    accept_equivalent: bool = False
+    reason: str = Field(min_length=1)
+
+
+class IntegrationDevelopmentSweepArgs(CommandArgs):
+    project_id: str = Field(min_length=1)
+    retry: bool = False
+
+
 class IntegrationOperationalValue(CommandValue):
+    id: str | None = None
+    head_sha: str | None = None
+    manifest: tuple[dict[str, Any], ...] = ()
+    evidence: dict[str, Any] | None = None
+    policy: dict[str, Any] | None = None
+    deliveries: tuple[dict[str, Any], ...] = ()
+    pending_publications: tuple[str, ...] = ()
+    parked: tuple[Any, ...] = ()
+    preserved_owners: tuple[str, ...] = ()
     project_id: str | None = None
     operation_id: str | None = None
     batch_id: str | None = None
@@ -1878,6 +1911,23 @@ async def _recover_candidate_member_adapter(
     )
 
 
+_DEVELOPMENT_CONTRACT_ARGS = (
+    ("integration_develop", IntegrationDevelopArgs),
+    ("integration_adopt", IntegrationAdoptArgs),
+    ("integration_development_sweep", IntegrationDevelopmentSweepArgs),
+    ("integration_cancel_preserving", IntegrationAbortArgs),
+)
+_DEVELOPMENT_OUTCOMES = ("configured", "adopted", "delivered", "idle", "parked", "base_moved",
+                         "cancelled", "already_terminal", "blocked")
+
+
+def _development_adapter(name):
+    async def invoke(args, ctx):
+        return await _hierarchy_adapter(name, args, ctx, IntegrationOperationalValue,
+                                        set(_DEVELOPMENT_OUTCOMES))
+    return invoke
+
+
 def register_integration_contracts(registry: ContractRegistry) -> None:
     """Register contracts whose real handlers have landed.
 
@@ -1885,6 +1935,12 @@ def register_integration_contracts(registry: ContractRegistry) -> None:
     declaration together.  Unavailable security-sensitive mutations remain
     outside the allowlist.
     """
+    for name, args_model in _DEVELOPMENT_CONTRACT_ARGS:
+        if registry.get(name) is None:
+            contract = _operational_contract(name, args_model, _DEVELOPMENT_OUTCOMES,
+                successes=frozenset({"configured", "adopted", "delivered", "idle", "cancelled", "already_terminal"}),
+                side_effect=SideEffectClass.COMPOSITE)
+            registry.register(CommandRegistration(name, contract, _development_adapter(name)))
     if registry.get(INTEGRATION_TRANSFER_OWNER.name) is None:
         registry.register(
             CommandRegistration(

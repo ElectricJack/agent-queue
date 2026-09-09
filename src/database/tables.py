@@ -82,11 +82,11 @@ projects = Table(
     ),
     Column("created_at", Float, nullable=False),
     CheckConstraint(
-        "hierarchical_integration_mode IN ('disabled', 'observe', 'hierarchy', 'train')",
+        "hierarchical_integration_mode IN ('disabled', 'observe', 'hierarchy', 'train', 'development')",
         name="ck_projects_hierarchical_integration_mode",
     ),
     CheckConstraint(
-        "hierarchical_integration_desired_mode IN ('disabled', 'observe', 'hierarchy', 'train')",
+        "hierarchical_integration_desired_mode IN ('disabled', 'observe', 'hierarchy', 'train', 'development')",
         name="ck_projects_hierarchical_integration_desired_mode",
     ),
     CheckConstraint(
@@ -3605,10 +3605,10 @@ integration_rollout_transitions = Table(
     ),
     CheckConstraint("generation > 0", name="ck_integration_rollout_transitions_generation"),
     CheckConstraint(
-        "old_effective_mode IN ('disabled', 'observe', 'hierarchy', 'train') AND "
-        "new_effective_mode IN ('disabled', 'observe', 'hierarchy', 'train') AND "
-        "old_desired_mode IN ('disabled', 'observe', 'hierarchy', 'train') AND "
-        "new_desired_mode IN ('disabled', 'observe', 'hierarchy', 'train')",
+        "old_effective_mode IN ('disabled', 'observe', 'hierarchy', 'train', 'development') AND "
+        "new_effective_mode IN ('disabled', 'observe', 'hierarchy', 'train', 'development') AND "
+        "old_desired_mode IN ('disabled', 'observe', 'hierarchy', 'train', 'development') AND "
+        "new_desired_mode IN ('disabled', 'observe', 'hierarchy', 'train', 'development')",
         name="ck_integration_rollout_transitions_modes",
     ),
     CheckConstraint("length(operator_id) > 0", name="ck_integration_rollout_transitions_operator"),
@@ -3758,3 +3758,25 @@ integration_outbox_artifact_pins = Table(
     ),
     Index("idx_integration_outbox_artifact_pins_sha", "artifact_sha256"),
 )
+
+
+# Development integration keeps executed Git facts separate from task episodes.
+development_deliveries = Table(
+    "development_deliveries", metadata,
+    Column("id", Text, primary_key=True),
+    Column("project_id", Text, nullable=False),
+    Column("repository_id", Text, nullable=False),
+    Column("target_ref", Text, nullable=False),
+    Column("expected_sha", Text, nullable=True),
+    Column("prepared_sha", Text, nullable=True),
+    Column("state", Text, nullable=False),
+    Column("manifest", JSON, nullable=False),
+    Column("evidence", JSON, nullable=False),
+    Column("reason", Text, nullable=False),
+    Column("created_at", Float, nullable=False),
+    Column("updated_at", Float, nullable=False),
+    CheckConstraint("state IN ('prepared', 'publishing', 'delivered', 'parked', 'adopted', 'cancelled')",
+                    name="ck_development_delivery_state"),
+)
+Index("idx_development_delivery_project", development_deliveries.c.project_id,
+      development_deliveries.c.state)

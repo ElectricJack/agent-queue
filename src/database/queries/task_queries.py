@@ -54,6 +54,7 @@ logger = logging.getLogger(__name__)
 # Only the conn-owned parent completion path imports and supplies this token.
 # Public ``force`` and context strings are deliberately not verification proof.
 _INTEGRATION_COMPLETION_TOKEN = object()
+_OPERATOR_ADOPTION_TOKEN = object()
 _INTEGRATION_WAKE_TOKEN = object()
 
 
@@ -790,6 +791,7 @@ class TaskQueryMixin:
         assume_pre_state: tuple[TaskStatus, bool] | None = None,
         _manual_pause_control: bool = False,
         _integration_completion_token=None,
+        _operator_adoption_token=None,
         _integration_wake_token=None,
         **kwargs,
     ) -> TransitionResult:
@@ -848,6 +850,11 @@ class TaskQueryMixin:
         that a matched UPDATE proves the assertion.
         """
         values = self._coerce_task_values(kwargs)
+        from src.database.tables import projects
+        development_mode = False
+        if new_status in {TaskStatus.READY, TaskStatus.COMPLETED}:
+            development_mode = await conn.scalar(select(projects.c.hierarchical_integration_mode)
+                .join(tasks, tasks.c.project_id == projects.c.id).where(tasks.c.id == task_id)) == "development"
         result = TransitionResult()
 
         if assume_pre_state is not None:
@@ -961,7 +968,7 @@ class TaskQueryMixin:
                     )
                 ).scalar_one_or_none()
                 if (
-                    managed_parent is not None
+                    managed_parent is not None and not development_mode
                     and _integration_wake_token is not _INTEGRATION_WAKE_TOKEN
                 ):
                     from src.database.queries.hierarchy_queries import HierarchyError
@@ -980,7 +987,8 @@ class TaskQueryMixin:
                     )
                 ).scalar_one_or_none()
                 if (
-                    managed_parent is not None
+                    managed_parent is not None and not development_mode
+                    and _operator_adoption_token is not _OPERATOR_ADOPTION_TOKEN
                     and _integration_completion_token is not _INTEGRATION_COMPLETION_TOKEN
                 ):
                     from src.database.queries.hierarchy_queries import HierarchyError

@@ -94,6 +94,34 @@ class IntegrationStatusService:
             if project is None:
                 return None
 
+            if project["hierarchical_integration_mode"] == "development":
+                from src.database.tables import development_deliveries, sessions
+                rows = await self._all(conn, select(development_deliveries).where(
+                    development_deliveries.c.project_id == project_id).order_by(
+                    development_deliveries.c.created_at.desc()).limit(100))
+                owner_rows = await self._all(conn, select(integration_branch_owners,
+                    sessions.c.state.label("session_state"),
+                    sessions.c.desired_state.label("session_desired_state")).outerjoin(
+                    sessions, sessions.c.id == integration_branch_owners.c.session_id).where(
+                    integration_branch_owners.c.repository_id == project["integration_repository_id"],
+                    integration_branch_owners.c.handoff_state != "released"))
+                owners = []
+                for owner in owner_rows:
+                    classification = "reserved" if owner["handoff_state"] == "reserved" and not owner["session_id"] else (
+                        "stopped_awaiting_preservation" if owner["session_state"] == "stopped" and
+                        owner["session_desired_state"] == "stopped" else "live_or_unconfirmed")
+                    owners.append({"ref": owner["ref"], "classification": classification,
+                                   "owner_id": owner["owner_id"]})
+                pending = [r["id"] for r in rows if r["state"] == "publishing"]
+                blockers = [_blocker("publication_pending", "Remote write awaits reconciliation", ref=i)
+                            for i in pending]
+                return {"project_id": project_id, "effective_mode": "development",
+                        "desired_mode": "development", "generation": project["hierarchical_integration_generation"],
+                        "policy": project["hierarchical_integration_policy"], "deliveries": rows,
+                        "ownership": owners, "blockers": blockers, "ready": not pending, "rollout_ready": True,
+                        "pending_publications": [r["id"] for r in rows if r["state"] == "publishing"],
+                        "parked": [r["id"] for r in rows if r["state"] == "parked"]}
+
             schedule = await self._one(
                 conn,
                 select(project_integration_schedules).where(

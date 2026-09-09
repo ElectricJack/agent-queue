@@ -226,7 +226,7 @@ class DatabaseActivationSource:
             # per-project legacy merge sweep.
             if scope == "project" and row.get("playbook_id") == "pr-merge-sweep":
                 suppression = await self._db.get_integration_legacy_suppression(identifier)
-                if suppression and suppression.get("merge_sweep_suppressed"):
+                if (suppression and suppression.get("merge_sweep_suppressed")) or await self.development_reviews_suppressed(identifier):
                     continue
             if scope == "project" and identifier != project_id and not global_event:
                 continue
@@ -245,7 +245,13 @@ class DatabaseActivationSource:
         """Resolve an immutable artifact independently of current activation."""
         return await self._db.get_playbook_artifact(artifact_sha256)
 
+    async def development_reviews_suppressed(self, project_id: str) -> bool:
+        project = await self._db.get_project(project_id)
+        return getattr(project, "hierarchical_integration_mode", "disabled") == "development"
+
     async def legacy_final_review_suppressed(self, project_id: str) -> bool:
+        if await self.development_reviews_suppressed(project_id):
+            return True
         suppression = await self._db.get_integration_legacy_suppression(project_id)
         return bool(suppression and suppression.get("final_review_route_suppressed"))
 

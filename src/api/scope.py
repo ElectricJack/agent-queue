@@ -93,6 +93,10 @@ LOCAL_INTEGRATION_CONTROLS = frozenset(
         "integration_waive_history",
         "integration_resume",
         "integration_abort",
+        "integration_develop",
+        "integration_adopt",
+        "integration_cancel_preserving",
+        "integration_development_sweep",
         "integration_retry_cleanup",
     }
 )

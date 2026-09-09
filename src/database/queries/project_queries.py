@@ -132,7 +132,7 @@ class ProjectQueryMixin:
     async def _validate_hierarchical_integration_project(
         conn, project_id: str, mode: str, repository_id: str | None
     ) -> None:
-        allowed = {"disabled", "observe", "hierarchy", "train"}
+        allowed = {"disabled", "observe", "hierarchy", "train", "development"}
         if mode not in allowed:
             raise ValueError(
                 "hierarchical_integration_mode must be one of " + ", ".join(sorted(allowed))

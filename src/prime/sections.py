@@ -163,6 +163,9 @@ def build_task_section(
 
 async def build_integration_delivery_summary(db: Any, task: Any) -> str:
     """Render the same receipt projection that gates parent verification."""
+    project = await db.get_project(task.project_id)
+    if getattr(project, "hierarchical_integration_mode", None) == "development":
+        return "## Integration delivery\nDevelopment mode: publish your source branch; batch delivery is recorded separately."
     checkpoint = await db.get_integration_checkpoint(task.id)
     if checkpoint is None or checkpoint.get("episode_id") is None:
         return ""
@@ -551,9 +554,21 @@ async def profile_allows_create_task(db: Any, profile_id: str | None) -> bool:
 
 
 def build_completion_protocol_section(
-    task_id: str, *, lifecycle: str | None = None, allow_emergent_work: bool = True
+    task_id: str, *, lifecycle: str | None = None, allow_emergent_work: bool = True,
+    development: bool = False
 ) -> PrimeSection:
     body = _load_template("completion_protocol.md").replace("{task_id}", task_id)
+    if development:
+        start = body.index("## Prepare feature history before review")
+        end = body.index("## Never close over unpushed commits")
+        body = body[:start] + ("## Development delivery\n\n"
+            "Commit and push your task branch, run focused local checks, and close with actual evidence. "
+            "Ordinary commits and merges are accepted; no squash, PR, hosted CI, or parent verifier is required. "
+            "The daemon collects completed source branches and publishes validated batches to main. "
+            "Do not push main yourself.\n\n") + body[end:]
+        stacked = body.find("## Stacked branches")
+        if stacked >= 0:
+            body = body[:stacked] + "Declare dependencies for stacked work so failed prerequisites park their dependents.\n"
     # Pool sessions (swarm-work-model §10) never get pushed a next task —
     # they pull in a loop via `--claim-next`. That's a materially different
     # completion contract, so it renders as an addendum only for a session

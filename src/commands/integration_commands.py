@@ -317,6 +317,9 @@ class IntegrationCommandsMixin:
             return _failure("not_found", "project_id is required")
         if not await self._integration_delivery_authorized(project_id, "integration_flush"):
             return _failure("unauthorized", "integration flush is outside the caller authority")
+        project = await self.db.get_project(project_id)
+        if getattr(project, "hierarchical_integration_mode", "disabled") == "development":
+            return await self._development_integration().sweep(project_id)
         await self._reconcile_integration_completion(project_id)
         return await self._integration_control_service().flush(project_id)
 
@@ -1727,3 +1730,52 @@ class IntegrationCommandsMixin:
         if error:
             result["error"] = error
         return result
+
+
+    def _development_integration(self):
+        from src.integration.development import DevelopmentIntegration
+        service = getattr(self.orchestrator, "development_integration", None)
+        if service is not None:
+            return service
+        return DevelopmentIntegration(self.db, data_dir=self.config.data_dir,
+                                      git=self.orchestrator.git)
+
+    async def _cmd_integration_develop(self, args: dict) -> dict:
+        authorized, operator_id = self._integration_local_operator()
+        if not authorized:
+            return _failure("unauthorized", "development policy requires LOCAL operator authority")
+        try:
+            return await self._development_integration().configure(
+                args["project_id"], args["policy"], reason=args["reason"], operator_id=operator_id)
+        except (ValueError, RuntimeError, KeyError) as exc:
+            return _failure("blocked", str(exc))
+
+    async def _cmd_integration_adopt(self, args: dict) -> dict:
+        authorized, operator_id = self._integration_local_operator()
+        if not authorized:
+            return _failure("unauthorized", "delivery adoption requires LOCAL operator authority")
+        try:
+            return await self._development_integration().adopt(
+                project_id=args["project_id"], task_ids=args["task_ids"],
+                target_ref=args["target_ref"], head_sha=args["head_sha"], reason=args["reason"],
+                operator_id=operator_id, accept_equivalent=args.get("accept_equivalent", False))
+        except (ValueError, RuntimeError, KeyError) as exc:
+            return _failure("blocked", str(exc))
+
+    async def _cmd_integration_development_sweep(self, args: dict) -> dict:
+        authorized, _ = self._integration_local_operator()
+        if not authorized:
+            return _failure("unauthorized", "manual sweep requires LOCAL operator authority")
+        try:
+            return await self._development_integration().sweep(args["project_id"], retry=args.get("retry", False))
+        except (ValueError, RuntimeError, KeyError) as exc:
+            return _failure("blocked", str(exc))
+
+    async def _cmd_integration_cancel_preserving(self, args: dict) -> dict:
+        authorized, _ = self._integration_local_operator()
+        if not authorized:
+            return _failure("unauthorized", "cancellation requires LOCAL operator authority")
+        try:
+            return await self._development_integration().cancel_preserving(args["operation_id"], reason=args["reason"])
+        except (ValueError, RuntimeError, KeyError) as exc:
+            return _failure("blocked", str(exc))

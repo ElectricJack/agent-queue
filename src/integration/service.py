@@ -32,6 +32,7 @@ class IntegrationService:
         branch_discard_handler: DrainHandler | None = None,
         branch_materialization_handler: DrainHandler | None = None,
         collection_handler: DrainHandler | None = None,
+        development_handler: DrainHandler | None = None,
         page_size: int = 100,
         interval_seconds: float = 5.0,
         clock: Callable[[], float] = time.time,
@@ -40,6 +41,8 @@ class IntegrationService:
             raise ValueError("integration service page size must be positive")
         if interval_seconds <= 0:
             raise ValueError("integration service interval must be positive")
+        self._development_handler = development_handler
+        self._development_task = None
         self._db = db
         self._scheduler = scheduler
         self._repair = repair
@@ -71,6 +74,12 @@ class IntegrationService:
             return
         await self._tick_lock.acquire()
         try:
+            if self._development_handler is not None and (
+                self._development_task is None or self._development_task.done()
+            ):
+                self._development_task = asyncio.create_task(
+                    self._source("development", self._development_handler, now)
+                )
             if self._branch_materialization_handler is not None:
                 await self._source(
                     "branch materialization", self._branch_materialization_handler, now
@@ -223,6 +232,10 @@ class IntegrationService:
         if task is None:
             return
         self._stop_event.set()
+        if self._development_task is not None:
+            self._development_task.cancel()
+            await asyncio.gather(self._development_task, return_exceptions=True)
+            self._development_task = None
         await task
         self._task = None
 

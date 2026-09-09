@@ -20,7 +20,7 @@ from src.database.tables import (
 )
 
 
-ROLLOUT_MODES = frozenset({"disabled", "observe", "hierarchy", "train"})
+ROLLOUT_MODES = frozenset({"disabled", "observe", "hierarchy", "train", "development"})
 _BLOCKER_DIGEST = re.compile(r"sha256:[0-9a-f]{64}\Z")
 
 

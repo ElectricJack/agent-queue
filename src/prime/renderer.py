@@ -102,8 +102,8 @@ class PrimeRenderer:
             work_dir or session_work_dir or await _sections.resolve_work_dir(self.db, task)
         )
         effective_profile_id = session_profile_id or task.profile_id
+        project = await self.db.get_project(task.project_id)
         if not effective_profile_id:
-            project = await self.db.get_project(task.project_id)
             effective_profile_id = getattr(project, "default_profile_id", None)
 
         allow_emergent_work = await _sections.profile_allows_create_task(
@@ -138,6 +138,7 @@ class PrimeRenderer:
             _sections.build_completion_protocol_section(
                 task_id,
                 lifecycle=session_lifecycle,
+                development=getattr(project, "hierarchical_integration_mode", None) == "development",
                 allow_emergent_work=allow_emergent_work,
             ),
         )

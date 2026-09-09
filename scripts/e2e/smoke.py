@@ -1487,6 +1487,48 @@ def s14_graph_and_vault(state: dict) -> str:
 # ---------------------------------------------------------------------------
 
 
+def s15_development_delivery(state: dict) -> str:
+    """Operator configure → real published branch → AQ validation/promotion → adoption."""
+    from pathlib import Path
+    root = Path(os.environ["AQ_E2E_HOME"]) / "onboarding"
+    remote, source = root / "development.git", root / "development-source"
+    subprocess.run(["git", "init", "--bare", "--initial-branch=main", str(remote)], check=True, capture_output=True)
+    subprocess.run(["git", "clone", str(remote), str(source)], check=True, capture_output=True)
+    _git_text(str(source), "config", "user.name", "AQ E2E")
+    _git_text(str(source), "config", "user.email", "e2e@example.test")
+    (source / "README.md").write_text("development fixture\n")
+    _git_text(str(source), "add", ".")
+    _git_text(str(source), "commit", "-m", "base")
+    _git_text(str(source), "push", "origin", "main")
+    aq_text("project", "onboard", "--request-id", "e2e-development", "--source-mode", "link",
+            "--root-id", "e2e-onboarding", "--relative-path", "development-source",
+            "--project-name", "Development", "--project-id", "e2e-development")
+    configured = aq("integration", "develop", "e2e-development", "--command", "test -f README.md",
+                    "--interval-seconds", "86400", "--reason", "isolated acceptance")
+    check(configured.get("outcome") == "configured", str(configured))
+    _git_text(str(source), "checkout", "-b", "fixture-feature")
+    (source / "feature.txt").write_text("delivered by AQ\n")
+    _git_text(str(source), "add", ".")
+    _git_text(str(source), "commit", "-m", "feature")
+    head = _git_text(str(source), "rev-parse", "HEAD")
+    _git_text(str(source), "push", "origin", "fixture-feature")
+    task = api("create_task", {"project_id": "e2e-development", "repo_id": configured["repository_id"],
+        "title": "development delivery", "description": "real Git fixture"})
+    task_id = task.get("task_id") or task.get("created")
+    check(bool(task_id), str(task))
+    aq("task", "set", task_id, "--branch", "fixture-feature")
+    aq("task", "set-status", "--task-id", task_id, "--status", "COMPLETED")
+    result = aq("integration", "sweep", "e2e-development")
+    check(result.get("outcome") == "delivered", str(result))
+    check(_git_text(str(remote), "rev-parse", "main") == head, "AQ did not promote exact checked commit")
+    adopted = aq("integration", "adopt", "e2e-development", "--task", task_id,
+                 "--head-sha", head, "--reason", "prove repeatable operator reconciliation")
+    check(adopted.get("outcome") == "adopted", str(adopted))
+    status = aq("integration", "status", "e2e-development")
+    check(status.get("effective_mode") == "development", str(status))
+    return "local validation and exact Git publication through real AQ CLI; operator adoption recorded without CI fabrication"
+
+
 @dataclass
 class Scenario:
     key: str
@@ -1519,6 +1561,7 @@ SCENARIOS: list[Scenario] = [
     Scenario("S12", "MCP registry", s12_mcp_registry, ("MCP registry CRUD",)),
     Scenario("S13", "plugin extensions", s13_plugin_extensions, ("plugin extension startup",)),
     Scenario("S14", "graph + vault", s14_graph_and_vault, ("graph/vault",)),
+    Scenario("S15", "development integration", s15_development_delivery, ("integration",)),
 ]
 
 # These exclusions are intentional properties of Tier 1, not silent omissions.

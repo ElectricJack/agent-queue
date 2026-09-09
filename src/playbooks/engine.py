@@ -529,6 +529,11 @@ class PlaybookEngine:
         if isinstance(project_id, str) and callable(suppression_reader):
             final_review_suppressed = await suppression_reader(project_id)
 
+        development_suppressed = False
+        development_reader = getattr(self.activations, "development_reviews_suppressed", None)
+        if isinstance(project_id, str) and callable(development_reader):
+            development_suppressed = await development_reader(project_id)
+
         selected: list[str] = []
         run_ids: list[str] = []
         deduplicated: list[str] = []
@@ -548,6 +553,8 @@ class PlaybookEngine:
                 await self._queue_pending(ref.playbook_id, hydrated)
                 continue
             for rule in artifact.rules:
+                if development_suppressed and ref.playbook_id == "default-pipeline" and rule.id in {"per-task-review", "per-branch-final-review", "per-task-review-on-retry"}:
+                    continue
                 if (
                     final_review_suppressed
                     and ref.playbook_id == "default-pipeline"

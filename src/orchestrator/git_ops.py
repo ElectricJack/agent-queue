@@ -879,6 +879,29 @@ class GitOpsMixin:
         - **verify**: Critical — if it crashes or returns STOP, the task
           cannot be marked completed.
         """
+        project = await self.db.get_project(ctx.task.project_id)
+        if getattr(project, "hierarchical_integration_mode", "disabled") == "development":
+            # Published work is complete; aggregate/root delivery is asynchronous.
+            if not ctx.workspace_path or not await self._task_uses_git(ctx):
+                return (ctx.pr_url, True)
+            try:
+                from src.integration.hierarchy import resolve_workspace_checkpoint
+                repo = await self.db.get_repo(ctx.task.repo_id or "")
+                if repo is None:
+                    raise ValueError("development task has no repository")
+                await resolve_workspace_checkpoint(self.db, self.git,
+                    {"id": ctx.task.id, "repo_id": ctx.task.repo_id,
+                     "branch_name": ctx.task.branch_name}, repo)
+                failure = await self._reserved_delivery_failure(ctx.workspace_path,
+                    repo.default_branch, "refs/heads/" + ctx.task.branch_name.removeprefix("refs/heads/"),
+                    has_remote=True)
+                if failure:
+                    raise ValueError(failure[0])
+                return (ctx.pr_url, True)
+            except (ValueError, RuntimeError) as exc:
+                self._aggregate_verifier_retry(ctx, str(exc))
+                return (ctx.pr_url, False)
+
         # Phase 1: Git verification (critical)
         try:
             result = await self._phase_verify(ctx)
