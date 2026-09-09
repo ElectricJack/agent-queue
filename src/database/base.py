@@ -677,6 +677,15 @@ class DatabaseBackend(Protocol):
         release_workspace_lock: bool = False,
         conn=None,
     ) -> "TransitionResult": ...
+    async def release_historical_pool_claim(
+        self,
+        conn,
+        session_id: str,
+        *,
+        task_id: str,
+        claim_epoch: int,
+        now: float,
+    ) -> "TransitionResult": ...
     async def terminate_pool_session(
         self,
         session_id: str,

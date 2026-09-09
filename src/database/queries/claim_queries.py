@@ -753,6 +753,91 @@ class ClaimQueryMixin:
         await self._after_release(out)
         return out
 
+    async def release_historical_pool_claim(
+        self,
+        conn,
+        session_id: str,
+        *,
+        task_id: str,
+        claim_epoch: int,
+        now: float,
+    ) -> TransitionResult:
+        """Release a stopped historical claim without touching its former holder.
+
+        This is intentionally not a ``release_claim`` mode.  That normal path
+        unwinds every workspace lock held by the session's agent and clears the
+        agent's current task, which is correct for a live holder but corrupts a
+        slot or agent that has since been reused.  The caller proves the
+        detached integration handoff separately while holding its owner row;
+        this method changes only the exact old task and exact old session.
+        """
+        row = (
+            await conn.execute(
+                select(sessions).where(sessions.c.id == session_id).with_for_update()
+            )
+        ).mappings().one_or_none()
+        out = TransitionResult()
+        if (
+            row is None
+            or row["task_id"] != task_id
+            or row["lifecycle"] != "pool"
+            or row["state"] != "stopped"
+            or row["desired_state"] != "stopped"
+            or row["claim_phase"] != "active"
+            or row["last_claim_epoch"] != claim_epoch
+        ):
+            return out
+
+        out = await self._apply_transition(
+            conn,
+            task_id,
+            TaskStatus.PAUSED,
+            context="integration_handoff_recovery",
+            force=True,
+            assigned_agent_id=None,
+            _manual_pause_control=True,
+            extra_where=and_(
+                tasks.c.status == TaskStatus.BLOCKED.value,
+                tasks.c.assigned_agent_id.is_(None),
+                tasks.c.claim_epoch == claim_epoch,
+            ),
+            returning=True,
+        )
+        if out.row is None:
+            return out
+        released = await conn.execute(
+            update(sessions)
+            .where(
+                sessions.c.id == session_id,
+                sessions.c.task_id == task_id,
+                sessions.c.lifecycle == "pool",
+                sessions.c.state == "stopped",
+                sessions.c.desired_state == "stopped",
+                sessions.c.claim_phase == "active",
+                sessions.c.last_claim_epoch == claim_epoch,
+            )
+            .values(
+                task_id=None,
+                claim_phase=None,
+                claim_phase_at=None,
+                last_claim_result="historical_handoff_recovered",
+            )
+        )
+        if released.rowcount != 1:
+            # The task transition and session release are one atomic repair.
+            # A changed holder after the row was observed is not a partial
+            # recovery; make the surrounding transaction roll back.
+            raise RuntimeError("historical pool claim release lost its fence")
+        await self.finish_task_session_attempt(
+            session_id,
+            task_id=task_id,
+            ended_at=now,
+            end_reason="integration_handoff_recovery",
+            conn=conn,
+        )
+        out.released = True
+        return out
+
     async def terminate_pool_session(
         self, session_id, *, reason, task_status=TaskStatus.READY, conn=None
     ) -> TransitionResult:
