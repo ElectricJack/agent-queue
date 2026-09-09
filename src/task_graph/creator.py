@@ -27,10 +27,11 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any
 
-from sqlalchemy import insert
+from sqlalchemy import insert, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from src.database.tables import (
+    projects,
     task_context,
     task_criteria,
     task_dependencies,
@@ -359,12 +360,67 @@ def _rewrite_ids(plan: GraphPlan, real: dict[str, str]) -> None:
             row["task_id"] = real.get(row.get("_key"), row["task_id"])
 
 
+def _task_from_plan_row(row: dict):
+    """Convert the graph's insert payload to the atomic filing model."""
+    from dataclasses import fields
+
+    from src.models import Task, TaskStatus, TaskType, VerificationType
+
+    values = {field.name: row[field.name] for field in fields(Task) if field.name in row}
+    values["status"] = TaskStatus(values["status"])
+    values["verification_type"] = VerificationType(values["verification_type"])
+    if values.get("task_type"):
+        values["task_type"] = TaskType(values["task_type"])
+    for name in ("attachments", "deliverables"):
+        if isinstance(values.get(name), str):
+            values[name] = json.loads(values[name])
+    return Task(**values)
+
+
+async def _file_hierarchical_plan(db, conn, plan: GraphPlan, service) -> None:
+    """Reserve the root and sibling origins with the graph's transaction."""
+    if plan.parent_row is not None:
+        old_parent_id = plan.parent_id
+        created = await service.file_root_on(conn, _task_from_plan_row(plan.parent_row))
+        plan.parent_id = created["task_id"]
+        plan.parent_row["id"] = plan.parent_id
+        # Parent labels have no node key and are not handled by _rewrite_ids.
+        for row in plan.label_rows:
+            if row["task_id"] == old_parent_id:
+                row["task_id"] = plan.parent_id
+        await db.mark_container(plan.parent_id, conn=conn)
+    children = [_task_from_plan_row(row) for row in plan.node_rows]
+    created = await service.file_prepared_children_on(conn, plan.parent_id, children)
+    _rewrite_ids(plan, {
+        row["_key"]: result["task_id"]
+        for row, result in zip(plan.node_rows, created, strict=True)
+    })
+
+
+async def _graph_route(service, conn, plan: GraphPlan):
+    """The hierarchy route *plan* files through, or ``None`` for a legacy project.
+
+    A plan with a ``parent_row`` mints a new root; one without files under
+    its existing ``parent_id``.  Raises :class:`HierarchyError` for an enabled
+    project the graph cannot file into (no designated repository, a parent
+    bound elsewhere) — the same error the filing itself would raise.
+    """
+    mode = await conn.scalar(
+        select(projects.c.hierarchical_integration_mode).where(projects.c.id == plan.project_id)
+    )
+    if mode not in {"hierarchy", "train"}:
+        return None
+    existing_parent = plan.parent_id if plan.parent_row is None else None
+    return await service.graph_route(conn, plan.project_id, existing_parent)
+
+
 async def write_plan(
     db: Any,
     plan: GraphPlan,
     *,
     provenance: FormulaProvenance | None = None,
     routing_manager=None,
+    hierarchy_service=None,
 ) -> None:
     """Persist a :class:`GraphPlan` in exactly one transaction.
 
@@ -380,6 +436,12 @@ async def write_plan(
     ignored here because a brand new (or still-open) container has nothing
     left to settle.
 
+    Enabled hierarchical integration uses ``hierarchy_service`` to file the
+    root and sibling origins/checkpoints in this same transaction instead of
+    the legacy inserts/bulk link. Reserved IDs replace plan IDs in all graph
+    metadata before it is written. Without a service the bulk-write guard
+    still refuses enabled projects.
+
     *provenance* is written to ``plan.parent_id`` — the container, whether
     brand new or pre-existing — after every other row and before
     ``recompute_blocked`` (spec §13): metadata keys upserted (latest cook
@@ -389,12 +451,17 @@ async def write_plan(
     the ``(task_id, label)`` primary key).
     """
     async with db._engine.begin() as conn:
-        if plan.project_id is not None:
+        hierarchical = False
+        if hierarchy_service is not None and plan.project_id is not None:
+            hierarchical = await _graph_route(hierarchy_service, conn, plan) is not None
+        if hierarchical:
+            await _file_hierarchical_plan(db, conn, plan, hierarchy_service)
+        elif plan.project_id is not None:
             # The legacy graph writer inserts rows before linking them.  An
             # enabled project must instead use atomic origin/checkpoint filing,
             # so fail before even the first task insert or ordinal mutation.
             await db.guard_hierarchy_bulk_write(plan.project_id, conn=conn)
-        if plan.parent_row is not None:
+        if plan.parent_row is not None and not hierarchical:
             await _insert_task(conn, plan.parent_row)
             # ``_insert_task`` is a direct ``insert(tasks)`` that bypasses
             # ``_insert_task_row``, so the layout mark is owed here.  The
@@ -409,7 +476,7 @@ async def write_plan(
             # and its parent would never become a container at all.
             # Idempotent, so the two paths can both run.
             await db.mark_container(plan.parent_id, conn=conn)
-        if plan.provisional:
+        if plan.provisional and not hierarchical:
             real: dict[str, str] = {}
             for key in plan.ids:
                 ordinal = await reserve_child_ordinal(conn, plan.parent_id)
@@ -418,7 +485,8 @@ async def write_plan(
         from src.playbooks.routing import requires_routing_gate
 
         for row in plan.node_rows:
-            await _insert_task(conn, row)
+            if not hierarchical:
+                await _insert_task(conn, row)
             if requires_routing_gate(routing_manager, row, {"parent_task_id": plan.parent_id}):
                 await db.create_gate(
                     row["project_id"],
@@ -434,7 +502,7 @@ async def write_plan(
         # precondition ``set_parent_bulk`` asserts.  Per-node ``set_parent``
         # re-validated the parent and re-read every blocking edge in the
         # database once per node — ~23 statements per node at §15.2 scale.
-        if plan.node_rows:
+        if plan.node_rows and not hierarchical:
             await db.set_parent_bulk(
                 [row["id"] for row in plan.node_rows], plan.parent_id, conn=conn
             )
@@ -555,8 +623,8 @@ async def create_graph(
 ) -> dict:
     """Create the graph, or report what creating it would do.
 
-    *handler* is the ``CommandHandler`` (its ``db`` property is the only
-    thing used).  Returns the report from :func:`build_report`; the caller
+    *handler* is the ``CommandHandler``, supplying the database, hierarchy
+    filing service and routing event hooks. Returns :func:`build_report`; the caller
     layers validation warnings on top.  *parent_id* creates the graph under
     an existing container instead of minting a new one.  *provenance*, when
     given, is written inside ``write_plan``'s transaction (spec §13) and
@@ -564,13 +632,25 @@ async def create_graph(
     """
     db = handler.db
     plan = await build_plan(db, graph, project_id=project_id, parent_id=parent_id)
+    hierarchy_service = (
+        handler._hierarchy_integration_service()
+        if callable(getattr(handler, "_hierarchy_integration_service", None))
+        else None
+    )
     if dry_run:
+        if hierarchy_service is not None:
+            # Same route check the real run performs first, so a dry run
+            # refuses what the real run would refuse instead of reporting a
+            # graph the project cannot file (keen-harbor.14).
+            async with db._engine.connect() as conn:
+                await _graph_route(hierarchy_service, conn, plan)
         return build_report(graph, plan, dry_run=True, provenance=provenance)
     await write_plan(
         db,
         plan,
         provenance=provenance,
         routing_manager=getattr(getattr(handler, "orchestrator", None), "playbook_manager", None),
+        hierarchy_service=hierarchy_service,
     )
     for task_id in plan.routing_task_ids:
         await handler._emit_admitted_routing_gates(task_id)

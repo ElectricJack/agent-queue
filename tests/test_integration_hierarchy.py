@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import subprocess
+from pathlib import Path
 
 import pytest
 from sqlalchemy import insert, select, update
@@ -11,10 +13,10 @@ from sqlalchemy import insert, select, update
 from src.database import Database
 from src.database.queries.hierarchy_queries import HierarchyError
 from src.database.tables import (
-    task_delivery_receipts,
     integration_outbox,
     playbook_artifacts,
     task_branch_origins,
+    task_delivery_receipts,
     task_integration_checkpoints,
     tasks,
 )
@@ -35,9 +37,12 @@ from src.integration.models import (
 from src.models import Project, RepoConfig, RepoSourceType, Task, TaskStatus, Workspace
 from tests.db_fixtures import lease_dsn
 
-
 BASE = "a" * 40
 NEXT = "b" * 40
+
+#: The 2026-09-08 CLI-audit epic exactly as `aq task create --graph` sent it
+#: (keen-harbor.14): dry-run passed, the real run failed `integration_required`.
+EPIC_GRAPH = Path(__file__).parent / "fixtures" / "task_graphs" / "cli_audit_2026_09_08_epic.json"
 
 
 def _git(args, cwd):
@@ -560,3 +565,471 @@ async def test_checkpoint_verifies_actual_clean_and_pushed_workspace_head(db, tm
     assert await verify_workspace_checkpoint(
         db, git, task.__dict__, repo, next_head
     ) == next_head
+
+
+@pytest.mark.parametrize("mode", ["hierarchy", "train"])
+@pytest.mark.parametrize("operation", ["create_task", "task_batch_commit"])
+async def test_new_root_bootstraps_default_branch_before_its_branch_exists(
+    db, internal_plugins_handler, mode, operation
+):
+    from src.git.manager import GitError
+
+    await db.update_project("p", hierarchical_integration_mode=mode)
+    requested = []
+
+    def resolve(repo, branch):
+        requested.append(branch)
+        if branch != repo.default_branch:
+            raise GitError(f"repository branch {branch!r} does not exist")
+        return BASE
+
+    handler = await internal_plugins_handler(db=db)
+    handler.orchestrator.hierarchy_integration = HierarchyIntegration(
+        db, default_head_resolver=resolve
+    )
+    if operation == "create_task":
+        result = await handler.execute(operation, {
+            "project_id": "p", "title": "New root", "description": "No branch exists yet",
+        })
+        assert "created" in result, result
+        task_id = result["created"]
+    else:
+        proposal = await handler.execute("task_batch_propose", {
+            "project_id": "p", "source": "regression:new-root",
+            "tasks": [{"tempId": "root", "title": "New root", "description": "No branch"}],
+            "edges": [],
+        })
+        result = await handler.execute(operation, {"proposal_id": proposal["proposal_id"]})
+        assert result["success"], result
+        task_id = result["task_ids"][0]
+    repo = await db.get_repo("repo")
+    assert requested == [repo.default_branch]
+    task = await db.get_task(task_id)
+    assert task.branch_name == f"aq/{task_id}"
+    checkpoint = await db.get_integration_checkpoint(task_id)
+    assert checkpoint["checkpoint_sha"] == BASE
+    origins = await _origins(db)
+    assert len(origins) == 1
+    assert origins[0]["base_sha"] == BASE
+    assert origins[0]["parent_ref"] == repo.default_branch
+    assert not origins[0]["materialized"]
+
+
+async def test_existing_root_adoption_keeps_its_bound_branch(db):
+    await _create(db, "existing")
+    await db.update_task("existing", branch_name="existing-work")
+    requested = []
+
+    def resolve(_repo, branch):
+        requested.append(branch)
+        assert branch == "existing-work"
+        return NEXT
+
+    service = HierarchyIntegration(db, default_head_resolver=resolve)
+    result = await service.file_children("existing", [{"title": "Child"}], 0)
+    assert requested == ["existing-work"]
+    assert result["origins"][0]["base_sha"] == NEXT
+
+
+@pytest.mark.parametrize("existing_parent", [False, True])
+async def test_graph_creation_uses_atomic_filing_and_rewrites_all_graph_ids(
+    db, internal_plugins_handler, existing_parent
+):
+    from src.database.tables import task_context, task_criteria
+    from src.task_graph import parse_graph
+    from src.task_graph.creator import FormulaProvenance, create_graph
+
+    def resolve(repo, branch):
+        assert branch == repo.default_branch
+        return BASE
+
+    handler = await internal_plugins_handler(db=db)
+    handler.orchestrator.hierarchy_integration = HierarchyIntegration(
+        db, default_head_resolver=resolve
+    )
+    parent_id = None
+    if existing_parent:
+        await _create(db, "existing")
+        parent_id = "existing"
+    document = {
+        "version": 1,
+        "parent": {"title": "Graph epic", "labels": ["epic"]},
+        "nodes": [
+            {"key": "first", "title": "First", "description": "Do the work",
+             "task_type": "bugfix", "priority": 42,
+             "deliverables": [{"id": "source", "kind": "file", "target": "src/cli/tasks.py"}],
+             "acceptance": ["Evidence is retained"], "labels": ["regression"],
+             "context": [{"type": "file", "path": "src/cli/tasks.py"}]},
+            {"key": "second", "title": "Second", "needs": ["first"]},
+        ],
+    }
+    graph = parse_graph(document)
+    provenance = FormulaProvenance(
+        name="audit", scope="system", path="formulas/audit.md", vars={},
+        chain_sha="test", snapshot=document,
+    )
+    dry = await create_graph(handler, graph, project_id="p", parent_id=parent_id, dry_run=True)
+    assert not await _origins(db)
+    report = await create_graph(
+        handler, graph, project_id="p", parent_id=parent_id, provenance=provenance
+    )
+    parent_id = report["parent_id"]
+    first, second = report["task_ids"]
+    assert first == f"{parent_id}.1"
+    assert second == f"{parent_id}.2"
+    if existing_parent:
+        assert dry["parent_id"] == parent_id == "existing"
+    first_task = await db.get_task(first)
+    assert first_task.parent_task_id == parent_id
+    assert first_task.priority == 42
+    assert first_task.task_type.value == "bugfix"
+    assert first_task.deliverables[0]["target"] == "src/cli/tasks.py"
+    assert "Evidence is retained" in first_task.description
+    assert "regression" in await db.get_task_labels(first)
+    assert "formula:audit" in await db.get_task_labels(parent_id)
+    if not existing_parent:
+        assert "epic" in await db.get_task_labels(parent_id)
+    assert (await db.get_task(second)).is_blocked
+    assert report["nodes"][1]["needs"][0]["task_id"] == first
+    assert {row["task_id"] for row in await _origins(db)} == {parent_id, first, second}
+    assert (await db.get_integration_checkpoint(parent_id))["generation"] == 1
+    async with db._engine.connect() as conn:
+        assert await conn.scalar(select(task_criteria.c.task_id)) == first
+        contexts = (await conn.execute(select(task_context))).mappings().all()
+    assert {(row["task_id"], row["type"]) for row in contexts} == {
+        (first, "file"), (parent_id, "formula_snapshot"),
+    }
+
+
+async def test_hierarchical_graph_failure_rolls_back_roots_children_and_origins(
+    db, hierarchy, internal_plugins_handler, monkeypatch
+):
+    from src.task_graph import parse_graph
+    from src.task_graph.creator import create_graph
+
+    handler = await internal_plugins_handler(db=db)
+    handler.orchestrator.hierarchy_integration = hierarchy
+    original = hierarchy.file_prepared_children_on
+
+    async def fail_after_children(*args, **kwargs):
+        await original(*args, **kwargs)
+        raise RuntimeError("failed after sibling origins")
+
+    monkeypatch.setattr(hierarchy, "file_prepared_children_on", fail_after_children)
+    graph = parse_graph({"parent": {"title": "Epic"}, "nodes": [
+        {"key": "a", "title": "A"}, {"key": "b", "title": "B", "needs": ["a"]},
+    ]})
+    with pytest.raises(RuntimeError, match="failed after sibling origins"):
+        await create_graph(handler, graph, project_id="p")
+    assert not await _origins(db)
+    async with db._engine.connect() as conn:
+        assert not (await conn.execute(select(tasks.c.id))).all()
+        assert not (await conn.execute(select(task_integration_checkpoints))).all()
+
+
+async def test_concurrent_graph_commands_allocate_distinct_sibling_ids(
+    db, hierarchy, internal_plugins_handler
+):
+    await _create(db, "parent")
+    handler = await internal_plugins_handler(db=db)
+    handler.orchestrator.hierarchy_integration = hierarchy
+    args = {"project_id": "p", "parent_id": "parent", "graph": {
+        "nodes": [{"key": "a", "title": "A"}, {"key": "b", "title": "B"}],
+    }}
+    results = await asyncio.gather(
+        handler._cmd_create_task_graph(args), handler._cmd_create_task_graph(args)
+    )
+    assert all(result.get("created") for result in results), results
+    assert {task_id for result in results for task_id in result["task_ids"]} == {
+        "parent.1", "parent.2", "parent.3", "parent.4",
+    }
+    assert (await db.get_integration_checkpoint("parent"))["generation"] == 2
+    assert len(await _origins(db)) == 5
+
+
+async def test_new_root_missing_base_rolls_back_task_and_origin(db):
+    from src.git.manager import GitError
+
+    def missing_base(_repo, _branch):
+        raise GitError("default branch is missing")
+
+    service = HierarchyIntegration(db, default_head_resolver=missing_base)
+    with pytest.raises(GitError, match="default branch is missing"):
+        async with db.immediate() as conn:
+            await service.file_root_on(conn, Task(
+                id="", project_id="p", title="Root", description="No base",
+            ))
+    assert not await _origins(db)
+    async with db._engine.connect() as conn:
+        assert not (await conn.execute(select(tasks.c.id))).all()
+
+
+@pytest.mark.parametrize("mode", ["hierarchy", "train"])
+async def test_cli_audit_epic_graph_files_through_the_command_in_one_transaction(
+    db, hierarchy, internal_plugins_handler, mode
+):
+    """The live graph that dry-ran clean and then failed the bulk-write guard."""
+    from src.database.tables import task_dependencies, task_labels
+    from src.vault import ensure_default_intelligence_classes
+
+    await db.update_project("p", hierarchical_integration_mode=mode)
+    handler = await internal_plugins_handler(db=db)
+    ensure_default_intelligence_classes(handler.config.data_dir)
+    handler.orchestrator.intelligence_classes.reload(handler.config.data_dir)
+    handler.orchestrator.hierarchy_integration = hierarchy
+    document = json.loads(EPIC_GRAPH.read_text(encoding="utf-8"))
+    node_count = len(document["nodes"])
+    edge_count = sum(len(node.get("needs", [])) for node in document["nodes"])
+    assert (node_count, edge_count) == (15, 24)
+    args = {"project_id": "p", "graph": document}
+
+    dry = await handler._cmd_create_task_graph({**args, "dry_run": True})
+    assert "error" not in dry, dry
+    assert dry["dry_run"] and not dry["created"]
+    assert dry["warnings"] == []
+    assert len(dry["task_ids"]) == node_count
+    assert not await _origins(db)
+    async with db._engine.connect() as conn:
+        assert not (await conn.execute(select(tasks.c.id))).all()
+
+    report = await handler._cmd_create_task_graph(args)
+    assert "error" not in report, report
+    assert report["created"]
+    parent_id = report["parent_id"]
+    assert report["task_ids"] == [f"{parent_id}.{n}" for n in range(1, node_count + 1)]
+    assert report["dependency_count"] == edge_count
+    # The dry run and the real run resolve the same keys in the same order.
+    assert [node["key"] for node in report["nodes"]] == [node["key"] for node in dry["nodes"]]
+    assert [
+        [need["on"] for need in node["needs"]] for node in report["nodes"]
+    ] == [[need["on"] for need in node["needs"]] for node in dry["nodes"]]
+
+    parent = await db.get_task(parent_id)
+    assert parent.parent_task_id is None
+    assert parent.title == document["parent"]["title"]
+    assert parent.priority == document["parent"]["priority"]
+    assert set(document["parent"]["labels"]) <= set(await db.get_task_labels(parent_id))
+    async with db._engine.connect() as conn:
+        rows = (await conn.execute(select(tasks.c.id, tasks.c.parent_task_id, tasks.c.intelligence_class, tasks.c.task_type))).mappings().all()
+        # ``set_parent`` records the containment as a ``parent-child`` edge;
+        # the graph's own ``needs`` are everything else.
+        edges = (
+            await conn.execute(
+                select(task_dependencies.c.task_id, task_dependencies.c.depends_on_task_id).where(
+                    task_dependencies.c.dep_type != "parent-child"
+                )
+            )
+        ).all()
+        labels = (await conn.execute(select(task_labels.c.task_id, task_labels.c.label))).all()
+    assert len(rows) == node_count + 1
+    children = {row["id"]: row for row in rows if row["id"] != parent_id}
+    assert set(children) == set(report["task_ids"])
+    assert all(row["parent_task_id"] == parent_id for row in children.values())
+    by_key = {node["key"]: node["task_id"] for node in report["nodes"]}
+    expected_edges = {
+        (by_key[node["key"]], by_key[need])
+        for node in document["nodes"]
+        for need in node.get("needs", [])
+    }
+    assert set(edges) == expected_edges and len(edges) == edge_count
+    for node in document["nodes"]:
+        row = children[by_key[node["key"]]]
+        assert row["intelligence_class"] == node.get(
+            "intelligence_class", document["defaults"]["intelligence_class"]
+        )
+        assert row["task_type"] == node.get("task_type")
+        for label in node.get("labels", []):
+            assert (by_key[node["key"]], label) in labels
+    # Every task filed with its origin and checkpoint; one parent generation.
+    assert {row["task_id"] for row in await _origins(db)} == {parent_id, *report["task_ids"]}
+    assert (await db.get_integration_checkpoint(parent_id))["generation"] == 1
+    assert (await db.get_task(by_key["atomic-graph"])).is_blocked
+
+
+async def test_graph_dry_run_refuses_the_same_route_the_real_run_refuses(
+    db, hierarchy, internal_plugins_handler
+):
+    """An enabled project whose parent is not bound to the designated repository."""
+    handler = await internal_plugins_handler(db=db)
+    handler.orchestrator.hierarchy_integration = hierarchy
+    await db.create_task(Task(id="unbound", project_id="p", title="Unbound", description="x"))
+    args = {"project_id": "p", "parent_id": "unbound", "graph": {
+        "nodes": [{"key": "a", "title": "A"}, {"key": "b", "title": "B", "needs": ["a"]}],
+    }}
+    dry = await handler._cmd_create_task_graph({**args, "dry_run": True})
+    real = await handler._cmd_create_task_graph(args)
+    assert dry["code"] == real["code"] == "hierarchy.invalid"
+    assert "designated repository" in dry["error"] and "nothing was created" in real["error"]
+    assert not await _origins(db)
+    async with db._engine.connect() as conn:
+        assert [row[0] for row in (await conn.execute(select(tasks.c.id))).all()] == ["unbound"]
+        assert not (await conn.execute(select(task_integration_checkpoints))).all()
+
+
+async def test_graph_without_hierarchy_service_still_hits_the_bulk_write_guard(db):
+    """The guard is retained: a bare ``write_plan`` on an enabled project refuses."""
+    from src.task_graph import parse_graph
+    from src.task_graph.creator import build_plan, write_plan
+
+    plan = await build_plan(db, parse_graph({"nodes": [{"key": "a", "title": "A"}]}), project_id="p")
+    with pytest.raises(HierarchyError) as exc:
+        await write_plan(db, plan)
+    assert exc.value.code == "integration_required"
+    async with db._engine.connect() as conn:
+        assert not (await conn.execute(select(tasks.c.id))).all()
+
+
+# ---------------------------------------------------------------------------
+# The real API and CLI paths (keen-harbor.14 acceptance): the same command the
+# daemon serves over ``POST /api/execute`` and the same ``aq task create
+# --graph`` the operator ran, against a train-mode project.
+# ---------------------------------------------------------------------------
+
+
+def _execute_app(handler, monkeypatch):
+    """The daemon's ``/api/execute`` route on a bare app serving *handler*."""
+    from fastapi import FastAPI
+
+    from src.api import dependencies as deps
+    from src.api.execute import router as execute_router
+
+    monkeypatch.setattr(deps, "_command_handler", handler)
+    monkeypatch.setattr(deps, "_orchestrator", handler.orchestrator)
+    monkeypatch.setattr(deps, "_token_store", None)
+    monkeypatch.setattr(deps, "_require_session_token", False)
+    app = FastAPI()
+    app.include_router(execute_router)
+    return app
+
+
+async def _train_handler(db, hierarchy, internal_plugins_handler):
+    """A command handler whose project ``p`` runs an integration train."""
+    from src.vault import ensure_default_intelligence_classes
+
+    await db.update_project("p", hierarchical_integration_mode="train")
+    handler = await internal_plugins_handler(db=db)
+    ensure_default_intelligence_classes(handler.config.data_dir)
+    handler.orchestrator.intelligence_classes.reload(handler.config.data_dir)
+    handler.orchestrator.hierarchy_integration = hierarchy
+    return handler
+
+
+async def test_api_execute_files_graphs_under_new_and_existing_parents_atomically(
+    db, hierarchy, internal_plugins_handler, monkeypatch
+):
+    import httpx
+
+    handler = await _train_handler(db, hierarchy, internal_plugins_handler)
+    app = _execute_app(handler, monkeypatch)
+    graph = {"nodes": [{"key": "a", "title": "A"}, {"key": "b", "title": "B", "needs": ["a"]}]}
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://aq.test"
+    ) as http:
+
+        async def execute(**args):
+            response = await http.post(
+                "/api/execute", json={"command": "create_task_graph", "args": args}
+            )
+            assert response.status_code == 200, response.text
+            return response.json()
+
+        dry = await execute(project_id="p", graph=graph, dry_run=True)
+        assert dry["ok"] and dry["result"]["dry_run"], dry
+        assert not await _origins(db)
+
+        created = await execute(project_id="p", graph=graph)
+        assert created["ok"], created
+        parent_id = created["result"]["parent_id"]
+        assert created["result"]["task_ids"] == [f"{parent_id}.1", f"{parent_id}.2"]
+        assert (await db.get_task(f"{parent_id}.2")).is_blocked
+
+        # Under the existing container: provisional at dry-run time, reserved on write.
+        under_dry = await execute(project_id="p", parent_id=parent_id, graph=graph, dry_run=True)
+        assert under_dry["ok"] and under_dry["result"]["provisional"], under_dry
+        under = await execute(project_id="p", parent_id=parent_id, graph=graph)
+        assert under["ok"], under
+        assert under["result"]["task_ids"] == [f"{parent_id}.3", f"{parent_id}.4"]
+
+        # Two graph commands racing for the same parent get distinct ordinals.
+        first, second = await asyncio.gather(
+            execute(project_id="p", parent_id=parent_id, graph=graph),
+            execute(project_id="p", parent_id=parent_id, graph=graph),
+        )
+        assert first["ok"] and second["ok"], (first, second)
+        raced = [*first["result"]["task_ids"], *second["result"]["task_ids"]]
+        assert sorted(raced) == sorted(f"{parent_id}.{n}" for n in range(5, 9))
+
+        # A route the train cannot file refuses the same way with or without
+        # ``dry_run`` and leaves nothing behind.
+        await db.create_task(Task(id="unbound", project_id="p", title="U", description="x"))
+        refused = [
+            await execute(project_id="p", parent_id="unbound", graph=graph, dry_run=True),
+            await execute(project_id="p", parent_id="unbound", graph=graph),
+        ]
+        for response in refused:
+            assert not response["ok"], response
+            assert response["details"]["code"] == "hierarchy.invalid"
+            assert "designated repository" in response["error"]
+
+    origins = await _origins(db)
+    assert {row["task_id"] for row in origins} == {
+        parent_id, *(f"{parent_id}.{n}" for n in range(1, 9))
+    }
+    assert (await db.get_integration_checkpoint(parent_id))["generation"] == 4
+    async with db._engine.connect() as conn:
+        ids = {row[0] for row in (await conn.execute(select(tasks.c.id))).all()}
+    assert ids == {"unbound", parent_id, *(f"{parent_id}.{n}" for n in range(1, 9))}
+
+
+@pytest.mark.usefixtures("unpooled_postgres")
+async def test_cli_task_create_graph_files_the_audit_epic_through_the_real_api(
+    db, hierarchy, internal_plugins_handler, monkeypatch
+):
+    """``aq --json task create --graph <epic> [--dry-run]`` end to end."""
+    from unittest.mock import patch
+
+    import httpx
+    from click.testing import CliRunner
+
+    from src.cli.app import cli
+    from src.cli.client import CLIClient
+
+    handler = await _train_handler(db, hierarchy, internal_plugins_handler)
+    app = _execute_app(handler, monkeypatch)
+
+    def cli_client(_api_url=None):
+        client = CLIClient(base_url="http://aq.test")
+
+        async def connect():
+            client._http = httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app), base_url="http://aq.test"
+            )
+
+        client.connect = connect
+        return client
+
+    def run(*extra):
+        with patch("src.cli.tasks._get_client", side_effect=cli_client):
+            result = CliRunner().invoke(
+                cli, ["--json", "task", "create", "-p", "p", "--graph", str(EPIC_GRAPH), *extra]
+            )
+        assert result.exit_code == 0, result.output
+        return json.loads(result.output)
+
+    document = json.loads(EPIC_GRAPH.read_text(encoding="utf-8"))
+    dry = run("--dry-run")
+    assert dry.get("error") is None and dry["data"]["dry_run"], dry
+    assert len(dry["data"]["task_ids"]) == len(document["nodes"])
+    assert not await _origins(db)
+
+    real = run()
+    assert real.get("error") is None and real["data"]["created"], real
+    parent_id = real["data"]["parent_id"]
+    assert real["data"]["task_ids"] == [
+        f"{parent_id}.{n}" for n in range(1, len(document["nodes"]) + 1)
+    ]
+    assert real["data"]["dependency_count"] == sum(
+        len(node.get("needs", [])) for node in document["nodes"]
+    )
+    assert (await db.get_task(parent_id)).title == document["parent"]["title"]
+    assert {row["task_id"] for row in await _origins(db)} == {parent_id, *real["data"]["task_ids"]}

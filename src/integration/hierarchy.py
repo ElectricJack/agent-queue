@@ -26,15 +26,13 @@ from src.database.tables import (
     tasks,
     workspaces,
 )
+from src.git.manager import is_valid_git_oid
 from src.integration.models import BranchKey
 from src.integration.outbox import enqueue_integration_event
 from src.integration.ownership import BranchOwnership
 from src.integration.parent_completion import ParentCompletion
 from src.models import RepoConfig, Task, TaskStatus
-from src.git.manager import is_valid_git_oid
-from src.task_names import child_task_id
-from src.task_names import fresh_root_id
-
+from src.task_names import child_task_id, fresh_root_id
 
 _OID = re.compile(r"^[0-9a-f]{40}$")
 _ACTIVE_BATCH_STATES = (
@@ -475,25 +473,15 @@ class HierarchyIntegration:
         routing_policy=None,
     ) -> dict:
         """Insert an enabled-project root and reserve its isolated origin."""
-        from src.database.tables import projects
-
-        project = (
-            await conn.execute(select(projects).where(projects.c.id == task.project_id))
-        ).mappings().one_or_none()
-        if project is None or project["hierarchical_integration_mode"] not in {
-            "hierarchy",
-            "train",
-        }:
-            raise HierarchyError("invalid", "hierarchical integration is not enabled")
-        repository_id = project["integration_repository_id"]
-        repo = await self._repo_on(conn, repository_id) if repository_id else None
-        if repo is None or repo.project_id != task.project_id:
-            raise HierarchyError("invalid", "designated repository is not in the project")
+        _project, repo = await self._root_route(conn, task.project_id)
         await self.db.lock_hierarchy_project(conn, task.project_id)
         task.id = await fresh_root_id(conn)
         task.parent_task_id = None
         task.repo_id = repo.id
-        task.branch_name = f"aq/{task.id}"
+        # This root has no branch yet. Let origin bootstrap resolve the
+        # repository's default branch; adoption of existing roots still
+        # resolves their recorded branch in _ensure_origin_chain.
+        task.branch_name = None
         await self.db.create_task(task, conn=conn)
         await self._write_task_extras(
             conn,
@@ -504,6 +492,7 @@ class HierarchyIntegration:
         )
         gate_id = await self._maybe_create_routing_gate(conn, task, routing_policy)
         await self._ensure_origin_chain(conn, task.id, repo)
+        task.branch_name = f"aq/{task.id}"
         return {"task_id": task.id, "generation": 0, "gate_id": gate_id}
 
     async def checkpoint_parent(
@@ -838,6 +827,48 @@ class HierarchyIntegration:
             "old_parent_generation": old_generation,
             "new_parent_generation": new_generation,
         }
+
+    async def _root_route(self, conn, project_id: str) -> tuple[dict, RepoConfig]:
+        """The (project, repo) a new root in *project_id* files through."""
+        project = (
+            await conn.execute(
+                select(self._projects_table()).where(self._projects_table().c.id == project_id)
+            )
+        ).mappings().one_or_none()
+        if project is None or project["hierarchical_integration_mode"] not in {
+            "hierarchy",
+            "train",
+        }:
+            raise HierarchyError("invalid", "hierarchical integration is not enabled")
+        project = dict(project)
+        repository_id = project["integration_repository_id"]
+        repo = await self._repo_on(conn, repository_id) if repository_id else None
+        if repo is None or repo.project_id != project_id:
+            raise HierarchyError("invalid", "designated repository is not in the project")
+        return project, repo
+
+    async def graph_route(
+        self, conn, project_id: str, parent_id: str | None = None
+    ) -> tuple[dict, RepoConfig] | None:
+        """The route a task graph in *project_id* files through, or ``None``.
+
+        ``None`` means the project is not hierarchical and the graph creator
+        may take its legacy path.  An enabled project answers the same
+        ``(project, repo)`` that :meth:`file_root_on` (new container) or
+        :meth:`file_prepared_children_on` (existing *parent_id*) will use,
+        raising the same :class:`HierarchyError` they would — so a dry run
+        refuses exactly what the real run refuses, before anything is written.
+        """
+        mode = await conn.scalar(
+            select(self._projects_table().c.hierarchical_integration_mode).where(
+                self._projects_table().c.id == project_id
+            )
+        )
+        if mode not in {"hierarchy", "train"}:
+            return None
+        if parent_id is not None:
+            return await self._enabled_route(conn, await self._task_row(conn, parent_id))
+        return await self._root_route(conn, project_id)
 
     async def _enabled_route(self, conn, task: dict) -> tuple[dict, RepoConfig]:
         project = (
