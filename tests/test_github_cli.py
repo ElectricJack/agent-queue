@@ -28,7 +28,9 @@ def _fake_gh(
         "stdin = sys.stdin.read()\n"
         "with open(os.environ['AQ_TEST_GH_CAPTURE'], 'w') as stream:\n"
         "    json.dump({'argv': sys.argv[1:], 'stdin': stdin}, stream)\n"
-        f"print({json.dumps(json.dumps(response))})\n"
+        f"response = {response!r}\n"
+        "pages = response if '--paginate' in sys.argv else [response]\n"
+        "for page in pages: print(json.dumps(page, indent=2))\n"
         f"print({json.dumps(stderr)}, file=sys.stderr)\n"
         f"raise SystemExit({exit_code})\n"
     )
@@ -146,7 +148,7 @@ async def test_exact_head_ref_uses_numeric_binding_and_escaped_short_ref(tmp_pat
 
 
 @pytest.mark.asyncio
-async def test_paged_items_flattens_gh_slurp_pages(tmp_path):
+async def test_paged_items_flattens_successive_json_pages_without_slurp(tmp_path):
     executable, capture = _fake_gh(
         tmp_path,
         [
@@ -166,7 +168,7 @@ async def test_paged_items_flattens_gh_slurp_pages(tmp_path):
         {"id": 3},
     ]
     invocation = json.loads(capture.read_text())
-    assert invocation["argv"][-3:] == ["repos/acme/widgets/check-runs", "--paginate", "--slurp"]
+    assert invocation["argv"][-2:] == ["repos/acme/widgets/check-runs", "--paginate"]
 
 
 @pytest.mark.asyncio

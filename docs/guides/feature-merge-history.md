@@ -21,6 +21,23 @@ candidates must be superseded and rebuilt with fresh CI before promotion; old
 candidate objects and evidence remain retained for audit. Already-published main
 history is never rewritten.
 
+When main advances across an accepted candidate repair and the ancestry-preserving
+merge conflicts, the current bounded root-repair stage owns the resolution. AQ
+freezes the exact candidate and new-main commits in the stage dossier, hands the
+integration branch to that stage's current delegate, and accepts only a two-parent
+merge of those commits. The accepted merge becomes a new candidate revision whose
+construction base is the frozen new-main commit; prior CI never carries forward,
+so that exact revision must pass the configured root checks before promotion. A
+later main movement causes another bounded rebuild rather than rewriting either
+reviewed history.
+
 Database fields named `squash_sha` and `generated_squash_sha` retain their names
 for compatibility; new clean deliveries store the merge commit SHA there.
 Conflict-repair evidence and ownership fences continue to control publication.
+
+For a child conflict, the resolution may retain the exact reviewed child tip
+as the second parent of one merge commit. Its first-parent chain must start at
+the expected parent head; any following repair commits stay on that chain.
+Unrelated side branches, additional merge parents, and reversed parent order
+are rejected. The complete resolution tree and commit range remain bound to
+the persisted repair evidence before publication.

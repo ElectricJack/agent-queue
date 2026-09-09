@@ -296,6 +296,13 @@ outright; the rest are ordered by idle surplus relative to their own demand
 session in the chosen project goes. That is what stops a quiet project's one
 warm worker from being reaped first simply for being idle and old.
 
+When global supply already matches demand but idle workers are in another
+project, the pool waits the scale-down grace period and drains only idle
+surplus above that project's warm floor. A destination must have unserved
+ready work, workspace capacity and room under its project cap. The next
+normal sizing pass replaces the retired capacity; rebalancing never grants
+extra starts or raises the configured limits.
+
 **Nowhere to put it.** When the sizer authorises a start and no project is
 eligible, the start is not silently dropped: it comes back as a starvation,
 logged once per condition (not per tick), persisted as
