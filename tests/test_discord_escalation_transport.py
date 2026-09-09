@@ -95,3 +95,60 @@ async def test_a_non_numeric_channel_is_an_actionable_configuration_fault():
     transport, _ = make_transport()
     with pytest.raises(TransportUnavailable, match="not an ID"):
         await transport.post_root(channel_id="agent-queue", content="x")
+
+
+class FakeMessage:
+    """A root post that may or may not already own a thread."""
+
+    def __init__(self, thread=None) -> None:
+        self.thread = thread
+        self.created: list[str] = []
+
+    async def create_thread(self, *, name: str):
+        self.created.append(name)
+        return SimpleNamespace(id=999, send=None)
+
+
+class FakeChannel:
+    def __init__(self, message: FakeMessage) -> None:
+        self.message = message
+        self.sent: list[str] = []
+
+    async def fetch_message(self, _id: int) -> FakeMessage:
+        return self.message
+
+    async def send(self, content, **_kwargs):  # pragma: no cover - guard only
+        self.sent.append(content)
+        raise AssertionError("ensure_thread must not send anything")
+
+
+def bind(transport, channel: FakeChannel) -> None:
+    transport._bot.get_channel = lambda _id: channel
+
+
+async def test_ensure_thread_creates_the_thread_and_sends_nothing():
+    transport, _ = make_transport()
+    channel = FakeChannel(FakeMessage())
+    bind(transport, channel)
+
+    handle = await transport.ensure_thread(
+        channel_id="424242424242424242", root_message_id="7", name="incident"
+    )
+
+    assert (handle.thread_id, handle.created) == ("999", True)
+    assert channel.message.created == ["incident"]
+    assert channel.sent == []
+
+
+async def test_ensure_thread_rebinds_an_existing_thread_instead_of_making_a_second():
+    transport, _ = make_transport()
+    channel = FakeChannel(FakeMessage(thread=SimpleNamespace(id=555)))
+    bind(transport, channel)
+
+    handle = await transport.ensure_thread(
+        channel_id="424242424242424242", root_message_id="7", name="incident"
+    )
+
+    assert (handle.thread_id, handle.created) == ("555", False)
+    assert channel.message.created == []
+    assert channel.sent == []

@@ -19,6 +19,7 @@ from typing import Any
 import discord
 from src.escalations.transport import (
     SendOutcome,
+    ThreadHandle,
     TransportAmbiguous,
     TransportMissing,
     TransportRetryable,
@@ -139,9 +140,16 @@ class DiscordEscalationTransport:
             receipt_id=str(message.id), channel_id=channel_id, root_message_id=str(message.id)
         )
 
-    async def open_thread(
-        self, *, channel_id: str, root_message_id: str, name: str, content: str
-    ) -> SendOutcome:
+    async def ensure_thread(
+        self, *, channel_id: str, root_message_id: str, name: str
+    ) -> ThreadHandle:
+        """Bind the incident's thread without sending anything into it.
+
+        A Discord message carries at most one thread, so re-finding it is the
+        idempotent half of opening a thread; the opener message is the half
+        that must never be replayed blindly, and the dispatcher sends that one
+        separately through :meth:`post_thread_message`.
+        """
         self._guard()
         channel = await self._channel(channel_id)
         try:
@@ -156,24 +164,17 @@ class DiscordEscalationTransport:
 
         existing = getattr(message, "thread", None)
         if existing is not None:
-            thread = existing
-        else:
-            try:
-                thread = await message.create_thread(name=name)
-            except discord.Forbidden as exc:
-                self._record(403)
-                raise TransportUnavailable(f"cannot create threads here: {exc}") from exc
-            except (TimeoutError, discord.DiscordServerError) as exc:
-                raise TransportAmbiguous(f"thread creation outcome unknown: {exc}") from exc
-            except discord.HTTPException as exc:
-                raise self._http_error(exc) from exc
-        opener = await self.post_thread_message(thread_id=str(thread.id), content=content)
-        return SendOutcome(
-            receipt_id=opener.receipt_id,
-            channel_id=channel_id,
-            root_message_id=root_message_id,
-            thread_id=str(thread.id),
-        )
+            return ThreadHandle(thread_id=str(existing.id), created=False)
+        try:
+            thread = await message.create_thread(name=name)
+        except discord.Forbidden as exc:
+            self._record(403)
+            raise TransportUnavailable(f"cannot create threads here: {exc}") from exc
+        except (TimeoutError, discord.DiscordServerError) as exc:
+            raise TransportAmbiguous(f"thread creation outcome unknown: {exc}") from exc
+        except discord.HTTPException as exc:
+            raise self._http_error(exc) from exc
+        return ThreadHandle(thread_id=str(thread.id), created=True)
 
     async def post_thread_message(self, *, thread_id: str, content: str) -> SendOutcome:
         self._guard()

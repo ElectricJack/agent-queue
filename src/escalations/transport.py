@@ -54,14 +54,30 @@ class SendOutcome:
     thread_id: str | None = None
 
 
+@dataclass(frozen=True)
+class ThreadHandle:
+    """The incident's one thread, and whether *this* call is what made it.
+
+    Thread creation and the opener message are two separate external writes,
+    and §7 forbids replaying the second one blindly.  ``created`` is what lets
+    the dispatcher tell "brand new and provably empty" (post the opener) from
+    "already there" (reconcile the opener's marker first).
+    """
+
+    thread_id: str
+    created: bool
+
+
 class EscalationTransport(Protocol):
     """Everything §7 needs from a chat platform, and nothing else."""
 
     async def post_root(self, *, channel_id: str, content: str) -> SendOutcome: ...
 
-    async def open_thread(
-        self, *, channel_id: str, root_message_id: str, name: str, content: str
-    ) -> SendOutcome: ...
+    async def ensure_thread(
+        self, *, channel_id: str, root_message_id: str, name: str
+    ) -> ThreadHandle:
+        """Create — or re-find — the incident's thread.  Sends no message."""
+        ...
 
     async def post_thread_message(self, *, thread_id: str, content: str) -> SendOutcome: ...
 
@@ -127,22 +143,19 @@ class SinkTransport:
         message = self.record(channel_id, content)
         return SendOutcome(receipt_id=message.id, channel_id=channel_id, root_message_id=message.id)
 
-    async def open_thread(
-        self, *, channel_id: str, root_message_id: str, name: str, content: str
-    ) -> SendOutcome:
-        self.calls.append("open_thread")
-        self._maybe_fail("open_thread")
+    async def ensure_thread(
+        self, *, channel_id: str, root_message_id: str, name: str
+    ) -> ThreadHandle:
+        self.calls.append("ensure_thread")
+        self._maybe_fail("ensure_thread")
         if root_message_id not in self.messages:
             raise TransportMissing(f"root {root_message_id} is gone")
+        for thread_id, root in self.threads.items():
+            if root == root_message_id:
+                return ThreadHandle(thread_id=thread_id, created=False)
         thread_id = self._next_id("thread")
         self.threads[thread_id] = root_message_id
-        message = self.record(thread_id, content, thread_id=thread_id)
-        return SendOutcome(
-            receipt_id=message.id,
-            channel_id=channel_id,
-            root_message_id=root_message_id,
-            thread_id=thread_id,
-        )
+        return ThreadHandle(thread_id=thread_id, created=True)
 
     async def post_thread_message(self, *, thread_id: str, content: str) -> SendOutcome:
         self.calls.append("post_thread_message")
