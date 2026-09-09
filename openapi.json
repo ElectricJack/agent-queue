@@ -30828,7 +30828,8 @@
           },
           "deleted": {
             "type": "boolean",
-            "title": "Deleted"
+            "title": "Deleted",
+            "default": false
           },
           "playbook_id": {
             "anyOf": [
@@ -30864,12 +30865,10 @@
             "title": "Scope Identifier"
           }
         },
+        "additionalProperties": false,
         "type": "object",
-        "required": [
-          "deleted"
-        ],
         "title": "PlaybookDeleteResponse",
-        "description": "``playbook_delete``: ``deleted`` is False when no exact entry existed."
+        "description": "Result of deleting one exact installed catalog entry.\n\n``deleted=False`` alongside ``success=True`` is the idempotent answer: the\nentry the caller named was already gone.  Every refusal (an enabled\nactivation, a stale hash, unfinished work, a policy reference) is a command\nerror rather than a ``deleted=False`` body, so a client can treat this\nresponse as \"the named entry is not installed any more\"."
       },
       "PlaybookGraphEdge": {
         "properties": {
