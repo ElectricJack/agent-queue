@@ -55,6 +55,204 @@ class _DeliveryResolution:
 class GitOpsMixin:
     """Git operations methods mixed into Orchestrator."""
 
+    @staticmethod
+    def _aggregate_verifier_retry(ctx: PipelineContext, message: str) -> PhaseResult:
+        """Refuse a branchless aggregate-verifier close in its live session.
+
+        A verifier does not produce a PR or a new delivery branch.  Its
+        recovery action is therefore to retain the fenced checkout and let
+        the verifier correct/re-observe the aggregate, rather than feeding it
+        to the ordinary PR-to-default remediation loop.
+        """
+        ctx.verification_retry_in_session = True
+        ctx.verification_issues = [message]
+        ctx.verification_feedback = message
+        return PhaseResult.STOP
+
+    async def _phase_verify_aggregate_verifier(
+        self, ctx: PipelineContext, operation: dict,
+    ) -> PhaseResult:
+        """Verify and complete a branchless parent aggregate exactly once.
+
+        ``integration_repair_operations.verifier_task_id`` identifies the
+        separate verifier task which temporarily owns the *parent* branch.
+        That task is deliberately not an ordinary source-branch producer:
+        requiring a PR for it would create a spurious parent-to-main merge.
+        Prove its real checkout instead, retain the normal reserved-path
+        guard, and let :class:`ParentCompletion` re-check the generation,
+        trusted check evidence, receipt chain, and owner fence atomically.
+        """
+        from src.git.manager import is_valid_git_oid
+        from src.integration.hierarchy import resolve_workspace_checkpoint
+        from src.integration.models import BranchKey
+        from src.integration.ownership import BranchOwnership
+        from src.integration.parent_completion import ParentCompletion
+
+        task = ctx.task
+        workspace = ctx.workspace_path
+        parent_id = operation.get("parent_task_id")
+        if (
+            not workspace
+            or operation.get("verifier_task_id") != task.id
+            or not isinstance(parent_id, str)
+            or operation.get("state") not in {"active", "escalated"}
+        ):
+            return self._aggregate_verifier_retry(
+                ctx, "Aggregate verifier ownership is no longer current."
+            )
+
+        parent = await self.db.get_task(parent_id)
+        checkpoint = await self.db.get_integration_checkpoint(parent_id)
+        repo = await self.db.get_repo(task.repo_id or "")
+        if (
+            parent is None
+            or checkpoint is None
+            or repo is None
+            or parent.repo_id != task.repo_id
+            or parent.branch_name != task.branch_name
+            or checkpoint.get("episode_id") != operation.get("episode_id")
+            or checkpoint.get("repository_id") != task.repo_id
+            or checkpoint.get("branch") != task.branch_name
+        ):
+            return self._aggregate_verifier_retry(
+                ctx, "Aggregate verifier is not bound to the current parent checkpoint."
+            )
+
+        if not await self.git.avalidate_checkout(workspace):
+            return self._aggregate_verifier_retry(
+                ctx, "Aggregate verifier checkout could not be validated."
+            )
+        has_remote = await self.git.ahas_remote(workspace, strict=True)
+        if has_remote is not True:
+            return self._aggregate_verifier_retry(
+                ctx, "Aggregate verifier requires a readable remote for exact head proof."
+            )
+
+        owner = await BranchOwnership(self.db).get_owner(
+            BranchKey(repository_id=task.repo_id or "", branch=task.branch_name or "")
+        )
+        if (
+            owner is None
+            or owner["owner_id"] != task.id
+            or owner["owner_role"] != "verifier"
+            or owner["handoff_state"] not in {"reserved", "attached"}
+        ):
+            return self._aggregate_verifier_retry(
+                ctx, "Aggregate verifier no longer owns the parent branch fence."
+            )
+
+        try:
+            head = await resolve_workspace_checkpoint(
+                self.db,
+                self.git,
+                {"id": task.id, "repo_id": task.repo_id, "branch_name": task.branch_name},
+                repo,
+            )
+        except Exception as exc:
+            return self._aggregate_verifier_retry(
+                ctx, f"Aggregate verifier requires a clean, exactly pushed checkout: {exc}"
+            )
+        if not is_valid_git_oid(head) or head != checkpoint.get("checkpoint_sha"):
+            return self._aggregate_verifier_retry(
+                ctx, "Aggregate verifier head no longer matches the current parent checkpoint."
+            )
+
+        delivery_failure = await self._reserved_delivery_failure(
+            workspace,
+            ctx.default_branch or "main",
+            f"refs/heads/{task.branch_name}",
+            has_remote=True,
+        )
+        if delivery_failure:
+            return self._aggregate_verifier_retry(ctx, delivery_failure[0])
+
+        completion = await ParentCompletion(self.db).complete_parent(
+            parent_id, int(checkpoint["generation"]), head
+        )
+        if completion["outcome"] != "completed":
+            return self._aggregate_verifier_retry(
+                ctx,
+                "Parent integration completion was refused: "
+                f"{completion['outcome']}.",
+            )
+        logger.info(
+            "Task %s: verified and completed parent aggregate %s generation %s at %s",
+            task.id,
+            parent_id,
+            checkpoint["generation"],
+            head,
+        )
+        return PhaseResult.CONTINUE
+
+    async def _phase_verify_hierarchy_producer(
+        self, ctx: PipelineContext, checkpoint: dict,
+    ) -> PhaseResult:
+        """Prove a managed hierarchy producer's owned delivery branch.
+
+        Hierarchy producers publish an intermediate branch for collection,
+        not a PR-to-default.  Keep the proof as strict as ordinary delivery
+        (checkout, remote tip, ownership, cleanliness, and reserved paths)
+        while deliberately omitting ordinary PR and merge remediation.
+        """
+        from src.integration.hierarchy import resolve_workspace_checkpoint
+        from src.integration.models import BranchKey
+        from src.integration.ownership import BranchOwnership
+
+        task = ctx.task
+        workspace = ctx.workspace_path
+        repo = await self.db.get_repo(task.repo_id or "")
+        if (
+            not workspace
+            or repo is None
+            or checkpoint.get("repository_id") != task.repo_id
+            or checkpoint.get("branch") != task.branch_name
+        ):
+            return self._aggregate_verifier_retry(
+                ctx, "Managed hierarchy producer is not bound to its current checkpoint."
+            )
+        if not await self.git.avalidate_checkout(workspace):
+            return self._aggregate_verifier_retry(
+                ctx, "Managed hierarchy producer checkout could not be validated."
+            )
+        has_remote = await self.git.ahas_remote(workspace, strict=True)
+        if has_remote is not True:
+            return self._aggregate_verifier_retry(
+                ctx, "Managed hierarchy producer requires a readable remote for exact head proof."
+            )
+        owner = await BranchOwnership(self.db).get_owner(
+            BranchKey(repository_id=task.repo_id or "", branch=task.branch_name or "")
+        )
+        if (
+            owner is None
+            or owner["owner_id"] != task.id
+            or owner["owner_role"] not in {"worker", "verifier"}
+            or owner["handoff_state"] not in {"reserved", "attached"}
+        ):
+            return self._aggregate_verifier_retry(
+                ctx, "Managed hierarchy producer no longer owns its delivery branch fence."
+            )
+        try:
+            await resolve_workspace_checkpoint(
+                self.db,
+                self.git,
+                {"id": task.id, "repo_id": task.repo_id, "branch_name": task.branch_name},
+                repo,
+            )
+        except Exception as exc:
+            return self._aggregate_verifier_retry(
+                ctx, f"Managed hierarchy producer requires a clean, exactly pushed checkout: {exc}"
+            )
+        delivery_failure = await self._reserved_delivery_failure(
+            workspace,
+            ctx.default_branch or "main",
+            f"refs/heads/{task.branch_name}",
+            has_remote=True,
+        )
+        if delivery_failure:
+            return self._aggregate_verifier_retry(ctx, delivery_failure[0])
+        ctx.delivery_branch = task.branch_name
+        return PhaseResult.CONTINUE
+
     async def _is_last_subtask(self, task: Task) -> bool:
         """Check if this subtask is the final one to complete in a plan chain.
 
