@@ -393,3 +393,36 @@ unloaded until the legacy uncertainty and live recovery sequence are covered.
 Sound-apex51f01a84 remains committed and tested, awaiting the next combined
 rollout. Neither local progress nor task completion is counted as reviewed
 main delivery.
+
+## Terminal close recovery review and root scheduling (09:19 UTC)
+
+Calm-dune published 90e2b812 on PR546. Applied as 19cbeaad to the operator
+checkout; combined completion recovery and workspace handoff suites passed
+156 tests in 96.62s. Ruff passed on all five changed Python files. Evidence:
+/tmp/aq-terminal-recovery-combined-tests.log. Required isolated swarm smoke
+is still running; this patch has not yet been loaded.
+
+The exact keen-harbor.8 session still has a live Claude process at its completed
+turn prompt. Terminal recovery correctly requires authoritative process
+termination before detaching its clean published branch. A subsequent fenced
+operator stop and public integration flush will be required after rollout;
+no active work has been killed to free capacity.
+
+Root repair priority changed from 100 to 1 through aq task edit, so the next
+available deep-high worker can service its rearmed deadline at
+1788946538.1471775. Pool caps and active workers were not changed.
+
+Swift-journey completed its submitted task branch at
+475143b0feb4f0d8a38443ec8c17d770a59f51d9, PR544: a two-parent merge preserving
+remote main 6d2b07db and operator source 7391eeac. Worker reports 514 focused
+checks passed. Remote main is still 6d2b07db; this is a submitted delivery,
+not proof of candidate review, CI, or main promotion. Keen-harbor.16 is now
+actively integrating the separate CLI response-loss commit.
+
+Sharp-beacon 2efa6998 conservatively backfills legacy reserved pushes with an
+unknown-start sentinel. Its documented reconciliation only covers a remote
+already at the reserved head, so it does not recover the actual unpublished
+keen-harbor resolution (remote 3eada329, reserved local 5f41738e). Reopened with
+explicit feedback requiring that guarded public recovery and tests. The worker
+also squashed previously reviewed commits; feedback requires preserving those
+reviewed heads by merge and additive fixes. This migration remains unapplied.
