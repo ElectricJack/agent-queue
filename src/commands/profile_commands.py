@@ -74,6 +74,70 @@ def _mcp_server_names(value: Any) -> list[str]:
     return [str(name) for name in value]
 
 
+def _flat_tool_list(profile: Any) -> list[str]:
+    """The flat tool list the profile editors speak, whatever the profile shape.
+
+    A modern profile authors ``## Capabilities`` and leaves the legacy
+    ``allowed_tools`` column empty (``src/profiles/parser.py`` — a present
+    block wins outright).  Reporting that column alone showed the dashboard an
+    empty tool picker for every migrated profile, so a save looked like it had
+    been discarded.  Flatten the authored namespaces instead;
+    :func:`_split_capability_namespaces` puts an edited list back where it
+    belongs.
+    """
+    from src.profiles.capabilities import NAMESPACES
+
+    authored = [getattr(profile, ns, None) for ns in NAMESPACES]
+    if all(value is None for value in authored):
+        return list(getattr(profile, "allowed_tools", None) or [])
+    names = set(getattr(profile, "allowed_tools", None) or [])
+    for value in authored:
+        names.update(value or [])
+    return sorted(names)
+
+
+def _split_capability_namespaces(
+    names: Any, plugin_command_names: frozenset[str]
+) -> dict[str, list[str]]:
+    """Route a flat tool list back into the three capability namespaces.
+
+    Editors send one list because that is what a tool picker is.  Writing it
+    verbatim into ``harness_tools`` — as this module used to — put ``aq``
+    command names in the namespace the launcher checks against
+    ``HARNESS_TOOL_NAMES``, where they are all dropped, while leaving
+    ``aq_commands`` (the namespace that actually gates daemon access)
+    untouched.  Classification is by name and matches the dispatch gate in
+    ``src/commands/authorization.py``.
+    """
+    from src.profiles.capabilities import NAMESPACES, classify_capability
+
+    buckets: dict[str, list[str]] = {ns: [] for ns in NAMESPACES}
+    seen: set[str] = set()
+    for name in names or []:
+        if not isinstance(name, str) or not name.strip() or name in seen:
+            continue
+        seen.add(name)
+        namespace = classify_capability(name, plugin_command_names=plugin_command_names)
+        buckets[namespace].append(name)
+    return {ns: sorted(values) for ns, values in buckets.items()}
+
+
+def _unreachable_capabilities_error(split: dict[str, list[str]]) -> str | None:
+    """Reject a selection the parser would refuse *before* writing the vault.
+
+    ``aq`` commands reach a session through the ``aq`` CLI, i.e. through
+    ``Bash``: harness tools empty alongside non-empty ``aq_commands`` is a hard
+    parse error (``src/profiles/parser.py``).  Caught here it is a message in
+    the editor; caught at sync it is a vault file that no longer parses.
+    """
+    if split["aq_commands"] and not split["harness_tools"]:
+        return (
+            "No harness tools selected: the aq commands would be unreachable "
+            "because a session needs Bash to run the aq CLI. Select at least Bash."
+        )
+    return None
+
+
 def _replace_json_section(markdown: str, heading: str, data: dict | list) -> str:
     """Replace one structured section's JSON while preserving its prose.
 
@@ -146,7 +210,13 @@ def _replace_prompt_section(markdown: str, heading: str, content: str) -> str:
     return markdown.rstrip() + f"\n\n## {heading}\n" + body
 
 
-def _patch_modern_profile(markdown: str, parsed: Any, updates: dict, merged: dict) -> str:
+def _patch_modern_profile(
+    markdown: str,
+    parsed: Any,
+    updates: dict,
+    merged: dict,
+    capability_split: dict[str, list[str]] | None = None,
+) -> str:
     """Apply every supported edit to a modern profile without legacy rendering."""
     patched = _patch_frontmatter_fields(
         markdown, {key: merged[key] for key in ("name", "description") if key in updates}
@@ -175,7 +245,9 @@ def _patch_modern_profile(markdown: str, parsed: Any, updates: dict, merged: dic
 
     if "allowed_tools" in updates:
         capabilities = dict(parsed.capabilities or {})
-        capabilities["harness_tools"] = list(merged["allowed_tools"])
+        capabilities.update(capability_split or _split_capability_namespaces(
+            merged["allowed_tools"], frozenset()
+        ))
         patched = _replace_json_section(patched, "Capabilities", capabilities)
     if "mcp_servers" in updates:
         patched = _replace_json_section(patched, "MCP Servers", merged["mcp_servers"])
@@ -247,7 +319,7 @@ class ProfileCommandsMixin:
                         p.claude_dangerously_skip_permissions
                     ),
                     "default_class": p.default_class or "",
-                    "allowed_tools": p.allowed_tools,
+                    "allowed_tools": _flat_tool_list(p),
                     "mcp_servers": list(p.mcp_servers) if p.mcp_servers else [],
                     "has_system_prompt": bool(p.system_prompt_suffix),
                     # Lifecycle and its sizing bounds decide whether a profile
@@ -366,7 +438,7 @@ class ProfileCommandsMixin:
             "claude_dangerously_skip_permissions": (
                 profile.claude_dangerously_skip_permissions
             ),
-            "allowed_tools": profile.allowed_tools,
+            "allowed_tools": _flat_tool_list(profile),
             "mcp_servers": profile.mcp_servers,
             "system_prompt_suffix": profile.system_prompt_suffix or "(none)",
             "install": profile.install,
@@ -458,6 +530,18 @@ class ProfileCommandsMixin:
             return {"error": validation_error}
         merged = _canonical_permission_values(merged, updates)
 
+        # An edited tool list is one flat picker selection; split it by name
+        # so each entry lands in the namespace that actually gates it, and
+        # refuse a selection the parser would reject before touching the vault.
+        capability_split: dict[str, list[str]] | None = None
+        if "allowed_tools" in updates:
+            capability_split = _split_capability_namespaces(
+                merged.get("allowed_tools") or [], self._plugin_command_names()
+            )
+            unreachable = _unreachable_capabilities_error(capability_split)
+            if unreachable:
+                return {"error": unreachable}
+
         # Ensure vault dirs exist (handles DB-only → vault migration).
         ensure_vault_profile_dirs(self.config.data_dir, profile_id)
 
@@ -466,7 +550,9 @@ class ProfileCommandsMixin:
             # model: it cannot represent modern Config keys, Capabilities, or
             # arbitrary authored sections. Patch each requested field in its
             # native location instead.
-            markdown = _patch_modern_profile(text, parsed, updates, merged)
+            markdown = _patch_modern_profile(
+                text, parsed, updates, merged, capability_split
+            )
         else:
             # Legacy and DB-only profiles remain on the established renderer.
             markdown = agent_profile_to_markdown(

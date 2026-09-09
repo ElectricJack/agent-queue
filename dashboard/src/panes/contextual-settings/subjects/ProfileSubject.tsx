@@ -131,7 +131,7 @@ export default function ProfileSubject({ args, setToolbar }: PaneViewProps<Args>
       </Section>
 
       <Section title="Allowed tools" hint="Tools the agent may invoke. Groups appear for the servers selected above.">
-        <ToolPicker value={form.allowed_tools} onChange={(t) => set("allowed_tools", t)} enabledServers={form.mcp_servers} model="" />
+        <ToolPicker value={form.allowed_tools} onChange={(t) => set("allowed_tools", t)} enabledServers={form.mcp_servers} />
       </Section>
 
       {edit.isError && (
