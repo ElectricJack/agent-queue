@@ -9,7 +9,12 @@ import sys
 import pytest
 from sqlalchemy import text
 
-from src.database.engine import _schema_cache_inputs, create_postgres_engine, run_schema_setup, run_startup_data_migrations
+from src.database.engine import (
+    _schema_cache_inputs,
+    create_postgres_engine,
+    run_schema_setup,
+    run_startup_data_migrations,
+)
 from tests.pg_dsn import create_scratch_database
 
 

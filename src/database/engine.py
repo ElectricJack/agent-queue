@@ -9,17 +9,21 @@ import logging
 import os
 
 from sqlalchemy import inspect, select, text
-from src.database.tables import projects, repos
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 
 from src.database.migration_guard import VERIFY, migration_decision
 from src.database.schema_key import (
     ALEMBIC_INI as _ALEMBIC_INI_SHARED,
+)
+from src.database.schema_key import (
     PROJECT_ROOT as _PROJECT_ROOT_SHARED,
+)
+from src.database.schema_key import (
     alembic_head_revisions,
     schema_inputs,
     schema_key,
 )
+from src.database.tables import projects, repos
 
 logger = logging.getLogger(__name__)
 
@@ -95,9 +99,9 @@ def _preflight_check_alembic_version(sync_connection) -> None:
     NOTE: never auto-repair — clobbering the row loses history and
     can silently skip data migrations. A clearer error is the fix.
     """
+    from alembic.config import Config
     from alembic.migration import MigrationContext
     from alembic.script import ScriptDirectory
-    from alembic.config import Config
 
     alembic_cfg = Config(str(_ALEMBIC_INI))
     alembic_cfg.attributes["connection"] = sync_connection
