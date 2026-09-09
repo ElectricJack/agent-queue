@@ -219,6 +219,41 @@ async def test_runtime_cycle_materializes_origins_and_starts_untouched_container
     assert origin["materialized"] is True
 
 
+async def test_branch_materialization_drain_is_not_reentrant():
+    """The daemon cycle and IntegrationService.tick share one drain.
+
+    Both drive ``drain_due`` (step 3a of ``run_one_cycle`` and the
+    reconciliation loop).  A pass that is already pushing must not be joined by
+    a second one walking the same page of reservations; the later caller skips
+    and lets the next tick retry.
+    """
+    from src.integration.branch_materialization import BranchMaterializationService
+
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    calls = 0
+
+    service = BranchMaterializationService(
+        MagicMock(), hierarchy_service_factory=lambda: None
+    )
+
+    async def pending_origins(*, limit=10):
+        nonlocal calls
+        calls += 1
+        entered.set()
+        await release.wait()
+        return []
+
+    service.pending_origins = pending_origins
+
+    first = asyncio.create_task(service.drain_due(now=1.0))
+    await entered.wait()
+    assert await service.drain_due(now=1.0) == []
+    release.set()
+    assert await first == []
+    assert calls == 1
+
+
 @pytest.mark.parametrize("use_app", [False, True])
 async def test_configured_orchestrator_installs_repository_bound_candidate_transport(
     tmp_path, monkeypatch, use_app

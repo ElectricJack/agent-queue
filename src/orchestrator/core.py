@@ -2539,7 +2539,19 @@ class Orchestrator(
             #    unblock dependents within the same cycle.
             await self._check_defined_tasks()
 
-            # 3a. Tell the playbook layer about work that still lacks a class
+            # 3a. Cut reserved hierarchy branches and start a released,
+            # untouched container's collection episode.  This must precede
+            # scheduling so a newly materialized child can be prepared on a
+            # following assignment without waiting a full IntegrationService
+            # interval.  ``BranchMaterializationService.drain_due`` is
+            # non-reentrant, so sharing the drain with that loop costs at most
+            # a skipped pass, never a duplicate materialization.
+            try:
+                await self._drain_branch_materializations(time.time())
+            except Exception:
+                logger.error("Branch materialization reconciliation failed", exc_info=True)
+
+            # 3b. Tell the playbook layer about work that still lacks a class
             # or a profile.  The orchestrator decides nothing here; the
             # ``default-assignment-routing`` playbook answers the event.
             try:
@@ -2547,7 +2559,7 @@ class Orchestrator(
             except Exception:
                 logger.error("route_needed emission error", exc_info=True)
 
-            # 3b. Backstop sweep for container settlement (spec §7). Settlement
+            # 3c. Backstop sweep for container settlement (spec §7). Settlement
             #     itself is event-driven inside transition_task; this only
             #     catches containers the event path somehow missed.
             await self._sweep_container_completion()
