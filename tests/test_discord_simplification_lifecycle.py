@@ -28,7 +28,12 @@ from src.database.tables import task_session_attempts, tasks
 from src.digest import DigestScheduleService, schedule_for
 from src.discord.escalation_intake import DiscordEscalationIntake
 from src.discord.slash_commands import RETIRED_SLASH_COMMANDS, unregister_retired_commands
-from src.escalations import EscalationDeliveryService, SinkTransport
+from src.escalations import (
+    EscalationDeliveryService,
+    SinkTransport,
+    TransportAmbiguous,
+    TransportRetryable,
+)
 from src.event_bus import EventBus
 from src.messaging.factory import create_messaging_adapter
 from src.messaging.null_adapter import NullMessagingAdapter
@@ -407,6 +412,305 @@ async def test_failed_recovery_stays_open_and_reports_in_the_original_thread(env
     thread_messages = [row.content for row in sink.messages.values() if row.thread_id == thread_id]
     assert any("recovery action failed" in body.lower() for body in thread_messages)
     assert not any("resolved" in body.lower() for body in thread_messages)
+
+
+async def test_partial_root_and_thread_creation_reconcile_without_blind_reposts(env):
+    """Each confirmed half survives retry, ambiguity, and daemon replacement."""
+    supervisor_id, token = await add_supervisor(env, "partial")
+    task_id, recovery = await add_blocked_attempt(env, "partial")
+    escalation = await create_recovery_escalation(
+        env,
+        task_id,
+        recovery,
+        supervisor_scope(supervisor_id, token),
+    )
+    clock = Clock(BASE + 1000)
+    sink = SinkTransport()
+    sink.faults.append(("ensure_thread", TransportRetryable("gateway unavailable")))
+
+    first = EscalationDeliveryService(
+        env.db,
+        sink,
+        config=env.config,
+        lease_owner="partial-root-daemon",
+        base_url=BASE_URL,
+        clock=clock,
+    )
+    assert (await first.tick()).retried == 1
+    root = next(
+        row
+        for row in await env.db.list_escalation_deliveries(escalation["id"])
+        if row["kind"] == "root"
+    )
+    assert root["status"] == "retry"
+    assert root["root_message_id"] and root["thread_id"] is None
+
+    # The replacement daemon creates only the missing thread.  Its opener
+    # lands, but the fake gateway loses the response after accepting it.
+    original_post_thread = sink.post_thread_message
+
+    async def ambiguous_opener(*, thread_id: str, content: str):
+        sink.calls.append("post_thread_message")
+        sink.record(thread_id, content, thread_id=thread_id)
+        raise TransportAmbiguous("response lost after the opener landed")
+
+    sink.post_thread_message = ambiguous_opener  # type: ignore[method-assign]
+    clock.advance(120)
+    second = EscalationDeliveryService(
+        env.db,
+        sink,
+        config=env.config,
+        lease_owner="partial-thread-daemon",
+        base_url=BASE_URL,
+        clock=clock,
+    )
+    assert (await second.tick()).retried == 1
+    partial = next(
+        row
+        for row in await env.db.list_escalation_deliveries(escalation["id"])
+        if row["kind"] == "root"
+    )
+    assert partial["status"] == "retry"
+    assert partial["root_message_id"] == root["root_message_id"]
+    assert partial["thread_id"]
+
+    # A third process finds the opener's durable marker in the bound thread;
+    # it never posts a second root, creates a second thread, or repeats text.
+    sink.post_thread_message = original_post_thread  # type: ignore[method-assign]
+    clock.advance(120)
+    third = EscalationDeliveryService(
+        env.db,
+        sink,
+        config=env.config,
+        lease_owner="partial-reconcile-daemon",
+        base_url=BASE_URL,
+        clock=clock,
+    )
+    assert (await third.tick()).sent == 1
+    final = next(
+        row
+        for row in await env.db.list_escalation_deliveries(escalation["id"])
+        if row["kind"] == "root"
+    )
+    assert final["status"] == "sent"
+    assert sink.calls.count("post_root") == 1
+    assert sink.calls.count("ensure_thread") == 2
+    assert sink.calls.count("post_thread_message") == 1
+    assert len(sink.threads) == 1
+    assert len([message for message in sink.messages.values() if message.thread_id]) == 1
+
+
+async def test_transport_outage_and_rate_guard_leave_scheduling_and_event_bus_live(env):
+    """External failure is bounded and observable without blocking core work."""
+    supervisor_id, token = await add_supervisor(env, "outage")
+    task_id, recovery = await add_blocked_attempt(env, "outage")
+    escalation = await create_recovery_escalation(
+        env,
+        task_id,
+        recovery,
+        supervisor_scope(supervisor_id, token),
+    )
+    await env.db.create_task(
+        Task(
+            id="scheduler-still-runs",
+            project_id="p",
+            title="Scheduler still runs",
+            description="",
+            profile_id="worker",
+        )
+    )
+
+    delivery_events: list[dict] = []
+    ready_events: list[dict] = []
+    env.orch.bus.subscribe(
+        "escalation.delivery_status.v1", lambda payload: delivery_events.append(payload)
+    )
+    env.orch.bus.subscribe("task.ready", lambda payload: ready_events.append(payload))
+    env.orch.register_settlement_listener()
+
+    clock = Clock(BASE + 1000)
+    sink = SinkTransport()
+    sink.faults.extend(
+        [
+            ("post_root", TransportRetryable("Discord gateway unavailable")),
+            ("post_root", TransportRetryable("Discord gateway unavailable")),
+        ]
+    )
+    outage = EscalationDeliveryService(
+        env.db,
+        sink,
+        config=env.config,
+        lease_owner="outage-daemon",
+        base_url=BASE_URL,
+        clock=clock,
+        on_status=env.handler.emit_escalation_delivery_status,
+        max_attempts=2,
+    )
+
+    assert (await outage.tick()).retried == 1
+    retry = next(
+        row
+        for row in await env.db.list_escalation_deliveries(escalation["id"])
+        if row["kind"] == "root"
+    )
+    assert retry["status"] == "retry" and retry["attempt_count"] == 1
+    assert retry["next_attempt_at"] == clock.now + 15
+    assert "gateway unavailable" in retry["last_error"]
+
+    # The same real database and EventBus can still promote independent work
+    # while Discord is unavailable; the retry status itself is visible there.
+    await env.orch._check_defined_tasks()
+    assert (await env.db.get_task("scheduler-still-runs")).status is TaskStatus.READY
+    assert [event["task_id"] for event in ready_events] == ["scheduler-still-runs"]
+    assert [event["status"] for event in delivery_events] == ["retry"]
+
+    clock.advance(15)
+    assert (await outage.tick()).unknown == 1
+    abandoned = next(
+        row
+        for row in await env.db.list_escalation_deliveries(escalation["id"])
+        if row["kind"] == "root"
+    )
+    assert abandoned["status"] == "unknown" and abandoned["attempt_count"] == 2
+    assert [event["status"] for event in delivery_events] == ["retry", "unknown"]
+
+    # The invalid-request guard spends no transport call and schedules one
+    # bounded backoff.  A tick before that deadline cannot busy-loop it.
+    rate_task, rate_recovery = await add_blocked_attempt(env, "rate-limit")
+    rate_escalation = await create_recovery_escalation(
+        env,
+        rate_task,
+        rate_recovery,
+        supervisor_scope(supervisor_id, token),
+    )
+    allowed = {"value": False}
+    guarded = EscalationDeliveryService(
+        env.db,
+        sink,
+        config=env.config,
+        lease_owner="rate-guard-daemon",
+        base_url=BASE_URL,
+        clock=clock,
+        rate_guard=lambda: allowed["value"],
+        on_status=env.handler.emit_escalation_delivery_status,
+    )
+    calls_before_guard = len(sink.calls)
+    assert (await guarded.tick()).retried == 1
+    held = next(
+        row
+        for row in await env.db.list_escalation_deliveries(rate_escalation["id"])
+        if row["kind"] == "root"
+    )
+    assert held["status"] == "retry" and held["next_attempt_at"] == clock.now + 15
+    assert "rate guard" in held["last_error"]
+    assert len(sink.calls) == calls_before_guard
+    assert (await guarded.tick()).retried == 0
+    assert (
+        next(
+            row
+            for row in await env.db.list_escalation_deliveries(rate_escalation["id"])
+            if row["kind"] == "root"
+        )["attempt_count"]
+        == 1
+    )
+
+    allowed["value"] = True
+    clock.advance(15)
+    assert (await guarded.tick()).sent == 1
+    delivered = next(
+        row
+        for row in await env.db.list_escalation_deliveries(rate_escalation["id"])
+        if row["kind"] == "root"
+    )
+    assert delivered["status"] == "sent" and delivered["attempt_count"] == 2
+
+
+async def test_authorized_late_reply_cannot_reopen_a_resolved_archived_task(env):
+    """A durable thread tombstone records history but creates no new work."""
+    supervisor_id, token = await add_supervisor(env, "late-archive")
+    task_id, recovery = await add_blocked_attempt(env, "late-archive")
+    escalation = await create_recovery_escalation(
+        env,
+        task_id,
+        recovery,
+        supervisor_scope(supervisor_id, token),
+    )
+    clock = Clock(BASE + 1000)
+    sink = SinkTransport()
+    service, root = await post_escalation(env, escalation["id"], sink, clock)
+    thread_id = str(root["thread_id"])
+
+    # Resolve the incident from an earlier verified decision, then close and
+    # archive its task while retaining the incident's transport tombstone.
+    accepted = await env.db.accept_escalation_reply(
+        escalation["id"],
+        transport="dashboard",
+        external_message_id="decision-before-archive",
+        verified_actor="human:dashboard:operator",
+        text="Resolve without retrying the worker.",
+        received_at=clock.now,
+    )
+    await service.reconcile(escalation["id"])
+    await service.pump()
+    resolving = await env.db.transition_escalation(
+        escalation["id"],
+        expected_revision=accepted["escalation"]["revision"],
+        new_state="resolving",
+        now=clock.advance(1),
+    )
+    resolved = await env.db.transition_escalation(
+        escalation["id"],
+        expected_revision=resolving["revision"],
+        new_state="resolved",
+        terminal_outcome="Closed before the late Discord reply.",
+        terminal_evidence={"kind": "test-resolution"},
+        now=clock.advance(1),
+    )
+    await service.reconcile(escalation["id"])
+    await service.pump()
+    assert thread_id in sink.archived
+
+    await env.db.transition_task(
+        task_id,
+        TaskStatus.COMPLETED,
+        context="resolved_before_late_reply",
+        force=True,
+    )
+    assert await env.db.archive_task(task_id)
+    assert await env.db.get_task(task_id) is None
+    assert (await env.db.get_archived_task(task_id))["status"] == "COMPLETED"
+    pending_before = await env.db.get_pending_messages("session", "supervisor-p")
+
+    intake = DiscordEscalationIntake(env.handler, env.config, reconcile=service.reconcile)
+    assert await intake.handle(
+        gateway_message(
+            thread_id,
+            message_id="discord-late-after-archive",
+            content="Retry this closed task anyway.",
+        ),
+        bot_user_id=777,
+    )
+    await service.pump()
+
+    after = await env.db.get_escalation(escalation["id"])
+    assert after["state"] == "resolved" and after["revision"] == resolved["revision"]
+    assert await env.db.get_task(task_id) is None
+    assert (await env.db.get_archived_task(task_id))["status"] == "COMPLETED"
+    assert await env.db.get_pending_messages("session", "supervisor-p") == pending_before
+    late = next(
+        message
+        for message in await env.db.list_escalation_messages(escalation["id"])
+        if message["external_message_id"] == "discord-late-after-archive"
+    )
+    assert late["supervisor_message_id"] is None
+    env.stopped_probe.assert_not_awaited()
+    guidance = [
+        message
+        for message in sink.messages.values()
+        if "has not reopened the work" in message.content
+    ]
+    assert len(guidance) == 1 and guidance[0].thread_id == thread_id
+    assert thread_id in sink.archived
 
 
 async def add_digest_task(db: Database, task_id: str, *, status: str = "READY") -> None:
