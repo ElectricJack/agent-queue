@@ -694,7 +694,10 @@ class TestClaim:
 
         Nothing else writes ``tasks.branch_name`` on this path, and both the
         development close pipeline and development batch collection require it,
-        so a task claimed without it could never close pass or be delivered.
+        so a task claimed without it could never close pass or be delivered:
+        discarding the reset's return value left development-mode tasks with a
+        NULL ``branch_name``, and ``resolve_workspace_checkpoint`` then refused
+        their close forever (task fleet-willow).
         """
         await db.create_repo(
             RepoConfig(
@@ -719,6 +722,33 @@ class TestClaim:
 
         assert result["result"] == "claimed"
         assert (await db.get_task("t1")).branch_name == "aq/t1"
+        assert result["task"]["branch_name"] == "aq/t1"
+
+    async def test_failed_activation_records_no_branch(self, handler, db, tmp_path):
+        """Branch and activation are one fact: neither lands without the other."""
+        await mktask(db, "t1", profile_id="worker")
+        sid, _wd = await pool_session(db, tmp_path)
+        handler.orchestrator._worktree_slots.return_value.reset_slot_for_task = AsyncMock(
+            side_effect=RuntimeError("git exploded")
+        )
+
+        assert (await scoped(handler, sid)._cmd_task_claim({"next": True}))[
+            "result"
+        ] == "prepare_failed"
+        assert (await db.get_task("t1")).branch_name is None
+
+    async def test_hierarchy_claim_keeps_its_origin_chain_branch(self, handler, db, tmp_path):
+        """The origin chain already named the branch; the claim must agree."""
+        await self._hierarchy_task(db, tmp_path)
+        sid, _wd = await pool_session(db, tmp_path)
+        handler.orchestrator._worktree_slots.return_value.reset_slot_for_task = AsyncMock(
+            return_value="aq/child"
+        )
+
+        result = await scoped(handler, sid)._cmd_task_claim({"next": True})
+
+        assert result["result"] == "claimed"
+        assert (await db.get_task("child")).branch_name == "aq/child"
 
     async def test_prepare_failed_releases_and_reports(self, handler, db, tmp_path):
         await mktask(db, "t1", profile_id="worker")
@@ -751,7 +781,7 @@ class TestClaim:
         return value, so ``tasks.branch_name`` stayed NULL where the
         push-assignment path writes it.  In a ``development`` project that
         surfaced only at close, as ``resolve_workspace_checkpoint``'s
-        "task has no exact owned integration workspace" refusal.
+        ``branch_not_recorded`` refusal.
         """
         await db.update_project(PROJECT_ID, hierarchical_integration_mode="development")
         await mktask(db, "t1", profile_id="worker")

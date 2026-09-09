@@ -977,26 +977,44 @@ class SessionCommandsMixin:
             # ``aq task close`` again.  No completion record, no claim
             # release, no token revoke — nothing about the run ended.
             issues = result.get("issues") or []
+            escalated = bool(result.get("escalated"))
             bullets = "\n".join(f"- {msg}" for msg in issues)
-            lead = (
-                "close refused: this workspace holds commits no remote branch has"
-                if result.get("unmerged")
-                else "close refused: git verification found issues you can still "
-                "fix from this workspace"
-            )
+            if escalated:
+                # A precondition no agent command can satisfy.  Saying "you
+                # can still fix this from this workspace" here is what sends
+                # a worker into a retry loop or into closing --outcome fail
+                # over passing work.
+                lead = (
+                    "close refused: delivery is blocked on daemon state this "
+                    "workspace cannot change"
+                )
+                tail = (
+                    "The task is still yours (IN_PROGRESS, same claim) and has been "
+                    "flagged for an operator. Do not retry blindly and do not close "
+                    "--outcome fail to escape it: report the blocker with "
+                    "`aq message send --to user:dashboard`."
+                )
+            else:
+                lead = (
+                    "close refused: this workspace holds commits no remote branch has"
+                    if result.get("unmerged")
+                    else "close refused: git verification found issues you can still "
+                    "fix from this workspace"
+                )
+                tail = (
+                    "The task is still yours (IN_PROGRESS, same claim). Fix these, "
+                    "then run `aq task close` again."
+                )
             return {
                 "success": False,
                 "result": "verification_failed",
                 "task_id": task_id,
                 "status": result.get("status"),
+                "escalated": escalated,
                 "issues": issues,
                 "feedback": result.get("feedback") or "",
                 "unmerged": result.get("unmerged"),
-                "error": (
-                    f"{lead}:\n{bullets}\n"
-                    "The task is still yours (IN_PROGRESS, same claim). Fix these, "
-                    "then run `aq task close` again."
-                ),
+                "error": f"{lead}:\n{bullets}\n{tail}",
             }
 
         final_task = await self.db.get_task(task_id)

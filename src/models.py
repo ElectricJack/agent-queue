@@ -1327,6 +1327,12 @@ class PipelineContext:
     verification_retry_in_session: bool = False
     #: The fixable issues behind ``verification_retry_in_session``.
     verification_issues: list[str] = field(default_factory=list)
+    #: True when the refused close is blocked on daemon-side delivery state
+    #: the closing workspace cannot change (no integration workspace, a
+    #: workspace locked by another task, a repository mismatch).  The task is
+    #: flagged ``needs_attention`` and the refusal says so instead of telling
+    #: the agent to fix its git state.
+    verification_escalated: bool = False
     #: Rendered feedback text handed back to the agent on an in-session retry.
     verification_feedback: str = ""
     #: ``--work-outcome`` from ``aq task close`` (``shipped`` | ``no-op`` |
