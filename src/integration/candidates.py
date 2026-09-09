@@ -2841,6 +2841,13 @@ class CandidateService:
         return store
 
     async def _fetch_oid(self, store: Path, oid: str, destination_ref: str) -> None:
+        # This daemon-owned store retains immutable exact inputs across retries.
+        # Remote head/authority checks happen separately; an object download is
+        # not freshness evidence. Pin cached commits just as a fresh import does.
+        if (is_valid_git_oid(oid) and destination_ref.startswith("refs/aq/")
+                and await self._commit_exists(store, oid)):
+            await self._pin(store, destination_ref, oid)
+            return
         token = await self.app_client.installation_token()
         await self.git.afetch_exact_oid_with_app_auth(
             str(store),

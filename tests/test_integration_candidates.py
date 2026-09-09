@@ -421,6 +421,7 @@ class _LocalPushGit:
         self.delegate = GitManager()
         self.origin = origin
         self.pushes = []
+        self.fetches = []
 
     def __getattr__(self, name):
         return getattr(self.delegate, name)
@@ -440,6 +441,7 @@ class _LocalPushGit:
         return kwargs["tip_oid"]
 
     async def afetch_exact_oid_with_app_auth(self, destination_git_dir, **kwargs):
+        self.fetches.append(kwargs["oid"])
         result = await self.delegate.arun_git_result(
             [
                 "fetch",
@@ -485,6 +487,7 @@ async def test_many_members_build_in_ordinal_order_without_moving_sources(db, tm
         app_client=app,
         clock=lambda: 100.0,
     ).build("batch")
+    initial_fetches = list(git.fetches)
     replay = await CandidateService(
         db,
         data_dir=tmp_path / "data",
@@ -494,6 +497,7 @@ async def test_many_members_build_in_ordinal_order_without_moving_sources(db, tm
         clock=lambda: 100.0,
     ).build("batch")
 
+    assert git.fetches == initial_fetches
     assert result.outcome == "built"
     assert result.revision == 0
     assert result.head_sha and result.head_sha != base
@@ -577,8 +581,12 @@ async def test_one_member_build_and_local_replay_are_deterministic(db, tmp_path)
     )
 
     built = await service.build("batch")
+    fetched = list(service.git.fetches)
     replay = await service.build("batch")
 
+    assert set(fetched) == {base, members[0][1]}
+    assert len(fetched) == 2  # the member base is shared with the batch base
+    assert service.git.fetches == fetched  # restart/replay downloads no retained input
     assert built.outcome == "built"
     assert replay.outcome == "already_built"
     assert replay.head_sha == built.head_sha
