@@ -573,9 +573,6 @@ class DevelopmentIntegration:
                             "updated_at": now,
                         }
                     )
-                    await self.ensure_repair(
-                        project_id, repo.id, [member], base, reason="merge conflict"
-                    )
                     conflicts.append(member)
                     if parent_id:
                         blocked_parents.add(parent_id)
@@ -588,6 +585,7 @@ class DevelopmentIntegration:
                     break
             await self.run_git(store, "checkout", "--detach", "--force", head)
             if not manifest:
+                await self.reconcile_parked(repo, store, base)
                 return {"outcome": "idle", "parked": conflicts}
             head = await self.run_git(store, "rev-parse", "HEAD")
             evidence, passed = await self.validate(store, policy)
@@ -628,13 +626,47 @@ class DevelopmentIntegration:
                         "updated_at": now,
                     }
                 )
-                await self.ensure_repair(
-                    project_id, repo.id, manifest, head, reason="selected validation failed"
-                )
+                await self.reconcile_parked(repo, store, base)
                 return {"outcome": "parked", "head_sha": head, "evidence": evidence}
-            return await self.publish(
+            result = await self.publish(
                 repo, store, target, head, base, manifest, evidence, "development batch"
             )
+            await self.reconcile_parked(
+                repo, store, head if result["outcome"] == "delivered" else base
+            )
+            return result
+
+    async def reconcile_parked(self, repo, store, accepted_head):
+        """Dispatch only failures still unresolved after the whole batch was assembled.
+
+        A later consolidation may contain an earlier conflicting source. Starting
+        a worker mid-assembly spends tokens repairing work this batch already fixes.
+        Parked rows are durable, so a subsequent sweep resumes dispatch after a crash.
+        """
+        for row in await self.rows(repo.project_id):
+            if row["state"] != "parked" or not row["manifest"]:
+                continue
+            contained = True
+            for member in row["manifest"]:
+                source = member.get("source_sha")
+                if not source or not await self.git.ais_ancestor(str(store), source, accepted_head):
+                    contained = False
+                    break
+            if contained:
+                await self.change(
+                    row["id"],
+                    state="adopted",
+                    prepared_sha=accepted_head,
+                    evidence={**row["evidence"], "resolved_by_main_ancestry": accepted_head},
+                )
+            else:
+                await self.ensure_repair(
+                    repo.project_id,
+                    repo.id,
+                    row["manifest"],
+                    row["prepared_sha"] or accepted_head,
+                    reason=row["reason"],
+                )
 
     async def tick(self, now):
         async with self.db._engine.connect() as conn:
