@@ -472,6 +472,25 @@ class PromotionService:
         expected_role = "repair" if exact_writer else "collector"
         expected_state = "attached" if exact_writer else "reserved"
         async with self.db.immediate() as conn:
+            if exact_writer:
+                from sqlalchemy import select
+
+                from src.database.tables import sessions
+
+                writer = (
+                    await conn.execute(
+                        select(sessions)
+                        .where(sessions.c.id == intent["resolution_session_id"])
+                        .with_for_update()
+                    )
+                ).mappings().one_or_none()
+                if (
+                    writer is None
+                    or writer["state"] != "stopped"
+                    or writer["desired_state"] != "stopped"
+                    or writer["instance_token"] != intent["resolution_session_instance_token"]
+                ):
+                    raise PromotionInvariantError("exact resolution writer is not quiescent")
             async with self.ownership.mutation_exclusion_on(
                 conn, recovery_fence, state=expected_state, expected_role=expected_role
             ):
