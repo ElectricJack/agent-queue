@@ -101,6 +101,11 @@ Durable questions raised by worker turns. Session identity, instance token and c
 
 Indexes: `idx_agent_questions_pending` (`state`, `created_at`), `idx_agent_questions_session` (`session_id`, `instance_token`).
 
+Question reads also project a nullable `escalation_id` from the durable escalation whose
+`source_kind='question'` and `source_identity` matches the question ID. This is a derived link,
+not a mutable question column, so it cannot disagree with the escalation's authoritative source
+binding.
+
 ### Table: `escalations`
 
 Transport-neutral, supervisor-owned human incidents. The unique project/incident key makes source replay idempotent while `source_identity` distinguishes separate attempts. Task and source references are soft audit identity so an incident survives task archival. Conversation changes compare and increment `revision`; terminal states retain an explicit outcome and optional structured evidence.
@@ -150,6 +155,34 @@ Immutable inbound and outbound conversation facts. Verified actor identity is su
 | `created_at` | FLOAT | NOT NULL |
 
 Unique: (`transport`, `external_message_id`). Index: `idx_escalation_messages_history`.
+
+### Table: `escalation_actions`
+
+Durable at-most-once reservations for applying a verified inbound human reply through an
+action-specific supervisor service. The reply foreign key is the human-evidence binding;
+the executor remains the authenticated supervisor. A processing reservation is created
+before the external action and completed with its exact outcome, so replay never repeats
+task recovery.
+
+| Column | Type | Constraints |
+|---|---|---|
+| `id` | TEXT | PRIMARY KEY |
+| `escalation_id` | TEXT | NOT NULL, REFERENCES escalations(id) ON DELETE CASCADE |
+| `reply_id` | TEXT | NOT NULL, REFERENCES escalation_messages(id) ON DELETE RESTRICT |
+| `idempotency_key` | TEXT | NOT NULL |
+| `action_kind` | TEXT | question_answer, gate_resolve or task_recover |
+| `target_id` | TEXT | NOT NULL |
+| `parameters` | JSON | NOT NULL |
+| `executor` | TEXT | NOT NULL authenticated supervisor identity |
+| `started_revision` | INTEGER | NOT NULL CAS revision after reservation |
+| `status` | TEXT | processing, succeeded or failed |
+| `outcome` | TEXT | nullable until completion |
+| `result` | JSON | nullable action-specific result |
+| `error` | TEXT | nullable failure detail |
+| `created_at` | FLOAT | NOT NULL |
+| `completed_at` | FLOAT | required after completion |
+
+Unique: (`escalation_id`, `idempotency_key`). Index: `idx_escalation_actions_history`.
 
 ### Table: `escalation_deliveries`
 

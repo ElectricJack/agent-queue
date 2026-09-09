@@ -29,6 +29,7 @@ from src.database.tables import (
     archived_tasks,
     chat_analyzer_suggestions,
     digest_windows,
+    escalation_actions,
     escalation_deliveries,
     escalation_messages,
     escalations,
@@ -180,6 +181,8 @@ _ORDERED_TABLES = [
     escalations,
     # FK -> escalations, messages
     escalation_messages,
+    # FK -> escalations, escalation_messages
+    escalation_actions,
     # FK -> escalations, escalation_messages
     escalation_deliveries,
     # FK → repos (current_task_id deferred)

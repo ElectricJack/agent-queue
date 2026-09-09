@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import Any, TypeVar
+from typing import Any, TypeVar, cast
 
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
@@ -17,12 +17,12 @@ class CreateProjectResponse:
     Attributes:
         created (str):
         name (str):
-        auto_create_channels (bool | Unset):  Default: False.
+        default_profile_id (None | str | Unset):
     """
 
     created: str
     name: str
-    auto_create_channels: bool | Unset = False
+    default_profile_id: None | str | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -30,7 +30,11 @@ class CreateProjectResponse:
 
         name = self.name
 
-        auto_create_channels = self.auto_create_channels
+        default_profile_id: None | str | Unset
+        if isinstance(self.default_profile_id, Unset):
+            default_profile_id = UNSET
+        else:
+            default_profile_id = self.default_profile_id
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
@@ -40,8 +44,8 @@ class CreateProjectResponse:
                 "name": name,
             }
         )
-        if auto_create_channels is not UNSET:
-            field_dict["auto_create_channels"] = auto_create_channels
+        if default_profile_id is not UNSET:
+            field_dict["default_profile_id"] = default_profile_id
 
         return field_dict
 
@@ -52,12 +56,19 @@ class CreateProjectResponse:
 
         name = d.pop("name")
 
-        auto_create_channels = d.pop("auto_create_channels", UNSET)
+        def _parse_default_profile_id(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        default_profile_id = _parse_default_profile_id(d.pop("default_profile_id", UNSET))
 
         create_project_response = cls(
             created=created,
             name=name,
-            auto_create_channels=auto_create_channels,
+            default_profile_id=default_profile_id,
         )
 
         create_project_response.additional_properties = d

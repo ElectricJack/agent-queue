@@ -199,7 +199,6 @@ Represents a software project managed by the system. Projects are the top-level 
 | `status` | `ProjectStatus` | Whether the project is ACTIVE, PAUSED, or ARCHIVED. Defaults to ACTIVE. |
 | `total_tokens_used` | `int` | Cumulative count of tokens consumed by all agents across all tasks for this project. |
 | `budget_limit` | `int \| None` | Optional hard cap on total tokens. When set, no new tasks are started once this limit is reached. `None` means unlimited. |
-| `discord_channel_id` | `str \| None` | Optional Discord channel ID for project-specific notifications. When set, all task output for this project is routed to this channel instead of the default control channel. |
 | `repo_url` | `str` | Repository URL for the project. Empty string if not set. |
 | `repo_default_branch` | `str` | Default branch name for the project's repository. Defaults to `"main"`. |
 | `default_profile_id` | `str \| None` | Default agent profile ID for tasks in this project. `None` if no profile resolved. |

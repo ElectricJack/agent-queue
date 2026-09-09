@@ -2748,19 +2748,19 @@
         }
       }
     },
-    "/api/discord/cleanup-threads": {
+    "/api/digest/preview": {
       "post": {
         "tags": [
-          "discord"
+          "digest"
         ],
-        "summary": "Archive or delete threads in a Discord channel. Defaults to mode='archive' and only_closed=true, so threads for running tasks are left alone. Dry-run unless confirm=true.",
-        "description": "Archive or delete threads in a Discord channel. Defaults to mode='archive' and only_closed=true, so threads for running tasks are left alone. Dry-run unless confirm=true.",
-        "operationId": "discord_cleanup_threads",
+        "summary": "Dry-run the current hourly digest window: the message that would be sent, or the reason it would stay silent. Sends nothing and advances no delivery cursor.",
+        "description": "Dry-run the current hourly digest window: the message that would be sent, or the reason it would stay silent. Sends nothing and advances no delivery cursor.",
+        "operationId": "digest_preview",
         "requestBody": {
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/DiscordCleanupThreadsRequest"
+                "$ref": "#/components/schemas/DigestPreviewRequest"
               }
             }
           },
@@ -2772,7 +2772,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/DiscordCleanupThreadsResponse"
+                  "$ref": "#/components/schemas/DigestPreviewResponse"
                 }
               }
             }
@@ -2782,12 +2782,49 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "properties": {
-                    "error": {
-                      "type": "string"
-                    }
-                  },
-                  "type": "object"
+                  "$ref": "#/components/schemas/EscalationErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/digest/status": {
+      "post": {
+        "tags": [
+          "digest"
+        ],
+        "summary": "Configured digest destination and schedule generation, next evaluation, recent windows and pending/unknown/failed delivery health.",
+        "description": "Configured digest destination and schedule generation, next evaluation, recent windows and pending/unknown/failed delivery health.",
+        "operationId": "digest_status",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DigestStatusRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DigestStatusResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EscalationErrorResponse"
                 }
               }
             }
@@ -2835,6 +2872,258 @@
                     }
                   },
                   "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/escalation/apply-reply": {
+      "post": {
+        "tags": [
+          "escalation"
+        ],
+        "summary": "Apply one bound verified human reply through the owning supervisor's exact question, human-gate, or task-recovery service.",
+        "description": "Apply one bound verified human reply through the owning supervisor's exact question, human-gate, or task-recovery service.",
+        "operationId": "escalation_apply_reply",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EscalationApplyReplyRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EscalationApplyReplyResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EscalationErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/escalation/create": {
+      "post": {
+        "tags": [
+          "escalation"
+        ],
+        "summary": "Create or reuse a project-scoped human escalation by durable source incident. The logical supervisor owner is derived by the server.",
+        "description": "Create or reuse a project-scoped human escalation by durable source incident. The logical supervisor owner is derived by the server.",
+        "operationId": "escalation_create",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EscalationCreateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EscalationCreateResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EscalationErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/escalation/get": {
+      "post": {
+        "tags": [
+          "escalation"
+        ],
+        "summary": "Get one visible escalation with immutable messages, deliveries, and actions.",
+        "description": "Get one visible escalation with immutable messages, deliveries, and actions.",
+        "operationId": "escalation_get",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EscalationGetRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EscalationGetResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EscalationErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/escalation/list": {
+      "post": {
+        "tags": [
+          "escalation"
+        ],
+        "summary": "List visible escalations with current external-delivery status.",
+        "description": "List visible escalations with current external-delivery status.",
+        "operationId": "escalation_list",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EscalationListRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EscalationListResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EscalationErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/escalation/reply": {
+      "post": {
+        "tags": [
+          "escalation"
+        ],
+        "summary": "Append an authenticated human reply and atomically enqueue its owning supervisor. Actor, transport, project, and thread authority are server-derived.",
+        "description": "Append an authenticated human reply and atomically enqueue its owning supervisor. Actor, transport, project, and thread authority are server-derived.",
+        "operationId": "escalation_reply",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EscalationReplyRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EscalationReplyResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EscalationErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/escalation/update": {
+      "post": {
+        "tags": [
+          "escalation"
+        ],
+        "summary": "CAS-update an owned escalation, including explicit terminal resolution.",
+        "description": "CAS-update an owned escalation, including explicit terminal resolution.",
+        "operationId": "escalation_update",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EscalationUpdateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EscalationUpdateResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EscalationErrorResponse"
                 }
               }
             }
@@ -5195,8 +5484,8 @@
         "tags": [
           "message"
         ],
-        "summary": "Answer a pending worker question in its original live session. Human approval cannot be supplied by supervisors.",
-        "description": "Answer a pending worker question in its original live session. Human approval cannot be supplied by supervisors.",
+        "summary": "Let the owning supervisor answer a narrow factual worker question in its original claim-fenced session. Direct human replies use escalation_reply and escalation_apply_reply.",
+        "description": "Let the owning supervisor answer a narrow factual worker question in its original claim-fenced session. Direct human replies use escalation_reply and escalation_apply_reply.",
         "operationId": "question_answer",
         "requestBody": {
           "content": {
@@ -5242,8 +5531,8 @@
         "tags": [
           "message"
         ],
-        "summary": "Escalate a worker question to the human when a factual answer is not sufficient.",
-        "description": "Escalate a worker question to the human when a factual answer is not sufficient.",
+        "summary": "Create or reuse the durable human escalation for a worker question after supervisor investigation cannot resolve it.",
+        "description": "Create or reuse the durable human escalation for a worker question after supervisor investigation cannot resolve it.",
         "operationId": "question_escalate",
         "requestBody": {
           "content": {
@@ -7733,8 +8022,8 @@
         "tags": [
           "project"
         ],
-        "summary": "Create a new project.  Optionally auto-create a dedicated Discord channel for the project.  When auto_create_channels is omitted the behaviour is determined by the per_project_channels.auto_create config flag.",
-        "description": "Create a new project.  Optionally auto-create a dedicated Discord channel for the project.  When auto_create_channels is omitted the behaviour is determined by the per_project_channels.auto_create config flag.",
+        "summary": "Create a new project.",
+        "description": "Create a new project.",
         "operationId": "create_project",
         "requestBody": {
           "content": {
@@ -7780,8 +8069,8 @@
         "tags": [
           "project"
         ],
-        "summary": "Delete a project and all associated data (tasks, repos, results, token ledger). Cannot delete if any task is IN_PROGRESS. In-memory channel caches are automatically purged. Optionally archive the project's Discord channels.",
-        "description": "Delete a project and all associated data (tasks, repos, results, token ledger). Cannot delete if any task is IN_PROGRESS. In-memory channel caches are automatically purged. Optionally archive the project's Discord channels.",
+        "summary": "Delete a project and all associated data (tasks, repos, results, token ledger). Cannot delete if any task is IN_PROGRESS. Historical Discord content is left untouched.",
+        "description": "Delete a project and all associated data (tasks, repos, results, token ledger). Cannot delete if any task is IN_PROGRESS. Historical Discord content is left untouched.",
         "operationId": "delete_project",
         "requestBody": {
           "content": {
@@ -7827,8 +8116,8 @@
         "tags": [
           "project"
         ],
-        "summary": "Edit a project's properties: name, credit_weight, max_concurrent_agents, budget_limit, discord_channel_id, default_profile_id, assignment_playbook_id, repo_default_branch, or LOCAL-only hierarchical integration configuration. Use this to rename projects, adjust scheduling weight, set token budgets, link Discord channels, set a default agent profile, or change the default git branch.",
-        "description": "Edit a project's properties: name, credit_weight, max_concurrent_agents, budget_limit, discord_channel_id, default_profile_id, assignment_playbook_id, repo_default_branch, or LOCAL-only hierarchical integration configuration. Use this to rename projects, adjust scheduling weight, set token budgets, link Discord channels, set a default agent profile, or change the default git branch.",
+        "summary": "Edit a project's properties: name, credit_weight, max_concurrent_agents, budget_limit, default_profile_id, assignment_playbook_id, repo_default_branch, or LOCAL-only hierarchical integration configuration. Use this to rename projects, adjust scheduling weight, set token budgets, set a default agent profile, or change the default git branch.",
+        "description": "Edit a project's properties: name, credit_weight, max_concurrent_agents, budget_limit, default_profile_id, assignment_playbook_id, repo_default_branch, or LOCAL-only hierarchical integration configuration. Use this to rename projects, adjust scheduling weight, set token budgets, set a default agent profile, or change the default git branch.",
         "operationId": "edit_project",
         "requestBody": {
           "content": {
@@ -8035,100 +8324,6 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/GetProjectResponse"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Command error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "properties": {
-                    "error": {
-                      "type": "string"
-                    }
-                  },
-                  "type": "object"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/project/get-channels": {
-      "post": {
-        "tags": [
-          "project"
-        ],
-        "summary": "Get the Discord channel ID configured for a project.",
-        "description": "Get the Discord channel ID configured for a project.",
-        "operationId": "get_project_channels",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/GetProjectChannelsRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/GetProjectChannelsResponse"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Command error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "properties": {
-                    "error": {
-                      "type": "string"
-                    }
-                  },
-                  "type": "object"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/project/get-for-channel": {
-      "post": {
-        "tags": [
-          "project"
-        ],
-        "summary": "Reverse lookup: given a Discord channel ID, find which project it belongs to. Returns the project ID, or null if no project is linked.",
-        "description": "Reverse lookup: given a Discord channel ID, find which project it belongs to. Returns the project ID, or null if no project is linked.",
-        "operationId": "get_project_for_channel",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/GetProjectForChannelRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/GetProjectForChannelResponse"
                 }
               }
             }
@@ -8854,53 +9049,6 @@
         }
       }
     },
-    "/api/project/set-control-interface": {
-      "post": {
-        "tags": [
-          "project"
-        ],
-        "summary": "Set a project's channel by channel name (string lookup). Resolves the channel name within the guild. Deprecated \u2014 prefer edit_project with discord_channel_id.",
-        "description": "Set a project's channel by channel name (string lookup). Resolves the channel name within the guild. Deprecated \u2014 prefer edit_project with discord_channel_id.",
-        "operationId": "set_control_interface",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/SetControlInterfaceRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/SetProjectChannelResponse"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Command error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "properties": {
-                    "error": {
-                      "type": "string"
-                    }
-                  },
-                  "type": "object"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
     "/api/project/set-default-branch": {
       "post": {
         "tags": [
@@ -8926,53 +9074,6 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/SetDefaultBranchResponse"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Command error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "properties": {
-                    "error": {
-                      "type": "string"
-                    }
-                  },
-                  "type": "object"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/project/set-channel": {
-      "post": {
-        "tags": [
-          "project"
-        ],
-        "summary": "Link an existing Discord channel to a project. Deprecated \u2014 prefer edit_project with discord_channel_id.",
-        "description": "Link an existing Discord channel to a project. Deprecated \u2014 prefer edit_project with discord_channel_id.",
-        "operationId": "set_project_channel",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/SetProjectChannelRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/SetProjectChannelResponse"
                 }
               }
             }
@@ -14042,6 +14143,17 @@
               }
             ],
             "title": "Reason"
+          },
+          "escalation_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Escalation Id"
           }
         },
         "additionalProperties": true,
@@ -16905,18 +17017,6 @@
             "description": "Default branch name (default: main)",
             "default": "main"
           },
-          "auto_create_channels": {
-            "anyOf": [
-              {
-                "type": "boolean"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Auto Create Channels",
-            "description": "If true, auto-create dedicated Discord channels for this project after creation.  If false, skip channel creation.  When omitted, falls back to the global per_project_channels.auto_create config setting."
-          },
           "default_profile_id": {
             "anyOf": [
               {
@@ -16946,10 +17046,16 @@
             "type": "string",
             "title": "Name"
           },
-          "auto_create_channels": {
-            "type": "boolean",
-            "title": "Auto Create Channels",
-            "default": false
+          "default_profile_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Default Profile Id"
           }
         },
         "type": "object",
@@ -17720,12 +17826,6 @@
             "type": "string",
             "title": "Project Id",
             "description": "Project ID to delete"
-          },
-          "archive_channels": {
-            "type": "boolean",
-            "title": "Archive Channels",
-            "description": "If true, archive the project's Discord channels (rename + set read-only) instead of leaving them as-is. Default: false.",
-            "default": false
           }
         },
         "type": "object",
@@ -17743,31 +17843,6 @@
           "name": {
             "type": "string",
             "title": "Name"
-          },
-          "channel_ids": {
-            "anyOf": [
-              {
-                "additionalProperties": {
-                  "type": "string"
-                },
-                "type": "object"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Channel Ids"
-          },
-          "archive_channels": {
-            "anyOf": [
-              {
-                "type": "boolean"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Archive Channels"
           }
         },
         "type": "object",
@@ -17859,194 +17934,131 @@
         "title": "DeletedBranch",
         "description": "One branch a ``branch_discard_required`` refusal is asking about."
       },
-      "DiscordCleanupThreadsRequest": {
+      "DigestEscalationSettings": {
         "properties": {
-          "channel_id": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Channel Id",
-            "description": "Target channel id."
+          "enabled": {
+            "type": "boolean",
+            "title": "Enabled"
           },
-          "project_id": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Project Id",
-            "description": "Use this project's channel instead of channel_id."
+          "mention_user_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Mention User Ids",
+            "default": []
           },
-          "mode": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Mode",
-            "description": "archive (reversible, default) or delete (permanent)."
+          "mention_role_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Mention Role Ids",
+            "default": []
           },
-          "only_closed": {
-            "anyOf": [
-              {
-                "type": "boolean"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Only Closed",
-            "description": "Only touch threads whose task is finished (default true). Matched via tasks.discord_thread_id."
+          "reminder_minutes": {
+            "type": "integer",
+            "title": "Reminder Minutes"
           },
-          "limit": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Limit",
-            "description": "How many archived threads to scan (default 500)."
-          },
-          "confirm": {
-            "anyOf": [
-              {
-                "type": "boolean"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Confirm",
-            "description": "Actually apply. Without it this is a dry run."
+          "supervisor_delivery_timeout_minutes": {
+            "type": "integer",
+            "title": "Supervisor Delivery Timeout Minutes"
           }
         },
         "type": "object",
-        "title": "DiscordCleanupThreadsRequest"
+        "required": [
+          "enabled",
+          "reminder_minutes",
+          "supervisor_delivery_timeout_minutes"
+        ],
+        "title": "DigestEscalationSettings"
       },
-      "DiscordCleanupThreadsResponse": {
+      "DigestPreviewRequest": {
+        "properties": {
+          "dashboard_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Dashboard Url",
+            "description": ""
+          },
+          "now": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Now",
+            "description": "Evaluate as of this epoch time."
+          }
+        },
+        "type": "object",
+        "title": "DigestPreviewRequest"
+      },
+      "DigestPreviewResponse": {
         "properties": {
           "success": {
             "type": "boolean",
             "title": "Success",
             "default": true
           },
-          "channel": {
+          "destination": {
             "type": "string",
-            "title": "Channel"
+            "title": "Destination"
           },
-          "dry_run": {
-            "type": "boolean",
-            "title": "Dry Run",
-            "default": false
-          },
-          "mode": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Mode"
-          },
-          "threads_found": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Threads Found"
-          },
-          "would_archive": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Would Archive"
-          },
-          "would_delete": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Would Delete"
-          },
-          "archived": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Archived"
-          },
-          "deleted": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Deleted"
-          },
-          "failed": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Failed"
-          },
-          "skipped_live": {
+          "config_generation": {
             "type": "integer",
-            "title": "Skipped Live",
+            "title": "Config Generation"
+          },
+          "enabled": {
+            "type": "boolean",
+            "title": "Enabled"
+          },
+          "window": {
+            "$ref": "#/components/schemas/DigestWindowBounds"
+          },
+          "would_send": {
+            "type": "boolean",
+            "title": "Would Send"
+          },
+          "reason": {
+            "type": "string",
+            "title": "Reason"
+          },
+          "text": {
+            "type": "string",
+            "title": "Text",
+            "default": ""
+          },
+          "completed_count": {
+            "type": "integer",
+            "title": "Completed Count",
             "default": 0
           },
-          "note": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Note"
+          "active_count": {
+            "type": "integer",
+            "title": "Active Count",
+            "default": 0
           },
-          "warning": {
+          "idle_tasks": {
+            "type": "integer",
+            "title": "Idle Tasks",
+            "default": 0
+          },
+          "open_escalations": {
+            "type": "integer",
+            "title": "Open Escalations",
+            "default": 0
+          },
+          "suppression_reason": {
             "anyOf": [
               {
                 "type": "string"
@@ -18055,15 +18067,330 @@
                 "type": "null"
               }
             ],
-            "title": "Warning"
+            "title": "Suppression Reason"
+          },
+          "settings_errors": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Settings Errors",
+            "default": []
+          },
+          "warnings": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Warnings",
+            "default": []
           }
         },
         "type": "object",
         "required": [
-          "channel"
+          "destination",
+          "config_generation",
+          "enabled",
+          "window",
+          "would_send",
+          "reason"
         ],
-        "title": "DiscordCleanupThreadsResponse",
-        "description": "Result of ``discord_cleanup_threads``.\n\n``skipped_live`` is reported rather than inferred: the useful question\nafter a cleanup is \"what did it leave alone, and why\", and the answer is\nthreads whose task is still running."
+        "title": "DigestPreviewResponse",
+        "description": "A dry evaluation of the current window; nothing was sent."
+      },
+      "DigestScheduleSettings": {
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "title": "Enabled"
+          },
+          "interval_minutes": {
+            "type": "integer",
+            "title": "Interval Minutes"
+          },
+          "project_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Project Ids",
+            "default": []
+          },
+          "categories": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Categories",
+            "default": []
+          },
+          "catchup_hours": {
+            "type": "integer",
+            "title": "Catchup Hours"
+          }
+        },
+        "type": "object",
+        "required": [
+          "enabled",
+          "interval_minutes",
+          "catchup_hours"
+        ],
+        "title": "DigestScheduleSettings"
+      },
+      "DigestStatusRequest": {
+        "properties": {
+          "now": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Now",
+            "description": ""
+          }
+        },
+        "type": "object",
+        "title": "DigestStatusRequest"
+      },
+      "DigestStatusResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "destination": {
+            "type": "string",
+            "title": "Destination"
+          },
+          "config_generation": {
+            "type": "integer",
+            "title": "Config Generation"
+          },
+          "channel_id": {
+            "type": "string",
+            "title": "Channel Id",
+            "default": ""
+          },
+          "digest": {
+            "$ref": "#/components/schemas/DigestScheduleSettings"
+          },
+          "escalation": {
+            "$ref": "#/components/schemas/DigestEscalationSettings"
+          },
+          "next_evaluation_at": {
+            "type": "number",
+            "title": "Next Evaluation At"
+          },
+          "last_window_end": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Window End"
+          },
+          "recent_windows": {
+            "items": {
+              "$ref": "#/components/schemas/DigestWindowRecord"
+            },
+            "type": "array",
+            "title": "Recent Windows",
+            "default": []
+          },
+          "delivery_health": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "type": "object",
+            "title": "Delivery Health",
+            "default": {}
+          },
+          "open_escalations": {
+            "type": "integer",
+            "title": "Open Escalations",
+            "default": 0
+          },
+          "pending_escalation_deliveries": {
+            "type": "integer",
+            "title": "Pending Escalation Deliveries",
+            "default": 0
+          },
+          "cutover": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DiscordCutoverStatus"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "settings_errors": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Settings Errors",
+            "default": []
+          },
+          "warnings": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Warnings",
+            "default": []
+          }
+        },
+        "type": "object",
+        "required": [
+          "destination",
+          "config_generation",
+          "digest",
+          "escalation",
+          "next_evaluation_at"
+        ],
+        "title": "DigestStatusResponse"
+      },
+      "DigestWindowBounds": {
+        "properties": {
+          "since": {
+            "type": "number",
+            "title": "Since"
+          },
+          "until": {
+            "type": "number",
+            "title": "Until"
+          },
+          "catchup": {
+            "type": "boolean",
+            "title": "Catchup",
+            "default": false
+          }
+        },
+        "type": "object",
+        "required": [
+          "since",
+          "until"
+        ],
+        "title": "DigestWindowBounds"
+      },
+      "DigestWindowRecord": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "window_start": {
+            "type": "number",
+            "title": "Window Start"
+          },
+          "window_end": {
+            "type": "number",
+            "title": "Window End"
+          },
+          "send_status": {
+            "type": "string",
+            "title": "Send Status"
+          },
+          "suppression_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Suppression Reason"
+          },
+          "is_catchup": {
+            "type": "boolean",
+            "title": "Is Catchup",
+            "default": false
+          },
+          "config_generation": {
+            "type": "integer",
+            "title": "Config Generation"
+          },
+          "attempt_count": {
+            "type": "integer",
+            "title": "Attempt Count",
+            "default": 0
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "window_start",
+          "window_end",
+          "send_status",
+          "config_generation"
+        ],
+        "title": "DigestWindowRecord"
+      },
+      "DiscordCutoverStatus": {
+        "properties": {
+          "status": {
+            "type": "string",
+            "title": "Status"
+          },
+          "channel_id": {
+            "type": "string",
+            "title": "Channel Id",
+            "default": ""
+          },
+          "migrated_questions": {
+            "type": "integer",
+            "title": "Migrated Questions",
+            "default": 0
+          },
+          "migrated_gates": {
+            "type": "integer",
+            "title": "Migrated Gates",
+            "default": 0
+          },
+          "accepted_answers_preserved": {
+            "type": "integer",
+            "title": "Accepted Answers Preserved",
+            "default": 0
+          },
+          "adopted_roots": {
+            "type": "integer",
+            "title": "Adopted Roots",
+            "default": 0
+          },
+          "retired_task_threads": {
+            "type": "integer",
+            "title": "Retired Task Threads",
+            "default": 0
+          },
+          "inert_messages": {
+            "type": "integer",
+            "title": "Inert Messages",
+            "default": 0
+          },
+          "conflicts": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Conflicts",
+            "default": []
+          }
+        },
+        "type": "object",
+        "required": [
+          "status"
+        ],
+        "title": "DiscordCutoverStatus"
       },
       "DiscordPurgeChannelRequest": {
         "properties": {
@@ -18078,18 +18405,6 @@
             ],
             "title": "Channel Id",
             "description": "Target channel id."
-          },
-          "project_id": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Project Id",
-            "description": "Use this project's channel instead of channel_id."
           },
           "limit": {
             "anyOf": [
@@ -18997,18 +19312,6 @@
             "title": "Budget Limit",
             "description": "Token budget limit (optional, null to clear)"
           },
-          "discord_channel_id": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Discord Channel Id",
-            "description": "Discord channel ID to link (optional, null to unlink)"
-          },
           "default_profile_id": {
             "anyOf": [
               {
@@ -19685,6 +19988,986 @@
           "resolved"
         ],
         "title": "EnvVarReference"
+      },
+      "EscalationAction": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "escalation_id": {
+            "type": "string",
+            "title": "Escalation Id"
+          },
+          "reply_id": {
+            "type": "string",
+            "title": "Reply Id"
+          },
+          "idempotency_key": {
+            "type": "string",
+            "title": "Idempotency Key"
+          },
+          "action_kind": {
+            "type": "string",
+            "title": "Action Kind"
+          },
+          "target_id": {
+            "type": "string",
+            "title": "Target Id"
+          },
+          "parameters": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Parameters"
+          },
+          "executor": {
+            "type": "string",
+            "title": "Executor"
+          },
+          "started_revision": {
+            "type": "integer",
+            "title": "Started Revision"
+          },
+          "status": {
+            "type": "string",
+            "title": "Status"
+          },
+          "outcome": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Outcome"
+          },
+          "result": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Result"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          },
+          "created_at": {
+            "type": "number",
+            "title": "Created At"
+          },
+          "completed_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Completed At"
+          }
+        },
+        "additionalProperties": true,
+        "type": "object",
+        "required": [
+          "id",
+          "escalation_id",
+          "reply_id",
+          "idempotency_key",
+          "action_kind",
+          "target_id",
+          "parameters",
+          "executor",
+          "started_revision",
+          "status",
+          "created_at"
+        ],
+        "title": "EscalationAction"
+      },
+      "EscalationApplyReplyRequest": {
+        "properties": {
+          "escalation_id": {
+            "type": "string",
+            "title": "Escalation Id",
+            "description": ""
+          },
+          "reply_id": {
+            "type": "string",
+            "title": "Reply Id",
+            "description": ""
+          },
+          "expected_revision": {
+            "type": "integer",
+            "title": "Expected Revision",
+            "description": ""
+          },
+          "idempotency_key": {
+            "type": "string",
+            "title": "Idempotency Key",
+            "description": ""
+          },
+          "action_kind": {
+            "type": "string",
+            "title": "Action Kind",
+            "description": ""
+          },
+          "target_id": {
+            "type": "string",
+            "title": "Target Id",
+            "description": ""
+          },
+          "decision": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Decision",
+            "description": ""
+          }
+        },
+        "type": "object",
+        "required": [
+          "escalation_id",
+          "reply_id",
+          "expected_revision",
+          "idempotency_key",
+          "action_kind",
+          "target_id"
+        ],
+        "title": "EscalationApplyReplyRequest"
+      },
+      "EscalationApplyReplyResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "applied": {
+            "type": "boolean",
+            "title": "Applied"
+          },
+          "replayed": {
+            "type": "boolean",
+            "title": "Replayed"
+          },
+          "action": {
+            "$ref": "#/components/schemas/EscalationAction"
+          },
+          "escalation": {
+            "$ref": "#/components/schemas/EscalationRecord"
+          },
+          "action_result": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Action Result"
+          }
+        },
+        "type": "object",
+        "required": [
+          "applied",
+          "replayed",
+          "action",
+          "escalation"
+        ],
+        "title": "EscalationApplyReplyResponse"
+      },
+      "EscalationCreateRequest": {
+        "properties": {
+          "project_id": {
+            "type": "string",
+            "title": "Project Id",
+            "description": ""
+          },
+          "task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Task Id",
+            "description": ""
+          },
+          "source_kind": {
+            "type": "string",
+            "title": "Source Kind",
+            "description": ""
+          },
+          "source_identity": {
+            "type": "string",
+            "title": "Source Identity",
+            "description": ""
+          },
+          "incident_key": {
+            "type": "string",
+            "title": "Incident Key",
+            "description": ""
+          },
+          "summary": {
+            "type": "string",
+            "title": "Summary",
+            "description": ""
+          },
+          "investigation": {
+            "type": "string",
+            "title": "Investigation",
+            "description": ""
+          },
+          "decision_requested": {
+            "type": "string",
+            "title": "Decision Requested",
+            "description": ""
+          },
+          "choices": {
+            "anyOf": [
+              {
+                "items": {},
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Choices",
+            "description": ""
+          },
+          "severity": {
+            "type": "string",
+            "title": "Severity",
+            "description": ""
+          }
+        },
+        "type": "object",
+        "required": [
+          "project_id",
+          "source_kind",
+          "source_identity",
+          "incident_key",
+          "summary",
+          "investigation",
+          "decision_requested",
+          "severity"
+        ],
+        "title": "EscalationCreateRequest"
+      },
+      "EscalationCreateResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "created": {
+            "type": "boolean",
+            "title": "Created"
+          },
+          "escalation": {
+            "$ref": "#/components/schemas/EscalationRecord"
+          }
+        },
+        "type": "object",
+        "required": [
+          "created",
+          "escalation"
+        ],
+        "title": "EscalationCreateResponse"
+      },
+      "EscalationDelivery": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "escalation_id": {
+            "type": "string",
+            "title": "Escalation Id"
+          },
+          "status": {
+            "type": "string",
+            "title": "Status"
+          },
+          "kind": {
+            "type": "string",
+            "title": "Kind"
+          },
+          "attempt_count": {
+            "type": "integer",
+            "title": "Attempt Count"
+          },
+          "generation": {
+            "type": "integer",
+            "title": "Generation"
+          }
+        },
+        "additionalProperties": true,
+        "type": "object",
+        "required": [
+          "id",
+          "escalation_id",
+          "status",
+          "kind",
+          "attempt_count",
+          "generation"
+        ],
+        "title": "EscalationDelivery"
+      },
+      "EscalationErrorResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": false
+          },
+          "error_code": {
+            "type": "string",
+            "title": "Error Code"
+          },
+          "error": {
+            "type": "string",
+            "title": "Error"
+          }
+        },
+        "additionalProperties": true,
+        "type": "object",
+        "required": [
+          "error_code",
+          "error"
+        ],
+        "title": "EscalationErrorResponse",
+        "description": "Stable error envelope shared by all escalation endpoints."
+      },
+      "EscalationGetRequest": {
+        "properties": {
+          "escalation_id": {
+            "type": "string",
+            "title": "Escalation Id",
+            "description": ""
+          }
+        },
+        "type": "object",
+        "required": [
+          "escalation_id"
+        ],
+        "title": "EscalationGetRequest"
+      },
+      "EscalationGetResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "escalation": {
+            "$ref": "#/components/schemas/EscalationRecord"
+          },
+          "messages": {
+            "items": {
+              "$ref": "#/components/schemas/EscalationMessage"
+            },
+            "type": "array",
+            "title": "Messages"
+          },
+          "deliveries": {
+            "items": {
+              "$ref": "#/components/schemas/EscalationDelivery"
+            },
+            "type": "array",
+            "title": "Deliveries"
+          },
+          "actions": {
+            "items": {
+              "$ref": "#/components/schemas/EscalationAction"
+            },
+            "type": "array",
+            "title": "Actions"
+          }
+        },
+        "type": "object",
+        "required": [
+          "escalation",
+          "messages",
+          "deliveries",
+          "actions"
+        ],
+        "title": "EscalationGetResponse"
+      },
+      "EscalationListRequest": {
+        "properties": {
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Id",
+            "description": ""
+          },
+          "task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Task Id",
+            "description": ""
+          },
+          "states": {
+            "anyOf": [
+              {
+                "items": {},
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "States",
+            "description": ""
+          },
+          "limit": {
+            "type": "integer",
+            "title": "Limit",
+            "description": "",
+            "default": 100
+          }
+        },
+        "type": "object",
+        "title": "EscalationListRequest"
+      },
+      "EscalationListResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "escalations": {
+            "items": {
+              "$ref": "#/components/schemas/EscalationRecord"
+            },
+            "type": "array",
+            "title": "Escalations"
+          },
+          "count": {
+            "type": "integer",
+            "title": "Count"
+          }
+        },
+        "type": "object",
+        "required": [
+          "escalations",
+          "count"
+        ],
+        "title": "EscalationListResponse"
+      },
+      "EscalationMessage": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "escalation_id": {
+            "type": "string",
+            "title": "Escalation Id"
+          },
+          "direction": {
+            "type": "string",
+            "title": "Direction"
+          },
+          "transport": {
+            "type": "string",
+            "title": "Transport"
+          },
+          "verified_actor": {
+            "type": "string",
+            "title": "Verified Actor"
+          },
+          "text": {
+            "type": "string",
+            "title": "Text"
+          },
+          "external_message_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "External Message Id"
+          },
+          "received_sequence": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Received Sequence"
+          },
+          "received_at": {
+            "type": "number",
+            "title": "Received At"
+          },
+          "supervisor_message_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Supervisor Message Id"
+          },
+          "created_at": {
+            "type": "number",
+            "title": "Created At"
+          }
+        },
+        "additionalProperties": true,
+        "type": "object",
+        "required": [
+          "id",
+          "escalation_id",
+          "direction",
+          "transport",
+          "verified_actor",
+          "text",
+          "received_at",
+          "created_at"
+        ],
+        "title": "EscalationMessage"
+      },
+      "EscalationRecord": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "project_id": {
+            "type": "string",
+            "title": "Project Id"
+          },
+          "task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Task Id"
+          },
+          "source_kind": {
+            "type": "string",
+            "title": "Source Kind"
+          },
+          "source_identity": {
+            "type": "string",
+            "title": "Source Identity"
+          },
+          "incident_key": {
+            "type": "string",
+            "title": "Incident Key"
+          },
+          "supervisor_owner": {
+            "type": "string",
+            "title": "Supervisor Owner"
+          },
+          "task_title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Task Title"
+          },
+          "task_status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Task Status"
+          },
+          "summary": {
+            "type": "string",
+            "title": "Summary"
+          },
+          "investigation": {
+            "type": "string",
+            "title": "Investigation"
+          },
+          "decision_requested": {
+            "type": "string",
+            "title": "Decision Requested"
+          },
+          "choices": {
+            "anyOf": [
+              {
+                "items": {},
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Choices"
+          },
+          "severity": {
+            "type": "string",
+            "title": "Severity"
+          },
+          "state": {
+            "type": "string",
+            "title": "State"
+          },
+          "revision": {
+            "type": "integer",
+            "title": "Revision"
+          },
+          "terminal_outcome": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Terminal Outcome"
+          },
+          "terminal_evidence": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Terminal Evidence"
+          },
+          "created_at": {
+            "type": "number",
+            "title": "Created At"
+          },
+          "updated_at": {
+            "type": "number",
+            "title": "Updated At"
+          },
+          "terminal_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Terminal At"
+          },
+          "delivery_statuses": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Delivery Statuses"
+          },
+          "pending_delivery": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pending Delivery"
+          }
+        },
+        "additionalProperties": true,
+        "type": "object",
+        "required": [
+          "id",
+          "project_id",
+          "source_kind",
+          "source_identity",
+          "incident_key",
+          "supervisor_owner",
+          "summary",
+          "investigation",
+          "decision_requested",
+          "severity",
+          "state",
+          "revision",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "EscalationRecord"
+      },
+      "EscalationReplyRequest": {
+        "properties": {
+          "escalation_id": {
+            "type": "string",
+            "title": "Escalation Id",
+            "description": ""
+          },
+          "text": {
+            "type": "string",
+            "title": "Text",
+            "description": ""
+          },
+          "external_message_id": {
+            "type": "string",
+            "title": "External Message Id",
+            "description": "Stable dashboard or adapter message identity for replay collapse."
+          },
+          "received_sequence": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Received Sequence",
+            "description": ""
+          }
+        },
+        "type": "object",
+        "required": [
+          "escalation_id",
+          "text",
+          "external_message_id"
+        ],
+        "title": "EscalationReplyRequest"
+      },
+      "EscalationReplyResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "reply": {
+            "$ref": "#/components/schemas/EscalationMessage"
+          },
+          "escalation": {
+            "$ref": "#/components/schemas/EscalationRecord"
+          },
+          "created": {
+            "type": "boolean",
+            "title": "Created"
+          },
+          "supervisor_enqueued": {
+            "type": "boolean",
+            "title": "Supervisor Enqueued"
+          },
+          "terminal": {
+            "type": "boolean",
+            "title": "Terminal"
+          }
+        },
+        "type": "object",
+        "required": [
+          "reply",
+          "escalation",
+          "created",
+          "supervisor_enqueued",
+          "terminal"
+        ],
+        "title": "EscalationReplyResponse"
+      },
+      "EscalationUpdateRequest": {
+        "properties": {
+          "escalation_id": {
+            "type": "string",
+            "title": "Escalation Id",
+            "description": ""
+          },
+          "expected_revision": {
+            "type": "integer",
+            "title": "Expected Revision",
+            "description": ""
+          },
+          "state": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "State",
+            "description": ""
+          },
+          "summary": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Summary",
+            "description": ""
+          },
+          "investigation": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Investigation",
+            "description": ""
+          },
+          "decision_requested": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Decision Requested",
+            "description": ""
+          },
+          "choices": {
+            "anyOf": [
+              {
+                "items": {},
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Choices",
+            "description": ""
+          },
+          "severity": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Severity",
+            "description": ""
+          },
+          "terminal_outcome": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Terminal Outcome",
+            "description": ""
+          },
+          "terminal_evidence": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Terminal Evidence",
+            "description": ""
+          }
+        },
+        "type": "object",
+        "required": [
+          "escalation_id",
+          "expected_revision"
+        ],
+        "title": "EscalationUpdateRequest"
+      },
+      "EscalationUpdateResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "escalation": {
+            "$ref": "#/components/schemas/EscalationRecord"
+          }
+        },
+        "type": "object",
+        "required": [
+          "escalation"
+        ],
+        "title": "EscalationUpdateResponse"
       },
       "EventGroupDTO": {
         "properties": {
@@ -22197,93 +23480,6 @@
         ],
         "title": "GetProfileResponse"
       },
-      "GetProjectChannelsRequest": {
-        "properties": {
-          "project_id": {
-            "type": "string",
-            "title": "Project Id",
-            "description": "Project ID"
-          }
-        },
-        "type": "object",
-        "required": [
-          "project_id"
-        ],
-        "title": "GetProjectChannelsRequest"
-      },
-      "GetProjectChannelsResponse": {
-        "properties": {
-          "project_id": {
-            "type": "string",
-            "title": "Project Id"
-          },
-          "channel_id": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Channel Id"
-          }
-        },
-        "type": "object",
-        "required": [
-          "project_id"
-        ],
-        "title": "GetProjectChannelsResponse"
-      },
-      "GetProjectForChannelRequest": {
-        "properties": {
-          "channel_id": {
-            "type": "string",
-            "title": "Channel Id",
-            "description": "Discord channel ID to look up"
-          }
-        },
-        "type": "object",
-        "required": [
-          "channel_id"
-        ],
-        "title": "GetProjectForChannelRequest"
-      },
-      "GetProjectForChannelResponse": {
-        "properties": {
-          "channel_id": {
-            "type": "string",
-            "title": "Channel Id"
-          },
-          "project_id": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Project Id"
-          },
-          "project_name": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Project Name"
-          }
-        },
-        "type": "object",
-        "required": [
-          "channel_id"
-        ],
-        "title": "GetProjectForChannelResponse"
-      },
       "GetProjectOnboardingRequest": {
         "properties": {
           "request_id": {
@@ -22460,17 +23656,6 @@
               }
             ],
             "title": "Budget Limit"
-          },
-          "discord_channel_id": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Discord Channel Id"
           },
           "default_profile_id": {
             "anyOf": [
@@ -33481,17 +34666,6 @@
             ],
             "title": "Repo Url"
           },
-          "discord_channel_id": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Discord Channel Id"
-          },
           "assignment_playbook_id": {
             "anyOf": [
               {
@@ -37305,26 +38479,6 @@
         "type": "object",
         "title": "SessionWakeRequest"
       },
-      "SetControlInterfaceRequest": {
-        "properties": {
-          "project_id": {
-            "type": "string",
-            "title": "Project Id",
-            "description": "Project ID or project name"
-          },
-          "channel_name": {
-            "type": "string",
-            "title": "Channel Name",
-            "description": "Discord channel name to look up"
-          }
-        },
-        "type": "object",
-        "required": [
-          "project_id",
-          "channel_name"
-        ],
-        "title": "SetControlInterfaceRequest"
-      },
       "SetDefaultBranchRequest": {
         "properties": {
           "project_id": {
@@ -37514,49 +38668,6 @@
           "enabled"
         ],
         "title": "SetPlaybookEnabledResponse"
-      },
-      "SetProjectChannelRequest": {
-        "properties": {
-          "project_id": {
-            "type": "string",
-            "title": "Project Id",
-            "description": "Project ID"
-          },
-          "channel_id": {
-            "type": "string",
-            "title": "Channel Id",
-            "description": "Discord channel ID to link"
-          }
-        },
-        "type": "object",
-        "required": [
-          "project_id",
-          "channel_id"
-        ],
-        "title": "SetProjectChannelRequest"
-      },
-      "SetProjectChannelResponse": {
-        "properties": {
-          "project_id": {
-            "type": "string",
-            "title": "Project Id"
-          },
-          "channel_id": {
-            "type": "string",
-            "title": "Channel Id"
-          },
-          "status": {
-            "type": "string",
-            "title": "Status",
-            "default": ""
-          }
-        },
-        "type": "object",
-        "required": [
-          "project_id",
-          "channel_id"
-        ],
-        "title": "SetProjectChannelResponse"
       },
       "SetProjectConstraintRequest": {
         "properties": {

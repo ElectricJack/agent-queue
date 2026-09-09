@@ -206,8 +206,9 @@ what fences kills.
 **Transcript readers** are the structured progress channel. Per-harness readers resolve the
 harness's own session log from `work_dir` + session key (Claude
 `~/.claude/projects/<slug>/*.jsonl`; Codex `~/.codex/sessions/…`; Gemini `~/.gemini/tmp`),
-poll ~2 s, normalize entries, and produce: `notify.*` events for Discord thread streaming
-and the dashboard (replacing the SDK message callback), token usage into the token ledger
+poll ~2 s, normalize entries, and produce: `notify.*` events for the dashboard (replacing
+the SDK message callback; Discord no longer streams a per-task thread — it consumes task
+activity for the hourly digest only), token usage into the token ledger
 (`db.record_token_usage`), model/context-% for session views, and `in-turn`/`idle` activity
 for the heartbeat. **This is the signal; pane text is a hint.**
 
@@ -219,7 +220,7 @@ ours (Codex has no `--session-id`), the reader also reports it via
 daemon can learn a key it did not assign, and without it restart-with-resume is impossible
 for that harness.
 
-**Peek** is `capture-pane` — for humans (`aq session peek`, dashboard, Discord `/peek`) and
+**Peek** is `capture-pane` — for humans (`aq session peek`, dashboard) and
 as the SSE fallback when no transcript is found. **Activity** from the provider is pane
 activity with poke discounting (our own nudges must not look like agent progress).
 
@@ -397,8 +398,8 @@ new hash to the manifest; a test fails otherwise.
 **Events:** `session.started` / `.ready` / `.adopted` / `.exited` / `.drain_acked` /
 `.sleeping` / `.recycled` / `.quarantined`; `task.stalled` / `.nudged` / `.restarted` /
 `.quarantined`; transcript-sourced `notify.task_message`. All cross-component signaling
-rides the EventBus (principle #7) — Discord and dashboard subscribe, the reconciler never
-calls them.
+rides the EventBus (principle #7) — the dashboard subscribes to all of it and the Discord
+digest to task activity alone, and the reconciler never calls them.
 
 ## 8. Failure Modes and Edge Cases
 

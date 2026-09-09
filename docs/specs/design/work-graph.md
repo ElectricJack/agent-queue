@@ -121,7 +121,7 @@ A **gate** is a first-class wait record — "something outside the graph must ha
 
 | gate_type | `await_id` holds | Resolved when |
 |---|---|---|
-| `human` | optional context ref (plan id, question id) | a human runs `gate resolve` — **only** path; Discord buttons and the dashboard call the same command |
+| `human` | optional context ref (plan id, question id) | a human runs `gate resolve` through the CLI, API, or dashboard — **only** path |
 | `timer` | target epoch seconds | `now ≥ await_id` (sweep) |
 | `pr-merged` | PR URL | `gh` reports merged **and** the PR's work has reached the default branch (sweep, via the extracted PR-poll helper from the approvals mixin) — see §5.1a |
 | `ci-run` | run id / URL | `gh run` reports success (sweep) |
@@ -179,7 +179,7 @@ A new deterministic step `_sweep_gates()` runs each cycle between approvals and 
 
 ### 5.5 Consumers and producers (cross-spec)
 
-- **[[messaging-rework]]** renders open gates as Discord buttons in task threads and the gates inbox; buttons invoke the `gate_resolve` command — no Discord-only approval path survives.
+- The dashboard gates inbox invokes `gate_resolve`. Discord gate buttons and task-thread approval paths are retired; Discord only carries durable escalation replies to the supervisor.
 - **[[supervisor-agent]]**: `aq ask` creates a `human` gate attached to the asking task; the reply resolves it (and is delivered as a nudge).
 - **[[worktree-execution]]**: "PR merged" / "CI green" completion gates replace bespoke polling states in the merge pipeline.
 - The gates table is the substrate the later status collapse (§12) lands on.

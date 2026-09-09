@@ -4,7 +4,16 @@ tags: [tools, agent, reference]
 
 # Agent Queue — Internal Tool Reference for AI Agents
 
-> **Audience:** AI agents (supervisor LLM, task agents) that call these tools programmatically via the tool-use loop. This is NOT documentation for Discord slash commands or human-facing interfaces.
+> **Audience:** AI agents (supervisor LLM, task agents) that call these tools programmatically via the tool-use loop. This is NOT documentation for human-facing interfaces.
+>
+> There is no agent tool that posts to Discord. Discord is an output surface with one
+> shared channel: the hourly activity digest, and an escalation thread per human
+> decision whose replies return to the owning project supervisor. An agent that needs a
+> human uses the escalation commands (see the [escalations guide](escalations.md));
+> an agent that needs another agent uses `message_send`. Channel selection and
+> delivery are the operator's, in the `discord:` config block — never a tool argument.
+> See the [migration runbook](discord-migration.md) and the
+> [replacement capability checklist](discord-replacement-checklist.md).
 
 All tools are called through [[specs/command-handler|CommandHandler]]`.execute(tool_name, params)`. Parameters are passed as a JSON object. Tools return `{"success": bool, ...}` dicts.
 
@@ -15,8 +24,11 @@ All tools are called through [[specs/command-handler|CommandHandler]]`.execute(t
 To optimize context window usage, tools are split into **core** (always loaded) and **categorized** (loaded on demand). See [[specs/tiered-tools|Tiered Tools]] for the design rationale.
 
 **To discover and load tools:**
-1. Call `browse_tools` (no params) → returns category names with descriptions and tool counts
-2. Call `load_tools(category="git")` → injects that category's tools into your active set
+1. Read the **Tool Index** in your system prompt — the registry renders category names,
+   descriptions and tool counts into it. (There is no `browse_tools` tool; the index
+   replaced it.)
+2. Call `load_tools(category="git")` → injects that category's tools into your active set,
+   or `load_tools(tool_name="git_commit")` for a single tool
 
 Loading is a context optimization only — all tools are always executable on the backend regardless of loading state.
 
@@ -30,10 +42,9 @@ Loading is a context optimization only — all tools are always executable on th
 
 | Tool | What It Does | Parameters |
 |------|-------------|------------|
-| `browse_tools` | List available tool categories | *none* |
-| `load_tools` | Load a tool category into active set | `category` (string, required) |
+| `load_tools` | Load a tool category (or one tool) into the active set | `category` (string) **or** `tool_name` (string) — one is required |
 | `reply_to_user` | **Must call** to deliver final response | `message` (string, required) |
-| `send_message` | Post message to a Discord channel | `channel_id` (string, required), `content` (string, required) |
+| `message_send` | Queue a message to a session, task, profile or user (the transport is the daemon's, not Discord's) | `to_kind` (required: `session`/`task`/`profile`/`user`), `to_id` (required), `body` (required), `from_kind`, `from_id`, `project_id`, `subject` |
 
 ### Task Management
 
@@ -84,19 +95,17 @@ All git tools accept optional `project_id` (defaults to active project) and `wor
 
 ---
 
-## Project Category (16 tools)
+## Project Category
 
 | Tool | What It Does | Parameters |
 |------|-------------|------------|
 | `list_projects` | List all projects | *none* |
-| `create_project` | Create new project | `name` (required), `credit_weight` (float, default 1.0), `max_concurrent_agents` (int, default 2), `repo_url`, `default_branch` (default "main"), `auto_create_channels` (bool) |
+| `create_project` | Create new project | `name` (required), `credit_weight` (float, default 1.0), `max_concurrent_agents` (int, default 2), `repo_url`, `default_branch` (default "main") |
 | `pause_project` | Pause task scheduling | `project_id` (required) |
 | `resume_project` | Resume task scheduling | `project_id` (required) |
-| `edit_project` | Edit project properties | `project_id` (required), then any of: `name`, `credit_weight`, `max_concurrent_agents`, `budget_limit` (int or null), `discord_channel_id` (string or null), `default_profile_id` (string or null), `repo_default_branch` |
+| `edit_project` | Edit project properties | `project_id` (required), then any of: `name`, `credit_weight`, `max_concurrent_agents`, `budget_limit` (int or null), `default_profile_id` (string or null), `repo_default_branch` |
 | `set_default_branch` | Set default git branch (creates on remote if missing) | `project_id` (required), `branch` (required) |
-| `get_project_channels` | Get Discord channel ID for project | `project_id` (required) |
-| `get_project_for_channel` | Find project linked to a channel | `channel_id` (required) |
-| `delete_project` | Delete project and all data (fails if task IN_PROGRESS) | `project_id` (required), `archive_channels` (bool) |
+| `delete_project` | Delete project and all data (fails if task IN_PROGRESS) | `project_id` (required) |
 | `set_active_project` | Set/clear default project for commands | `project_id` (string, empty/null to clear) |
 | `add_workspace` | Add workspace (clone from repo or link existing dir) | `project_id` (required), `source` (required: "clone" or "link"), `path` (required for link), `name` |
 | `list_workspaces` | List workspaces with lock status | `project_id` (optional) |

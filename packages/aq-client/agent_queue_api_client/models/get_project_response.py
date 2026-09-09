@@ -26,7 +26,6 @@ class GetProjectResponse:
         total_tokens_used (int | Unset):  Default: 0.
         tokens_used_recent (int | Unset):  Default: 0.
         budget_limit (int | None | Unset):
-        discord_channel_id (None | str | Unset):
         default_profile_id (None | str | Unset):
         assignment_playbook_id (None | str | Unset):
     """
@@ -42,7 +41,6 @@ class GetProjectResponse:
     total_tokens_used: int | Unset = 0
     tokens_used_recent: int | Unset = 0
     budget_limit: int | None | Unset = UNSET
-    discord_channel_id: None | str | Unset = UNSET
     default_profile_id: None | str | Unset = UNSET
     assignment_playbook_id: None | str | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
@@ -77,12 +75,6 @@ class GetProjectResponse:
             budget_limit = UNSET
         else:
             budget_limit = self.budget_limit
-
-        discord_channel_id: None | str | Unset
-        if isinstance(self.discord_channel_id, Unset):
-            discord_channel_id = UNSET
-        else:
-            discord_channel_id = self.discord_channel_id
 
         default_profile_id: None | str | Unset
         if isinstance(self.default_profile_id, Unset):
@@ -122,8 +114,6 @@ class GetProjectResponse:
             field_dict["tokens_used_recent"] = tokens_used_recent
         if budget_limit is not UNSET:
             field_dict["budget_limit"] = budget_limit
-        if discord_channel_id is not UNSET:
-            field_dict["discord_channel_id"] = discord_channel_id
         if default_profile_id is not UNSET:
             field_dict["default_profile_id"] = default_profile_id
         if assignment_playbook_id is not UNSET:
@@ -170,15 +160,6 @@ class GetProjectResponse:
 
         budget_limit = _parse_budget_limit(d.pop("budget_limit", UNSET))
 
-        def _parse_discord_channel_id(data: object) -> None | str | Unset:
-            if data is None:
-                return data
-            if isinstance(data, Unset):
-                return data
-            return cast(None | str | Unset, data)
-
-        discord_channel_id = _parse_discord_channel_id(d.pop("discord_channel_id", UNSET))
-
         def _parse_default_profile_id(data: object) -> None | str | Unset:
             if data is None:
                 return data
@@ -209,7 +190,6 @@ class GetProjectResponse:
             total_tokens_used=total_tokens_used,
             tokens_used_recent=tokens_used_recent,
             budget_limit=budget_limit,
-            discord_channel_id=discord_channel_id,
             default_profile_id=default_profile_id,
             assignment_playbook_id=assignment_playbook_id,
         )

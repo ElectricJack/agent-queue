@@ -18,6 +18,7 @@ const SystemProfiles = lazy(() => import("./pages/system/Profiles"));
 const SystemConfig = lazy(() => import("./pages/system/Config"));
 const IntelligenceClassesStub = lazy(() => import("./pages/settings/IntelligenceClassesStub"));
 const ProjectRoots = lazy(() => import("./pages/settings/ProjectRoots"));
+const Messaging = lazy(() => import("./pages/settings/Messaging"));
 
 const ProjectOverview = lazy(() => import("./pages/project/Overview"));
 const ProjectWorkspaces = lazy(() => import("./pages/project/Workspaces"));
@@ -177,6 +178,7 @@ export default function App() {
               <Route path="profiles" element={<SystemProfiles />} />
               <Route path="intelligence-classes" element={<IntelligenceClassesStub />} />
               <Route path="project-roots" element={<ProjectRoots />} />
+              <Route path="messaging" element={<Messaging />} />
               <Route path="config" element={<SystemConfig />} />
             </Route>
 

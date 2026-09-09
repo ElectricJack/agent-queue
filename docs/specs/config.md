@@ -120,40 +120,32 @@ database:
 
 ### 4.2 `discord` Section
 
-Maps to `DiscordConfig`. The YAML key is `discord`.
+Maps to `DiscordConfig`. Discord uses one shared destination.
 
 | YAML key | Type | Default | Description |
 |---|---|---|---|
-| `bot_token` | `str` | `""` | Discord bot token for authentication. |
-| `guild_id` | `str` | `""` | Discord server (guild) ID the bot operates in. |
-| `channels` | `dict[str, str]` | `{"channel": "agent-queue", "agent_questions": "agent-questions"}` | Mapping of logical channel role names to Discord channel names. See backward-compatibility note below. |
-| `authorized_users` | `list[str]` | `[]` | List of Discord usernames or IDs permitted to issue commands. |
-| `per_project_channels` | nested object | See section 4.2.1 | Settings for automatic per-project Discord channel management. |
+| `bot_token` | `str` | `""` | Discord bot token. |
+| `guild_id` | `str` | `""` | Discord server ID. |
+| `channel_id` | `str` | `""` | Numeric shared channel ID for digests and escalation roots. |
+| `authorized_users` | `list[str]` | `[]` | Discord user IDs allowed to reply in escalation threads. |
+| `digest` | object | enabled, 60 minutes | Digest interval, project visibility, categories and catch-up horizon. |
+| `escalation` | object | enabled | Mention allowlists, reminders and supervisor-delivery timeout. |
+| `rate_guard_*` | `int` | 1000/5000/8000 | Invalid-request warning, critical and halt thresholds. |
 
-#### Backward-Compatibility Channel Merging
+`digest.interval_minutes` is 15–1440 and `catchup_hours` is 1–168.
+`digest.project_ids: []` means all projects visible to this destination.
+`escalation.mention_user_ids`, `mention_role_ids`, and `channel_id` use
+numeric Discord IDs.
 
-When the `channels` dict is loaded, a check is performed for old-style configs that used `control` and/or `notifications` as channel keys instead of the unified `channel` key.
+Old `channels.control`, `channels.notifications` and
+`channels.agent_questions` names are retained only as one-way migration
+inventory. One unambiguous global name can be resolved at gateway startup;
+conflicting destinations require an explicit `channel_id`. Legacy
+`per_project_channels` is ignored with a warning and cannot enable channel
+creation.
 
-The merging rule:
-
-1. If the parsed `channels` dict already contains a `channel` key, no merging occurs and the dict is used as-is.
-2. If `channel` is absent but either `control` or `notifications` (or both) is present:
-   - The unified `channel` value is set to the value of `control` if that value is truthy (non-empty); otherwise it falls back to `notifications` (with `"agent-queue"` as the final default if `notifications` is also absent or empty).
-   - The `agent_questions` key is preserved from the raw dict if present, otherwise defaults to `"agent-questions"`.
-   - All other keys from the old config are discarded.
-
-This merging only activates when `channel` is absent and at least one of `control` or `notifications` is present. Any other combination of keys (including completely custom keys) is passed through untouched.
-
-#### 4.2.1 `per_project_channels` Sub-Section
-
-Maps to `PerProjectChannelsConfig`. The YAML key within `discord` is `per_project_channels`.
-
-| YAML key | Type | Default | Description |
-|---|---|---|---|
-| `auto_create` | `bool` | `False` | When `True`, the bot automatically creates a Discord channel for each project. |
-| `naming_convention` | `str` | `"{project_id}"` | Template string for the generated channel name. The placeholder `{project_id}` is substituted with the project's ID at runtime. |
-| `category_name` | `str` | `""` | Name of the Discord category to place project channels under. Empty string means no category grouping. |
-| `private` | `bool` | `True` | When `True`, auto-created channels and categories are private — the `@everyone` role is denied `view_channel`, and the bot is explicitly granted `view_channel` and `send_messages`. |
+Disabling external escalation or digest delivery never disables the core
+escalation inbox, supervisor routing, scheduler, or dashboard.
 
 ### 4.3 `agents` Section
 

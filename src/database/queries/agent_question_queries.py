@@ -10,6 +10,7 @@ from sqlalchemy.exc import IntegrityError
 
 from src.database.tables import (
     agent_questions as questions,
+    escalations,
     message_discord_receipts,
     messages,
     sessions,
@@ -18,6 +19,21 @@ from src.database.tables import (
 )
 
 PENDING_QUESTION_STATES = ("supervisor", "human", "answered")
+
+
+def _question_projection():
+    escalation_id = (
+        select(escalations.c.id)
+        .where(
+            escalations.c.project_id == questions.c.project_id,
+            escalations.c.source_kind == "question",
+            escalations.c.source_identity == questions.c.id,
+        )
+        .limit(1)
+        .scalar_subquery()
+        .label("escalation_id")
+    )
+    return select(questions, escalation_id)
 
 
 class AgentQuestionQueriesMixin:
@@ -35,7 +51,7 @@ class AgentQuestionQueriesMixin:
     async def get_agent_question(self, question_id: str) -> dict | None:
         async with self._engine.connect() as conn:
             row = (
-                (await conn.execute(select(questions).where(questions.c.id == question_id)))
+                (await conn.execute(_question_projection().where(questions.c.id == question_id)))
                 .mappings()
                 .first()
             )
@@ -44,7 +60,7 @@ class AgentQuestionQueriesMixin:
     async def list_agent_questions(
         self, project_id=None, session_id=None, pending_only=True
     ) -> list[dict]:
-        stmt = select(questions)
+        stmt = _question_projection()
         if project_id is not None:
             stmt = stmt.where(questions.c.project_id == project_id)
         if session_id is not None:
@@ -116,7 +132,11 @@ class AgentQuestionQueriesMixin:
             await conn.execute(
                 insert(messages).values(
                     id="msg-" + question_id,
-                    project_id=None,
+                    project_id=(
+                        select(questions.c.project_id)
+                        .where(questions.c.id == question_id)
+                        .scalar_subquery()
+                    ),
                     from_kind="system",
                     from_id="agent-questions",
                     to_kind="session",
@@ -129,6 +149,24 @@ class AgentQuestionQueriesMixin:
                     body_kind="agent_question",
                 )
             )
+
+    async def list_overdue_supervisor_incident_messages(self, cutoff: float) -> list[dict]:
+        """Return still-undelivered internal incidents old enough for one watchdog notice."""
+        statement = (
+            select(messages)
+            .where(
+                messages.c.to_kind == "session",
+                messages.c.to_id.like("supervisor-%"),
+                messages.c.body_kind.in_(("agent_question", "task_recovery", "escalation_reply")),
+                messages.c.project_id.is_not(None),
+                messages.c.created_at <= cutoff,
+                messages.c.delivered_at.is_(None),
+                messages.c.archived_at.is_(None),
+            )
+            .order_by(messages.c.created_at, messages.c.id)
+        )
+        async with self._engine.connect() as conn:
+            return [dict(row) for row in (await conn.execute(statement)).mappings().all()]
 
     async def claim_agent_question_delivery(self, question_id, token, now) -> bool:
         async with self._engine.begin() as conn:

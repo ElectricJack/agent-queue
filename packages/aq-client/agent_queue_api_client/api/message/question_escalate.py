@@ -65,9 +65,11 @@ def sync_detailed(
     client: AuthenticatedClient | Client,
     body: QuestionEscalateRequest,
 ) -> Response[AgentQuestionDetail | QuestionEscalateResponse422]:
-    """Escalate a worker question to the human when a factual answer is not sufficient.
+    """Create or reuse the durable human escalation for a worker question after supervisor investigation
+    cannot resolve it.
 
-     Escalate a worker question to the human when a factual answer is not sufficient.
+     Create or reuse the durable human escalation for a worker question after supervisor investigation
+    cannot resolve it.
 
     Args:
         body (QuestionEscalateRequest):
@@ -96,9 +98,11 @@ def sync(
     client: AuthenticatedClient | Client,
     body: QuestionEscalateRequest,
 ) -> AgentQuestionDetail | QuestionEscalateResponse422 | None:
-    """Escalate a worker question to the human when a factual answer is not sufficient.
+    """Create or reuse the durable human escalation for a worker question after supervisor investigation
+    cannot resolve it.
 
-     Escalate a worker question to the human when a factual answer is not sufficient.
+     Create or reuse the durable human escalation for a worker question after supervisor investigation
+    cannot resolve it.
 
     Args:
         body (QuestionEscalateRequest):
@@ -122,9 +126,11 @@ async def asyncio_detailed(
     client: AuthenticatedClient | Client,
     body: QuestionEscalateRequest,
 ) -> Response[AgentQuestionDetail | QuestionEscalateResponse422]:
-    """Escalate a worker question to the human when a factual answer is not sufficient.
+    """Create or reuse the durable human escalation for a worker question after supervisor investigation
+    cannot resolve it.
 
-     Escalate a worker question to the human when a factual answer is not sufficient.
+     Create or reuse the durable human escalation for a worker question after supervisor investigation
+    cannot resolve it.
 
     Args:
         body (QuestionEscalateRequest):
@@ -151,9 +157,11 @@ async def asyncio(
     client: AuthenticatedClient | Client,
     body: QuestionEscalateRequest,
 ) -> AgentQuestionDetail | QuestionEscalateResponse422 | None:
-    """Escalate a worker question to the human when a factual answer is not sufficient.
+    """Create or reuse the durable human escalation for a worker question after supervisor investigation
+    cannot resolve it.
 
-     Escalate a worker question to the human when a factual answer is not sufficient.
+     Create or reuse the durable human escalation for a worker question after supervisor investigation
+    cannot resolve it.
 
     Args:
         body (QuestionEscalateRequest):

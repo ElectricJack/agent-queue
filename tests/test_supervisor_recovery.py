@@ -95,6 +95,86 @@ async def decide(env, current, decision="retry", **extra):
     )
 
 
+async def apply_human_recovery_reply(env, current, decision):
+    created = await env.handler.execute(
+        "escalation_create",
+        {
+            "project_id": "p",
+            "task_id": "t",
+            "source_kind": "task_recovery",
+            "source_identity": current["id"],
+            "incident_key": "task-recovery:" + current["id"],
+            "summary": "Worker attempt is blocked",
+            "investigation": "Supervisor inspected the stopped attempt and recovery guards",
+            "decision_requested": "Retry the task or keep it blocked?",
+            "choices": ["retry", "hold"],
+            "severity": "high",
+        },
+    )
+    replay = await env.handler.execute(
+        "escalation_create",
+        {
+            "project_id": "p",
+            "task_id": "t",
+            "source_kind": "task_recovery",
+            "source_identity": current["id"],
+            "incident_key": "task-recovery:" + current["id"],
+            "summary": "Worker attempt is blocked",
+            "investigation": "Supervisor inspected the stopped attempt and recovery guards",
+            "decision_requested": "Retry the task or keep it blocked?",
+            "choices": ["retry", "hold"],
+            "severity": "high",
+        },
+    )
+    assert created["created"] is True
+    assert replay["created"] is False
+    escalation = created["escalation"]
+    accepted = await env.handler.execute(
+        "escalation_reply",
+        {
+            "escalation_id": escalation["id"],
+            "text": f"Decision: {decision}",
+            "external_message_id": "human-recovery-" + decision,
+        },
+    )
+    await env.db.create_session(
+        SessionRecord(
+            id="supervisor-" + decision,
+            project_id="p",
+            profile_id="supervisor",
+            harness="fake",
+            provider="fake",
+            name="n-supervisor--p",
+            lifecycle="named",
+            state="running",
+            desired_state="running",
+            epoch="test",
+            instance_token="supervisor-token-" + decision,
+            work_dir="/never-used",
+            started_at=300,
+        )
+    )
+    return await env.handler.execute(
+        "escalation_apply_reply",
+        {
+            "escalation_id": escalation["id"],
+            "reply_id": accepted["reply"]["id"],
+            "expected_revision": accepted["escalation"]["revision"],
+            "idempotency_key": "apply-human-recovery-" + decision,
+            "action_kind": "task_recover",
+            "target_id": "t",
+            "decision": decision,
+            "_scope": {
+                "kind": "session",
+                "session_id": "supervisor-" + decision,
+                "session_instance_token": "supervisor-token-" + decision,
+                "project_id": "p",
+                "elevated": True,
+            },
+        },
+    )
+
+
 async def test_notification_survives_restart_without_duplicates_and_has_diagnostics(env):
     current = await incident(env)
     await asyncio.gather(
@@ -103,12 +183,14 @@ async def test_notification_survives_restart_without_duplicates_and_has_diagnost
     async with env.db._engine.connect() as conn:
         queued = (await conn.execute(select(messages))).mappings().all()
     assert len(queued) == 1
-    assert queued[0]["to_id"] == "supervisor-global"
+    assert queued[0]["to_id"] == "supervisor-p"
+    assert queued[0]["project_id"] == "p"
     assert queued[0]["from_kind"] == "system"
     assert queued[0]["archive_after_inject"] == 1
     assert current["id"] in queued[0]["body"]
     assert '"idle_seconds": 1' in queued[0]["body"]
     assert "aq task recover" in queued[0]["body"]
+    assert "task-recovery:<incident-id>" in queued[0]["body"]
     assert (await env.db.get_task("t")).status == TaskStatus.BLOCKED
 
 
@@ -218,6 +300,30 @@ async def test_hold_decision_is_durable_and_does_not_restart(env):
     assert (await env.db.get_task_meta("t", "supervisor_recovery_incident"))["decision"] == "hold"
 
 
+@pytest.mark.parametrize("decision,expected_status", [("retry", "READY"), ("hold", "BLOCKED")])
+async def test_human_evidence_drives_guarded_recovery_or_keep_blocked(env, decision, expected_status):
+    current = await incident(env)
+    result = await apply_human_recovery_reply(env, current, decision)
+    assert result["success"] is True
+    assert result["escalation"]["state"] == "resolved"
+    assert result["action_result"]["status"] == expected_status
+    assert (await env.db.get_task("t")).status.value == expected_status
+
+
+async def test_integration_owned_recovery_keeps_operation_authority_and_budget(env, monkeypatch):
+    current = await incident(env)
+    monkeypatch.setattr(
+        env.db,
+        "get_active_integration_repair_for_task",
+        AsyncMock(return_value={"id": "integration-operation"}),
+    )
+    result = await decide(env, current, decision="hold")
+    assert "integration operation integration-operation" in result["error"]
+    assert (await env.db.get_task("t")).status == TaskStatus.BLOCKED
+    assert (await env.db.get_task_meta("t", "supervisor_recovery_incident"))["decision"] is None
+    assert await env.db.get_task_meta("t", "supervisor_recovery_attempts") is None
+
+
 async def test_two_recoveries_maximum_even_if_manual_retry_count_reset(env):
     for n in range(3):
         await env.db.transition_task("t", TaskStatus.BLOCKED, force=True, retry_count=0)
@@ -325,11 +431,11 @@ async def test_delivered_incident_rearmed_after_supervisor_exit_without_duplicat
     await env.db.create_session(
         SessionRecord(
             id="supervisor",
-            project_id=None,
+            project_id="p",
             profile_id="worker",
             harness="fake",
             provider="fake",
-            name="n-supervisor--global",
+            name="n-supervisor--p",
             lifecycle="named",
             state="running",
             desired_state="running",
@@ -357,6 +463,69 @@ async def test_delivered_incident_rearmed_after_supervisor_exit_without_duplicat
     async with env.db._engine.connect() as conn:
         assert len((await conn.execute(select(messages))).all()) == 1
     assert (await env.db.get_task_meta("t", "supervisor_recovery_incident"))["redeliveries"] == 1
+
+
+async def test_supervisor_unavailable_watchdog_is_bounded_deduplicated_and_non_actionable(env):
+    from src.escalations import SupervisorDeliveryWatchdog
+
+    current = await incident(env)
+    message = await env.db.get_message("msg-" + current["id"])
+    watchdog = SupervisorDeliveryWatchdog(env.db, env.orch.bus, env.config)
+    assert await watchdog.tick(message.created_at + 901) == 1
+    assert await watchdog.tick(message.created_at + 1800) == 0
+    escalations = await env.db.list_escalations(project_id="p")
+    watchdog_incidents = [e for e in escalations if e["source_kind"] == "supervisor_delivery"]
+    assert len(watchdog_incidents) == 1
+    unavailable = watchdog_incidents[0]
+    assert unavailable["source_identity"] == "task_recovery:" + current["id"]
+    assert "does not approve" in unavailable["decision_requested"]
+
+    accepted = await env.handler.execute(
+        "escalation_reply",
+        {
+            "escalation_id": unavailable["id"],
+            "text": "Retry it",
+            "external_message_id": "watchdog-reply",
+        },
+    )
+    await env.db.create_session(
+        SessionRecord(
+            id="supervisor-p",
+            project_id="p",
+            profile_id="supervisor",
+            harness="fake",
+            provider="fake",
+            name="n-supervisor--p",
+            lifecycle="named",
+            state="running",
+            desired_state="running",
+            epoch="test",
+            instance_token="supervisor-p-token",
+            work_dir="/never-used",
+            started_at=message.created_at,
+        )
+    )
+    result = await env.handler.execute(
+        "escalation_apply_reply",
+        {
+            "escalation_id": unavailable["id"],
+            "reply_id": accepted["reply"]["id"],
+            "expected_revision": accepted["escalation"]["revision"],
+            "idempotency_key": "watchdog-cannot-retry",
+            "action_kind": "task_recover",
+            "target_id": "t",
+            "decision": "retry",
+            "_scope": {
+                "kind": "session",
+                "session_id": "supervisor-p",
+                "session_instance_token": "supervisor-p-token",
+                "project_id": "p",
+                "elevated": True,
+            },
+        },
+    )
+    assert result["error_code"] == "invalid_binding"
+    assert (await env.db.get_task("t")).status == TaskStatus.BLOCKED
 
 
 @pytest.mark.parametrize("probe", ["unavailable", "still-listed"])

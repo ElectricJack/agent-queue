@@ -195,7 +195,7 @@ Memory is provided by the **external `aq-memory` plugin** (install via `aq plugi
 | Directory | Purpose |
 |-----------|---------|
 | `src/adapters/` | Agent adapter interface + Claude Code implementation |
-| `src/discord/` | Bot, slash commands, notifications, channel routing |
+| `src/discord/` | Notification-only Discord adapter: hourly digest and escalation post/thread delivery out, escalation-thread replies in. No slash commands, controls or channel routing |
 | `src/git/` | Clone, branch, worktree, push/pull, serialized shared-repo ops |
 | `src/tokens/` | Token budget calculation, usage ledger, rate limit tracking |
 | `src/llm/` | Direct LLM path — `LLMClient`, provider adapters (Anthropic, Google, OpenAI/Ollama), `LLMCallSpec` |
@@ -224,11 +224,11 @@ Playbooks, profiles, facts, and knowledge are all markdown files in `~/.agent-qu
 ### Why PostgreSQL only?
 Lightweight, zero-ops. Single process means no need for distributed locking. WAL mode gives concurrent reads. Survives restarts. Runs on a Raspberry Pi. SQLAlchemy Core provides dialect portability — PostgreSQL supported via asyncpg for production deployments.
 
-### Why Discord as control plane?
-Users manage from their phone. Discord slash commands and threads front the same `CommandHandler` used by CLI and MCP. Each task gets a thread for live streaming. Reply to threads to unblock agents.
+### Why Discord is *not* the control plane
+It was one, and the surface grew faster than it could be trusted: 122 mirrored slash commands, task buttons and per-task streaming threads all mutating work from a chat client. The dashboard, CLI and MCP now own browsing, controls, gates and logs; Discord is the phone-shaped notification surface only — one shared channel carrying an hourly activity digest and one thread per human decision. A reply in that thread is evidence for the owning project supervisor, never a direct task mutation. See `docs/guides/discord-commands.md` and `docs/guides/discord-migration.md`.
 
 ### Why the Command Pattern?
-`CommandHandler` is the single execution point for all operations. Discord slash commands, playbook nodes, MCP tools, and CLI all delegate here — ensures feature parity and consistent error handling across all interfaces.
+`CommandHandler` is the single execution point for all operations. Playbook nodes, MCP tools, the dashboard API and the CLI all delegate here — ensures feature parity and consistent error handling across all interfaces. The Discord adapter is held to the same rule and has exactly one command it may call, `escalation_reply`; it never touches the database or a session directly.
 
 ### Why plugins?
 Internal functionality (file ops, git, memory, code quality) is implemented as plugins with the same API available to third parties. This enforces clean boundaries, enables selective loading, and stress-tests the plugin API with real complexity.

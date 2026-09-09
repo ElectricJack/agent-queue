@@ -86,7 +86,7 @@ CATEGORIES: dict[str, CategoryMeta] = {
     "project": CategoryMeta(
         name="project",
         description=(
-            "Project CRUD, workspace management, channel configuration, "
+            "Project CRUD, workspace management, "
             "project metadata (repo URL, GitHub URL, workspace path)"
         ),
     ),
@@ -135,11 +135,25 @@ CATEGORIES: dict[str, CategoryMeta] = {
             "the messages that carry all chat and handoff traffic"
         ),
     ),
+    "escalation": CategoryMeta(
+        name="escalation",
+        description=(
+            "Durable supervisor-owned human escalations — create, inspect, reply, "
+            "update, and apply verified reply evidence"
+        ),
+    ),
+    "digest": CategoryMeta(
+        name="digest",
+        description=(
+            "Hourly activity digest — dry preview of the current window and the "
+            "configured schedule's destination, generation and delivery health"
+        ),
+    ),
     "discord": CategoryMeta(
         name="discord",
         description=(
-            "Discord channel and thread housekeeping — purge channel messages, "
-            "archive or delete task threads"
+            "Discord historical-message housekeeping — preview or purge messages "
+            "from the configured shared channel"
         ),
     ),
     "mcp": CategoryMeta(
@@ -221,7 +235,7 @@ class ToolRegistry:
         self._tool_index = idx
 
     def _ensure_navigation_tools(self) -> None:
-        """Add load_tools, send_message, reply_to_user stubs if absent.
+        """Add load_tools and reply_to_user stubs if absent.
 
         These tools are synthesised at init time rather than being defined in
         ``_ALL_TOOL_DEFINITIONS`` because they need special handling in the
@@ -252,29 +266,6 @@ class ToolRegistry:
                             "description": "Load a single tool by exact name",
                         },
                     },
-                },
-            }
-        if "send_message" not in self._all_tools:
-            self._all_tools["send_message"] = {
-                "name": "send_message",
-                "description": (
-                    "Post a message to a Discord channel. Use this to "
-                    "notify users, post updates, or communicate outside "
-                    "the current conversation thread."
-                ),
-                "input_schema": {
-                    "type": "object",
-                    "properties": {
-                        "channel_id": {
-                            "type": "string",
-                            "description": ("Discord channel ID to post to"),
-                        },
-                        "content": {
-                            "type": "string",
-                            "description": "Message content to post",
-                        },
-                    },
-                    "required": ["channel_id", "content"],
                 },
             }
         # reply_to_user — mandatory response delivery tool

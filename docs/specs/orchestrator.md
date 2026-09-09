@@ -562,7 +562,8 @@ assigning new tasks to this project.
 Poll `db.list_active_tasks` (excluding `COMPLETED`, `FAILED`, `BLOCKED`) every 10 seconds,
 filtering out the sync task itself.  Wait up to 3 600 seconds (1 hour).  If the timeout
 expires, transition the sync task to `FAILED` with `context="sync_timeout_waiting_for_tasks"`
-and return.  Progress is reported to the notification channel every 60 seconds.
+and return. Progress is recorded in state/events; Discord does not emit direct
+workflow progress notifications.
 
 **Early-out: workspaces already synced.**
 After active tasks have drained, re-check whether any workspace actually needs merging.
@@ -941,7 +942,7 @@ db.transition_task(task_id, PAUSED, context="tokens_exhausted", resume_after=...
 - `PAUSED_RATE_LIMIT`: `config.pause_retry.rate_limit_backoff_seconds`
 - `PAUSED_TOKENS`: `config.pause_retry.token_exhaustion_retry_seconds`
 
-A brief notification is sent to the task thread or notifications channel.
+The state transition is captured by the event log and appears in the dashboard and hourly digest. Discord does not create a task thread or emit a direct lifecycle notification.
 
 ### Global pause (`pause()` / `resume()`)
 

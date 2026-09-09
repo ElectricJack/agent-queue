@@ -431,16 +431,6 @@ def _register_all():
         extract=None,
         many=False,
     )
-    FORMATTERS["get_project_channels"] = FormatterSpec(
-        render=format_key_value,
-        extract=None,
-        many=False,
-    )
-    FORMATTERS["get_project_for_channel"] = FormatterSpec(
-        render=format_key_value,
-        extract=None,
-        many=False,
-    )
     FORMATTERS["find_merge_conflict_workspaces"] = FormatterSpec(
         render=format_entity_detail,
         extract=None,
@@ -458,7 +448,6 @@ def _register_all():
         "release_workspace",
         "queue_sync_workspaces",
         "set_active_project",
-        "set_control_interface",
     ):
         FORMATTERS[_proj_confirm] = FormatterSpec(
             render=format_confirmation,

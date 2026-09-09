@@ -192,9 +192,8 @@ class Orchestrator(
 
     The orchestrator is deliberately decoupled from any messaging transport.
     All outbound notifications are emitted as typed events on the EventBus
-    via ``_emit_notify()``.  Transport handlers (e.g.
-    ``DiscordNotificationHandler``) subscribe to ``notify.*`` events and
-    handle formatting/delivery independently.  This makes the orchestrator
+    via ``_emit_notify()``. Plugins and other transport-neutral consumers may
+    subscribe independently. This makes the orchestrator
     testable in isolation and keeps the transport layer pluggable.
 
     Key internal state:
@@ -350,6 +349,16 @@ class Orchestrator(
         # each task (keyed by task_id) to rate-limit alerts.
         self._stuck_notified_at: dict[str, float] = {}
         self.vault_watcher = None
+        # Escalation delivery pump (discord-simplification §7).  Wired by
+        # ``main.py`` once a transport exists; ``None`` means "no external
+        # escalation surface", which never affects scheduling or the durable
+        # escalation records themselves.
+        self.escalation_delivery = None
+        # Hourly digest scheduler (discord-simplification §8).  Also wired by
+        # ``main.py``; ``None`` means no external routine surface.  Evaluation
+        # and delivery both live in the service, so nothing about the cycle
+        # depends on whether Discord is reachable.
+        self.digest_schedule = None
         # MCP server registry — populated from vault/mcp-servers/*.md and
         # vault/projects/*/mcp-servers/*.md on startup, kept current by the
         # vault watcher.  Resolves the ``list[str]`` of names on each
@@ -420,6 +429,11 @@ class Orchestrator(
         # (spec default).
         self.agent_questions = AgentQuestionService(
             self.db, self.bus, self.session_providers, config
+        )
+        from src.escalations import SupervisorDeliveryWatchdog
+
+        self.supervisor_delivery_watchdog = SupervisorDeliveryWatchdog(
+            self.db, self.bus, config
         )
         self.transcript_watcher = TranscriptWatcher(
             db=self.db,
@@ -2557,6 +2571,28 @@ class Orchestrator(
                 except Exception as e:
                     logger.warning("WorkspaceSpecWatcher check failed: %s", e)
 
+            # 7d-bis. Escalation delivery pump (discord-simplification §7):
+            # reconcile open incidents into the durable delivery outbox and
+            # push whatever is due.  ``tick`` never raises — a Discord outage
+            # must not stop the EventBus or the scheduler — but the call is
+            # guarded anyway so a wiring mistake cannot either.
+            if self.escalation_delivery is not None:
+                try:
+                    await self.escalation_delivery.tick()
+                except Exception:
+                    logger.warning("Escalation delivery tick failed", exc_info=True)
+
+            # 7d-ter. Hourly digest scheduler (discord-simplification §8):
+            # reserve and evaluate the due window, then deliver the ones that
+            # had something to say.  Escalations are pumped first above and
+            # the digest pump stands down while any are owed a send, which is
+            # §7's priority rule.  ``tick`` never raises.
+            if self.digest_schedule is not None:
+                try:
+                    await self.digest_schedule.tick()
+                except Exception:
+                    logger.warning("Digest schedule tick failed", exc_info=True)
+
             # 7e. Periodic orphan workflow check (Roadmap 7.5.6).
             # Detects workflows whose coordination playbook died and emits
             # workflow.orphaned events.  Rate-limited internally (~60s).
@@ -3026,6 +3062,10 @@ class Orchestrator(
             await self.message_delivery.check_reply_timeouts()
         except Exception:
             logger.exception("Message delivery pass failed")
+        try:
+            await self.supervisor_delivery_watchdog.tick(now)
+        except Exception:
+            logger.exception("Supervisor delivery watchdog pass failed")
 
     async def _revoke_expired_tokens(self) -> None:
         """Sweep expired API session tokens out of ``api_session_tokens``.

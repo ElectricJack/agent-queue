@@ -6,8 +6,6 @@ from typing import Any, TypeVar
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
 
-from ..types import UNSET, Unset
-
 T = TypeVar("T", bound="DeleteProjectRequest")
 
 
@@ -16,18 +14,13 @@ class DeleteProjectRequest:
     """
     Attributes:
         project_id (str): Project ID to delete
-        archive_channels (bool | Unset): If true, archive the project's Discord channels (rename + set read-only)
-            instead of leaving them as-is. Default: false. Default: False.
     """
 
     project_id: str
-    archive_channels: bool | Unset = False
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         project_id = self.project_id
-
-        archive_channels = self.archive_channels
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
@@ -36,8 +29,6 @@ class DeleteProjectRequest:
                 "project_id": project_id,
             }
         )
-        if archive_channels is not UNSET:
-            field_dict["archive_channels"] = archive_channels
 
         return field_dict
 
@@ -46,11 +37,8 @@ class DeleteProjectRequest:
         d = dict(src_dict)
         project_id = d.pop("project_id")
 
-        archive_channels = d.pop("archive_channels", UNSET)
-
         delete_project_request = cls(
             project_id=project_id,
-            archive_channels=archive_channels,
         )
 
         delete_project_request.additional_properties = d

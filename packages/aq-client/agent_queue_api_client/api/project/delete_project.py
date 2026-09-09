@@ -66,12 +66,10 @@ def sync_detailed(
     body: DeleteProjectRequest,
 ) -> Response[DeleteProjectResponse | DeleteProjectResponse422]:
     """Delete a project and all associated data (tasks, repos, results, token ledger). Cannot delete if any
-    task is IN_PROGRESS. In-memory channel caches are automatically purged. Optionally archive the
-    project's Discord channels.
+    task is IN_PROGRESS. Historical Discord content is left untouched.
 
      Delete a project and all associated data (tasks, repos, results, token ledger). Cannot delete if any
-    task is IN_PROGRESS. In-memory channel caches are automatically purged. Optionally archive the
-    project's Discord channels.
+    task is IN_PROGRESS. Historical Discord content is left untouched.
 
     Args:
         body (DeleteProjectRequest):
@@ -101,12 +99,10 @@ def sync(
     body: DeleteProjectRequest,
 ) -> DeleteProjectResponse | DeleteProjectResponse422 | None:
     """Delete a project and all associated data (tasks, repos, results, token ledger). Cannot delete if any
-    task is IN_PROGRESS. In-memory channel caches are automatically purged. Optionally archive the
-    project's Discord channels.
+    task is IN_PROGRESS. Historical Discord content is left untouched.
 
      Delete a project and all associated data (tasks, repos, results, token ledger). Cannot delete if any
-    task is IN_PROGRESS. In-memory channel caches are automatically purged. Optionally archive the
-    project's Discord channels.
+    task is IN_PROGRESS. Historical Discord content is left untouched.
 
     Args:
         body (DeleteProjectRequest):
@@ -131,12 +127,10 @@ async def asyncio_detailed(
     body: DeleteProjectRequest,
 ) -> Response[DeleteProjectResponse | DeleteProjectResponse422]:
     """Delete a project and all associated data (tasks, repos, results, token ledger). Cannot delete if any
-    task is IN_PROGRESS. In-memory channel caches are automatically purged. Optionally archive the
-    project's Discord channels.
+    task is IN_PROGRESS. Historical Discord content is left untouched.
 
      Delete a project and all associated data (tasks, repos, results, token ledger). Cannot delete if any
-    task is IN_PROGRESS. In-memory channel caches are automatically purged. Optionally archive the
-    project's Discord channels.
+    task is IN_PROGRESS. Historical Discord content is left untouched.
 
     Args:
         body (DeleteProjectRequest):
@@ -164,12 +158,10 @@ async def asyncio(
     body: DeleteProjectRequest,
 ) -> DeleteProjectResponse | DeleteProjectResponse422 | None:
     """Delete a project and all associated data (tasks, repos, results, token ledger). Cannot delete if any
-    task is IN_PROGRESS. In-memory channel caches are automatically purged. Optionally archive the
-    project's Discord channels.
+    task is IN_PROGRESS. Historical Discord content is left untouched.
 
      Delete a project and all associated data (tasks, repos, results, token ledger). Cannot delete if any
-    task is IN_PROGRESS. In-memory channel caches are automatically purged. Optionally archive the
-    project's Discord channels.
+    task is IN_PROGRESS. Historical Discord content is left untouched.
 
     Args:
         body (DeleteProjectRequest):

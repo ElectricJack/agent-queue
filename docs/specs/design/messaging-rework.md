@@ -4,7 +4,7 @@ tags: [design, messaging, discord, dashboard, api, overhaul]
 
 # Messaging Rework — Out-of-Process Discord, Dashboard as Primary UI
 
-**Status:** Draft — approved direction (2026-08-19)
+**Status:** Superseded for Discord by [[../messaging/discord]] and the [Discord replacement checklist](../../guides/discord-replacement-checklist.md). The retained design history below does not describe the current Discord product surface.
 **Principles:** [[guiding-design-principles]] (#1 files as source of truth, #2 visible and editable, #5 reduce effort not judgment, #7 events not coupling, #10 fewer moving parts)
 **Related:** [[../analysis/framework-overhaul-todo]] (D7, Workstream F §9), [[session-runtime]] (notify events, transcripts, SSE), [[supervisor-agent]] (messages table, chat relay), [[work-graph]] (gates, event log, `after_seq`), [[aq-surface]] (commands, `--json` envelope), [[../messaging/base]] (superseded in part), [[../messaging/discord]] (superseded), [[../messaging/telegram]] (removed)
 
@@ -47,9 +47,9 @@ adapter out of process.
 | # | Decision |
 |---|---|
 | M1 | **Telegram is removed entirely** — `src/telegram/` and the `python-telegram-bot` dependency are deleted, not paused. |
-| M2 | **Discord becomes a separate process** in `packages/aq-discord/` with its own `pyproject.toml` and its own `discord.py` dependency. After migration the daemon never imports discord.py. |
+| M2 | **Discord becomes a separate process** in `packages/aq-discord/` with its own `pyproject.toml` and its own `discord.py` dependency. After migration the daemon never imports discord.py. **Not done, and not required.** The Discord simplification keeps the adapter in-tree at `src/discord/` behind a transport-neutral command/event boundary — the daemon still imports discord.py. Moving the process boundary remains separate, unscheduled work; nothing in the current product surface depends on it. |
 | M3 | The bot talks to the daemon **only via REST + WebSocket** — the same `/api/execute` + `/api/ws` surface the dashboard uses — authenticated with a **service token**, with reconnect/backoff and `after_seq` resume. |
-| M4 | Discord keeps five features: per-task threads (streamed from transcript events, in-place edits), thread replies → agent messages / gate answers, gate & approval buttons, project-channel chat → the project's supervisor session, and a minimal (≤6) set of read-only slash commands. |
+| M4 | ~~Discord keeps five features: per-task threads (streamed from transcript events, in-place edits), thread replies → agent messages / gate answers, gate & approval buttons, project-channel chat → the project's supervisor session, and a minimal (≤6) set of read-only slash commands.~~ **Superseded** by the [Discord simplification implementation spec](../../superpowers/specs/2026-09-08-discord-simplification-implementation.md) §1–§2. All five are removed from the target surface. Discord keeps exactly two: the hourly activity digest and one escalation thread per human decision, whose replies return to the owning project supervisor. §4.1–4.5 below describe the retired design. |
 | M5 | Removed: the 122 mirrored command handlers, the project wizard, and the ad-hoc views (`src/discord/commands.py`, `project_wizard.py`, most of `views.py`). |
 | M6 | `src/messaging/` stays in-tree as the transport-port abstraction (used by the interim in-process adapter and any future in-process transport). Its Telegram branch goes now. |
 | M7 | **The dashboard is the primary UI.** Every dashboard feature follows the API-first rule: a named `CommandHandler` command + a registered Pydantic response model + the generated TS client — no dashboard-private endpoints. |
@@ -95,6 +95,15 @@ Three properties define the boundary:
 ---
 
 ## 4. What Discord keeps
+
+> **Superseded (2026-09-08).** Sections 4.1–4.5 describe the M4 surface, which the
+> [Discord simplification implementation spec](../../superpowers/specs/2026-09-08-discord-simplification-implementation.md)
+> removed in full. Per-task execution threads, thread-reply-to-worker routing, gate and
+> approval buttons, project-channel chat and the six slash commands no longer exist. For the
+> current surface read [[../messaging/discord]] and
+> [Discord notifications](../../guides/discord-commands.md); for what replaced each control,
+> the [replacement capability checklist](../../guides/discord-replacement-checklist.md); for the
+> operator procedure, the [migration runbook](../../guides/discord-migration.md).
 
 ### 4.1 Per-task threads (observe surface)
 
@@ -143,20 +152,27 @@ tailed assistant turn) posts back to the channel. This replaces the in-process
 `Supervisor.chat()` loop, the channel history buffer, and channel summarization — the
 supervisor session owns its own conversation memory (`--resume`).
 
-### 4.5 Minimal slash commands (6)
+### 4.5 Minimal slash commands (6) — removed, none survive
 
-| Command | Backs onto | Why it survives |
+> **Superseded (2026-09-08).** The bot registers **no** slash commands. The cutover
+> unregisters these six from the guild ([Discord simplification implementation spec]
+> (../../superpowers/specs/2026-09-08-discord-simplification-implementation.md) §10) and
+> leaves unrelated guild commands alone. The table is history; the third column records
+> where each capability lives now.
+
+| Removed command | Backed onto | Where it lives now |
 |---|---|---|
-| `/status` | `system_status` | The single highest-frequency glance; answerable in one embed. |
-| `/tasks [project] [status]` | `list_tasks` | Orientation before replying in a thread. |
-| `/explain <task>` | `task_explain` | "Why isn't X running" is *the* support question; explain is built for it ([[work-graph]]). |
-| `/peek <task>` | `session_peek` | See the live pane without leaving Discord; complements thread streaming. |
-| `/gates [project]` | `gate_list` | What is waiting on a human right now. |
-| `/attach <task>` | `session_attach` | Prints the `tmux attach` command — the bridge to the real terminal. |
+| `/status` | `system_status` | Dashboard overview; `aq system status`. |
+| `/tasks [project] [status]` | `list_tasks` | Dashboard Tasks tab; `aq task list`. The hourly digest carries the activity summary nobody has to ask for. |
+| `/explain <task>` | `task_explain` | `aq task explain`; dashboard task detail. |
+| `/peek <task>` | `session_peek` | `aq session peek`; dashboard session view. Discord never streamed a pane again. |
+| `/gates [project]` | `gate_list` | Dashboard gates view; `aq playbook gates`. A gate that needs a human now opens an escalation thread instead of waiting to be discovered. |
+| `/attach <task>` | `session_attach` | `aq session attach`. |
 
-Selection rule: **read-only or navigation only**. Every mutation flows through gate buttons,
-thread replies, supervisor chat, or the dashboard — mutating slash commands are exactly the
-122-command surface we are deleting. Six is the cap; additions require removing one.
+The old selection rule (**read-only or navigation only**, capped at six) is moot: Discord is
+an output surface plus one reply path. The only inbound message the bot acts on is a reply
+in an escalation thread, and that is routed to the owning project supervisor rather than
+executing a command.
 
 ### 4.6 Removed
 

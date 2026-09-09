@@ -60,7 +60,7 @@ Agent Queue uses a YAML configuration file. The setup wizard creates this for yo
 
 Key configuration sections:
 
-- **discord** — Bot token, guild ID, channel names
+- **discord** — Bot token, guild ID, and one shared channel ID
 - **agents_default** — Heartbeat intervals, timeouts
 - **scheduling** — Rolling window, token budgets
 - **projects** — Your project definitions with workspace paths and repo settings
@@ -71,14 +71,16 @@ roots and GitHub host authentication as needed; see the
 
 ## First Steps
 
-Once the daemon is running and connected to Discord:
+Once the daemon is running:
 
 1. **Add a project** — Use the dashboard's **Add project** wizard or `aq project onboard`; it selects or creates repositories only beneath configured project roots. See the [project onboarding guide](project-onboarding.md).
-2. **Create a task** — Describe what you want done in natural language, or use `/add-task`
-3. **Watch it work** — The bot creates a thread and streams agent progress
+2. **Create a task** — Use the dashboard or `aq task add`
+3. **Watch it work** — Follow the dashboard live session view and recorded attempts
 4. **Review the PR** — When the task completes, review the generated pull request
 
-The bot uses a **Supervisor** — an LLM-powered conversation interface that translates your natural language into system commands. You can also use Discord slash commands (type `/` to see them) for structured operations. Both methods call the same underlying logic.
+Discord optionally posts an hourly digest and opens a durable thread when the
+supervisor needs a human answer. Replies in that thread return to the
+supervisor; Discord does not expose task commands or general chat.
 
 ### Alternative Interfaces
 
