@@ -220,10 +220,14 @@ def pool_row(project_id: str = PROJECT, profile_id: str = POOL_PROFILE) -> dict:
     raise Failure(f"no pool row for {project_id}/{profile_id}")
 
 
-def pool_sessions(project_id: str = PROJECT) -> list[dict]:
+def pool_sessions(project_id: str | None = PROJECT) -> list[dict]:
     rows = aq("session", "list", "--lifecycle", "pool").get("sessions", [])
     live = ("starting", "running")
-    return [s for s in rows if s["project_id"] == project_id and s["state"] in live]
+    return [
+        s
+        for s in rows
+        if (project_id is None or s["project_id"] == project_id) and s["state"] in live
+    ]
 
 
 def session_token(session_id: str) -> str:
@@ -316,8 +320,9 @@ def fresh_workers(count: int) -> list[Worker]:
     task it creates is the only thing to race for.  Rebuilding beats
     guessing:
 
-    1. drain the pool profile's frontier and kill every live session, in a
-       loop.  Both halves are needed and neither is enough on its own: a
+    1. drain the pool profile's frontier and kill every live session across
+       both isolated fixture projects in a loop.  Both halves are needed and
+       neither is enough on its own: a
        session holding a task blocks the delete, and demand that outlives a
        kill just makes the sizer start a replacement on the next tick.  The
        loop converges once the frontier is empty *and* no session is live.
@@ -327,11 +332,18 @@ def fresh_workers(count: int) -> list[Worker]:
     """
 
     def _quiesced():
-        _delete_open_pool_tasks()
-        live = pool_sessions()
+        # Pool bounds are global per profile.  S5 deliberately starts an
+        # ``other``-project worker to prove scope fencing; leaving it idle
+        # here consumes one of S7's two global worker slots and prevents a
+        # two-way race from being set up.
+        for project_id in (PROJECT, OTHER_PROJECT):
+            _delete_open_pool_tasks(project_id)
+        live = pool_sessions(project_id=None)
         for s in live:
             aq("session", "kill", s["id"], check_ok=False)
-        return not live and not _open_pool_tasks()
+        return not live and not any(
+            _open_pool_tasks(project_id) for project_id in (PROJECT, OTHER_PROJECT)
+        )
 
     wait_for(_quiesced, what="the pool to quiesce (no live sessions, empty frontier)")
 
@@ -345,20 +357,20 @@ def fresh_workers(count: int) -> list[Worker]:
     return [Worker.adopt(s["id"]) for s in live[:count]]
 
 
-def _open_pool_tasks() -> list[dict]:
+def _open_pool_tasks(project_id: str = PROJECT) -> list[dict]:
     """Every unfinished task in the project.
 
     ``aq task list`` already hides COMPLETED/FAILED/BLOCKED and returns a
     bare list, and its rows carry no ``profile_id`` — so this cannot filter
     to the pool profile.  It does not need to: at the S5/S7 boundary
-    everything still open in ``e2e`` is leftover scenario scaffolding, and
-    clearing all of it is exactly the point.
+    everything still open in either isolated fixture project is leftover
+    scenario scaffolding, and clearing all of it is exactly the point.
     """
-    rows = aq("task", "list", "--project", PROJECT)
+    rows = aq("task", "list", "--project", project_id)
     return list(rows) if isinstance(rows, list) else rows.get("tasks", [])
 
 
-def _delete_open_pool_tasks() -> None:
+def _delete_open_pool_tasks(project_id: str = PROJECT) -> None:
     """Clear the frontier so a scenario starts from zero.
 
     ``--cascade`` because a worker-filed task from S3 may still hang off
@@ -366,7 +378,7 @@ def _delete_open_pool_tasks() -> None:
     holding refuses deletion, and the caller's loop retries after the kill
     has released it.
     """
-    for task in _open_pool_tasks():
+    for task in _open_pool_tasks(project_id):
         aq("task", "delete", "--task-id", task["id"], "--cascade", check_ok=False)
 
 

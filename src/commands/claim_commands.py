@@ -249,6 +249,12 @@ class ClaimCommandsMixin:
                 "error": "task sessions cannot claim other work",
             }
 
+        # This is the durable proof that an idle worker's claim loop is still
+        # alive.  A long poll may be silent in the harness for up to its
+        # whole wait window, so the reconciler cannot infer loop progress from
+        # transcript activity alone after a preparation failure.
+        await self.db.touch_session_activity(session.id, time.time())
+
         cap = self._pool_context_claim_cap(profile)
         project = await self.db.get_project(session.project_id)
         default_profile = getattr(project, "default_profile_id", None)

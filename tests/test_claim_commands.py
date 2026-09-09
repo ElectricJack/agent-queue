@@ -12,7 +12,7 @@ import pytest
 from src.commands.handler import CommandHandler
 from src.config import DatabaseConfig, AppConfig, DiscordConfig
 from src.database import Database
-from src.database.tables import task_branch_origins, task_metadata
+from src.database.tables import integration_repair_stages, task_branch_origins, task_metadata
 from src.intelligence_classes import IntelligenceClass
 from src.integration.models import BranchKey
 from src.integration.ownership import BranchOwnership
@@ -601,6 +601,39 @@ class TestClaim:
         res = await scoped(handler, sid)._cmd_task_claim({"next": True})
 
         assert res["result"] == "claimed" and res["task"]["id"] == "repair-operation-0"
+
+    async def test_pool_claim_skips_an_expired_repair_delegate(
+        self, handler, db, tmp_path
+    ):
+        """A stage can expire while its never-started delegate is still READY."""
+        await mktask(
+            db,
+            "repair-operation-0",
+            profile_id="worker",
+            priority=1,
+            created_by_kind="integration_repair",
+            created_by_id="operation",
+        )
+        await mktask(db, "ordinary", profile_id="worker", priority=100)
+        async with db.immediate() as conn:
+            await conn.execute(
+                integration_repair_stages.insert().values(
+                    operation_id="operation",
+                    ordinal=0,
+                    policy={},
+                    repair_task_id="repair-operation-0",
+                    writer_kind="repair_delegate",
+                    starting_sha="a" * 40,
+                    attempts=0,
+                    state="expired",
+                )
+            )
+        sid, _ = await pool_session(db, tmp_path)
+
+        res = await scoped(handler, sid)._cmd_task_claim({"next": True})
+
+        assert res["result"] == "claimed" and res["task"]["id"] == "ordinary"
+        assert (await db.get_task("repair-operation-0")).status is TaskStatus.READY
 
     async def test_no_ready_work_without_wait(self, handler, db, tmp_path):
         sid, _ = await pool_session(db, tmp_path)
