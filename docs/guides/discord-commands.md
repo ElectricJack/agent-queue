@@ -37,4 +37,8 @@ channel selection. Agent Queue never creates or deletes channels during the
 cutover.
 
 See [Discord replacement capability checklist](discord-replacement-checklist.md)
-for the dashboard/CLI replacement for each retired surface.
+for the dashboard/CLI replacement for each retired surface, the
+[migration runbook](discord-migration.md) for the operator procedure — channel
+selection, pending-conversation migration, digest preview, delivery health and
+rollback — and [Durable human escalations](escalations.md) for the model
+underneath the threads.

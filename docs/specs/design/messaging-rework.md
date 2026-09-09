@@ -47,9 +47,9 @@ adapter out of process.
 | # | Decision |
 |---|---|
 | M1 | **Telegram is removed entirely** — `src/telegram/` and the `python-telegram-bot` dependency are deleted, not paused. |
-| M2 | **Discord becomes a separate process** in `packages/aq-discord/` with its own `pyproject.toml` and its own `discord.py` dependency. After migration the daemon never imports discord.py. |
+| M2 | **Discord becomes a separate process** in `packages/aq-discord/` with its own `pyproject.toml` and its own `discord.py` dependency. After migration the daemon never imports discord.py. **Not done, and not required.** The Discord simplification keeps the adapter in-tree at `src/discord/` behind a transport-neutral command/event boundary — the daemon still imports discord.py. Moving the process boundary remains separate, unscheduled work; nothing in the current product surface depends on it. |
 | M3 | The bot talks to the daemon **only via REST + WebSocket** — the same `/api/execute` + `/api/ws` surface the dashboard uses — authenticated with a **service token**, with reconnect/backoff and `after_seq` resume. |
-| M4 | Discord keeps five features: per-task threads (streamed from transcript events, in-place edits), thread replies → agent messages / gate answers, gate & approval buttons, project-channel chat → the project's supervisor session, and a minimal (≤6) set of read-only slash commands. |
+| M4 | ~~Discord keeps five features: per-task threads (streamed from transcript events, in-place edits), thread replies → agent messages / gate answers, gate & approval buttons, project-channel chat → the project's supervisor session, and a minimal (≤6) set of read-only slash commands.~~ **Superseded** by the [Discord simplification implementation spec](../../superpowers/specs/2026-09-08-discord-simplification-implementation.md) §1–§2. All five are removed from the target surface. Discord keeps exactly two: the hourly activity digest and one escalation thread per human decision, whose replies return to the owning project supervisor. §4.1–4.5 below describe the retired design. |
 | M5 | Removed: the 122 mirrored command handlers, the project wizard, and the ad-hoc views (`src/discord/commands.py`, `project_wizard.py`, most of `views.py`). |
 | M6 | `src/messaging/` stays in-tree as the transport-port abstraction (used by the interim in-process adapter and any future in-process transport). Its Telegram branch goes now. |
 | M7 | **The dashboard is the primary UI.** Every dashboard feature follows the API-first rule: a named `CommandHandler` command + a registered Pydantic response model + the generated TS client — no dashboard-private endpoints. |
@@ -95,6 +95,15 @@ Three properties define the boundary:
 ---
 
 ## 4. What Discord keeps
+
+> **Superseded (2026-09-08).** Sections 4.1–4.5 describe the M4 surface, which the
+> [Discord simplification implementation spec](../../superpowers/specs/2026-09-08-discord-simplification-implementation.md)
+> removed in full. Per-task execution threads, thread-reply-to-worker routing, gate and
+> approval buttons, project-channel chat and the six slash commands no longer exist. For the
+> current surface read [[../messaging/discord]] and
+> [Discord notifications](../../guides/discord-commands.md); for what replaced each control,
+> the [replacement capability checklist](../../guides/discord-replacement-checklist.md); for the
+> operator procedure, the [migration runbook](../../guides/discord-migration.md).
 
 ### 4.1 Per-task threads (observe surface)
 

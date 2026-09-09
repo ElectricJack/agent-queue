@@ -160,7 +160,6 @@ creates the project, primary workspace, and vault structure as one operation.
 - `name` (required): Human-readable project name. The project ID is derived by lowercasing and replacing spaces with hyphens.
 - `credit_weight` (optional, default `1.0`): Scheduler weight for this project.
 - `max_concurrent_agents` (optional, default `2`): Maximum agents that can work on this project simultaneously.
-- `auto_create_channels` (optional): Boolean override for whether the Discord layer should auto-create a channel. If not provided, falls back to `config.discord.per_project_channels.auto_create`.
 
 **Behavior:** Derives the project ID from the name, selects the requested or
 system-default profile when one resolves, saves the project, creates its
@@ -171,7 +170,6 @@ standard task/vault storage, and invokes the optional project-created callback.
 {
     "created": <str: project_id>,
     "name": <str>,
-    "auto_create_channels": <bool>,
     "default_profile_id": <str | None>,
 }
 ```

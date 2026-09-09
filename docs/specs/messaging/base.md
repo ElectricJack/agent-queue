@@ -4,26 +4,50 @@ tags: [spec, messaging, base, interface]
 
 # Messaging Abstraction
 
-**Source files:** `src/messaging/base.py`, `src/messaging/port.py`, `src/messaging/factory.py`
-**Related:** [[messaging/discord]], [[messaging/telegram]], [[specs/supervisor]], [[specs/command-handler]]
+**Source files:** `src/messaging/base.py`, `src/messaging/port.py`, `src/messaging/factory.py`, `src/messaging/null_adapter.py`
+**Related:** [[messaging/discord]], [[specs/supervisor]], [[specs/command-handler]], [Discord migration runbook](../../guides/discord-migration.md)
 
 ## 1. Overview
 
-The messaging subsystem provides a platform-agnostic interface for chat platforms (Discord, Telegram). All platform-specific behavior is isolated behind the `MessagingAdapter` abstract base class. The orchestrator and supervisor interact with messaging exclusively through this interface.
+The messaging subsystem is the platform-agnostic seam between the daemon and a
+chat transport. There is exactly one real implementation — Discord — and one
+`none` implementation; Telegram was removed with its dependency, so this
+document describes a one-transport port kept for substitutability and testing,
+not a multi-platform abstraction.
+
+The seam also shrank. Since the Discord simplification the transport carries two
+outbound products and one inbound one:
+
+| Direction | What crosses the seam | Owner |
+|---|---|---|
+| Out | The hourly activity digest — one message per eligible window | `src/discord/embeds.py`, driven by the digest scheduler |
+| Out | One escalation root post and its thread, plus acks, relays and the resolution edit | `src/escalations` + `src/discord/escalation_transport.py` |
+| In | A verified reply in a known escalation thread → `escalation_reply` | `src/discord/escalation_intake.py` |
+
+Everything else that used to cross it — per-task execution threads, project-channel
+chat, gate and task buttons, immediate lifecycle posts, slash commands — is gone.
+See the [replacement capability checklist](../../guides/discord-replacement-checklist.md).
 
 ---
 
-## 2. Three-Layer Architecture
+## 2. Layers
 
-Both platform implementations follow the same three-layer decomposition:
+| Layer | Responsibility | Discord |
+|---|---|---|
+| **Adapter / bot core** | Connection, authorization, the startup cutover pass, and inbound escalation-reply routing | `AgentQueueBot` (`src/discord/bot.py`), `DiscordMessagingAdapter` (`src/discord/adapter.py`) |
+| **Transports** | Durable, leased, deduplicated outbound delivery for escalations and digests | `src/discord/escalation_transport.py`, the digest dispatcher |
+| **Formatting** | Pure functions producing platform-native output | `src/discord/embeds.py`, `src/discord/notifications.py` |
 
-| Layer | Responsibility | Discord | Telegram |
-|---|---|---|---|
-| **Bot Core** | Connection, routing, authorization, history, thread management | `AgentQueueBot` (`src/discord/bot.py`) | `TelegramBot` (`src/telegram/bot.py`) |
-| **Commands** | Interactive commands registered on the platform; thin wrappers that delegate to `CommandHandler` | Slash commands (`src/discord/commands.py`) | `/command` handlers (`src/telegram/commands.py`) |
-| **Notifications** | Pure formatting functions that produce platform-native output for task lifecycle events | `src/discord/notifications.py` | `src/telegram/notifications.py` |
+There is no Commands layer. `src/discord/commands.py` and the 122-command mirror
+are deleted, and `src/discord/slash_commands.py` now exists only to *unregister*
+the six retired commands at sync time. Plugin-registered slash commands are the
+one thing the bot still adds to the command tree; Agent Queue itself registers
+none.
 
-The Bot Core layer owns all runtime state. The Commands layer is stateless — every command handler receives the bot/handler reference, extracts platform-specific parameters, calls `CommandHandler.execute(name, args)`, and formats the result. The Notifications layer contains pure functions that accept task/agent data and return formatted strings.
+`src/discord/notifications.py` retains the lifecycle formatters as pure
+functions. Nothing in `src/discord/` subscribes them to the bus any more — the
+daemon imports `classify_error` and `format_task_started` directly — so treat
+that module as a formatting library, not as an active notification consumer.
 
 ---
 
@@ -39,146 +63,115 @@ Defined in `src/messaging/base.py`. Abstract base class with:
 
 ### Messaging
 
-- `send_message(text, project_id, embed, view)` -- Send a message to a project's channel.
-- `create_task_thread(thread_name, initial_message, project_id, task_id)` -- Create a task-specific thread or topic.
-- `edit_thread_root_message()` -- Update the first message in a thread.
+- `send_message(text, project_id=None, *, embed=None, view=None)`
+- `create_task_thread(thread_name, initial_message, project_id=None, task_id=None)`
+- `get_thread_last_message_url(task_id)`
+- `edit_thread_root_message(task_id, content=None, embed=None)`
+
+**All four are retired no-ops on the Discord adapter.** They remain on the ABC
+so an old caller cannot crash the daemon, and each returns `None` without
+touching Discord. A new outbound product does not go through them: it gets a
+durable transport with its own outbox row, lease and confirmed receipt, because
+a fire-and-forget send cannot survive a restart or an ambiguous timeout.
+Historical threads and roots are left exactly as they are.
 
 ### Components
 
-- `get_command_handler()` -> `CommandHandler`
-- `get_supervisor()` -> `Supervisor`
+- `get_command_handler()` -- the daemon-wide `CommandHandler` wired by `main.py`.
+- `get_supervisor()` -- retained for compatibility; the bot owns no private
+  Supervisor since the chat cutover.
 
 ### Health
 
-- `is_connected()` -> `bool`
-- `platform_name` property -> `str`
+- `is_connected()` / `platform_name()`.
 
 ---
 
-## 4. Shared Authorization Model
+## 4. Authorization Model
 
-Both platforms enforce the same authorization pattern:
+1. `config.discord.authorized_users` lists the Discord user IDs allowed to act.
+2. An empty list permits everybody; a non-empty one requires `str(user_id)` to
+   appear in it.
+3. An unauthorized user is **silently ignored**. There is no rejection message,
+   because the configured channel is shared with people and the adapter must not
+   behave like a chatbot.
 
-1. A config list of authorized user IDs (`config.discord.authorized_users` or `config.telegram.authorized_users`).
-2. If the list is empty, all users are permitted.
-3. If non-empty, `str(user_id)` must appear in the list.
-4. Authorization is checked at two levels:
-   - **Commands** -- Unauthorized users receive an error/rejection. On Discord this is an ephemeral message; on Telegram the callback query returns "Unauthorized."
-   - **Messages** -- Unauthorized users are silently ignored (no response, no log).
-
----
-
-## 5. Message History Pattern
-
-Both platforms maintain a per-channel/chat message buffer and build LLM-compatible history from it.
-
-### Buffer
-
-- Maximum size: `MAX_HISTORY_MESSAGES = 50` (deque with `maxlen`).
-- Each buffered message stores: message ID, author name, is-bot flag, text content, timestamp, and channel/chat identifier.
-- Discord buffers from the Discord API message history on each call; Telegram maintains a local `CachedMessage` deque per chat (since Telegram's API does not expose channel history to bots).
-- Telegram additionally tracks `_buffer_last_access` per chat and drops idle buffers after `BUFFER_IDLE_TIMEOUT = 3600` seconds.
-
-### History Construction
-
-`_build_message_history()` converts the buffer into a list of `{"role": "user"|"assistant", "content": str}` dicts for `Supervisor.chat()`:
-
-- Bot messages become `{"role": "assistant", "content": msg.content}`.
-- Other messages become `{"role": "user", "content": "[from {display_name}]: {msg.content}"}` (Discord) or `{"role": "user", "content": "[{author_name}]: {content}"}` (Telegram).
-- Consecutive messages with the same role are merged (Anthropic API requirement -- Discord performs this explicitly; Telegram's local buffer naturally avoids it).
-
-### LLM Call Serialization
-
-Both platforms serialize LLM calls per channel/chat using an `asyncio.Lock` dictionary (`_channel_locks` on Discord, `_chat_locks` on Telegram) to prevent duplicate concurrent responses.
+Authorization alone is not authority. An accepted reply is executed under
+`ExecutionPrincipal.service("discord:<user id>")`, which the core turns into
+`human:discord:<user id>`; identity is never read from a request body. See
+[Durable human escalations](../../guides/escalations.md).
 
 ---
 
-## 6. Channel / Chat Routing
+## 5. Message History
 
-Both platforms map `project_id` to a platform-native channel concept:
+Removed. There is no per-channel message buffer, no `_build_message_history()`,
+no `Supervisor.chat()` relay and no per-channel LLM lock, because Discord no
+longer hosts a conversation. Supervisor chat lives in the dashboard, and the
+supervisor session owns its own conversation memory.
 
-| Concept | Discord | Telegram |
-|---|---|---|
-| Channel type | `discord.TextChannel` object | Integer `chat_id` |
-| Forward mapping | `_project_channels[project_id]` | `_project_chats[project_id]` |
-| Reverse mapping | `_channel_to_project[channel_id]` | `_chat_to_project[chat_id]` |
-| Global fallback | `_channel` (named channel, default `"agent-queue"`) | `_main_chat_id` (from config) |
-| Runtime update | `update_project_channel(project_id, channel)` | `update_project_chat(project_id, chat_id)` |
-| Cleanup on delete | `clear_project_channels(project_id)` | `clear_project_chats(project_id)` |
-
-Resolution logic (`_get_channel` / `_get_chat_id`): return the project-specific channel if one is cached; otherwise fall back to the global channel. Return `None`/`0` if no channel is available.
-
-When routing a message to the global channel for a project that has no dedicated channel, Discord prefixes the message with a `` [`project-id`] `` tag. Telegram does not currently add a project prefix in the global chat.
+The one conversation the transport does carry — an escalation thread — is
+persisted as immutable inbound/outbound message rows in core state, not buffered
+in the adapter.
 
 ---
 
-## 7. Thread / Topic Creation Pattern
+## 6. Channel Routing
 
-Both platforms create a task-scoped conversation space for streaming agent output. The entry point returns the same callback pair:
+One installation, one channel. `discord.channel_id` is a numeric channel ID that
+survives a rename; every item in it names its project. There is no
+project→channel map, no reverse map, no global-channel fallback and no runtime
+`update_project_channel`. `per_project_channels` is ignored with a warning and
+cannot re-enable channel creation, and the adapter never creates or deletes a
+channel.
 
-```
-(send_to_thread, notify_main_channel)
-```
-
-- `send_to_thread(text)` -- Sends content into the task's thread/topic. Logs but does not raise on errors.
-- `notify_main_channel(text)` -- Sends a notification visible in the main channel feed, linked to the task thread. Falls back to a plain send if the link fails.
-
-Returns `None` if no channel is available.
-
-| Aspect | Discord | Telegram |
-|---|---|---|
-| Thread type | Discord thread on a root message | Forum topic (if supported) or reply chain |
-| Name limit | 100 characters | 128 characters (topics) |
-| Reuse | No reuse; new thread per task run | Topics reused per `task_id` when possible |
-| Root message | `"**Agent working:** {name}"` in channel | `"*Agent working:* {name}"` in MarkdownV2, or topic title |
-| Global channel prefix | `[{project_id}]` prepended to thread name | None |
+Legacy channel *names* survive only as one-way migration inventory. Resolving
+them, and what happens when they disagree, is
+[the migration runbook's §4](../../guides/discord-migration.md).
 
 ---
 
-## 8. Orchestrator Callback Wiring
+## 7. Threads
 
-Both platforms register two callbacks with the orchestrator during startup:
-
-| Callback | Purpose | Signature |
-|---|---|---|
-| `notify_callback` | Send a plain text notification to a project's channel | `(text: str, project_id: str) -> None` |
-| `create_thread_callback` | Create a streaming thread and return the callback pair | `(thread_name, initial_message, project_id) -> (send_to_thread, notify_main_channel)` |
-
-Discord wires these in `on_ready` via `orchestrator.set_notify_callback()` and `orchestrator.set_create_thread_callback()`. Telegram wires them during `start()` via `orchestrator.set_command_handler()` and `orchestrator.set_supervisor()`, with notification delivery handled through the EventBus (`TelegramNotificationHandler` subscribes to `notify.*` events).
+The only thread the adapter creates is an escalation's own thread, opened from
+its root post and owned by the escalation delivery outbox — one row per
+`(escalation, kind, generation)`, leased, deduplicated and rebound after a
+restart from stored channel/message/thread IDs. Task-scoped execution threads
+and the `(send_to_thread, notify_main_channel)` callback pair are retired; the
+adapter's `create_task_thread` returns `None`.
 
 ---
 
-## 9. Notification Types (Shared Semantics)
+## 8. Orchestrator Wiring
 
-Both platforms implement the same set of notification formatters. The notification types represent task lifecycle events emitted by the orchestrator. Each platform renders them in its native format (Discord: plain text with markdown; Telegram: MarkdownV2 with inline keyboards).
+`main.py` builds the adapter and hands the bot the daemon-wide
+`CommandHandler`. The orchestrator ticks the escalation delivery service once
+per cycle when a bot is present and `discord.escalation.enabled` is true, and
+the digest scheduler evaluates its window on its own interval. Neither is on the
+critical path: a Discord outage, a rate-limit halt or a missing channel is a
+recorded delivery fault, never a stall in the EventBus or the scheduler.
 
-### 9.1 Notification Type Catalog
+The old `set_notify_callback` / `set_create_thread_callback` wiring is gone with
+the notification handler that used it.
 
-| Notification | Trigger | Key Data |
-|---|---|---|
-| **task_completed** | Task finishes successfully | task, agent, tokens used, summary, files changed |
-| **task_failed** | Task fails (before exhausting retries) | task, agent, retry count, error classification, fix suggestion |
-| **task_blocked** | Task exhausts retry limit | task, last error, error classification |
-| **pr_created** | Agent creates a GitHub PR | task, PR URL |
-| **agent_question** | Agent enters WAITING_INPUT | task, agent, question text (truncated to 500 chars) |
-| **chain_stuck** | Blocked task has stuck downstream dependents | blocked task, list of stuck tasks (up to 10) |
-| **stuck_defined_task** | DEFINED task not promoted for extended period | task, blocking deps (up to 5), stuck duration in hours |
-| **budget_warning** | Project token usage crosses threshold | project name, usage, limit, percentage |
+---
 
-### 9.2 Interactive Action Buttons
+## 9. Notification Semantics
 
-Notifications that require user action include interactive buttons. Both platforms render the same logical actions, adapted to their UI:
+Lifecycle events are still published on the bus for the dashboard, plugins and
+playbooks. What changed is that Discord is no longer an immediate consumer of
+them:
 
-| Notification | Buttons |
+| Old Discord behavior | Now |
 |---|---|
-| task_started | View Context, Stop Task |
-| task_failed | Retry, Skip, View Error |
-| task_approval | Approve, Restart |
-| task_blocked | Restart, Skip |
-| agent_question | Reply, Skip |
-| plan_approval | Approve Plan, Delete Plan |
+| One post per task completed / failed / blocked, PR created, budget warning, chain stuck, stuck DEFINED task | Aggregated into the hourly digest, or silence when the window has no qualifying activity |
+| Per-task streamed output | Dashboard live session view and recorded attempts |
+| Agent question card with a reply modal | Supervisor triage; a human decision becomes a durable escalation |
+| Action buttons (retry / skip / stop / approve / restart / reply) | Dashboard controls and the Gates drawer; the Discord view classes and callbacks are deleted |
 
-Discord renders these as `discord.ui.View` subclasses with `discord.ui.Button` components. Telegram renders them as `InlineKeyboardMarkup` with `InlineKeyboardButton` rows. Both route button presses back to `CommandHandler.execute()`.
+`NotificationAction` (§11) survives on the platform-neutral port, but no Discord
+message renders an actionable button any more: the transport's messages are
+text, and the one inbound action is a typed reply.
 
 ---
 
@@ -238,9 +231,16 @@ Interactive button dataclass:
 
 ## 12. Factory
 
-`create_messaging_adapter(config, orchestrator)` in `src/messaging/factory.py` returns the appropriate adapter based on `config.messaging_platform`:
+`create_messaging_adapter(config, orchestrator)` in `src/messaging/factory.py`
+returns an adapter for `config.messaging_platform`:
 
-| Platform value | Adapter returned |
+| Platform value | Result |
 |---|---|
-| `"telegram"` | `TelegramMessagingAdapter` |
 | `"discord"` (default) | `DiscordMessagingAdapter` |
+| `"none"` | `NullMessagingAdapter` — the daemon runs with no chat transport at all |
+| `"telegram"` | `ValueError` naming the removal and the two supported values |
+| anything else | `ValueError` listing the supported values |
+
+`"none"` is a first-class configuration, not a degraded one: escalations are
+still created, supervisors are still notified and the dashboard inbox still
+works. Only the external post is absent.

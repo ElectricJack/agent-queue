@@ -6,6 +6,11 @@ This is the ledger the cutover task (§10) works from: one row per Discord surfa
 that is slated for removal, the surface that replaces it, and — the part that
 matters — whether that replacement exists **today**.
 
+The cutover has shipped. For the operator procedure that uses this ledger —
+channel selection, pending-conversation migration, settings, digest preview,
+delivery health and rollback — see the
+[migration runbook](discord-migration.md).
+
 Status is asserted against this checkout, not against intent. "Ready" means the
 replacement is reachable by an operator now; "gap" means removing the Discord
 control today would lose a capability.
@@ -42,6 +47,15 @@ control today would lose a capability.
 | Pending legacy conversations | Idempotent startup migration to durable escalations | Ready; compatible bot-owned roots in the selected channel are adopted. |
 | Per-project channel auto-provisioning | One explicit shared `discord.channel_id` | Ready; legacy settings only produce a migration warning. |
 | Digest and escalation delivery | Durable shared-channel transports | Ready. |
+
+## Documentation and agent guidance
+
+| Discord surface | Replacement | Status |
+|---|---|---|
+| `messaging-rework.md` M4 / §4.1–4.5 as the Discord product description | Superseded in place; the implementation spec and this ledger are canonical | Ready |
+| "Discord as control plane" in `docs/index.md`, `profile.md`, `docs/agent-queue-primitives.md` | Notification-only framing, dashboard/CLI as the control plane | Ready |
+| `create_project`'s `auto_create_channels` parameter in `docs/specs/command-handler.md` | Removed from the command and from the docs | Ready |
+| Agent guidance that pointed a worker at "the Discord channel" | `aq-comms` skill: `user:dashboard` for the human, escalations for decisions | Ready; installed copies need a refresh, see [the runbook](discord-migration.md#8-keeping-the-shipped-agent-skills-current) |
 
 ## How to re-check
 

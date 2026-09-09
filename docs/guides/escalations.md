@@ -123,8 +123,11 @@ Discord invalid-request rate guard holds escalation sends rather than dropping t
 
 The thread is the only inbound Discord surface an escalation has, and
 `src.discord.escalation_intake.DiscordEscalationIntake` is the only path a Discord message
-takes into one. It runs first in `on_message`; a message it does not correlate falls through to
-the bot's ordinary supervisor routing having cost no database work.
+takes into one — `on_message` does nothing else, because there is no longer any general
+channel chat, mention handling or task-thread routing to fall through to. A message it does
+not correlate is dropped having cost no database work. The gateway also ignores every message
+until the startup cutover pass reports `complete`, so a pre-cutover conversation can never be
+half-migrated and half-live (see the [migration runbook](discord-migration.md)).
 
 Every one of these must hold before a message becomes a reply, and each refusal is silent — the
 channel is shared with people, and answering unrelated lines would turn it into the chatbot the

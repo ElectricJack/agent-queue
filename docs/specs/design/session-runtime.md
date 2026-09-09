@@ -219,7 +219,7 @@ ours (Codex has no `--session-id`), the reader also reports it via
 daemon can learn a key it did not assign, and without it restart-with-resume is impossible
 for that harness.
 
-**Peek** is `capture-pane` — for humans (`aq session peek`, dashboard, Discord `/peek`) and
+**Peek** is `capture-pane` — for humans (`aq session peek`, dashboard) and
 as the SSE fallback when no transcript is found. **Activity** from the provider is pane
 activity with poke discounting (our own nudges must not look like agent progress).
 

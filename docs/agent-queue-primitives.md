@@ -197,7 +197,7 @@ Vault is Obsidian-compatible markdown. Scoped by directory: `system/` · `orches
 | **PlaybookRunner** | `src/playbooks/runner.py` (+ `runner_transitions.py`, `runner_events.py`, `runner_context.py`, `resume_handler.py`) | Walks compiled graph, invokes LLM per node, evaluates transitions, pauses for human input. |
 | **PlaybookCompiler** | `src/playbooks/compiler.py` | MD → LLM → JSON schema validation → `compiled/<id>.json`. |
 | **PlaybookManager** | `src/playbooks/manager.py` | Lifecycle API (list/get/compile/run/inspect). |
-| **Discord Bot / Command Handler** | `src/discord/`, `src/commands/handler.py` | User chat, task CRUD, diagnostics — no in-process Supervisor; Discord slash commands and threads front `CommandHandler` directly. |
+| **Discord adapter / Command Handler** | `src/discord/`, `src/commands/handler.py` | `CommandHandler` is the single execution point (CLI, MCP, dashboard). Discord is notification-only: the hourly digest and escalation threads out, one `escalation_reply` in. No slash commands, task CRUD, chat or execution threads. |
 | **Reflection** | playbook, not a module | Post-action verdict pass. Tiers: deep (task.completed) / standard (user.request) / light (periodic). Runs via the direct LLM path (`src/llm/`), not an in-process reflection engine. |
 | **PromptBuilder** | `src/prompt_builder.py` | 5-layer: L0 role → override → L1 facts → L2 context → identity → tools. Budget-aware. |
 | **EventBus** | `src/event_bus.py` (+ schemas in `src/event_schemas.py`) | Typed pub-sub. Triggers playbooks, notifies adapters, drives orchestration. |
