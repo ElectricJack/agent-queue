@@ -1664,7 +1664,7 @@ class RepairService:
                         agents.c.id == old_task["assigned_agent_id"],
                         agents.c.current_task_id == old_task_id,
                     )
-                    .values(state="idle", current_task_id=None)
+                    .values(state="IDLE", current_task_id=None)
                 )
             old_status = (
                 TaskStatus.PAUSED

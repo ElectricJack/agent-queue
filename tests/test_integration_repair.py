@@ -3874,3 +3874,18 @@ async def test_parent_delegate_close_requires_recorded_resolution(db, monkeypatc
             integration_outbox.c.event_type == "integration.repair_delegate_closed"
         ))).all()
     assert len(events) == (1 if resolution in {"observed", "none"} else 0)
+
+
+async def test_legacy_handoff_agent_state_loads_and_normalizes(db):
+    from src.database.tables import agents
+
+    await db.create_agent(Agent(id='legacy', name='Legacy', profile_id='repairer'))
+    async with db.immediate() as conn:
+        await conn.execute(update(agents).where(agents.c.id == 'legacy').values(state='idle'))
+    assert (await db.get_agent('legacy')).state is AgentState.IDLE
+    await db.normalize_agent_state_casing()
+    await db.normalize_agent_state_casing()
+    async with db._engine.connect() as conn:
+        assert (await conn.execute(select(agents.c.state).where(
+            agents.c.id == 'legacy'
+        ))).scalar_one() == 'IDLE'

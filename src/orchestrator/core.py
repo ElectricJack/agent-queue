@@ -2067,6 +2067,7 @@ class Orchestrator(
                 protected_agents.add(row.agent_id)
 
         # Reset BUSY agents to IDLE
+        await self.db.normalize_agent_state_casing()
         agents = await self.db.list_agents()
         for a in agents:
             if a.id in protected_agents:
