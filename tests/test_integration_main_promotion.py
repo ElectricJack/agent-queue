@@ -1783,6 +1783,23 @@ async def test_current_moved_main_expires_then_public_rebuild_creates_next_revis
     ).reconcile(waiting.intent_id)
     assert released.outcome == "base_moved"
 
+    # A fresh reconciler can crash after supersession: the construction route
+    # remains durably queued, and a replay does not enqueue a second rebuild.
+    replay = await RootPromotionService(
+        db, data_dir=data_dir, git_manager=git, app_client=app, clock=lambda: 147.0
+    ).reconcile(waiting.intent_id)
+    assert replay.outcome == "base_moved"
+    async with db._engine.connect() as conn:
+        events = (await conn.execute(select(integration_outbox).where(
+            integration_outbox.c.id == f"integration-rebuild:{waiting.intent_id}"
+        ))).mappings().all()
+    assert len(events) == 1
+    assert events[0]["event_type"] == "integration.sealed"
+    assert events[0]["payload"] == {
+        "event_id": f"integration-rebuild:{waiting.intent_id}",
+        "project_id": "p", "batch_id": "batch", "operation_id": "root-op",
+    }
+
     class RebuildProbe(CandidateService):
         async def build(self, batch_id):
             async with self.db._engine.connect() as conn:

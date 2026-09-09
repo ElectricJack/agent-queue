@@ -20,14 +20,13 @@ from unittest.mock import MagicMock
 import pytest
 
 from src.commands.handler import CommandHandler
-from src.config import DatabaseConfig, AppConfig, DiscordConfig
+from src.config import AppConfig, DatabaseConfig, DiscordConfig
 from src.database import Database
 from src.explain import build_capacity_reasons
 from src.intelligence_classes import IntelligenceClass
-from src.models import Agent, AgentProfile, AgentState, Project, Task, TaskStatus
+from src.models import Agent, AgentProfile, AgentState, DepType, Project, Task, TaskStatus
 from src.orchestrator import Orchestrator
 from tests.db_fixtures import lease_dsn
-
 
 PROJECT_ID = "proj-explain"
 
@@ -252,6 +251,78 @@ class TestExplainCommand:
         res = await handler._cmd_explain_task({"task_id": "t"})
         d = next(r for r in res["reasons"] if r["code"] == "blocked_dependency")
         assert "proj-other" in d["detail"]
+
+    async def test_typed_dependency_reasons_match_the_blocked_projection(self, handler, db):
+        """Explain reports only the exact typed edges that currently block.
+
+        This covers the edge rules whose satisfaction cannot be inferred from
+        a target task merely being COMPLETED: released and manually withheld
+        containers, waits-for fan-in, and conditional failure.  It also keeps
+        a provenance edge out of diagnostics and retains cross-project
+        attribution for an ordinary blocking edge.
+        """
+        async def assert_blockers(task_id, expected):
+            task = await db.get_task(task_id)
+            blockers = await db.get_blocking_dependencies(task_id)
+            assert {(row[0], row[3], row[4]) for row in blockers} == expected
+            assert bool(blockers) is task.is_blocked
+
+            result = await handler._cmd_explain_task({"task_id": task_id})
+            reasons = [reason for reason in result["reasons"] if reason["code"] == "blocked_dependency"]
+            assert {(reason["ref"], reason["detail"].split(" dep '")[0].removeprefix("blocked by ")) for reason in reasons} == {
+                (dep_id, dep_type) for dep_id, dep_type, _project_id in expected
+            }
+            return result
+
+        # A normally released PAUSED container does not withhold its child.
+        await mktask(db, "released-parent", status=TaskStatus.PAUSED)
+        await mktask(db, "released-child")
+        await db.add_dependency("released-child", "released-parent", DepType.PARENT_CHILD.value)
+        await assert_blockers("released-child", set())
+
+        # The same PAUSED state is unmet when the explicit hold marker exists.
+        await mktask(db, "held-parent", status=TaskStatus.PAUSED)
+        await db.set_task_meta("held-parent", "manual_pause_withholds_children", True)
+        await mktask(db, "held-child")
+        await db.add_dependency("held-child", "held-parent", DepType.PARENT_CHILD.value)
+        await assert_blockers(
+            "held-child", {("held-parent", DepType.PARENT_CHILD.value, PROJECT_ID)}
+        )
+
+        # waits-for is blocked by an open descendant, not by the container's status.
+        await mktask(db, "container", status=TaskStatus.PAUSED)
+        await mktask(db, "waiter")
+        await mktask(db, "open-descendant", status=TaskStatus.IN_PROGRESS)
+        await db.add_dependency("waiter", "container", DepType.WAITS_FOR.value)
+        await db.add_dependency("open-descendant", "container", DepType.PARENT_CHILD.value)
+        await assert_blockers("waiter", {("container", DepType.WAITS_FOR.value, PROJECT_ID)})
+
+        # Only a transient failure holds its contingency; a terminal failure releases it.
+        await mktask(db, "transient", status=TaskStatus.FAILED, retry_count=2, max_retries=3)
+        await mktask(db, "contingency")
+        await db.add_dependency("contingency", "transient", DepType.CONDITIONAL_BLOCKS.value)
+        await assert_blockers(
+            "contingency", {("transient", DepType.CONDITIONAL_BLOCKS.value, PROJECT_ID)}
+        )
+        await db.transition_task("transient", TaskStatus.FAILED, retry_count=3)
+        await assert_blockers("contingency", set())
+
+        # Provenance never enters either the projection or an explain blocker list.
+        await mktask(db, "origin", status=TaskStatus.DEFINED)
+        await mktask(db, "provenance-only")
+        await db.add_dependency("provenance-only", "origin", DepType.DISCOVERED_FROM.value)
+        await assert_blockers("provenance-only", set())
+
+        other_project = "proj-explain-typed-other"
+        await db.create_project(Project(id=other_project, name="Typed other"))
+        await mktask(db, "cross-project-dep", project_id=other_project)
+        await mktask(db, "cross-project-dependent")
+        await db.add_dependency("cross-project-dependent", "cross-project-dep")
+        result = await assert_blockers(
+            "cross-project-dependent", {("cross-project-dep", DepType.BLOCKS.value, other_project)}
+        )
+        detail = next(reason["detail"] for reason in result["reasons"] if reason["ref"] == "cross-project-dep")
+        assert f"project '{other_project}'" in detail
 
     async def test_unknown_task(self, handler):
         res = await handler._cmd_explain_task({"task_id": "no-such"})

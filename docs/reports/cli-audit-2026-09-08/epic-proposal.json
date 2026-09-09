@@ -1,0 +1,299 @@
+{
+  "project_id": "agent-queue",
+  "source": "CLI consistency audit 2026-09-08; user-authorized epic and child issues",
+  "tasks": [
+    {
+      "tempId": "epic",
+      "title": "Epic: Make the aq CLI consistent, robust, and fully verifiable",
+      "description": "User-authorized follow-up to the 2026-09-08 CLI audit. Goal: a consistent command grammar, predictable interactive/noninteractive behavior, reliable machine output, offline-safe discovery, honest supported/deprecated surfaces, current documentation, and evidence-backed end-to-end behavior.\n\nOriginal evidence: 318 core commands inventoried; 232 dispatch checks passed; 29 live reads succeeded; 422 CLI/API-contract tests plus 116 creation/routing/authorization tests ultimately passed. Passing suites missed confirmed defects. Report: docs/reports/cli-audit-2026-09-08/README.md. Each child embeds its finding so workers do not depend on the original report having been committed.\n\nCoverage: task-create partial flags and priority validation; creation JSON and cross-CLI envelopes; plugin DB startup hangs; global flags; missing workspace requirements; unimplemented ask-human; obsolete hook-log command; obsolete task spellings/close outcomes/worker permissions/module/auth/profile docs; conformance and plugin inventory gaps; missing DSN and scratch DB collision diagnostics; untested stateful workflows; final re-audit.\n\nDeliverables: all repair children complete; current command/JSON/help documentation and skills source; focused automated regression and isolated end-to-end coverage; final per-command acceptance report accounting for every original finding. No operator DB migration or real external messaging is authorized by these test tasks. Scope errors remain enforced. The final acceptance child blocks completion until evidence and exceptions are reconciled.\n\nNew live finding during issue filing: graph dry-run passes, but actual creation fails with integration_required: bulk parent writes must use atomic hierarchy filing. A dedicated child must repair this without disabling the hierarchy guard.\n\nSecond live blocker: full-flags single root creation fails resolving its new aq/<id> branch before it exists; readback confirms rollback. Dedicated root-origin bootstrap issue is highest priority. Total: 15 child issues including the two creation blockers discovered while filing.",
+      "priority": 35
+    },
+    {
+      "tempId": "create-input",
+      "title": "Preserve task-create flags and validate interactive/noninteractive input",
+      "description": "Source: aq CLI audit dated 2026-09-08, checkout 86c87a99a21385a25a393b4d0c4b5d5552b0933e. Report and evidence: docs/reports/cli-audit-2026-09-08/README.md (the original report may still be local/uncommitted; the finding and acceptance criteria below are self-contained). \n\nConfirmed: src/cli/tasks.py enters the full wizard unless project, title AND description are truthy. Partial flags are not passed into the wizard, despite help saying they skip steps. A mocked CLI reproduction with -p flag-project -t \"Flag title\" --priority 50 --type bugfix --integration-mode direct (no description) sent wizard-project/Wizard title/100/feature/pull_request instead. Also priority or 100 silently changes an explicit zero into 100 and Click accepts integers outside the documented 1\u2013300 range. Relevant files: src/cli/tasks.py, menus.py; tests/test_cli.py, test_cli_menus.py.\n\nImplementation rules: inspect the current source/spec before editing; preserve authenticated scope and worker DB guards. Use focused aq test commands and existing worker caps. Test mutations only against disposable infrastructure; never migrate the operator database. Record exact verification commands/results and update the relevant documentation. If changing API models/codegen routers, regenerate committed API clients/spec by the repository workflow.\n\nAcceptance criteria:\n- Preserve every explicitly supplied flag, prompt only for genuinely missing required values, and preserve graph/worker routing behavior.\n- With non-TTY stdin, missing required input exits promptly with actionable usage guidance and a nonzero status; JSON mode never enters the wizard. Cancellation is deterministic and documented.\n- Use None-based defaulting and validate priority 1\u2013300 in both wizard and flag paths; cover 0, -1, 301, malformed input, and default 100.\n- Regression tests cover partial project/title/description combinations, integration/type/priority overrides, full flags, cancellation, and no write when validation fails.\n\nIntended routing: standard-medium.",
+      "priority": 30
+    },
+    {
+      "tempId": "create-json",
+      "title": "Make task creation return a parseable success response in JSON mode",
+      "description": "Source: aq CLI audit dated 2026-09-08, checkout 86c87a99a21385a25a393b4d0c4b5d5552b0933e. Report and evidence: docs/reports/cli-audit-2026-09-08/README.md (the original report may still be local/uncommitted; the finding and acceptance criteria below are self-contained). \n\nConfirmed: aq --json task create with complete project/title/description returns human text \"Task created: ...\" at exit 0. A client can fail parsing after persistence and retry into duplicate creation. src/cli/tasks.py prints directly for single creation, while _create_task_graph uses emit().\n\nImplementation rules: inspect the current source/spec before editing; preserve authenticated scope and worker DB guards. Use focused aq test commands and existing worker caps. Test mutations only against disposable infrastructure; never migrate the operator database. Record exact verification commands/results and update the relevant documentation. If changing API models/codegen routers, regenerate committed API clients/spec by the repository workflow.\n\nAcceptance criteria:\n- Route single-task creation through the shared output contract: one JSON document on stdout containing the actual created ID and returned metadata; keep useful human rendering.\n- Honor --brief consistently and preserve the documented legacy JSON escape hatch only if still supported.\n- Test single and graph creation success/error paths, title markup/multiline values, and downstream JSON parsing; assert exactly one create request with no output-triggered retry.\n- Document the success shape and safe task-ID extraction.\n\nIntended routing: standard-medium.",
+      "priority": 30
+    },
+    {
+      "tempId": "output-contract",
+      "title": "Unify success/error envelopes, brief output, and exit codes across the CLI",
+      "description": "Source: aq CLI audit dated 2026-09-08, checkout 86c87a99a21385a25a393b4d0c4b5d5552b0933e. Report and evidence: docs/reports/cli-audit-2026-09-08/README.md (the original report may still be local/uncommitted; the finding and acceptance criteria below are self-contained). \n\nConfirmed live: aq --json task list and session list return versioned envelopes, while status, project list, pool status and most generated commands return raw JSON. auto_commands.py directly prints JSON after formatter selection. Audit all handwritten and generated families; do not assume existing error-envelope tests cover success.\n\nImplementation rules: inspect the current source/spec before editing; preserve authenticated scope and worker DB guards. Use focused aq test commands and existing worker caps. Test mutations only against disposable infrastructure; never migrate the operator database. Record exact verification commands/results and update the relevant documentation. If changing API models/codegen routers, regenerate committed API clients/spec by the repository workflow.\n\nAcceptance criteria:\n- Define and implement one documented JSON success/error/pagination/brief contract across autogenerated and handwritten commands, including plugin-facing wrappers where owned by core.\n- Keep human output separate; JSON stdout has exactly one machine-readable document, with diagnostics on the appropriate stream and stable exit codes for usage, command, connection and auth failures.\n- Handle empty results, scalar/list/object payloads, typed models/Unset, Unicode and untrusted Rich markup without losing data; explicitly classify streaming exceptions.\n- Provide compatibility/migration behavior for raw JSON users and contract tests covering successes and failures across command families.\n\nIntended routing: deep-high.",
+      "priority": 35
+    },
+    {
+      "tempId": "offline-startup",
+      "title": "Remove database initialization from CLI import and help discovery",
+      "description": "Source: aq CLI audit dated 2026-09-08, checkout 86c87a99a21385a25a393b4d0c4b5d5552b0933e. Report and evidence: docs/reports/cli-audit-2026-09-08/README.md (the original report may still be local/uncommitted; the finding and acceptance criteria below are self-contained). \n\nConfirmed environment-sensitive hang: importing src.cli.app invokes _load_plugin_cli_groups -> _load_plugin_config_from_db -> PluginClient.connect -> PostgreSQL adapter initialize/schema setup before Click handles --help. Restricted-network runs stalled; a 10-second traceback showed this path and eventual asyncio warnings mentioned a 300-second executor join. Normal unrestricted commands completed. This is an offline/startup isolation defect, not proof that every operator shell hangs.\n\nImplementation rules: inspect the current source/spec before editing; preserve authenticated scope and worker DB guards. Use focused aq test commands and existing worker caps. Test mutations only against disposable infrastructure; never migrate the operator database. Record exact verification commands/results and update the relevant documentation. If changing API models/codegen routers, regenerate committed API clients/spec by the repository workflow.\n\nAcceptance criteria:\n- aq --help, --help-all, --version, schema/discovery and test --aq-help do not open a DB, migrate schema, or require a reachable daemon.\n- Make plugin configuration lazy and read-only where appropriate, with bounded connection/query behavior and actionable errors; preserve plugin command discovery without swallowing failures silently.\n- Prove DB initialize/migration functions are never reached from command import/help; retain worker sentinel/scope guards.\n- Subprocess tests exercise unreachable database/daemon, missing config, installed plugin discovery and worker scope. Follow repository perf-marker rules for any strict timing budgets.\n\nIntended routing: deep-high.",
+      "priority": 25
+    },
+    {
+      "tempId": "global-options",
+      "title": "Make global output flags consistent across command positions and help",
+      "description": "Source: aq CLI audit dated 2026-09-08, checkout 86c87a99a21385a25a393b4d0c4b5d5552b0933e. Report and evidence: docs/reports/cli-audit-2026-09-08/README.md (the original report may still be local/uncommitted; the finding and acceptance criteria below are self-contained). \n\nConfirmed: aq status --json fails with no such option, but aq --json status works. Installed aq skills document trailing --json/--brief. Current Click behavior is internally explainable but inconsistent with published usage.\n\nImplementation rules: inspect the current source/spec before editing; preserve authenticated scope and worker DB guards. Use focused aq test commands and existing worker caps. Test mutations only against disposable infrastructure; never migrate the operator database. Record exact verification commands/results and update the relevant documentation. If changing API models/codegen routers, regenerate committed API clients/spec by the repository workflow.\n\nAcceptance criteria:\n- Choose and document a canonical global-option grammar. Support published trailing --json/--brief forms as aliases if feasible, or replace all examples with a consistent explicit placement and actionable errors.\n- Apply the policy uniformly to nested and handwritten/generated commands, including combinations of --json and --brief.\n- Respect the -- boundary and passthrough commands (especially aq test and stream argv); do not consume flags intended for child programs.\n- Regression tests cover prefix/trailing/mixed/duplicate flags, nested commands and help. Coordinate API URL precedence with existing tests rather than changing it incidentally.\n\nIntended routing: standard-medium.",
+      "priority": 50
+    },
+    {
+      "tempId": "workspace-input",
+      "title": "Expose task workspace requirements and guard handwritten CLI/backend parity",
+      "description": "Source: aq CLI audit dated 2026-09-08, checkout 86c87a99a21385a25a393b4d0c4b5d5552b0933e. Report and evidence: docs/reports/cli-audit-2026-09-08/README.md (the original report may still be local/uncommitted; the finding and acceptance criteria below are self-contained). \n\nConfirmed capability gap: create_task accepts requires_kinds (tests/test_create_task_requires_kinds.py), but handwritten aq task create has no corresponding flag. Backend acceptance does not make the field reachable from CLI.\n\nImplementation rules: inspect the current source/spec before editing; preserve authenticated scope and worker DB guards. Use focused aq test commands and existing worker caps. Test mutations only against disposable infrastructure; never migrate the operator database. Record exact verification commands/results and update the relevant documentation. If changing API models/codegen routers, regenerate committed API clients/spec by the repository workflow.\n\nAcceptance criteria:\n- Add a documented CLI representation for requires_kinds, supporting simple kind names and structured kind/alias values already accepted by the backend.\n- Forward values unchanged through noninteractive and wizard paths, with clear local parse errors and backend validation for unknown kinds/aliases.\n- Preserve omitted-field behavior and default requirements; do not silently ignore options on graph/from-spec paths\u2014support them deliberately or reject unsupported combinations.\n- Add request-capture and isolated persistence tests plus a maintained parity/intentional-exclusion check for handwritten create options against intended backend capabilities.\n\nIntended routing: standard-medium.",
+      "priority": 45
+    },
+    {
+      "tempId": "ask-human",
+      "title": "Resolve the advertised but unimplemented task ask-human command",
+      "description": "Source: aq CLI audit dated 2026-09-08, checkout 86c87a99a21385a25a393b4d0c4b5d5552b0933e. Report and evidence: docs/reports/cli-audit-2026-09-08/README.md (the original report may still be local/uncommitted; the finding and acceptance criteria below are self-contained). \n\nAudit inventory maps aq task ask-human to ask_human, but CommandHandler has no _cmd_ask_human. tests/test_command_surface.py explicitly allowlists ask_human as pending. Mock dispatch passing is not evidence the operation works; runtime/plugin interception was not tested. Existing question commands and system provide-input have distinct identity/state flows.\n\nImplementation rules: inspect the current source/spec before editing; preserve authenticated scope and worker DB guards. Use focused aq test commands and existing worker caps. Test mutations only against disposable infrastructure; never migrate the operator database. Record exact verification commands/results and update the relevant documentation. If changing API models/codegen routers, regenerate committed API clients/spec by the repository workflow.\n\nAcceptance criteria:\n- Trace current runtime ownership and choose either a fully implemented scoped question operation or deliberate removal/deprecation with a clear supported replacement.\n- If implemented, preserve authenticated session/task ownership and exact question identity; never create a second divergent question mechanism.\n- Remove stale pending-handler exemptions when resolved; discovery/help/schema must not promise an unavailable operation.\n- Test installed/missing backend behavior, scope denial, correct request/response and error contracts using disposable/fake messaging destinations; do not send real user messages during verification.\n\nIntended routing: deep-high.",
+      "priority": 55
+    },
+    {
+      "tempId": "plugin-logs",
+      "title": "Retire or explicitly deprecate the obsolete plugin hook-log command",
+      "description": "Source: aq CLI audit dated 2026-09-08, checkout 86c87a99a21385a25a393b4d0c4b5d5552b0933e. Report and evidence: docs/reports/cli-audit-2026-09-08/README.md (the original report may still be local/uncommitted; the finding and acceptance criteria below are self-contained). \n\nConfirmed: aq plugin logs NAME in src/cli/plugins.py only prints that hook execution history was removed and suggests playbooks. It does not retrieve logs, despite a command name and --limit option that suggest otherwise.\n\nImplementation rules: inspect the current source/spec before editing; preserve authenticated scope and worker DB guards. Use focused aq test commands and existing worker caps. Test mutations only against disposable infrastructure; never migrate the operator database. Record exact verification commands/results and update the relevant documentation. If changing API models/codegen routers, regenerate committed API clients/spec by the repository workflow.\n\nAcceptance criteria:\n- Choose a documented compatibility policy: remove the obsolete command with actionable replacement guidance or retain an explicit deprecation stub that cannot be mistaken for returned history.\n- Make human and JSON behavior/exit semantics intentional and consistent with the CLI output contract; never fabricate empty successful history.\n- Point users to actual current playbook list/run inspection commands; distinguish plugin diagnostic logs from removed hook execution history.\n- Tests cover help, arbitrary plugin names, legacy --limit, machine output and the chosen deprecation behavior.\n\nIntended routing: standard-medium.",
+      "priority": 75
+    },
+    {
+      "tempId": "documentation",
+      "title": "Refresh aq skills, command examples, auth/module docs and profile guidance",
+      "description": "Source: aq CLI audit dated 2026-09-08, checkout 86c87a99a21385a25a393b4d0c4b5d5552b0933e. Report and evidence: docs/reports/cli-audit-2026-09-08/README.md (the original report may still be local/uncommitted; the finding and acceptance criteria below are self-contained). \n\nConfirmed stale installed skills: task tree/result/dep/input-response do not exist; replacements are get-tree/get-result/add-dependency or remove-dependency/system provide-input. Close takes positional/implicit task ID and pass|fail, not --task-id plus success/failure/needs_context. Workers CAN file constrained work with --reason. src/cli/CLAUDE.md mentions removed agents.py/hooks.py, ignored auth, and a universal generic execution path although message sending has a dedicated path. Create-help profile examples use older IDs. Affected installed files: ~/.codex/skills/aq-cli/SKILL.md and aq-tasks/SKILL.md; locate their maintained source/distribution path before editing.\n\nImplementation rules: inspect the current source/spec before editing; preserve authenticated scope and worker DB guards. Use focused aq test commands and existing worker caps. Test mutations only against disposable infrastructure; never migrate the operator database. Record exact verification commands/results and update the relevant documentation. If changing API models/codegen routers, regenerate committed API clients/spec by the repository workflow.\n\nAcceptance criteria:\n- Update maintained source and installation/distribution guidance for every listed stale example and claim; include global flag placement, JSON shapes, close outcomes, worker filing, current profiles/intelligence classes and auth behavior.\n- Replace nonexistent task commands with supported syntax; distinguish legacy WAITING_INPUT replies from identity-based question operations. Retain working aliases deliberately.\n- Update the CLI module map and client transport description from current source. Use profile examples that are clearly examples or derive from current list commands.\n- Validate executable examples through CLI parsing with mocked side effects and add a drift check where practical. If installed copies cannot be changed by a worker, ship the source fix and exact operator sync instructions rather than claiming installation completed.\n\nIntended routing: standard-medium.",
+      "priority": 80
+    },
+    {
+      "tempId": "conformance",
+      "title": "Add a maintained command inventory and CLI conformance regression suite",
+      "description": "Source: aq CLI audit dated 2026-09-08, checkout 86c87a99a21385a25a393b4d0c4b5d5552b0933e. Report and evidence: docs/reports/cli-audit-2026-09-08/README.md (the original report may still be local/uncommitted; the finding and acceptance criteria below are self-contained). \n\nAudit baseline: 318 core leaf commands, 343 entries, 232 autogenerated dispatch checks, all passing help/dispatch. Installed plugin-specific top-level extensions were excluded. A missing core handler is expected for plugin-backed file/git/note/memory commands, but not for an undocumented unimplemented command. The passing 422-test CLI suite missed the confirmed defects.\n\nImplementation rules: inspect the current source/spec before editing; preserve authenticated scope and worker DB guards. Use focused aq test commands and existing worker caps. Test mutations only against disposable infrastructure; never migrate the operator database. Record exact verification commands/results and update the relevant documentation. If changing API models/codegen routers, regenerate committed API clients/spec by the repository workflow.\n\nAcceptance criteria:\n- Generate a reproducible inventory that labels core, handwritten, generated and plugin-owned commands, supported aliases/deprecations, and evidence levels without false missing-handler findings.\n- Exercise representative success/error payloads, required/optional/structured/null parameters, output modes and exit contracts\u2014not only named dispatch or --help.\n- Check plugin-present/plugin-absent startup and command behavior, and fail on newly advertised unsupported operations unless explicitly classified.\n- Integrate focused checks into CI using aq test gating; inventory counts should be regenerated rather than frozen to 318. Treat aq test --aq-help and passthrough tools correctly.\n\nIntended routing: deep-high.",
+      "priority": 85
+    },
+    {
+      "tempId": "test-environment",
+      "title": "Make CLI test preflight and scratch database isolation failures actionable",
+      "description": "Source: aq CLI audit dated 2026-09-08, checkout 86c87a99a21385a25a393b4d0c4b5d5552b0933e. Report and evidence: docs/reports/cli-audit-2026-09-08/README.md (the original report may still be local/uncommitted; the finding and acceptance criteria below are self-contained). \n\nAudit environment errors: missing POSTGRES_TEST_DSN produced 413 fixture errors and 9 passes; a configured rerun passed all 422. Three backend tests then used pre-existing postgres_master_gw0 stamped with absent revision d3f2c0de0005. Fresh dedicated base DB aq_cli_audit_20260908_9f20 made all three pass. These are test-harness/setup findings, not 413 CLI regressions or justification to stamp/repair any operator database.\n\nImplementation rules: inspect the current source/spec before editing; preserve authenticated scope and worker DB guards. Use focused aq test commands and existing worker caps. Test mutations only against disposable infrastructure; never migrate the operator database. Record exact verification commands/results and update the relevant documentation. If changing API models/codegen routers, regenerate committed API clients/spec by the repository workflow.\n\nAcceptance criteria:\n- Fail early once with actionable configuration guidance when required test DSN is absent, instead of hundreds of identical fixture failures.\n- Prevent cross-run/check-out collisions in derived scratch databases; use uniquely owned test resources and a clear lifecycle. Detect stale/unknown revisions without stamping someone else's database.\n- Preserve production URL refusal, AQ_DB_SCOPE and sentinel guards, global test semaphore, worker caps and marker behavior.\n- Test missing DSN, concurrent runs, stale scratch revisions and cleanup ownership using isolated fixtures; document setup and distinguish environment errors from assertions.\n\nIntended routing: deep-high.",
+      "priority": 60
+    },
+    {
+      "tempId": "isolated-e2e",
+      "title": "Cover stateful CLI workflows with disposable end-to-end smoke tests",
+      "description": "Source: aq CLI audit dated 2026-09-08, checkout 86c87a99a21385a25a393b4d0c4b5d5552b0933e. Report and evidence: docs/reports/cli-audit-2026-09-08/README.md (the original report may still be local/uncommitted; the finding and acceptance criteria below are self-contained). \n\nAudit live coverage was limited to 29 successful reads; mutations were intentionally untested. Coverage gaps include task/project lifecycle, workspace acquisition/release, agent/session/pool controls, playbook/formula changes, MCP/plugin lifecycle, config/integration, file/git/note writes, memory, messages/questions, streams, vault/graph and daemon/DB tools. This issue establishes evidence, not an assumption that these commands are broken.\n\nImplementation rules: inspect the current source/spec before editing; preserve authenticated scope and worker DB guards. Use focused aq test commands and existing worker caps. Test mutations only against disposable infrastructure; never migrate the operator database. Record exact verification commands/results and update the relevant documentation. If changing API models/codegen routers, regenerate committed API clients/spec by the repository workflow.\n\nAcceptance criteria:\n- Build/extend a disposable-daemon smoke harness with isolated PostgreSQL, temp repositories/vault/config, fake providers and sink messaging endpoints; never target operator resources or paid real services.\n- Exercise representative create/read/update/delete and failure/rollback flows per applicable family, including actual task creation with full/partial flags and machine-readable ID extraction.\n- Include plugin extension present/absent cases and optional-service capability reporting; distinguish passed, broken, unsupported, dependency-unavailable and explicitly untested.\n- Document repeatable focused commands and cleanup; validate scopes, payloads, exit codes and persistence. Gate slow/integration/tmux tests explicitly under aq test and do not run the whole repo casually.\n\nIntended routing: deep-high.",
+      "priority": 90
+    },
+    {
+      "tempId": "acceptance",
+      "title": "Re-audit CLI consistency and publish final per-command acceptance report",
+      "description": "Source: aq CLI audit dated 2026-09-08, checkout 86c87a99a21385a25a393b4d0c4b5d5552b0933e. Report and evidence: docs/reports/cli-audit-2026-09-08/README.md (the original report may still be local/uncommitted; the finding and acceptance criteria below are self-contained). \n\nClose the epic only with evidence that every original audit finding is resolved or explicitly dispositioned. Original baseline: 538 distinct tests ultimately passed, 29 live reads, 232 dispatch checks; despite that, partial creation flags, JSON and startup issues survived. This task is the final verification/documentation gate after repairs.\n\nImplementation rules: inspect the current source/spec before editing; preserve authenticated scope and worker DB guards. Use focused aq test commands and existing worker caps. Test mutations only against disposable infrastructure; never migrate the operator database. Record exact verification commands/results and update the relevant documentation. If changing API models/codegen routers, regenerate committed API clients/spec by the repository workflow.\n\nAcceptance criteria:\n- Reproduce every original defect against the final code and verify corrected behavior; include partial input, priority bounds, requires_kinds, success/error JSON, global flags, offline startup, ask-human and plugin-log disposition.\n- Publish updated per-command working/broken/obsolete/unsupported/untested inventory with exact commands, environment, revision and test evidence, including installed plugin extensions.\n- Reconcile every epic child and original report row; do not mark untested stateful paths working based on help or mocked dispatch. Document remaining external-service limitations explicitly.\n- Run only required focused and area checks with aq test; update the report and operator usage examples, and record any unresolved issue as an explicit follow-up before accepting the epic.\n\nIntended routing: deep-high.",
+      "priority": 100
+    },
+    {
+      "tempId": "atomic-graph",
+      "title": "Fix task graph creation rejected by atomic hierarchy integration guard",
+      "description": "New confirmed finding while filing this epic on 2026-09-08: aq --json task create --project agent-queue --graph <document> --dry-run succeeded with 13 children, 22 dependencies and no warnings. The same command without --dry-run exited 1 with error integration_required: bulk parent writes must use atomic hierarchy filing. A subsequent task list showed no new epic. Source guard: src/database/queries/hierarchy_queries.py. Trace src/task_graph/creator.py and CommandHandler graph creation through the current integration-aware hierarchy filing API. Fix the supported graph path, not the guard. Preserve transactional all-or-nothing writes, parent locks, ordinals, task routing, dependency/context/acceptance persistence and integration ownership. This is an actual live creation failure that existing graph tests did not catch. The graph source is docs/reports/cli-audit-2026-09-08/epic-graph.json; original 13-node request and error are preserved in filing evidence. Use isolated test databases and aq test; do not change the operator schema or bypass integration fences.\n\nAcceptance criteria:\n- The original graph shape succeeds with current integration configuration and produces exactly one parent, all children and all dependency edges.\n- Dry-run and real execution use consistent validation; invalid hierarchy changes return actionable errors before partial persistence.\n- Exercise new-parent and existing-parent graph creation, concurrent ordinal allocation, rollback and current integration policy via the real CLI/API path against a disposable daemon.\n- Retain the atomic hierarchy guard and add regression coverage in task graph creation/integration tests.\n\nIntended routing: deep-high.",
+      "priority": 20
+    },
+    {
+      "tempId": "root-origin",
+      "title": "Bootstrap new root task origins from an existing repository ref",
+      "description": "New live creation blocker confirmed 2026-09-08: aq task create --project agent-queue --title <epic> --description <full description> --priority 35 --type plan --intelligence-class deep-high failed with repository branch aq/keen-grove does not exist. Follow-up aq --json task get --task-id keen-grove returned not found, confirming rollback. Code trace: src/integration/hierarchy.py:file_root_on assigns task.branch_name = aq/<new-id>, inserts the task, then _ensure_origin_chain resolves row.branch_name for a root lacking a checkpoint. src/commands/integration_commands.py resolve_head queries that not-yet-created remote ref and fails. New-root bootstrap needs an existing validated base (e.g. designated repository default branch), while existing-root adoption must preserve its exact bound head. Do not disable hierarchy integration, precreate guessed random branches, or bypass DB guards. This explains an actual full-flags task-creation failure beyond the initial audit UX bugs. Fix with focused isolated PostgreSQL and git/daemon tests using aq test.\n\nAcceptance criteria:\n- A root task/epic can be created in hierarchy/train integration mode when its aq/<id> branch does not yet exist.\n- Reserve its origin/checkpoint from the correct existing exact base, without reading a nonexistent new branch; retain ownership fences and existing-root adoption semantics.\n- Failures leave no partial task/origin/checkpoint records; retry does not create duplicates or branch artifacts.\n- Regression tests exercise the real command integration service and missing-new-ref bootstrap rather than an always-successful head resolver stub; include single-task and batch/graph roots.\n\nIntended routing: deep-high.",
+      "priority": 15
+    }
+  ],
+  "edges": [
+    {
+      "from": "create-input",
+      "to": "epic",
+      "dep_type": "parent-child"
+    },
+    {
+      "from": "create-json",
+      "to": "epic",
+      "dep_type": "parent-child"
+    },
+    {
+      "from": "create-json",
+      "to": "create-input",
+      "dep_type": "blocks"
+    },
+    {
+      "from": "output-contract",
+      "to": "epic",
+      "dep_type": "parent-child"
+    },
+    {
+      "from": "output-contract",
+      "to": "create-json",
+      "dep_type": "blocks"
+    },
+    {
+      "from": "offline-startup",
+      "to": "epic",
+      "dep_type": "parent-child"
+    },
+    {
+      "from": "global-options",
+      "to": "epic",
+      "dep_type": "parent-child"
+    },
+    {
+      "from": "global-options",
+      "to": "output-contract",
+      "dep_type": "blocks"
+    },
+    {
+      "from": "global-options",
+      "to": "offline-startup",
+      "dep_type": "blocks"
+    },
+    {
+      "from": "workspace-input",
+      "to": "epic",
+      "dep_type": "parent-child"
+    },
+    {
+      "from": "workspace-input",
+      "to": "create-json",
+      "dep_type": "blocks"
+    },
+    {
+      "from": "ask-human",
+      "to": "epic",
+      "dep_type": "parent-child"
+    },
+    {
+      "from": "plugin-logs",
+      "to": "epic",
+      "dep_type": "parent-child"
+    },
+    {
+      "from": "plugin-logs",
+      "to": "output-contract",
+      "dep_type": "blocks"
+    },
+    {
+      "from": "documentation",
+      "to": "epic",
+      "dep_type": "parent-child"
+    },
+    {
+      "from": "documentation",
+      "to": "create-input",
+      "dep_type": "blocks"
+    },
+    {
+      "from": "documentation",
+      "to": "create-json",
+      "dep_type": "blocks"
+    },
+    {
+      "from": "documentation",
+      "to": "global-options",
+      "dep_type": "blocks"
+    },
+    {
+      "from": "documentation",
+      "to": "workspace-input",
+      "dep_type": "blocks"
+    },
+    {
+      "from": "documentation",
+      "to": "ask-human",
+      "dep_type": "blocks"
+    },
+    {
+      "from": "documentation",
+      "to": "plugin-logs",
+      "dep_type": "blocks"
+    },
+    {
+      "from": "documentation",
+      "to": "offline-startup",
+      "dep_type": "blocks"
+    },
+    {
+      "from": "conformance",
+      "to": "epic",
+      "dep_type": "parent-child"
+    },
+    {
+      "from": "conformance",
+      "to": "global-options",
+      "dep_type": "blocks"
+    },
+    {
+      "from": "conformance",
+      "to": "workspace-input",
+      "dep_type": "blocks"
+    },
+    {
+      "from": "conformance",
+      "to": "ask-human",
+      "dep_type": "blocks"
+    },
+    {
+      "from": "conformance",
+      "to": "plugin-logs",
+      "dep_type": "blocks"
+    },
+    {
+      "from": "test-environment",
+      "to": "epic",
+      "dep_type": "parent-child"
+    },
+    {
+      "from": "test-environment",
+      "to": "offline-startup",
+      "dep_type": "blocks"
+    },
+    {
+      "from": "isolated-e2e",
+      "to": "epic",
+      "dep_type": "parent-child"
+    },
+    {
+      "from": "isolated-e2e",
+      "to": "conformance",
+      "dep_type": "blocks"
+    },
+    {
+      "from": "isolated-e2e",
+      "to": "test-environment",
+      "dep_type": "blocks"
+    },
+    {
+      "from": "isolated-e2e",
+      "to": "atomic-graph",
+      "dep_type": "blocks"
+    },
+    {
+      "from": "acceptance",
+      "to": "epic",
+      "dep_type": "parent-child"
+    },
+    {
+      "from": "acceptance",
+      "to": "documentation",
+      "dep_type": "blocks"
+    },
+    {
+      "from": "acceptance",
+      "to": "isolated-e2e",
+      "dep_type": "blocks"
+    },
+    {
+      "from": "atomic-graph",
+      "to": "epic",
+      "dep_type": "parent-child"
+    },
+    {
+      "from": "atomic-graph",
+      "to": "root-origin",
+      "dep_type": "blocks"
+    },
+    {
+      "from": "root-origin",
+      "to": "epic",
+      "dep_type": "parent-child"
+    }
+  ]
+}

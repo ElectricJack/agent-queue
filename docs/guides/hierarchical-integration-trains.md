@@ -285,6 +285,26 @@ aq integration abort integration-operation-id --reason 'operator chose forensic 
 aq integration retry-cleanup integration-batch-id
 ```
 
+### Stopped pool-writer handoff recovery
+
+For the current `agent-queue` incident, first inspect without changing state,
+then resume the exact human-held repair operation. As of 2026-09-09 that
+operation is `repair-batch-integration-batch-db9e3d6681c4b82624d569d2bdbf2a6e`:
+
+```bash
+aq integration status agent-queue
+aq integration resume repair-batch-integration-batch-db9e3d6681c4b82624d569d2bdbf2a6e
+aq integration status agent-queue
+```
+
+Run this only as the LOCAL operator, after the first status result still lists
+that ID in `repair` with `state: human_required`. `resume` first checks the
+durable handoff proof and releases only the exact stopped pool claim; it refuses
+an active writer, a reused session/agent/slot, an operator hold, or any other
+ambiguous shape. Do not clear claim, session, workspace, or owner rows manually.
+For a later incident, copy the operation ID from the fresh status result rather
+than reusing the example above.
+
 For rollback, request disabled with the current generation:
 
 ```bash

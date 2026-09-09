@@ -962,3 +962,65 @@ def place_pool_actions(
             )
 
     return placed_starts, placed_drains, starvations
+
+
+def rebalance_idle_pools(
+    *,
+    candidates: dict[PoolKey, list[PlacementCandidate]],
+    starts: list[PlacedStart],
+    drains: list[PlacedDrain],
+    surplus_since: dict[PoolKey, float],
+    now: float,
+    grace: float,
+    max_drains: int,
+) -> tuple[list[PlacedDrain], dict[PoolKey, float]]:
+    """Retire misplaced idle capacity so normal sizing can replace it.
+
+    Global supply can equal desired supply while all ready work is in a
+    different project from its idle workers. No size action then exists.
+    After sustained placement imbalance, drain only idle surplus above the
+    source's warm floor. A later ordinary sizing pass owns replacement;
+    this function never grants extra starts or changes any pool cap.
+    """
+    converging = {item.key for item in starts} | {item.key for item in drains}
+    budget = max(0, max_drains - sum(len(item.session_ids) for item in drains))
+    since = {}
+    result = []
+    for key in sorted(candidates, key=lambda item: item.profile_id):
+        if key in converging:
+            continue
+        needed = 0
+        donors = []
+        for candidate in candidates[key]:
+            idle = len(candidate.idle_session_ids)
+            deficit = max(0, candidate.ready - idle - candidate.starting)
+            if deficit and not _start_ineligibility(
+                candidate,
+                live=candidate.live,
+                total=candidate.project_live_total,
+                capacity=candidate.workspace_capacity,
+                unserved=deficit,
+            ):
+                room = candidate.workspace_capacity
+                if candidate.project_cap is not None:
+                    room = min(room, candidate.project_cap - candidate.project_live_total)
+                needed += min(deficit, room)
+            spare = min(
+                idle - max(0, candidate.ready - candidate.starting),
+                candidate.live - candidate.warm_floor,
+            )
+            if spare > 0:
+                donors.append((candidate, spare))
+        if not needed or not donors:
+            continue
+        since[key] = surplus_since.get(key, now)
+        if now - since[key] < grace:
+            continue
+        for candidate, spare in sorted(donors, key=lambda item: item[0].project_id):
+            count = min(spare, needed, budget)
+            if count <= 0:
+                break
+            result.append(PlacedDrain(key, candidate.project_id, candidate.idle_session_ids[:count]))
+            budget -= count
+            needed -= count
+    return result, since

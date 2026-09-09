@@ -530,7 +530,7 @@ class WorkspaceMixin:
         return workspace
 
     async def _hierarchy_origin_and_fence(
-        self, task: Task, project
+        self, task: Task, project, *, preparing_session_id=None, preparing_workspace_id=None
     ) -> tuple[dict, Fence, str]:
         """Resolve exact origin/target and the server-derived current role."""
         repository_id = getattr(project, "integration_repository_id", None)
@@ -578,7 +578,14 @@ class WorkspaceMixin:
                 owner is None
                 or owner["owner_id"] != task.id
                 or owner["owner_role"] != "repair"
-                or owner["handoff_state"] != "reserved"
+                or not (
+                    owner["handoff_state"] == "reserved"
+                    or (owner["handoff_state"] == "attached"
+                        and preparing_session_id is not None
+                        and preparing_workspace_id is not None
+                        and owner["session_id"] == preparing_session_id
+                        and owner["workspace_id"] == preparing_workspace_id)
+                )
             ):
                 raise BranchBusy("repair branch is not reserved by this delegate")
             return (
@@ -606,13 +613,33 @@ class WorkspaceMixin:
         target = BranchKey(repository_id=repository_id, branch=branch)
         ownership = BranchOwnership(self.db)
         owner = await ownership.get_owner(target)
+        if (
+            operation is None
+            and subject_id == task.id
+            and owner is not None
+            and owner["owner_id"] == task.id
+            and owner["owner_role"] == "worker"
+            and owner["handoff_state"] == "released"
+        ):
+            # A reopened producer retains its canonical origin, but its prior
+            # session released ownership at close. Reserve a fresh fence for
+            # the new attempt before preparing the workspace.
+            await ownership.acquire(target, task.id, "worker")
+            owner = await ownership.get_owner(target)
         role = str(owner["owner_role"]) if owner is not None else ""
         expected_role = "verifier" if operation is not None or subject_id == task.id and role == "verifier" else "worker"
         if (
             owner is None
             or owner["owner_id"] != task.id
             or role != expected_role
-            or owner["handoff_state"] != "reserved"
+            or not (
+                owner["handoff_state"] == "reserved"
+                or (owner["handoff_state"] == "attached"
+                    and preparing_session_id is not None
+                    and preparing_workspace_id is not None
+                    and owner["session_id"] == preparing_session_id
+                    and owner["workspace_id"] == preparing_workspace_id)
+            )
         ):
             raise BranchBusy("canonical branch is not reserved by this task")
         if role == "verifier":
@@ -1182,7 +1209,7 @@ class WorkspaceMixin:
         current_branch = await self.git.aget_current_branch(
             workspace.workspace_path, strict=True
         )
-        if current_branch not in {owner.get("ref"), "HEAD"}:
+        if current_branch not in {str(owner.get("ref") or "").removeprefix("refs/heads/"), "HEAD"}:
             return False
         try:
             provider = self.session_providers.create(session.provider, self.config)

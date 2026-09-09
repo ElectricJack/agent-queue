@@ -429,14 +429,21 @@ class ClaimCommandsMixin:
                 if row.task_id:
                     held = await self.db._get_task_conn(row.task_id, conn=conn)
                     epoch = held.claim_epoch if held else None
-                out = self._simple(ClaimResult.CLAIM_IN_PROGRESS, kind, row, cap)
-                out.update(
-                    task_id=row.task_id,
-                    claim_epoch=epoch,
-                    claim_phase=row.claim_phase,
-                    claim_phase_at=row.claim_phase_at,
-                )
-                return out
+                waiter = self.orchestrator.claim_waiters.get((session.id, epoch))
+                if kind == "preparing" and epoch is not None and (waiter is None or waiter.done()):
+                    # The previous request failed or the daemon restarted.
+                    # Retry this exact held preparation under the task lock;
+                    # never discard its attached fence to manufacture a new claim.
+                    new_claim = (row, held, None)
+                else:
+                    out = self._simple(ClaimResult.CLAIM_IN_PROGRESS, kind, row, cap)
+                    out.update(
+                        task_id=row.task_id,
+                        claim_epoch=epoch,
+                        claim_phase=row.claim_phase,
+                        claim_phase_at=row.claim_phase_at,
+                    )
+                    return out
             elif kind == "session_exhausted":
                 return self._simple(
                     ClaimResult.SESSION_EXHAUSTED, "max_claims_per_session reached", row, cap
@@ -565,22 +572,32 @@ class ClaimCommandsMixin:
                 from src.integration.ownership import BranchOwnership
 
                 origin, fence, owner_role = await self.orchestrator._hierarchy_origin_and_fence(
-                    task, project
+                    task, project, preparing_session_id=session.id, preparing_workspace_id=slot.id
                 )
                 ownership = BranchOwnership(self.db)
+                previous_owner = await ownership.get_owner(fence.target)
+                hierarchy_attached = bool(
+                    previous_owner and previous_owner["handoff_state"] == "attached"
+                    and previous_owner["session_id"] == session.id
+                    and previous_owner["workspace_id"] == slot.id
+                )
                 base_sha = origin["base_sha"]
                 if owner_role == "repair":
-                    async with ownership.mutation_exclusion(fence, expected_role=owner_role):
+                    async with ownership.mutation_exclusion(
+                        fence, expected_role=owner_role,
+                        state="attached" if hierarchy_attached else "reserved",
+                    ):
                         base_sha = await self.orchestrator._hierarchy_repair_start(
                             slot.workspace_path, origin, fence
                         )
-                await ownership.attach(
-                    fence,
-                    session.id,
-                    slot.id,
-                    agent_id=row.agent_id,
-                    expected_role=owner_role,
-                )
+                if not hierarchy_attached:
+                    await ownership.attach(
+                        fence,
+                        session.id,
+                        slot.id,
+                        agent_id=row.agent_id,
+                        expected_role=owner_role,
+                    )
                 hierarchy_attached = True
                 async with ownership.mutation_exclusion(
                     fence, state="attached", expected_role=owner_role
