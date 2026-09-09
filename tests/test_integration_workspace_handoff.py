@@ -1829,8 +1829,9 @@ async def test_historical_recovery_requires_the_same_repair_operation(
 
 
 @pytest.mark.parametrize("published", [True, False])
+@pytest.mark.parametrize("unlocked", [True, False])
 async def test_stopped_verifier_recovery_preserves_detached_published_baseline(
-    orchestrator_factory, tmp_path, monkeypatch, published
+    orchestrator_factory, tmp_path, monkeypatch, published, unlocked
 ):
     """Recover failed verifier preparation only with fresh remote publication proof."""
     orchestrator = await _stopped_stale_pool_orchestrator(orchestrator_factory, tmp_path)
@@ -1838,6 +1839,8 @@ async def test_stopped_verifier_recovery_preserves_detached_published_baseline(
         await conn.execute(update(integration_branch_owners).where(
             integration_branch_owners.c.id == "owner"
         ).values(owner_role="verifier"))
+    if unlocked:
+        await orchestrator.db.release_workspace("slot")
     events = []
     provider = SimpleNamespace(confirm_stopped=AsyncMock(return_value=True))
     monkeypatch.setattr(orchestrator.session_providers, "create", lambda *_: provider)
@@ -1870,7 +1873,9 @@ async def test_stopped_verifier_recovery_preserves_detached_published_baseline(
             _owner(owner_role="verifier")
         )
         assert (await orchestrator.db.get_session("session")).task_id == "task"
-        assert (await orchestrator.db.get_workspace("slot")).locked_by_task_id == "task"
+        assert (await orchestrator.db.get_workspace("slot")).locked_by_task_id == (
+            None if unlocked else "task"
+        )
     assert "remote-publication" in events
     assert "detach" not in events
     assert (await orchestrator.db.get_task("task")).claim_epoch == 3
@@ -1907,6 +1912,7 @@ async def test_real_git_detached_verifier_baseline_requires_current_publication(
     lock = asyncio.Lock()
     assert await detach_workspace_for_integration_handoff(
         git, lambda _: lock, workspace, expected_branch="aq/parent",
+        require_detached=True,
         allow_published_detached_head=True,
     )
     assert await run("rev-parse", "HEAD") == baseline
@@ -1918,3 +1924,30 @@ async def test_real_git_detached_verifier_baseline_requires_current_publication(
     )
     assert await run("rev-parse", "HEAD") == unpublished
     assert await run("rev-parse", "--abbrev-ref", "HEAD") == "HEAD"
+
+
+async def test_unlocked_verifier_recovery_cannot_release_a_reused_workspace(
+    orchestrator_factory, tmp_path
+):
+    from src.orchestrator.workspace_attachments import mark_stopped_integration_pool_handoff_released
+
+    orchestrator = await _stopped_stale_pool_orchestrator(
+        orchestrator_factory, tmp_path, handoff_state="handoff_pending"
+    )
+    db = orchestrator.db
+    async with db.immediate() as conn:
+        await conn.execute(update(integration_branch_owners).where(
+            integration_branch_owners.c.id == "owner"
+        ).values(owner_role="verifier"))
+    await db.release_workspace("slot")
+    snapshot = await db.get_workspace("slot")
+    await db.create_task(Task(id="successor", project_id="p", title="Successor", description=""))
+    async with db.immediate() as conn:
+        await conn.execute(update(workspaces).where(workspaces.c.id == "slot").values(
+            locked_by_task_id="successor", locked_by_agent_id="agent"
+        ))
+    assert not await mark_stopped_integration_pool_handoff_released(
+        db, _owner(owner_role="verifier"), workspace=snapshot, session_instance_token="instance"
+    )
+    assert (await db.get_workspace("slot")).locked_by_task_id == "successor"
+    assert (await db.get_session("session")).task_id == "task"

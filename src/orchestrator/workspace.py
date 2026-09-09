@@ -1338,6 +1338,11 @@ class WorkspaceMixin:
             if session and session.agent_id
             else True
         )
+        unlocked_verifier = (
+            workspace is not None and owner.get("owner_role") == "verifier"
+            and workspace.locked_by_task_id is None
+            and workspace.locked_by_agent_id is None
+        )
         if (
             session is None
             or workspace is None
@@ -1357,8 +1362,10 @@ class WorkspaceMixin:
             or session.desired_state != "stopped"
             or owner.get("owner_role") not in {"worker", "repair", "verifier"}
             or session.task_id != owner.get("owner_id")
-            or workspace.locked_by_task_id != owner.get("owner_id")
-            or workspace.locked_by_agent_id != session.agent_id
+            or (not unlocked_verifier and (
+                workspace.locked_by_task_id != owner.get("owner_id")
+                or workspace.locked_by_agent_id != session.agent_id
+            ))
             or workspace.project_id != repository.project_id
             or session.project_id != repository.project_id
             or task.project_id != repository.project_id
@@ -1393,6 +1400,7 @@ class WorkspaceMixin:
                     workspace,
                     expected_branch=str(owner["ref"]),
                     allow_published_detached_head=owner.get("owner_role") == "verifier",
+                    require_detached=unlocked_verifier,
                 )
             else:
                 detached = await detach_workspace_for_integration_handoff(
@@ -1401,6 +1409,7 @@ class WorkspaceMixin:
                     workspace,
                     expected_branch=str(owner["ref"]),
                     allow_published_detached_head=owner.get("owner_role") == "verifier",
+                    require_detached=unlocked_verifier,
                 )
             if not detached:
                 return False

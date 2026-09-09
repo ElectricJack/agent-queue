@@ -11,7 +11,7 @@ from __future__ import annotations
 import time
 from collections.abc import Callable
 
-from sqlalchemy import select, update
+from sqlalchemy import or_, select, update
 
 from src.database.tables import agents, integration_branch_owners, sessions, tasks, workspaces
 from src.models import (
@@ -471,7 +471,8 @@ async def mark_stopped_integration_pool_handoff_released(
                 await conn.execute(
                     select(sessions.c.id)
                     .where(
-                        sessions.c.agent_id == agent_id,
+                        or_(sessions.c.agent_id == agent_id,
+                            sessions.c.work_dir == session_row["work_dir"]),
                         sessions.c.id != session_row["id"],
                         sessions.c.started_at >= session_row["started_at"],
                     )
@@ -479,6 +480,14 @@ async def mark_stopped_integration_pool_handoff_released(
                 )
             ).scalar_one_or_none()
 
+        unlocked_verifier = (
+            owner_row is not None and owner_row["owner_role"] == "verifier"
+            and workspace_row is not None
+            and workspace_row["locked_by_task_id"] is None
+            and workspace_row["locked_by_agent_id"] is None
+            and workspace.locked_by_task_id is None
+            and workspace.locked_by_agent_id is None
+        )
         if (
             owner_row is None
             or session_row is None
@@ -498,8 +507,10 @@ async def mark_stopped_integration_pool_handoff_released(
             or session_row["desired_state"] != "stopped"
             or session_row["task_id"] != owner_row["owner_id"]
             or session_row["work_dir"] != workspace_row["workspace_path"]
-            or workspace_row["locked_by_task_id"] != owner_row["owner_id"]
-            or workspace_row["locked_by_agent_id"] != agent_id
+            or (not unlocked_verifier and (
+                workspace_row["locked_by_task_id"] != owner_row["owner_id"]
+                or workspace_row["locked_by_agent_id"] != agent_id
+            ))
             or task_row["status"] != "READY"
             or task_row["assigned_agent_id"] is not None
             or agent_row["state"] != AgentState.RETIRED.value
@@ -529,8 +540,8 @@ async def mark_stopped_integration_pool_handoff_released(
             update(workspaces)
             .where(
                 workspaces.c.id == workspace.id,
-                workspaces.c.locked_by_task_id == owner_row["owner_id"],
-                workspaces.c.locked_by_agent_id == agent_id,
+                workspaces.c.locked_by_task_id == workspace_row["locked_by_task_id"],
+                workspaces.c.locked_by_agent_id == workspace_row["locked_by_agent_id"],
             )
             .values(
                 locked_by_agent_id=None,
@@ -676,6 +687,7 @@ async def detach_slot_for_integration_handoff(
     *,
     expected_branch: str,
     allow_published_detached_head: bool = False,
+    require_detached: bool = False,
 ) -> bool:
     """Detach a clean, fully pushed slot without resetting its contents.
 
@@ -699,6 +711,7 @@ async def detach_slot_for_integration_handoff(
         mutex_path=base.workspace_path,
         expected_branch=expected_branch,
         allow_published_detached_head=allow_published_detached_head,
+        require_detached=require_detached,
     )
 
 
@@ -710,6 +723,7 @@ async def detach_workspace_for_integration_handoff(
     mutex_path: str | None = None,
     expected_branch: str,
     allow_published_detached_head: bool = False,
+    require_detached: bool = False,
 ) -> bool:
     """Prove and detach an exact pushed checkout before releasing its lock."""
 
@@ -722,6 +736,8 @@ async def detach_workspace_for_integration_handoff(
         current = await git._arun_unlocked(
             ["rev-parse", "--abbrev-ref", "HEAD"], cwd=checkout
         )
+        if require_detached and current != "HEAD":
+            return False
         if current not in {expected_branch, "HEAD"}:
             return False
         status = await git._arun_unlocked(["status", "--porcelain"], cwd=checkout)
