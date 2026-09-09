@@ -110,3 +110,20 @@ The canonical wrapper requires VS 2022 Community, MSVC 14.44.35207, Windows SDK
 10.0.26100.0, native Python 3.13, and Vulkan SDK 1.4.357.0. A runner-location
 preference is pending with the user. Required native CI and baseline delivery
 must be established before the two queued epics can run under the new policy.
+
+## Automatic candidate publication recovery
+
+`a9037973` adds a background publication-before-CI continuation using the normal
+fenced candidate builder, and returns a completed detached repair delegate's
+branch only when its adopted candidate exactly matches the current stage.
+Validation: 84 candidate/service tests passed; two additional crash cases passed
+for absent publication and interrupted publication. Changed files introduce no
+new Ruff diagnostics relative to HEAD before the change. Loaded after restart.
+
+Live batch `integration-batch-db9e3d6681c4b82624d569d2bdbf2a6e` is at revision 1,
+`371391a11fc7035545d58ec9bf16af3cea123710`, with publication only for revision 0.
+Stage 0 completed, but its deadline elapsed before this fix; stage 1 now owns
+the reserved branch and is READY. Its disabled-Claude route was changed through
+`aq task route` to enabled `deep-high-codex`. Recovery waits for that authorized
+repair; it does not seize its reservation. Automatic live publication acceptance
+is therefore still pending.
