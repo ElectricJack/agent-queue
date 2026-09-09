@@ -9,7 +9,12 @@ from unittest.mock import AsyncMock
 import pytest
 from sqlalchemy import insert, select, update
 
-from src.database.tables import integration_branch_owners, sessions, task_integration_checkpoints, workspaces
+from src.database.tables import (
+    integration_branch_owners,
+    sessions,
+    task_integration_checkpoints,
+    workspaces,
+)
 from src.git.manager import GitError
 from src.integration.models import BranchKey, Fence
 from src.integration.ownership import BranchOwnership
@@ -33,9 +38,7 @@ async def _orchestrator(orchestrator_factory, tmp_path):
     orchestrator = await orchestrator_factory()
     db = orchestrator.db
     await db.create_project(Project(id="p", name="Project"))
-    await db.create_repo(
-        RepoConfig(id="repo", project_id="p", source_type=RepoSourceType.CLONE)
-    )
+    await db.create_repo(RepoConfig(id="repo", project_id="p", source_type=RepoSourceType.CLONE))
     await db.create_task(
         Task(
             id="task",
@@ -201,9 +204,7 @@ async def test_stop_timeout_is_not_release_evidence(orchestrator_factory, tmp_pa
     assert (await orchestrator.db.get_workspace("slot")).locked_by_task_id == "task"
 
 
-async def test_dirty_slot_is_not_detached_or_released(
-    orchestrator_factory, tmp_path, monkeypatch
-):
+async def test_dirty_slot_is_not_detached_or_released(orchestrator_factory, tmp_path, monkeypatch):
     """Resetting a dirty handoff checkout would destroy the writer's evidence."""
     orchestrator = await _orchestrator(orchestrator_factory, tmp_path)
     events: list[str] = []
@@ -256,17 +257,13 @@ async def test_foreign_checked_out_branch_is_rejected_before_stopping(
     assert (await orchestrator.db.get_workspace("slot")).locked_by_task_id == "task"
 
 
-async def test_failed_detach_keeps_the_slot_locked(
-    orchestrator_factory, tmp_path, monkeypatch
-):
+async def test_failed_detach_keeps_the_slot_locked(orchestrator_factory, tmp_path, monkeypatch):
     """A failed checkout detach is not workspace-release evidence."""
     orchestrator = await _orchestrator(orchestrator_factory, tmp_path)
     events: list[str] = []
     provider = _provider(events)
     monkeypatch.setattr(orchestrator.session_providers, "create", lambda *_args: provider)
-    current_branch, run = _clean_git(
-        events, detach_error=GitError("could not detach")
-    )
+    current_branch, run = _clean_git(events, detach_error=GitError("could not detach"))
     orchestrator.git.aget_current_branch = AsyncMock(side_effect=current_branch)
     orchestrator.git._arun_unlocked = AsyncMock(side_effect=run)
 
@@ -296,9 +293,7 @@ async def test_success_stops_confirms_detaches_then_releases(
         events.append("release")
         return await real_release(*args, **kwargs)
 
-    monkeypatch.setattr(
-        workspace_attachments, "mark_integration_handoff_released", release
-    )
+    monkeypatch.setattr(workspace_attachments, "mark_integration_handoff_released", release)
 
     confirmed = await orchestrator.aconfirm_integration_owner_handoff(_owner())
 
@@ -367,9 +362,7 @@ async def test_released_handoff_recovers_after_crash_without_touching_a_new_hold
 
     assert await orchestrator.aconfirm_integration_owner_handoff(_owner()) is True
     async with orchestrator.db._engine.connect() as conn:
-        released = (
-            await conn.execute(select(integration_branch_owners))
-        ).mappings().one()
+        released = (await conn.execute(select(integration_branch_owners))).mappings().one()
     assert released["handoff_state"] == "released"
     assert released["fence_token"] == 4
     assert released["confirmed_workspace_id"] == "slot"
@@ -836,9 +829,7 @@ async def test_pool_handoff_replay_is_idempotent_and_touches_no_git(
     assert events == []
 
 
-async def test_pool_handoff_refuses_a_dirty_slot(
-    orchestrator_factory, tmp_path, monkeypatch
-):
+async def test_pool_handoff_refuses_a_dirty_slot(orchestrator_factory, tmp_path, monkeypatch):
     """Uncommitted work means the writer has not stopped writing to the branch."""
     orchestrator = await _pool_orchestrator(orchestrator_factory, tmp_path)
     events: list[str] = []
@@ -855,9 +846,7 @@ async def test_pool_handoff_refuses_a_dirty_slot(
     assert row["handoff_state"] == "handoff_pending"
 
 
-async def test_pool_handoff_refuses_an_unpushed_slot(
-    orchestrator_factory, tmp_path, monkeypatch
-):
+async def test_pool_handoff_refuses_an_unpushed_slot(orchestrator_factory, tmp_path, monkeypatch):
     """A local tip origin has never seen is unreviewable, un-collectable work."""
     orchestrator = await _pool_orchestrator(orchestrator_factory, tmp_path)
     events: list[str] = []
@@ -921,9 +910,7 @@ async def test_pool_proof_is_refused_once_the_session_dropped_the_task(
     """Released-claim ordering matters: the binding is the fence for this proof."""
     orchestrator = await _pool_orchestrator(orchestrator_factory, tmp_path)
     async with orchestrator.db.immediate() as conn:
-        await conn.execute(
-            update(sessions).where(sessions.c.id == "session").values(task_id=None)
-        )
+        await conn.execute(update(sessions).where(sessions.c.id == "session").values(task_id=None))
     events: list[str] = []
     current_branch, run = _clean_git(events)
     orchestrator.git.aget_current_branch = AsyncMock(side_effect=current_branch)
@@ -932,6 +919,133 @@ async def test_pool_proof_is_refused_once_the_session_dropped_the_task(
     confirmed = await orchestrator.aconfirm_integration_pool_owner_handoff(_owner())
 
     assert confirmed is False
+    assert events == []
+
+
+async def _released_pool_attachment(orchestrator, *, owner_role="worker"):
+    """Build the old bad ordering through the real pool claim-release API."""
+    db = orchestrator.db
+    await db.update_project(
+        "p", hierarchical_integration_mode="hierarchy", integration_repository_id="repo"
+    )
+    async with db.immediate() as conn:
+        await conn.execute(
+            update(sessions).where(sessions.c.id == "session").values(lifecycle="pool")
+        )
+        await db._start_task_session_attempt(conn, "session", started_at=time.time())
+    await db.transition_task("task", TaskStatus.IN_PROGRESS, context="test", force=True)
+    await db.release_claim(
+        "session",
+        task_status=TaskStatus.READY,
+        context="test_orphaned_pool_release",
+        now=time.time(),
+        result="prepare_failed",
+    )
+    await db.update_session(
+        "session",
+        state="stopped",
+        desired_state="stopped",
+        end_reason="prepare_failed",
+    )
+    async with db.immediate() as conn:
+        await conn.execute(
+            update(integration_branch_owners)
+            .where(integration_branch_owners.c.id == "owner")
+            .values(owner_role=owner_role, handoff_state="attached")
+        )
+
+
+@pytest.mark.parametrize("owner_role", ["worker", "verifier"])
+async def test_public_transfer_recovers_exact_orphaned_pool_attachment(
+    orchestrator_factory, tmp_path, monkeypatch, owner_role
+):
+    """A stopped, released pool attempt can hand off without stopping anything."""
+    orchestrator = await _orchestrator(orchestrator_factory, tmp_path)
+    await _released_pool_attachment(orchestrator, owner_role=owner_role)
+    events: list[str] = []
+    current_branch, run = _clean_git(events)
+    orchestrator.git.aget_current_branch = AsyncMock(side_effect=current_branch)
+    orchestrator.git._arun_unlocked = AsyncMock(side_effect=run)
+    monkeypatch.setattr(orchestrator.session_providers, "create", lambda *_args: _provider(events))
+
+    target = BranchKey(repository_id="repo", branch="aq/parent")
+    successor = await BranchOwnership(
+        orchestrator.db, confirm_handoff=orchestrator.aconfirm_integration_owner_handoff
+    ).transfer(Fence(target=target, owner_id="task", token=4), "operation", "collector")
+
+    assert successor == Fence(target=target, owner_id="operation", token=5)
+    assert events == ["confirm", "clean-check", "fetch", "detach"]
+    owner = await BranchOwnership(orchestrator.db).get_owner(target)
+    assert owner["owner_id"] == "operation"
+    assert owner["handoff_state"] == "reserved"
+    workspace = await orchestrator.db.get_workspace("slot")
+    assert workspace.locked_by_agent_id == "agent" and workspace.locked_by_task_id is None
+
+
+async def test_public_transfer_refuses_reused_orphaned_pool_attachment(
+    orchestrator_factory, tmp_path, monkeypatch
+):
+    """A successor agent/session identity is never stopped or detached by recovery."""
+    orchestrator = await _orchestrator(orchestrator_factory, tmp_path)
+    await _released_pool_attachment(orchestrator)
+    await orchestrator.db.update_agent("agent", state=AgentState.BUSY, current_task_id="successor")
+    events: list[str] = []
+    current_branch, run = _clean_git(events)
+    orchestrator.git.aget_current_branch = AsyncMock(side_effect=current_branch)
+    orchestrator.git._arun_unlocked = AsyncMock(side_effect=run)
+    monkeypatch.setattr(
+        orchestrator.session_providers,
+        "create",
+        lambda *_args: (_ for _ in ()).throw(AssertionError("must not stop successor")),
+    )
+
+    target = BranchKey(repository_id="repo", branch="aq/parent")
+    with pytest.raises(Exception, match="previous writer has not confirmed"):
+        await BranchOwnership(
+            orchestrator.db, confirm_handoff=orchestrator.aconfirm_integration_owner_handoff
+        ).transfer(Fence(target=target, owner_id="task", token=4), "operation", "collector")
+
+    assert events == []
+    owner = await BranchOwnership(orchestrator.db).get_owner(target)
+    assert owner["handoff_state"] == "handoff_pending"
+
+
+async def test_public_transfer_refuses_an_orphaned_attachment_with_newer_session(
+    orchestrator_factory, tmp_path
+):
+    """Even a stopped successor makes the old worktree identity ambiguous."""
+    orchestrator = await _orchestrator(orchestrator_factory, tmp_path)
+    await _released_pool_attachment(orchestrator)
+    old = await orchestrator.db.get_session("session")
+    await orchestrator.db.create_session(
+        SessionRecord(
+            id="successor-session",
+            agent_id="agent",
+            project_id="p",
+            profile_id="worker",
+            harness="codex",
+            provider="fake",
+            name="successor",
+            lifecycle="pool",
+            work_dir=old.work_dir,
+            epoch="epoch-2",
+            instance_token="successor-instance",
+            started_at=old.started_at + 1,
+            state="stopped",
+            desired_state="stopped",
+        )
+    )
+    events: list[str] = []
+    current_branch, run = _clean_git(events)
+    orchestrator.git.aget_current_branch = AsyncMock(side_effect=current_branch)
+    orchestrator.git._arun_unlocked = AsyncMock(side_effect=run)
+
+    target = BranchKey(repository_id="repo", branch="aq/parent")
+    with pytest.raises(Exception, match="previous writer has not confirmed"):
+        await BranchOwnership(
+            orchestrator.db, confirm_handoff=orchestrator.aconfirm_integration_owner_handoff
+        ).transfer(Fence(target=target, owner_id="task", token=4), "operation", "collector")
+
     assert events == []
 
 
@@ -978,9 +1092,7 @@ async def test_pool_writer_release_restores_a_reserved_fence_for_the_parent(
         )
     )
     fence = Fence(target=target, owner_id="task", token=5)
-    transferred = await BranchOwnership(orchestrator.db).transfer(
-        fence, "collector", "collector"
-    )
+    transferred = await BranchOwnership(orchestrator.db).transfer(fence, "collector", "collector")
     assert transferred == Fence(target=target, owner_id="collector", token=6)
 
 
@@ -1086,9 +1198,7 @@ async def test_pool_close_of_a_suspended_parent_releases_its_owner_row(
 
     assert result["status"] == TaskStatus.PAUSED.value
     suspended.assert_awaited_once()
-    owner = await BranchOwnership(db).get_owner(
-        BranchKey(repository_id="repo", branch="aq/parent")
-    )
+    owner = await BranchOwnership(db).get_owner(BranchKey(repository_id="repo", branch="aq/parent"))
     assert owner["handoff_state"] == "reserved"
     assert owner["owner_id"] == "task"
     assert owner["fence_token"] == 5

@@ -230,9 +230,7 @@ class ClaimCommandsMixin:
         # worker is finishing current work.  The conversion marks each live
         # worker stopped; reject a fresh claim before it can take new work.
         if session.lifecycle == "pool" and session.desired_state == "stopped":
-            return self._simple(
-                ClaimResult.DRAIN_REQUESTED, "pool is draining", session
-            )
+            return self._simple(ClaimResult.DRAIN_REQUESTED, "pool is draining", session)
         want_id = args.get("task_id")
         if not want_id and not args.get("next"):
             return {"success": False, "error": "task_id or next=true is required"}
@@ -268,9 +266,7 @@ class ClaimCommandsMixin:
             # completion; what the switch stops is the *next* claim — including
             # one a long poll is still waiting for.
             if not getattr(profile, "enabled", True):
-                return self._simple(
-                    ClaimResult.DRAIN_REQUESTED, "pool is disabled", session
-                )
+                return self._simple(ClaimResult.DRAIN_REQUESTED, "pool is disabled", session)
             # Subscribe before checking admissibility (same discipline as
             # the frontier waiter below) — otherwise a ``project.resumed`` /
             # ``constraint.released`` / ``snapshot.refreshed`` landing
@@ -303,10 +299,14 @@ class ClaimCommandsMixin:
                 # never reads it (spec §15).
                 seq0 = await self.db.max_event_id() if wait else 0
                 routing = self._pool_claim_routing(session, profile)
-                outcome = await self._attempt_claim(session, want_id, cap, default_profile, routing=routing)
+                outcome = await self._attempt_claim(
+                    session, want_id, cap, default_profile, routing=routing
+                )
                 result = outcome["result"]
-                if (result == ClaimResult.SESSION_EXHAUSTED.value
-                        and self.config.swarm.fresh_context_per_task):
+                if (
+                    result == ClaimResult.SESSION_EXHAUSTED.value
+                    and self.config.swarm.fresh_context_per_task
+                ):
                     # Also retire idle sessions that predate this policy.
                     await self.db.update_session(session.id, desired_state="stopped")
                 if result == ClaimResult.NO_READY_WORK.value and wait:
@@ -339,9 +339,7 @@ class ClaimCommandsMixin:
             return 1
         return getattr(profile, "max_claims_per_session", None)
 
-    def _pool_claim_routing(
-        self, session, profile
-    ) -> tuple[str | None, str | None, str | None]:
+    def _pool_claim_routing(self, session, profile) -> tuple[str | None, str | None, str | None]:
         """Restrict claims to the recorded live session, not next-launch settings.
 
         A running pool cannot change model or reasoning class between claims.
@@ -354,13 +352,17 @@ class ClaimCommandsMixin:
 
         live_class = session.intelligence_class or None
         worker = Agent(
-            id=session.agent_id or session.id, name=session.name,
-            profile_id=session.profile_id, harness=session.harness,
-            model=session.model, intelligence_class=live_class,
+            id=session.agent_id or session.id,
+            name=session.name,
+            profile_id=session.profile_id,
+            harness=session.harness,
+            model=session.model,
+            intelligence_class=live_class,
         )
         classes = getattr(
             getattr(self.orchestrator, "session_spec_builder", None),
-            "_intelligence_classes", None,
+            "_intelligence_classes",
+            None,
         )
 
         def matches(class_id):
@@ -370,14 +372,24 @@ class ClaimCommandsMixin:
             if not required_class and getattr(profile, "model", None) and not session.model:
                 return False
             task = Task(
-                id="", project_id=session.project_id, title="", description="",
-                profile_id=session.profile_id, intelligence_class=class_id,
+                id="",
+                project_id=session.project_id,
+                title="",
+                description="",
+                profile_id=session.profile_id,
+                intelligence_class=class_id,
             )
-            return task_agent_mismatch(
-                task, worker, task_profile=profile, agent_profile=profile,
-                harness_registry=getattr(self.orchestrator, "harness_registry", None),
-                intelligence_classes=classes,
-            ) is None
+            return (
+                task_agent_mismatch(
+                    task,
+                    worker,
+                    task_profile=profile,
+                    agent_profile=profile,
+                    harness_registry=getattr(self.orchestrator, "harness_registry", None),
+                    intelligence_classes=classes,
+                )
+                is None
+            )
 
         return (
             live_class if live_class and matches(live_class) else None,
@@ -514,10 +526,14 @@ class ClaimCommandsMixin:
                 session.id, task.id, task.claim_epoch
             ):
                 self._resolve_claim_waiters(session.id, task.claim_epoch, "prepare_failed")
-                return self._simple(ClaimResult.PREPARE_FAILED, "claim changed before preparation", row, cap)
+                return self._simple(
+                    ClaimResult.PREPARE_FAILED, "claim changed before preparation", row, cap
+                )
             return await self._prepare_and_activate_locked(session, row, task, cap, slot=slot)
 
-    async def _prepare_and_activate_locked(self, session, row, task, cap=None, *, slot=None) -> dict:
+    async def _prepare_and_activate_locked(
+        self, session, row, task, cap=None, *, slot=None
+    ) -> dict:
         """Reset the slot, write the claim file, activate.
 
         *slot* is the workspace row ``record_holder`` already returned from
@@ -533,9 +549,10 @@ class ClaimCommandsMixin:
             if slot is None:
                 raise RuntimeError("session holds no workspace slot")
             project = await self.db.get_project(task.project_id)
-            hierarchy_enabled = getattr(
-                project, "hierarchical_integration_mode", "disabled"
-            ) in {"hierarchy", "train"}
+            hierarchy_enabled = getattr(project, "hierarchical_integration_mode", "disabled") in {
+                "hierarchy",
+                "train",
+            }
 
             async def prepare_and_activate(*, conn=None, base_branch=None, target_branch=None):
                 reset_kwargs = {"base_branch": base_branch} if base_branch else {}
@@ -594,11 +611,44 @@ class ClaimCommandsMixin:
             logger.warning("claim %s/%s: prepare failed: %s", session.id, task.id, exc)
             remove_claim_file(row.work_dir)
             if hierarchy_attached:
-                # Never unlock a checkout still named by an attached fence.
-                # Reconciliation/handoff owns the stop+detach proof.
-                await self.db.set_task_meta(
-                    task.id, "needs_attention", "integration_prepare_failed_attached"
+                # The attachment happened before slot reset / claim-file
+                # preparation.  Detach it *before* release_claim erases the
+                # session/task and workspace/task proof.  A clean, pushed
+                # checkout restores this task's reserved fence and then the
+                # normal failed-prepare release is safe; an unprovable one
+                # intentionally retains every binding for later recovery.
+                released = await self.orchestrator.arelease_integration_writer_for_retry(
+                    task,
+                    reason="integration_prepare_failed",
+                    pool=True,
                 )
+                if released:
+                    await self.db.release_claim(
+                        session.id,
+                        task_status=TaskStatus.READY,
+                        context="integration_prepare_failed",
+                        now=time.time(),
+                        result="prepare_failed",
+                        needs_attention="integration_prepare_failed",
+                        prepare_backoff=True,
+                    )
+                    await self.orchestrator.bus.emit(
+                        "pool.prepare_failed",
+                        {
+                            "project_id": session.project_id,
+                            "profile_id": session.profile_id,
+                            "session_id": session.id,
+                            "task_id": task.id,
+                            "reason": str(exc),
+                        },
+                    )
+                else:
+                    # Never unlock a checkout still named by an attached
+                    # fence.  The retained claim is the evidence required by
+                    # the guarded handoff/recovery path.
+                    await self.db.set_task_meta(
+                        task.id, "needs_attention", "integration_prepare_failed_attached"
+                    )
                 self._resolve_claim_waiters(session.id, epoch, "prepare_failed")
                 return self._simple(ClaimResult.PREPARE_FAILED, str(exc), row, cap)
             await self.db.release_claim(

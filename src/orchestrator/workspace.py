@@ -194,9 +194,11 @@ class WorkspaceMixin:
             "train",
         }:
             try:
-                integration_origin, integration_fence, _integration_role = (
-                    await self._hierarchy_origin_and_fence(task, project)
-                )
+                (
+                    integration_origin,
+                    integration_fence,
+                    _integration_role,
+                ) = await self._hierarchy_origin_and_fence(task, project)
             except (BranchBusy, StaleFence, ValueError) as exc:
                 logger.info("Task %s hierarchy workspace wait: %s", task.id, exc)
                 self._workspace_wait_reasons[task.id] = "branch_materialization_pending"
@@ -250,9 +252,7 @@ class WorkspaceMixin:
                 task,
                 agent.id,
                 worktrees_enabled=worktrees_enabled,
-                worktree_slot_cap=(
-                    self._project_slot_cap(project) if worktrees_enabled else None
-                ),
+                worktree_slot_cap=(self._project_slot_cap(project) if worktrees_enabled else None),
                 preferred_workspaces=preferred or None,
             )
         except AcquisitionFailed:
@@ -297,9 +297,7 @@ class WorkspaceMixin:
         # workspace path (for worktrees, the parent repo; otherwise the
         # workspace itself).
         if lock_mode == WorkspaceMode.BRANCH_ISOLATED:
-            base = (
-                await self.git.aworktree_base_path(workspace) if is_worktree else None
-            )
+            base = await self.git.aworktree_base_path(workspace) if is_worktree else None
             mutex_key = base if base else workspace
             self._git_mutex(mutex_key)  # ensure the lock exists in the dict
             if base:
@@ -369,6 +367,7 @@ class WorkspaceMixin:
             logger.warning("Failed to write sentinel to %s: %s", workspace, e)
 
         from src.orchestrator.task_checkpoint import CHECKPOINT_META, restore_checkpoint
+
         if integration_origin is None and await self.db.get_task_meta(task.id, CHECKPOINT_META):
             try:
                 branch = await restore_checkpoint(self.db, self.git, task.id, workspace)
@@ -529,9 +528,7 @@ class WorkspaceMixin:
 
         return workspace
 
-    async def _hierarchy_origin_and_fence(
-        self, task: Task, project
-    ) -> tuple[dict, Fence, str]:
+    async def _hierarchy_origin_and_fence(self, task: Task, project) -> tuple[dict, Fence, str]:
         """Resolve exact origin/target and the server-derived current role."""
         repository_id = getattr(project, "integration_repository_id", None)
         if not repository_id or task.repo_id != repository_id:
@@ -607,7 +604,11 @@ class WorkspaceMixin:
         ownership = BranchOwnership(self.db)
         owner = await ownership.get_owner(target)
         role = str(owner["owner_role"]) if owner is not None else ""
-        expected_role = "verifier" if operation is not None or subject_id == task.id and role == "verifier" else "worker"
+        expected_role = (
+            "verifier"
+            if operation is not None or subject_id == task.id and role == "verifier"
+            else "worker"
+        )
         if (
             owner is None
             or owner["owner_id"] != task.id
@@ -635,9 +636,11 @@ class WorkspaceMixin:
             cwd=workspace,
         )
         head = (await self.git._arun(["rev-parse", "--verify", tracking], cwd=workspace)).strip()
-        if not is_valid_git_oid(head) or await self.git.ais_ancestor(
-            workspace, origin["base_sha"], head, strict=True
-        ) is not True:
+        if (
+            not is_valid_git_oid(head)
+            or await self.git.ais_ancestor(workspace, origin["base_sha"], head, strict=True)
+            is not True
+        ):
             raise GitError("repair branch no longer descends from its frozen starting commit")
         return head
 
@@ -668,19 +671,14 @@ class WorkspaceMixin:
                 raise BranchBusy("retained repair workspace binding is stale")
             current_branch = await self.git.aget_current_branch(workspace, strict=True)
             current_head = (
-                await self.git._arun(["rev-parse", "HEAD"], cwd=workspace)
-            ).strip().lower()
-            if (
-                current_branch != branch
-                or current_head != provenance.get("head_sha")
-            ):
+                (await self.git._arun(["rev-parse", "HEAD"], cwd=workspace)).strip().lower()
+            )
+            if current_branch != branch or current_head != provenance.get("head_sha"):
                 raise BranchBusy("retained repair workspace contents changed")
             return fence.target.branch
         owner = await BranchOwnership(self.db).get_owner(fence.target)
         role = owner["owner_role"] if owner else None
-        async with BranchOwnership(self.db).mutation_exclusion(
-            fence, expected_role=role
-        ):
+        async with BranchOwnership(self.db).mutation_exclusion(fence, expected_role=role):
             if ws.is_slot:
                 if role == "repair":
                     base_sha = await self._hierarchy_repair_start(workspace, origin, fence)
@@ -953,9 +951,7 @@ class WorkspaceMixin:
                     for s in await self.db.list_slots_for_base(base.id)
                     if (s.slot_index or 0) < cap
                 ]
-                holder = await self._worktree_slots().find_slot_holding_branch(
-                    base, slots, branch
-                )
+                holder = await self._worktree_slots().find_slot_holding_branch(base, slots, branch)
             except Exception as e:  # a hint is never worth failing dispatch over
                 logger.debug(
                     "Task %s: branch affinity lookup failed for kind %s: %s",
@@ -1033,15 +1029,13 @@ class WorkspaceMixin:
         ws = attachment.workspace
         slot_dir = ws.workspace_path
 
-        base = (
-            await self.db.get_workspace(ws.base_workspace_id)
-            if ws.base_workspace_id
-            else None
-        )
+        base = await self.db.get_workspace(ws.base_workspace_id) if ws.base_workspace_id else None
         if base is not None:
             self._register_slot_bases([ws], base.workspace_path)
 
-        resume_branch = None if integration_origin is not None else await self._resume_branch_for(task)
+        resume_branch = (
+            None if integration_origin is not None else await self._resume_branch_for(task)
+        )
 
         try:
             reset_kwargs = {
@@ -1155,6 +1149,8 @@ class WorkspaceMixin:
         from src.orchestrator.workspace_attachments import (
             integration_handoff_release_is_confirmed,
             mark_integration_handoff_released,
+            mark_orphaned_integration_pool_handoff_released,
+            orphaned_integration_pool_handoff_is_recoverable,
         )
 
         if await integration_handoff_release_is_confirmed(self.db, owner):
@@ -1178,10 +1174,74 @@ class WorkspaceMixin:
             or task.branch_name != owner.get("ref")
             or os.path.realpath(session.work_dir) != os.path.realpath(workspace.workspace_path)
         ):
-            return False
-        current_branch = await self.git.aget_current_branch(
-            workspace.workspace_path, strict=True
-        )
+            # A failed pool prepare used to release its task bindings before
+            # detaching this owner.  Its stopped attempt is enough to recover
+            # only if the exact old session/worktree identity has not been
+            # reused; see the helper for the full fence set.  This path only
+            # probes the retired instance token and never stops a process.
+            recovery = await orphaned_integration_pool_handoff_is_recoverable(self.db, owner)
+            if recovery is None:
+                return False
+            retired_session = await self.db.get_session(recovery["session_id"])
+            if retired_session is None:
+                return False
+            try:
+                # Probe only the retired instance token.  Unlike ``stop``,
+                # confirmation is read-only and a reused session name cannot
+                # make this touch a successor process.
+                provider = self.session_providers.create(retired_session.provider, self.config)
+                retired_handle = SessionHandle(
+                    name=retired_session.name,
+                    provider=retired_session.provider,
+                    instance_token=recovery["session_instance_token"],
+                )
+                if not await provider.confirm_stopped(retired_handle):
+                    return False
+            except Exception:
+                logger.warning(
+                    "Could not confirm orphaned integration writer %s stopped",
+                    recovery["session_id"],
+                    exc_info=True,
+                )
+                return False
+            workspace = await self.db.get_workspace(recovery["workspace_id"])
+            if workspace is None:
+                return False
+            try:
+                from src.orchestrator.workspace_attachments import (
+                    detach_slot_for_integration_handoff,
+                    detach_workspace_for_integration_handoff,
+                )
+
+                if workspace.is_slot:
+                    detached = await detach_slot_for_integration_handoff(
+                        self.db,
+                        self.git,
+                        self._git_mutex,
+                        workspace,
+                        expected_branch=str(owner["ref"]),
+                    )
+                else:
+                    detached = await detach_workspace_for_integration_handoff(
+                        self.git,
+                        self._git_mutex,
+                        workspace,
+                        expected_branch=str(owner["ref"]),
+                    )
+            except Exception:
+                logger.warning(
+                    "Could not recover orphaned integration workspace %s",
+                    recovery["workspace_id"],
+                    exc_info=True,
+                )
+                return False
+            return detached and await mark_orphaned_integration_pool_handoff_released(
+                self.db,
+                owner,
+                session_instance_token=recovery["session_instance_token"],
+                session_started_at=recovery["session_started_at"],
+            )
+        current_branch = await self.git.aget_current_branch(workspace.workspace_path, strict=True)
         if current_branch not in {owner.get("ref"), "HEAD"}:
             return False
         try:
@@ -1195,7 +1255,9 @@ class WorkspaceMixin:
             if not await provider.confirm_stopped(handle):
                 return False
         except Exception:
-            logger.warning("Could not confirm integration writer %s stopped", session_id, exc_info=True)
+            logger.warning(
+                "Could not confirm integration writer %s stopped", session_id, exc_info=True
+            )
             return False
 
         try:
@@ -1230,10 +1292,7 @@ class WorkspaceMixin:
             return False
 
         current_workspace = await self.db.get_workspace(workspace.id)
-        if (
-            current_workspace is None
-            or current_workspace.locked_by_task_id != session.task_id
-        ):
+        if current_workspace is None or current_workspace.locked_by_task_id != session.task_id:
             return False
         if session.state != "stopped" or session.desired_state != "stopped":
             await self.db.update_session(
@@ -1348,13 +1407,14 @@ class WorkspaceMixin:
         ):
             return False
         return await mark_integration_pool_handoff_released(
-            self.db, owner, workspace=workspace, task_id=session.task_id,
-            session_instance_token=session.instance_token
+            self.db,
+            owner,
+            workspace=workspace,
+            task_id=session.task_id,
+            session_instance_token=session.instance_token,
         )
 
-    async def aconfirm_integration_owner_stopped_for_repair(
-        self, owner: dict
-    ) -> dict | None:
+    async def aconfirm_integration_owner_stopped_for_repair(self, owner: dict) -> dict | None:
         """Stop one exact writer without touching its retained repair checkout."""
         session_id = owner.get("session_id")
         workspace_id = owner.get("workspace_id")
@@ -1381,8 +1441,7 @@ class WorkspaceMixin:
             or task.repo_id != repository.id
             or task.branch_name != owner.get("ref")
             or owner.get("owner_id") != task.id
-            or os.path.realpath(session.work_dir)
-            != os.path.realpath(workspace.workspace_path)
+            or os.path.realpath(session.work_dir) != os.path.realpath(workspace.workspace_path)
         ):
             return None
         if not await self.db.update_session_instance(
@@ -1407,8 +1466,10 @@ class WorkspaceMixin:
                 workspace.workspace_path, strict=True
             )
             head_sha = (
-                await self.git._arun(["rev-parse", "HEAD"], cwd=workspace.workspace_path)
-            ).strip().lower()
+                (await self.git._arun(["rev-parse", "HEAD"], cwd=workspace.workspace_path))
+                .strip()
+                .lower()
+            )
             from src.integration.hierarchy import resolve_repair_commit_proof
             from src.integration.repair import repair_subject_sha
 
@@ -1835,9 +1896,7 @@ class WorkspaceMixin:
         slot_ws = await self._slot_workspace_at(workspace)
         if slot_ws is not None:
             try:
-                await self._worktree_slots().restore_slot_after_task(
-                    slot_ws, task_id=task_id
-                )
+                await self._worktree_slots().restore_slot_after_task(slot_ws, task_id=task_id)
             except Exception as e:  # never block the terminal transition
                 logger.warning(
                     "Task %s: could not restore slot %s after task: %s",
