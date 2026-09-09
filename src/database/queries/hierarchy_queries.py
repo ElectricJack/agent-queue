@@ -98,9 +98,12 @@ LIVE_SESSION_STATES = ("starting", "running", "draining")
 class HierarchyError(Exception):
     """A rejected hierarchy mutation.  ``code`` is the stable machine string."""
 
-    def __init__(self, code: str, detail: str = ""):
+    def __init__(self, code: str, detail: str = "", context: dict | None = None):
         self.code = code
         self.detail = detail
+        #: Machine-readable specifics a surface can render (e.g. the branches a
+        #: ``branch_discard_required`` refusal is asking the operator about).
+        self.context = context or {}
         super().__init__(f"{code}: {detail}" if detail else code)
 
 
@@ -319,15 +322,35 @@ class HierarchyQueryMixin:
         *,
         conn,
         retire_pending: bool = False,
+        branch_policy: str | None = None,
     ) -> bool:
         """Fence canonical hierarchy/lifecycle writers for enabled projects.
 
         Returns whether hierarchical delivery applies.  When
-        ``retire_pending`` is true, an unstarted removal retires its origins
-        and advances each surviving affected parent's generation in this
-        transaction.  Materialized, delivered, or batch-sealed identity is
-        never discarded.
+        ``retire_pending`` is true, a removal retires every live origin in the
+        subtree and advances each surviving affected parent's generation in
+        this transaction.  Delivered and batch-sealed identity is never
+        discarded.
+
+        ``branch_policy`` says what to do about origins whose branch reached
+        the remote, and is only consulted when ``retire_pending`` is set:
+
+        ``"keep"``
+            Retire the origins; leave the refs alone.  ``archive`` always
+            passes this — archiving moves a task out of the active view, it
+            does not destroy work.
+        ``"discard"``
+            Retire the origins and mark each materialized one ``pending`` for
+            :class:`~src.integration.branch_discard.BranchDiscardService`,
+            which removes the ref asynchronously.
+        ``None``
+            Refuse with ``branch_discard_required`` when the subtree holds a
+            materialized origin, naming the branches in the error context so a
+            surface can ask.  A caller that says nothing can never destroy a
+            branch by omission.
         """
+        if branch_policy not in (None, "keep", "discard"):
+            raise ValueError(f"unknown branch_policy: {branch_policy!r}")
         task_row = (
             await conn.execute(
                 select(tasks.c.project_id, tasks.c.parent_task_id).where(tasks.c.id == task_id)
@@ -445,18 +468,47 @@ class HierarchyQueryMixin:
             .mappings()
             .all()
         )
-        if retire_pending and any(bool(row["materialized"]) for row in origins):
+        materialized = [row for row in origins if row["materialized"]]
+        if retire_pending and materialized and branch_policy is None:
+            # Not a refusal on the merits — the caller simply has not said what
+            # should happen to the branches.  Name them so the surface can ask.
+            branches = [
+                {
+                    "task_id": row["task_id"],
+                    "branch": f"aq/{row['task_id']}",
+                    "base_sha": row["base_sha"],
+                }
+                for row in sorted(materialized, key=lambda r: r["task_id"])
+            ]
             raise HierarchyError(
-                "delivery_target_fixed", f"{mutation} would discard a materialized origin"
+                "branch_discard_required",
+                f"{len(branches)} task(s) in this subtree have a branch on the remote; "
+                f"{mutation} must say whether to keep or delete it",
+                {"branches": branches},
             )
         if retire_pending and origins:
             now = time.time()
             await conn.execute(
                 update(task_branch_origins)
                 .where(task_branch_origins.c.id.in_([row["id"] for row in origins]))
-                .where(task_branch_origins.c.materialized.is_(False))
                 .values(retired_at=now)
             )
+            if branch_policy == "discard" and materialized:
+                # The row outlives the task it describes, so the drain can find
+                # this after the subtree is gone.
+                await conn.execute(
+                    update(task_branch_origins)
+                    .where(
+                        task_branch_origins.c.id.in_([row["id"] for row in materialized])
+                    )
+                    .values(
+                        discard_state="pending",
+                        discard_requested_at=now,
+                        discard_attempts=0,
+                        discard_next_attempt_at=now,
+                        discard_last_error=None,
+                    )
+                )
             owner_ids = [row["task_id"] for row in origins]
             await conn.execute(
                 update(integration_branch_owners)

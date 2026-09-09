@@ -201,9 +201,20 @@ class EditTaskResponse(BaseModel):
     new_status: str | None = None
 
 
+class DeletedBranch(BaseModel):
+    """One branch a ``branch_discard_required`` refusal is asking about."""
+
+    task_id: str
+    branch: str
+    base_sha: str
+
+
 class DeleteTaskResponse(BaseModel):
     deleted: str
     title: str
+    #: Branches the delete discarded, when it was asked to.  Removal itself is
+    #: asynchronous; these are the refs queued for it.
+    discarded_branches: list[DeletedBranch] = []
 
 
 class TaskControlResponse(BaseModel):

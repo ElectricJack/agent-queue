@@ -1,7 +1,7 @@
 # Deleting tasks that own a materialized branch
 
 **Date:** 2026-09-08
-**Status:** design
+**Status:** implemented
 **Supersedes:** the removal half of `2026-09-04-hierarchical-integration-trains-design.md` §6.8
 
 ## 1. Problem
@@ -159,6 +159,22 @@ Named check constraint `ck_task_branch_origins_discard_state`; a partial index o
 Alembic revision generated from `tables.py` with an inspector guard, per the
 project's idempotent-migration rule.
 
+**The trigger has to move too.** Implementation turned up a second enforcement
+point the original analysis missed: `task_branch_origin_materialized_immutable`
+(`migrations/integration_guards.py:140`) raises on *any* UPDATE or DELETE of a
+materialized row, not just on clearing `materialized`. That, not only the
+Python guard, is what made retiring one impossible.
+
+`migrations/integration_guards.py` is the immutable pre-squash snapshot by
+contract ("Keep this snapshot immutable; subsequent behavior changes belong in
+subsequent Alembic revisions"), so revision `a00000000004` narrows it with a
+`CREATE OR REPLACE` that runs after the baseline installs it. Identity stays
+frozen — `task_id`, `repository_id`, parent columns, `base_sha`,
+`creation_generation`, `reserved`, `materialized`, `created_at`,
+`materialized_at` — and DELETE of a materialized row stays forbidden. Only
+`retired_at` and the discard bookkeeping may move. `downgrade` restores the
+whole-row body.
+
 ### 3.3 The drain
 
 `src/integration/branch_discard.py` — `BranchDiscardService.drain_due(now)`, wired
@@ -175,8 +191,11 @@ in `run_one_cycle`. Per due row, mirroring `IntegrationCleanupService._cleanup_r
    `pending`, record `discard_last_error`.
 
 Terminal `conflict` / `failed` rows are surfaced by a new
-`aq doctor --check integration.branch_discards`, which names the ref and the reason
-and can retry with `--fix`.
+`aq doctor --check integration.branch_discards`, which names the ref and the
+reason and can retry with `--fix`. That fix only re-arms the row to `pending`;
+doctor never deletes a ref itself. A discard parks as `conflict` precisely when
+the remote stopped matching what the operator was asked about, and doctor is
+not the place to overrule that.
 
 ## 4. Surfaces
 
@@ -200,8 +219,10 @@ per CLAUDE.md.
 }
 ```
 
-**CLI.** `aq task delete <id> [--keep-branches | --delete-branches]`. Without
-either, the refusal prints the branch list and the two flags.
+**CLI.** `aq task delete <id> [--branches keep|delete]`. The CLI is generated
+from the tool definition, and an `enum` there becomes a `click.Choice`, so one
+option carrying the wire vocabulary beats two hand-written flags that would
+have to be kept in sync with it.
 
 **Dashboard.** The delete action catches `hierarchy.branch_discard_required` and
 opens a modal listing the branches with a keep/delete choice, then re-issues the
@@ -237,7 +258,20 @@ This is a separate defect from the one this design fixes and wants its own task.
 It is recorded here because it is the reason §2.1 rejects the outbox as the
 discard transport.
 
-## 7. Tests
+## 7. What shipped
+
+| area | file |
+|---|---|
+| schema + trigger | `src/database/tables.py`, `migrations/versions/a00000000004_task_branch_origin_discard.py` |
+| guard | `src/database/queries/hierarchy_queries.py` (`branch_policy`, `HierarchyError.context`) |
+| callers | `task_queries.delete_task`, `archive_queries.archive_task`, `database/base.py` |
+| drain | `src/integration/branch_discard.py`, wired via `IntegrationService(branch_discard_handler=…)` and `Orchestrator._drain_branch_discards` |
+| command | `task_commands._cmd_delete_task` (`branches`), `_hierarchy_failure`, `_materialized_branches_under` |
+| surface | `src/tools/definitions.py`, `src/api/models/task.py`, regenerated `openapi.json` + both clients |
+| doctor | `integration.branch_discards` in `src/doctor/integration_checks.py` |
+| dashboard | `dashboard/src/api/branchDiscard.ts`, `components/BranchDiscardPrompt.tsx`, wired in `TaskActions.tsx` and `panes/task-detail/` |
+
+## 8. Tests
 
 `tests/test_integration_hierarchy.py::test_materialized_child_cannot_be_deleted_or_archived`
 is replaced by:
@@ -248,6 +282,17 @@ is replaced by:
 - delete with `discard` → task gone, origin retired and `pending`
 - archive → succeeds, origin retired, ref untouched, no discard row
 - sealed batch and delivery receipt still refuse under both policies
-- drain: absent ref → `complete`; moved head → `conflict`; live branch owner →
-  `conflict`; default branch → `conflict`; transport error → retry with backoff
 - the surviving parent's checkpoint generation still advances in every accepting case
+- an unknown `branch_policy` is a programming error, not a refusal
+
+`tests/test_branch_discard.py` covers the drain: absent ref → `complete`; moved
+head → `conflict`; live branch owner → `conflict`; default branch →
+`conflict`; transport error → retry with backoff; exhausted attempts →
+`failed`; a backed-off row is not attempted early; non-`pending` rows are left
+alone.
+
+`tests/test_doctor_integration_checks.py` covers the check and that its fix
+re-arms rather than deleting. `dashboard/src/api/__tests__/branchDiscard.test.ts`
+covers the refusal parser in both directions — a missed prompt makes delete
+look permanently broken, a false positive asks about branches on an unrelated
+error.

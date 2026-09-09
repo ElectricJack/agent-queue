@@ -1300,9 +1300,20 @@ class TaskQueryMixin:
                 await ctx.__aexit__(None, None, None)
 
     async def delete_task(
-        self, task_id: str, *, cascade: bool = False, conn=None
+        self,
+        task_id: str,
+        *,
+        cascade: bool = False,
+        conn=None,
+        branch_policy: str | None = None,
     ) -> TransitionResult:
         """Delete a task; with *cascade*, its whole subtree (spec §7).
+
+        ``branch_policy`` (``"keep"`` / ``"discard"`` / ``None``) says what to
+        do about any branch the subtree has already put on the remote; see
+        :meth:`guard_integration_mutation`.  It matters only in a
+        hierarchy/train project, and ``None`` there refuses with
+        ``branch_discard_required`` rather than silently choosing.
 
         Refuses a container with children unless *cascade*.  One transaction:
         dependents are snapshotted while the edges exist, the subtree is
@@ -1318,21 +1329,27 @@ class TaskQueryMixin:
         ``_notify_ready`` once its own transaction has committed.
         """
         if conn is not None:
-            return await self._delete_task_body(task_id, cascade=cascade, conn=conn)
+            return await self._delete_task_body(
+                task_id, cascade=cascade, conn=conn, branch_policy=branch_policy
+            )
 
         async with self._engine.begin() as c:
-            result = await self._delete_task_body(task_id, cascade=cascade, conn=c)
+            result = await self._delete_task_body(
+                task_id, cascade=cascade, conn=c, branch_policy=branch_policy
+            )
         await self.log_blocked_flips(result.flipped)
         await self._notify_settled(result.settled)
         await self._notify_ready(result.ready)
         return result
 
-    async def _delete_task_body(self, task_id: str, *, cascade: bool, conn) -> TransitionResult:
+    async def _delete_task_body(
+        self, task_id: str, *, cascade: bool, conn, branch_policy: str | None = None
+    ) -> TransitionResult:
         """The transactional body of :meth:`delete_task`, on a supplied ``conn``."""
         from src.database.queries.hierarchy_queries import HierarchyError
 
         await self.guard_integration_mutation(
-            task_id, "delete", conn=conn, retire_pending=True
+            task_id, "delete", conn=conn, retire_pending=True, branch_policy=branch_policy
         )
         parent = (
             await conn.execute(select(tasks.c.parent_task_id).where(tasks.c.id == task_id))

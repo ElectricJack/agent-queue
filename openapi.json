@@ -17789,6 +17789,18 @@
             "title": "Cascade",
             "description": "",
             "default": false
+          },
+          "branches": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Branches",
+            "description": "What to do with any branch the subtree already put on the remote. Omitted, a subtree that has one is refused with hierarchy.branch_discard_required rather than guessed at."
           }
         },
         "type": "object",
@@ -17806,6 +17818,14 @@
           "title": {
             "type": "string",
             "title": "Title"
+          },
+          "discarded_branches": {
+            "items": {
+              "$ref": "#/components/schemas/DeletedBranch"
+            },
+            "type": "array",
+            "title": "Discarded Branches",
+            "default": []
           }
         },
         "type": "object",
@@ -17814,6 +17834,30 @@
           "title"
         ],
         "title": "DeleteTaskResponse"
+      },
+      "DeletedBranch": {
+        "properties": {
+          "task_id": {
+            "type": "string",
+            "title": "Task Id"
+          },
+          "branch": {
+            "type": "string",
+            "title": "Branch"
+          },
+          "base_sha": {
+            "type": "string",
+            "title": "Base Sha"
+          }
+        },
+        "type": "object",
+        "required": [
+          "task_id",
+          "branch",
+          "base_sha"
+        ],
+        "title": "DeletedBranch",
+        "description": "One branch a ``branch_discard_required`` refusal is asking about."
       },
       "DiscordCleanupThreadsRequest": {
         "properties": {

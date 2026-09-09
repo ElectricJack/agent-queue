@@ -2145,6 +2145,15 @@ _ALL_TOOL_DEFINITIONS = [
             "properties": {
                 "task_id": {"type": "string", "description": "Task ID to delete"},
                 "cascade": {"type": "boolean", "default": False},
+                "branches": {
+                    "type": "string",
+                    "enum": ["keep", "delete"],
+                    "description": (
+                        "What to do with any branch the subtree already put on the "
+                        "remote. Omitted, a subtree that has one is refused with "
+                        "hierarchy.branch_discard_required rather than guessed at."
+                    ),
+                },
             },
             "required": ["task_id"],
         },

@@ -136,6 +136,7 @@ from .delete_project_response_channel_ids_type_0 import DeleteProjectResponseCha
 from .delete_task_request import DeleteTaskRequest
 from .delete_task_response import DeleteTaskResponse
 from .delete_task_response_422 import DeleteTaskResponse422
+from .deleted_branch import DeletedBranch
 from .discord_cleanup_threads_request import DiscordCleanupThreadsRequest
 from .discord_cleanup_threads_response import DiscordCleanupThreadsResponse
 from .discord_cleanup_threads_response_422 import DiscordCleanupThreadsResponse422
@@ -1236,6 +1237,7 @@ __all__ = (
     "DeleteAgentRequest",
     "DeleteAgentResponse",
     "DeleteAgentResponse422",
+    "DeletedBranch",
     "DeleteMcpServerRequest",
     "DeleteMcpServerResponse",
     "DeleteMcpServerResponse422",

@@ -278,3 +278,91 @@ async def test_operational_check_surfaces_schema_or_status_failure(db):
     assert result.severity is Severity.ERROR
     assert "db.migrations" in result.detail
     assert "integration_batches" in result.data["errors"][0]["error"]
+
+
+# -- integration.branch_discards ---------------------------------------------
+#
+# A discard that parks is invisible otherwise: the task it belonged to is
+# already deleted, so no surface still shows the branch.  Doctor is the only
+# place the leftover ref gets named.
+
+
+async def _parked_origin(db, *, task_id: str, state: str, error: str) -> str:
+    import uuid
+
+    from sqlalchemy import insert
+
+    from src.database.tables import task_branch_origins
+
+    origin_id = str(uuid.uuid4())
+    async with db.immediate() as conn:
+        await conn.execute(
+            insert(task_branch_origins).values(
+                id=origin_id,
+                task_id=task_id,
+                repository_id="repo",
+                parent_ref="main",
+                base_sha="a" * 40,
+                creation_generation=0,
+                reserved=True,
+                materialized=True,
+                materialized_at=1.0,
+                created_at=1.0,
+                retired_at=2.0,
+                discard_state=state,
+                discard_requested_at=2.0,
+                discard_attempts=3,
+                discard_last_error=error,
+            )
+        )
+    return origin_id
+
+
+@pytest.mark.asyncio
+async def test_branch_discards_is_ok_when_nothing_is_parked(db):
+    result = await run_check(db, "integration.branch_discards")
+
+    assert result.severity is Severity.OK
+
+
+@pytest.mark.asyncio
+async def test_branch_discards_names_the_leftover_ref(db):
+    await _parked_origin(db, task_id="gone", state="conflict", error="branch has an active owner")
+
+    result = await run_check(db, "integration.branch_discards")
+
+    assert result.severity is Severity.WARN
+    assert result.fixable is True
+    assert result.data["count"] == 1
+    assert result.data["discards"][0]["branch"] == "aq/gone"
+    assert "aq/gone" in result.detail
+
+
+@pytest.mark.asyncio
+async def test_branch_discards_fix_re_arms_rather_than_deleting(db):
+    """The repair is another attempt, never doctor deleting a ref itself."""
+    from sqlalchemy import select
+
+    from src.database.tables import task_branch_origins
+
+    origin_id = await _parked_origin(
+        db, task_id="gone", state="failed", error="network down"
+    )
+
+    result = await run_check(db, "integration.branch_discards")
+    assert result.severity is Severity.WARN
+
+    from src.doctor.integration_checks import _fix_branch_discards
+
+    fixed = await _fix_branch_discards(DoctorContext(config=SimpleNamespace(), db=db))
+
+    assert fixed.fix_applied is True
+    async with db._engine.connect() as conn:
+        row = (
+            await conn.execute(
+                select(task_branch_origins).where(task_branch_origins.c.id == origin_id)
+            )
+        ).mappings().one()
+    assert row["discard_state"] == "pending"
+    assert row["discard_attempts"] == 0
+    assert row["discard_last_error"] is None
