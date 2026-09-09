@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
@@ -7,17 +7,21 @@ import type { PlaybookSummary } from "../../../api/hooks";
 import Pane from "../index";
 
 const mock = vi.hoisted(() => ({ playbook: { id: "audit", scope: "project", scope_identifier: "alpha", triggers: ["timer.24h"], last_run: { run_id: "old-run", status: "completed" } } as PlaybookSummary,
-  run: vi.fn(), toggle: vi.fn(), open: vi.fn(), earlierPaused: false, error: null as Error | null }));
+  run: vi.fn(), toggle: vi.fn(), open: vi.fn(), del: vi.fn(), earlierPaused: false, error: null as Error | null }));
 vi.mock("../../../api/hooks", () => ({
   usePlaybooks: () => ({ data: [mock.playbook] }),
   usePlaybookRuns: () => ({ data: [{ run_id: "old-run", status: "completed", started_at: 1788200000 }, ...(mock.earlierPaused ? [{ run_id: "earlier-run", status: "paused" }] : [])], error: mock.error }),
   useRunPlaybook: () => ({ mutate: mock.run, isPending: false }),
   useSetPlaybookEnabled: () => ({ mutate: mock.toggle, isPending: false }),
+  useDeletePlaybook: () => ({ mutateAsync: mock.del, isPending: false }),
+  usePlaybookActivationHealth: () => ({ data: { activations: [{ playbook_id: "audit", scope: "project",
+    scope_identifier: "alpha", enabled: mock.playbook.enabled, active_artifact_sha256: "e".repeat(64) }] }, isLoading: false }),
 }));
 vi.mock("../../../ws/useEventStream", () => ({ useEventStream: vi.fn() }));
 vi.mock("../../store", () => ({ useShellPaneStore: () => ({ open: mock.open }) }));
 afterEach(cleanup);
-beforeEach(() => { mock.run.mockClear(); mock.toggle.mockClear(); mock.open.mockClear(); mock.error = null; mock.earlierPaused = false; mock.playbook.enabled = true; mock.playbook.running_count = 0; });
+beforeEach(() => { mock.run.mockClear(); mock.toggle.mockClear(); mock.open.mockClear();
+  mock.del.mockReset(); mock.del.mockResolvedValue({ success: true, deleted: true }); mock.error = null; mock.earlierPaused = false; mock.playbook.enabled = true; mock.playbook.running_count = 0; });
 function show(client = new QueryClient()) {
   const close = vi.fn();
   return { close, ...render(<Pane args={{ playbookId: "audit" }} close={close} setArgs={vi.fn()} setToolbar={vi.fn()} setShortcuts={vi.fn()} />, {
@@ -69,4 +73,38 @@ it("keeps older human-input runs intact without treating them as a currently exe
   expect(screen.getByText(/1 earlier runs in this history are paused/)).toBeInTheDocument();
   expect(screen.getByRole("button", { name: "Run again" })).toBeEnabled();
   expect(mock.run).not.toHaveBeenCalled();
+});
+
+it("deletes a paused definition from the graph and closes the pane it described", async () => {
+  mock.playbook.enabled = false;
+  const { close } = show();
+  fireEvent.click(screen.getByRole("button", { name: "Delete playbook audit" }));
+  fireEvent.click(screen.getByRole("button", { name: "Delete playbook" }));
+  await waitFor(() => expect(mock.del).toHaveBeenCalledWith({ playbook_id: "audit", scope: "project",
+    scope_identifier: "alpha", artifact_sha256: "e".repeat(64) }));
+  await waitFor(() => expect(close).toHaveBeenCalled());
+});
+it("will not delete a definition whose triggers are still enabled", () => {
+  show();
+  fireEvent.click(screen.getByRole("button", { name: "Delete playbook audit" }));
+  expect(screen.getByRole("button", { name: "Delete playbook" })).toBeDisabled();
+  expect(mock.del).not.toHaveBeenCalled();
+});
+it("keeps the definition and reports the daemon's refusal", async () => {
+  mock.playbook.enabled = false;
+  mock.del.mockRejectedValue(new Error("API 422: playbook still owns unfinished work; deletion refused"));
+  const { close } = show();
+  fireEvent.click(screen.getByRole("button", { name: "Delete playbook audit" }));
+  fireEvent.click(screen.getByRole("button", { name: "Delete playbook" }));
+  expect(await screen.findByText(/deletion refused/)).toBeInTheDocument();
+  expect(close).not.toHaveBeenCalled();
+});
+it("cancels the delete without touching the definition", () => {
+  mock.playbook.enabled = false;
+  const { close } = show();
+  fireEvent.click(screen.getByRole("button", { name: "Delete playbook audit" }));
+  fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+  expect(mock.del).not.toHaveBeenCalled();
+  expect(close).not.toHaveBeenCalled();
+  expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
 });

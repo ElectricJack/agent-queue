@@ -42,6 +42,8 @@ const state = vi.hoisted(() => ({
   sourceMarkdown: "# review-flow source",
   sourceData: null as { markdown: string; source_hash: string; path: string } | null,
   updateSource: vi.fn(),
+  deletePlaybook: vi.fn(),
+  playbooks: [] as Array<Record<string, unknown>>,
 }));
 
 function sourceData() {
@@ -56,7 +58,7 @@ function sourceData() {
 }
 vi.mock("../../api/hooks", () => ({
   usePlaybooks: () => ({
-    data: [{ id: "review-flow", scope: "system", version: 3, node_count: 5, triggers: ["task.created"], running_count: 0 }],
+    data: state.playbooks,
   }),
   // Mirror react-query: the same query data object identity across renders,
   // so the editor's reset-on-new-source effect does not fire on every render.
@@ -76,6 +78,7 @@ vi.mock("../../api/hooks", () => ({
   useSetPlaybookActivation: () => ({ mutate: vi.fn() }),
   usePlaybookPendingEventAction: () => ({ mutate: vi.fn() }),
   usePlaybookRunOverlay: () => ({ data: undefined }),
+  useDeletePlaybook: () => ({ mutateAsync: state.deletePlaybook, isPending: false }),
 }));
 
 function page() {
@@ -83,12 +86,23 @@ function page() {
     <MemoryRouter initialEntries={["/settings/playbooks/review-flow"]}>
       <Routes>
         <Route path="/settings/playbooks/:playbookId" element={<PlaybookDetail />} />
+        <Route path="/settings/playbooks" element={<p>Playbook list</p>} />
       </Routes>
     </MemoryRouter>
   );
 }
 
+/** The installed entry the delete dialog reads its scope and hash from. */
+const installed = {
+  playbook_id: "review-flow",
+  scope: "system",
+  scope_identifier: "",
+  enabled: false,
+  active_artifact_sha256: "d".repeat(64),
+};
+
 beforeEach(() => {
+  state.playbooks = [{ id: "review-flow", scope: "system", version: 3, node_count: 5, triggers: ["task.created"], running_count: 0 }];
   state.semanticGraph = { data: semanticGraph, isPending: false, isError: false, error: null };
   state.activationHealth = {
     data: { activations: [semanticGraph.activation] },
@@ -102,6 +116,8 @@ beforeEach(() => {
     node_count: 5,
     source_hash: "def456abc123",
   });
+  state.deletePlaybook.mockReset();
+  state.deletePlaybook.mockResolvedValue({ success: true, deleted: true });
 });
 afterEach(cleanup);
 
@@ -262,5 +278,73 @@ describe("PlaybookDetail source view/edit cycle", () => {
 
     expect(screen.getByRole("textbox", { name: "Playbook markdown source" })).toBeInTheDocument();
     expect(screen.getByText(/Vault changed underneath this editor/)).toBeInTheDocument();
+  });
+});
+
+describe("PlaybookDetail delete", () => {
+  it("deletes the playbook and leaves the page it can no longer show", async () => {
+    state.activationHealth = { data: { activations: [installed] }, isPending: false };
+    const user = userEvent.setup();
+    render(page());
+
+    await user.click(screen.getByRole("button", { name: "Delete playbook review-flow" }));
+    await user.click(screen.getByRole("button", { name: "Delete playbook" }));
+
+    expect(state.deletePlaybook).toHaveBeenCalledWith({
+      playbook_id: "review-flow",
+      scope: "system",
+      scope_identifier: "",
+      artifact_sha256: "d".repeat(64),
+    });
+    expect(await screen.findByText("Playbook list")).toBeInTheDocument();
+  });
+
+  it("stays on the page and shows the refusal when the daemon says no", async () => {
+    state.activationHealth = { data: { activations: [installed] }, isPending: false };
+    state.deletePlaybook.mockRejectedValue(new Error("API 422: playbook is enabled or artifact changed; deletion refused"));
+    const user = userEvent.setup();
+    render(page());
+
+    await user.click(screen.getByRole("button", { name: "Delete playbook review-flow" }));
+    await user.click(screen.getByRole("button", { name: "Delete playbook" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("deletion refused");
+    expect(screen.queryByText("Playbook list")).not.toBeInTheDocument();
+  });
+
+  it("cancels without deleting", async () => {
+    state.activationHealth = { data: { activations: [installed] }, isPending: false };
+    const user = userEvent.setup();
+    render(page());
+
+    await user.click(screen.getByRole("button", { name: "Delete playbook review-flow" }));
+    await user.click(screen.getByRole("button", { name: "Cancel" }));
+
+    expect(state.deletePlaybook).not.toHaveBeenCalled();
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  });
+
+  it("refuses an ambiguous duplicate ID instead of deleting the first scope", async () => {
+    state.playbooks = [
+      { id: "review-flow", scope: "system", version: 3, node_count: 5, triggers: [], running_count: 0 },
+      { id: "review-flow", scope: "project", scope_identifier: "alpha", version: 3, node_count: 5, triggers: [], running_count: 0 },
+    ];
+    state.activationHealth = {
+      data: {
+        activations: [
+          installed,
+          { ...installed, scope: "project", scope_identifier: "alpha", active_artifact_sha256: "e".repeat(64) },
+        ],
+      },
+      isPending: false,
+    };
+    const user = userEvent.setup();
+    render(page());
+
+    await user.click(screen.getByRole("button", { name: "Delete playbook review-flow" }));
+
+    expect(await screen.findByRole("status")).toHaveTextContent("installed in more than one scope");
+    expect(screen.getByRole("button", { name: "Delete playbook" })).toBeDisabled();
+    expect(state.deletePlaybook).not.toHaveBeenCalled();
   });
 });
