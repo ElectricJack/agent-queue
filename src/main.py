@@ -29,6 +29,7 @@ import shutil
 import signal
 import sys
 import time
+from typing import Any
 
 from src.config import ConfigValidationError, load_config
 from src.database.migration_guard import DAEMON, set_process_scope
@@ -280,6 +281,34 @@ async def run(config_path: str, profile: str | None = None) -> bool:
         if adapter_handler is not None:
             orch.set_command_handler(adapter_handler)
 
+        # Escalation delivery (discord-simplification §7): one channel post
+        # and one thread per incident, driven from the durable delivery
+        # outbox.  It is attached only when a real transport exists — with no
+        # bot, or with ``discord.escalation.enabled`` false, the core
+        # escalation records, the supervisor loop and the dashboard inbox are
+        # unaffected, which is the §9 promise about disabling the external
+        # surface.
+        if bot is not None:
+            from src.discord.escalation_transport import DiscordEscalationTransport
+            from src.escalations import EscalationDeliveryService
+
+            handler = orch._get_handler()
+            base_url = (
+                config.health_check.base_url or f"http://localhost:{config.health_check.port}"
+            )
+            orch.escalation_delivery = EscalationDeliveryService(
+                orch.db,
+                DiscordEscalationTransport(bot, config),
+                config=config,
+                lease_owner=f"daemon-{os.getpid()}",
+                base_url=base_url,
+                rate_guard=_bot_rate_guard(bot),
+                on_status=(
+                    handler.emit_escalation_delivery_status if handler is not None else None
+                ),
+            )
+            logger.info("Escalation delivery service wired to the Discord transport")
+
         await _run_scheduler_cycles(orch, shutdown_event)
 
     # Start embedded MCP server (if enabled).  Lazy-imports the MCP SDK
@@ -327,6 +356,19 @@ async def run(config_path: str, profile: str | None = None) -> bool:
         await orch.shutdown()
 
     return restart
+
+
+def _bot_rate_guard(bot: Any):
+    """Let the escalation pump defer while the invalid-request guard is hot.
+
+    The guard is the bot's, not a second counter: an escalation is critical
+    traffic, so it is held rather than dropped, and the delivery row simply
+    retries after backoff (§7 keeps the existing rate guard).
+    """
+    tracker = getattr(bot, "_rate_tracker", None)
+    if tracker is None:
+        return None
+    return lambda: tracker.should_allow(critical=True)
 
 
 async def _health_checks(orch: Orchestrator, adapter: MessagingAdapter) -> dict:

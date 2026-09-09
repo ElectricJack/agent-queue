@@ -350,6 +350,11 @@ class Orchestrator(
         # each task (keyed by task_id) to rate-limit alerts.
         self._stuck_notified_at: dict[str, float] = {}
         self.vault_watcher = None
+        # Escalation delivery pump (discord-simplification §7).  Wired by
+        # ``main.py`` once a transport exists; ``None`` means "no external
+        # escalation surface", which never affects scheduling or the durable
+        # escalation records themselves.
+        self.escalation_delivery = None
         # MCP server registry — populated from vault/mcp-servers/*.md and
         # vault/projects/*/mcp-servers/*.md on startup, kept current by the
         # vault watcher.  Resolves the ``list[str]`` of names on each
@@ -2556,6 +2561,17 @@ class Orchestrator(
                     await self.workspace_spec_watcher.check()
                 except Exception as e:
                     logger.warning("WorkspaceSpecWatcher check failed: %s", e)
+
+            # 7d-bis. Escalation delivery pump (discord-simplification §7):
+            # reconcile open incidents into the durable delivery outbox and
+            # push whatever is due.  ``tick`` never raises — a Discord outage
+            # must not stop the EventBus or the scheduler — but the call is
+            # guarded anyway so a wiring mistake cannot either.
+            if self.escalation_delivery is not None:
+                try:
+                    await self.escalation_delivery.tick()
+                except Exception:
+                    logger.warning("Escalation delivery tick failed", exc_info=True)
 
             # 7e. Periodic orphan workflow check (Roadmap 7.5.6).
             # Detects workflows whose coordination playbook died and emits

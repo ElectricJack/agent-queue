@@ -47,3 +47,49 @@ The event bus publishes these versioned state hints after commits:
 Every payload requires `version: 1`, `escalation_id`, and `project_id` plus its event-specific
 identity/status fields. Consumers must reload authoritative escalation state; event replay is
 never permission to repeat an external send or recovery.
+
+## Discord delivery: one post and one thread per incident
+
+External delivery is a thin renderer over that durable state (implementation spec §7). It is
+driven from the `escalation_deliveries` outbox by `src.escalations.EscalationDeliveryService`,
+which the daemon ticks once per orchestrator cycle when a Discord bot is present and
+`discord.escalation.enabled` is true. With no bot — or with the setting off — the incident, the
+supervisor loop and the dashboard inbox are unchanged; only the channel goes quiet.
+
+What the channel sees:
+
+| Delivery kind | When | Where |
+|---|---|---|
+| `root` | The incident exists and is not closed | One channel post plus the one thread it opens |
+| `ack` | A human reply was persisted | In the thread, once per reply |
+| `relay` | A correlated supervisor message | In the thread |
+| `resolution` | The incident reached a terminal state | In the thread, then the root is edited and the thread archived |
+
+The root post carries the project, task title and ID, the blocker, the exact decision needed,
+the configured mention, a dashboard link and the escalation ID. It is the only message that may
+mention anybody, and only the IDs in `discord.escalation.mention_user_ids` /
+`mention_role_ids`: every interpolated string — task titles, summaries, supervisor text, human
+replies — is neutralised first, so authored text can never produce a ping. The resolution edit
+drops the mention entirely.
+
+Delivery identity is durable, not in-memory:
+
+- one row per `(escalation, kind, generation)` via the outbox's unique `dedup_key`, so replayed
+  events, a gateway reconnect and a second daemon all converge on the same post;
+- `claim_escalation_deliveries` leases a row, so only one sender owns it at a time and an
+  expired lease is reclaimed rather than duplicated;
+- a restart rebinds from the stored channel/message/thread IDs — never from a task-thread
+  heuristic.
+
+An external send cannot be transactionally exactly-once with the database, and the code does
+not pretend otherwise. Each message embeds an `aq-esc:<dedup key>` marker; after an ambiguous
+timeout the next attempt searches recent history for it. If the marker is found the delivery is
+recorded `sent` with that receipt and nothing is re-posted. If it is not found, the row becomes
+`unknown` — attention-needed, visible on `escalation_get` and counted by `digest_status` —
+rather than being blindly re-posted.
+
+A deleted root or thread earns an explicit replacement generation: at most one may be pending
+at a time, and a closed incident never gets one, so a resolution can never reopen work. Missing
+channel or missing permission is an actionable delivery fault recorded on the row; the daemon
+never creates a channel. Retries are bounded (six attempts, 15s → 30m backoff) and the existing
+Discord invalid-request rate guard holds escalation sends rather than dropping them.
