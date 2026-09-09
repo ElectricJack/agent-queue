@@ -1008,3 +1008,26 @@ Discord collector is blocked on an immutable malformed resolution: intent
 actual local resolution de34e965e1fda18329bf95f5dd98df7f2fa69571. Guarded push
 refused before remote mutation. bright-journey tracks pre-reservation validation
 and explicitly guarded recovery preserving old evidence.
+
+
+### Verifier correction ready for swarm validation
+
+Final operator verifier source afd54e73 combines0d36f367 replay support with a
+locked explicit manual_pause metadata refusal. The row-local transition guard
+also refuses integration-owned untimed PAUSED rows, so the internal transition
+flag remains necessary after that explicit check. Public manual-pause and
+integration-pause fixtures are now distinct. All124 session/parent tests passed
+41.38s; three focused ordinary/replay/operator-hold close cases passed5.72s.
+Source published aq/operator-verifier-close-20260909. Isolated swarm run
+/tmp/aq-verifier-rollout-swarm.log is live; no production rollout claimed yet.
+
+The prior verifier session da613545 remains running with its verifier task and
+ws-hidden-hall locked to it, despite task READY. A guarded stop/detach is needed
+before replacement claim. No lock was forcibly cleared.
+
+Pre-reservation object/lineage validation6e8d4748 is published on
+ aq/operator-resolution-prevalidation-20260909. Promotion area63 pass plus
+corrected final two focused cases pass; malformed input now fails before
+immutable reservation. Existing-record recovery remains bright-journey work.
+Container hold regressiona18e68c8 passes both crash recovery and pause-after-
+reservation cases; unsafe follow-up noble-torrent was reopened.
