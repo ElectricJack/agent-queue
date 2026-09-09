@@ -89,7 +89,7 @@ Look-up material: exhaustive, terse, and generated from source where it can be.
 |---|---|
 | [Glossary](reference/glossary.md) | Every term the documentation uses as jargon. |
 | [Module catalog](reference/modules/README.md) | Every production module, its purpose and its owning page. |
-| `docs/reference/cli/README.md` — **planned** | Every `aq` command group, its flags and its exit semantics. |
+| [CLI reference](reference/cli/README.md) | Every `aq` command group, its flags and its exit semantics. |
 | `docs/reference/api/README.md` — **planned** | REST endpoints, WebSocket events and the two generated clients. |
 | `docs/reference/configuration.md` — **planned** | Every configuration key, its default and when it is read. |
 | `docs/reference/database/README.md` — **planned** | Tables, query modules and data lifecycle. |

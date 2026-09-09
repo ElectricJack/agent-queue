@@ -45,6 +45,12 @@ OPERATOR_DOCS = (
     _REPO_ROOT / "docs" / "guides" / "discord-replacement-checklist.md",
     _REPO_ROOT / "docs" / "guides" / "escalations.md",
 )
+#: The CLI reference itself.  Its whole job is to show the reader the current
+#: command surface, so a leaf that has been renamed or an option that has been
+#: dropped is exactly the rot this scan exists to catch — and the pages quote
+#: several hundred invocations, which is more coverage than every other
+#: guidance file combined.
+CLI_REFERENCE_DIR = _REPO_ROOT / "docs" / "reference" / "cli"
 
 _FENCE = re.compile(r"^```(\w*)\s*$")
 _INLINE = re.compile(r"`([^`]+)`")
@@ -184,6 +190,7 @@ def _guidance_files() -> list[Path]:
         sorted(SKILLS_DIR.glob("*/SKILL.md"))
         + sorted(PRIME_TEMPLATES_DIR.rglob("*.md"))
         + [path for path in OPERATOR_DOCS if path.exists()]
+        + sorted(CLI_REFERENCE_DIR.glob("*.md"))
     )
 
 
@@ -202,6 +209,9 @@ def test_both_guidance_trees_are_where_we_think_they_are():
     assert any(label.startswith("src/prime/templates/") for label in labels), PRIME_TEMPLATES_DIR
     for path in OPERATOR_DOCS:
         assert path.exists(), f"{path} moved; the operator-runbook scan would be a no-op"
+    assert any(
+        label.startswith("docs/reference/cli/") for label in labels
+    ), CLI_REFERENCE_DIR
 
 
 @pytest.mark.parametrize("path", _guidance_files(), ids=_label)
