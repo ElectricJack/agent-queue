@@ -31,6 +31,7 @@ from src.database.tables import (
     integration_repair_stages,
     project_integration_leases,
     projects,
+    tasks,
 )
 from src.git.manager import GitManager, is_valid_git_oid
 from src.integration.models import BranchKey, Fence
@@ -1283,7 +1284,7 @@ class CandidateService:
                     await conn.execute(
                         select(integration_repair_operations).where(
                             integration_repair_operations.c.batch_id == batch_id
-                        )
+                        ).with_for_update()
                     )
                 )
                 .mappings()
@@ -1297,6 +1298,7 @@ class CandidateService:
                     repository_id=batch["repository_id"], branch=batch["integration_branch"]
                 )
                 try:
+                    await self._return_completed_repair_on(conn, batch, operation, target)
                     fence = await self.ownership.acquire(
                         target, operation["id"], "collector", conn=conn
                     )
@@ -1317,6 +1319,53 @@ class CandidateService:
                 "lease": dict(lease) if lease else None,
                 "fence": fence,
             }
+
+    async def _return_completed_repair_on(self, conn, batch, operation, target):
+        """Recover a closed delegate's detached branch after exact repair adoption."""
+        if (operation["state"] not in {"active", "escalated"}
+                or int(batch["current_revision"]) == 0):
+            return
+        stage = (await conn.execute(select(integration_repair_stages).where(
+            integration_repair_stages.c.operation_id == operation["id"],
+            integration_repair_stages.c.ordinal == operation["active_stage"],
+        ).with_for_update())).mappings().one_or_none()
+        revision = (await conn.execute(select(integration_candidate_revisions).where(
+            integration_candidate_revisions.c.batch_id == batch["id"],
+            integration_candidate_revisions.c.revision == batch["current_revision"],
+        ).with_for_update())).mappings().one_or_none()
+        if (stage is None or revision is None
+                or revision["repair_parent_revision"] is None
+                or revision["state"] != "built"
+                or stage["state"] != "active"
+                or stage["writer_kind"] != "repair_delegate"
+                or stage["current_subject"] != {
+                    "kind": "batch", "revision": int(revision["revision"]),
+                    "candidate_sha": revision["head_sha"],
+                }):
+            return
+        task = (await conn.execute(select(tasks).where(
+            tasks.c.id == stage["repair_task_id"],
+        ).with_for_update())).mappings().one_or_none()
+        if (task is None or task["status"] != "COMPLETED"
+                or task["project_id"] != batch["project_id"]
+                or task["repo_id"] != batch["repository_id"]
+                or task["branch_name"] != batch["integration_branch"]
+                or task["created_by_kind"] != "integration_repair"
+                or task["created_by_id"] != operation["id"]):
+            return
+        owner = (await conn.execute(select(integration_branch_owners).where(
+            integration_branch_owners.c.repository_id == target.repository_id,
+            integration_branch_owners.c.ref == target.branch,
+        ).with_for_update())).mappings().one_or_none()
+        if (owner is None or owner["owner_id"] != task["id"]
+                or owner["owner_role"] != "repair"
+                or owner["handoff_state"] not in {"reserved", "released"}
+                or owner["session_id"] is not None or owner["workspace_id"] is not None):
+            return
+        await self.ownership.transfer_detached_on(
+            conn, Fence(target=target, owner_id=owner["owner_id"], token=owner["fence_token"]),
+            operation["id"], "collector",
+        )
 
     async def _ensure_revision(self, state, revision: int, base_sha: str) -> dict[str, Any]:
         now = self.clock()
