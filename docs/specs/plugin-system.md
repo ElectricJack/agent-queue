@@ -475,7 +475,7 @@ Its `--limit` option is still accepted and ignored so a legacy invocation
 reaches the guidance instead of a Click usage error. Replacements:
 
 - Playbook automation history: `aq playbook list-runs`, then
-  `aq playbook inspect-run <run-id>`.
+  `aq playbook inspect-run --run-id <run-id>`.
 - A plugin's own diagnostic output (daemon logging, *not* hook history):
   `aq logs --grep <plugin-name>`.
 

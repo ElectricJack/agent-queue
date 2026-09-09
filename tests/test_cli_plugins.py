@@ -150,7 +150,7 @@ def test_plugin_lifecycle_validates_options_and_prints_operation_errors(
 
 def _assert_points_at_replacements(text: str) -> None:
     assert "aq playbook list-runs" in text
-    assert "aq playbook inspect-run" in text
+    assert "aq playbook inspect-run --run-id <run-id>" in text
     # plugin diagnostics are daemon logging, a different thing from hook history
     assert "aq logs --grep" in text
 
@@ -203,6 +203,39 @@ def test_plugin_logs_help_does_not_promise_history(runner):
     # advertise it as a working knob
     options = result.output.split("Options:", 1)[1]
     assert "--limit" not in options
+
+
+def test_plugin_logs_replacements_are_executable_commands():
+    """Every advertised replacement must resolve against the real CLI.
+
+    The first version of this stub advertised `aq playbook inspect-run
+    <run-id>`, but that subcommand is auto-generated and takes `--run-id`;
+    the guidance was not runnable as written.
+    """
+    import click
+
+    from src.cli.app import cli
+    from src.cli.plugins import _PLUGIN_LOGS_REPLACEMENTS
+
+    for _what, command in _PLUGIN_LOGS_REPLACEMENTS:
+        tokens = command.split()
+        assert tokens[0] == "aq", command
+        node, rest = cli, tokens[1:]
+        while rest and isinstance(node, click.Group):
+            child = node.get_command(click.Context(node), rest[0])
+            if child is None:
+                break
+            node, rest = child, rest[1:]
+        assert isinstance(node, click.Command), f"no such command: {command}"
+        flags = {opt for param in node.params for opt in param.opts}
+        required = {
+            param.opts[0]
+            for param in node.params
+            if isinstance(param, click.Option) and param.required
+        }
+        used = {token for token in rest if token.startswith("--")}
+        assert used <= flags, f"{command} uses unknown options {used - flags}"
+        assert required <= used, f"{command} omits required options {required - used}"
 
 
 def test_plugin_group_help_marks_logs_as_removed(runner):

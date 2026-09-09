@@ -372,7 +372,7 @@ _PLUGIN_LOGS_REMOVED_WHY = (
 # width, and a wrapped paragraph splits a command mid-name.
 _PLUGIN_LOGS_REPLACEMENTS = (
     ("Recent automation runs (playbooks replaced hooks)", "aq playbook list-runs"),
-    ("One run in detail", "aq playbook inspect-run <run-id>"),
+    ("One run in detail", "aq playbook inspect-run --run-id <run-id>"),
     ("A plugin's own diagnostic output - daemon logging, not hook history",
      "aq logs --grep <plugin-name>"),
 )
