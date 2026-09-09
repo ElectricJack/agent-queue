@@ -461,3 +461,12 @@ Matter baseline sharp-nexus completed at a1aa19993e59bf25245deda3d8decff3203b7a5
 PR7. Exact Actions34333158883 succeeded at09:22:09UTC; worker also reports a
 clean local canonical run with98/98 CTest and package validation. Reviewed
 candidate delivery remains outstanding; feature entry holds remain in place.
+
+Lock-fix rollout completed in daemon421623 throughdf2c4389. The old advisory
+waiters disappeared. After verifying the interrupted create was absent and its
+old daemon transaction ended, a new CLI create succeeded as fresh-beacon;
+a second create succeeded as brisk-journey, assigned to review/deliver only
+df2c4389 from origin/aq/operator-pr-lock-20260909. Public integration flush
+returned coalesced for integration-sweep:agent-queue:52 instead of hanging.
+New deep-high and standard-high pool sessions started automatically afterward;
+root repair claim and final candidate delivery are still being monitored.
