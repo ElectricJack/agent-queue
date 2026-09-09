@@ -620,7 +620,8 @@ class WorkspaceQueryMixin:
                 )
                 return result.fetchone()[0]
 
-        rows = [w for w in await self.list_workspaces(project_id) if w.enabled]
+        all_rows = await self.list_workspaces(project_id)
+        rows = [w for w in all_rows if w.enabled]
 
         # Resolve each distinct kind once (project row shadows system row).
         kinds: dict[str, object] = {}
@@ -658,15 +659,15 @@ class WorkspaceQueryMixin:
                 continue  # counted through its base's capacity
             if bases.get(kid) != w.id:
                 continue  # a redundant clone under worktree mode
-            locked_slots = sum(
+            unavailable_slots = sum(
                 1
-                for s in rows
+                for s in all_rows
                 if s.base_workspace_id == w.id
                 and s.slot_index is not None
-                and s.locked_by_agent_id is not None
+                and (not s.enabled or s.locked_by_agent_id is not None)
                 and s.slot_index < worktree_slot_cap
             )
-            total += max(0, worktree_slot_cap - locked_slots)
+            total += max(0, worktree_slot_cap - unavailable_slots)
         return total
 
     async def count_free_slots(
