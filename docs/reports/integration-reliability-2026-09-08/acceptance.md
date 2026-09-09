@@ -911,3 +911,22 @@ of operation81d0aaee-0c3a-482c-b04c-d3afe6631cbe succeeded with deadline
 1788959437.8776863. Final-child receipt was still pending at the observation.
 `noble-torrent` is actively fixing epoch-one untouched container collection
 and prerequisite delivery gating; Matter `.2` remains deliberately paused.
+
+### 2026-09-09 — final CLI child received and aggregate verification started
+
+Receipt `receipt-a34a0f2d-e830-5903-a855-190509672559` delivers
+`keen-harbor.13` into `keen-harbor` at
+`bd054e4129b2a66a859408f0fa2b76b62a5d670e`. Independent remote-ref inspection
+matched that exact parent SHA. AQ reports 16/16 children complete and
+automatically claimed `verify-81d0aaee-0c3a-482c-b04c-d3afe6631cbe` to verify
+the aggregate. Parent remains PAUSED until verified settlement; root delivery
+to main remains unproven.
+
+The priority-one root batch repair was claimed by session
+`4baaded6-3206-41a7-b9eb-564d473c74b2`, which is inspecting the current frozen
+member and supported CLI. Discord reports 11/12 children complete; final
+acceptance and remaining parent receipts are still outstanding.
+
+Task `agile-current` tracks ordinary AQ review/delivery of the operator's
+post-CAS successor-instance protection from7aabdd39, in addition to the
+original bright-grove implementation.
