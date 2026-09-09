@@ -1012,6 +1012,59 @@ class ParentCompletion:
             parent, project, checkpoint, operation = await self._locked_context_on(
                 conn, task_id
             )
+            # A verifier can crash after this method has committed the parent
+            # completion but before its own session close is persisted.  The
+            # retry retains the same fenced verifier and must be able to
+            # close, but only when the durable completion is for this exact
+            # operation, episode, generation, head, and verification.
+            if (
+                operation["state"] == "completed"
+                and parent["status"] == TaskStatus.COMPLETED.value
+                and int(checkpoint["generation"]) == generation
+                and checkpoint["verified_generation"] == generation
+                and checkpoint["verified_sha"] == head_sha
+                and checkpoint["current_verification_id"] is not None
+                and checkpoint["last_completed_operation_id"] == operation["id"]
+                and checkpoint["last_completed_verification_id"]
+                == checkpoint["current_verification_id"]
+            ):
+                verification = (
+                    await conn.execute(
+                        select(integration_parent_verifications.c.id).where(
+                            integration_parent_verifications.c.id
+                            == checkpoint["current_verification_id"],
+                            integration_parent_verifications.c.operation_id == operation["id"],
+                            integration_parent_verifications.c.parent_task_id == task_id,
+                            integration_parent_verifications.c.episode_id
+                            == checkpoint["episode_id"],
+                            integration_parent_verifications.c.generation == generation,
+                            integration_parent_verifications.c.head_sha == head_sha,
+                        )
+                    )
+                ).first()
+                completion = (
+                    await conn.execute(
+                        select(integration_parent_operation_completions.c.operation_id).where(
+                            integration_parent_operation_completions.c.operation_id
+                            == operation["id"],
+                            integration_parent_operation_completions.c.verification_id
+                            == checkpoint["current_verification_id"],
+                            integration_parent_operation_completions.c.parent_task_id == task_id,
+                            integration_parent_operation_completions.c.episode_id
+                            == checkpoint["episode_id"],
+                        )
+                    )
+                ).first()
+                if verification is not None and completion is not None:
+                    return {
+                        "outcome": "already_completed",
+                        "task_id": task_id,
+                        "generation": generation,
+                        "head_sha": head_sha,
+                        "operation_id": operation["id"],
+                    }
+            if await self.db._read_manual_pause(conn, task_id) is not None:
+                return {"outcome": "invariant_error", "task_id": task_id, "reason": "manual_pause"}
             if int(checkpoint["generation"]) != generation:
                 return {"outcome": "stale_verification", "task_id": task_id}
             readiness = await self.readiness_on(
@@ -1068,6 +1121,9 @@ class ParentCompletion:
                 TaskStatus.COMPLETED,
                 context="integration_parent_verified",
                 force=True,
+                # The locked metadata check above distinguishes an operator
+                # hold from this integration-owned PAUSED checkpoint.
+                _manual_pause_control=True,
                 _integration_completion_token=_INTEGRATION_COMPLETION_TOKEN,
             )
             completed_at = self.clock()
