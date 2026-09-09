@@ -969,3 +969,23 @@ received a parent delivery receipt with after_sha
 actual claim and prepared prerequisite contents remain to verify.
 Priority-one `fleet-harbor` tracks recovery of the root batch pushed-resolution
 acceptance failure, including diagnostic reasons and already-contained sources.
+
+
+### Closed audit revision recovery
+
+465842b9 passed 168 tests and was deployed, but live replay still failed because
+PR9 retained revision0 marker while revision1 expected a different marker.
+Operator correction 3f61fb0b reuses a closed same-batch audit PR only with exact
+candidate/head/branch identity and authenticated main-head equality. It retains
+the expected PR state through marker PATCH. 98 candidate/provider tests and a
+final 24-test provider run passed. Published source:
+`aq/operator-closed-audit-recovery-20260909`; daemon PID1296927 loaded correction.
+Public build retry now succeeds with already_built, revision1 at 7a39e65a and
+PR9. Read-only database evidence confirms revision1 pr_published. Exact CI
+observation and final batch delivery remain separate acceptance steps.
+
+Matter nimble-dune.2 claim attempted but failed on old attached ownership:
+worker fence1 retains stopped session36cb470b despite session task_id now NULL.
+Public transfer refused stopped/detached proof. Priority-one fresh-rapids tracks
+safe existing-state recovery and prevention at failed claim release. keen-bridge
+is actively implementing verifier close repair; private test helper supplied.
