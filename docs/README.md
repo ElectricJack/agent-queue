@@ -59,7 +59,7 @@ explains the vocabulary, then the mechanism, then the failure modes.
 | `docs/concepts/sessions.md` — **planned** | Sessions, attempts, claims and epoch fencing; what survives a restart. |
 | `docs/concepts/projects-and-workspaces.md` — **planned** | Projects, repositories, workspace kinds, worktree slots, task branches. |
 | `docs/concepts/integration.md` — **planned** | Finishing work versus delivering it; validation, publication and recovery. |
-| `docs/concepts/playbooks.md` — **planned** | Playbooks V2: events, rules, gates, activation, and what ships enabled. |
+| [Playbooks V2](concepts/playbooks.md) | Events, rules, gates, authoring, activation, and what ships enabled. |
 | `docs/concepts/configuration-and-vault.md` — **planned** | Configuration file versus vault markdown versus database state. |
 | `docs/concepts/providers.md` — **planned** | LLM providers, model selection, token accounting and budgets. |
 | [Messaging, digests and escalations](concepts/messaging.md) | Messages to and from workers, the activity digest, escalation threads. |
