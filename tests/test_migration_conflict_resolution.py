@@ -22,6 +22,8 @@ RESOLUTION_COLUMNS = {
     "resolution_fence_token",
     "resolution_push_started_at",
     "resolution_push_evidence",
+    "supersedes_intent_id",
+    "superseded_by_intent_id",
 }
 RESOLUTION_CONSTRAINTS = {
     "ck_integration_promotion_intents_resolution_binding",
@@ -48,6 +50,10 @@ def _assert_resolution_schema(connection) -> None:
         "resolution_session_instance_token"
         in constraints["ck_integration_promotion_intents_resolution_binding"]
     )
+    assert "resolution_push_started_at" in constraints[
+        "ck_integration_promotion_intents_resolution_binding"
+    ]
+    assert "'superseded'" in constraints["ck_integration_promotion_intents_resolution_binding"]
 
 
 async def test_baseline_conflict_resolution_schema():

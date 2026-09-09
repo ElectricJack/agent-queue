@@ -1947,6 +1947,10 @@ integration_promotion_intents = Table(
     # latter remains the receipt authority.
     Column("resolution_recovery_evidence", JSON, nullable=True),
     Column("resolution_push_evidence", JSON, nullable=True),
+    # Recovery never rewrites a frozen resolution.  It links an immutable
+    # superseded record to a fresh conflict intent instead.
+    Column("supersedes_intent_id", Text, nullable=True),
+    Column("superseded_by_intent_id", Text, nullable=True),
     Column("remote_evidence", JSON, nullable=True),
     Column("committed_at", Float, nullable=True),
     Column("created_at", Float, nullable=False),
@@ -2013,7 +2017,8 @@ integration_promotion_intents = Table(
         "resolution_stage_ordinal IS NOT NULL AND resolution_task_id IS NOT NULL AND "
         "resolution_session_id IS NOT NULL AND resolution_session_instance_token IS NOT NULL AND "
         "resolution_workspace_id IS NOT NULL AND resolution_fence_owner_id IS NOT NULL AND "
-        "resolution_fence_token IS NOT NULL AND state IN ('resolution_reserved', 'committed'))",
+        "resolution_fence_token IS NOT NULL AND state IN "
+        "('resolution_reserved', 'committed', 'superseded'))",
         name="ck_integration_promotion_intents_resolution_binding",
     ),
     CheckConstraint(

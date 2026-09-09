@@ -51,6 +51,7 @@ DESIGN_INTEGRATION_COMMANDS = frozenset(
         "integration_resolve_conflict",
         "integration_push_conflict_resolution",
         "integration_recover_candidate_member",
+        "integration_recover_unwritten_resolution",
         "integration_promote_main",
         "integration_release",
         "integration_cleanup",
@@ -1869,6 +1870,7 @@ async def _recover_candidate_member_adapter(
 ):
     return await _hierarchy_adapter(
         "integration_recover_candidate_member",
+        "integration_recover_unwritten_resolution",
         args,
         ctx,
         IntegrationRecoverCandidateMemberValue,
@@ -1914,6 +1916,7 @@ def register_integration_contracts(registry: ContractRegistry) -> None:
         (INTEGRATION_RECONCILE_PROMOTION, _reconcile_adapter),
         (INTEGRATION_RESOLVE_CONFLICT, _resolve_conflict_adapter),
         (INTEGRATION_PUSH_CONFLICT_RESOLUTION, _push_conflict_resolution_adapter),
+        (INTEGRATION_RECOVER_UNWRITTEN_RESOLUTION, _recover_unwritten_resolution_adapter),
         (INTEGRATION_RESOLVE_CANDIDATE_MEMBER, _resolve_candidate_member_adapter),
         (INTEGRATION_PROMOTE_MAIN, _promote_main_adapter),
         (INTEGRATION_CLEANUP, _cleanup_adapter),
@@ -1927,3 +1930,45 @@ def register_integration_contracts(registry: ContractRegistry) -> None:
     ):
         if registry.get(contract.name) is None:
             registry.register(CommandRegistration(contract.name, contract, adapter))
+
+class IntegrationRecoverUnwrittenResolutionArgs(CommandArgs):
+    """Operator recovery of a malformed reservation which never wrote remotely."""
+
+    intent_id: str = Field(min_length=1)
+
+INTEGRATION_RECOVER_UNWRITTEN_RESOLUTION = CommandContract(
+    execution=ExecutionContract(
+        name="integration_recover_unwritten_resolution",
+        args_model=IntegrationRecoverUnwrittenResolutionArgs,
+        result_model=PromotionCommandValue,
+        outcomes=(
+            OutcomeSpec(name="recovered", classification=OutcomeClass.SUCCESS),
+            OutcomeSpec(name="already_recovered", classification=OutcomeClass.SUCCESS),
+            OutcomeSpec(name="not_recoverable", classification=OutcomeClass.FAILURE),
+        ),
+        capability="integration_recover_unwritten_resolution",
+        side_effect=SideEffectClass.COMPOSITE,
+        idempotency=IdempotencySpec(mode="keyed", key_field="intent_id"),
+        retry_safe=True,
+        effects=(
+            UpdateClause(subject=EffectSubject.BRANCH_OWNERSHIP),
+            UpdateClause(subject=EffectSubject.INTEGRATION_OPERATION),
+        ),
+        receipt_projection=("intent_id", "receipt_id"),
+    ),
+    presentation=CommandPresentation(
+        title="Recover unwritten conflict resolution",
+        summary="Supersede a malformed reservation only after an operator proves no remote write occurred.",
+    ),
+)
+
+async def _recover_unwritten_resolution_adapter(
+    args: IntegrationRecoverUnwrittenResolutionArgs, ctx: CommandContext | None
+) -> CommandResult:
+    return await _invoke_adapter(
+        "integration_recover_unwritten_resolution",
+        args,
+        ctx,
+        PromotionCommandValue,
+        {"recovered", "already_recovered", "not_recoverable"},
+    )
