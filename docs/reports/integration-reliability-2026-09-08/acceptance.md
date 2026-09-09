@@ -803,3 +803,33 @@ The corrected `wise-nexus` worker closed at `4ff4db60` with 34 handoff and
 179 related tests reported passing. Its isolated swarm was 7/8: S7 timed out
 waiting for two fresh sessions before reaching its race assertion. That
 limitation is recorded and is not counted as successful swarm acceptance.
+
+### 2026-09-09 — candidate member repair command loaded
+
+Published task `quick-falcon` at `83570c0d` was merged into the operator
+checkout as `21639491`, preserving source ancestry. The combined candidate,
+repair, CLI, contract, scope and profile suite passed 500 tests with 10 skips
+in 112.48 seconds; changed-file Ruff and whitespace checks passed. Evidence:
+`/tmp/aq-candidate-member-rollout-tests.log`. The merge is published at
+`aq/operator-candidate-member-cli-20260909`; remote main was not changed.
+
+AQ restart completed with PID 948596. The new public command
+`aq integration resolve-candidate-member` is available, and a live invocation
+without an authenticated repair session returned the expected structured
+unauthorized error and exit status 1. The current frozen root-batch delegate
+has been given the command instructions through its task record. Actual
+member resolution and batch delivery remain unverified: the delegate is
+waiting for compatible deep-worker capacity.
+
+Current CLI epic progress is 15/16: `.8` has completed its correction, while
+`.13` was reopened by review to correct final acceptance revision provenance.
+The report must distinguish the pre-report parent head from the actual
+source containing the report, inventory and test-wrapper correction. Discord
+is 10/12, with lifecycle acceptance running. Matter's first child remains in
+rework after the exact native CI failure. `sharp-glacier` was rejected again
+for omitting guarded ownership recovery on the already-green retry path;
+its new source has not been loaded into the operator daemon.
+
+Post-restart doctor confirms current schema and consistent claim holders.
+Integration warnings and other configuration warnings remain; a running
+daemon is not evidence that the end-to-end goal is complete.
