@@ -1461,7 +1461,13 @@ class TestAgentProfilesMinPerProject:
             async with engine.begin() as conn:
                 assert "min_per_project" in await conn.run_sync(_cols)
                 version = (await conn.execute(text("SELECT version_num FROM alembic_version"))).scalar()
-            assert version == "a00000000003"
+            # Asserted against the checkout's head rather than a literal:
+            # ``run_schema_setup`` runs the whole remaining chain, so pinning
+            # ``a00000000003`` here made every later revision fail this test
+            # for a reason that has nothing to do with ``min_per_project``.
+            from src.database.schema_key import alembic_head_revisions
+
+            assert version in alembic_head_revisions()
         finally:
             await engine.dispose()
 
