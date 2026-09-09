@@ -518,6 +518,16 @@ class EscalationDeliveryService:
             content=content,
             dedup_key=dedup_key,
         )
+        if facts.is_terminal:
+            # Posting into an archived thread un-archives it (Discord does this
+            # for any unlocked thread, and the transport asks for it
+            # explicitly).  A closed incident must not be left looking open
+            # because somebody replied late, so restore §7's archived state.
+            # Best effort: the guidance is already delivered either way.
+            try:
+                await self.transport.archive_thread(thread_id=str(binding.thread_id))
+            except TransportError as exc:
+                logger.debug("re-archive after a late-reply post failed: %s", exc)
 
     async def _post_in_thread(
         self,

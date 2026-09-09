@@ -107,6 +107,9 @@ class AgentQueueBot(commands.Bot):
         # detect when a user types into a task thread and route the message
         # appropriately (reopen completed tasks, acknowledge in-progress ones).
         self._task_threads: dict[int, str] = {}  # thread_id -> task_id
+        # Lazily built so the bot can be constructed before main.py has wired
+        # the daemon-wide CommandHandler onto the orchestrator.
+        self._escalation_intake_impl = None
         self._task_thread_objects: dict[str, discord.Thread] = {}  # task_id -> Thread
         self._task_root_messages: dict[str, discord.Message] = {}  # task_id -> root msg
         # RuleManager removed (playbooks spec §13 Phase 3).
@@ -118,6 +121,36 @@ class AgentQueueBot(commands.Bot):
     def handler(self):
         """Daemon-wide CommandHandler (wired by main.py before transports start)."""
         return self.orchestrator._command_handler
+
+    def _escalation_intake(self):
+        """The §5/§7 inbound escalation adapter, built on first use.
+
+        Rebuilt whenever the command handler changes (tests swap it) so the
+        intake can never hold a stale database.  The reconcile hook is read
+        through the orchestrator on every call rather than captured, because
+        ``escalation_delivery`` is attached after the bot is constructed and
+        stays ``None`` when there is no transport.
+        """
+        from src.discord.escalation_intake import DiscordEscalationIntake
+
+        handler = self.handler
+        cached = getattr(self, "_escalation_intake_impl", None)
+        if cached is None or cached[0] is not handler:
+            intake = DiscordEscalationIntake(
+                handler,
+                self.config,
+                reconcile=self._reconcile_escalation,
+            )
+            self._escalation_intake_impl = (handler, intake)
+            return intake
+        return cached[1]
+
+    async def _reconcile_escalation(self, escalation_id: str) -> None:
+        """Ask the delivery service to plan this incident's next posts now."""
+        service = getattr(self.orchestrator, "escalation_delivery", None)
+        if service is None:
+            return
+        await service.reconcile(escalation_id)
 
     def update_project_channel(self, project_id: str, channel: discord.TextChannel) -> None:
         """Update the cached channel for a project at runtime.
@@ -1138,6 +1171,17 @@ class AgentQueueBot(commands.Bot):
         # Keep the set from growing unbounded
         if len(self._processed_messages) > 200:
             self._processed_messages = set(list(self._processed_messages)[-100:])
+
+        # Escalation-thread replies are correlated before anything else and,
+        # when they correlate, consumed here.  They deliberately run ahead of
+        # the boot-time guard: a gateway that redelivers a reply across a
+        # reconnect must still reach the incident, and ``escalation_reply`` is
+        # idempotent on the Discord message ID, so a replay is a no-op rather
+        # than a second reply.  An uncorrelated message falls straight
+        # through to the routing below and costs no database work.
+        bot_user_id = getattr(self.user, "id", None)
+        if await self._escalation_intake().handle(message, bot_user_id=bot_user_id):
+            return
 
         # Skip messages created before the bot started (prevents reprocessing after restart)
         if self._boot_time and message.created_at.timestamp() < self._boot_time:

@@ -25,7 +25,6 @@ from src.database.tables import (
     messages,
 )
 
-
 OPEN_ESCALATION_STATES = frozenset({"needs_human", "reply_received", "resolving"})
 TERMINAL_ESCALATION_STATES = frozenset({"resolved", "cancelled", "stale"})
 ESCALATION_TRANSITIONS = {
@@ -40,6 +39,10 @@ ESCALATION_TRANSITIONS = {
     "stale": frozenset(),
 }
 DELIVERY_FINAL_STATES = frozenset({"sent", "retry", "unknown"})
+#: The delivery kind that carries an incident's channel/thread binding.
+#: Duplicated from :mod:`src.escalations.facts` so the query layer stays
+#: free of a dependency on the transport package.
+KIND_ROOT_DELIVERY = "root"
 
 _ESCALATION_CREATE_REQUIRED = frozenset(
     {
@@ -1038,6 +1041,58 @@ class EscalationQueriesMixin:
         async with self._engine.connect() as conn:
             rows = (await conn.execute(statement)).mappings().all()
         return [dict(row) for row in rows]
+
+    async def find_escalation_by_thread(
+        self,
+        *,
+        channel_id: str,
+        thread_id: str,
+    ) -> dict[str, Any] | None:
+        """The incident a transport thread belongs to, or ``None``.
+
+        The mapping is the *confirmed receipt* on a root delivery, never a
+        heuristic over task or thread names (§7: "thread recovery after
+        restart uses stored IDs").  Because the row survives resolution and
+        archival it is also the tombstone that lets a late reply be
+        recognised and answered with closed-state guidance instead of
+        silently creating work.
+
+        A thread ID is unique per transport, so both identifiers must match:
+        a channel that has been reconfigured no longer correlates, which is
+        exactly the "changed channel" refusal the adapter needs.  The newest
+        root generation wins when a replacement re-posted the incident.
+        """
+        if not channel_id or not thread_id:
+            return None
+        statement = (
+            select(
+                escalations,
+                escalation_deliveries.c.generation.label("delivery_generation"),
+                escalation_deliveries.c.channel_id.label("delivery_channel_id"),
+                escalation_deliveries.c.thread_id.label("delivery_thread_id"),
+                escalation_deliveries.c.root_message_id.label("delivery_root_message_id"),
+            )
+            .select_from(
+                escalation_deliveries.join(
+                    escalations,
+                    escalations.c.id == escalation_deliveries.c.escalation_id,
+                )
+            )
+            .where(
+                escalation_deliveries.c.kind == KIND_ROOT_DELIVERY,
+                escalation_deliveries.c.channel_id == channel_id,
+                escalation_deliveries.c.thread_id == thread_id,
+            )
+            .order_by(
+                escalation_deliveries.c.generation.desc(),
+                escalation_deliveries.c.created_at.desc(),
+                escalation_deliveries.c.id.desc(),
+            )
+            .limit(1)
+        )
+        async with self._engine.connect() as conn:
+            row = (await conn.execute(statement)).mappings().one_or_none()
+        return dict(row) if row is not None else None
 
     async def reserve_digest_window(
         self,

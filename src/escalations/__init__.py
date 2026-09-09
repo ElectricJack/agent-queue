@@ -13,7 +13,9 @@ interesting rules stay testable without a gateway:
 * :mod:`src.escalations.transport` — the narrow port, its honest fault
   taxonomy and the in-memory sink the tests use;
 * :mod:`src.escalations.dispatch` — the pump that leases a delivery, sends it
-  once, reconciles an ambiguous send and records the receipt.
+  once, reconciles an ambiguous send and records the receipt;
+* :mod:`src.escalations.intake` — the mirror of the planner: which inbound
+  transport messages are allowed to become a verified human reply.
 
 The Discord implementation of the port lives in
 :mod:`src.discord.escalation_transport`.
@@ -33,6 +35,14 @@ from src.escalations.facts import (
     EscalationFacts,
     MentionPolicy,
     TransportBinding,
+)
+from src.escalations.intake import (
+    ACTION_ACCEPT,
+    ACTION_CLOSED,
+    ACTION_IGNORE,
+    InboundMessage,
+    IntakeDecision,
+    classify_inbound,
 )
 from src.escalations.plan import (
     DeliveryPlan,
@@ -66,6 +76,9 @@ from src.escalations.transport import (
 )
 
 __all__ = [
+    "ACTION_ACCEPT",
+    "ACTION_CLOSED",
+    "ACTION_IGNORE",
     "DELIVERY_KINDS",
     "KIND_ACK",
     "KIND_RELAY",
@@ -79,6 +92,8 @@ __all__ = [
     "EscalationDeliveryService",
     "EscalationFacts",
     "EscalationTransport",
+    "InboundMessage",
+    "IntakeDecision",
     "MentionPolicy",
     "PlannedDelivery",
     "SendOutcome",
@@ -92,6 +107,7 @@ __all__ = [
     "TransportRetryable",
     "TransportUnavailable",
     "binding_from_deliveries",
+    "classify_inbound",
     "escalation_url",
     "marker_for",
     "plan_deliveries",

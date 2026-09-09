@@ -118,3 +118,42 @@ at a time, and a closed incident never gets one, so a resolution can never reope
 channel or missing permission is an actionable delivery fault recorded on the row; the daemon
 never creates a channel. Retries are bounded (six attempts, 15s → 30m backoff) and the existing
 Discord invalid-request rate guard holds escalation sends rather than dropping them.
+
+## Replying from the thread
+
+The thread is the only inbound Discord surface an escalation has, and
+`src.discord.escalation_intake.DiscordEscalationIntake` is the only path a Discord message
+takes into one. It runs first in `on_message`; a message it does not correlate falls through to
+the bot's ordinary supervisor routing having cost no database work.
+
+Every one of these must hold before a message becomes a reply, and each refusal is silent — the
+channel is shared with people, and answering unrelated lines would turn it into the chatbot the
+product contract rules out:
+
+- the author is not this bot and not any bot (an acknowledgement must never acknowledge itself);
+- the message is in a thread, and that thread's parent is the configured `discord.channel_id`
+  (reconfigure the channel and old threads stop correlating on their own);
+- the author is on the existing `discord.authorized_users` allowlist;
+- the thread is bound to an incident by the *confirmed receipt* on its root delivery — the same
+  stored IDs a restart rebinds from, never a task-thread naming heuristic;
+- the reply has text, is at most 16,000 characters, and carries a transport message ID.
+
+Identity is never taken from the request body. The adapter checks the account the gateway
+authenticated and then calls `escalation_reply` under an `ExecutionPrincipal.service(
+"discord:<user id>")`, which the core turns into `human:discord:<user id>`. A body carrying
+`actor`, `human`, `verified_actor` or a project ID is refused by `escalation_reply` itself, so a
+service principal cannot impersonate a human or a supervisor through this path.
+
+What an accepted reply does, and nothing more: the words are persisted as immutable inbound
+evidence and a message to `session:supervisor-<project>` is queued in the *same* transaction,
+which is what makes a duplicate gateway delivery a no-op (the reply is unique on
+`(transport, external_message_id)`) and a second reply an ordinary second row. Waking or
+recreating that supervisor is the existing delivery machinery's job — the intake holds no handle
+on a process. The intake never resolves a gate, reopens or edits a task, or types into a
+worker's terminal; `escalation_apply_reply` remains the supervisor's to call.
+
+A reply to an incident that is already `resolved`, `cancelled` or `stale` is still recorded, but
+no supervisor work is queued and the incident stays terminal. Its acknowledgement is closed-state
+guidance instead — it says the incident closed before the reply arrived and that nothing has
+reopened. Posting it un-archives the thread the way any Discord post does, so the dispatcher
+re-archives it afterwards and §7's archived state survives a late reply.
