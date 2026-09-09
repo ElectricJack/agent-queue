@@ -86,6 +86,27 @@ def integration_enable(
     _execute(ctx, "integration_enable", args)
 
 
+@integration.command("reconcile-unmaterialized")
+@click.argument("project_id")
+@click.option("--expected-generation", type=click.IntRange(min=0), required=True)
+@click.option("--reason", required=True)
+@click.pass_context
+@_handle_errors
+def integration_reconcile_unmaterialized(
+    ctx: click.Context, project_id: str, expected_generation: int, reason: str
+) -> None:
+    """Bind safe pre-rollout tasks and reserve their hierarchy origins."""
+    _execute(
+        ctx,
+        "integration_reconcile_unmaterialized",
+        {
+            "project_id": project_id,
+            "expected_generation": expected_generation,
+            "reason": reason,
+        },
+    )
+
+
 @integration.command("waive-history")
 @click.argument("project_id")
 @click.option("--reason", required=True)

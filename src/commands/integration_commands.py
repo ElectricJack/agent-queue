@@ -8,6 +8,7 @@ there are intentionally no optimistic success stubs.
 from __future__ import annotations
 
 import inspect
+import json
 import time
 from typing import Any
 
@@ -367,6 +368,29 @@ class IntegrationCommandsMixin:
             )
         except KeyError:
             return _failure("not_waivable", "project_id, reason, and blocker_digest are required")
+
+    async def _cmd_integration_reconcile_unmaterialized(self, args: dict) -> dict:
+        authorized, operator_id = self._integration_local_operator()
+        if not authorized:
+            return _failure(
+                "unauthorized", "integration rollout controls require LOCAL operator authority"
+            )
+        try:
+            project_id = str(args["project_id"])
+            expected_generation = int(args["expected_generation"])
+            reason = str(args["reason"])
+        except (KeyError, TypeError, ValueError):
+            return _failure("blocked", "project_id, expected_generation, and reason are required")
+        try:
+            return await self._integration_control_service().reconcile_unmaterialized_tasks(
+                project_id,
+                expected_generation=expected_generation,
+                reason=reason,
+                operator_id=operator_id,
+                hierarchy=self._hierarchy_integration_service(),
+            )
+        except HierarchyError as exc:
+            return _failure(f"hierarchy.{exc.code}", exc.detail)
 
     async def _cmd_integration_resume(self, args: dict) -> dict:
         authorized, _operator_id = self._integration_local_operator()

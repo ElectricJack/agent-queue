@@ -12,6 +12,7 @@ aq integration status PROJECT_ID
 aq integration flush PROJECT_ID
 aq integration enable PROJECT_ID --mode observe --expected-generation GENERATION --reason REASON
 aq integration enable PROJECT_ID --mode train --interval-seconds SECONDS --expected-generation GENERATION --reason REASON
+aq integration reconcile-unmaterialized PROJECT_ID --expected-generation GENERATION --reason REASON
 aq integration waive-history PROJECT_ID --reason REASON --blocker-digest BLOCKER_DIGEST
 aq integration resume OPERATION_ID
 aq integration abort OPERATION_ID --reason REASON
@@ -245,6 +246,30 @@ aq integration enable example --mode train --expected-generation 5 --reason 'ena
 aq integration flush example
 aq integration status example
 ```
+
+### Recover tasks created before repository binding
+
+Tasks created while integration was disabled can have no repository binding or
+branch-origin reservation. After a repository is designated and hierarchy or
+train mode is enabled, recover only that legacy state with a fresh generation:
+
+```bash
+aq integration status PROJECT_ID
+aq integration reconcile-unmaterialized PROJECT_ID \
+  --expected-generation 5 \
+  --reason 'bind pre-rollout unclaimed task graph to the designated repository'
+aq integration status PROJECT_ID
+```
+
+`PROJECT_ID` is the AQ project identifier, not the designated repository ID.
+The command is LOCAL-operator-only and runs under the project hierarchy lock.
+It advances the generation and atomically binds every null-repository task in
+the project, preserving task IDs, graph edges, dependency edges, and manual
+holds while creating the normal immutable origin/checkpoint/outbox records.
+It refuses the entire operation when any affected chain has an active claim,
+an existing origin/checkpoint, a different repository binding, or crosses a
+project. Do not repair these rows with SQL; resolve the reported ambiguity and
+repeat from a fresh status generation.
 
 Train mode checks the periodic window every 300 seconds by default and seals
 all eligible root work into the next batch. To choose a different positive
