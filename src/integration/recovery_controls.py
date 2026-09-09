@@ -97,6 +97,16 @@ class IntegrationRecoveryControls:
                     live_resolution = await self._safe_legacy_resolution_resume_on(
                         conn, operation, stage, project_id, now
                     )
+            elif (
+                operation["state"] in {"active", "escalated"}
+                and stage["state"] in {"active", "awaiting_completion"}
+                and self._has_operator_resume_evidence(operation, stage)
+            ):
+                # An explicit resume retry must recognize the same attached
+                # writer without allocating another deadline or attempt.
+                live_resolution = await self._safe_live_resolution_resume_on(
+                    conn, operation, dict(stage) | {"state": "expired"}, project_id
+                )
             blockers = await self._ambiguous_writes_on(
                 conn,
                 operation,
@@ -134,7 +144,7 @@ class IntegrationRecoveryControls:
                     now=now,
                     validate_only=True,
                 )
-                if continuation["outcome"] == "stale":
+                if continuation["outcome"] == "stale" and live_resolution is None:
                     return self._state_result("stale", operation, project_id)
                 if live_resolution is None:
                     _, delegate_recovery = await self._restore_completed_delegate_on(
@@ -808,6 +818,50 @@ class IntegrationRecoveryControls:
                 .with_for_update()
             )
         ).mappings().all()
+        if not intents and not allow_legacy_marker:
+            # The operator may rearm the same writer before it has reserved
+            # any external write. Prove the exact current conflict as strictly
+            # as a reserved resolution, without inventing a reservation or
+            # waiving any other mutation checked by _ambiguous_writes_on.
+            conflicts = (
+                await conn.execute(
+                    select(integration_promotion_intents).where(
+                        integration_promotion_intents.c.operation_key == operation["id"],
+                        integration_promotion_intents.c.state == "conflict",
+                    ).with_for_update()
+                )
+            ).mappings().all()
+            checkpoint_row = (
+                await conn.execute(select(task_integration_checkpoints).where(
+                    task_integration_checkpoints.c.task_id == parent["id"]
+                ))
+            ).mappings().one_or_none()
+            if len(conflicts) != 1 or checkpoint_row is None:
+                return None
+            conflict = conflicts[0]
+            frozen = (stage["dossier"] or {}).get("current_conflict") or {}
+            if (
+                session["state"] != "running"
+                or session["desired_state"] != "running"
+                or conflict["id"] != stage["trigger_id"]
+                or conflict["id"] != frozen.get("intent_id")
+                or conflict["target_task_id"] != parent["id"]
+                or conflict["repository_id"] != parent["repo_id"]
+                or conflict["target_branch"] != parent["branch_name"]
+                or conflict["expected_target"] != stage["starting_sha"]
+                or any(conflict[key] != frozen.get(key) for key in (
+                    "source_task_id", "source_head", "source_base", "expected_target"
+                ))
+                or conflict["resolution_operation_id"] is not None
+                or conflict["resolution_push_started_at"] is not None
+                or conflict["resolution_push_evidence"] is not None
+                or stage["current_subject"] != {
+                    "kind": "parent", "generation": int(checkpoint_row["generation"]),
+                    "head_sha": conflict["expected_target"],
+                }
+            ):
+                return None
+            return {"writer_id": str(owner["id"])}
         if len(intents) != 1:
             return None
         intent = intents[0]

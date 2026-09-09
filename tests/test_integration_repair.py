@@ -4661,7 +4661,8 @@ async def test_legacy_handoff_agent_state_loads_and_normalizes(db):
         ))).scalar_one() == 'IDLE'
 
 
-async def test_human_resume_rearms_exact_live_unstarted_resolution_writer(db):
+@pytest.mark.parametrize("pre_reservation", [False, True])
+async def test_human_resume_rearms_exact_live_unstarted_resolution_writer(db, pre_reservation):
     """Only the frozen live writer may resume before its first push attempt."""
     from src.integration.repair import RepairService
 
@@ -4751,6 +4752,66 @@ async def test_human_resume_rearms_exact_live_unstarted_resolution_writer(db):
         }
     )
     await db.mark_integration_promotion_conflict(intent["id"], {"paths": ["shared"]})
+    if pre_reservation:
+        # No reservation exists. A live writer alone cannot authorize resume;
+        # the stage must still identify this exact frozen conflict.
+        controls = IntegrationControlService(db, clock=lambda: 200.0)
+        assert (await controls.resume("operation"))["outcome"] == "ambiguous"
+        async with db.immediate() as conn:
+            checkpoint = (await conn.execute(select(task_integration_checkpoints).where(
+                task_integration_checkpoints.c.task_id == "parent"
+            ))).mappings().one()
+            current_stage = (await conn.execute(select(integration_repair_stages).where(
+                integration_repair_stages.c.operation_id == "operation",
+                integration_repair_stages.c.ordinal == 1,
+            ))).mappings().one()
+            frozen = {key: intent[key] for key in (
+                "source_task_id", "source_head", "source_base", "expected_target"
+            )} | {"intent_id": intent["id"]}
+            await conn.execute(update(integration_repair_stages).where(
+                integration_repair_stages.c.operation_id == "operation",
+                integration_repair_stages.c.ordinal == 1,
+            ).values(
+                trigger_id=intent["id"], starting_sha=intent["expected_target"],
+                current_subject={"kind": "parent", "generation": checkpoint["generation"],
+                                 "head_sha": intent["expected_target"]},
+                dossier=dict(current_stage["dossier"]) | {"current_conflict": frozen},
+            ))
+        # Claim reuse and intentional stopping both retain the refusal.
+        for fields, restored in (
+            ({"last_claim_epoch": 8}, {"last_claim_epoch": 7}),
+            ({"desired_state": "stopped"}, {"desired_state": "running"}),
+        ):
+            await db.update_session("resolution-session", **fields)
+            assert (await controls.resume("operation"))["outcome"] == "ambiguous"
+            await db.update_session("resolution-session", **restored)
+        await db.set_task_meta(repair_task_id, "manual_pause", "true")
+        assert (await controls.resume("operation"))["outcome"] == "ambiguous"
+        await db.delete_task_meta(repair_task_id, "manual_pause")
+        async with db.immediate() as conn:
+            await conn.execute(update(integration_repair_stages).where(
+                integration_repair_stages.c.operation_id == "operation",
+                integration_repair_stages.c.ordinal == 1,
+            ).values(starting_sha="9" * 40))
+        assert (await controls.resume("operation"))["outcome"] == "ambiguous"
+        async with db.immediate() as conn:
+            await conn.execute(update(integration_repair_stages).where(
+                integration_repair_stages.c.operation_id == "operation",
+                integration_repair_stages.c.ordinal == 1,
+            ).values(starting_sha=intent["expected_target"]))
+        resumed = await controls.resume("operation")
+        assert resumed["outcome"] == "resumed"
+        assert resumed["deadline_at"] == 260.0
+        replay = await IntegrationControlService(db, clock=lambda: 205.0).resume("operation")
+        assert replay == resumed
+        assert (await db.get_task(repair_task_id)).claim_epoch == 7
+        async with db._engine.connect() as conn:
+            unchanged = (await conn.execute(select(integration_promotion_intents).where(
+                integration_promotion_intents.c.id == intent["id"]
+            ))).mappings().one()
+        assert unchanged["state"] == "conflict"
+        assert unchanged["resolution_operation_id"] is None
+        return
     async with db.immediate() as conn:
         await db.reserve_integration_conflict_resolution(
             conn,
