@@ -131,16 +131,29 @@ Every command run with `--json` emits exactly one JSON object on stdout:
 - `pagination` is present **only when `data` is a list**: `returned` = items in this
   response, `total` = matching rows server-side, `truncated` = `returned < total`.
 - Errors: `{"schema_version": 1, "error": {"code": "...", "message": "..."}, "data": null}`
-  on stdout, non-zero exit. Error codes: `command_error`, `not_found`, `out_of_scope`,
-  `daemon_unreachable`, `paused`.
+  on stdout, non-zero exit. Error codes: `usage_error`, `command_error`, `not_found`,
+  `out_of_scope`, `daemon_unreachable`, `paused`. Human diagnostics and compatibility
+  warnings go to stderr; stdout remains exactly one JSON document.
+- Empty collections are `data: []` with zeroed pagination. Scalar, object, and collection
+  payloads retain their JSON type. Generated-client models are projected with `to_dict()` /
+  `model_dump()`; missing `Unset` fields are omitted rather than rendered as repr strings.
+  JSON is UTF-8/Unicode text (`ensure_ascii=false`).
 
 The envelope is applied by the CLI presentation layer on top of the unchanged
 `CommandHandler` `{"success": bool, ...}` dicts and the `/api/execute`
 `{"ok": bool, "result"|"error"}` wire format — neither changes.
 
 Exit codes: `0` success (and all `paused` no-ops, so agent loops don't spuriously fail),
-`1` command error, `2` usage error (Click), `3` daemon unreachable, `4` auth/scope denied.
+`1` command error, `2` usage error (including Click parsing), `3` daemon unreachable,
+`4` auth/scope denied.
 `aq inbox --inject` always exits `0` regardless (§6.2).
+
+The two structured-output exceptions are protocols rather than ordinary command results:
+`aq logs --json` (and `aq --json logs`) emits JSON Lines until the bounded read or follow
+stream ends, and `aq prime --hook-json` emits the harness-owned hook envelope. Interactive
+commands (`aq chat` without `--once`, `aq task select`, and `aq system config edit`) reject
+JSON mode with a `usage_error` envelope instead of prompting. Process passthrough commands
+such as `aq test` retain the child process's stdout/stderr and exit status.
 
 ### 4.2 `--brief` lite projections
 
@@ -153,11 +166,25 @@ Exit codes: `0` success (and all `paused` no-ops, so agent loops don't spuriousl
 | gate | `id, gate_type, status, task_id` |
 | message | `id, from, subject, created_at, read` |
 | workspace | `id, kind_id, path, locked_by` |
+| agent | `id, name, state, profile_id, current_task_id` |
+| project | `id, name, status, workspace, max_concurrent_agents` |
+| pool | `profile_id, enabled, min_active, max_active, desired, running_idle, running_busy, starting, draining, ready` |
 
 `--brief` composes with `--json` (trimmed `data` items, envelope unchanged) and with table
 output (fewer columns). Projections are defined centrally, not per command.
+The workspace projection deliberately aliases the internal `workspace_path` and
+`locked_by_agent_id`/`locked_by_task_id` names to the stable public `path` and `locked_by`
+fields.
 
-### 4.3 `aq schema`
+### 4.3 Raw-JSON compatibility window
+
+`AQ_JSON_LEGACY=1` restores the pre-envelope payload for one release and writes one
+deprecation warning to stderr. For generated list commands this is the original backend
+wrapper (for example `{"projects": [...]}`), even though the versioned contract exposes the
+logical list at `data` and adds pagination. The variable never changes human output and is
+ignored by the streaming exceptions above.
+
+### 4.4 `aq schema`
 
 Prints the system's enums so agents never guess magic strings and MCP schemas don't have to
 carry them: task statuses, task types, dependency types (`blocks`, `parent-child`,

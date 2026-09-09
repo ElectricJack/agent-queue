@@ -14,6 +14,7 @@ from uuid import uuid4
 import click
 
 from .app import cli, console, _run, _get_client, _handle_errors
+from .envelope import emit
 
 
 def _getval(obj: Any, key: str, default: Any = None) -> Any:
@@ -109,11 +110,15 @@ def project_onboard(
             return await client.execute("onboard_project", args)
 
     result = _run(_onboard())
-    console.print(
-        "[green]Onboarded[/] "
-        f"[bold cyan]{_getval(result, 'project_id')}[/] "
-        f"(workspace {_getval(result, 'workspace_id')})\n"
-        f"[dim]{_getval(result, 'canonical_path')}[/]"
+    emit(
+        ctx,
+        result,
+        render=lambda data: console.print(
+            "[green]Onboarded[/] "
+            f"[bold cyan]{_getval(data, 'project_id')}[/] "
+            f"(workspace {_getval(data, 'workspace_id')})\n"
+            f"[dim]{_getval(data, 'canonical_path')}[/]"
+        ),
     )
 
 
@@ -152,32 +157,29 @@ def project_details(ctx: click.Context, project_id: str) -> None:
             break
 
     if not p:
-        console.print(f"[bold red]Project not found:[/] {project_id}")
-        raise SystemExit(1)
+        from .exceptions import CommandError
 
-    status = (_getval(p, "status", "ACTIVE") or "ACTIVE").upper()
-    status_style = "green" if status == "ACTIVE" else "dim"
-
-    lines = [
-        Text(f"Status: {status}", style=status_style),
-        Text(""),
-    ]
-
-    fields = [
-        ("Name", _getval(p, "name", "—")),
-        ("Channel", _getval(p, "discord_channel_id", "—") or "—"),
-        ("Max Agents", str(_getval(p, "max_concurrent_agents", "—"))),
-        ("Credit Weight", str(_getval(p, "credit_weight", "—"))),
-    ]
-
-    for label, value in fields:
-        line = Text()
-        line.append(f"  {label}: ", style="bold cyan")
-        line.append(value, style="white")
-        lines.append(line)
+        raise CommandError("project_details", f"Project not found: {project_id}")
 
     tasks = _getval(task_result, "tasks", [])
-    if tasks:
+    data = {"project": p, "tasks": tasks}
+
+    def _render(_data) -> None:
+        status = (_getval(p, "status", "ACTIVE") or "ACTIVE").upper()
+        status_style = "green" if status == "ACTIVE" else "dim"
+        lines = [Text(f"Status: {status}", style=status_style), Text("")]
+        fields = [
+            ("Name", _getval(p, "name", "—")),
+            ("Channel", _getval(p, "discord_channel_id", "—") or "—"),
+            ("Max Agents", str(_getval(p, "max_concurrent_agents", "—"))),
+            ("Credit Weight", str(_getval(p, "credit_weight", "—"))),
+        ]
+        for label, value in fields:
+            line = Text()
+            line.append(f"  {label}: ", style="bold cyan")
+            line.append(value, style="white")
+            lines.append(line)
+
         counts: dict[str, int] = {}
         for t in tasks:
             s = (_getval(t, "status", "UNKNOWN") or "UNKNOWN").upper()
@@ -194,14 +196,15 @@ def project_details(ctx: click.Context, project_id: str) -> None:
             tl.append(f"    {icon} {status_name}: ", style=sty)
             tl.append(str(count))
             lines.append(tl)
+        panel = Panel(
+            Group(*lines),
+            title=Text(f"Project: {project_id}", style="bold bright_white"),
+            border_style="bright_magenta",
+            padding=(1, 2),
+        )
+        console.print(panel)
 
-    panel = Panel(
-        Group(*lines),
-        title=f"[bold bright_white]Project: {project_id}[/]",
-        border_style="bright_magenta",
-        padding=(1, 2),
-    )
-    console.print(panel)
+    emit(ctx, data, legacy_data={"project": p, "tasks": tasks}, render=_render)
 
 
 @project.command("set")
@@ -243,10 +246,7 @@ def project_set(
 
     field = KEY_MAP.get(key)
     if not field:
-        console.print(
-            f"[bold red]Unknown key:[/] {key}\n[dim]Allowed: {', '.join(sorted(KEY_MAP))}[/]"
-        )
-        raise SystemExit(1)
+        raise click.UsageError(f"Unknown key {key!r}; allowed: {', '.join(sorted(KEY_MAP))}")
 
     coerced: str | int | float | dict | None = value
     if field == "max_concurrent_agents":
@@ -316,8 +316,12 @@ def project_set(
 
     result = _run(_set())
     if sensitive:
-        from .envelope import emit
-
         emit(ctx, result, entity="integration")
         return
-    console.print(f"[green]Updated[/] {project_id} [bold cyan]{key}[/] = {value}")
+    emit(
+        ctx,
+        result,
+        render=lambda _data: console.print(
+            f"[green]Updated[/] {project_id} [bold cyan]{key}[/] = {value}"
+        ),
+    )

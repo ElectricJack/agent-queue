@@ -68,17 +68,18 @@ def session_list(ctx: click.Context, state, lifecycle, live_only) -> None:
         args["lifecycle"] = lifecycle
     result = _call(ctx, "session_list", args)
 
-    def _render(data: dict) -> None:
+    rows = result.get("sessions", [])
+
+    def _render(render_rows: list[dict]) -> None:
         from rich.table import Table
 
-        rows = data.get("sessions", [])
-        if not rows:
+        if not render_rows:
             console.print("[dim]No sessions.[/dim]")
             return
         table = Table(border_style="bright_black")
         for col in ("ID", "Name", "State", "Task", "Harness", "Idle", "Restarts"):
             table.add_column(col)
-        for r in rows:
+        for r in render_rows:
             idle = r.get("idle_seconds") or 0
             table.add_row(
                 (r.get("id") or "")[:8],
@@ -93,7 +94,14 @@ def session_list(ctx: click.Context, state, lifecycle, live_only) -> None:
             )
         console.print(table)
 
-    emit(ctx, result, render=_render)
+    emit(
+        ctx,
+        rows,
+        entity="session",
+        total=result.get("count"),
+        legacy_data=result,
+        render=_render,
+    )
 
 
 @session.command("show")
@@ -102,7 +110,8 @@ def session_list(ctx: click.Context, state, lifecycle, live_only) -> None:
 @_handle_errors
 def session_show(ctx: click.Context, session_id) -> None:
     """Full detail for one session."""
-    emit(ctx, _call(ctx, "session_show", {"session_id": _resolve_session_id(session_id)}))
+    result = _call(ctx, "session_show", {"session_id": _resolve_session_id(session_id)})
+    emit(ctx, result.get("session", result), entity="session", legacy_data=result)
 
 
 @session.command("peek")

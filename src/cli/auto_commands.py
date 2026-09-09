@@ -398,7 +398,7 @@ def _make_auto_command(
             )
 
     def _make_callback(name: str):
-        from .formatter_registry import apply_formatter
+        from .formatter_registry import apply_formatter, command_output
 
         @click.pass_context
         def callback(ctx, **kwargs):
@@ -460,11 +460,36 @@ def _make_auto_command(
                 else:
                     raise
 
-            # Use Rich formatter if registered, otherwise fall back to JSON
-            if not apply_formatter(name, result, console):
-                # Typed responses need to_dict() for JSON serialisation
-                json_data = result.to_dict() if hasattr(result, "to_dict") else result
-                console.print_json(data=json_data)
+            # One success funnel for built-in and plugin-contributed generated
+            # commands.  Formatter metadata identifies collection payloads so
+            # JSON and human modes expose the same logical data.
+            from .envelope import emit
+
+            data, entity, total = command_output(name, result)
+
+            def _render(_data):
+                brief = bool((ctx.obj or {}).get("brief"))
+                formatted = apply_formatter(
+                    name,
+                    result,
+                    console,
+                    **({"data_override": _data} if brief else {}),
+                )
+                if not formatted:
+                    # Let emit's plain JSON fallback handle unknown commands;
+                    # this closure is only used when a Rich formatter exists.
+                    from .envelope import to_jsonable
+
+                    click.echo(json.dumps(to_jsonable(result), ensure_ascii=False, indent=2))
+
+            emit(
+                ctx,
+                data,
+                entity=entity,
+                total=total,
+                legacy_data=result,
+                render=_render,
+            )
 
         return callback
 

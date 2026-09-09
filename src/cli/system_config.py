@@ -8,7 +8,6 @@ group with dotted-key set syntax and ``$EDITOR`` integration.
 
 from __future__ import annotations
 
-import json
 import os
 import subprocess
 import tempfile
@@ -17,6 +16,7 @@ from typing import Any
 import click
 
 from .app import _get_client, _handle_errors, _run, cli, console
+from .envelope import emit, emit_error
 
 
 def _parse_yaml_scalar(text: str) -> Any:
@@ -71,15 +71,24 @@ def config_get(ctx: click.Context, section: str | None, as_json: bool) -> None:
     if section:
         config = config.get(section)
     if as_json:
-        console.print_json(data=config)
-    else:
-        console.print(yaml.safe_dump(config, sort_keys=False).rstrip())
+        ctx.find_root().obj["json"] = True
+
+    emit(
+        ctx,
+        config,
+        legacy_data=config,
+        render=lambda data: console.print(yaml.safe_dump(data, sort_keys=False).rstrip()),
+    )
 
     refs = [r for r in result.get("env_var_references", []) if not r.get("resolved")]
     if refs:
-        console.print(f"[yellow]Warning:[/] {len(refs)} unresolved ${{ENV_VAR}} reference(s):")
+        target_stderr = as_json or bool((ctx.obj or {}).get("json"))
+        click.echo(
+            f"Warning: {len(refs)} unresolved ${{ENV_VAR}} reference(s):",
+            err=target_stderr,
+        )
         for r in refs:
-            console.print(f"  • {r['path']} → ${{{r['var']}}}")
+            click.echo(f"  • {r['path']} → ${{{r['var']}}}", err=target_stderr)
 
 
 @system_config.command("set")
@@ -119,20 +128,29 @@ def config_set(ctx: click.Context, assignment: str, dry_run: bool) -> None:
 
     result = _run(_do())
     if result.get("validation_errors"):
+        if (ctx.obj or {}).get("json"):
+            emit_error(
+                "command_error",
+                "configuration validation failed",
+                {"validation_errors": result["validation_errors"]},
+            )
+            ctx.exit(1)
         console.print("[red]Validation failed:[/]")
         for err in result["validation_errors"]:
             console.print(f"  • {err}")
         ctx.exit(1)
-    if result.get("dry_run"):
-        console.print(f"[green]OK (dry-run)[/] would set [cyan]{key}[/] = {value!r}")
-        return
-    if result.get("requires_restart"):
-        console.print(
-            f"[yellow]Saved[/] [cyan]{key}[/] = {value!r} — section "
-            f"[bold]{section}[/] requires daemon restart."
-        )
-    else:
-        console.print(f"[green]Saved + applied live[/] [cyan]{key}[/] = {value!r}")
+    def _render(data: dict) -> None:
+        if data.get("dry_run"):
+            console.print(f"[green]OK (dry-run)[/] would set [cyan]{key}[/] = {value!r}")
+        elif data.get("requires_restart"):
+            console.print(
+                f"[yellow]Saved[/] [cyan]{key}[/] = {value!r} — section "
+                f"[bold]{section}[/] requires daemon restart."
+            )
+        else:
+            console.print(f"[green]Saved + applied live[/] [cyan]{key}[/] = {value!r}")
+
+    emit(ctx, result, render=_render)
 
 
 @system_config.command("edit")
@@ -145,6 +163,9 @@ def config_edit(ctx: click.Context) -> None:
     are NOT preserved by this path — use ``set`` for surgical edits.
     """
     import yaml
+
+    if (ctx.obj or {}).get("json"):
+        raise click.UsageError("system config edit is interactive and does not support JSON mode")
 
     api_url = ctx.obj.get("api_url") if ctx.obj else None
     editor = os.environ.get("EDITOR", "vi")
@@ -215,4 +236,6 @@ def config_schema(ctx: click.Context, as_json: bool) -> None:
             return await client.execute("get_config_schema", {})
 
     schema = _run(_do()).get("schema", {})
-    console.print(json.dumps(schema, indent=2))
+    if as_json:
+        ctx.find_root().obj["json"] = True
+    emit(ctx, schema)

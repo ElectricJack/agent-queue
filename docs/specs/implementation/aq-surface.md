@@ -258,6 +258,8 @@ SCHEMA_VERSION = 1
 def envelope(data: Any, *, total: int | None = None) -> dict
     # list data → pagination {returned, total or len(data), truncated}
 def error_envelope(code: str, message: str) -> dict
+def to_jsonable(value: Any) -> JSONValue
+    # recursive typed-model/Pydantic/dataclass/Enum/date conversion; omit Unset fields
 def emit(ctx: click.Context, data: Any, *, entity: str | None = None, total: int | None = None)
     # honors ctx.obj["json"], ctx.obj["brief"], AQ_JSON_LEGACY=1
 
@@ -265,7 +267,14 @@ BRIEF_PROJECTIONS: dict[str, tuple[str, ...]] = {"task": (...), "session": (...)
 ```
 
 Add a global `--brief` flag next to `--json` in the `cli` group (src/cli/app.py:145–167).
-All new commands and (incrementally) existing ones route output through `emit()`.
+All daemon-backed handwritten commands and every command produced by
+`register_auto_commands()` route output through `emit()`. Formatter registry metadata is
+also the generated command's output metadata: `extract` identifies logical list data,
+`entity` selects the central brief projection, and `total`/`count` supplies pagination.
+This includes core-owned wrappers for internal plugin commands. `app.AQGroup` catches Click
+usage failures before invocation and emits the same error envelope with exit 2 in JSON mode.
+`legacy_data=` lets generated list commands restore their exact pre-envelope backend wrapper
+under `AQ_JSON_LEGACY=1`.
 
 ### 5.3 New command modules
 
@@ -415,13 +424,13 @@ dicts). No new log stream, no new retention rules.
   `int`; error envelope shape; round-trips through `json.dumps`/`json.loads` with no custom
   encoder required.
 - **`emit()`:** `--json` prints the envelope; `--brief` trims via `apply_brief()` before
-  wrapping, only in JSON mode (human-mode `render` callbacks always receive the untrimmed
-  payload — see the note below); `AQ_JSON_LEGACY=1` prints the raw (pre-envelope) payload to
+  wrapping and passes the same projection to human renderers; `AQ_JSON_LEGACY=1` prints the raw (pre-envelope) payload to
   stdout plus a deprecation warning on **stderr** (verified with separate stdout/stderr
-  capture, not just combined output) and still composes with `--brief`; no-`render` fallback
-  dumps indented JSON; a `ctx.obj is None` context defaults to human mode without raising.
-- **`BRIEF_PROJECTIONS` completeness vs. models:** the five entities from design §4.2
-  (`task`, `session`, `gate`, `message`, `workspace`) are all present; `task`'s tuple matches
+  capture, not just combined output); exact legacy wrappers bypass `--brief`; no-`render`
+  fallback dumps indented JSON; a `ctx.obj is None` context defaults to human mode without
+  raising.
+- **`BRIEF_PROJECTIONS` completeness vs. models:** the entities from design §4.2
+  (`task`, `session`, `gate`, `message`, `workspace`, `agent`, `project`, `pool`) are present; `task`'s tuple matches
   the design table field-for-field; every field in `BRIEF_PROJECTIONS["task"]` is asserted to
   be an actual key produced by `TaskCommandsMixin._task_to_dict()` (the real `list_tasks` /
   `aq task list --brief` row shape) and to appear as an assigned key in `_cmd_get_task`'s
@@ -476,9 +485,9 @@ correct patch target.
 
 **Not covered in S0** (deferred to the phase that lands the backing subsystem): `aq inbox
 --inject`, `aq prime --hook-json`, `task details`'s renderer showing gate/work-state data
-(no query layer yet), exit-code `3`/`4` and `paused` mapping (no daemon-unreachable /
-out-of-scope / paused-memory path exercised by these commands yet), MCP `/mcp-task`
-integration.
+(no query layer yet), `paused` mapping, and MCP `/mcp-task` integration. Exit codes 1–4,
+generated and handwritten successes, Unicode/model normalization, and raw compatibility are
+covered by the cross-family CLI contract tests.
 
 ### 10.1 Later phases
 

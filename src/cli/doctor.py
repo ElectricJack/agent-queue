@@ -22,6 +22,7 @@ from typing import Any
 import click
 
 from .app import _get_client, _handle_errors, _run, cli, console
+from .envelope import emit, emit_error
 
 _SEVERITY_STYLE = {
     "ok": "green",
@@ -51,7 +52,7 @@ def _as_dict(obj: Any) -> dict:
 
 @cli.command("doctor")
 @click.option("--fix", is_flag=True, help="Apply fixes for failing fixable checks, then re-run.")
-@click.option("--json", "as_json", is_flag=True, help="Emit the raw command result.")
+@click.option("--json", "as_json", is_flag=True, help="Emit the versioned JSON envelope.")
 @click.option(
     "--check",
     "checks",
@@ -72,14 +73,30 @@ def doctor(ctx: click.Context, fix: bool, as_json: bool, checks: tuple[str, ...]
                 "doctor", {"fix": fix, "checks": list(checks) or None}
             )
 
+    json_mode = as_json or bool((ctx.obj or {}).get("json"))
+    if as_json:
+        ctx.find_root().obj["json"] = True
+
     try:
         result = _run(_fetch())
-    except Exception as exc:  # transport / daemon failure → exit 3
-        console.print(f"[bold red]doctor failed to run:[/] {exc}")
+    except Exception as exc:
+        from .exceptions import CommandError, DaemonNotRunningError
+
+        if isinstance(exc, (CommandError, DaemonNotRunningError)):
+            raise
+        # Doctor initialization failures are classified with transport
+        # failures by its long-standing operational exit-code contract.
+        if json_mode:
+            emit_error("daemon_unreachable", str(exc))
+        else:
+            console.print(f"[bold red]doctor failed to run:[/] {exc}")
         sys.exit(3)
 
-    if as_json or (ctx.obj or {}).get("json"):
-        console.print_json(data=_as_dict(result))
+    if json_mode:
+        if _getval(result, "success") is False:
+            emit_error("command_error", str(_getval(result, "error", "doctor failed")))
+            sys.exit(int(_getval(result, "exit_code", 3) or 3))
+        emit(ctx, result)
         sys.exit(int(_getval(result, "exit_code", 3) or 0))
 
     if _getval(result, "success") is False:
@@ -134,7 +151,7 @@ def doctor(ctx: click.Context, fix: bool, as_json: bool, checks: tuple[str, ...]
     default="project",
     show_default=True,
 )
-@click.option("--json", "as_json", is_flag=True, help="Emit the raw command result.")
+@click.option("--json", "as_json", is_flag=True, help="Emit the versioned JSON envelope.")
 @click.pass_context
 @_handle_errors
 def costs(
@@ -161,9 +178,11 @@ def costs(
             )
 
     result = _run(_fetch())
+    if as_json:
+        ctx.find_root().obj["json"] = True
 
     if as_json or (ctx.obj or {}).get("json"):
-        console.print_json(data=_as_dict(result))
+        emit(ctx, result)
         return
 
     error = _getval(result, "error")
