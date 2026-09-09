@@ -39,49 +39,14 @@ class SurfaceCommandsMixin:
     async def _cmd_get_schema(self, args: dict) -> dict:
         """Return the system's enum catalog so agents never guess magic strings.
 
-        Introspects the enums that exist in the codebase today.  Enums owned
-        by subsystems that haven't landed yet (gate lifecycle beyond type/
-        status, outcome/failure_class/work_outcome, session states — see
-        design §4.3) are intentionally omitted rather than hard-coded here;
-        they will appear automatically once those subsystems add their
-        constants and this method is extended to read them.
+        Uses the same pure catalog as the offline CLI. Enums owned by
+        subsystems that haven't landed yet are intentionally omitted rather
+        than hard-coded here; they belong in ``src.surface_schema`` once the
+        owning subsystem provides their constants.
         """
-        from src.commands.session_commands import VALID_OUTCOMES
-        from src.database.queries.session_queries import _SESSION_TRANSITIONS
-        from src.database.tables import GATE_STATUSES, GATE_TYPES, TASK_DEP_TYPES
-        from src.models import AgentState, ClaimResult, CLAIM_PHASES, TaskStatus, TaskType
+        from src.surface_schema import get_surface_schema
 
-        return {
-            "schema_version": 1,
-            "enums": {
-                "task_status": [s.value for s in TaskStatus],
-                "task_type": [t.value for t in TaskType],
-                "dependency_type": list(TASK_DEP_TYPES),
-                "gate_type": list(GATE_TYPES),
-                "gate_status": list(GATE_STATUSES),
-                "hierarchy_error": [
-                    "not_found",
-                    "cross_project",
-                    "cycle",
-                    "depth",
-                    "self_parent",
-                    "container_closed",
-                    "has_children",
-                    "open_children",
-                    "open_descendants",
-                    "live_descendants",
-                    "manually_paused_descendants",
-                    "cycle_check_skipped",
-                ],
-                # Swarm work model — claims and pools (§10, §11).
-                "claim_result": [r.value for r in ClaimResult],
-                "claim_phase": list(CLAIM_PHASES),
-                "lifecycle": ["task", "named", "pool"],
-                "session_state": list(_SESSION_TRANSITIONS),
-                "agent_state": [s.value for s in AgentState],
-                "outcome": list(VALID_OUTCOMES),
-            },
-        }
+        return get_surface_schema()
 
     # ------------------------------------------------------------------
     # task_show — backs `aq task show|details` (design §3.1)

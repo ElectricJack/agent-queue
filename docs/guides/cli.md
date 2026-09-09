@@ -41,18 +41,25 @@ aq task search "login bug"
 
 ## Configuration
 
-The CLI connects directly to the AgentQueue SQLite database. It finds the
-database using this resolution order:
+The CLI delegates normal commands to the running daemon over HTTP. It resolves
+the API URL from `AQ_API_URL`, then the legacy `AGENT_QUEUE_API_URL`, then the
+`mcp_server` address in `~/.agent-queue/config.yaml`, and finally
+`http://127.0.0.1:8081`. `AQ_API_TOKEN`, when present, is sent as a bearer token
+and preserves the task/project scope of worker sessions.
 
-1. `--db` command-line flag
-2. `AGENT_QUEUE_DB` environment variable
-3. `database.path` from `~/.agent-queue/config.yaml`
-4. Default: `~/.agent-queue/agentqueue.db`
+Help and discovery are offline: `aq --help`, `aq --help-all`, `aq --version`,
+`aq schema`, and `aq test --aq-help` neither connect to the daemon nor open or
+migrate its database. Installed plugin command metadata remains visible in
+help. A plugin's saved configuration is read lazily only when that plugin's
+command group actually runs; the read is bounded and read-only. If the
+database is unavailable, the command reports why and continues with the
+plugin's declared defaults.
 
-### Environment Variable
+### Environment Variables
 
 ```bash
-export AGENT_QUEUE_DB=/path/to/agentqueue.db
+export AQ_API_URL=http://127.0.0.1:8081
+export AQ_API_TOKEN=...  # injected automatically in managed sessions
 ```
 
 ### Shell Alias
@@ -248,7 +255,7 @@ Use `-y` / `--yes` flag to skip.
 
 ## Architecture
 
-The CLI follows the same adapter pattern as the Discord and Telegram bots:
+The CLI uses the daemon as its authenticated command boundary:
 
 ```
 ┌────────────┐
@@ -256,15 +263,15 @@ The CLI follows the same adapter pattern as the Discord and Telegram bots:
 └─────┬──────┘
       │
 ┌─────┴──────┐
-│  CLIClient │──── Data access (reads from shared SQLite DB)
+│  CLIClient │──── Authenticated HTTP transport
 └─────┬──────┘
       │
 ┌─────┴──────┐
-│  Database  │──── Shared persistence (WAL mode for concurrent access)
+│   Daemon   │──── CommandHandler and PostgreSQL persistence
 └────────────┘
 ```
 
-The CLI reads directly from the same SQLite database the daemon uses.
-WAL journal mode ensures reads don't block the running daemon.
-Write operations (create, approve, stop, restart) use the same models
-and state machine validation as the rest of AgentQueue.
+Plugin installation and other filesystem-heavy plugin management commands are
+the narrow direct-database exception. Worker sessions retain their database
+sentinel and migration-scope guards, so those operator operations must be run
+outside a worktree slot.

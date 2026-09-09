@@ -165,8 +165,10 @@ carry them: task statuses, task types, dependency types (`blocks`, `parent-child
 `supersedes`), gate types (`human`, `timer`, `pr-merged`, `ci-run`, `event`, `task`),
 lifecycle values (`task`, `named`), outcome enums (`outcome`, `failure_class`,
 `work_outcome`), and session states. Backed by a `get_schema` command (so REST and MCP get
-it too); the enum values themselves are owned by [[work-graph]] and [[session-runtime]] —
-`aq schema` is a projection with its own `schema_version`.
+it too); the CLI and command handler render the same pure code-owned catalog, so `aq schema`
+needs neither the daemon nor a database. The enum values themselves are owned by
+[[work-graph]] and [[session-runtime]] — `aq schema` is a projection with its own
+`schema_version`.
 
 ---
 

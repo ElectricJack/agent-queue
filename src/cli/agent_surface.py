@@ -27,19 +27,14 @@ from .tasks import task
 
 @cli.command("schema")
 @click.pass_context
-@_handle_errors
 def schema(ctx: click.Context) -> None:
     """Print the system's enum catalog (task statuses, types, dependency
     types, gate types/statuses, ...) so scripts and agents never guess
     magic strings.
     """
-    api_url = ctx.obj.get("api_url") if ctx.obj else None
+    from src.surface_schema import get_surface_schema
 
-    async def _get_schema():
-        async with _get_client(api_url) as client:
-            return await client.execute("get_schema")
-
-    result = _run(_get_schema())
+    result = get_surface_schema()
 
     def _render(data: dict) -> None:
         from rich.table import Table

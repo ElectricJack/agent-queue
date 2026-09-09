@@ -20,11 +20,15 @@ into their respective CLI groups (e.g., ``aq git``, ``aq memory``, etc.).
 from __future__ import annotations
 
 import asyncio
+import functools
+import logging
 
 import click
 from rich.console import Console
 
 from .styles import AQ_THEME
+
+logger = logging.getLogger(__name__)
 
 # Create themed console
 console = Console(theme=AQ_THEME)
@@ -346,28 +350,91 @@ from . import system_config as _system_config_cli  # noqa: E402, F401
 # ---------------------------------------------------------------------------
 
 
+_PLUGIN_CONFIG_TIMEOUT_SECONDS = 3.0
+
+
 def _load_plugin_config_from_db(plugin_id: str) -> dict | None:
-    """Try to load a plugin's config from the database (best-effort)."""
-    import json
+    """Read one plugin's saved config without initializing the database.
+
+    This function is called only from the plugin group's Click callback, so
+    imports and eager help options never touch the database.  The narrow
+    reader exposes no mutation methods, and the outer timeout bounds both
+    connecting and querying an unavailable PostgreSQL server.
+    """
+    from .client import PluginConfigReader
+
+    async def _fetch():
+        async with PluginConfigReader() as reader:
+            return await reader.get_config(plugin_id)
 
     try:
-        from .client import PluginClient
+        return _run(asyncio.wait_for(_fetch(), timeout=_PLUGIN_CONFIG_TIMEOUT_SECONDS))
+    except TimeoutError as exc:
+        raise RuntimeError(
+            f"database lookup timed out after {_PLUGIN_CONFIG_TIMEOUT_SECONDS:g}s"
+        ) from exc
 
-        client = PluginClient()
 
-        async def _fetch():
-            await client.connect()
-            try:
-                p = await client.get_plugin(plugin_id)
-                if p:
-                    return json.loads(p.get("config", "{}") or "{}")
-            finally:
-                await client.close()
-            return None
+def _configure_plugin_on_invoke(plugin_id: str, instance: object) -> None:
+    """Merge persisted config immediately before a plugin command runs.
 
-        return _run(_fetch())
-    except Exception:
+    Plugin CLI extensions historically fell back to their declared defaults
+    when the daemon database was unavailable.  Preserve that useful offline
+    behaviour, but make the fallback visible and actionable instead of
+    swallowing every exception during module import.
+    """
+    try:
+        db_config = _load_plugin_config_from_db(plugin_id)
+    except Exception as exc:
+        click.echo(
+            f"Warning: could not load saved config for plugin '{plugin_id}': {exc}. "
+            "Using plugin defaults; check database.url or run this command from an "
+            "operator shell.",
+            err=True,
+        )
+        return
+
+    if db_config is None:
+        return
+    current = getattr(instance, "config", {})
+    if not isinstance(current, dict):
+        current = {}
+    instance.config = {**current, **db_config}
+
+
+def _defer_plugin_config(plugin_id: str, instance: object, group: click.Group) -> None:
+    """Attach lazy configuration to *group* without affecting help paths."""
+    original_callback = group.callback
+
+    def configured_callback(*args, **kwargs):
+        _configure_plugin_on_invoke(plugin_id, instance)
+        if original_callback is not None:
+            return original_callback(*args, **kwargs)
         return None
+
+    if original_callback is not None:
+        configured_callback = functools.wraps(original_callback)(configured_callback)
+    group.callback = configured_callback
+
+
+def _broken_plugin_group(plugin_id: str, exc: Exception) -> click.Group:
+    """Return a discoverable command that reports an entry-point failure."""
+    detail = f"{type(exc).__name__}: {exc}"
+
+    @click.group(
+        plugin_id,
+        invoke_without_command=True,
+        help=f"Unavailable plugin command ({detail}).",
+    )
+    @click.pass_context
+    def broken(ctx: click.Context) -> None:
+        if ctx.invoked_subcommand is None:
+            raise click.ClickException(
+                f"plugin '{plugin_id}' could not be loaded: {detail}. "
+                "Reinstall the plugin or inspect `aq plugin info`."
+            )
+
+    return broken
 
 
 def _load_plugin_cli_groups() -> None:
@@ -376,20 +443,24 @@ def _load_plugin_cli_groups() -> None:
         from importlib.metadata import entry_points
 
         for ep in entry_points(group="aq.plugins"):
+            if ep.name in cli.commands:
+                logger.warning(
+                    "Plugin CLI entry point '%s' conflicts with an existing command; skipped",
+                    ep.name,
+                )
+                continue
             try:
                 cls = ep.load()
                 instance = cls()
-                # Load saved config from DB so CLI commands use the right defaults
-                db_config = _load_plugin_config_from_db(ep.name)
-                if db_config:
-                    instance.config = {**instance.config, **db_config}
                 group = instance.cli_group()
                 if group is not None:
+                    _defer_plugin_config(ep.name, instance, group)
                     cli.add_command(group, ep.name)
-            except Exception:
-                pass
-    except Exception:
-        pass
+            except Exception as exc:
+                logger.warning("Plugin CLI entry point '%s' failed: %s", ep.name, exc)
+                cli.add_command(_broken_plugin_group(ep.name, exc), ep.name)
+    except Exception as exc:
+        logger.warning("Plugin CLI entry-point discovery failed: %s", exc)
 
 
 _load_plugin_cli_groups()

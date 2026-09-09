@@ -11,7 +11,9 @@ typed routes again without rediscovering how.
 
 Plugin operations still need direct database access (filesystem ops that
 don't belong in CommandHandler), so ``PluginClient`` is provided as a
-separate class for that purpose.
+separate class for that purpose. ``PluginConfigReader`` is the deliberately
+read-only counterpart used by lazy plugin CLI configuration; it connects
+without schema setup or data migrations.
 """
 
 from __future__ import annotations
@@ -509,6 +511,69 @@ class PluginClient:
 
     async def delete_plugin_data_all(self, plugin_id: str) -> None:
         await self.db.delete_plugin_data_all(plugin_id)
+
+
+class PluginConfigReader:
+    """Read one installed plugin's configuration without schema mutation.
+
+    Unlike :class:`PluginClient`, this capability does not expose any writes
+    and never calls ``Database.initialize()``.  Its caller owns the timeout,
+    because the useful bound includes both connection establishment and the
+    query rather than either step in isolation.
+    """
+
+    def __init__(self, db_url: str | None = None):
+        self._db_url = db_url or _resolve_db_url()
+        self._engine = None
+
+    async def connect(self) -> None:
+        if not is_postgres_url(self._db_url):
+            raise RuntimeError(
+                "plugin configuration requires a PostgreSQL database URL; "
+                "set database.url in ~/.agent-queue/config.yaml"
+            )
+        from src.database.engine import create_postgres_engine
+
+        # Engine construction is lazy: the actual connection is opened by
+        # get_config(), inside app.py's whole-operation timeout.
+        self._engine = create_postgres_engine(self._db_url, pool_min=1, pool_max=1)
+
+    async def close(self) -> None:
+        if self._engine is not None:
+            await self._engine.dispose()
+            self._engine = None
+
+    async def __aenter__(self) -> PluginConfigReader:
+        await self.connect()
+        return self
+
+    async def __aexit__(self, *exc: Any) -> None:
+        await self.close()
+
+    async def get_config(self, plugin_id: str) -> dict | None:
+        """Return parsed JSON config for *plugin_id*, or ``None`` if absent."""
+        import json
+
+        from sqlalchemy import select
+
+        from src.database.tables import plugins
+
+        if self._engine is None:
+            raise RuntimeError("PluginConfigReader not connected")
+        async with self._engine.connect() as conn:
+            result = await conn.execute(
+                select(plugins.c.config).where(plugins.c.id == plugin_id)
+            )
+            raw = result.scalar_one_or_none()
+        if raw is None:
+            return None
+        try:
+            config = json.loads(raw or "{}")
+        except (json.JSONDecodeError, TypeError) as exc:
+            raise RuntimeError(f"stored config is not valid JSON: {exc}") from exc
+        if not isinstance(config, dict):
+            raise RuntimeError("stored config is not a JSON object")
+        return config
 
 
 def _resolve_db_config() -> dict | None:
