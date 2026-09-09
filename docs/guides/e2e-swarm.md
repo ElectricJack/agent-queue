@@ -15,8 +15,9 @@ It comes in two tiers.
 |---|---|---|
 | `sessions.provider` | `fake` | `tmux` |
 | Who is the worker | `scripts/e2e-smoke.sh` | a real `claude` process |
-| Playbooks / messages / supervisor | off | on (a live agent needs them) |
-| Runtime | ~2½ minutes | as long as the model takes |
+| Playbooks / supervisor | off | on (a live agent needs them) |
+| Durable messages | local sink only | on |
+| Runtime | ~4 minutes | as long as the model takes |
 | Deterministic | yes | no |
 | Costs tokens | no | yes |
 | Use it for | every change to claims / pools / formulas / hierarchy | before shipping a change to the bootstrap prompt or the harness |
@@ -58,6 +59,11 @@ scripts/e2e-daemon.sh logs 200
 scripts/e2e-daemon.sh stop
 ```
 
+The default run executes all 14 scenarios. `S1`–`S8` cover swarm composition;
+`S9`–`S14` cover the wider stateful CLI surface. Every CLI subprocess is
+forced back to this disposable data directory and database even when the
+caller is a worker carrying production-refusal sentinels.
+
 A clean run:
 
 ```
@@ -79,11 +85,27 @@ PASS S7 PostgreSQL claim race (26.4s)
      outcomes ['no_ready_work', 'claimed'] — one winner, loser said no_ready_work
 PASS S8 project onboarding (1.2s)
      real CLI linked an unchanged repository and initialized main + README; each project has one enabled project-repo workspace and standard vault storage
+PASS S9 task lifecycle (...)
+     partial flags exited 2 without persistence; full JSON receipt yielded [...]; update persisted; priority failure rolled back; task deleted
+PASS S10 workspace + file/git/note writes (...)
+     workspace/file/git/note CRUD persisted across processes; refusals rolled back
+PASS S11 messages (...)
+     queued/injected/replied through database-only sink; bad target refused
+PASS S12 MCP registry (...)
+     registry create/read/delete passed; loopback:1 probe = dependency-unavailable
+PASS S13 plugin extensions (...)
+     disposable entry point loaded when present and was an exit-2 unknown command when absent
+PASS S14 graph + vault (...)
+     layout rebuild/tidy persisted through daemon; isolated vault migration preview made no writes
 
-8/8 scenarios passed
+14/14 scenarios passed
 ```
 
-The runner exits non-zero if any scenario fails.
+The runner exits non-zero if any scenario fails. It then prints a capability
+report whose statuses are deliberately finite: `passed`, `broken`,
+`unsupported`, `dependency-unavailable`, and `explicitly-untested`. This keeps
+an absent optional service or retired surface from being reported as either a
+false pass or a product regression.
 
 Tier 1 keeps assignment deterministic without an LLM: its generated execution
 profiles carry fixed `default_class` values, and the runner and formula fixtures
@@ -96,10 +118,11 @@ class and model constraints.
 | File | What it does |
 |---|---|
 | `scripts/e2e-common.sh` | shared paths, ports and DSNs; every value overridable from the environment |
-| `scripts/e2e-env.sh` | builds the world: dirs, bare git repos + workspace clones, an operator-owned onboarding root, vault fixtures, `bin/aq`, `config.yaml`, and the database. `--reset` drops all of it first; `--register` registers the projects against a running daemon |
+| `scripts/e2e-env.sh` | builds the world: dirs, bare git repos + workspace clones, an onboarding root, an opt-in plugin entry point, vault fixtures, `bin/aq`, config, and database |
 | `scripts/e2e-daemon.sh` | `start` / `stop` / `status` / `logs` for the isolated daemon |
+| `scripts/e2e-clean.sh` | validates path ownership and the isolated tmux socket before any side effect, then stops the disposable daemon, drops only its database, and removes only its data directory |
 | `scripts/e2e-smoke.sh` | the Tier 1 runner (thin wrapper) |
-| `scripts/e2e/smoke.py` | the eight scenarios |
+| `scripts/e2e/smoke.py` | the 14 scenarios and capability report |
 | `scripts/e2e/aq.py` | runs *this worktree's* `aq` — see below |
 | `scripts/e2e/register.py` | creates the `e2e` / `other` projects + their workspaces (needs the daemon) |
 | `scripts/e2e/dbsetup.py` | creates/drops `agent_queue_e2e` via asyncpg (no `psql` needed) |
@@ -230,6 +253,41 @@ byte-for-byte clean and both standard vault trees exist. *Regression it catches:
 the public CLI, configured-root authorization, saga registration, Git setup, and
 vault setup working separately but failing when composed through a real daemon.*
 
+**S9 — task lifecycle.** A partial noninteractive `aq --json task create`
+invocation must exit 2, name its missing flag, and leave no task behind; the
+full noninteractive flag set, including a workspace requirement, then creates
+a real task. Its id comes from the JSON receipt, not terminal scraping.
+Separate reads prove persistence; `task set` proves update semantics; invalid
+priority proves nonzero exit plus rollback; deletion proves the final edge.
+
+**S10 — workspace, file, git and notes.** A clone reserved by `e2e-env.sh` is
+registered and removed through the workspace CLI. Duplicate registration and
+an out-of-workspace file write are refused without residue. File write/read/edit,
+git branch/commit/push/log, and note write/append/read/delete are all exercised
+against disposable disk and a bare local remote.
+
+**S11 — messages.** The durable queue sends, reads, injects and replies to a
+synthetic `profile:e2e-sink-*` mailbox. Profile mailboxes are pull-only, and
+`messaging_platform: none` is a second hard network fence: no Discord, webhook
+or human receives anything. A malformed recipient verifies the CLI's nonzero
+failure contract.
+
+**S12 — MCP registry.** Project-scoped create/read/delete goes through the
+daemon and vault watcher. The only probe targets `127.0.0.1:1`, deliberately
+proving `dependency-unavailable` reporting without contacting a real MCP
+service.
+
+**S13 — plugin extensions.** `e2e-env.sh` creates a tiny distribution metadata
+fixture without installing it. One subprocess opts in with `PYTHONPATH` and
+runs its command; another omits the path and must receive Click's exit-2
+unknown-command response. No package manager or interpreter environment is
+modified.
+
+**S14 — graph and vault.** Layout rebuild and tidy run through the daemon,
+including a missing-project refusal. Vault migration is invoked only with
+`--dry-run --data-dir "$AQ_E2E_HOME"`; database upgrade and operator-daemon
+control remain explicitly untested.
+
 ### Reading a failure
 
 Every scenario prints its own reason on the line under `FAIL`; the waits name
@@ -258,10 +316,10 @@ These are not bugs the kit hides; they are places where the CLI cannot yet
 express what the runner needs, and it falls back to `POST /api/execute` —
 just as public a surface.
 
-- The runner calls `create_task` over REST rather than shelling out to
-  `aq task create`. It no longer has to: single-task creation routes through
-  `emit`, so `aq --json task create ... | jq -r .data.created` returns the new
-  id (design §4.2.1). Switching the runner over is bookkeeping, not a gap.
+- S1–S7 retain a small REST helper for fixture setup and commands whose
+  generated Click schema cannot carry their arguments. S9 is the acceptance
+  path for task creation itself: `aq --json task create ...` returns the new
+  id at `.data.created` (design §4.2.1), and the runner consumes that receipt.
 - `gate_list` / `explain_task` / `list_agents` carry codegen-only input
   schemas, so their auto-generated Click commands take no options.
 - `agents.state` has no public reader at all — see S2 above.
@@ -385,13 +443,36 @@ talks to.
 ### Teardown
 
 ```bash
-scripts/e2e-daemon.sh stop
-tmux -L aq-e2e kill-server           # Tier 2 only
-scripts/e2e-env.sh --reset           # drops the DB, repos, vault and config
+scripts/e2e-clean.sh
 ```
 
-`kill-server` on the `aq-e2e` socket cannot touch your real sessions — those
-live on the `aq` socket.
+The cleanup command refuses broad/protected paths, any directory without
+the `.aq-e2e` ownership marker, and the operator/default tmux sockets (`aq`
+and `default`) before it stops a daemon or invokes any destructive command.
+It then drops only `E2E_DB_NAME`. The daemon's
+Tier-2 sessions use the `aq-e2e` tmux socket; cleanup of the marked e2e home
+and daemon cannot target the operator's default data directory or database.
+
+### Automated gates
+
+Fast fixture/contract checks use the normal default marker set:
+
+```bash
+POSTGRES_TEST_DSN=<admin-dsn> aq test \
+  tests/test_e2e_kit_fixtures.py tests/test_script_modes.py -q
+```
+
+The real daemon/PostgreSQL run is explicitly marked `integration`, so a normal
+`aq test` never starts it. Run it deliberately through the global test gate:
+
+```bash
+POSTGRES_TEST_DSN=<admin-dsn> aq test \
+  tests/test_e2e_cli_stateful.py -m integration -q
+```
+
+The test chooses a unique database, port and temporary home, uses fake
+sessions, and calls `e2e-clean.sh` in `finally`. Tmux/real-provider testing
+remains Tier 2 and is never part of the default suite.
 
 ## Extending the kit
 
