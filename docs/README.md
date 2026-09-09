@@ -100,11 +100,18 @@ Look-up material: exhaustive, terse, and generated from source where it can be.
 
 | Page | Covers |
 |---|---|
+| [Contributing](contributing/README.md) | The contributor loop: set up, find the code, check it, deliver it. Start here. |
 | [Documentation style](contributing/documentation-style.md) | How to write a page here, and the rules every runnable example must pass. |
 | [Documentation map](documentation-map.md) | Which page owns which subject, and the ownership rules that keep two authors out of the same file. |
-| `docs/contributing/setup.md` — **planned** | Getting a development checkout running. |
-| `docs/contributing/testing.md` — **planned** | Running the focused tests for what you changed. |
-| `docs/contributing/repo-map.md` — **planned** | Where things live in the repository. |
+| [Development setup](contributing/setup.md) | Getting a development checkout running. |
+| [Testing](contributing/testing.md) | Running the focused tests for what you changed. |
+| [Repository map](contributing/repo-map.md) | Where things live in the repository. |
+| [Code generation](contributing/codegen.md) | The files written by a command, and the guards that catch a stale one. |
+| [Local checks](contributing/checks.md) | The shortest sufficient check list before you push. |
+| [Scripts](contributing/scripts.md) | Every script in `scripts/`, and which ones are historical. |
+| [Continuous integration](contributing/ci.md) | What CI runs, when, and what it does not run. |
+| [Pull requests and delivery](contributing/pull-requests.md) | How a change reaches `main`. |
+| [Builds and releases](contributing/releases.md) | What is built, how it is versioned, and why there is no release. |
 
 ## Historical and existing material
 
