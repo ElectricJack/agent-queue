@@ -3159,9 +3159,11 @@ class Orchestrator(
         if config is None:
             return
         self.config = config
-        # Update budget manager if global budget changed
-        if self.budget and config.global_token_budget_daily is not None:
-            self.budget._global_budget = config.global_token_budget_daily
+        # Propagate the global budget to the manager ``_schedule`` reads it
+        # back out of.  Assign unconditionally: ``None`` means "no global
+        # cap", and skipping it would leave a cleared budget enforced until
+        # the next restart.
+        self.budget.global_budget = config.global_token_budget_daily
         logger.info(
             "Config reloaded: updated sections: %s",
             ", ".join(data.get("changed_sections", [])),
@@ -3360,7 +3362,7 @@ class Orchestrator(
             hierarchy_runnable_task_ids=hierarchy_runnable_task_ids,
             project_available_workspaces=workspace_counts,
             workspace_locks=workspace_locks,
-            global_budget=self.config.global_token_budget_daily,
+            global_budget=self.budget.global_budget,
             global_tokens_used=total_used,
             provider_cooldowns=self._provider_cooldowns,
             project_constraints=constraint_map,

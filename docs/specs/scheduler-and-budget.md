@@ -10,11 +10,12 @@ The scheduler and budget subsystem controls which tasks get assigned to which ag
 
 See [[design/agent-coordination]] for how coordination playbooks interact with the scheduler.
 
-The subsystem is split across three files:
+The subsystem is split across two files:
 
 - `src/scheduler.py` — the core scheduling algorithm
-- `src/tokens/budget.py` — reusable budget math (target ratios, deficits, exhaustion checks)
-- `src/tokens/tracker.py` — sliding-window rate limit tracking per agent type
+- `src/tokens/budget.py` — the configured fleet-wide budget plus budget math (target ratios, deficits, exhaustion checks)
+
+> **Removed.** `src/tokens/tracker.py` (`RateLimitWindow`) held a sliding-window token counter per (agent type, limit type). It had no production importer and no test, and it counted against a hand-configured cap rather than any provider's real quota, so it was deleted rather than carried. Provider headroom is an unstarted design (`docs/superpowers/specs/2026-08-24-usage-aware-concurrency.md`); whatever implements it will be sampler-driven and does not build on that dataclass.
 
 The scheduler is called once per orchestrator tick (roughly every 5 seconds). It produces a list of zero or more `AssignAction` objects, each pairing one idle agent with one ready task. The orchestrator then executes those assignments by updating the database and launching agent processes.
 
@@ -23,7 +24,6 @@ The scheduler is called once per orchestrator tick (roughly every 5 seconds). It
 ## Source Files
 - `src/scheduler.py`
 - `src/tokens/budget.py`
-- `src/tokens/tracker.py`
 
 ---
 
@@ -158,6 +158,10 @@ When a valid `(agent, project, task)` triple is found:
 
 `BudgetManager` in `src/tokens/budget.py` is a lightweight class that encapsulates the arithmetic for fair-share budget allocation. It holds one piece of persistent state: the configured `global_budget` (an integer or `None`). All methods are pure functions of their arguments.
 
+The orchestrator constructs exactly one (`Orchestrator.budget`) and treats it as the **single source of truth for the global budget**. `Orchestrator._on_config_reloaded` writes `budget.global_budget` on every `config.reloaded` event, and `Orchestrator._schedule` reads it back into `SchedulerState.global_budget`, so a hot edit of `global_token_budget_daily` takes effect on the next tick without a restart. The assignment is unconditional: dropping the key from the config means "no global cap", and must clear the manager rather than leave the previous cap enforced.
+
+`BudgetManager` declares `__slots__`. The reload hook previously assigned `budget._global_budget` — a name nothing reads — which silently discarded every reloaded budget; `__slots__` turns that class of typo into an immediate `AttributeError`.
+
 ### 3.1 Construction
 
 ```
@@ -196,7 +200,7 @@ Algorithm:
    - `actual = usage.get(project_id, 0) / total_usage`
    - `deficit = target - actual`
 
-Note: the sign convention here (target minus actual) is the inverse of what the scheduler's inline sort key computes (actual minus target). The `BudgetManager.calculate_deficits` method returns positive-means-behind, while the scheduler's sort key uses negative-means-behind. Both arrive at the same ordering when sorted ascending: the scheduler sorts by `actual - target` ascending, which is equivalent to sorting by `target - actual` descending. The `BudgetManager` class is available as a utility but the scheduler does its own inline calculation rather than calling `BudgetManager` directly.
+Note: the sign convention here (target minus actual) is the inverse of what the scheduler's inline sort key computes (actual minus target). The `BudgetManager.calculate_deficits` method returns positive-means-behind, while the scheduler's sort key uses negative-means-behind. Both arrive at the same ordering when sorted ascending: the scheduler sorts by `actual - target` ascending, which is equivalent to sorting by `target - actual` descending. The `BudgetManager` class is available as a utility but the scheduler does its own inline calculation rather than calling `BudgetManager` directly — `Scheduler.schedule` is a pure function over its snapshot and holds no reference to the manager.
 
 ### 3.4 Global Budget Exhaustion Check
 
@@ -216,89 +220,11 @@ Returns `True` if `budget_limit` is not `None` and `project_used >= budget_limit
 
 ---
 
-## 4. Rate Limit Window Tracker
+## 4. Interactions and Invariants
 
-`RateLimitWindow` in `src/tokens/tracker.py` is a dataclass that tracks token consumption within a single sliding time window for a single (agent type, limit type) pair. It is stateful and mutates in place as tokens are recorded.
+- The `Scheduler` does not call `BudgetManager` methods directly. It replicates the target ratio and deficit arithmetic inline within the sort key closure, because `schedule()` is a pure function over a snapshot and holds no object references. The `BudgetManager` instance still reaches it *by value*: `Orchestrator._schedule` copies `budget.global_budget` into `SchedulerState.global_budget` on every tick.
 
-### 4.1 Data Fields
-
-| Field | Type | Description |
-|---|---|---|
-| `agent_type` | `str` | Identifies the agent type this limit applies to (e.g., `"claude"`) |
-| `limit_type` | `str` | One of `"per_minute"`, `"per_hour"`, or `"per_day"` |
-| `max_tokens` | `int` | The maximum number of tokens allowed in one window |
-| `current_tokens` | `int` | Tokens consumed in the current window; starts at 0 |
-| `window_start` | `float` | Unix timestamp (from `time.time()`) when the current window began |
-
-On construction, if `window_start` is not provided (or is 0.0), it is set to `time.time()` in `__post_init__`.
-
-### 4.2 Window Duration
-
-The `window_seconds` property maps `limit_type` to its duration in seconds:
-
-| `limit_type` | `window_seconds` |
-|---|---|
-| `"per_minute"` | 60 |
-| `"per_hour"` | 3600 |
-| `"per_day"` | 86400 |
-
-Any other value for `limit_type` raises a `KeyError`.
-
-### 4.3 Window Reset Behavior
-
-A window is considered expired when `time.time() - window_start > window_seconds`. The window does not reset automatically in the background. It resets lazily: only when `record()` is called after the window has expired.
-
-When `record(tokens)` is called:
-1. Compute `now = time.time()`.
-2. If `now - window_start > window_seconds`, the window has expired: reset `current_tokens` to 0 and set `window_start = now`.
-3. Add `tokens` to `current_tokens`.
-
-The reset sets the new window start to the moment `record()` is called, not to the exact moment the old window expired. This means windows do not slide continuously — they restart from the first event after expiry.
-
-### 4.4 is_exceeded Check
-
-```
-is_exceeded() -> bool
-```
-
-Returns `True` if the rate limit is currently exceeded, `False` otherwise.
-
-Algorithm:
-1. If `time.time() - window_start > window_seconds`, the window has already expired and no tokens have been recorded yet in the new window. Return `False` immediately — the limit is not exceeded.
-2. Otherwise, return `current_tokens >= max_tokens`.
-
-Important: `is_exceeded()` does not mutate state. If the window has expired, it returns `False` without resetting the counters. The reset only happens in `record()`. This means a brief inconsistency is possible: `is_exceeded()` can return `False` (because the window expired) while `current_tokens` still holds the old value. The next call to `record()` will clear it.
-
-### 4.5 seconds_until_reset Calculation
-
-```
-seconds_until_reset() -> float
-```
-
-Returns the number of seconds remaining before the current window expires and the counter resets.
-
-Algorithm:
-1. `elapsed = time.time() - window_start`
-2. `remaining = window_seconds - elapsed`
-3. Return `max(0.0, remaining)`.
-
-If the window has already expired, this returns 0.0. It does not account for whether the limit is currently exceeded — it only reports time until the window boundary, regardless of `current_tokens`.
-
-### 4.6 Recording Tokens
-
-```
-record(tokens: int) -> None
-```
-
-Adds `tokens` to the current window's consumption counter, resetting the window first if it has expired. See section 4.3 for the full reset behavior.
-
----
-
-## 5. Interactions and Invariants
-
-- The `Scheduler` does not call `BudgetManager` methods directly. It replicates the target ratio and deficit arithmetic inline within the sort key closure. `BudgetManager` is a utility class intended for use elsewhere (e.g., reporting or hook logic).
-
-- The `Scheduler` does not interact with `RateLimitWindow` directly. Rate limit tracking is the responsibility of the orchestrator and agent adapter layers. The scheduler only sees the aggregate `project_token_usage` and `global_tokens_used` values after rate limits have already been factored into whether tasks are runnable.
+- Nothing in this subsystem tracks the provider's own rate limits. The scheduler only sees the aggregate `project_token_usage` and `global_tokens_used` values from the token ledger, which measure our recorded spend against hand-configured caps, not remaining quota.
 
 - `SchedulerState` is constructed fresh on every orchestrator tick. The scheduler never holds a reference to it between calls, so there is no risk of stale state.
 

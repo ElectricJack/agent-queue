@@ -1,21 +1,34 @@
 """Token budget management for fair resource allocation across projects.
 
-BudgetManager calculates target token ratios from per-project credit weights
-and tracks how far each project's actual usage deviates from its target (the
-"deficit score").  The Scheduler uses these deficit scores to decide which
-project should receive the next available agent -- the most under-served
-project wins.
+``BudgetManager`` holds the configured fleet-wide daily token budget and the
+arithmetic for fair-share allocation: target token ratios from per-project
+credit weights, and how far each project's actual usage deviates from its
+target (the "deficit score").  Keeping agent time proportional to credit
+weights over rolling windows is what stops a bursty project from starving the
+others.
 
-This keeps agent time proportional to credit weights over rolling windows,
-even when projects have bursty workloads.
+The orchestrator owns one instance (``Orchestrator.budget``).  It is the
+single source of truth for the global budget: the config-reload hook writes
+``global_budget`` here and ``Orchestrator._schedule`` reads it back into every
+``SchedulerState``, so a hot edit of ``global_token_budget_daily`` reaches the
+scheduler through this object.  The ratio/deficit helpers are not on that
+path -- ``Scheduler.schedule`` is a pure function over its snapshot and
+recomputes the same arithmetic inline in its sort key.
 
-See specs/scheduler-and-budget.md for the full specification.
+See docs/specs/scheduler-and-budget.md for the full specification.
 """
 
 from __future__ import annotations
 
 
 class BudgetManager:
+    # ``__slots__`` is the ratchet for the bug this class shipped with for
+    # months: the orchestrator's config-reload hook assigned
+    # ``_global_budget``, a name nothing reads, so a hot reload of
+    # ``global_token_budget_daily`` silently never arrived.  Any misspelled
+    # attribute is now an immediate AttributeError instead of dead state.
+    __slots__ = ("global_budget",)
+
     def __init__(self, global_budget: int | None = None):
         self.global_budget = global_budget
 

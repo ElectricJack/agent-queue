@@ -250,12 +250,15 @@ The 80% / 95% budget-warning helper in the orchestrator has no caller on
 
 | Module | Status on `main` |
 |---|---|
-| [`src/tokens/budget.py`](../../src/tokens/budget.py) (`BudgetManager`) | Constructed by the orchestrator from `global_token_budget_daily`, but no production caller reads its ratios, deficits or exhaustion predicates. The scheduler takes `global_budget` and `global_tokens_used` from config and the ledger directly. |
-| [`src/tokens/tracker.py`](../../src/tokens/tracker.py) (`RateLimitWindow`) | No production importer. |
+| [`src/tokens/budget.py`](../../src/tokens/budget.py) (`BudgetManager`) | The orchestrator's single instance (`Orchestrator.budget`) owns the configured `global_token_budget_daily`: `_on_config_reloaded` writes it and `_schedule` copies it into every `SchedulerState`, so the fleet cap is hot-reloadable. Its ratio / deficit / per-project helpers still have no production caller — `Scheduler.schedule` recomputes the same arithmetic inline (see [scheduler-and-budget](../specs/scheduler-and-budget.md) §4). |
 
-Both are covered by `tests/test_budget.py` and are documented here so nobody
-mistakes them for the live path. Treat their behaviour as unenforced until a
-caller appears.
+`src/tokens/tracker.py` (`RateLimitWindow`) was deleted: no production importer,
+no test, and it counted against a hand-configured cap rather than a provider's
+real quota. Provider headroom remains unstarted design work.
+
+`BudgetManager` is covered by `tests/test_budget.py`; the reload wiring by
+`tests/test_orchestrator.py::TestGlobalBudgetReload`. Treat everything on it
+*except* `global_budget` as unenforced until a caller appears.
 
 ## Configuration keys
 

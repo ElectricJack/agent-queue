@@ -1,4 +1,5 @@
 import asyncio
+import copy
 import os
 from unittest.mock import AsyncMock, MagicMock
 
@@ -2734,3 +2735,56 @@ class TestMergeConflictBlockedIsNotRecovered:
         await orch._check_defined_tasks()
 
         assert (await orch.db.get_task("t-epic.1")).status == TaskStatus.BLOCKED
+
+
+class TestGlobalBudgetReload:
+    """``global_token_budget_daily`` must survive a hot config reload.
+
+    The reload hook used to assign ``self.budget._global_budget``, a name
+    ``BudgetManager`` never reads, so an edit to the fleet-wide cap only took
+    effect on a daemon restart.
+    """
+
+    @staticmethod
+    def _reload_payload(orch, budget: int | None) -> dict:
+        # The watcher emits a *freshly loaded* AppConfig, not the object the
+        # orchestrator already holds, so copy rather than mutate in place --
+        # otherwise anything still reading ``self.config`` would see the new
+        # value for free and the test would prove nothing.
+        config = copy.deepcopy(orch.config)
+        config.global_token_budget_daily = budget
+        return {"config": config, "changed_sections": ["scheduling"]}
+
+    async def test_reload_updates_the_budget_manager(self, orch):
+        orch.budget.global_budget = 100_000
+
+        await orch._on_config_reloaded(self._reload_payload(orch, 250_000))
+
+        assert orch.budget.global_budget == 250_000
+
+    async def test_reload_can_clear_the_budget(self, orch):
+        """Removing the key means "no cap", not "keep the old cap"."""
+        orch.budget.global_budget = 100_000
+
+        await orch._on_config_reloaded(self._reload_payload(orch, None))
+
+        assert orch.budget.global_budget is None
+        assert orch.budget.is_global_budget_exhausted(10**9) is False
+
+    async def test_a_misspelled_budget_attribute_raises(self, orch):
+        """``__slots__`` keeps the original typo from silently reappearing."""
+        with pytest.raises(AttributeError):
+            orch.budget._global_budget = 1
+
+    async def test_reloaded_budget_reaches_the_scheduler(self, orch):
+        await _create_project_with_workspace(orch.db)
+
+        await orch._on_config_reloaded(self._reload_payload(orch, 777_000))
+        await orch._schedule()
+
+        assert orch._last_scheduler_state.global_budget == 777_000
+
+        await orch._on_config_reloaded(self._reload_payload(orch, None))
+        await orch._schedule()
+
+        assert orch._last_scheduler_state.global_budget is None
