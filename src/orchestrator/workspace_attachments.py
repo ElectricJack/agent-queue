@@ -13,12 +13,13 @@ from collections.abc import Callable
 
 from sqlalchemy import select, update
 
-from src.database.tables import agents, integration_branch_owners, sessions, workspaces
+from src.database.tables import agents, integration_branch_owners, sessions, tasks, workspaces
 from src.models import (
     AgentState,
     ResolvedRequirement,
     SYSTEM_KIND_SCOPE,
     Task,
+    TaskStatus,
     WorkspaceAttachment,
     WorkspaceAttachmentSet,
     WorkspaceKind,
@@ -74,7 +75,13 @@ async def mark_integration_handoff_released(
     workspace,
     task_id: str,
 ) -> bool:
-    """Atomically record detach proof and release the exact old DB lock."""
+    """Atomically record detach proof and release the exact old DB lock.
+
+    A stopped pool writer still has an active claim.  Its task claim must be
+    released in this transaction, after detach proof and before the slot can
+    be claimed by a successor.
+    """
+    claim_release = None
     async with db.immediate() as conn:
         session_row = (await conn.execute(select(sessions).where(
             sessions.c.id == owner.get("session_id")
@@ -93,6 +100,19 @@ async def mark_integration_handoff_released(
                 .with_for_update()
             )
         ).mappings().one_or_none()
+        agent_row = None
+        if (
+            session_row is not None
+            and session_row["lifecycle"] == "pool"
+            and session_row["agent_id"] is not None
+        ):
+            agent_row = (
+                await conn.execute(
+                    select(agents)
+                    .where(agents.c.id == session_row["agent_id"])
+                    .with_for_update()
+                )
+            ).mappings().one_or_none()
         if (
             owner_row is None
             or session_row is None
@@ -109,6 +129,15 @@ async def mark_integration_handoff_released(
             or session_row["project_id"] != workspace_row["project_id"]
             or workspace_row["locked_by_task_id"] != task_id
             or workspace_row["locked_by_agent_id"] != session_row["agent_id"]
+            or (
+                session_row["lifecycle"] == "pool"
+                and session_row["agent_id"] is not None
+                and (
+                    agent_row is None
+                    or agent_row["state"] != AgentState.BUSY.value
+                    or agent_row["current_task_id"] != task_id
+                )
+            )
         ):
             return False
 
@@ -130,21 +159,53 @@ async def mark_integration_handoff_released(
                 updated_at=time.time(),
             )
         )
-        released_workspace = await conn.execute(
-            update(workspaces)
-            .where(
-                workspaces.c.id == workspace.id,
-                workspaces.c.locked_by_task_id == task_id,
-                workspaces.c.locked_by_agent_id == session_row["agent_id"],
+        if released_owner.rowcount != 1:
+            raise RuntimeError("integration handoff release lost its compare-and-swap")
+
+        if session_row["lifecycle"] == "pool":
+            task_row = (
+                await conn.execute(
+                    select(tasks).where(tasks.c.id == task_id).with_for_update()
+                )
+            ).mappings().one_or_none()
+            if (
+                task_row is None
+                or task_row["status"] != TaskStatus.IN_PROGRESS.value
+                or task_row["assigned_agent_id"] != session_row["agent_id"]
+                or task_row["claim_epoch"] != session_row["last_claim_epoch"]
+            ):
+                raise RuntimeError("integration pool handoff claim changed before release")
+            claim_release = await db.release_claim(
+                session_row["id"],
+                task_status=TaskStatus.PAUSED,
+                context="integration_handoff",
+                now=time.time(),
+                expected_task_id=task_id,
+                expected_claim_epoch=session_row["last_claim_epoch"],
+                expected_task_status=TaskStatus.IN_PROGRESS,
+                release_workspace_lock=True,
+                conn=conn,
             )
-            .values(
-                locked_by_agent_id=None,
-                locked_by_task_id=None,
-                locked_at=None,
-                lock_mode=None,
+            if not claim_release.released:
+                raise RuntimeError("integration pool handoff claim release lost its fence")
+        else:
+            released_workspace = await conn.execute(
+                update(workspaces)
+                .where(
+                    workspaces.c.id == workspace.id,
+                    workspaces.c.locked_by_task_id == task_id,
+                    workspaces.c.locked_by_agent_id == session_row["agent_id"],
+                )
+                .values(
+                    locked_by_agent_id=None,
+                    locked_by_task_id=None,
+                    locked_at=None,
+                    lock_mode=None,
+                )
             )
-        )
-        if session_row["agent_id"] is not None:
+            if released_workspace.rowcount != 1:
+                raise RuntimeError("integration handoff release lost its compare-and-swap")
+        if session_row["lifecycle"] != "pool" and session_row["agent_id"] is not None:
             # The agent may have been legitimately rebound while external
             # stop/Git proof was in flight.  Release only the exact old
             # assignment; a missed CAS must not disturb its new task.
@@ -157,8 +218,8 @@ async def mark_integration_handoff_released(
                 )
                 .values(state=AgentState.IDLE.value, current_task_id=None)
             )
-        if released_owner.rowcount != 1 or released_workspace.rowcount != 1:
-            raise RuntimeError("integration handoff release lost its compare-and-swap")
+    if claim_release is not None:
+        await db._after_release(claim_release)
     return True
 
 
@@ -253,6 +314,163 @@ async def mark_integration_pool_handoff_released(
         )
         if released_owner.rowcount != 1:
             raise RuntimeError("integration pool handoff release lost its compare-and-swap")
+    return True
+
+
+async def mark_stopped_integration_pool_handoff_released(
+    db,
+    owner: dict,
+    *,
+    workspace,
+    session_instance_token: str,
+) -> bool:
+    """Release an exact, stopped pool claim without replaying its task transition.
+
+    A pool teardown can stop a process after its task lease expired and was
+    requeued. In that state ``release_claim`` is deliberately the wrong tool:
+    its normal READY transition would need to rediscover the old claim epoch,
+    and must never overwrite the successor claim. This is the narrow repair
+    for that stranded attachment. It requires the requeued task to still be
+    unassigned, the stopped session/retired worker/slot to be unchanged, and
+    no later session for that worker. It then releases only those old rows;
+    the task row (including its newer claim epoch) is left untouched.
+    """
+    async with db.immediate() as conn:
+        session_row = (await conn.execute(select(sessions).where(
+            sessions.c.id == owner.get("session_id")
+        ).with_for_update())).mappings().one_or_none()
+        owner_row = (
+            await conn.execute(
+                select(integration_branch_owners)
+                .where(integration_branch_owners.c.id == owner.get("id"))
+                .with_for_update()
+            )
+        ).mappings().one_or_none()
+        workspace_row = (
+            await conn.execute(
+                select(workspaces)
+                .where(workspaces.c.id == workspace.id)
+                .with_for_update()
+            )
+        ).mappings().one_or_none()
+        task_row = (
+            await conn.execute(
+                select(tasks)
+                .where(tasks.c.id == owner.get("owner_id"))
+                .with_for_update()
+            )
+        ).mappings().one_or_none()
+        agent_id = session_row["agent_id"] if session_row is not None else None
+        agent_row = (
+            await conn.execute(select(agents).where(agents.c.id == agent_id).with_for_update())
+            if agent_id
+            else None
+        )
+        agent_row = agent_row.mappings().one_or_none() if agent_row is not None else None
+        newer_session = None
+        if session_row is not None and agent_id:
+            newer_session = (
+                await conn.execute(
+                    select(sessions.c.id)
+                    .where(
+                        sessions.c.agent_id == agent_id,
+                        sessions.c.id != session_row["id"],
+                        sessions.c.started_at >= session_row["started_at"],
+                    )
+                    .limit(1)
+                )
+            ).scalar_one_or_none()
+
+        if (
+            owner_row is None
+            or session_row is None
+            or workspace_row is None
+            or task_row is None
+            or agent_row is None
+            or newer_session is not None
+            or owner_row["fence_token"] != owner.get("fence_token")
+            or owner_row["owner_id"] != owner.get("owner_id")
+            or owner_row["owner_role"] != owner.get("owner_role")
+            or owner_row["handoff_state"] != "handoff_pending"
+            or owner_row["session_id"] != session_row["id"]
+            or owner_row["workspace_id"] != workspace.id
+            or session_row["lifecycle"] != "pool"
+            or session_row["instance_token"] != session_instance_token
+            or session_row["state"] != "stopped"
+            or session_row["desired_state"] != "stopped"
+            or session_row["task_id"] != owner_row["owner_id"]
+            or session_row["work_dir"] != workspace_row["workspace_path"]
+            or workspace_row["locked_by_task_id"] != owner_row["owner_id"]
+            or workspace_row["locked_by_agent_id"] != agent_id
+            or task_row["status"] != "READY"
+            or task_row["assigned_agent_id"] is not None
+            or agent_row["state"] != AgentState.RETIRED.value
+            or agent_row["current_task_id"] != owner_row["owner_id"]
+        ):
+            return False
+
+        released_owner = await conn.execute(
+            update(integration_branch_owners)
+            .where(
+                integration_branch_owners.c.id == owner_row["id"],
+                integration_branch_owners.c.fence_token == owner_row["fence_token"],
+                integration_branch_owners.c.owner_id == owner_row["owner_id"],
+                integration_branch_owners.c.handoff_state == "handoff_pending",
+                integration_branch_owners.c.session_id == session_row["id"],
+                integration_branch_owners.c.workspace_id == workspace.id,
+            )
+            .values(
+                handoff_state="released",
+                session_id=None,
+                workspace_id=None,
+                confirmed_workspace_id=workspace.id,
+                updated_at=time.time(),
+            )
+        )
+        released_workspace = await conn.execute(
+            update(workspaces)
+            .where(
+                workspaces.c.id == workspace.id,
+                workspaces.c.locked_by_task_id == owner_row["owner_id"],
+                workspaces.c.locked_by_agent_id == agent_id,
+            )
+            .values(
+                locked_by_agent_id=None,
+                locked_by_task_id=None,
+                locked_at=None,
+                lock_mode=None,
+            )
+        )
+        released_session = await conn.execute(
+            update(sessions)
+            .where(
+                sessions.c.id == session_row["id"],
+                sessions.c.instance_token == session_instance_token,
+                sessions.c.task_id == owner_row["owner_id"],
+                sessions.c.state == "stopped",
+                sessions.c.desired_state == "stopped",
+            )
+            .values(
+                task_id=None,
+                claim_phase=None,
+                claim_phase_at=None,
+                last_claim_result="stale_handoff_recovered",
+            )
+        )
+        released_agent = await conn.execute(
+            update(agents)
+            .where(
+                agents.c.id == agent_id,
+                agents.c.state == AgentState.RETIRED.value,
+                agents.c.current_task_id == owner_row["owner_id"],
+            )
+            .values(state=AgentState.IDLE.value, current_task_id=None)
+        )
+        if any(
+            result.rowcount != 1
+            for result in (released_owner, released_workspace, released_session, released_agent)
+        ):
+            raise RuntimeError("stopped pool integration handoff lost its compare-and-swap")
     return True
 
 
@@ -396,6 +614,7 @@ async def detach_workspace_for_integration_handoff(
 
     checkout = workspace.workspace_path
     mutex_path = mutex_path or checkout
+    expected_branch = expected_branch.removeprefix("refs/heads/")
     branch_ref = f"refs/heads/{expected_branch}"
     remote_ref = f"refs/remotes/origin/{expected_branch}"
     async with git_mutex(mutex_path):

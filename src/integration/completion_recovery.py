@@ -89,6 +89,9 @@ async def reconcile_closed_integration_owners(
         or project.hierarchical_integration_draining
     ):
         return []
+    recovered = []
+    if not ready_only:
+        recovered = await recover_completed_pool_claims(orch, project_id)
     eligible_statuses = ["READY"] if ready_only else ["READY", "COMPLETED", "BLOCKED", "FAILED", "PAUSED"]
     owners = integration_branch_owners
     async with db._engine.connect() as conn:
@@ -111,7 +114,7 @@ async def reconcile_closed_integration_owners(
             .mappings()
             .all()
         )
-    released = []
+    released = list(recovered)
     for owner in rows:
         session = await db.get_session(owner["session_id"]) if owner["session_id"] else None
         workspace = await db.get_workspace(owner["workspace_id"]) if owner["workspace_id"] else None
@@ -129,6 +132,33 @@ async def reconcile_closed_integration_owners(
             or os.path.realpath(session.work_dir) != os.path.realpath(workspace.workspace_path)
         ):
             continue
+        # An expired pool claim can still have its original task/workspace
+        # attachment. Let the same public confirmer recover that exact
+        # stopped writer; it has the stronger CAS that refuses a reused
+        # worker, workspace, or successor claim. The older reconciliation
+        # below remains for already-released pool claims (task_id is None).
+        if session.lifecycle == "pool" and session.task_id == owner["owner_id"]:
+            confirmer = getattr(orch, "aconfirm_integration_owner_handoff", None)
+            if confirmer is not None:
+                try:
+                    from src.integration.models import BranchKey, Fence
+                    from src.integration.ownership import BranchOwnership
+
+                    ownership = BranchOwnership(db, confirm_handoff=confirmer)
+                    confirmed = await ownership.confirm_transfer(Fence(
+                        target=BranchKey(repository_id=owner["repository_id"], branch=owner["ref"]),
+                        owner_id=owner["owner_id"], token=int(owner["fence_token"]),
+                    ))
+                    if confirmed["handoff_state"] == "released":
+                        released.append(owner["owner_id"])
+                        continue
+                except Exception:
+                    logger.warning(
+                        "Could not confirm stopped pool integration owner %s",
+                        owner["owner_id"],
+                        exc_info=True,
+                    )
+                    continue
         try:
             provider = orch.session_providers.create(session.provider, orch.config)
             if not await provider.confirm_stopped(
@@ -303,6 +333,52 @@ async def reconcile_closed_integration_owners(
     return released
 
 
+async def recover_completed_pool_claims(orch, project_id: str) -> list[str]:
+    """Public recovery for a terminal pool close interrupted before cleanup.
+
+    This deliberately discovers only attached or handoff-pending owners. A released owner,
+    a successor claim, or an ordinary completed task is not evidence that an
+    operator may touch a pool session.  The orchestrator method repeats all
+    identity, liveness, Git, and release fences before making any change.
+    """
+    db = orch.db
+    project = await db.get_project(project_id)
+    if (
+        project is None
+        or project.hierarchical_integration_mode not in {"hierarchy", "train"}
+        or project.hierarchical_integration_draining
+        or not project.integration_repository_id
+    ):
+        return []
+    recover = getattr(orch, "arecover_completed_integration_pool_claim", None)
+    if recover is None:
+        return []
+    async with db._engine.connect() as conn:
+        candidates = (
+            await conn.execute(
+                select(tasks.c.id.label("task_id"), sessions.c.id.label("session_id"))
+                .join(integration_branch_owners, integration_branch_owners.c.owner_id == tasks.c.id)
+                .join(sessions, sessions.c.id == integration_branch_owners.c.session_id)
+                .where(
+                    tasks.c.project_id == project_id,
+                    tasks.c.status == TaskStatus.COMPLETED.value,
+                    tasks.c.repo_id == project.integration_repository_id,
+                    integration_branch_owners.c.repository_id == project.integration_repository_id,
+                    integration_branch_owners.c.owner_role.in_(["worker", "repair"]),
+                    integration_branch_owners.c.handoff_state.in_(["attached", "handoff_pending"]),
+                    sessions.c.lifecycle == "pool",
+                )
+            )
+        ).mappings().all()
+    recovered = []
+    for candidate in candidates:
+        task = await db.get_task(candidate["task_id"])
+        session = await db.get_session(candidate["session_id"])
+        if await recover(task, session):
+            recovered.append(task.id)
+    return recovered
+
+
 async def recover_completed_pr_links(db, promotion, project_id: str) -> list[str]:
     """An explicit flush repairs exact root PR links lost by older close paths.
 
@@ -358,10 +434,14 @@ async def recover_completed_pr_links(db, promotion, project_id: str) -> list[str
     resolved = await promotion._resolve_repository(project.integration_repository_id)
     await promotion._ensure_retained_repository(resolved)
     recovered = []
+    # Git observations precede SQL locking: origin materialization takes the
+    # project lock before the repository lock, so retaining the latter while
+    # waiting for SQL here would deadlock filing and the integration sweep.
     async with promotion.git.arepository_transaction(str(resolved.retained_git_dir)):
         await promotion._fetch_all_heads(resolved.retained_git_dir)
-        for row in rows:
-            try:
+    for row in rows:
+        try:
+            async with promotion.git.arepository_transaction(str(resolved.retained_git_dir)):
                 checkout = str(resolved.retained_git_dir)
                 remote = await promotion.git.als_remote_ref(checkout, row["branch_name"])
                 if (
@@ -381,46 +461,46 @@ async def recover_completed_pr_links(db, promotion, project_id: str) -> list[str
                     or identity.base_ref != resolved.repo.default_branch
                 ):
                     continue
-                async with db.immediate() as conn:
-                    await db.lock_hierarchy_project(conn, project_id)
-                    current_project = (
-                        (await conn.execute(select(projects).where(projects.c.id == project_id)))
-                        .mappings()
-                        .one()
+            async with db.immediate() as conn:
+                await db.lock_hierarchy_project(conn, project_id)
+                current_project = (
+                    (await conn.execute(select(projects).where(projects.c.id == project_id)))
+                    .mappings()
+                    .one()
+                )
+                if (
+                    current_project["hierarchical_integration_mode"] != "train"
+                    or current_project["hierarchical_integration_draining"]
+                    or current_project["integration_repository_id"]
+                    != project.integration_repository_id
+                ):
+                    break
+                current_head = (
+                    select(cp.c.task_id)
+                    .where(
+                        cp.c.task_id == row["id"],
+                        cp.c.checkpoint_sha == remote.oid,
+                        cp.c.generation == row["generation"],
+                        cp.c.version == row["version"],
                     )
-                    if (
-                        current_project["hierarchical_integration_mode"] != "train"
-                        or current_project["hierarchical_integration_draining"]
-                        or current_project["integration_repository_id"]
-                        != project.integration_repository_id
-                    ):
-                        break
-                    current_head = (
-                        select(cp.c.task_id)
-                        .where(
-                            cp.c.task_id == row["id"],
-                            cp.c.checkpoint_sha == remote.oid,
-                            cp.c.generation == row["generation"],
-                            cp.c.version == row["version"],
-                        )
-                        .exists()
+                    .exists()
+                )
+                changed = await conn.execute(
+                    update(tasks)
+                    .where(
+                        tasks.c.id == row["id"],
+                        tasks.c.project_id == project_id,
+                        tasks.c.repo_id == project.integration_repository_id,
+                        tasks.c.branch_name == row["branch_name"],
+                        tasks.c.parent_task_id.is_(None),
+                        tasks.c.status == TaskStatus.COMPLETED.value,
+                        missing,
+                        current_head,
                     )
-                    changed = await conn.execute(
-                        update(tasks)
-                        .where(
-                            tasks.c.id == row["id"],
-                            tasks.c.project_id == project_id,
-                            tasks.c.repo_id == project.integration_repository_id,
-                            tasks.c.branch_name == row["branch_name"],
-                            tasks.c.parent_task_id.is_(None),
-                            tasks.c.status == TaskStatus.COMPLETED.value,
-                            missing,
-                            current_head,
-                        )
-                        .values(pr_url=url)
-                    )
-                    if changed.rowcount:
-                        recovered.append(row["id"])
-            except Exception:
-                logger.warning("Could not recover integration PR for %s", row["id"], exc_info=True)
+                    .values(pr_url=url)
+                )
+                if changed.rowcount:
+                    recovered.append(row["id"])
+        except Exception:
+            logger.warning("Could not recover integration PR for %s", row["id"], exc_info=True)
     return recovered
