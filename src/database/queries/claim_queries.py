@@ -30,6 +30,7 @@ from src.database.queries.task_queries import (
 from src.database.tables import (
     agents,
     integration_branch_owners,
+    integration_repair_stages,
     sessions,
     task_metadata,
     task_workspace_requirements,
@@ -53,6 +54,16 @@ def _frontier_where(project_id: str):
         # (Invariant 6) and its live session would block the settlement it
         # waits for (calm-ember-48).
         ~container_flag_exists(),
+        # A repair delegate belongs to one exact active stage.  When that
+        # stage expires, the task row can still be READY until cleanup runs;
+        # it must not be offered to a pool worker in that gap.
+        ~exists(
+            select(literal(1)).where(
+                integration_repair_stages.c.repair_task_id == tasks.c.id,
+                integration_repair_stages.c.writer_kind == "repair_delegate",
+                integration_repair_stages.c.state.notin_(("active", "awaiting_completion")),
+            )
+        ),
     )
 
 
@@ -320,6 +331,15 @@ class ClaimQueryMixin:
                 tasks.c.status == TaskStatus.READY.value,
                 tasks.c.is_blocked == 0,
                 tasks.c.assigned_agent_id.is_(None),
+                ~exists(
+                    select(literal(1)).where(
+                        integration_repair_stages.c.repair_task_id == tasks.c.id,
+                        integration_repair_stages.c.writer_kind == "repair_delegate",
+                        integration_repair_stages.c.state.notin_(
+                            ("active", "awaiting_completion")
+                        ),
+                    )
+                ),
             ),
             extra_values={"claim_epoch": tasks.c.claim_epoch + 1},
             returning=True,

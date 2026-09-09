@@ -292,6 +292,39 @@ class TestFullPullLoop:
         assert res2["result"] == "claimed"
         assert res2["task"]["id"] != claimed_first
 
+    async def test_prepare_failure_abandoned_loop_is_recycled_for_next_ready_task(
+        self, orch, db, handler
+    ):
+        """A failed prepare cannot consume the sole idle worker indefinitely."""
+        await single_worker_pool(db)
+        await ready(db, "broken", priority=1)
+        await ready(db, "next", priority=100)
+        await orch._reconcile_pools()
+        first = await only_pool_session(db)
+        reset = orch._worktree_slots.return_value.reset_slot_for_task
+        reset.side_effect = [RuntimeError("repair checkout cannot be prepared"), "aq/next"]
+
+        failed = await scoped(handler, first.id)._cmd_task_claim({"next": True})
+        assert failed["result"] == "prepare_failed"
+        assert await db.get_task_meta("broken", "needs_attention") == "slot_reset_failed"
+        assert await db.get_task_meta("broken", "claim_prepare_backoff_until") > time.time()
+
+        # No subsequent claim reached the daemon.  Simulate the stale pane
+        # observation that distinguishes this from a worker in its normal
+        # 60-second long poll.
+        stale_at = time.time() - 1_000
+        provider = orch.session_providers.create("fake", orch.config)
+        provider.sessions[first.name].activity = stale_at
+        await db.update_session(first.id, last_activity=stale_at)
+        await orch.session_reconciler.tick(now=time.time())
+        assert (await db.get_session(first.id)).state == "stopped"
+
+        await orch._reconcile_pools()
+        second = await only_pool_session(db)
+        assert second.id != first.id
+        claimed = await scoped(handler, second.id)._cmd_task_claim({"next": True})
+        assert (claimed["result"], claimed["task"]["id"]) == ("claimed", "next")
+
     async def test_no_ready_work_then_scale_down_after_grace(self, orch, db, handler):
         # ``fresh_context_per_task`` caps the session at one claim and drains
         # it on close; turning it off is what leaves an *idle* session behind
