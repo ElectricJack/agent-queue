@@ -853,9 +853,10 @@ class TestEndToEndOnFakeProvider:
         under a green test.
         """
         from src.orchestrator.execution import ExecutionMixin
+        from src.orchestrator.git_ops import GitOpsMixin
         from src.orchestrator.workspace import WorkspaceMixin
 
-        class _Orch(ExecutionMixin, WorkspaceMixin, _StubOrchestrator):
+        class _Orch(ExecutionMixin, WorkspaceMixin, GitOpsMixin, _StubOrchestrator):
             #: Pipeline verdict the next close should see: (pr_url, ok).
             pipeline_result = (None, True)
 
@@ -1737,7 +1738,7 @@ class TestEndToEndOnFakeProvider:
     ):
         from unittest.mock import AsyncMock
 
-        from src.models import PhaseResult
+        from src.git.manager import RemoteRefState
 
         wd = await self._setup(db, tmp_path)
         await self._enable_hierarchy_launch(db, tmp_path)
@@ -1763,19 +1764,26 @@ class TestEndToEndOnFakeProvider:
         )
         session = await db.get_session_for_task("t1")
         head = "b" * 40
-        real_orch.git = _handoff_git(head)
-        monkeypatch.setattr(
-            real_orch,
-            "_phase_verify",
-            AsyncMock(return_value=PhaseResult.CONTINUE),
-            raising=False,
-        )
         monkeypatch.setattr(real_orch, "_phase_integrate", AsyncMock(), raising=False)
-        async def exact_checkpoint(_db, _git, _task, _repo, requested):
-            return requested
 
-        monkeypatch.setattr(
-            "src.integration.hierarchy.verify_workspace_checkpoint", exact_checkpoint
+        async def git_run(args, *, cwd):
+            assert cwd == wd
+            if args == ["status", "--porcelain"]:
+                return ""
+            if args == ["rev-parse", "HEAD"]:
+                return head
+            raise AssertionError(f"unexpected producer Git command: {args!r}")
+
+        real_orch.git = SimpleNamespace(
+            avalidate_checkout=AsyncMock(return_value=True),
+            ahas_remote=AsyncMock(return_value=True),
+            aget_current_branch=AsyncMock(return_value="aq/t1"),
+            als_remote_ref=AsyncMock(
+                return_value=SimpleNamespace(state=RemoteRefState.PRESENT, oid=head)
+            ),
+            areserved_paths_in_diff=AsyncMock(return_value=[]),
+            afind_open_pr=AsyncMock(),
+            _arun=git_run,
         )
         close = await real_handler.execute(
             "task_close",
@@ -1794,6 +1802,10 @@ class TestEndToEndOnFakeProvider:
         origin = await db.get_task_branch_origin_for_promotion("t1", "repo")
         assert origin["base_sha"] == "a" * 40
         real_orch._phase_integrate.assert_not_awaited()
+        real_orch.git.afind_open_pr.assert_not_awaited()
+        real_orch.git.areserved_paths_in_diff.assert_awaited_once_with(
+            wd, "refs/remotes/origin/main", "refs/heads/aq/t1"
+        )
 
     async def test_managed_parent_close_suspends_owned_branch_without_legacy_integrate(
         self, db, real_orch, real_handler, provider, tmp_path, monkeypatch
@@ -1989,6 +2001,127 @@ class TestEndToEndOnFakeProvider:
             "state"
         ] == "completed"
         real_orch._phase_integrate.assert_not_awaited()
+
+    async def test_branchless_verifier_close_proves_aggregate_without_pr_to_main(
+        self, db, real_orch, real_handler, provider, tmp_path
+    ):
+        """The real close dispatch uses the verifier proof, not ``_phase_verify``.
+
+        This deliberately supplies a Git double with no ordinary PR result:
+        the close must validate the fenced, pushed parent branch, preserve the
+        reserved-path inspection, and complete the parent through its guarded
+        generation/evidence path without looking for a PR to ``main``.
+        """
+        from unittest.mock import AsyncMock
+
+        from src.git.manager import RemoteRefState
+        from src.integration.hierarchy import HierarchyIntegration
+        from src.integration.parent_completion import ParentCompletion
+
+        wd = await self._setup(db, tmp_path)
+        ownership, worker_fence = await self._enable_hierarchy_launch(db, tmp_path)
+        await self._install_hierarchy_policy(db)
+        head = "a" * 40
+        async with db.immediate() as conn:
+            await conn.execute(
+                task_integration_checkpoints.insert().values(
+                    task_id="t1",
+                    repository_id="repo",
+                    branch="aq/t1",
+                    checkpoint_sha=head,
+                    generation=0,
+                    state="working",
+                    version=0,
+                    updated_at=time.time(),
+                )
+            )
+        hierarchy = HierarchyIntegration(
+            db,
+            default_head_resolver=lambda _repo, _branch: head,
+            checkpoint_verifier=lambda _task, _repo, requested: requested,
+        )
+        checkpointed = await hierarchy.checkpoint_parent("t1", head, 0)
+        await db.transition_task("t1", TaskStatus.PAUSED, assigned_agent_id=None)
+        completion = ParentCompletion(db)
+        async with db.immediate() as conn:
+            ready = await completion.mark_ready_on(conn, "t1")
+        assert ready["state"] == "integration_ready"
+        operation = await db.get_active_parent_integration_operation("t1")
+        verifier_id = operation["verifier_task_id"]
+        assert verifier_id
+
+        collector = await ownership.transfer(worker_fence, operation["id"], "collector")
+        verifier_fence = await ownership.transfer(collector, verifier_id, "verifier")
+        assert (await hierarchy.wake_verifier("t1", verifier_fence))["outcome"] == "woken"
+        await db.transition_task(verifier_id, TaskStatus.IN_PROGRESS, assigned_agent_id="a1")
+        await db.update_workspace("ws1", locked_by_agent_id="a1", locked_by_task_id=verifier_id)
+        session = await _make_session(
+            db, provider, sid="verifier-session", task_id=verifier_id
+        )
+
+        async with db.immediate() as conn:
+            await conn.execute(
+                integration_check_evidence.insert().values(
+                    id="aggregate-check",
+                    operation_id=checkpointed["operation_id"],
+                    parent_task_id="t1",
+                    parent_generation=0,
+                    parent_head_sha=head,
+                    producer_id="forge-observer",
+                    workflow_id="workflow",
+                    run_id="run",
+                    attempt=1,
+                    required_check_version="parent-v1",
+                    checks={"unit": "success"},
+                    conclusion="success",
+                    classification="conclusive",
+                    observed_at=2.0,
+                )
+            )
+        assert (await completion.verify_parent("t1", 0, head, ["aggregate-check"]))[
+            "outcome"
+        ] == "verified"
+
+        async def git_run(args, *, cwd):
+            assert cwd == wd
+            if args in (
+                ["status", "--porcelain"],
+                ["rev-parse", "HEAD"],
+            ):
+                return "" if args[0] == "status" else head
+            raise AssertionError(f"unexpected verifier Git command: {args!r}")
+
+        real_orch.git = SimpleNamespace(
+            avalidate_checkout=AsyncMock(return_value=True),
+            ahas_remote=AsyncMock(return_value=True),
+            aget_current_branch=AsyncMock(return_value="aq/t1"),
+            als_remote_ref=AsyncMock(
+                return_value=SimpleNamespace(state=RemoteRefState.PRESENT, oid=head)
+            ),
+            areserved_paths_in_diff=AsyncMock(return_value=[]),
+            afind_open_pr=AsyncMock(),
+            _arun=git_run,
+        )
+        close = await real_handler.execute(
+            "task_close",
+            {
+                "task_id": verifier_id,
+                "session_id": session.id,
+                "outcome": "pass",
+                "work_outcome": "shipped",
+                "summary": "aggregate verified",
+            },
+        )
+
+        assert close["success"] is True
+        assert close["status"] == "COMPLETED"
+        assert (await db.get_task("t1")).status is TaskStatus.COMPLETED
+        assert (await db.get_task(verifier_id)).status is TaskStatus.COMPLETED
+        assert (await db.get_integration_operation(operation["id"]))["state"] == "completed"
+        real_orch.git.afind_open_pr.assert_not_awaited()
+        real_orch.git.areserved_paths_in_diff.assert_awaited_once_with(
+            wd, "refs/remotes/origin/main", "refs/heads/aq/t1"
+        )
 
     async def test_hierarchy_transfer_cannot_pass_provider_start_exclusion(
         self, db, real_orch, provider, tmp_path, monkeypatch

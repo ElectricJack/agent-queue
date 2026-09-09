@@ -1325,10 +1325,12 @@ class ExecutionMixin:
                     repair_writer_closed = True
                 elif verifier_operation is not None:
                     # A branchless verifier owns no source branch and must
-                    # never enter the legacy direct/main integration path.
-                    # It may close only after it has used the guarded parent
-                    # completion command successfully.
-                    result = await self._phase_verify(ctx)
+                    # never enter the legacy direct/main or PR verification
+                    # path.  Its dedicated proof checks the exact fenced
+                    # parent checkout and completes that parent atomically.
+                    result = await self._phase_verify_aggregate_verifier(
+                        ctx, verifier_operation
+                    )
                     completed_ok = result not in (PhaseResult.STOP, PhaseResult.ERROR)
                     parent = await self.db.get_task(verifier_operation["parent_task_id"])
                     if completed_ok and (
@@ -1342,20 +1344,19 @@ class ExecutionMixin:
                         ctx.verification_feedback = ctx.verification_issues[0]
                 elif managed_parent or hierarchy_managed:
                     # A managed parent is a source-branch producer, not a
-                    # legacy container merge.  Verify only the clean pushed
-                    # owned branch, then durably suspend its collection
-                    # episode.  Child promotion and aggregate verification
-                    # are separate fenced phases.
-                    result = await self._phase_verify(ctx)
+                    # legacy PR/main delivery.  Verify only its clean,
+                    # pushed, owned branch, then durably suspend its
+                    # collection episode.  Child promotion and aggregate
+                    # verification are separate fenced phases.
+                    if checkpoint is None:
+                        raise HierarchyError("invariant_error", "managed parent has no checkpoint")
+                    result = await self._phase_verify_hierarchy_producer(ctx, checkpoint)
                     completed_ok = result not in (PhaseResult.STOP, PhaseResult.ERROR)
                     if completed_ok:
                         from src.integration.hierarchy import (
                             HierarchyIntegration,
                             verify_workspace_checkpoint,
                         )
-
-                        if checkpoint is None:
-                            raise HierarchyError("invariant_error", "managed parent has no checkpoint")
 
                         async def verify_checkpoint(task_row, repo_row, head):
                             return await verify_workspace_checkpoint(
