@@ -253,6 +253,13 @@ async def test_leaf_close_review_hook_and_delivery_promote_command_end_to_end(
         )
     )
 
+    # The leaf worker holds the durable fence on its own delivery branch —
+    # the managed-producer verify path proves ownership, not just the origin
+    # row the shared fixture seeds.
+    await BranchOwnership(db).acquire(
+        BranchKey(repository_id="repo", branch="aq/leaf"), "leaf", "worker"
+    )
+
     handler = await command_handler_factory()
     await handler.orchestrator.db.close()
     handler.orchestrator.db = db
