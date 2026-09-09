@@ -867,3 +867,28 @@ the retired plugin-log command. Final epic acceptance remains pending `.13`.
 Task `stark-cascade` records the manual replay hydration/partial-failure
 reporting defect exposed during the missing-review recovery, with scoped
 public-command regressions and normal AQ delivery required.
+
+### 2026-09-09 — exact-green retry rollout and remaining publication blocker
+
+Operator merge `6990d853` includes `sharp-glacier` source `76242c6e` and a
+combined-tree correction: candidate replay activates the original budget only
+at stage zero, retaining stage one's frozen start, deadline and attempts.
+The first area run caught two failures (313 passed); after correcting replay
+and cancellation-order assertions, all 315 CI/repair/control/promotion/service/
+candidate tests passed in 97.84 seconds. Ruff and whitespace checks passed.
+Evidence: `/tmp/aq-green-retry-final-tests.log`. Source is published at
+`aq/operator-green-ci-retry-20260909`; daemon PID1058647 loaded it.
+
+Public resume of Matter batch `integration-batch-b5798e8c7f47c25214349df9e0b5567b`
+succeeded at stage one with deadline 1788958575.1058476. A public transfer
+returned its unattached repair reservation from fence4 to collector fence5.
+Rebuild then progressed beyond stale mutation identity / initial-stage replay
+and failed with `GitHub CLI request failed` during candidate publication.
+PR9 is CLOSED at `7a39e65a5321f0e6c7864068703d29940b2f117c`, the prior no-op
+candidate head. `sharp-glacier` was reopened with this exact remaining case
+and a required provider/publication regression. This batch is not delivered.
+
+`bright-grove` was also reopened because its passing close reported tests
+blocked before execution; its claim/pool changes require focused PostgreSQL
+tests and the isolated swarm before rollout. Discord lifecycle `.10` and
+Matter protocol `.1` completed; review and aggregate acceptance remain open.
