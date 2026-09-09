@@ -307,3 +307,104 @@ class TestAdapterHealthMethods:
         adapter = NullMessagingAdapter(MagicMock(), MagicMock())
         assert adapter.get_command_handler() is None
         assert adapter.get_supervisor() is None
+
+
+# ---------------------------------------------------------------------------
+# Plan viewer task id validation
+# ---------------------------------------------------------------------------
+
+
+async def _get_plan(task_id: str, *, content: str | None = "# Plan\n"):
+    """Call GET /plans/{task_id} against a router-only app with a stub provider."""
+    from fastapi import FastAPI
+    from httpx import ASGITransport, AsyncClient
+
+    from src.api import dependencies as deps
+    from src.api.health import router
+
+    seen: list[str] = []
+
+    async def provider(requested: str) -> str | None:
+        seen.append(requested)
+        return content
+
+    old_prov = deps._plan_content_provider
+    deps._plan_content_provider = provider
+    try:
+        app = FastAPI()
+        app.include_router(router)
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            resp = await client.get(f"/plans/{task_id}")
+    finally:
+        deps._plan_content_provider = old_prov
+
+    return resp, seen
+
+
+class TestPlanViewerTaskIds:
+    """The plan viewer must accept hierarchical ids without opening a traversal."""
+
+    @pytest.mark.asyncio
+    async def test_root_task_id_is_served(self):
+        """A root id (``adjective-noun``) reaches the provider and renders."""
+        resp, seen = await _get_plan("solid-grove")
+
+        assert resp.status_code == 200
+        assert seen == ["solid-grove"]
+
+    @pytest.mark.asyncio
+    async def test_hierarchical_task_id_is_served(self):
+        """``<parent>.<ordinal>`` is a real task id, not an invalid one."""
+        resp, seen = await _get_plan("solid-grove.13")
+
+        assert resp.status_code == 200
+        assert seen == ["solid-grove.13"]
+        assert "solid-grove.13" in resp.text
+
+    @pytest.mark.asyncio
+    async def test_deeply_nested_task_id_is_served(self):
+        """Nesting is unbounded, so every dot-separated level is accepted."""
+        resp, seen = await _get_plan("solid-grove-42.13.2")
+
+        assert resp.status_code == 200
+        assert seen == ["solid-grove-42.13.2"]
+
+    @pytest.mark.asyncio
+    async def test_missing_plan_for_hierarchical_id_is_404(self):
+        """A well-formed child id with no plan row is 'not found', not 'invalid'."""
+        resp, seen = await _get_plan("solid-grove.13", content=None)
+
+        assert resp.status_code == 404
+        assert resp.json() == {"error": "plan not found"}
+        assert seen == ["solid-grove.13"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "task_id",
+        [
+            "solid-grove..13",
+            "..solid-grove",
+            ".solid-grove",
+            "solid-grove.",
+            "solid grove",
+            "solid-grove;13",
+        ],
+    )
+    async def test_malformed_task_ids_are_rejected(self, task_id: str):
+        """Dots are only a separator: an empty segment or a stray character is 400."""
+        resp, seen = await _get_plan(task_id)
+
+        assert resp.status_code == 400
+        assert resp.json() == {"error": "invalid task id"}
+        assert seen == []
+
+    @pytest.mark.parametrize(
+        "candidate",
+        ["..", "../etc/passwd", "solid-grove/../etc", "solid/grove", "solid-grove/", "", "."],
+    )
+    def test_pattern_rejects_traversal_shapes(self, candidate: str):
+        """Separators never make it through the allowlist, whatever routing does first."""
+        from src.api.health import _TASK_ID_RE
+
+        assert _TASK_ID_RE.match(candidate) is None
