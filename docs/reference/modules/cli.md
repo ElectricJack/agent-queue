@@ -154,9 +154,9 @@ context. They are covered where their behaviour is explained.
 | [src/prime/templates/hooks/codex.json](../../../src/prime/templates/hooks/codex.json) | The Codex harness hook file: both sub-agent events. | [cli/prime.md](../cli/prime.md) |
 | [src/skills/aq-cli/SKILL.md](../../../src/skills/aq-cli/SKILL.md) | Orients an agent in the command surface and how to get detail on a command. | [cli/agent-tools.md](../cli/agent-tools.md) |
 | [src/skills/aq-tasks/SKILL.md](../../../src/skills/aq-tasks/SKILL.md) | Explains the task lifecycle from a worker's seat. | [cli/agent-tools.md](../cli/agent-tools.md) |
-| [src/skills/aq-comms/SKILL.md](../../../src/skills/aq-comms/SKILL.md) | Explains messages, the inbox and reporting a blocker. Carries a stale inbox-hook claim — ledger entry 9. | [cli/agent-tools.md](../cli/agent-tools.md) |
+| [src/skills/aq-comms/SKILL.md](../../../src/skills/aq-comms/SKILL.md) | Explains messages, the inbox and reporting a blocker. | [cli/agent-tools.md](../cli/agent-tools.md) |
 | [src/skills/aq-workspaces-and-git/SKILL.md](../../../src/skills/aq-workspaces-and-git/SKILL.md) | Explains the assigned worktree, its branch, and committing, pushing and opening a PR. | [cli/agent-tools.md](../cli/agent-tools.md) |
-| [src/skills/aq-playbooks-and-gates/SKILL.md](../../../src/skills/aq-playbooks-and-gates/SKILL.md) | Explains inspecting a paused run and resolving a human gate. Carries a stale default-pipeline claim — ledger entry 8. | [cli/agent-tools.md](../cli/agent-tools.md) |
+| [src/skills/aq-playbooks-and-gates/SKILL.md](../../../src/skills/aq-playbooks-and-gates/SKILL.md) | Explains inspecting a paused run, resolving a human gate, and what the shipped default pipeline does. | [cli/agent-tools.md](../cli/agent-tools.md) |
 
 ## Code-adjacent notes
 

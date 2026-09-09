@@ -22,9 +22,13 @@ aq message list --thread-id dashboard:<pid>   # filter to a chat thread
 ```
 
 Every session that starts with a bearer token gets an automatic inbox.
-The `aq inbox --inject` hook the Claude harness runs at every prompt
-boundary rendering pending messages inline — you don't usually need to
-poll `aq message inbox` manually.
+Nothing renders it at every prompt boundary: the `UserPromptSubmit` hook
+that ran `aq inbox --inject` was removed on 2026-08-27. Pending messages
+reach you when `aq prime` runs (start, resume, post-compact) and through
+the cascade's nudge, which types them into the session once it goes idle.
+`aq inbox --inject` is still a supported command, so run it yourself when
+you want the queue rendered inline mid-task; `aq message inbox` is the
+same queue as data.
 
 ## Send
 
@@ -120,9 +124,10 @@ See `docs/guides/escalations.md` for the full model.
   lose them.
 - Delivery is per-`to_kind` (session / task / user). The daemon retries
   transient failures.
-- If a session is asleep when a message arrives, the message parks. When
-  the session wakes, `aq inbox --inject` (hook) or `aq prime` (manual)
-  renders parked messages inline.
+- If a session is asleep or mid-turn when a message arrives, the message
+  parks. It is rendered when the session next primes, or when the
+  cascade nudges the idle session; `aq inbox --inject` renders the same
+  parked messages on demand. No hook injects them at a prompt boundary.
 - Chat messages between the dashboard and a supervisor session use the
   thread id `dashboard:<project_id>` — filter by that thread id when
   you want to see the current live chat.
