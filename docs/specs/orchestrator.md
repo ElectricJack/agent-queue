@@ -157,7 +157,7 @@ The constructor creates all sub-objects but performs no I/O:
 | `config` | `AppConfig` | Full application config |
 | `db` | `Database` | SQLite persistence layer |
 | `bus` | `EventBus` | In-process pub/sub |
-| `budget` | `BudgetManager` | Global daily token budget |
+| `budget` | `BudgetManager` | Global daily token budget; the reload target for `global_token_budget_daily` and the value `_schedule` puts in `SchedulerState.global_budget` |
 | `git` | `GitManager` | Git operations wrapper |
 | `_adapter_factory` | optional | Factory for creating agent adapters |
 | `_adapters` | `dict[str, adapter]` | `agent_id -> running adapter` |
