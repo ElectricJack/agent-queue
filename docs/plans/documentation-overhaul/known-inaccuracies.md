@@ -89,7 +89,7 @@ format or its coverage guarantee.
 | Stale count in `CLAUDE.md` | `CLAUDE.md:144` says "4 internal plugins (files, git, notes, vibecop)". Discovery is dynamic and five internal plugins are found: `files`, `git`, `notes`, `vibecop` and the `inbox` package. | `contributing` |
 | CLI inventory page has no forward link | `docs/reference/cli-command-inventory.md` is accurate but predates the CLI reference. It explains the JSON artifact and its acceptance statuses and stops there, so a reader who lands on it never reaches [`docs/reference/cli/`](../../reference/cli/README.md), which is the prose for the same surface. The new pages link *to* the artifact; the link back is missing and the page is `legacy`-owned. | `legacy` |
 
-## 8. Shipped skill describes reviewer creation as the default pipeline
+## 8. Shipped skill describes reviewer creation as the default pipeline — resolved
 
 | | |
 |---|---|
@@ -98,8 +98,9 @@ format or its coverage guarantee.
 | **Evidence** | [`src/prompts/default_playbooks/default-pipeline.md`](../../../src/prompts/default_playbooks/default-pipeline.md) lines 15-23 against [`src/skills/aq-playbooks-and-gates/SKILL.md`](../../../src/skills/aq-playbooks-and-gates/SKILL.md) lines 81-95. |
 | **Note** | This is shipped text that reaches an agent's context, so correcting it changes agent behaviour and belongs in a code change, not a documentation ticket. Skill installation is write-if-absent, so an already-installed copy also needs `aq doctor`'s `skills.installed_drift` check to notice. |
 | **Owner** | `playbooks` for the wording; whoever fixes the skill file. Recorded by `cli`, which owns the shipped-skill coverage rows. |
+| **Resolved** | The skill's "Default pipeline (shipped)" section and its `description:` frontmatter now describe the three shipped rules and say the pipeline creates no reviewers; assignment routing is named as the separate `default-assignment-routing` playbook. Installs that already carry the old copy are re-seeded with `aq doctor --check skills.installed_drift --fix`, which backs the installed file up as `SKILL.md.bak` first. |
 
-## 9. Shipped skill describes a removed inbox hook
+## 9. Shipped skill describes a removed inbox hook — resolved
 
 | | |
 |---|---|
@@ -108,6 +109,7 @@ format or its coverage guarantee.
 | **Evidence** | [`src/prime/templates/hooks/claude.json`](../../../src/prime/templates/hooks/claude.json); the removal note in [`src/sessions/default_harnesses/claude.md`](../../../src/sessions/default_harnesses/claude.md) lines 186-190. |
 | **Note** | `CLAUDE.md`'s "Messages" bullet carries the same stale claim ("`aq inbox --inject` hook in claude harness"). |
 | **Owner** | `communications` for the messaging page; whoever fixes the skill file and `CLAUDE.md`. Recorded by `cli`. |
+| **Resolved** | Both passages in `src/skills/aq-comms/SKILL.md` now say the `UserPromptSubmit` hook was removed on 2026-08-27, that pending messages arrive through `aq prime` and the cascade's nudge, and that `aq inbox --inject` is an on-demand command. `CLAUDE.md`'s Messages bullet carries the same correction. Existing installs are re-seeded with `aq doctor --check skills.installed_drift --fix`. |
 
 ## How to use this ledger
 

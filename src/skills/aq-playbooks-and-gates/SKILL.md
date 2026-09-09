@@ -1,6 +1,6 @@
 ---
 name: aq-playbooks-and-gates
-description: Playbook runs and human-in-the-loop gates in aq. Use to find and inspect a paused playbook run, resume it with an approve / reject decision, run a playbook by hand, or check playbook health. Also covers how the default pipeline routes task events into review + final-review + spec-ingest flows.
+description: Playbook runs and human-in-the-loop gates in aq. Use to find and inspect a paused playbook run, resume it with an approve / reject decision, run a playbook by hand, or check playbook health. Also covers what the shipped default pipeline actually does (spec ingest, proposal gate, batch commit) and where assignment routing lives.
 allowed-tools:
   - Bash
 ---
@@ -80,25 +80,38 @@ trigger event.
 
 ## Default pipeline (shipped)
 
-The default pipeline is a `kind: pipeline` playbook that wires:
+The system default pipeline is a `kind: pipeline` playbook with exactly
+three rules — approved specs in, an approved task batch out:
 
-- `task.created` → route the task via `task_route` (assigns profile +
-  intelligence class + workspace kind).
-- `task.completed` with `branch_name` → create a per-task review task
-  under the `reviewer` profile.
-- `task.completed` with `branch_name AND pr_url` → create a per-branch
-  final-review task under the `final-reviewer` profile once every
-  per-task reviewer approves.
-- `spec.approved` → create a spec-ingest task under `spec-ingest` that
-  turns the approved spec into a `task_batch_propose` proposal.
-- `proposal.ready` → open a human gate; on approve, run
-  `task_batch_commit` to materialize the proposed tasks.
+- `spec.approved` → create a spec-ingest task under the `spec-ingest`
+  profile, deduped on `spec-ingest:<spec_path>`, that turns the approved
+  spec into a `task_batch_propose` proposal.
+- `proposal.ready` → open a human gate ("Approve task batch?") whose
+  `await_id` is pinned to the proposal id.
+- `gate.resolved`, filtered to `gate_type: human` → call
+  `task_batch_commit` with that `await_id`, writing the approved batch
+  into the task graph.
 
-To see it in action:
+It does **not** create per-task reviewers, final branch reviewers, or
+review/PR gates on downstream work — code validation and delivery come
+from integration. The `reviewer` and `final-reviewer` profiles still
+ship, so a review stage is something a project can wire up, not something
+the default configuration produces.
+
+Assignment routing is a **separate** playbook,
+`default-assignment-routing`. It fires on `task.route_needed` — emitted
+for a task that lacks an `intelligence_class`, a `profile_id`, or both —
+reads the catalog with `task_route_options`, and writes the chosen class
+and profile back with `task_route`, which also resolves the task's
+routing gate. A project that wants different routing keeps a
+project-scope copy of that file.
+
+To see them in action:
 
 ```bash
 aq playbook show-graph --playbook-id default-pipeline
 aq playbook list-runs --playbook-id default-pipeline --limit 20
+aq playbook show-graph --playbook-id default-assignment-routing
 ```
 
 ## Rules of thumb

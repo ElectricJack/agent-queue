@@ -198,13 +198,15 @@ the pages in this directory — a subcommand that no longer exists, a positional
 id passed to a generated command, or an option the command does not take all
 fail that test.
 
-> **Two shipped skills carry stale claims** recorded as entries 8 and 9 in the
-> [known-inaccuracies ledger](../../plans/documentation-overhaul/known-inaccuracies.md):
-> `aq-playbooks-and-gates` describes per-task reviewer and final-reviewer
-> creation as part of the shipped default pipeline, and `aq-comms` describes a
-> `UserPromptSubmit` inbox hook that was removed on 2026-08-27. Fixing shipped
-> prompt text changes agent behaviour, so it is a code change rather than a
-> documentation one.
+> **Two shipped skills carried stale claims** — entries 8 and 9 of the
+> [known-inaccuracies ledger](../../plans/documentation-overhaul/known-inaccuracies.md),
+> both now corrected in tree: `aq-playbooks-and-gates` described per-task
+> reviewer and final-reviewer creation as part of the shipped default pipeline,
+> and `aq-comms` described a `UserPromptSubmit` inbox hook that was removed on
+> 2026-08-27. Because installation is write-if-absent, an install that already
+> has the old copy keeps it until it is re-seeded — `aq doctor --check
+> skills.installed_drift` reports the divergence and `--fix` re-copies the
+> shipped file after backing the installed one up as `SKILL.md.bak`.
 
 ## State ownership
 
