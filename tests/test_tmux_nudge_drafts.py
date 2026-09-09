@@ -63,13 +63,19 @@ class Composer:
         self.typed = False
         self.fail_probe = False
         self.on_capture = None
+        self.environment = {"AQ_READY_PREFIX": prefix, "AQ_SKIP_ESCAPE": "1"}
 
     async def tmux(self, *args, stdin=None, **kwargs):
         command = args[0]
         if command == "show-environment":
             key = args[-1]
-            values = {"AQ_READY_PREFIX": self.prefix, "AQ_SKIP_ESCAPE": "1"}
-            return f"{key}={values.get(key, '')}\n"
+            return f"{key}={self.environment.get(key, '')}\n"
+        if command == "set-environment":
+            if "-u" in args:
+                self.environment.pop(args[-1], None)
+            else:
+                self.environment[args[-2]] = args[-1]
+            return ""
         if command == "display-message":
             if self.fail_probe:
                 raise TmuxCommandError(args, 1, "pane not available")

@@ -23,7 +23,7 @@ if os.name != "posix":
     pytest.skip("tmux provider is POSIX-only", allow_module_level=True)
 
 from src.sessions import tmux as tmux_module
-from src.sessions.provider import NotSubmitted, NudgeDeferred
+from src.sessions.provider import NotSubmitted, NudgeDeferred, SessionHandle
 from src.sessions.tmux import _marker_for, _marker_on_input_line, _submit_pending
 from tests.test_tmux_nudge_drafts import Composer, handle, provider_for
 
@@ -59,12 +59,8 @@ class FlakyComposer(Composer):
         command = args[0]
         if command == "show-environment":
             key = args[-1]
-            values = {
-                "AQ_READY_PREFIX": self.prefix,
-                "AQ_SKIP_ESCAPE": "1",
-                "AQ_CLEAR_KEYS": ",".join(self.clear_keys),
-            }
-            return f"{key}={values.get(key, '')}\n"
+            self.environment["AQ_CLEAR_KEYS"] = ",".join(self.clear_keys)
+            return f"{key}={self.environment.get(key, '')}\n"
         if command == "send-keys" and args[-1] == "Enter":
             self.mutations.append(args)
             self.enters += 1
@@ -141,7 +137,7 @@ class TestNeverLeaveTextBehind:
 
         assert caught.value.composer_dirty is True
         assert composer.draft == REMINDER
-        assert provider._unsubmitted[handle().name][0] == MARKER
+        assert provider._unsubmitted[handle().name].marker == MARKER
 
     async def test_a_harness_with_clear_keys_that_do_nothing_reports_dirty(self, fast_polls):
         composer = FlakyComposer(ignore_enters=99, clear_keys=("C-u",))
@@ -199,6 +195,71 @@ class TestResubmitInsteadOfDeferring:
 
 
 class TestStuckComposerProbe:
+    async def test_pending_submit_survives_a_provider_restart(self, fast_polls):
+        composer = FlakyComposer(ignore_enters=99)
+        with pytest.raises(NotSubmitted):
+            await provider_for(composer).nudge(handle(), REMINDER)
+
+        restarted = provider_for(composer)
+
+        assert await restarted.pending_submit(handle()) == MARKER
+        composer.ignore_enters = 0
+        assert await restarted.resubmit_pending(handle()) is True
+        assert composer.submitted == [REMINDER]
+        assert "AQ_PENDING_SUBMIT" not in composer.environment
+
+    async def test_edited_aq_text_is_never_resubmitted_after_restart(self, fast_polls):
+        composer = FlakyComposer(ignore_enters=99)
+        with pytest.raises(NotSubmitted):
+            await provider_for(composer).nudge(handle(), REMINDER)
+        # Keep the same trailing marker but change the actual AQ injection.
+        composer.draft = REMINDER.replace("Close", "Cloxe")
+        composer.typed = True
+        restarted = provider_for(composer)
+
+        assert await restarted.pending_submit(handle()) is None
+        assert await restarted.resubmit_pending(handle()) is False
+        assert composer.submitted == []
+        assert composer.enters == 4
+
+    async def test_unknown_pane_preserves_durable_evidence_for_a_later_probe(self, fast_polls):
+        composer = FlakyComposer(ignore_enters=99)
+        with pytest.raises(NotSubmitted):
+            await provider_for(composer).nudge(handle(), REMINDER)
+        restarted = provider_for(composer)
+        # A provider restart normally recreates pane discovery. Simulate a
+        # temporarily absent pane without deleting its tmux environment.
+        from unittest.mock import AsyncMock
+
+        restarted._find_agent_pane = AsyncMock(return_value=None)
+        assert await restarted.pending_submit(handle()) is None
+        assert "AQ_PENDING_SUBMIT" in composer.environment
+
+        restarted._find_agent_pane = AsyncMock(return_value="%1")
+        assert await restarted.pending_submit(handle()) == MARKER
+
+    async def test_reused_name_cannot_claim_an_old_pending_record(self, fast_polls):
+        composer = FlakyComposer(ignore_enters=99)
+        with pytest.raises(NotSubmitted):
+            await provider_for(composer).nudge(handle(), REMINDER)
+        restarted = provider_for(composer)
+        successor = SessionHandle(provider="tmux", name=handle().name, instance_token="new")
+
+        assert await restarted.pending_submit(successor) is None
+        assert await restarted.resubmit_pending(successor) is False
+        assert composer.submitted == []
+
+    async def test_duplicate_recovery_only_submits_once(self, fast_polls):
+        composer = FlakyComposer(ignore_enters=99)
+        provider = provider_for(composer)
+        with pytest.raises(NotSubmitted):
+            await provider.nudge(handle(), REMINDER)
+        composer.ignore_enters = 0
+
+        assert await provider.resubmit_pending(handle()) is True
+        assert await provider.resubmit_pending(handle()) is False
+        assert composer.submitted == [REMINDER]
+
     async def test_pending_submit_reports_then_clears_once_the_agent_submits(self, fast_polls):
         composer = FlakyComposer(ignore_enters=99)
         provider = provider_for(composer)

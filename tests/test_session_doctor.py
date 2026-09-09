@@ -123,6 +123,7 @@ class TestStuckComposerCheck:
         assert result.severity is Severity.WARN
         assert result.data["count"] == 1
         assert result.data["sessions"][0]["task_id"] == "t1"
+        assert result.data["sessions"][0]["evidence"] == "provider_pending_submit"
         assert row.name in result.detail
         assert "t1" in result.detail
 
