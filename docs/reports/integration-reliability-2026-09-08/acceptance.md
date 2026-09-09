@@ -892,3 +892,22 @@ and a required provider/publication regression. This batch is not delivered.
 blocked before execution; its claim/pool changes require focused PostgreSQL
 tests and the isolated swarm before rollout. Discord lifecycle `.10` and
 Matter protocol `.1` completed; review and aggregate acceptance remain open.
+
+### 2026-09-09 — abandoned claim-loop recovery loaded
+
+Operator merge `7aabdd39` preserves `bright-grove` source `92971ae8` and adds
+an instance-token check after the recycle CAS, preventing a same-ID successor
+from being terminated between the decision and teardown. Combined validation:
+198 area tests, eight targeted abandonment/race tests, and 8/8 isolated swarm
+scenarios passed. The private daemon1110696 was stopped and cleaned up.
+Logs: `/tmp/aq-claim-loop-rollout-tests.log`,
+`/tmp/aq-claim-loop-race-tests.log`, `/tmp/aq-claim-loop-rollout-e2e.log`.
+Published source: `aq/operator-claim-loop-recovery-20260909`; daemon1139624
+loaded the fix. This is not yet evidence of sustained throughput.
+
+The CLI final-child collector reserved its resolution, then hit deadline
+expiry while correcting rejected command arguments. Public guarded resume
+of operation81d0aaee-0c3a-482c-b04c-d3afe6631cbe succeeded with deadline
+1788959437.8776863. Final-child receipt was still pending at the observation.
+`noble-torrent` is actively fixing epoch-one untouched container collection
+and prerequisite delivery gating; Matter `.2` remains deliberately paused.
