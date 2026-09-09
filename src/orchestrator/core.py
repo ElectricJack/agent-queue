@@ -426,6 +426,11 @@ class Orchestrator(
         self.agent_questions = AgentQuestionService(
             self.db, self.bus, self.session_providers, config
         )
+        from src.escalations import SupervisorDeliveryWatchdog
+
+        self.supervisor_delivery_watchdog = SupervisorDeliveryWatchdog(
+            self.db, self.bus, config
+        )
         self.transcript_watcher = TranscriptWatcher(
             db=self.db,
             bus=self.bus,
@@ -3042,6 +3047,10 @@ class Orchestrator(
             await self.message_delivery.check_reply_timeouts()
         except Exception:
             logger.exception("Message delivery pass failed")
+        try:
+            await self.supervisor_delivery_watchdog.tick(now)
+        except Exception:
+            logger.exception("Supervisor delivery watchdog pass failed")
 
     async def _revoke_expired_tokens(self) -> None:
         """Sweep expired API session tokens out of ``api_session_tokens``.

@@ -37,6 +37,31 @@ human-required question, human gate, or recovery incident. It reserves an action
 before invoking the existing guarded service. Reusing the same idempotency key returns the
 receipt and never repeats the action.
 
+## Supervisor triage and worker questions
+
+A terminal blocked-task notice is a request to investigate, not itself a human escalation.
+The project supervisor reloads the task explanation, exact attempt and log tail, comments,
+claim, gates, recovery history, and any integration operation before deciding. Dependency
+waits, active retry legs, and unchanged queue state do not create human incidents. If an
+integration operation owns repair or verification, its controls and existing retry/time budgets
+remain authoritative.
+
+Completed-turn worker questions also route first to the logical
+`supervisor-<project_id>` mailbox. The persisted question retains its session instance token,
+task, agent, and claim epoch. Narrow factual questions may be answered by the owning supervisor;
+human-required or ambiguous questions use `aq question escalate`, which creates/reuses a durable
+escalation with the question as its source. Question reads expose that source link as
+`escalation_id`. Direct human `question_answer` calls are refused: a human responds with
+`escalation_reply`, and the supervisor applies that evidence with `escalation_apply_reply`.
+
+Supervisor mailboxes survive absence and restart. Messages target logical project ownership,
+never a historical session row. After the configured supervisor-delivery timeout (15 minutes by
+default), the watchdog creates at most one `supervisor_delivery` operational incident per source
+notice. That incident only reports unavailability; its source kind cannot be applied as approval
+for a question, gate, or recovery. A failed evidence-bound action records an outbound follow-up
+in the same escalation conversation and returns the incident to `reply_received` rather than
+resolving it.
+
 The event bus publishes these versioned state hints after commits:
 
 - `escalation.created.v1`

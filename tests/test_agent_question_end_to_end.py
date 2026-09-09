@@ -16,7 +16,7 @@ import httpx
 import pytest
 from fastapi import FastAPI, Request
 
-from src.api.auth import LOCAL_SCOPE, RequestScope
+from src.api.auth import RequestScope
 from src.api.dependencies import get_command_handler
 from src.api.execute import router
 from src.commands.handler import CommandHandler
@@ -191,7 +191,7 @@ async def capture(flow):
     rows = await flow.db.list_agent_questions(session_id=flow.session.id)
     assert len(rows) == 1
     assert rows[0]["question"] == QUESTION
-    assert rows[0]["state"] == "human"
+    assert rows[0]["state"] == "supervisor"
     assert rows[0]["requires_human"]
     return rows[0]
 
@@ -200,10 +200,49 @@ async def test_codex_question_survives_restart_and_answer_waits_for_draft(flow):
     q = await capture(flow)
     # Recreate watcher with zero offsets, like a daemon restart.
     await capture(flow)
-    response = await answer_request(
-        flow, LOCAL_SCOPE, {"question_id": q["id"], "body": "Keep projectless runs projectless."}
+    escalated = await flow.service.escalate(
+        q["id"], "Repository inspection did not determine this product decision"
     )
-    assert response.status_code == 200, response.text
+    accepted = await flow.handler.execute(
+        "escalation_reply",
+        {
+            "escalation_id": escalated["escalation_id"],
+            "text": "Keep projectless runs projectless.",
+            "external_message_id": "dashboard-question-answer",
+        },
+    )
+    supervisor = replace(
+        flow.session,
+        id="supervisor-session",
+        project_id="p",
+        profile_id="supervisor",
+        name="n-supervisor--p",
+        lifecycle="named",
+        task_id=None,
+        agent_id=None,
+        instance_token="supervisor-instance",
+    )
+    await flow.db.create_session(supervisor)
+    applied = await flow.handler.execute(
+        "escalation_apply_reply",
+        {
+            "escalation_id": escalated["escalation_id"],
+            "reply_id": accepted["reply"]["id"],
+            "expected_revision": accepted["escalation"]["revision"],
+            "idempotency_key": "apply-dashboard-question-answer",
+            "action_kind": "question_answer",
+            "target_id": q["id"],
+            "_scope": {
+                "kind": "session",
+                "session_id": supervisor.id,
+                "session_instance_token": supervisor.instance_token,
+                "project_id": "p",
+                "elevated": True,
+            },
+        },
+    )
+    assert applied["success"] is True
+    assert applied["escalation"]["state"] == "resolved"
     await flow.service.tick()
     assert flow.terminal.submissions == []
     assert (await flow.db.get_agent_question(q["id"]))["state"] == "answered"
@@ -237,14 +276,35 @@ async def test_worker_cannot_spoof_human_answer_through_execute(flow):
         },
     )
     assert response.status_code == 403
-    assert (await flow.db.get_agent_question(q["id"]))["state"] == "human"
+    assert (await flow.db.get_agent_question(q["id"]))["state"] == "supervisor"
     assert flow.terminal.submissions == []
 
 
 async def test_answer_cannot_follow_reused_tmux_name_to_replacement(flow):
     q = await capture(flow)
-    response = await answer_request(flow, LOCAL_SCOPE, {"question_id": q["id"], "body": "Proceed"})
-    assert response.status_code == 200, response.text
+    escalated = await flow.service.escalate(q["id"], "Human decision remains")
+    accepted = await flow.db.accept_escalation_reply(
+        escalated["escalation_id"],
+        transport="dashboard",
+        external_message_id="replacement-test-answer",
+        verified_actor="human:dashboard:test",
+        text="Proceed",
+    )
+    await flow.db.begin_escalation_action(
+        escalated["escalation_id"],
+        reply_id=accepted["reply"]["id"],
+        expected_revision=accepted["escalation"]["revision"],
+        idempotency_key="replacement-test-action",
+        action_kind="question_answer",
+        target_id=q["id"],
+        parameters={},
+        executor="session:test-supervisor",
+    )
+    answer = await flow.service.answer(
+        q["id"], "Proceed", actor="human:dashboard", human=True,
+        verified_escalation_id=escalated["escalation_id"],
+    )
+    assert answer["state"] == "answered"
     await flow.db.update_session(flow.session.id, state="stopped", desired_state="stopped")
     replacement = replace(
         flow.session,
@@ -300,7 +360,7 @@ async def test_native_automatic_stall_reminder_is_not_a_human_answer(flow):
         db=flow.db, bus=flow.bus, base_dir=flow.base, questions=flow.service
     )
     await watcher.tick()
-    assert (await flow.db.get_agent_question(q["id"]))["state"] == "human"
+    assert (await flow.db.get_agent_question(q["id"]))["state"] == "supervisor"
     assert len(await flow.db.list_agent_questions(session_id=flow.session.id)) == 1
     assert flow.terminal.submissions == []
 
@@ -328,5 +388,5 @@ async def test_elevated_supervisor_cannot_supply_human_only_approval(flow):
     # Legacy execute reports command denials in its stable 200/error envelope.
     assert response.status_code == 200, response.text
     assert response.json() == {"ok": False, "error": "this question requires a human answer"}
-    assert (await flow.db.get_agent_question(q["id"]))["state"] == "human"
+    assert (await flow.db.get_agent_question(q["id"]))["state"] == "supervisor"
     assert flow.terminal.submissions == []

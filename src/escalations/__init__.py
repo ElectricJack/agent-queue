@@ -53,6 +53,7 @@ from src.escalations.render import (
     sanitise,
     thread_name,
 )
+from src.escalations.supervisor import SupervisorDeliveryWatchdog
 from src.escalations.transport import (
     EscalationTransport,
     SendOutcome,
@@ -82,6 +83,7 @@ __all__ = [
     "PlannedDelivery",
     "SendOutcome",
     "SinkTransport",
+    "SupervisorDeliveryWatchdog",
     "TickReport",
     "TransportAmbiguous",
     "TransportBinding",

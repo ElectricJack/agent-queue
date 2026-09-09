@@ -299,7 +299,69 @@ async def test_required_human_question_uses_verified_reply_not_supervisor_text(e
         "Use the non-destructive option",
         actor="human:local-operator",
         human=True,
+        verified_escalation_id=incident["id"],
     )
+
+
+async def test_failed_question_recovery_stays_open_with_same_conversation_followup(env):
+    handler, db = env
+    await db.create_task(Task(id="q-task", project_id="p", title="Question", description="Q"))
+    await db.create_agent_question(
+        id="q-failed",
+        session_id="worker-session",
+        session_name="worker",
+        instance_token="worker-token",
+        task_id="q-task",
+        project_id="p",
+        agent_id="worker-agent",
+        claim_epoch=9,
+        turn_id="turn-failed",
+        question="Which option?",
+        requires_human=True,
+        state="human",
+        created_at=1.0,
+        updated_at=1.0,
+        source_ts=1.0,
+    )
+    incident = (
+        await handler.execute(
+            "escalation_create",
+            create_args(
+                task_id="q-task",
+                source_kind="question",
+                source_identity="q-failed",
+                incident_key="question-failed",
+            ),
+        )
+    )["escalation"]
+    accepted = await handler.execute(
+        "escalation_reply",
+        {
+            "escalation_id": incident["id"],
+            "text": "Choose option B",
+            "external_message_id": "question-failed-answer",
+        },
+    )
+    handler.orchestrator.agent_questions.answer = AsyncMock(
+        return_value={"error": "original worker claim is stale"}
+    )
+    result = await supervisor_execute(
+        handler,
+        "escalation_apply_reply",
+        {
+            "escalation_id": incident["id"],
+            "reply_id": accepted["reply"]["id"],
+            "expected_revision": accepted["escalation"]["revision"],
+            "idempotency_key": "apply-failed-question-answer",
+            "action_kind": "question_answer",
+            "target_id": "q-failed",
+        },
+    )
+    assert result["error_code"] == "action_failed"
+    assert result["escalation"]["state"] == "reply_received"
+    history = await db.list_escalation_messages(incident["id"])
+    assert [entry["direction"] for entry in history] == ["inbound", "outbound"]
+    assert "original worker claim is stale" in history[-1]["text"]
 
 
 async def test_task_recovery_delegates_exact_incident_decision_and_reply(env):

@@ -5531,8 +5531,8 @@
         "tags": [
           "message"
         ],
-        "summary": "Answer a pending worker question in its original live session. Human approval cannot be supplied by supervisors.",
-        "description": "Answer a pending worker question in its original live session. Human approval cannot be supplied by supervisors.",
+        "summary": "Let the owning supervisor answer a narrow factual worker question in its original claim-fenced session. Direct human replies use escalation_reply and escalation_apply_reply.",
+        "description": "Let the owning supervisor answer a narrow factual worker question in its original claim-fenced session. Direct human replies use escalation_reply and escalation_apply_reply.",
         "operationId": "question_answer",
         "requestBody": {
           "content": {
@@ -5578,8 +5578,8 @@
         "tags": [
           "message"
         ],
-        "summary": "Escalate a worker question to the human when a factual answer is not sufficient.",
-        "description": "Escalate a worker question to the human when a factual answer is not sufficient.",
+        "summary": "Create or reuse the durable human escalation for a worker question after supervisor investigation cannot resolve it.",
+        "description": "Create or reuse the durable human escalation for a worker question after supervisor investigation cannot resolve it.",
         "operationId": "question_escalate",
         "requestBody": {
           "content": {
@@ -14378,6 +14378,17 @@
               }
             ],
             "title": "Reason"
+          },
+          "escalation_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Escalation Id"
           }
         },
         "additionalProperties": true,

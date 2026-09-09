@@ -51,6 +51,7 @@ class AgentQuestionDetail(AgentWaitingQuestion):
     delivery_lease_until: float | None = None
     delivered_at: float | None = None
     reason: str | None = None
+    escalation_id: str | None = None
 
 
 class QuestionListResponse(BaseModel):

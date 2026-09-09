@@ -5757,10 +5757,10 @@ _TOOL_CATEGORIES.update({name: "message" for name in (
 _ALL_TOOL_DEFINITIONS.extend([
     {"name": "question_list", "description": "List pending worker questions visible to the human or live supervisor.",
      "input_schema": {"type": "object", "properties": {"project_id": {"type": "string"}}}},
-    {"name": "question_answer", "description": "Answer a pending worker question in its original live session. Human approval cannot be supplied by supervisors.",
+    {"name": "question_answer", "description": "Let the owning supervisor answer a narrow factual worker question in its original claim-fenced session. Direct human replies use escalation_reply and escalation_apply_reply.",
      "input_schema": {"type": "object", "properties": {"question_id": {"type": "string"},
          "body": {"type": "string", "minLength": 1, "maxLength": 16000}}, "required": ["question_id", "body"]}},
-    {"name": "question_escalate", "description": "Escalate a worker question to the human when a factual answer is not sufficient.",
+    {"name": "question_escalate", "description": "Create or reuse the durable human escalation for a worker question after supervisor investigation cannot resolve it.",
      "input_schema": {"type": "object", "properties": {"question_id": {"type": "string"},
          "reason": {"type": "string", "minLength": 1, "maxLength": 4000}}, "required": ["question_id", "reason"]}},
 ])

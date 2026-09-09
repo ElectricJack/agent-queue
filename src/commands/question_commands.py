@@ -49,6 +49,13 @@ class QuestionCommandsMixin:
         identity = await self._question_identity()
         if "error" in identity:
             return identity
+        if identity["human"]:
+            return {
+                "error": (
+                    "direct human question answers are retired; reply to the durable escalation "
+                    "so the owning supervisor can apply verified evidence"
+                )
+            }
         question = await self._question_for_caller(args.get("question_id"), identity)
         if "error" in question:
             return question
