@@ -62,7 +62,7 @@ explains the vocabulary, then the mechanism, then the failure modes.
 | `docs/concepts/playbooks.md` — **planned** | Playbooks V2: events, rules, gates, activation, and what ships enabled. |
 | `docs/concepts/configuration-and-vault.md` — **planned** | Configuration file versus vault markdown versus database state. |
 | `docs/concepts/providers.md` — **planned** | LLM providers, model selection, token accounting and budgets. |
-| `docs/concepts/messaging.md` — **planned** | Messages to and from workers, the activity digest, escalation threads. |
+| [Messaging, digests and escalations](concepts/messaging.md) | Messages to and from workers, the activity digest, escalation threads. |
 
 ## How-to guides
 
@@ -78,7 +78,7 @@ page before trusting one.
 | `docs/guides/operations.md` — **planned** | Symptom-to-command troubleshooting and recovery runbooks. |
 | [Worker pools](guides/worker-pools.md) | Operating the pull-based worker fleet. |
 | [Resource gating](guides/resource-gating.md) | Test slots, per-session CPU and memory caps. |
-| [Escalations](guides/escalations.md) | How a decision reaches a human and how the answer gets back. |
+| [Escalations and the hourly digest](guides/escalations.md) | Configuring the one Discord channel, reading the digest, answering an escalation. |
 | [Migrations](guides/migrations.md) | Who may run Alembic against which database. |
 
 ## Reference and module catalog
