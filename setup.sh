@@ -146,7 +146,7 @@ LOCAL_BIN="$HOME/.local/bin"
 mkdir -p "$LOCAL_BIN"
 echo ""
 echo "Linking CLI binaries into $LOCAL_BIN ..."
-for binname in aq agent-queue agent-queue-mcp; do
+for binname in aq agent-queue; do
     src="$SCRIPT_DIR/.venv/bin/$binname"
     dst="$LOCAL_BIN/$binname"
     if [[ -x "$src" ]]; then

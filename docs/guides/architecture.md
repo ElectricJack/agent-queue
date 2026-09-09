@@ -200,10 +200,8 @@ Reflection runs as a playbook, not a module — see [[specs/design/self-improvem
 |--------|---------|
 | `src/plugins/` | Plugin system ([[specs/plugin-system|spec]]) |
 | `src/plugins/internal/` | Shipped plugins: files, git, memory, notes, vibecop |
-| `packages/mcp_server/` | MCP server ([[specs/mcp-server|spec]]) |
-| `packages/memsearch/` | Milvus-backed semantic memory engine (fork of zilliztech/memsearch) |
 | `packages/aq-client/` | Typed API client (generated) for CLI and external tools |
-| `src/embedded_mcp.py` | Embedded MCP server in daemon |
+| `src/embedded_mcp.py` | MCP server, embedded in the daemon ([[specs/mcp-server|spec]]) |
 
 ### Infrastructure
 

@@ -187,17 +187,22 @@ dev = [
 ```toml
 [project.scripts]
 agent-queue = "src.main:main"
-agent-queue-mcp = "packages.mcp_server.mcp_server:main"
 aq = "src.cli.app:main"
 ```
 
-Three entry points are registered:
+Two entry points are registered:
 
 - `agent-queue` — runs the daemon (orchestrator + Discord + MCP). Canonical
   invocation for production and `./run.sh start`.
-- `agent-queue-mcp` — runs only the MCP server (used when the daemon is not
-  already exposing MCP).
 - `aq` — the CLI (`aq logs`, `aq plugin install`, etc.).
+
+There is deliberately no MCP-only script: the MCP server is embedded in the
+daemon (`src/embedded_mcp.py`) and shares its uvicorn app with the REST API, so
+it has no life of its own to start. A third entry point,
+`agent-queue-mcp = "packages.mcp_server.mcp_server:main"`, outlived that move
+and named a module the tree never contained; installing the package produced a
+script that died at import. `tests/test_packaging_entry_points.py` now checks
+every declared script against the tree so a target cannot go missing again.
 
 Plugin entry points use the `aq.plugins` entry-point group and are documented
 in `plugin-system.md`.

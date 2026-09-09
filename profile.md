@@ -202,7 +202,7 @@ Memory is provided by the **external `aq-memory` plugin** (install via `aq plugi
 | `src/prompts/` | System prompts and templates (Mustache-style `{{placeholder}}`) |
 | `src/messaging/` | Messaging transport port + adapter factory (`discord`, `none`) |
 | `src/plugins/` | Plugin system for extensibility |
-| `packages/mcp_server/` | MCP server — auto-exposes all CommandHandler commands as MCP tools |
+| `src/embedded_mcp.py`, `src/mcp_registration.py` | MCP server, embedded in the daemon — auto-exposes all CommandHandler commands as MCP tools |
 | `packages/aq-client/` | Typed API client (generated) for CLI and external tools |
 | `docs/specs/` | Behavioral specifications (source of truth) |
 | `docs/specs/design/` | Design specs (playbooks, memory, self-improvement, coordination, vault, profiles, roadmap) |
