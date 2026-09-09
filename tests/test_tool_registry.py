@@ -882,6 +882,7 @@ _PLAYBOOK_COMMANDS = [
     "get_playbook_source",
     "update_playbook_source",
     "set_playbook_enabled",
+    "playbook_delete",
     # Inspection and control
     "list_playbooks",
     "show_playbook_graph",
