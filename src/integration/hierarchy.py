@@ -94,19 +94,77 @@ async def materialize_exact_branch(git, checkout: str, branch: str, base_sha: st
     return base_sha
 
 
+#: Which of :func:`resolve_workspace_checkpoint`'s preconditions failed, and
+#: whether the agent holding the workspace can do anything about it.  The
+#: refusal used to collapse all four into one sentence naming the workspace,
+#: which read as a lock problem even when the only missing thing was the
+#: task's ``branch_name``.  ``fixable`` distinguishes "fix your git state and
+#: close again" from "this is daemon state; escalate".
+WORKSPACE_PRECONDITIONS = {
+    "no_integration_workspace": (
+        "task holds no integration workspace",
+        "operator",
+    ),
+    "workspace_not_owned": (
+        "the integration workspace is locked by another task",
+        "operator",
+    ),
+    "repo_mismatch": (
+        "task is not bound to the delivery repository",
+        "operator",
+    ),
+    "branch_not_recorded": (
+        "task has no branch_name recorded",
+        "worker",
+    ),
+}
+
+
+def _workspace_precondition(precondition: str, detail: str, **context) -> HierarchyError:
+    """Build the refusal for one named ``resolve_workspace_checkpoint`` gate."""
+    _summary, fixable = WORKSPACE_PRECONDITIONS[precondition]
+    return HierarchyError(
+        "dirty",
+        detail,
+        {"precondition": precondition, "fixable_by": fixable, **context},
+    )
+
+
 async def resolve_workspace_checkpoint(db, git, task: dict, repo: RepoConfig) -> str:
     """Return an owned writer workspace's clean, exactly-pushed current HEAD."""
     workspace = await db.get_workspace_for_task(task["id"])
-    # Each condition below refuses for a different reason and has a different
-    # remedy, so each names itself.  Folded into one "no exact owned
-    # integration workspace" message they read as a lock problem even when the
-    # lock is correct and only the recorded branch is missing.
-    if workspace is None or workspace.locked_by_task_id != task["id"]:
-        raise HierarchyError("dirty", "task has no exact owned integration workspace")
+    if workspace is None:
+        raise _workspace_precondition(
+            "no_integration_workspace",
+            f"task {task['id']} holds no integration workspace",
+            task_id=task["id"],
+        )
+    if workspace.locked_by_task_id != task["id"]:
+        raise _workspace_precondition(
+            "workspace_not_owned",
+            f"integration workspace {workspace.workspace_path} is locked by "
+            f"{workspace.locked_by_task_id or 'nobody'}, not {task['id']}",
+            task_id=task["id"],
+            workspace_id=workspace.id,
+            locked_by_task_id=workspace.locked_by_task_id,
+        )
     if task["repo_id"] != repo.id:
-        raise HierarchyError("dirty", "task is not bound to the integration repository")
+        raise _workspace_precondition(
+            "repo_mismatch",
+            f"task {task['id']} is bound to repository {task['repo_id'] or 'none'}, "
+            f"but delivery targets {repo.id}",
+            task_id=task["id"],
+            task_repo_id=task["repo_id"],
+            delivery_repo_id=repo.id,
+        )
     if not task["branch_name"]:
-        raise HierarchyError("dirty", "task has no recorded delivery branch")
+        raise _workspace_precondition(
+            "branch_not_recorded",
+            f"task {task['id']} has no branch_name recorded — record the branch "
+            f"this workspace is on with `aq task set {task['id']} --branch <branch>`",
+            task_id=task["id"],
+            remedy=f"aq task set {task['id']} --branch <branch>",
+        )
     checkout = workspace.workspace_path
     branch = await git.aget_current_branch(checkout, strict=True)
     if branch != task["branch_name"].removeprefix("refs/heads/"):
@@ -173,7 +231,11 @@ async def resolve_workspace_repair_proof(
     head_sha = await resolve_workspace_checkpoint(db, git, task, repo)
     workspace = await db.get_workspace_for_task(task["id"])
     if workspace is None:
-        raise HierarchyError("dirty", "task has no exact owned integration workspace")
+        raise _workspace_precondition(
+            "no_integration_workspace",
+            f"task {task['id']} holds no integration workspace",
+            task_id=task["id"],
+        )
     return await resolve_repair_commit_proof(
         git, workspace.workspace_path, base_sha=base_sha, head_sha=head_sha
     )

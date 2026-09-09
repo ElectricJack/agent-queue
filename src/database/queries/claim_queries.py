@@ -488,7 +488,10 @@ class ClaimQueryMixin:
         either publishes both or neither: a prepare that fails after the
         reset leaves no half-written branch for a later close to trust.  The
         push-assignment path writes the same field from
-        ``WorkspaceMixin._assign_worktree_slot``.
+        ``WorkspaceMixin._assign_worktree_slot``; the pool-claim path used to
+        discard it, which left ``branch_name`` NULL on every development-mode
+        pool task and made its close refuse forever in
+        ``resolve_workspace_checkpoint``.
         """
 
         async def _run(c):
@@ -561,11 +564,14 @@ class ClaimQueryMixin:
                     task_metadata.c.key == "needs_attention",
                 )
             )
-            if branch_name is not None and claim.branch_name != branch_name:
+            if branch_name and claim.branch_name != branch_name:
                 # Written only past every activation guard, and under the row
                 # lock taken above: an activation that bails leaves the branch
                 # exactly as it found it, so no failed prepare can publish a
-                # branch the task never got.
+                # branch the task never got.  Only a differing value is
+                # written: a hierarchy claim's branch already comes from the
+                # origin chain, and a no-op UPDATE would touch a task whose
+                # materialized origin is deliberately frozen.
                 await c.execute(
                     update(tasks)
                     .where(tasks.c.id == task_id)

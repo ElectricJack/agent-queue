@@ -49,31 +49,36 @@ async def test_repair_retry_fetches_published_tip_with_exact_ref(ancestor):
 
 
 @pytest.mark.parametrize(
-    ('workspace_task', 'repo_id', 'branch_name', 'expected'),
+    ('workspace_task', 'repo_id', 'branch_name', 'precondition', 'fixable_by'),
     [
-        (None, 'repo', 'aq/t', 'task has no exact owned integration workspace'),
-        ('other', 'repo', 'aq/t', 'task has no exact owned integration workspace'),
-        ('t', 'elsewhere', 'aq/t', 'task is not bound to the integration repository'),
-        ('t', 'repo', None, 'task has no recorded delivery branch'),
-        ('t', 'repo', '', 'task has no recorded delivery branch'),
+        (None, 'repo', 'aq/t', 'no_integration_workspace', 'operator'),
+        ('other', 'repo', 'aq/t', 'workspace_not_owned', 'operator'),
+        ('t', 'elsewhere', 'aq/t', 'repo_mismatch', 'operator'),
+        ('t', 'repo', None, 'branch_not_recorded', 'worker'),
+        ('t', 'repo', '', 'branch_not_recorded', 'worker'),
     ],
 )
 async def test_checkpoint_refusal_names_the_condition_that_failed(
-    workspace_task, repo_id, branch_name, expected
+    workspace_task, repo_id, branch_name, precondition, fixable_by
 ):
     """Each guard has a different remedy, so each names itself.
 
     Folded into one message, a missing ``tasks.branch_name`` read as a
     workspace-lock problem — the refusal a pool worker in a development-mode
-    project could neither diagnose nor fix.
+    project could neither diagnose nor fix.  The refusal also carries who can
+    clear it, which is what routes the development close arm between "fix this
+    and close again" and "escalate to an operator".
     """
     ws = None if workspace_task is None else SimpleNamespace(
-        locked_by_task_id=workspace_task, workspace_path='/slot'
+        id='ws-1', locked_by_task_id=workspace_task, workspace_path='/slot'
     )
     db = SimpleNamespace(get_workspace_for_task=AsyncMock(return_value=ws))
     git = SimpleNamespace(aget_current_branch=AsyncMock(return_value='aq/t'))
     task = {'id': 't', 'repo_id': repo_id, 'branch_name': branch_name}
-    with pytest.raises(HierarchyError, match=expected) as raised:
+    with pytest.raises(HierarchyError) as raised:
         await resolve_workspace_checkpoint(db, git, task, SimpleNamespace(id='repo'))
     assert raised.value.code == 'dirty'
+    assert raised.value.context['precondition'] == precondition
+    assert raised.value.context['fixable_by'] == fixable_by
+    assert 't' in raised.value.detail
     git.aget_current_branch.assert_not_awaited()

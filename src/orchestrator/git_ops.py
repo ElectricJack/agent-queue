@@ -69,6 +69,54 @@ class GitOpsMixin:
         ctx.verification_feedback = message
         return PhaseResult.STOP
 
+    async def _development_delivery_refusal(self, ctx: PipelineContext, exc: Exception) -> None:
+        """Refuse a development-mode close, separating fixable from escalating.
+
+        Every delivery precondition used to come back through the one
+        "issues you can still fix from this workspace" refusal, including
+        the ones no agent command can satisfy — a workspace locked by
+        another task, a task bound to the wrong repository, a task with no
+        integration workspace at all.  The worker then either loops on a
+        precondition it cannot move or closes ``--outcome fail`` on work
+        that actually passed.  A refusal the workspace cannot fix is flagged
+        for an operator here and says so in its own text.
+        """
+        context = dict(getattr(exc, "context", None) or {})
+        message = str(exc)
+        if context.get("fixable_by") == "operator":
+            precondition = str(context.get("precondition") or "delivery_precondition")
+            reason = f"delivery_{precondition}"
+            ctx.verification_escalated = True
+            try:
+                await self.db.set_task_meta(ctx.task.id, "needs_attention", reason)
+                await self.bus.emit(
+                    "task.needs_attention",
+                    {
+                        "task_id": ctx.task.id,
+                        "project_id": ctx.task.project_id,
+                        "title": ctx.task.title,
+                        "reason": reason,
+                    },
+                )
+            except Exception:
+                # Flagging is best-effort; the refusal itself is the contract.
+                logger.warning(
+                    "Task %s: could not flag delivery precondition %s for attention",
+                    ctx.task.id,
+                    precondition,
+                    exc_info=True,
+                )
+            message = (
+                f"{message}\nThis is daemon-side delivery state, not something this "
+                f"workspace can change. The task has been flagged for an operator "
+                f"(needs_attention={reason}); it stays yours and IN_PROGRESS. Do not "
+                f"close --outcome fail to get past it — report the blocker with "
+                f"`aq message send --to user:dashboard`."
+            )
+        elif context.get("remedy"):
+            message = f"{message}\nRun: {context['remedy']}"
+        self._aggregate_verifier_retry(ctx, message)
+
     async def _phase_verify_aggregate_verifier(
         self, ctx: PipelineContext, operation: dict,
     ) -> PhaseResult:
@@ -900,7 +948,7 @@ class GitOpsMixin:
                     raise ValueError(failure[0])
                 return (ctx.pr_url, True)
             except (ValueError, RuntimeError, HierarchyError) as exc:
-                self._aggregate_verifier_retry(ctx, str(exc))
+                await self._development_delivery_refusal(ctx, exc)
                 return (ctx.pr_url, False)
 
         # Phase 1: Git verification (critical)
