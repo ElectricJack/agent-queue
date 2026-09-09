@@ -697,7 +697,7 @@ class ClaimCommandsMixin:
                 reset_kwargs = {"base_branch": base_branch} if base_branch else {}
                 if target_branch is not None:
                     reset_kwargs["target_branch"] = target_branch
-                await self.orchestrator._worktree_slots().reset_slot_for_task(
+                branch = await self.orchestrator._worktree_slots().reset_slot_for_task(
                     slot, task, **reset_kwargs
                 )
                 # Writing the claim file joins the same guard as the slot
@@ -713,9 +713,24 @@ class ClaimCommandsMixin:
                         "claimed_at": time.time(),
                     },
                 )
-                return await self.db.activate_claim(
-                    session.id, task.id, epoch=epoch, now=time.time(), conn=conn
+                # The branch the reset just created (or restored) is the
+                # task's durable branch: the completion pipeline reads
+                # ``tasks.branch_name`` to resolve the workspace checkpoint,
+                # and a pool claim that dropped it left a development-mode
+                # close refused with "task has no exact owned integration
+                # workspace".  Persisting it inside the activation
+                # transaction keeps branch and claim atomic.
+                activated = await self.db.activate_claim(
+                    session.id,
+                    task.id,
+                    epoch=epoch,
+                    now=time.time(),
+                    conn=conn,
+                    branch_name=branch,
                 )
+                if activated is not None:
+                    task.branch_name = branch
+                return activated
 
             if hierarchy_enabled:
                 from src.integration.ownership import BranchOwnership

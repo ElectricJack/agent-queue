@@ -669,7 +669,14 @@ class DatabaseBackend(Protocol):
         now: float,
     ) -> Workspace | None: ...
     async def activate_claim(
-        self, session_id: str, task_id: str, *, epoch: int, now: float, conn=None
+        self,
+        session_id: str,
+        task_id: str,
+        *,
+        epoch: int,
+        now: float,
+        conn=None,
+        branch_name: str | None = None,
     ) -> SessionRecord | None: ...
     async def release_claim(
         self,
