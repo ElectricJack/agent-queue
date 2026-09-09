@@ -1235,11 +1235,11 @@ async def test_recovery_releases_only_the_durably_proven_stopped_pool_claim(
     assert (session.task_id, session.claim_phase, session.last_claim_epoch) == (None, None, 7)
 
 
-@pytest.mark.parametrize("reuse", ["active_writer", "slot", "agent"])
-async def test_recovery_refuses_reused_or_active_handoff_resources(
-    orchestrator_factory, tmp_path, reuse
+async def test_recovery_preserves_a_reused_slot_and_its_successor_claim_file(
+    orchestrator_factory, tmp_path
 ):
-    """The replay path must not clean up any successor assignment."""
+    """A recovered historical session must not disturb a slot's new holder."""
+    from src.claim_file import read_claim_file, write_claim_file
     from src.orchestrator.workspace_attachments import recover_stopped_integration_pool_claim
 
     orchestrator = await _pool_orchestrator(orchestrator_factory, tmp_path)
@@ -1254,40 +1254,206 @@ async def test_recovery_refuses_reused_or_active_handoff_resources(
             description="",
         )
     )
-    if reuse == "slot":
-        # PostgreSQL enforces the workspace's agent lock FK.  This is a real
-        # successor slot assignment, not merely a non-null sentinel.
-        await orchestrator.db.create_agent(
-            Agent(
-                id="replacement-agent",
-                name="Replacement",
-                profile_id="worker",
-                state=AgentState.BUSY,
-                current_task_id="replacement",
+    await orchestrator.db.create_agent(
+        Agent(
+            id="replacement-agent",
+            name="Replacement",
+            profile_id="worker",
+            state=AgentState.BUSY,
+            current_task_id="replacement",
+        )
+    )
+    async with orchestrator.db.immediate() as conn:
+        await conn.execute(
+            update(workspaces)
+            .where(workspaces.c.id == "slot")
+            .values(locked_by_task_id="replacement", locked_by_agent_id="replacement-agent")
+        )
+    await orchestrator.db.create_session(
+        SessionRecord(
+            id="replacement-session",
+            task_id="replacement",
+            agent_id="replacement-agent",
+            project_id="p",
+            profile_id="worker",
+            harness="fake",
+            provider="fake",
+            name="s-replacement",
+            lifecycle="pool",
+            state="running",
+            claim_phase="active",
+            last_claim_epoch=8,
+            work_dir=str(tmp_path / "slot"),
+            epoch="epoch",
+            instance_token="replacement-instance",
+            started_at=time.time(),
+        )
+    )
+    write_claim_file(
+        str(tmp_path / "slot"), {"task_id": "replacement", "claim_epoch": 8}
+    )
+
+    assert await recover_stopped_integration_pool_claim(orchestrator.db, "task")
+    slot = await orchestrator.db.get_workspace("slot")
+    successor = await orchestrator.db.get_agent("replacement-agent")
+    assert (slot.locked_by_task_id, slot.locked_by_agent_id) == (
+        "replacement",
+        "replacement-agent",
+    )
+    assert successor.current_task_id == "replacement"
+    successor_session = await orchestrator.db.get_session("replacement-session")
+    assert (successor_session.task_id, successor_session.claim_phase) == ("replacement", "active")
+    assert read_claim_file(str(tmp_path / "slot")) == {
+        "task_id": "replacement",
+        "claim_epoch": 8,
+    }
+
+
+async def test_recovery_preserves_an_old_agent_reused_on_another_slot(
+    orchestrator_factory, tmp_path
+):
+    """The generic release path would clear this successor's agent lock."""
+    from src.claim_file import read_claim_file, write_claim_file
+    from src.orchestrator.workspace_attachments import recover_stopped_integration_pool_claim
+
+    orchestrator = await _pool_orchestrator(orchestrator_factory, tmp_path)
+    await _seed_damaged_stopped_pool_handoff(orchestrator)
+    await orchestrator.db.create_task(
+        Task(
+            id="replacement",
+            project_id="p",
+            repo_id="repo",
+            branch_name="aq/replacement",
+            title="Replacement",
+            description="",
+        )
+    )
+    await orchestrator.db.create_workspace(
+        Workspace(
+            id="replacement-slot",
+            project_id="p",
+            workspace_path=str(tmp_path / "replacement-slot"),
+            source_type=RepoSourceType.WORKTREE,
+            locked_by_task_id="replacement",
+            locked_by_agent_id="agent",
+            slot_index=1,
+            base_workspace_id="base",
+        )
+    )
+    async with orchestrator.db.immediate() as conn:
+        await conn.execute(
+            update(agents)
+            .where(agents.c.id == "agent")
+            .values(state=AgentState.BUSY.value, current_task_id="replacement")
+        )
+    await orchestrator.db.create_session(
+        SessionRecord(
+            id="replacement-session",
+            task_id="replacement",
+            agent_id="agent",
+            project_id="p",
+            profile_id="worker",
+            harness="fake",
+            provider="fake",
+            name="s-replacement",
+            lifecycle="pool",
+            state="running",
+            claim_phase="active",
+            last_claim_epoch=9,
+            work_dir=str(tmp_path / "replacement-slot"),
+            epoch="epoch",
+            instance_token="replacement-instance",
+            started_at=time.time(),
+        )
+    )
+    write_claim_file(
+        str(tmp_path / "replacement-slot"), {"task_id": "replacement", "claim_epoch": 9}
+    )
+
+    assert await recover_stopped_integration_pool_claim(orchestrator.db, "task")
+    agent = await orchestrator.db.get_agent("agent")
+    successor_slot = await orchestrator.db.get_workspace("replacement-slot")
+    assert (agent.state, agent.current_task_id) == (AgentState.BUSY, "replacement")
+    assert (successor_slot.locked_by_task_id, successor_slot.locked_by_agent_id) == (
+        "replacement",
+        "agent",
+    )
+    successor_session = await orchestrator.db.get_session("replacement-session")
+    assert (successor_session.task_id, successor_session.claim_phase) == ("replacement", "active")
+    assert read_claim_file(str(tmp_path / "replacement-slot")) == {
+        "task_id": "replacement",
+        "claim_epoch": 9,
+    }
+
+
+@pytest.mark.parametrize(
+    "stale",
+    [
+        "attached_writer",
+        "mismatched_epoch",
+        "replacement_claim",
+        "old_session_owner",
+        "manual_hold",
+    ],
+)
+async def test_recovery_refuses_stale_or_ambiguous_historical_claims(
+    orchestrator_factory, tmp_path, stale
+):
+    """Every stale shape leaves the old claim untouched for human review."""
+    from src.orchestrator.workspace_attachments import recover_stopped_integration_pool_claim
+
+    orchestrator = await _pool_orchestrator(orchestrator_factory, tmp_path)
+    await _seed_damaged_stopped_pool_handoff(orchestrator)
+    if stale == "manual_hold":
+        await orchestrator.db.set_task_meta("task", "manual_pause", {"status": "BLOCKED"})
+    if stale == "replacement_claim":
+        await orchestrator.db.create_task(
+            Task(
+                id="replacement",
+                project_id="p",
+                repo_id="repo",
+                branch_name="aq/replacement",
+                title="Replacement",
+                description="",
             )
         )
     async with orchestrator.db.immediate() as conn:
-        if reuse == "active_writer":
+        if stale == "attached_writer":
             await conn.execute(
                 update(integration_branch_owners)
                 .where(integration_branch_owners.c.id == "owner")
                 .values(handoff_state="attached", session_id="successor", workspace_id="other")
             )
-        elif reuse == "slot":
+        elif stale == "mismatched_epoch":
+            await conn.execute(update(tasks).where(tasks.c.id == "task").values(claim_epoch=8))
+        elif stale == "replacement_claim":
             await conn.execute(
-                update(workspaces)
-                .where(workspaces.c.id == "slot")
-                .values(locked_by_task_id="replacement", locked_by_agent_id="replacement-agent")
+                update(sessions)
+                .where(sessions.c.id == "session")
+                .values(task_id="replacement", last_claim_epoch=8)
             )
-        else:
+        elif stale == "old_session_owner":
             await conn.execute(
-                update(agents)
-                .where(agents.c.id == "agent")
-                .values(state=AgentState.BUSY.value, current_task_id="replacement")
+                insert(integration_branch_owners).values(
+                    id="other-owner",
+                    repository_id="repo",
+                    ref="aq/other",
+                    owner_id="other",
+                    owner_role="worker",
+                    fence_token=1,
+                    handoff_state="attached",
+                    session_id="session",
+                    workspace_id="other",
+                    created_at=1.0,
+                    updated_at=1.0,
+                )
             )
 
     assert not await recover_stopped_integration_pool_claim(orchestrator.db, "task")
     task = await orchestrator.db.get_task("task")
     session = await orchestrator.db.get_session("session")
     assert task.status is TaskStatus.BLOCKED
-    assert (session.task_id, session.claim_phase) == ("task", "active")
+    if stale == "replacement_claim":
+        assert (session.task_id, session.claim_phase) == ("replacement", "active")
+    else:
+        assert (session.task_id, session.claim_phase) == ("task", "active")

@@ -230,10 +230,10 @@ async def recover_stopped_integration_pool_claim(db, task_id: str) -> bool:
 
     This is deliberately narrower than an operational cleanup sweep.  The
     branch owner must still retain the prior workspace as durable handoff
-    evidence *and* be detached from any current writer; the old slot and
-    agent must be idle.  Those checks make replay safe after the owner row
-    has been transferred to a collector, while refusing a reused slot,
-    session, or agent.
+    evidence *and* be detached from any current writer.  A successor may
+    already hold that slot or the old agent on another slot, so recovery may
+    only clear the exact stopped session's claim -- never its former locks,
+    agent state, or claim file.
     """
     claim_release = None
     async with db.immediate() as conn:
@@ -288,28 +288,10 @@ async def recover_stopped_integration_pool_claim(db, task_id: str) -> bool:
                 .with_for_update()
             )
         ).mappings().one_or_none()
-        agent_row = (
+        old_session_ownership = (
             await conn.execute(
-                select(agents)
-                .where(agents.c.id == session_row["agent_id"])
-                .with_for_update()
-            )
-        ).mappings().one_or_none()
-        live_slot = (
-            await conn.execute(
-                select(sessions.c.id)
-                .where(
-                    sessions.c.work_dir == session_row["work_dir"],
-                    sessions.c.id != session_row["id"],
-                    sessions.c.state.in_(("starting", "running", "draining")),
-                )
-                .limit(1)
-            )
-        ).first()
-        agent_locks = (
-            await conn.execute(
-                select(workspaces.c.id)
-                .where(workspaces.c.locked_by_agent_id == session_row["agent_id"])
+                select(integration_branch_owners.c.id)
+                .where(integration_branch_owners.c.session_id == session_row["id"])
                 .limit(1)
             )
         ).first()
@@ -320,27 +302,15 @@ async def recover_stopped_integration_pool_claim(db, task_id: str) -> bool:
             or owner_row["workspace_id"] is not None
             or owner_row["confirmed_workspace_id"] != workspace_row["id"]
             or workspace_row["project_id"] != task_row["project_id"]
-            or workspace_row["locked_by_task_id"] is not None
-            or workspace_row["locked_by_agent_id"] is not None
-            or agent_row is None
-            or agent_row["state"] != AgentState.IDLE.value
-            or agent_row["current_task_id"] is not None
-            or live_slot is not None
-            or agent_locks is not None
+            or old_session_ownership is not None
         ):
             return False
-        claim_release = await db.release_claim(
+        claim_release = await db.release_historical_pool_claim(
+            conn,
             session_row["id"],
-            # Preserve the human-repair boundary until ``integration resume``
-            # re-arms this exact delegate under its existing attempt budget.
-            task_status=TaskStatus.PAUSED,
-            context="integration_handoff_recovery",
+            task_id=task_id,
+            claim_epoch=session_row["last_claim_epoch"],
             now=time.time(),
-            expected_task_id=task_id,
-            expected_claim_epoch=session_row["last_claim_epoch"],
-            expected_task_status=TaskStatus.BLOCKED,
-            release_workspace_lock=True,
-            conn=conn,
         )
         if not claim_release.released:
             return False
