@@ -1,5 +1,5 @@
 {
-  "source_commit": "cedead51f061cde669085773022da69e9c7c932c",
+  "source_commit": "a682c193d302db957fbf9295bf1479c9937082ee",
   "generated_by": "docs/plans/documentation-overhaul/refresh_inventory.py",
   "note": "Assignment, not authored coverage.  Each entry's `purpose` is the rule-level description of the family the path belongs to; the per-module sentence is written by the owning shard's catalog page (`shards[<shard>].catalog`).  `component` is the prose page that explains the module.  There is no catch-all rule: a tracked path matching nothing is an error, not a default assignment.",
   "shards": {
@@ -4214,6 +4214,20 @@
       "purpose": "This overhaul's own planning material.",
       "catalog": null
     },
+    "docs/plans/install-onboarding/README.md": {
+      "shard": "legacy",
+      "component": "docs/history/README.md",
+      "category": "documentation",
+      "purpose": "Existing page; the legacy ticket records its disposition.",
+      "catalog": null
+    },
+    "docs/plans/install-onboarding/tasks.graph.json": {
+      "shard": "legacy",
+      "component": "docs/history/README.md",
+      "category": "documentation",
+      "purpose": "Existing page; the legacy ticket records its disposition.",
+      "catalog": null
+    },
     "docs/playbooks/integration-only/default-pipeline/artifact.json": {
       "shard": "legacy",
       "component": "docs/history/README.md",
@@ -4270,6 +4284,48 @@
       "purpose": "Existing page; the legacy ticket records its disposition.",
       "catalog": null
     },
+    "docs/reference/api/README.md": {
+      "shard": "api",
+      "component": "docs/reference/api/README.md",
+      "category": "documentation",
+      "purpose": "Overhaul page owned by the `api` ticket.",
+      "catalog": null
+    },
+    "docs/reference/api/conventions.md": {
+      "shard": "api",
+      "component": "docs/reference/api",
+      "category": "documentation",
+      "purpose": "Overhaul page owned by the `api` ticket.",
+      "catalog": null
+    },
+    "docs/reference/api/events.md": {
+      "shard": "api",
+      "component": "docs/reference/api",
+      "category": "documentation",
+      "purpose": "Overhaul page owned by the `api` ticket.",
+      "catalog": null
+    },
+    "docs/reference/api/models.md": {
+      "shard": "api",
+      "component": "docs/reference/api",
+      "category": "documentation",
+      "purpose": "Overhaul page owned by the `api` ticket.",
+      "catalog": null
+    },
+    "docs/reference/api/python-client.md": {
+      "shard": "api",
+      "component": "docs/reference/api",
+      "category": "documentation",
+      "purpose": "Overhaul page owned by the `api` ticket.",
+      "catalog": null
+    },
+    "docs/reference/api/typescript-client.md": {
+      "shard": "api",
+      "component": "docs/reference/api",
+      "category": "documentation",
+      "purpose": "Overhaul page owned by the `api` ticket.",
+      "catalog": null
+    },
     "docs/reference/cli-command-inventory.json": {
       "shard": "legacy",
       "component": "docs/history/README.md",
@@ -4296,6 +4352,13 @@
       "component": "docs/reference/modules/README.md",
       "category": "documentation",
       "purpose": "Overhaul page owned by the `foundation` ticket.",
+      "catalog": null
+    },
+    "docs/reference/modules/api.md": {
+      "shard": "api",
+      "component": "docs/reference/modules/api.md",
+      "category": "documentation",
+      "purpose": "Overhaul page owned by the `api` ticket.",
       "catalog": null
     },
     "docs/reports/cli-audit-2026-09-08/README.md": {
