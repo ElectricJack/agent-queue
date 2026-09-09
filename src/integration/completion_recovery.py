@@ -89,6 +89,9 @@ async def reconcile_closed_integration_owners(
         or project.hierarchical_integration_draining
     ):
         return []
+    recovered = []
+    if not ready_only:
+        recovered = await recover_completed_pool_claims(orch, project_id)
     eligible_statuses = ["READY"] if ready_only else ["READY", "COMPLETED", "BLOCKED", "FAILED", "PAUSED"]
     owners = integration_branch_owners
     async with db._engine.connect() as conn:
@@ -111,7 +114,7 @@ async def reconcile_closed_integration_owners(
             .mappings()
             .all()
         )
-    released = []
+    released = list(recovered)
     for owner in rows:
         session = await db.get_session(owner["session_id"]) if owner["session_id"] else None
         workspace = await db.get_workspace(owner["workspace_id"]) if owner["workspace_id"] else None
@@ -301,6 +304,52 @@ async def reconcile_closed_integration_owners(
                 "Could not reconcile stopped integration owner %s", owner["owner_id"], exc_info=True
             )
     return released
+
+
+async def recover_completed_pool_claims(orch, project_id: str) -> list[str]:
+    """Public recovery for a terminal pool close interrupted before cleanup.
+
+    This deliberately discovers only attached or handoff-pending owners. A released owner,
+    a successor claim, or an ordinary completed task is not evidence that an
+    operator may touch a pool session.  The orchestrator method repeats all
+    identity, liveness, Git, and release fences before making any change.
+    """
+    db = orch.db
+    project = await db.get_project(project_id)
+    if (
+        project is None
+        or project.hierarchical_integration_mode not in {"hierarchy", "train"}
+        or project.hierarchical_integration_draining
+        or not project.integration_repository_id
+    ):
+        return []
+    recover = getattr(orch, "arecover_completed_integration_pool_claim", None)
+    if recover is None:
+        return []
+    async with db._engine.connect() as conn:
+        candidates = (
+            await conn.execute(
+                select(tasks.c.id.label("task_id"), sessions.c.id.label("session_id"))
+                .join(integration_branch_owners, integration_branch_owners.c.owner_id == tasks.c.id)
+                .join(sessions, sessions.c.id == integration_branch_owners.c.session_id)
+                .where(
+                    tasks.c.project_id == project_id,
+                    tasks.c.status == TaskStatus.COMPLETED.value,
+                    tasks.c.repo_id == project.integration_repository_id,
+                    integration_branch_owners.c.repository_id == project.integration_repository_id,
+                    integration_branch_owners.c.owner_role.in_(["worker", "repair"]),
+                    integration_branch_owners.c.handoff_state.in_(["attached", "handoff_pending"]),
+                    sessions.c.lifecycle == "pool",
+                )
+            )
+        ).mappings().all()
+    recovered = []
+    for candidate in candidates:
+        task = await db.get_task(candidate["task_id"])
+        session = await db.get_session(candidate["session_id"])
+        if await recover(task, session):
+            recovered.append(task.id)
+    return recovered
 
 
 async def recover_completed_pr_links(db, promotion, project_id: str) -> list[str]:

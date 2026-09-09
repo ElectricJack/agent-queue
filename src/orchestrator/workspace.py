@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import os
+import time
 from dataclasses import dataclass, field
 
 from src.git.manager import GitError, GitManager, is_valid_git_oid
@@ -1351,6 +1352,134 @@ class WorkspaceMixin:
             self.db, owner, workspace=workspace, task_id=session.task_id,
             session_instance_token=session.instance_token
         )
+
+    async def arecover_completed_integration_pool_claim(self, task, session) -> bool:
+        """Release one terminal pool holder only after proving its writer is gone.
+
+        A daemon can lose the response after ``task_close`` has already made
+        the task COMPLETED.  The normal close tail then never gets to detach
+        the slot, release the claim, or remove the claim file.  This is not a
+        generic terminal-claim cleanup: it is deliberately limited to the
+        exact attached integration writer, its claim epoch, session instance,
+        agent lock, workspace lock, and branch-ownership fence.  In
+        particular, a live (or unprobeable) writer is left entirely alone.
+        """
+        if (
+            task is None
+            or session is None
+            or task.status is not TaskStatus.COMPLETED
+            or session.lifecycle != "pool"
+            or session.state not in {"running", "draining"}
+            or session.desired_state not in {"running", "stopped"}
+            or session.task_id != task.id
+            or session.last_claim_epoch != task.claim_epoch
+            or task.assigned_agent_id is not None
+            or not session.agent_id
+            or not task.repo_id
+            or not task.branch_name
+        ):
+            return False
+
+        project = await self.db.get_project(task.project_id)
+        if (
+            project is None
+            or project.hierarchical_integration_mode not in {"hierarchy", "train"}
+            or project.integration_repository_id != task.repo_id
+        ):
+            return False
+        workspace = await self.db.get_workspace_for_agent(session.agent_id)
+        if (
+            workspace is None
+            or workspace.id is None
+            or workspace.locked_by_agent_id != session.agent_id
+            or workspace.locked_by_task_id != task.id
+            or os.path.realpath(session.work_dir) != os.path.realpath(workspace.workspace_path)
+        ):
+            return False
+
+        target = BranchKey(repository_id=task.repo_id, branch=task.branch_name)
+        ownership = BranchOwnership(self.db, confirm_handoff=self.aconfirm_integration_pool_owner_handoff)
+        owner = await ownership.get_owner(target)
+        if (
+            owner is None
+            or owner["owner_id"] != task.id
+            or owner["owner_role"] not in RETRYABLE_INTEGRATION_OWNER_ROLES
+            or owner["handoff_state"] not in {"attached", "handoff_pending"}
+            or owner["session_id"] != session.id
+            or owner["workspace_id"] != workspace.id
+        ):
+            return False
+
+        # A stale daemon row is not liveness evidence.  Require both probes
+        # against the session's durable instance token before even reserving
+        # handoff; a false/unknown result preserves the writer and all locks.
+        try:
+            provider = self.session_providers.create(session.provider, self.config)
+            handle = SessionHandle(session.name, session.provider, session.instance_token)
+            process_names = ()
+            reconciler = getattr(self, "session_reconciler", None)
+            if reconciler is not None:
+                process_names = reconciler._process_names(session)
+            if await provider.process_alive(handle, process_names):
+                return False
+            if not await provider.confirm_stopped(handle):
+                return False
+        except Exception:
+            logger.warning(
+                "Could not prove terminal pool writer %s is quiescent", session.id, exc_info=True
+            )
+            return False
+
+        # Prevent the old loop from claiming a successor while the Git proof
+        # runs.  The instance-token CAS is the fence against a reused session.
+        if session.desired_state == "running" and not await self.db.update_session_instance(
+            session.id,
+            session.instance_token,
+            require_desired_state="running",
+            desired_state="stopped",
+        ):
+            return False
+
+        fence = Fence(target=target, owner_id=task.id, token=int(owner["fence_token"]))
+        try:
+            # confirm_transfer persists handoff_pending, then the pool
+            # confirmer proves clean/published HEAD and detaches it.  Unlike
+            # transfer(), it intentionally leaves durable release evidence
+            # rather than assigning this completed task a successor fence.
+            await ownership.confirm_transfer(fence)
+        except BranchOwnershipError:
+            return False
+
+        release = await self.db.release_claim(
+            session.id,
+            task_status=TaskStatus.COMPLETED,
+            context="completed_pool_claim_recovery",
+            now=time.time(),
+            result="completed_recovered",
+            expected_task_id=task.id,
+            expected_claim_epoch=task.claim_epoch,
+            expected_task_status=TaskStatus.COMPLETED,
+            preserve_terminal_task=True,
+            stop_after_release=True,
+            release_workspace_lock=True,
+            end_reason="completed_pool_claim_recovery",
+        )
+        if not release.released:
+            return False
+        from src.claim_file import remove_claim_file_if_matches
+
+        remove_claim_file_if_matches(session.work_dir, task.id, task.claim_epoch)
+        await self.db.log_event(
+            "pool.completed_claim_recovered",
+            project_id=task.project_id,
+            task_id=task.id,
+            agent_id=session.agent_id,
+            payload=(
+                f"session={session.id} epoch={task.claim_epoch} workspace={workspace.id} "
+                f"branch={task.branch_name}"
+            ),
+        )
+        return True
 
     async def aconfirm_integration_owner_stopped_for_repair(
         self, owner: dict

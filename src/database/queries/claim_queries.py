@@ -544,6 +544,8 @@ class ClaimQueryMixin:
         expected_task_status=None,
         drain_after_release=False,
         release_workspace_lock=False,
+        preserve_terminal_task=False,
+        stop_after_release=False,
         end_reason=None,
     ) -> TransitionResult:
         row = (
@@ -598,77 +600,98 @@ class ClaimQueryMixin:
                 return out
         epoch = None
         if task_id:
-            # ``projection_stable``: IN_PROGRESS -> READY cannot move any
-            # task's ``is_blocked`` (see ``_PROJECTION_NEUTRAL_STATUSES``);
-            # it is ignored for every other target status, so the FAILED /
-            # BLOCKED releases keep the full recompute.  ``returning`` folds
-            # what used to be a separate ``claim_epoch`` read into the write.
-            transition = dict(
-                context=context,
-                force=True,
-                assigned_agent_id=None,
-                projection_stable=True,
-                returning=True,
-                # Releasing the worker's ownership must not resume or alter
-                # an explicit manual pause.  It only clears its stale agent
-                # assignment after a task moved out from under the claim.
-                _manual_pause_control=task_status is TaskStatus.PAUSED,
-            )
-            if task_status == TaskStatus.READY:
-                # An active claim can only release the IN_PROGRESS,
-                # unblocked task it holds.  Put that proof in the UPDATE
-                # itself so _apply_transition may skip its validation read;
-                # a concurrent close/pause simply leaves this task unchanged.
-                transition.update(
-                    assume_pre_state=(TaskStatus.IN_PROGRESS, False),
-                    extra_where=and_(
-                        tasks.c.status == TaskStatus.IN_PROGRESS.value,
-                        tasks.c.is_blocked == 0,
-                    ),
-                )
-            elif expected_task_status is not None:
-                # The reconciler observed a non-live task before entering
-                # this transaction.  Do not replay that old state over a
-                # concurrent resume: the guarded write is also the proof
-                # that this session may release its claim and workspace.
-                transition["extra_where"] = tasks.c.status == expected_task_status.value
-            out = await self._apply_transition(
-                conn,
-                task_id,
-                task_status,
-                **transition,
-            )
-            if expected_task_status is not None and out.row is None:
-                return out
-            epoch = (out.row or {}).get("claim_epoch")
-            if needs_attention:
-                await self._upsert_meta(task_id, "needs_attention", needs_attention, conn=conn)
-            if prepare_backoff:
-                raw_attempts = (
+            if preserve_terminal_task:
+                # A close can commit the terminal task transition before it
+                # loses its response during a daemon restart.  Recovery must
+                # free only the stale holder -- re-applying COMPLETED would
+                # rewrite completion timing/context and blur the reviewed
+                # terminal record it is meant to preserve.
+                terminal = (
                     await conn.execute(
-                        select(task_metadata.c.value).where(
-                            task_metadata.c.task_id == task_id,
-                            task_metadata.c.key == PREPARE_BACKOFF_ATTEMPTS_KEY,
+                        select(tasks.c.claim_epoch)
+                        .where(
+                            tasks.c.id == task_id,
+                            tasks.c.status == task_status.value,
+                            tasks.c.claim_epoch == expected_claim_epoch,
                         )
+                        .with_for_update()
                     )
                 ).scalar_one_or_none()
-                try:
-                    attempts = int(json.loads(raw_attempts)) if raw_attempts else 0
-                except (TypeError, ValueError, json.JSONDecodeError):
-                    attempts = 0
-                attempts += 1
-                delay = min(
-                    PREPARE_BACKOFF_INITIAL_SECONDS * (2 ** (attempts - 1)),
-                    PREPARE_BACKOFF_MAX_SECONDS,
+                if terminal is None:
+                    return out
+                epoch = terminal
+            else:
+                # ``projection_stable``: IN_PROGRESS -> READY cannot move any
+                # task's ``is_blocked`` (see ``_PROJECTION_NEUTRAL_STATUSES``);
+                # it is ignored for every other target status, so the FAILED /
+                # BLOCKED releases keep the full recompute.  ``returning`` folds
+                # what used to be a separate ``claim_epoch`` read into the write.
+                transition = dict(
+                    context=context,
+                    force=True,
+                    assigned_agent_id=None,
+                    projection_stable=True,
+                    returning=True,
+                    # Releasing the worker's ownership must not resume or alter
+                    # an explicit manual pause.  It only clears its stale agent
+                    # assignment after a task moved out from under the claim.
+                    _manual_pause_control=task_status is TaskStatus.PAUSED,
                 )
-                await self._upsert_meta_many(
+                if task_status == TaskStatus.READY:
+                    # An active claim can only release the IN_PROGRESS,
+                    # unblocked task it holds.  Put that proof in the UPDATE
+                    # itself so _apply_transition may skip its validation read;
+                    # a concurrent close/pause simply leaves this task unchanged.
+                    transition.update(
+                        assume_pre_state=(TaskStatus.IN_PROGRESS, False),
+                        extra_where=and_(
+                            tasks.c.status == TaskStatus.IN_PROGRESS.value,
+                            tasks.c.is_blocked == 0,
+                        ),
+                    )
+                elif expected_task_status is not None:
+                    # The reconciler observed a non-live task before entering
+                    # this transaction.  Do not replay that old state over a
+                    # concurrent resume: the guarded write is also the proof
+                    # that this session may release its claim and workspace.
+                    transition["extra_where"] = tasks.c.status == expected_task_status.value
+                out = await self._apply_transition(
+                    conn,
                     task_id,
-                    {
-                        PREPARE_BACKOFF_ATTEMPTS_KEY: attempts,
-                        PREPARE_BACKOFF_UNTIL_KEY: now + delay,
-                    },
-                    conn=conn,
+                    task_status,
+                    **transition,
                 )
+                if expected_task_status is not None and out.row is None:
+                    return out
+                epoch = (out.row or {}).get("claim_epoch")
+                if needs_attention:
+                    await self._upsert_meta(task_id, "needs_attention", needs_attention, conn=conn)
+                if prepare_backoff:
+                    raw_attempts = (
+                        await conn.execute(
+                            select(task_metadata.c.value).where(
+                                task_metadata.c.task_id == task_id,
+                                task_metadata.c.key == PREPARE_BACKOFF_ATTEMPTS_KEY,
+                            )
+                        )
+                    ).scalar_one_or_none()
+                    try:
+                        attempts = int(json.loads(raw_attempts)) if raw_attempts else 0
+                    except (TypeError, ValueError, json.JSONDecodeError):
+                        attempts = 0
+                    attempts += 1
+                    delay = min(
+                        PREPARE_BACKOFF_INITIAL_SECONDS * (2 ** (attempts - 1)),
+                        PREPARE_BACKOFF_MAX_SECONDS,
+                    )
+                    await self._upsert_meta_many(
+                        task_id,
+                        {
+                            PREPARE_BACKOFF_ATTEMPTS_KEY: attempts,
+                            PREPARE_BACKOFF_UNTIL_KEY: now + delay,
+                        },
+                        conn=conn,
+                    )
         if task_id:
             await self.finish_task_session_attempt(
                 session_id,
@@ -705,6 +728,13 @@ class ClaimQueryMixin:
         )
         if drain_after_release:
             session_values["desired_state"] = "stopped"
+        if stop_after_release:
+            session_values.update(
+                state="stopped",
+                desired_state="stopped",
+                end_reason=end_reason or context,
+                ended_at=now,
+            )
         await conn.execute(
             update(sessions).where(sessions.c.id == session_id).values(**session_values)
         )
@@ -731,6 +761,9 @@ class ClaimQueryMixin:
         drain_after_release=False,
         release_workspace_lock=False,
         prepare_backoff=False,
+        preserve_terminal_task=False,
+        stop_after_release=False,
+        end_reason=None,
         conn=None,
     ) -> TransitionResult:
         kwargs = dict(
@@ -745,6 +778,9 @@ class ClaimQueryMixin:
             drain_after_release=drain_after_release,
             release_workspace_lock=release_workspace_lock,
             prepare_backoff=prepare_backoff,
+            preserve_terminal_task=preserve_terminal_task,
+            stop_after_release=stop_after_release,
+            end_reason=end_reason,
         )
         if conn is not None:
             return await self._release_claim_on(conn, session_id, **kwargs)
