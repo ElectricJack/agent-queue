@@ -502,3 +502,22 @@ transferred fence8→9 to the same operation's collector. Public integration
 resume then succeeded, preserving attempts and giving stage1 deadline
 1788950234.998555. No SQL overrides or changed candidate states were used.
 Noble-ridge.9 is now IN_PROGRESS on the enabled deep-high-codex pool.
+
+## Verified root main delivery (09:39:37 UTC)
+
+The repaired root batchdb9e3d6681c4b82624d569d2bdbf2a6e reached PROMOTED through
+AQ. Revision1 is superseded; revision2 is promoted at
+e13900405da3eacc523510a3513afa31df22da87 with fresh aggregate
+ci-aggregate-b8cc8fbe28f8b177b8f1d5d4b56c8e27ac66b415a4a9f3abe5d60d26cad00a2d.
+Batch tested_candidate_sha and final_main_sha both equal that exact head.
+Independent git ls-remote confirms remote main equals it, and GitHub PR519
+is MERGED with mergedAt2026-09-09T09:39:37Z. No direct operator main push occurred.
+The release record carries catchup integration-sweep:agent-queue:53, which has
+started batch2c484c0890ebecbbf98b0b12fd5469ff automatically.
+
+Matter Engine also entered candidate CI: batch6172c137978ed45a1ccbb229e4614e21
+contains approved sharp-nexus head a1aa1999 and built candidate
+7a39e65a5321f0e6c7864068703d29940b2f117c. Exact Actions34335827337 is running.
+The native baseline review evidence is review-0b078d2b-7266-5ccf-8e9f-a94d55216620;
+the task PR link was recovered through public flush. Feature holds remain until
+candidate promotion. Neither original epic nor sustained throughput is complete.
