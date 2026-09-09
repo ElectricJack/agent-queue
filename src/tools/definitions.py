@@ -3318,8 +3318,14 @@ _ALL_TOOL_DEFINITIONS = [
                     "description": (
                         "Trigger event data to seed the run. Defaults to "
                         '{"type": "manual"} if not provided. '
-                        "Include fields your playbook expects "
-                        "(e.g. project_id, task_id) for context."
+                        "Manual task.* events require event.task_id. The "
+                        "server loads its canonical task/project context; "
+                        "an optional event.task snapshot is retained only "
+                        "when its id/project_id agree. Repeating the same "
+                        "manual task event replays idempotently; supply an "
+                        "event_id to name a distinct replay. Include other fields "
+                        "your playbook expects. Handled command failures are "
+                        "reported in failed_steps even when the run status is completed."
                     ),
                 },
             },

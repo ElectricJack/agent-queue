@@ -878,7 +878,9 @@ from .run_playbook_request import RunPlaybookRequest
 from .run_playbook_request_event_type_0 import RunPlaybookRequestEventType0
 from .run_playbook_response import RunPlaybookResponse
 from .run_playbook_response_422 import RunPlaybookResponse422
+from .run_playbook_response_failed_steps_item import RunPlaybookResponseFailedStepsItem
 from .run_playbook_response_node_trace_item import RunPlaybookResponseNodeTraceItem
+from .run_playbook_response_runs_item import RunPlaybookResponseRunsItem
 from .sampler_metrics import SamplerMetrics
 from .scan_stub_staleness_request import ScanStubStalenessRequest
 from .scan_stub_staleness_response import ScanStubStalenessResponse
@@ -2001,7 +2003,9 @@ __all__ = (
     "RunPlaybookRequestEventType0",
     "RunPlaybookResponse",
     "RunPlaybookResponse422",
+    "RunPlaybookResponseFailedStepsItem",
     "RunPlaybookResponseNodeTraceItem",
+    "RunPlaybookResponseRunsItem",
     "SamplerMetrics",
     "ScanStubStalenessRequest",
     "ScanStubStalenessResponse",

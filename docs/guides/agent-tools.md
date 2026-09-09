@@ -387,10 +387,19 @@ memory_fact_set(key="deploy_status", value="green", scope="project", valid_until
 ```
 load_tools(category="playbook")
 list_playbooks()
-run_playbook(playbook_id="task-outcome", context={"task_id": "swift-dune"})
+run_playbook(playbook_id="task-outcome", event={"type": "task.completed", "task_id": "swift-dune"})
 inspect_playbook_run(run_id="run-123")
 show_playbook_graph(playbook_id="task-outcome", format="mermaid")
 ```
+
+For a manual `task.*` event, `event.task_id` is required. The server loads the
+canonical task and project before effects begin, so do not use a caller-supplied
+`project_id` to replay a different task. You may include a frozen `event.task`
+snapshot for a faithful replay; if it names an `id` or `project_id`, both must
+match the canonical task. Repeating the same manual task event is idempotent;
+provide an `event_id` when you intentionally need a distinct replay. A run can be `completed` after a playbook deliberately
+handles a command failure. Inspect `failed_steps` in the manual-run result (and
+then the durable run receipts) before treating it as a successful effect.
 
 ### Managing plugins
 ```
