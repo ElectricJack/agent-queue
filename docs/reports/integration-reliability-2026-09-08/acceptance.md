@@ -1075,3 +1075,22 @@ AQ explain reports fresh-rapids and bright-journey waiting for standard-high
 capacity (2 busy, 0 idle, maximum2). fleet-harbor and noble-torrent are the
 currently assigned repairs. The latter was told to reconcile existing operator
 runtime wiring rather than register a duplicate materialization tick.
+
+### Stopped verifier correction and post-restart attachment case
+
+Operator source415f9ba1 is published on
+`aq/operator-stopped-verifier-recovery-20260909`. The exact retired stopped
+verifier case now uses guarded recovery. A different detached HEAD is accepted
+only if it exactly matches a fresh origin HEAD query and the aggregate's local
+and remote tips match; the checkout is preserved. All57 handoff tests passed
+26.32s, including real Git published/unpublished detached preservation. Private
+swarm92903a9686 passed8/8 and cleaned daemon1478244.
+
+AQ restarted successfully as PID1497622 with degraded operational health.
+Public CLI verifier transfer at fence27 still refused: current workspace locks
+are now BOTH NULL while the stopped session keeps its task binding and the
+retired agent keeps current_task_id. Owner remains handoff_pending. This is an
+additional unlocked-but-stale attachment state, recorded on fresh-rapids. The
+locked-case correction is deployed; successful live verifier recovery is NOT
+claimed. Recovery must preserve successor exclusion and avoid any checkout
+mutation in an unlocked workspace.
