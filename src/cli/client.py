@@ -187,6 +187,8 @@ class CLIClient:
         )
         try:
             resp = await self._http.get("/api/health")
+            if getattr(resp, "status_code", 200) in (401, 403):
+                raise ScopeDeniedError("health", _relay_error(resp))
             resp.raise_for_status()
         except httpx.RequestError as exc:
             await self._http.aclose()
@@ -313,7 +315,7 @@ class CLIClient:
         assert self._http is not None, "CLIClient not connected"
         try:
             resp = await self._http.post("/api/messages/send", json=args, timeout=_DEFAULT_TIMEOUT)
-        except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
+        except httpx.TransportError as exc:
             raise DaemonNotRunningError(self._base_url, cause=exc) from exc
         if resp.status_code in (401, 403):
             raise ScopeDeniedError("message_send", _relay_error(resp))
@@ -354,8 +356,10 @@ class CLIClient:
             payload["subject"] = subject
         try:
             resp = await self._http.post(f"/api/sessions/{name}/message", json=payload)
-        except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
+        except httpx.TransportError as exc:
             raise DaemonNotRunningError(self._base_url, cause=exc) from exc
+        if resp.status_code in (401, 403):
+            raise ScopeDeniedError("message_send", _relay_error(resp))
         if resp.status_code >= 400:
             raise CommandError("message_send", _relay_error(resp))
         return resp.json()
@@ -377,8 +381,10 @@ class CLIClient:
             params["since"] = since
         try:
             resp = await self._http.get(f"/api/sessions/{name}/messages", params=params)
-        except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
+        except httpx.TransportError as exc:
             raise DaemonNotRunningError(self._base_url, cause=exc) from exc
+        if resp.status_code in (401, 403):
+            raise ScopeDeniedError("message_list", _relay_error(resp))
         if resp.status_code >= 400:
             raise CommandError("message_list", _relay_error(resp))
         return resp.json()
@@ -399,7 +405,7 @@ class CLIClient:
             payload["project_id"] = project_id
         try:
             resp = await self._http.post("/api/streams", json=payload)
-        except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
+        except httpx.TransportError as exc:
             raise DaemonNotRunningError(self._base_url, cause=exc) from exc
         if resp.status_code in (401, 403):
             raise ScopeDeniedError("stream_start", _relay_error(resp))
@@ -411,8 +417,10 @@ class CLIClient:
         assert self._http is not None, "CLIClient not connected"
         try:
             resp = await self._http.get(f"/api/streams/{stream_id}")
-        except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
+        except httpx.TransportError as exc:
             raise DaemonNotRunningError(self._base_url, cause=exc) from exc
+        if resp.status_code in (401, 403):
+            raise ScopeDeniedError("stream_metadata", _relay_error(resp))
         if resp.status_code >= 400:
             raise CommandError("stream_metadata", _relay_error(resp))
         return resp.json()
@@ -423,8 +431,10 @@ class CLIClient:
             resp = await self._http.get(
                 f"/api/streams/{stream_id}/tail", params={"after_seq": after_seq}
             )
-        except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
+        except httpx.TransportError as exc:
             raise DaemonNotRunningError(self._base_url, cause=exc) from exc
+        if resp.status_code in (401, 403):
+            raise ScopeDeniedError("stream_tail", _relay_error(resp))
         if resp.status_code >= 400:
             raise CommandError("stream_tail", _relay_error(resp))
         return resp.json()
@@ -433,8 +443,10 @@ class CLIClient:
         assert self._http is not None, "CLIClient not connected"
         try:
             resp = await self._http.post(f"/api/streams/{stream_id}/kill")
-        except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
+        except httpx.TransportError as exc:
             raise DaemonNotRunningError(self._base_url, cause=exc) from exc
+        if resp.status_code in (401, 403):
+            raise ScopeDeniedError("stream_kill", _relay_error(resp))
         if resp.status_code >= 400:
             raise CommandError("stream_kill", _relay_error(resp))
         return resp.json()
@@ -444,9 +456,12 @@ class CLIClient:
         assert self._http is not None, "CLIClient not connected"
         try:
             resp = await self._http.get("/api/tools")
-            resp.raise_for_status()
+            if resp.status_code in (401, 403):
+                raise ScopeDeniedError("list_tools", _relay_error(resp))
+            if resp.status_code >= 400:
+                raise CommandError("list_tools", _relay_error(resp))
             return resp.json()
-        except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
+        except httpx.TransportError as exc:
             raise DaemonNotRunningError(self._base_url, cause=exc) from exc
 
 

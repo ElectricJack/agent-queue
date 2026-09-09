@@ -483,7 +483,13 @@ def task_stop(ctx: click.Context, task_id: str, yes: bool) -> None:
             return await client.execute("stop_task", {"task_id": task_id})
 
     result = _run(_stop())
-    console.print(f"[bold yellow]Task stopped:[/] {_getval(result, 'stopped', task_id)}")
+    emit(
+        ctx,
+        result,
+        render=lambda data: console.print(
+            f"[bold yellow]Task stopped:[/] {_getval(data, 'stopped', task_id)}"
+        ),
+    )
 
 
 @task.command("restart")
@@ -507,7 +513,13 @@ def task_restart(ctx: click.Context, task_id: str, yes: bool) -> None:
             return await client.execute("restart_task", {"task_id": task_id})
 
     result = _run(_restart())
-    console.print(f"[bold green]Task restarted:[/] {_getval(result, 'restarted', task_id)}")
+    emit(
+        ctx,
+        result,
+        render=lambda data: console.print(
+            f"[bold green]Task restarted:[/] {_getval(data, 'restarted', task_id)}"
+        ),
+    )
 
 
 @task.command("search")
@@ -538,17 +550,17 @@ def task_search(ctx: click.Context, query: str, project: str | None) -> None:
         for t in raw_tasks
         if q in (_getval(t, "title", "")).lower() or q in (_getval(t, "description", "")).lower()
     ]
-    tasks = [task_proxy(t) for t in matched]
-
     title = f"Search results for '{query}'"
     if project:
         title += f" in {project}"
 
-    table = format_task_table(tasks, title=title)
-    console.print(table)
+    def _render(data: list[dict]) -> None:
+        tasks = [task_proxy(t) for t in data]
+        console.print(format_task_table(tasks, title=title))
+        if not tasks:
+            console.print("[dim]No tasks matched your search.[/]")
 
-    if not tasks:
-        console.print("[dim]No tasks matched your search.[/]")
+    emit(ctx, matched, entity="task", total=len(matched), render=_render)
 
 
 @task.command("select")
@@ -562,6 +574,8 @@ def task_select(ctx: click.Context, project: str | None) -> None:
     from .menus import fuzzy_select_task
 
     api_url = ctx.obj.get("api_url") if ctx.obj else None
+    if (ctx.obj or {}).get("json"):
+        raise click.UsageError("task select is interactive and does not support JSON mode")
 
     async def _select():
         async with _get_client(api_url) as client:
@@ -650,7 +664,14 @@ def task_list(
         if not proxied:
             console.print("[dim]No tasks found.[/]")
 
-    emit(ctx, raw_tasks, entity="task", total=total, render=_render)
+    emit(
+        ctx,
+        raw_tasks,
+        entity="task",
+        total=total,
+        legacy_data=result,
+        render=_render,
+    )
 
 
 @task.command("show")
@@ -769,8 +790,7 @@ def task_set(
     meta: dict[str, str] = {}
     for kv in meta_kv:
         if "=" not in kv:
-            console.print(f"[bold red]Error:[/] --meta expects KEY=VALUE, got '{kv}'")
-            raise SystemExit(2)
+            raise click.UsageError(f"--meta expects KEY=VALUE, got {kv!r}")
         key, _, value = kv.partition("=")
         meta[key] = value
 

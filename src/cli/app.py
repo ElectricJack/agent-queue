@@ -22,6 +22,7 @@ from __future__ import annotations
 import asyncio
 import functools
 import logging
+import sys
 
 import click
 from rich.console import Console
@@ -80,12 +81,15 @@ def _render_command_findings(details: dict) -> None:
         for finding in details.get(key) or []:
             if not isinstance(finding, dict):
                 continue
-            colour = "red" if severity == "error" else "yellow"
             where = f" ({finding['node']})" if finding.get("node") else ""
-            console.print(
-                f"  [{colour}]{severity}[/] {finding.get('rule')}{where}: "
-                f"{finding.get('detail')}"
+            from rich.text import Text
+
+            line = Text("  ")
+            line.append(severity, style="red" if severity == "error" else "yellow")
+            line.append(
+                f" {finding.get('rule')}{where}: {finding.get('detail')}"
             )
+            console.print(line)
 
 
 def _handle_errors(func):
@@ -113,7 +117,11 @@ def _handle_errors(func):
             if as_json:
                 emit_error(exc.code, exc.detail_message, exc.details or None)
             else:
-                console.print(f"[bold red]Error:[/] {exc}")
+                from rich.text import Text
+
+                line = Text("Error: ", style="bold red")
+                line.append(str(exc))
+                console.print(line)
                 _render_command_findings(exc.details or {})
             raise SystemExit(exc.exit_code)
 
@@ -150,6 +158,59 @@ def _handle_errors(func):
             _fail_command(exc)
 
     return wrapper
+
+
+class AQGroup(click.Group):
+    """Root group that preserves the JSON contract for Click usage errors."""
+
+    @staticmethod
+    def _wants_json(args) -> bool:
+        values = list(sys.argv[1:] if args is None else args)
+        try:
+            end = values.index("--")
+        except ValueError:
+            end = len(values)
+        return "--json" in values[:end]
+
+    def main(
+        self,
+        args=None,
+        prog_name=None,
+        complete_var=None,
+        standalone_mode=True,
+        windows_expand_args=True,
+        **extra,
+    ):
+        # In non-standalone mode Click deliberately exposes exceptions to its
+        # caller; preserve that API for embedding/tests.
+        if not standalone_mode or not self._wants_json(args):
+            return super().main(
+                args=args,
+                prog_name=prog_name,
+                complete_var=complete_var,
+                standalone_mode=standalone_mode,
+                windows_expand_args=windows_expand_args,
+                **extra,
+            )
+
+        from .envelope import emit_error
+
+        try:
+            rv = super().main(
+                args=args,
+                prog_name=prog_name,
+                complete_var=complete_var,
+                standalone_mode=False,
+                windows_expand_args=windows_expand_args,
+                **extra,
+            )
+        except click.UsageError as exc:
+            emit_error("usage_error", exc.format_message())
+            raise SystemExit(2) from exc
+        except click.ClickException as exc:
+            emit_error("command_error", exc.format_message())
+            raise SystemExit(exc.exit_code) from exc
+        raise SystemExit(rv if isinstance(rv, int) else 0)
 
 
 # ---------------------------------------------------------------------------
@@ -193,7 +254,7 @@ def _print_full_help(ctx: click.Context) -> None:
 # ---------------------------------------------------------------------------
 
 
-@click.group(invoke_without_command=True)
+@click.group(cls=AQGroup, invoke_without_command=True)
 @click.option(
     "--api-url",
     envvar="AGENT_QUEUE_API_URL",
@@ -211,7 +272,7 @@ def _print_full_help(ctx: click.Context) -> None:
     "output_json",
     is_flag=True,
     default=False,
-    help="Output raw JSON instead of formatted tables.",
+    help="Output one versioned JSON document instead of human formatting.",
 )
 @click.option(
     "--brief",
@@ -269,42 +330,35 @@ def status(ctx: click.Context) -> None:
 
     result = _run(_run_status())
 
-    # --json: emit raw result and return
-    if ctx.obj.get("json"):
-        json_data = result.to_dict() if hasattr(result, "to_dict") else result
-        console.print_json(data=json_data)
-        return
+    def _render(data):
+        # Adapt get_status response for format_status_overview.  The command
+        # may return a typed object or a plain dictionary.
+        def _get(obj, key, default=None):
+            if isinstance(obj, dict):
+                return obj.get(key, default)
+            val = getattr(obj, key, default)
+            if type(val).__name__ == "Unset":
+                return default
+            return val
 
-    # Adapt get_status response for format_status_overview.
-    # The formatter expects (projects: list, task_counts: dict).
-    # get_status returns {"tasks": {"by_status": {...}}, "projects": int, ...}
-    # get_status may return a typed object or a dict depending on the dispatch path.
-    def _get(obj, key, default=None):
-        if isinstance(obj, dict):
-            return obj.get(key, default)
-        val = getattr(obj, key, default)
-        if type(val).__name__ == "Unset":
-            return default
-        return val
+        tasks_section = _get(data, "tasks", {})
+        if isinstance(tasks_section, dict):
+            task_counts = tasks_section.get("by_status", {})
+        else:
+            task_counts = _get(tasks_section, "by_status", {})
+        task_counts = {k.upper(): v for k, v in task_counts.items()}
+        num_projects = _get(data, "projects", 0)
+        proj_list = [
+            project_proxy(
+                {"id": f"project-{i}", "name": f"project-{i}", "status": "ACTIVE"}
+            )
+            for i in range(num_projects)
+        ]
+        console.print(format_status_overview(proj_list, task_counts))
 
-    tasks_section = _get(result, "tasks", {})
-    if isinstance(tasks_section, dict):
-        task_counts = tasks_section.get("by_status", {})
-    else:
-        task_counts = _get(tasks_section, "by_status", {})
-    # Formatter expects uppercase status keys
-    task_counts = {k.upper(): v for k, v in task_counts.items()}
+    from .envelope import emit
 
-    # format_status_overview needs project list — but get_status only returns
-    # a count.  Build minimal proxies from the project count.
-    num_projects = _get(result, "projects", 0)
-    proj_list = [
-        project_proxy({"id": f"project-{i}", "name": f"project-{i}", "status": "ACTIVE"})
-        for i in range(num_projects)
-    ]
-
-    panel = format_status_overview(proj_list, task_counts)
-    console.print(panel)
+    emit(ctx, result, render=_render)
 
 
 # ---------------------------------------------------------------------------

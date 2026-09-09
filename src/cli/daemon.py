@@ -174,8 +174,7 @@ def _ensure_docker_postgres() -> bool:
     compose_file = _find_compose_file()
     if not compose_file:
         console.print(
-            "[bold red]Error:[/] docker-compose.yml not found. "
-            "Cannot auto-start PostgreSQL."
+            "[bold red]Error:[/] docker-compose.yml not found. Cannot auto-start PostgreSQL."
         )
         return False
 
@@ -215,9 +214,16 @@ def _ensure_docker_postgres() -> bool:
         try:
             result = subprocess.run(
                 [
-                    "docker", "compose", "-f", compose_file,
-                    "exec", "-T", "postgres",
-                    "pg_isready", "-U", "agent_queue",
+                    "docker",
+                    "compose",
+                    "-f",
+                    compose_file,
+                    "exec",
+                    "-T",
+                    "postgres",
+                    "pg_isready",
+                    "-U",
+                    "agent_queue",
                 ],
                 capture_output=True,
                 timeout=5,
@@ -358,7 +364,9 @@ def start_daemon() -> bool:
             except urllib.error.HTTPError as exc:
                 exc.close()
                 if exc.code == 503:
-                    console.print("[yellow]Daemon is running with degraded health; run aq doctor.[/]")
+                    console.print(
+                        "[yellow]Daemon is running with degraded health; run aq doctor.[/]"
+                    )
                     ready = True
                     break
             except (urllib.error.URLError, OSError):
@@ -454,9 +462,7 @@ def stop_agent_sessions(quiet: bool = False) -> int:
         return 0
 
     names = [
-        n.strip()
-        for n in listed.stdout.splitlines()
-        if n.strip().startswith(_AQ_SESSION_PREFIXES)
+        n.strip() for n in listed.stdout.splitlines() if n.strip().startswith(_AQ_SESSION_PREFIXES)
     ]
     stopped = 0
     for name in names:
@@ -569,9 +575,7 @@ def _start_dashboard() -> bool:
     """Daemonize ``npm -w dashboard run dev`` and write a PID file. Returns True on success."""
     repo = _repo_root()
     if repo is None:
-        console.print(
-            "[yellow]Cannot locate the agent-queue repo to launch the dashboard.[/]"
-        )
+        console.print("[yellow]Cannot locate the agent-queue repo to launch the dashboard.[/]")
         return False
     if not (repo / "dashboard" / "node_modules").exists():
         console.print(
@@ -655,8 +659,16 @@ def _maybe_prompt_dashboard(no_dashboard: bool) -> None:
 
 @cli.command("start")
 @click.option("--no-dashboard", is_flag=True, help="Skip the dashboard prompt.")
-def daemon_start(no_dashboard: bool) -> None:
+@click.pass_context
+def daemon_start(ctx: click.Context, no_dashboard: bool) -> None:
     """Start the agent-queue daemon."""
+    from .envelope import reject_json_mode
+
+    reject_json_mode(
+        ctx,
+        "aq start",
+        "daemon lifecycle output is subprocess progress and may prompt for the dashboard",
+    )
     _warn_harness_environment("start")
     if not start_daemon():
         raise SystemExit(1)
@@ -669,7 +681,8 @@ def daemon_start(no_dashboard: bool) -> None:
     is_flag=True,
     help="Leave agent tmux sessions running (they are re-adopted on next start).",
 )
-def daemon_stop(keep_sessions: bool) -> None:
+@click.pass_context
+def daemon_stop(ctx: click.Context, keep_sessions: bool) -> None:
     """Stop the agent-queue daemon and its agent sessions.
 
     Agent sessions are stopped too: they outlive the daemon by design so a
@@ -677,6 +690,13 @@ def daemon_stop(keep_sessions: bool) -> None:
     stop means agents working against a dead API with no way to report back.
     Pass ``--keep-sessions`` to preserve them.
     """
+    from .envelope import reject_json_mode
+
+    reject_json_mode(
+        ctx,
+        "aq stop",
+        "daemon lifecycle output is local process and tmux progress",
+    )
     stopped = stop_daemon()
     if keep_sessions:
         if stopped:
@@ -689,13 +709,21 @@ def daemon_stop(keep_sessions: bool) -> None:
 
 @cli.command("restart")
 @click.option("--no-dashboard", is_flag=True, help="Skip the dashboard prompt.")
-def daemon_restart(no_dashboard: bool) -> None:
+@click.pass_context
+def daemon_restart(ctx: click.Context, no_dashboard: bool) -> None:
     """Restart the agent-queue daemon.
 
     Agent sessions are deliberately left running — ``sessions.adopt_on_start``
     re-adopts them, so in-flight work survives the restart. Use ``aq stop`` to
     end them.
     """
+    from .envelope import reject_json_mode
+
+    reject_json_mode(
+        ctx,
+        "aq restart",
+        "daemon lifecycle output is subprocess progress and may prompt for the dashboard",
+    )
     _warn_harness_environment("restart")
     stop_daemon(quiet=True)
     time.sleep(1)

@@ -52,6 +52,8 @@ class FormatterSpec:
     many: bool = True
     sort_key: Callable | None = None
     empty_message: str | None = None
+    entity: str | None = None
+    output_extract: str | None = None
 
 
 # The registry: command_name → FormatterSpec
@@ -66,6 +68,8 @@ def formatter_for(
     many: bool = True,
     sort_key: Callable | None = None,
     empty_message: str | None = None,
+    entity: str | None = None,
+    output_extract: str | None = None,
 ):
     """Decorator to register a render function for a command."""
 
@@ -77,13 +81,51 @@ def formatter_for(
             many=many,
             sort_key=sort_key,
             empty_message=empty_message,
+            entity=entity,
+            output_extract=output_extract,
         )
         return fn
 
     return decorator
 
 
-def apply_formatter(command: str, result: dict, console) -> bool:
+def command_output(command: str, result: Any) -> tuple[Any, str | None, int | None]:
+    """Return the documented JSON payload, entity kind, and list total.
+
+    Rich formatters already declare which collection field they render.  The
+    generated CLI reuses that declaration so human and JSON modes describe
+    the same logical payload instead of exposing a wrapper in one mode and a
+    list in the other.  Commands without a declared extraction keep their
+    scalar/object/list payload unchanged.
+    """
+    spec = FORMATTERS.get(command)
+    data = result
+    extract = (spec.output_extract or spec.extract) if spec is not None else None
+    if extract:
+        if isinstance(result, dict):
+            data = result.get(extract, [] if spec.many else result)
+        else:
+            data = getattr(result, extract, [] if spec.many else result)
+            if type(data).__name__ == "Unset":
+                data = [] if spec.many else result
+
+    total = None
+    if isinstance(data, list):
+        for key in ("total", "count"):
+            if isinstance(result, dict):
+                candidate = result.get(key)
+            else:
+                candidate = getattr(result, key, None)
+            if type(candidate).__name__ != "Unset" and isinstance(candidate, int):
+                total = candidate
+                break
+    return data, spec.entity if spec is not None else None, total
+
+
+_NO_OVERRIDE = object()
+
+
+def apply_formatter(command: str, result: dict, console, *, data_override: Any = _NO_OVERRIDE) -> bool:
     """Try to format a command's result using the registry.
 
     Returns True if a formatter was found and applied, False otherwise
@@ -106,8 +148,15 @@ def apply_formatter(command: str, result: dict, console) -> bool:
     if spec is None:
         return False
 
-    # Extract data from result (handle both dicts and typed objects)
-    if spec.extract:
+    # Extract data from result (handle both dicts and typed objects).  The
+    # generated CLI passes a projected override in human --brief mode so Rich
+    # sees the same fields as JSON mode.
+    if data_override is not _NO_OVERRIDE:
+        if spec.output_extract and not spec.extract:
+            data = {spec.output_extract: data_override}
+        else:
+            data = data_override
+    elif spec.extract:
         if isinstance(result, dict):
             data = result.get(spec.extract, [] if spec.many else result)
         else:
@@ -212,6 +261,7 @@ def _register_all():
         many=True,
         sort_key=_task_sort,
         empty_message="No tasks found.",
+        entity="task",
     )
 
     def _render_task_detail(task):
@@ -244,6 +294,7 @@ def _register_all():
         extract=None,
         proxy=task_proxy,
         many=False,
+        entity="task",
     )
 
     # -- Agent commands ------------------------------------------------------
@@ -254,6 +305,7 @@ def _register_all():
         proxy=agent_proxy,
         many=True,
         empty_message="No agents found.",
+        entity="agent",
     )
 
     # -- Task extra commands ---------------------------------------------------
@@ -269,6 +321,7 @@ def _register_all():
         proxy=task_proxy,
         many=True,
         empty_message="No children.",
+        entity="task",
     )
 
     def _render_progress(p):
@@ -357,6 +410,7 @@ def _register_all():
         proxy=agent_proxy,
         many=True,
         empty_message="No agents found.",
+        entity="agent",
     )
     FORMATTERS["list_profiles"] = FormatterSpec(
         render=format_profile_list,
@@ -403,6 +457,7 @@ def _register_all():
         proxy=project_proxy,
         many=True,
         empty_message="No projects found.",
+        entity="project",
     )
 
     # -- Worker pools (global-worker-pools §6.2) -----------------------------
@@ -412,6 +467,7 @@ def _register_all():
         extract="pools",
         many=True,
         empty_message="No worker pools configured.",
+        entity="pool",
     )
 
     # -- Formulas (swarm-work-model §13) -------------------------------------
@@ -425,6 +481,8 @@ def _register_all():
         render=format_workspace_list,
         extract=None,
         many=False,
+        entity="workspace",
+        output_extract="workspaces",
     )
     FORMATTERS["get_project"] = FormatterSpec(
         render=format_entity_detail,
