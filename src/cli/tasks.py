@@ -27,6 +27,51 @@ def _getval(obj: Any, key: str, default: Any = None) -> Any:
     return val
 
 
+def _parse_requires_kinds(values: tuple[str, ...]) -> list[Any]:
+    """Parse repeated ``--requires-kind`` values into ``requires_kinds`` entries.
+
+    The backend (``create_task``, workspaces-v2 spec §5.1) accepts either a
+    bare kind id string or a ``{"kind": ..., "alias": ...}`` object, so the
+    CLI mirrors both shapes with one option:
+
+    * ``--requires-kind game-repo``          -> ``"game-repo"``
+    * ``--requires-kind game-repo=primary``  -> ``{"kind": ..., "alias": ...}``
+
+    The bare form is forwarded as a plain string rather than being expanded
+    into ``{"kind": ..., "alias": None}`` so that what the daemon receives is
+    exactly what an MCP or API caller would send. Whether a *kind* exists is
+    the daemon's call — this only rejects locally malformed values.
+    """
+    entries: list[Any] = []
+    for raw in values:
+        value = raw.strip()
+        if not value:
+            raise click.UsageError(
+                "--requires-kind needs a kind id, e.g. --requires-kind game-repo"
+            )
+        if "=" not in value:
+            entries.append(value)
+            continue
+        parts = value.split("=")
+        if len(parts) != 2:
+            raise click.UsageError(
+                f"--requires-kind {raw!r} has more than one '='; "
+                "the form is KIND[=ALIAS]"
+            )
+        kind, alias = parts[0].strip(), parts[1].strip()
+        if not kind:
+            raise click.UsageError(
+                f"--requires-kind {raw!r} is missing the kind id before '='"
+            )
+        if not alias:
+            raise click.UsageError(
+                f"--requires-kind {raw!r} is missing the alias after '='; "
+                "drop the '=' to require the kind without an alias"
+            )
+        entries.append({"kind": kind, "alias": alias})
+    return entries
+
+
 @cli.group()
 def task() -> None:
     """Task management commands."""
@@ -227,6 +272,18 @@ def _create_task_graph(
         "repo-relative path; a test target is a path or test command line."
     ),
 )
+@click.option(
+    "--requires-kind",
+    "requires_kinds",
+    multiple=True,
+    metavar="KIND[=ALIAS]",
+    help=(
+        "Workspace kind this task needs; repeatable. 'game-repo' requires the kind, "
+        "'game-repo=primary' requires it under an alias so the same kind can be "
+        "required twice. Omit to keep the default single 'project-repo' requirement. "
+        "Not supported with --graph/--from-spec."
+    ),
+)
 @click.pass_context
 @_handle_errors
 def task_create(
@@ -247,6 +304,7 @@ def task_create(
     root: bool,
     reason: str | None,
     deliverables: tuple[str, ...],
+    requires_kinds: tuple[str, ...],
 ) -> None:
     """Create a new task (interactive wizard or via flags).
 
@@ -257,6 +315,15 @@ def task_create(
     ``--graph FILE`` / ``--from-spec PATH`` create a whole dependency graph
     in one transaction instead of a single task; add ``--dry-run`` to see the
     validation report and the ids that would be assigned.
+
+    ``--requires-kind`` declares the workspace kinds the task needs
+    (workspaces-v2 spec §5). It is repeatable and takes either a bare kind id
+    (``--requires-kind game-repo``) or ``KIND=ALIAS``
+    (``--requires-kind game-repo=primary``) when the same kind is needed more
+    than once. Omitting it leaves the task with its default implicit
+    ``project-repo`` requirement. Graph documents carry no per-node
+    requirements, so combining it with ``--graph``/``--from-spec`` is rejected
+    rather than silently dropped.
     """
     api_url = ctx.obj.get("api_url") if ctx.obj else None
 
@@ -264,6 +331,15 @@ def task_create(
         raise click.UsageError("--root and --parent are mutually exclusive")
     if root and (graph_file or from_spec):
         raise click.UsageError("--root only applies to single-task creation")
+    # Parse before the graph branch so a malformed value is reported even on a
+    # path that would go on to reject the option outright.
+    parsed_requires_kinds = _parse_requires_kinds(requires_kinds)
+    if parsed_requires_kinds and (graph_file or from_spec):
+        raise click.UsageError(
+            "--requires-kind is not supported with --graph/--from-spec; graph "
+            "nodes carry no workspace requirements. Create the task on its own "
+            "with --requires-kind, or attach it to the graph afterwards."
+        )
     if graph_file or from_spec:
         _create_task_graph(
             ctx,
@@ -323,6 +399,8 @@ def task_create(
         params["root"] = True
     if reason and "reason" not in params:
         params["reason"] = reason
+    if parsed_requires_kinds:
+        params["requires_kinds"] = parsed_requires_kinds
     if deliverables:
         try:
             parsed = [json.loads(value) for value in deliverables]
