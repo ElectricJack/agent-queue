@@ -113,8 +113,9 @@ async def test_repeated_main_advances_keep_repair_commit_and_member_ancestry(
     assert len(rows) == len(members)
 
 
+@pytest.mark.parametrize("candidate_green", [False, True])
 async def test_conflicting_main_rebuild_uses_current_stage_and_requires_fresh_ci(
-    db, tmp_path
+    db, tmp_path, candidate_green
 ):
     origin, work, base, members = _make_origin(tmp_path)
     await db.update_repo("repo", url=str(origin))
@@ -354,6 +355,14 @@ async def test_conflicting_main_rebuild_uses_current_stage_and_requires_fresh_ci
         head_sha=resolved_head,
     )
     assert set(proof["head_parents"]) == {repaired_head, new_main}
+    if candidate_green:
+        async with db.immediate() as conn:
+            await conn.execute(
+                update(integration_candidate_revisions)
+                .where(integration_candidate_revisions.c.batch_id == "batch",
+                       integration_candidate_revisions.c.revision == adopted.revision)
+                .values(state="green")
+            )
     now["value"] = 115.0
     closed = await repair.complete_delegate(
         active_delegate["id"],
