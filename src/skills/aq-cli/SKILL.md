@@ -65,9 +65,13 @@ aq --help-all | grep -A5 gate     # every gate-related command
 - `--brief` — trims each entity to a compact projection (still readable).
   Composes with `--json`.
 
-Both are options on the top-level `aq` group, so they go **before** the
-subcommand: `aq --json task list` works, while putting `--json` after
-`task list` fails with `No such option: '--json'`.
+Both are **global**: they mean the same thing wherever you put them, so
+`aq task list --json`, `aq task --json list` and `aq --json task list` are
+the same command. Two exceptions: after a passthrough command the flag
+belongs to the child program (`aq test tests/x.py --json` hands `--json` to
+pytest — write `aq --json test …` instead), and a command that declares its
+own `--json` keeps its local meaning (`aq doctor`, `aq logs`,
+`aq system config get`).
 
 Example:
 

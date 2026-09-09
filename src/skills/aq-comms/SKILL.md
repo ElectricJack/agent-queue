@@ -15,8 +15,8 @@ The daemon's message bus carries three kinds of frames: agent → user
 
 ```bash
 aq message inbox                              # your session's pending messages
-aq --json message inbox                       # structured (--json is a
-                                              # top-level flag, before the group)
+aq message inbox --json                       # structured (--json is
+                                              # global: any position works)
 aq message list --project <pid>               # everything sent in a project
 aq message list --thread-id dashboard:<pid>   # filter to a chat thread
 ```

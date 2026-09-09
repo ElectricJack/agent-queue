@@ -113,6 +113,35 @@ from `register_auto_commands` all continue to work (§9).
 
 ## 4. Output Contract
 
+### 4.0 Global option grammar
+
+`--json`, `--brief` and `--api-url` are **global**: they may appear at any position and
+mean the same thing everywhere — before the group, between a group and its subcommand, or
+trailing after the leaf command and its arguments. All of these are equivalent:
+
+```bash
+aq --json task list
+aq task --json list
+aq task list --json
+aq task show task-1 --brief --json
+```
+
+Repeating a flag is allowed and idempotent; a flag given anywhere turns the mode on for the
+whole invocation. Implemented by `src/cli/global_options.py`, which copies the options onto
+every command and group in the tree after registration; each copy writes into the root
+context's `obj`, which is what `emit()` reads.
+
+Two exclusions, both about not stealing a flag from someone else:
+
+- **Passthrough commands** — anything whose `context_settings` set `ignore_unknown_options`
+  (`aq test`, `aq stream start`) forward their trailing argv to a child program, so
+  `aq test tests/x.py --json` hands `--json` to pytest. Use the prefix form
+  (`aq --json test …`) there.
+- **Commands that declare their own option of the same name** — `aq doctor --json`,
+  `aq logs --json`, `aq system config get --json` keep their local meaning.
+
+Everything after a `--` separator is Click's end-of-options boundary and is never consumed.
+
 ### 4.1 Versioned JSON envelope
 
 Every command run with `--json` emits exactly one JSON object on stdout:

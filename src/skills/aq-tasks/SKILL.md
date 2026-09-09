@@ -32,9 +32,9 @@ so do not build a workflow on them:
 ```bash
 aq task list                        # active tasks, current project scope
 aq task list --status IN_PROGRESS   # filter by status
-aq --json --brief task list         # scriptable projection.  --json and
-                                    # --brief are group-level flags: they go
-                                    # before the subcommand, not after it.
+aq task list --json --brief         # scriptable projection.  --json and
+                                    # --brief are global: before the group,
+                                    # after the command, either works.
 aq task get --task-id <task_id>     # single-row summary
 aq task deps --task-id <task_id>    # dependency graph for one task
 aq task get-tree --task-id <task_id>    # subtask tree, expanded
