@@ -7,6 +7,10 @@ tags: [cli, interface]
 A modern, interactive terminal interface for AgentQueue that mirrors Discord
 slash commands with rich formatting, interactive menus, and fuzzy search.
 
+For evidence-backed support status per command, see the maintained
+[CLI command inventory](../reference/cli-command-inventory.md) and the
+[2026-09-09 final acceptance report](../reports/cli-audit-2026-09-08/README.md).
+
 ## Installation
 
 Install the CLI extra dependencies:
@@ -203,7 +207,7 @@ aq test tests/ -k claim                # any pytest arguments; passed through un
 aq test --aq-status                    # slot occupancy: who is holding, who is waiting
 aq test --aq-no-wait tests/            # fail immediately instead of queueing
 aq test --aq-dry-run tests/            # print the pytest command that would run
-aq test --aq-all-markers tests/perf    # skip the default marker deselects
+aq test --aq-all-markers tests/perf    # override the default marker deselects
 aq test --aq-help                      # help (-h/--help belong to pytest)
 ```
 

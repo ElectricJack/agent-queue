@@ -126,7 +126,7 @@ class TestArgvComposition:
         args = _args(
             _compose_pytest_argv(("tests/",), workers=4, markers="not tmux", apply_markers=False)
         )
-        assert "-m" not in args
+        assert args[args.index("-m") + 1] == ""
 
     def test_pytest_args_are_passed_through_verbatim(self):
         args = ("tests/test_x.py::TestY::test_z", "-k", "not slow", "-x", "--lf")

@@ -55,6 +55,33 @@ def test_inventory_labels_registration_ownership_aliases_and_deprecations():
     assert rows["aq plugin logs"]["deprecation"]
 
 
+def test_acceptance_statuses_are_conservative_and_preserve_removed_surfaces():
+    from src.cli.app import cli
+
+    inventory = build_cli_inventory(cli)
+    rows = _by_path(inventory)
+
+    assert rows["aq task create"]["acceptance_status"] == "working"
+    assert rows["aq task create"]["acceptance_evidence"] == [
+        "focused-behavioral-tests",
+        "disposable-daemon:S3/S9",
+    ]
+    assert rows["aq task archive"]["acceptance_status"] == "untested"
+    assert rows["aq task archive"]["acceptance_evidence"] == []
+    assert rows["aq plugin logs"]["acceptance_status"] == "obsolete"
+
+    assert inventory["counts"]["acceptance_status"] == {
+        "working": 55,
+        "broken": 0,
+        "obsolete": 1,
+        "unsupported": 0,
+        "untested": 261,
+    }
+    historical = {row["path"]: row for row in inventory["historical_commands"]}
+    assert historical["aq task ask-human"]["acceptance_status"] == "unsupported"
+    assert historical["aq task tree"]["acceptance_status"] == "obsolete"
+
+
 def test_deprecated_plugin_logs_command_explains_the_supported_replacement():
     from src.cli.app import cli
 
