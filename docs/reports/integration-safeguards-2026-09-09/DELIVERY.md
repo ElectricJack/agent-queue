@@ -68,3 +68,5 @@ Every listed tip must be reachable from the final AQ main before this delivery i
 ## Verified Matter Engine publication
 
 `aq integration sweep matter-engine-cpp` delivered main `dc8a61acdd78bfebd62de4499162ece70a6d20c8`, journal `7e59dfcc-1fec-4f20-89af-ba92caec689f`. A fresh origin fetch reports zero unmerged remote branches. Project remains paused and unimplemented feature children remain open.
+
+Final additions: the completed CLI inventory gate correction (`keen-harbor`, `457bb44f`) is included; its seven focused inventory tests pass. Source scanning now uses one fetched ref snapshot instead of one GitHub request per historical task; all 18 development tests pass. The persisted local check runner is `/home/jkern/.agent-queue/operator-checks/isolated-tests.py` and uses the existing isolated PostgreSQL test container, never the operator database.
