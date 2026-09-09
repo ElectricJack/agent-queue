@@ -79,7 +79,6 @@ They are grouped by category (see `src/tools/registry.py`):
 | `resume_project` | Resume a paused project |
 | `edit_project` | Edit project settings |
 | `set_default_branch` | Set repo default branch |
-| `get_project_for_channel` | Find project for a channel |
 | `delete_project` | Delete a project |
 | `add_workspace` | Add a workspace to a project |
 | `list_workspaces` | List project workspaces |

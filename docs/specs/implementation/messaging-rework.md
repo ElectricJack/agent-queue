@@ -34,6 +34,12 @@ feature.
 
 ## 2. Module layout — `packages/aq-discord/`
 
+> **Superseded (2026-09-08) — never built.** No `packages/aq-discord/` exists and none
+> should be created. The adapter stayed in-tree at `src/discord/` and the daemon still
+> owns the `discord.py` dependency; see the
+> [Discord simplification implementation spec](../../superpowers/specs/2026-09-08-discord-simplification-implementation.md)
+> §3. The layout below is history.
+
 Modeled on `packages/aq-client/` (own pyproject, installable independently). The daemon's
 `pyproject.toml` drops `discord.py` at M4; `aq-discord` owns it from M2.
 
@@ -109,6 +115,11 @@ Ruff line-length 100, py312, fully async — same toolchain as the daemon.
 
 ## 3. Daemon-side changes
 
+> **Partly superseded (2026-09-08).** §3.1's service token landed and is unrelated to
+> Discord. §3.2–3.3 describe a daemon serving a separate bot process that was never built:
+> there is no second process to authenticate, no `aq-discord.yaml`, and the adapter reads
+> the daemon's own objects rather than a REST/WS contract. Read them as history.
+
 ### 3.1 Service token (new)
 
 - Config: `api.auth_tokens: list[str]` (empty = auth disabled, preserving localhost dev).
@@ -161,15 +172,60 @@ overrides but never writes the DB except through `set_project_channel`.
 
 ## 4. Configuration
 
-### 4.1 Daemon `~/.agent-queue/config.yaml`
+> **Superseded (2026-09-08).** The separate-process plan below (a `packages/aq-discord/`
+> bot with its own `~/.agent-queue/aq-discord.yaml`) was **never built**, and the
+> [Discord simplification implementation spec](../../superpowers/specs/2026-09-08-discord-simplification-implementation.md)
+> §3 keeps the adapter in-tree under `src/discord/`. Per-project channels,
+> `auto_create_channels`, `channel_overrides`, the `permissions` / `chat` / `threads`
+> blocks and `messaging_platform` are all gone. §4.1 below is the configuration that
+> actually ships; §4.2 is retained only as history and must not be created.
 
-| Key | Type / default | Notes |
-|---|---|---|
-| `messaging_platform` | `"discord" \| "none"`; default `"discord"` until M4, then `"none"` | `"telegram"` removed at M0 |
-| `api.auth_tokens` | `list[str]`, `[]` | empty disables auth (dev) |
-| `discord.*` | unchanged until M4, then deleted | `bot_token`, `guild_id`, `channels`, `authorized_users`, `per_project_channels`, `rate_guard_*` (verified `src/config.py:73-104`) migrate to `aq-discord.yaml` |
+### 4.1 Daemon `~/.agent-queue/config.yaml` (implemented)
 
-### 4.2 Bot `~/.agent-queue/aq-discord.yaml` (new)
+One process, one config file, one destination. The whole Discord surface is the
+`discord:` block:
+
+```yaml
+discord:
+  bot_token: "…"
+  guild_id: "…"
+  channel_id: "123456789012345678"   # the one shared destination; a snowflake, not a name
+  authorized_users: ["234567890123456789"]
+  digest:
+    enabled: true
+    interval_minutes: 60      # 15–1440
+    project_ids: []           # empty = every project this destination can see
+    categories: [work, vcs, budget, system]
+    catchup_hours: 24         # 1–168
+  escalation:
+    enabled: true
+    mention_user_ids: []
+    mention_role_ids: []
+    reminder_minutes: 0                        # 0 = disabled
+    supervisor_delivery_timeout_minutes: 15    # watchdog
+  rate_guard_warn: 1000
+  rate_guard_critical: 5000
+  rate_guard_halt: 8000
+```
+
+| Key | Fate relative to this plan |
+|---|---|
+| `messaging_platform` | Removed. There is one transport port and one adapter ([[../messaging/base]]). |
+| `discord.channels`, `discord.per_project_channels` | Removed. Old YAML is still *read* as migration input (`legacy_destination_names`, `legacy_inventory_names`) so the cutover pass can resolve a name to an ID, and is otherwise ignored with a startup warning. |
+| `discord.channel_id` | New, required. Empty means "not configured"; a name (rather than a snowflake) is refused at save time. |
+| `discord.authorized_users` | Kept unchanged — the migration preserves the list verbatim. |
+| `discord.rate_guard_*` | Kept unchanged, in the daemon. |
+| `api.auth_tokens` | Unchanged, and no longer load-bearing for Discord: there is no second process to authenticate. |
+
+Operator procedure — channel-selection conflicts, pending-conversation migration,
+digest preview, health and rollback — is the
+[migration runbook](../../guides/discord-migration.md).
+
+### 4.2 Bot `~/.agent-queue/aq-discord.yaml` — never shipped (historical)
+
+The M2 extraction that would have owned this file did not happen, so **no such file
+exists and none should be written**; `aq doctor` has no check for it. Retained below
+only so a reader of the old plan can recognise what was dropped.
 
 ```yaml
 daemon:
@@ -190,8 +246,6 @@ threads: {archive_after_s: 86400}
 catchup: {max_age_s: 21600}
 rate_guard: {warn: 1000, critical: 5000, halt: 8000}
 ```
-
-`aq doctor` gains a check that both files agree (token pair, daemon reachable).
 
 ---
 
@@ -219,6 +273,13 @@ channel set**, never the same channels, to avoid duplicate posting.
 ---
 
 ## 6. Phase checklist
+
+> **Superseded (2026-09-08).** M0–M1 landed; **M2–M4 were removed from the plan, not
+> completed** — the process extraction, the separate `aq-discord.yaml` and the five kept
+> Discord features are all gone. Do not work this checklist. The current ledger of what
+> replaced each control is the
+> [replacement capability checklist](../../guides/discord-replacement-checklist.md), and
+> the operator procedure is the [migration runbook](../../guides/discord-migration.md).
 
 **M0 — Strip (with overhaul Phase 0)**
 - [ ] Delete `src/telegram/`, `[telegram]` extra, `TelegramConfig`, telegram factory branch, telegram spec; migration note for `messaging_platform: telegram` users (hard error with pointer).

@@ -56,11 +56,18 @@ control today would lose a capability.
 | "Discord as control plane" in `docs/index.md`, `profile.md`, `docs/agent-queue-primitives.md` | Notification-only framing, dashboard/CLI as the control plane | Ready |
 | `create_project`'s `auto_create_channels` parameter in `docs/specs/command-handler.md` | Removed from the command and from the docs | Ready |
 | Agent guidance that pointed a worker at "the Discord channel" | `aq-comms` skill: `user:dashboard` for the human, escalations for decisions | Ready; installed copies need a refresh, see [the runbook](discord-migration.md#8-keeping-the-shipped-agent-skills-current) |
+| `messaging-rework.md` §2, §3.2–3.3, §4.2, §6 M2–M4 (the separate `packages/aq-discord/` process and its `aq-discord.yaml`) | Marked superseded and never built; the adapter stays in-tree at `src/discord/` and §4.1 documents the shipped `discord:` block | Ready |
+| `get_project_for_channel` in `docs/specs/mcp-server.md` | Removed; there is no channel→project lookup because there is one shared channel | Ready |
+| `send_message` ("post to a Discord channel") in `docs/guides/agent-tools.md` | `message_send` for agent-to-agent, escalation commands for a human decision; no agent tool posts to Discord | Ready |
 
 ## How to re-check
 
 - Settings, preview and inbox: `aq test tests/test_discord_settings.py tests/test_digest_commands.py`
   and `npx vitest run src/pages/settings/__tests__` from `dashboard/`.
+- Retired surfaces staying retired: `aq test tests/test_discord_docs.py` — the scan fails if
+  any doc names `auto_create_channels`, `per_project_channels`, `channel_overrides`,
+  `aq-discord.yaml` or a project-channel lookup in a section that does not say it is gone,
+  and the tool tables are resolved against the live `CommandHandler`.
 - Surviving direct mutation paths: `rg '_handler\.execute\(' src/discord/` returns only
   the narrow `escalation_reply` adapter boundary; task, gate, playbook, worker-input and
   project mutation commands are absent.

@@ -152,20 +152,27 @@ tailed assistant turn) posts back to the channel. This replaces the in-process
 `Supervisor.chat()` loop, the channel history buffer, and channel summarization — the
 supervisor session owns its own conversation memory (`--resume`).
 
-### 4.5 Minimal slash commands (6)
+### 4.5 Minimal slash commands (6) — removed, none survive
 
-| Command | Backs onto | Why it survives |
+> **Superseded (2026-09-08).** The bot registers **no** slash commands. The cutover
+> unregisters these six from the guild ([Discord simplification implementation spec]
+> (../../superpowers/specs/2026-09-08-discord-simplification-implementation.md) §10) and
+> leaves unrelated guild commands alone. The table is history; the third column records
+> where each capability lives now.
+
+| Removed command | Backed onto | Where it lives now |
 |---|---|---|
-| `/status` | `system_status` | The single highest-frequency glance; answerable in one embed. |
-| `/tasks [project] [status]` | `list_tasks` | Orientation before replying in a thread. |
-| `/explain <task>` | `task_explain` | "Why isn't X running" is *the* support question; explain is built for it ([[work-graph]]). |
-| `/peek <task>` | `session_peek` | See the live pane without leaving Discord; complements thread streaming. |
-| `/gates [project]` | `gate_list` | What is waiting on a human right now. |
-| `/attach <task>` | `session_attach` | Prints the `tmux attach` command — the bridge to the real terminal. |
+| `/status` | `system_status` | Dashboard overview; `aq system status`. |
+| `/tasks [project] [status]` | `list_tasks` | Dashboard Tasks tab; `aq task list`. The hourly digest carries the activity summary nobody has to ask for. |
+| `/explain <task>` | `task_explain` | `aq task explain`; dashboard task detail. |
+| `/peek <task>` | `session_peek` | `aq session peek`; dashboard session view. Discord never streamed a pane again. |
+| `/gates [project]` | `gate_list` | Dashboard gates view; `aq playbook gates`. A gate that needs a human now opens an escalation thread instead of waiting to be discovered. |
+| `/attach <task>` | `session_attach` | `aq session attach`. |
 
-Selection rule: **read-only or navigation only**. Every mutation flows through gate buttons,
-thread replies, supervisor chat, or the dashboard — mutating slash commands are exactly the
-122-command surface we are deleting. Six is the cap; additions require removing one.
+The old selection rule (**read-only or navigation only**, capped at six) is moot: Discord is
+an output surface plus one reply path. The only inbound message the bot acts on is a reply
+in an escalation thread, and that is routed to the owning project supervisor rather than
+executing a command.
 
 ### 4.6 Removed
 

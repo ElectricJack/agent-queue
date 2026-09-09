@@ -4,7 +4,16 @@ tags: [tools, agent, reference]
 
 # Agent Queue — Internal Tool Reference for AI Agents
 
-> **Audience:** AI agents (supervisor LLM, task agents) that call these tools programmatically via the tool-use loop. This is NOT documentation for Discord slash commands or human-facing interfaces.
+> **Audience:** AI agents (supervisor LLM, task agents) that call these tools programmatically via the tool-use loop. This is NOT documentation for human-facing interfaces.
+>
+> There is no agent tool that posts to Discord. Discord is an output surface with one
+> shared channel: the hourly activity digest, and an escalation thread per human
+> decision whose replies return to the owning project supervisor. An agent that needs a
+> human uses the escalation commands (see the [escalations guide](escalations.md));
+> an agent that needs another agent uses `message_send`. Channel selection and
+> delivery are the operator's, in the `discord:` config block — never a tool argument.
+> See the [migration runbook](discord-migration.md) and the
+> [replacement capability checklist](discord-replacement-checklist.md).
 
 All tools are called through [[specs/command-handler|CommandHandler]]`.execute(tool_name, params)`. Parameters are passed as a JSON object. Tools return `{"success": bool, ...}` dicts.
 
@@ -15,8 +24,11 @@ All tools are called through [[specs/command-handler|CommandHandler]]`.execute(t
 To optimize context window usage, tools are split into **core** (always loaded) and **categorized** (loaded on demand). See [[specs/tiered-tools|Tiered Tools]] for the design rationale.
 
 **To discover and load tools:**
-1. Call `browse_tools` (no params) → returns category names with descriptions and tool counts
-2. Call `load_tools(category="git")` → injects that category's tools into your active set
+1. Read the **Tool Index** in your system prompt — the registry renders category names,
+   descriptions and tool counts into it. (There is no `browse_tools` tool; the index
+   replaced it.)
+2. Call `load_tools(category="git")` → injects that category's tools into your active set,
+   or `load_tools(tool_name="git_commit")` for a single tool
 
 Loading is a context optimization only — all tools are always executable on the backend regardless of loading state.
 
@@ -30,10 +42,9 @@ Loading is a context optimization only — all tools are always executable on th
 
 | Tool | What It Does | Parameters |
 |------|-------------|------------|
-| `browse_tools` | List available tool categories | *none* |
-| `load_tools` | Load a tool category into active set | `category` (string, required) |
+| `load_tools` | Load a tool category (or one tool) into the active set | `category` (string) **or** `tool_name` (string) — one is required |
 | `reply_to_user` | **Must call** to deliver final response | `message` (string, required) |
-| `send_message` | Post message to a Discord channel | `channel_id` (string, required), `content` (string, required) |
+| `message_send` | Queue a message to a session, task, profile or user (the transport is the daemon's, not Discord's) | `to_kind` (required: `session`/`task`/`profile`/`user`), `to_id` (required), `body` (required), `from_kind`, `from_id`, `project_id`, `subject` |
 
 ### Task Management
 
