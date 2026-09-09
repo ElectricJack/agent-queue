@@ -11,5 +11,5 @@ Implementation checklist:
 - [x] automatic parent aggregation/root publication with focused validation
 - [x] worker close and planning integration; no duplicate legacy review/merge path
 - [x] stopped-owner preservation and cancellation/adoption reconciliation
-- [ ] status, docs and focused regression/e2e validation
+- [x] status, docs and focused regression/e2e validation
 - [ ] live rollout and remaining branch delivery, including task records

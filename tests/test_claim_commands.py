@@ -896,7 +896,8 @@ class TestClaim:
         Without ``pool.enabled_changed`` among the wake events the disable is
         only noticed when the wait expires, so a worker keeps asking for work
         for up to ``swarm.claim_wait_max`` seconds after its pool was turned
-        off.  Work that became ready in the meantime stays unclaimed.
+        off.  Work that became ready in the meantime stays unclaimed, proving
+        the wake-up re-checks the switch before attempting another claim.
         """
         sid, _ = await pool_session(db, tmp_path)
         waiting = asyncio.Event()

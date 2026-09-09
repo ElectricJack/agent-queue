@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useState } from "react";
-import { Link, useLocation, useParams } from "react-router-dom";
+import { Link, useLocation, useNavigate, useParams } from "react-router-dom";
 import {
   ArrowLeftIcon,
   CheckCircleIcon,
   ExclamationTriangleIcon,
+  TrashIcon,
 } from "@heroicons/react/24/outline";
 import {
   usePlaybooks,
@@ -13,6 +14,7 @@ import {
   type PlaybookUpdateResult,
 } from "../api/hooks";
 import StatusBadge from "../components/StatusBadge";
+import DeletePlaybookModal from "../components/DeletePlaybookModal";
 import PlaybookSemanticReview from "./playbook-graph-v2/PlaybookSemanticReview";
 import MarkdownPreview from "../components/MarkdownPreview";
 
@@ -29,10 +31,20 @@ export default function PlaybookDetail() {
   const location = useLocation();
   const id = playbookId;
   const from = (location.state as { from?: string } | null)?.from ?? "/settings/playbooks";
+  const navigate = useNavigate();
   const [tab, setTab] = useState<TabId>("source");
+  const [confirmDelete, setConfirmDelete] = useState(false);
 
   const { data: playbooks } = usePlaybooks();
-  const meta = useMemo(() => playbooks?.find((p) => p.id === id), [playbooks, id]);
+  // The detail route identifies only the playbook ID.  An ID can be installed
+  // in multiple scopes, so never let an arbitrary catalog row select a scope
+  // for the destructive action.  DeletePlaybookModal will require the operator
+  // to choose the entry from a scoped list row in that case.
+  const matchingPlaybooks = useMemo(
+    () => playbooks?.filter((p) => p.id === id) ?? [],
+    [playbooks, id],
+  );
+  const meta = matchingPlaybooks.length === 1 ? matchingPlaybooks[0] : undefined;
 
   return (
     <div className="h-full overflow-y-auto p-6 space-y-6">
@@ -64,7 +76,27 @@ export default function PlaybookDetail() {
             )}
           </div>
         </div>
+        <button
+          type="button"
+          onClick={() => setConfirmDelete(true)}
+          aria-label={`Delete playbook ${id}`}
+          className="inline-flex shrink-0 items-center gap-1.5 rounded-md border border-red-500/40 px-3 py-1.5 text-sm text-red-300 hover:bg-red-500/10"
+        >
+          <TrashIcon className="h-4 w-4" /> Delete playbook
+        </button>
       </div>
+
+      {/* A deleted playbook has no detail page left to show, so leave for
+          wherever the operator arrived from rather than rendering a shell
+          whose queries now 404. */}
+      <DeletePlaybookModal
+        open={confirmDelete}
+        onClose={() => setConfirmDelete(false)}
+        playbookId={id}
+        scope={meta?.scope}
+        scopeIdentifier={meta?.scope_identifier ?? ""}
+        onDeleted={() => navigate(from)}
+      />
 
 
       <div className="flex items-center gap-1 border-b border-gray-800">

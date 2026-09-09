@@ -57,6 +57,7 @@ def snapshot(**overrides) -> dict:
         "used_percent": 46.0,
         "resets_at": NOW + 3600.0,
         "observed_at": NOW,
+        "last_seen_at": NOW,
         "source": "probe",
     }
     row.update(overrides)
@@ -128,7 +129,7 @@ async def test_a_seeded_stale_row_reports_stale_true(db, client_factory):
     import time
 
     old = time.time() - (DEFAULT_CLAUDE_STALE_AFTER + 60)
-    await db.record_provider_usage([snapshot(observed_at=old)])
+    await db.record_provider_usage([snapshot(observed_at=old, last_seen_at=old)])
     async with client_factory() as client:
         body = (await client.get("/api/providers/usage")).json()
     row = body["snapshots"][0]
@@ -139,7 +140,8 @@ async def test_a_seeded_stale_row_reports_stale_true(db, client_factory):
 async def test_a_fresh_row_reports_stale_false(db, client_factory):
     import time
 
-    await db.record_provider_usage([snapshot(observed_at=time.time() - 30)])
+    fresh = time.time() - 30
+    await db.record_provider_usage([snapshot(observed_at=fresh, last_seen_at=fresh)])
     async with client_factory() as client:
         body = (await client.get("/api/providers/usage")).json()
     assert body["snapshots"][0]["stale"] is False
@@ -174,15 +176,48 @@ def test_staleness_is_measured_from_last_seen_at_not_observed_at():
     assert is_stale(row, NOW) is False
 
 
-def test_last_seen_at_falls_back_to_observed_at_when_the_column_is_absent():
-    """Rows written before ``last_seen_at`` existed still report an honest age.
+async def test_a_re_confirmed_steady_reading_stays_fresh_end_to_end(db, client_factory):
+    """Spec amendment A3, through the storage layer rather than around it.
 
-    Defaulting the missing value to 0 would date every such row to 1970 and
-    call the whole table stale.
+    Record a value, then record the *same* value again much later.  The writer
+    appends no second row, so ``observed_at`` stays six hours old --- but the
+    reading was confirmed a minute ago, and the API must say so.  This is the
+    regression the whole amendment exists for: a healthy account whose number
+    simply has not moved must not be reported as stale.
     """
-    row = snapshot(observed_at=NOW - 60)
-    row.pop("last_seen_at", None)
-    assert is_stale(row, NOW) is False
+    import time
+
+    now = time.time()
+    first = now - 6 * 3600
+    await db.record_provider_usage([snapshot(observed_at=first, last_seen_at=first)])
+    written = await db.record_provider_usage(
+        [snapshot(observed_at=now - 60, last_seen_at=now - 60)]
+    )
+    assert written == 0, "an unchanged reading must not append a second row"
+
+    async with client_factory() as client:
+        body = (await client.get("/api/providers/usage")).json()
+    assert len(body["snapshots"]) == 1
+    row = body["snapshots"][0]
+    assert row["observed_at"] == pytest.approx(first, abs=1.0)
+    assert row["last_seen_at"] == pytest.approx(now - 60, abs=1.0)
+    assert row["stale"] is False
+    assert row["age_seconds"] < 120
+
+
+async def test_a_series_nobody_re_confirmed_goes_stale(db, client_factory):
+    """The other half of the same rule --- freshness must still be losable.
+
+    Same shape as the test above with the second confirmation removed: if
+    ``last_seen_at`` never advanced, the row is exactly as old as it looks.
+    """
+    import time
+
+    first = time.time() - 6 * 3600
+    await db.record_provider_usage([snapshot(observed_at=first, last_seen_at=first)])
+    async with client_factory() as client:
+        body = (await client.get("/api/providers/usage")).json()
+    assert body["snapshots"][0]["stale"] is True
 
 
 def test_a_reading_from_the_future_is_fresh_not_stale():

@@ -812,6 +812,7 @@ _PLAYBOOK_COMMANDS = [
     "playbook_v2_graph",
     "playbook_activation_health",
     "playbook_activate",
+    "playbook_delete",
     # Activation artifacts and the pending-event queue (Package 5).
     "playbook_artifacts",
     "playbook_artifact_diff",

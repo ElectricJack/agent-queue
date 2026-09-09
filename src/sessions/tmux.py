@@ -614,7 +614,10 @@ class TmuxProvider(SessionProvider):
             if pane is None:
                 raise SessionError("No live terminal pane")
             observed = await self._tmux(
-                "show-environment", "-t", f"={h.name}", _META_TOKEN_KEY,
+                "show-environment",
+                "-t",
+                f"={h.name}",
+                _META_TOKEN_KEY,
             )
             if _parse_environment_value(observed, _META_TOKEN_KEY) != h.instance_token:
                 raise SessionError("Terminal session instance changed")
@@ -622,9 +625,15 @@ class TmuxProvider(SessionProvider):
             # Unpark copy mode. A detached TUI may also need a one-time
             # resize signal before accepting input after an idle period.
             with contextlib.suppress(TmuxCommandError):
-                in_mode = (await self._tmux(
-                    "display-message", "-p", "-t", pane, "#{pane_in_mode}",
-                )).strip()
+                in_mode = (
+                    await self._tmux(
+                        "display-message",
+                        "-p",
+                        "-t",
+                        pane,
+                        "#{pane_in_mode}",
+                    )
+                ).strip()
                 if in_mode == "1":
                     await self._tmux("send-keys", "-t", pane, "-X", "cancel")
                 if time.monotonic() - self._last_input_at.get(h.name, 0) > 5:
@@ -772,9 +781,15 @@ class TmuxProvider(SessionProvider):
         if not pending.marker or not _normalize(prefix).strip():
             return None
         try:
-            in_mode = (await self._tmux(
-                "display-message", "-p", "-t", pane, "#{pane_in_mode}",
-            )).strip()
+            in_mode = (
+                await self._tmux(
+                    "display-message",
+                    "-p",
+                    "-t",
+                    pane,
+                    "#{pane_in_mode}",
+                )
+            ).strip()
         except TmuxCommandError:
             return None
         if in_mode == "1":
@@ -786,10 +801,14 @@ class TmuxProvider(SessionProvider):
         if not tail:
             return None
         prefix_text = _normalize(prefix).strip()
+        rendered_prefix = _normalize(prefix).lstrip()
         lines = _normalize(tail).splitlines()
         last_prompt = next(
-            (index for index in range(len(lines) - 1, -1, -1)
-            if lines[index].lstrip().startswith(prefix_text)),
+            (
+                index
+                for index in range(len(lines) - 1, -1, -1)
+                if lines[index].lstrip().startswith(prefix_text)
+            ),
             None,
         )
         if last_prompt is None:
@@ -800,29 +819,40 @@ class TmuxProvider(SessionProvider):
         # Exact text identity is what makes an edited AQ-looking draft a
         # draft, not a command to submit. Wrapped/truncated prompts fail
         # closed rather than accepting a marker collision.
-        # Strip only the rendered prompt and stop at the composer border.
+        # Strip the known rendered prompt and stop at the composer border.
         # A substring match would submit human text prepended/appended to
         # the original injection. Unknown layouts deliberately fail closed.
-        content = [lines[last_prompt].lstrip()[len(prefix_text):].lstrip(" ")]
-        for line in lines[last_prompt + 1:]:
+        prompt_line = lines[last_prompt].lstrip()
+        if not prompt_line.startswith(rendered_prefix):
+            return None
+        content = [prompt_line[len(rendered_prefix) :]]
+        for line in lines[last_prompt + 1 :]:
             border = line.strip()
             if len(border) >= 8 and set(border) <= {"─", "━"}:
                 break
             content.append(line)
         if prefix_text == "›":
             # Codex renders a blank separator and a status footer below input.
-            # Remove only recognizable footer text followed solely by padding.
+            # Remove only a recognisable footer followed solely by literal
+            # terminal-padding lines; arbitrary text remains part of the draft.
             for index in range(1, len(content)):
                 footer = content[index].strip()
                 known = bool(re.fullmatch(r"\d+% context left", footer)) or bool(
                     re.fullmatch(r"(?:gpt|o\d)[\w. -]* · .+", footer)
                 )
-                if known and not content[index - 1].strip() and all(
-                    not row.strip() for row in content[index + 1:]
+                if (
+                    known
+                    and not content[index - 1].strip()
+                    and all(row == "" for row in content[index + 1 :])
                 ):
-                    content = content[:index - 1]
+                    content = content[: index - 1]
                     break
-        return "\n".join(content).strip() == _normalize(pending.text).strip()
+            # ``capture-pane`` includes the frame's empty padding below the
+            # Codex composer.  It is not payload; remove literal empty rows
+            # only, never whitespace or any user-supplied text.
+            while content and content[-1] == "":
+                content.pop()
+        return "\n".join(content) == _normalize(pending.text)
 
     async def _submit(
         self,
@@ -912,9 +942,7 @@ class TmuxProvider(SessionProvider):
         if cached is not None:
             return cached if cached.instance_token == h.instance_token else None
         try:
-            value = await self._tmux(
-                "show-environment", "-t", f"={h.name}", _PENDING_SUBMIT_KEY
-            )
+            value = await self._tmux("show-environment", "-t", f"={h.name}", _PENDING_SUBMIT_KEY)
         except TmuxCommandError:
             return None
         pending = _PendingSubmit.decode(_parse_environment_value(value, _PENDING_SUBMIT_KEY))

@@ -327,13 +327,18 @@ class TestMarkerOnInputLine:
         assert _submit_pending(tail, MARKER, prefix) is True
 
 
-@pytest.mark.parametrize("edit", [
-    lambda text: "human prefix " + text,
-    lambda text: text + " human suffix",
-    lambda text: text + "\nhuman continuation",
-    lambda text: "human continuation\n" + text,
-])
+@pytest.mark.parametrize(
+    "edit",
+    [
+        lambda text: "human prefix " + text,
+        lambda text: text + " human suffix",
+        lambda text: text + "\nhuman continuation",
+        lambda text: "human continuation\n" + text,
+    ],
+    ids=["prepended", "appended", "newline-appended", "newline-prepended"],
+)
 async def test_recovery_refuses_human_text_surrounding_injection(fast_polls, edit):
+    """A preserved AQ marker never authorizes Enter for an edited draft."""
     composer = FlakyComposer(ignore_enters=99)
     with pytest.raises(NotSubmitted):
         await provider_for(composer).nudge(handle(), REMINDER)
@@ -341,6 +346,7 @@ async def test_recovery_refuses_human_text_surrounding_injection(fast_polls, edi
     composer.typed = True
     composer.mutations.clear()
     restarted = provider_for(composer)
+
     assert await restarted.pending_submit(handle()) is None
     assert await restarted.resubmit_pending(handle()) is False
     assert composer.submitted == []

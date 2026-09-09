@@ -107,6 +107,69 @@ async def test_an_unchanged_repeat_of_the_newest_row_is_dropped(any_db):
     assert await count_rows(any_db) == 1
 
 
+async def test_an_insert_sets_last_seen_at_to_observed_at(any_db):
+    """A brand new value has been confirmed exactly once, when it appeared."""
+    await any_db.record_provider_usage([snap(observed_at=1_000.0)])
+
+    row = (await any_db.latest_provider_usage())[0]
+    assert row["observed_at"] == 1_000.0
+    assert row["last_seen_at"] == 1_000.0
+
+
+async def test_a_dropped_repeat_still_advances_last_seen_at(any_db):
+    """Spec amendment A3 --- the reason the column exists.
+
+    Dropping the row is right (the value did not move) but the *confirmation*
+    is information: without it a reader cannot tell a window steady at 88%
+    from a producer that died an hour ago, and would call the healthy one
+    stale.  ``observed_at`` must not move, or the sparkline would grow a step
+    where nothing happened.
+    """
+    await any_db.record_provider_usage([snap(observed_at=1_000.0)])
+
+    written = await any_db.record_provider_usage([snap(observed_at=5_000.0)])
+
+    assert written == 0
+    assert await count_rows(any_db) == 1
+    row = (await any_db.latest_provider_usage())[0]
+    assert row["observed_at"] == 1_000.0
+    assert row["last_seen_at"] == 5_000.0
+
+
+async def test_last_seen_at_never_walks_backwards(any_db):
+    """``max(last_seen_at, observed_at)`` --- a replayed old reading is not news."""
+    await any_db.record_provider_usage([snap(observed_at=1_000.0)])
+    await any_db.record_provider_usage([snap(observed_at=5_000.0)])
+
+    await any_db.record_provider_usage([snap(observed_at=2_000.0)])
+
+    assert (await any_db.latest_provider_usage())[0]["last_seen_at"] == 5_000.0
+
+
+async def test_a_batch_of_repeats_writes_one_row_seen_at_the_newest_clock(any_db):
+    """Dedup within a batch still has to carry the last confirmation out."""
+    written = await any_db.record_provider_usage(
+        [snap(observed_at=1_000.0), snap(observed_at=1_030.0), snap(observed_at=1_060.0)]
+    )
+
+    assert written == 1
+    row = (await any_db.latest_provider_usage())[0]
+    assert row["observed_at"] == 1_000.0
+    assert row["last_seen_at"] == 1_060.0
+
+
+async def test_a_new_value_starts_its_own_confirmation_clock(any_db):
+    """The superseded row's ``last_seen_at`` is not touched by its successor."""
+    await any_db.record_provider_usage([snap(used_percent=88.0, observed_at=1_000.0)])
+
+    await any_db.record_provider_usage([snap(used_percent=89.0, observed_at=4_000.0)])
+
+    row = (await any_db.latest_provider_usage())[0]
+    assert row["used_percent"] == 89.0
+    assert row["observed_at"] == 4_000.0
+    assert row["last_seen_at"] == 4_000.0
+
+
 async def test_a_changed_percent_always_writes(any_db):
     await any_db.record_provider_usage([snap(used_percent=88.0)])
 

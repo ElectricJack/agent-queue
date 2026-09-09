@@ -18,19 +18,12 @@ interface Props {
   value: string[];
   onChange: (tools: string[]) => void;
   enabledServers: string[];
-  /**
-   * Profile's model. Determines whether Claude Code's built-in tools
-   * (Read/Edit/Bash/etc.) apply — they only exist when the agent runs
-   * through the Claude CLI adapter. Empty / non-claude-* models use the
-   * chat provider and don't get them.
-   */
-  model: string;
 }
 
 interface Group {
   key: string;
   label: string;
-  kind: "claude" | "builtin-mcp" | "mcp";
+  kind: "harness" | "builtin-mcp" | "mcp";
   serverName: string | null;
   serverProjectId: string | null | undefined;
   tools: ToolEntry[];
@@ -41,25 +34,23 @@ interface ToolEntry {
   description: string | null;
 }
 
-const CLAUDE_CODE_TOOLS: ToolEntry[] = [
+// The names a CLI harness understands directly — kept in lockstep with
+// HARNESS_TOOL_NAMES in src/profiles/capabilities.py. A name outside that set
+// is classified as an aq command on save, so listing extras here would write
+// them into the wrong capability namespace and get them denied at dispatch.
+const HARNESS_TOOLS: ToolEntry[] = [
+  { toolName: "Bash", description: "Run shell commands (how a session reaches the aq CLI)" },
   { toolName: "Read", description: "Read file contents" },
   { toolName: "Write", description: "Write/create files" },
   { toolName: "Edit", description: "Edit existing files" },
-  { toolName: "Bash", description: "Run shell commands" },
   { toolName: "Glob", description: "Find files by pattern" },
   { toolName: "Grep", description: "Search file contents" },
+  { toolName: "Skill", description: "Execute a skill/slash command" },
   { toolName: "WebSearch", description: "Search the web" },
   { toolName: "WebFetch", description: "Fetch and process URL content" },
-  { toolName: "NotebookEdit", description: "Edit Jupyter notebooks" },
-  { toolName: "Agent", description: "Launch sub-agents" },
-  { toolName: "TodoRead", description: "Read task list" },
+  { toolName: "Task", description: "Launch sub-agents" },
   { toolName: "TodoWrite", description: "Write to task list" },
-  { toolName: "Skill", description: "Execute a skill/slash command" },
-  { toolName: "TaskCreate", description: "Create tracked tasks" },
-  { toolName: "TaskUpdate", description: "Update tracked tasks" },
-  { toolName: "TaskList", description: "List tracked tasks" },
-  { toolName: "TaskGet", description: "Get task details" },
-  { toolName: "EnterWorktree", description: "Create isolated git worktree" },
+  { toolName: "NotebookEdit", description: "Edit Jupyter notebooks" },
 ];
 
 export default function ToolPicker({
@@ -67,16 +58,14 @@ export default function ToolPicker({
   value,
   onChange,
   enabledServers,
-  model,
 }: Props) {
   const { data: catalog, isLoading, error } = useToolCatalog(projectId);
   const probe = useProbeMcpServer();
   const [query, setQuery] = useState("");
 
-  const usesClaudeCode = isClaudeCodeModel(model);
   const rawGroups = useMemo<Group[]>(
-    () => buildGroups(catalog ?? {}, enabledServers, usesClaudeCode),
-    [catalog, enabledServers, usesClaudeCode],
+    () => buildGroups(catalog ?? {}, enabledServers),
+    [catalog, enabledServers],
   );
 
   // Snapshot the selection at the moment the group structure changes (catalog
@@ -229,26 +218,22 @@ export default function ToolPicker({
   );
 }
 
-function isClaudeCodeModel(model: string): boolean {
-  return model.trim().toLowerCase().startsWith("claude");
-}
-
 function buildGroups(
   catalog: Record<string, CatalogEntry>,
   enabledServers: string[],
-  includeClaudeCodeTools: boolean,
 ): Group[] {
-  const groups: Group[] = [];
-  if (includeClaudeCodeTools) {
-    groups.push({
-      key: "claude",
-      label: "Claude Code (built-in)",
-      kind: "claude",
+  // Every agent runs as a CLI harness, so the harness tools always apply.
+  // They are also what makes the aq commands below reachable at all.
+  const groups: Group[] = [
+    {
+      key: "harness",
+      label: "Harness tools (CLI built-ins)",
+      kind: "harness",
       serverName: null,
       serverProjectId: null,
-      tools: CLAUDE_CODE_TOOLS,
-    });
-  }
+      tools: HARNESS_TOOLS,
+    },
+  ];
 
   // Always include the embedded agent-queue server (auto-injected at task launch).
   // Embedded tools are stored as BARE names in profile.allowed_tools — the
