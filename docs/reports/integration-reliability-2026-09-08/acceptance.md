@@ -1170,3 +1170,24 @@ waiting for deep-high capacity (project2 busy, fleet2 busy+1 idle, maximum3).
 bright-vault was corrected to actionable resume diagnostics and documentation
 of this existing guarded sequence. Do not relax owner checks to re-verify a red
 aggregate. CLI repair is resumed; repaired CI and parent delivery remain open.
+
+### CLI repair assigned after resolving blocked pool demand
+
+Public session sleep exposed a pool bug: idle Matter session8e6ee stayed running
+with desired_state sleeping because _step_drain_ack only handles stopped pool
+intent. Filed agile-crest. Used public instance-fenced kill after confirming it
+held no task; its tmux handle disappeared and state became stopped. Scheduler
+initially replaced it in Matter because nimble-dune.2 still advertised READY
+while failing ownership preparation. Operator paused .2 explicitly until
+fresh-rapids recovery is deployed, recorded the resume requirement, then stopped
+its new taskless idle sessiona9548689 through the public command.
+
+Without increasing limits, AQ placed deep-high sessionfa6bcd59 in agent-queue.
+It successfully claimed repair-81d0aaee-...-1: task IN_PROGRESS, agent-eb5e4f506853,
+session running, claim_phase active, last_claim_result claimed. Exact tmux
+p-deep-high-codex--agent-queue--80bb85cb has live pane1693240. CLI aggregate
+repair is now actually running, not merely resumed/READY. Its final CI and
+parent delivery remain unverified.
+
+Matter .2 must be explicitly resumed after guarded ownership recovery. This
+pause is temporary; the Matter epics remain required acceptance workloads.
