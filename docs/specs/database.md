@@ -2225,6 +2225,39 @@ Playbook artifacts an outbox event pins until it is delivered.
 | `event_id` | TEXT | PK, REFERENCES integration_outbox(id) ON DELETE CASCADE | Outbox row |
 | `artifact_sha256` | TEXT | PK, REFERENCES playbook_artifacts(artifact_sha256) ON DELETE RESTRICT | Pinned artifact; indexed |
 
+### Table: `development_deliveries`
+
+The development-mode delivery journal: one row per Git fact the daemon
+executed (or decided) against a repository's target ref, kept separate from
+the task episode tables so a publication that outlives a batch is still
+auditable.  `src/integration/development.py` writes a row *before* it touches
+the remote and reconciles it afterwards, so a process death leaves an
+ambiguous `publishing` row to resolve rather than a silent gap.  Configuration
+decisions and preserved-workspace cancellations are journaled here too, with
+an empty `manifest`.
+
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| `id` | TEXT | PRIMARY KEY | Delivery id |
+| `project_id` | TEXT | NOT NULL | Project; indexed with `state` (`idx_development_delivery_project`) |
+| `repository_id` | TEXT | NOT NULL | Repository the ref lives in |
+| `target_ref` | TEXT | NOT NULL | Fully-qualified ref written (e.g. `refs/heads/main`) |
+| `expected_sha` | TEXT | nullable | Remote head the write was leased against; NULL means the ref must not exist |
+| `prepared_sha` | TEXT | nullable | Head that was (or would be) published |
+| `state` | TEXT | NOT NULL | One of: prepared, publishing, delivered, parked, adopted, cancelled (`ck_development_delivery_state`) |
+| `manifest` | JSON | NOT NULL | Tasks the delivery carries: `task_id`, `source_sha`, `acceptance`. Empty for configuration and cancellation rows |
+| `evidence` | JSON | NOT NULL | What the decision rested on — local validation output, `operator_accepted` adoption, `configuration`, or reconciliation facts |
+| `reason` | TEXT | NOT NULL | Operator- or daemon-supplied why, retained for audit |
+| `created_at` | REAL | NOT NULL | Unix timestamp |
+| `updated_at` | REAL | NOT NULL | Unix timestamp |
+
+States move `prepared` → `publishing` → `delivered`.  `parked` is a write that
+was abandoned before it landed (the base moved, or reconciliation proved the
+push never applied); `adopted` records an operator accepting a ref that is
+already at the wanted SHA, as well as a configuration decision; `cancelled`
+records a preserved workspace whose writer was stopped.  Downgrading the
+`a0000000000c` revision refuses to drop the table while any row survives.
+
 ---
 
 ## 4. Projects
