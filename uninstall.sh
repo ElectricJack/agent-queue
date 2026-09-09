@@ -137,6 +137,8 @@ if [[ $remove_user_dir -eq 1 ]]; then
 fi
 
 echo "Removing CLI symlinks in ~/.local/bin (only those pointing into this repo)..."
+# ``agent-queue-mcp`` is a retired entry point; keep it here so a symlink
+# left by an older install still gets removed.
 for binname in aq agent-queue agent-queue-mcp; do
     link="$HOME/.local/bin/$binname"
     if [[ -L "$link" ]]; then

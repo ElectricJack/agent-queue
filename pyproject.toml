@@ -163,8 +163,12 @@ docs = [
 ]
 
 [project.scripts]
+# Every console script must name a module that exists in this tree --
+# tests/test_packaging_entry_points.py enforces that. There is no
+# ``agent-queue-mcp``: the MCP server is embedded in the daemon
+# (``src/embedded_mcp.py``) and served over streamable-http alongside the REST
+# API, so ``agent-queue`` is the only way to start it.
 agent-queue = "src.main:main"
-agent-queue-mcp = "packages.mcp_server.mcp_server:main"
 aq = "src.cli.app:main"
 
 [tool.setuptools.packages.find]
@@ -172,7 +176,10 @@ where = ["."]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
-testpaths = ["tests", "packages"]
+# ``packages/`` holds generated clients (aq-client) and a TypeScript package
+# (aq-ts-client), neither of which carries pytest tests -- listing it here only
+# bought a filesystem walk of node_modules on every collection.
+testpaths = ["tests"]
 # No xdist options (``-n``/``--dist``) here: ``aq test`` adds the box's worker
 # cap plus ``--dist loadfile`` and CI passes them explicitly, while
 # ``pytest -p no:xdist`` (the documented serial path) unloads those options

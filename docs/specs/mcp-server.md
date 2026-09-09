@@ -329,61 +329,61 @@ CommandHandler. They're useful for MCP clients that want to browse data.
 
 ## Connecting Claude Agents via MCP
 
+The MCP server is **embedded in the daemon** (`src/embedded_mcp.py`): it shares
+the daemon's `Orchestrator`, `Database`, `EventBus` and `CommandHandler` rather
+than starting a process of its own, and is served over streamable-http on the
+same uvicorn app as the REST API. There is no standalone `agent-queue-mcp`
+console script — starting the daemon (`agent-queue`, `./run.sh start`) starts
+the MCP server.
+
+### Endpoint
+
+`http://<mcp_server.host>:<mcp_server.port>/mcp` — `127.0.0.1:8081` by default.
+
+```yaml
+# ~/.agent-queue/config.yaml
+mcp_server:
+  enabled: true
+  host: 127.0.0.1
+  port: 8081
+  excluded_commands: []
+  inject_into_tasks: true
+```
+
+| Key | Default | Description |
+|------|---------|-------------|
+| `enabled` | `true` | Serve MCP from the daemon at all |
+| `host` | `127.0.0.1` | Bind address (shared with the REST API) |
+| `port` | `8081` | Bind port (shared with the REST API) |
+| `excluded_commands` | `[]` | Merged with the built-in exclusions and `AQ_MCP_EXCLUDED_COMMANDS` |
+| `inject_into_tasks` | `true` | Auto-add the server to every task's `mcp_servers` |
+
 ### Claude Code Configuration
 
-Add to your Claude Code MCP config (`.mcp.json` or project settings):
+With `inject_into_tasks` left on, the daemon writes this entry into every
+task's `mcp_servers` itself and no per-workspace file is needed. To wire up a
+client by hand:
 
 ```json
 {
   "mcpServers": {
     "agent-queue": {
-      "command": "agent-queue-mcp",
-      "args": ["--config", "~/.agent-queue/config.yaml"]
+      "type": "http",
+      "url": "http://127.0.0.1:8081/mcp"
     }
   }
 }
-```
-
-### Entry Point
-
-```bash
-# Default (stdio transport, default config path)
-agent-queue-mcp
-
-# Custom config
-agent-queue-mcp --config /path/to/config.yaml
-
-# SSE transport on custom port
-agent-queue-mcp --transport sse --port 9000
-
-# Debug logging
-agent-queue-mcp --debug
-```
-
-CLI arguments:
-
-| Flag | Default | Description |
-|------|---------|-------------|
-| `--config` | `~/.agent-queue/config.yaml` | Path to config YAML |
-| `--db` | *(from config)* | SQLite path (deprecated, use --config) |
-| `--transport` | `stdio` | Transport: `stdio`, `sse`, `streamable-http` |
-| `--port` | `8000` | Port for SSE/HTTP transport |
-| `--debug` | off | Enable debug logging to stderr |
-
-The entry point is defined in `pyproject.toml`:
-
-```toml
-[project.scripts]
-agent-queue-mcp = "packages.mcp_server.mcp_server:main"
 ```
 
 ## Key Files
 
 | File | Purpose |
 |------|---------|
-| `packages/mcp_server/mcp_server.py` | Main server -- lifespan, tool registration, resources, prompts, CLI |
-| `packages/mcp_server/mcp_interfaces.py` | Serialization helpers, URI schemes |
-| `packages/mcp_server/test/test_mcp_server.py` | Tests -- registration, delegation, drift detection |
+| `src/embedded_mcp.py` | Embedded server -- lifespan, uvicorn supervision, FastAPI mount |
+| `src/mcp_registration.py` | Tool, resource and prompt registration from the shared registry |
+| `src/mcp_interfaces.py` | Serialization helpers, URI schemes |
+| `tests/test_mcp_server.py` | Tests -- registration, delegation, drift detection |
+| `tests/test_embedded_mcp.py` | Tests -- mount, lifespan, restart behaviour |
 | `src/tools/registry.py` | `_ALL_TOOL_DEFINITIONS` -- the source of truth for tool schemas |
 | `src/command_handler.py` | [[specs/command-handler|CommandHandler]].execute() -- the single execution layer |
 
