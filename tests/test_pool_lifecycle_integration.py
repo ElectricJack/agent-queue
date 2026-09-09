@@ -118,6 +118,10 @@ async def orch(db, config):
     o.session_spec_builder._intelligence_classes = dict(_CLASSES)
     o.db = db
     o._agent_reconciler._db = db
+    # The reconciler is also built in ``Orchestrator.__init__``.  Keep its
+    # observation/recovery pass on this fixture's initialized adapter rather
+    # than the constructor's uninitialized production adapter.
+    o.session_reconciler.db = db
     o.git = MagicMock()
     # Pool launch installs the managed git excludes before it hands a
     # checkout to a session (src/orchestrator/pools.py), which reaches for

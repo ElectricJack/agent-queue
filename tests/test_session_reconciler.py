@@ -877,6 +877,7 @@ class TestPoolPrepareTimeout:
 class TestAbandonedPoolClaimLoop:
     async def _failed_idle_pool(self, db, provider, *, sid="pool-idle", **overrides):
         """A live worker which received ``prepare_failed`` and then went quiet."""
+        overrides.setdefault("last_activity", NOW - 1_000)
         return await _session(
             db,
             provider,
@@ -885,7 +886,6 @@ class TestAbandonedPoolClaimLoop:
             name=f"p-{sid}",
             lifecycle="pool",
             last_claim_result="prepare_failed",
-            last_activity=NOW - 1_000,
             **overrides,
         )
 
