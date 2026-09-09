@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import time
 from collections.abc import Callable
+from contextlib import asynccontextmanager
+from src.database.tables import task_session_attempts
 
 from sqlalchemy import or_, select, update
 
@@ -975,3 +977,208 @@ __all__ = [
     "acquire_for_task",
     "effective_requirements",
 ]
+
+
+async def orphaned_integration_pool_handoff_is_recoverable(db, owner: dict) -> dict | None:
+    """Return the exact retired pool attachment that may be detached safely.
+
+    This is deliberately more restrictive than the normal pool-close proof.
+    It is only for the historical ordering bug where ``release_claim`` had
+    already dropped the session/task and workspace/task bindings before the
+    attached owner was handed off.  The old session must be demonstrably
+    stopped, its attempt must name this owner task and exact session launch,
+    and no later session may have reused its agent/worktree identity.
+    """
+    session_id = owner.get("session_id")
+    workspace_id = owner.get("workspace_id")
+    if not session_id or not workspace_id:
+        return None
+    async with db.immediate() as conn:
+        return await _orphaned_integration_pool_handoff_is_recoverable_on(conn, owner)
+
+
+@asynccontextmanager
+async def orphaned_integration_pool_handoff_exclusion(db, owner: dict):
+    """Hold an exact orphan's workspace exclusion through its Git handoff.
+
+    The recovery proof includes a destructive ``switch --detach``.  Taking a
+    snapshot in one transaction and detaching after it commits leaves a gap in
+    which a new pool claim can reuse the slot.  Keep the owner, retired
+    session, agent, and -- critically -- workspace row locked until the caller
+    has either failed its external proof or recorded the released owner.
+    """
+    async with db.immediate() as conn:
+        yield conn, await _orphaned_integration_pool_handoff_is_recoverable_on(conn, owner)
+
+
+async def _orphaned_integration_pool_handoff_is_recoverable_on(conn, owner: dict) -> dict | None:
+    """Locked implementation of :func:`orphaned_integration_pool_handoff_is_recoverable`."""
+    session_id = owner.get("session_id")
+    workspace_id = owner.get("workspace_id")
+    if not session_id or not workspace_id:
+        return None
+
+    session_row = (
+        (await conn.execute(select(sessions).where(sessions.c.id == session_id).with_for_update()))
+        .mappings()
+        .one_or_none()
+    )
+    owner_row = (
+        (
+            await conn.execute(
+                select(integration_branch_owners)
+                .where(integration_branch_owners.c.id == owner.get("id"))
+                .with_for_update()
+            )
+        )
+        .mappings()
+        .one_or_none()
+    )
+    workspace_row = (
+        (
+            await conn.execute(
+                select(workspaces).where(workspaces.c.id == workspace_id).with_for_update()
+            )
+        )
+        .mappings()
+        .one_or_none()
+    )
+    task_row = (
+        (await conn.execute(select(tasks).where(tasks.c.id == owner.get("owner_id"))))
+        .mappings()
+        .one_or_none()
+    )
+    agent_row = None
+    if session_row is not None and session_row["agent_id"] is not None:
+        agent_row = (
+            (
+                await conn.execute(
+                    select(agents).where(agents.c.id == session_row["agent_id"]).with_for_update()
+                )
+            )
+            .mappings()
+            .one_or_none()
+        )
+    attempt = None
+    if session_row is not None:
+        attempt = (
+            (
+                await conn.execute(
+                    select(task_session_attempts)
+                    .where(
+                        task_session_attempts.c.session_id == session_id,
+                        task_session_attempts.c.task_id == owner.get("owner_id"),
+                        task_session_attempts.c.session_started_at == session_row["started_at"],
+                        task_session_attempts.c.ended_at.is_not(None),
+                        task_session_attempts.c.state == "stopped",
+                    )
+                    .order_by(
+                        task_session_attempts.c.started_at.desc(), task_session_attempts.c.id.desc()
+                    )
+                    .limit(1)
+                )
+            )
+            .mappings()
+            .one_or_none()
+        )
+    newer_session = None
+    if session_row is not None:
+        newer_session = (
+            await conn.execute(
+                select(sessions.c.id)
+                .where(
+                    sessions.c.id != session_id,
+                    sessions.c.agent_id == session_row["agent_id"],
+                    sessions.c.work_dir == session_row["work_dir"],
+                    sessions.c.started_at > session_row["started_at"],
+                )
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+    if (
+        owner_row is None
+        or session_row is None
+        or workspace_row is None
+        or task_row is None
+        or agent_row is None
+        or attempt is None
+        or owner_row["fence_token"] != owner.get("fence_token")
+        or owner_row["owner_id"] != owner.get("owner_id")
+        or owner_row["owner_role"] not in {"worker", "repair", "verifier"}
+        or owner_row["handoff_state"] != "handoff_pending"
+        or owner_row["session_id"] != session_id
+        or owner_row["workspace_id"] != workspace_id
+        or session_row["lifecycle"] != "pool"
+        or session_row["state"] != "stopped"
+        or session_row["desired_state"] != "stopped"
+        or session_row["task_id"] is not None
+        or session_row["work_dir"] != workspace_row["workspace_path"]
+        or session_row["project_id"] != workspace_row["project_id"]
+        or task_row["project_id"] != session_row["project_id"]
+        or task_row["repo_id"] != owner_row["repository_id"]
+        or task_row["branch_name"] != owner_row["ref"]
+        or workspace_row["locked_by_task_id"] is not None
+        or workspace_row["locked_by_agent_id"] != session_row["agent_id"]
+        or agent_row["state"] != AgentState.IDLE.value
+        or agent_row["current_task_id"] is not None
+        or newer_session is not None
+    ):
+        return None
+    return {
+        "session_id": session_id,
+        "workspace_id": workspace_id,
+        "session_instance_token": session_row["instance_token"],
+        "session_started_at": session_row["started_at"],
+        "session_name": session_row["name"],
+        "session_provider": session_row["provider"],
+    }
+
+
+async def mark_orphaned_integration_pool_handoff_released(
+    db,
+    owner: dict,
+    *,
+    session_instance_token: str,
+    session_started_at: float,
+) -> bool:
+    """CAS-release a recovered attachment after its checkout is detached.
+
+    Re-run every identity check at commit time.  In particular, a new session
+    or claim that arrived while Git was proving the checkout makes this a
+    no-op; recovery must never clear or detach a successor's authority.
+    """
+    async with db.immediate() as conn:
+        recovery = await _orphaned_integration_pool_handoff_is_recoverable_on(conn, owner)
+        if recovery is None:
+            return False
+        if (
+            recovery["session_instance_token"] != session_instance_token
+            or recovery["session_started_at"] != session_started_at
+        ):
+            return False
+        return await _mark_orphaned_integration_pool_handoff_released_on(conn, owner, recovery)
+
+
+async def _mark_orphaned_integration_pool_handoff_released_on(
+    conn, owner: dict, recovery: dict
+) -> bool:
+    """Record release while :func:`orphaned_integration_pool_handoff_exclusion` is held."""
+    result = await conn.execute(
+        update(integration_branch_owners)
+        .where(
+            integration_branch_owners.c.id == owner.get("id"),
+            integration_branch_owners.c.fence_token == owner.get("fence_token"),
+            integration_branch_owners.c.owner_id == owner.get("owner_id"),
+            integration_branch_owners.c.handoff_state == "handoff_pending",
+            integration_branch_owners.c.session_id == owner.get("session_id"),
+            integration_branch_owners.c.workspace_id == owner.get("workspace_id"),
+        )
+        .values(
+            handoff_state="released",
+            session_id=None,
+            workspace_id=None,
+            confirmed_workspace_id=recovery["workspace_id"],
+            updated_at=time.time(),
+        )
+    )
+    return result.rowcount == 1
