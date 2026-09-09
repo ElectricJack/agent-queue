@@ -47,8 +47,9 @@ automatic recovery acceptance.
 - As of the latest task inventory, keen-harbor has seven completed children and
   one running child; noble-ridge.1 is running. These counts are snapshots, not
   delivery receipts.
-- Matter Engine (`matter-engine-cpp`) has no queued tasks in the current API
-  inventory. The representative workload still needs selection.
+- Matter Engine now has two real feature epics (`nimble-dune` and `smart-dune`)
+  covering agent-facing selection and procedural command automation; see `matter-engine-plan.md`.
+  Its scheduling is paused pending new-pipeline configuration, not implementation completion.
 
 Each acceptance item requires current persisted state, Git/PR/CI evidence, and
 appropriate focused or scale-test results before it can be checked off.
