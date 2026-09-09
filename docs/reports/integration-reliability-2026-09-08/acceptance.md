@@ -426,3 +426,38 @@ keen-harbor resolution (remote 3eada329, reserved local 5f41738e). Reopened with
 explicit feedback requiring that guarded public recovery and tests. The worker
 also squashed previously reviewed commits; feedback requires preserving those
 reviewed heads by merge and additive fixes. This migration remains unapplied.
+
+## Live terminal recovery and PR-link lock inversion (09:28 UTC)
+
+Terminal recovery passed the isolated real-daemon swarm smoke, 8/8, and was
+loaded with sound-apex51f01a84 in daemon397793. The exact completed
+keen-harbor.8 Claude session was idle at its finished prompt, so the operator
+stopped it through aq session kill. Durable recovery then preserved COMPLETED
+and epoch2, released owner fence2 with confirmed_workspace_id=ws-hollow-plaza,
+cleared both workspace locks and the session task/claim, and recorded stopped
+with end_reason=completed_pool_claim_recovery. Evidence:
+/tmp/aq-terminal-recovery-e2e.log and the read-only owner/task/session checks.
+
+The following integration flush uncovered a separate lock inversion. Its CLI
+returned unknown outcome; no blind replay was made. PostgreSQL showed one
+idle transaction holding the project advisory lock and three waiters for over
+five minutes. Branch materialization takes project then repository lock, while
+recover_completed_pr_links held repository then requested project. The operator
+fixdf2c4389 releases the Git observation lock before the fenced SQL update,
+retaining exact checkpoint/version/status compare-and-swap. The concurrent
+regression deadlocks against deployed31f8aaeb (expected timeout) and passes on
+the fix. Targeted3passed, full completion recovery111passed in73.51s, Ruffpassed.
+Logs: /tmp/aq-pr-recovery-lock-negative-control.log,
+/tmp/aq-pr-recovery-lock-tests.log, /tmp/aq-pr-recovery-area-tests.log.
+Restart with this correction is in progress; no promotion evidence is inferred.
+
+An attempted task creation for disabled-pool routing returned unknown outcome
+while waiting behind that lock; recheck authoritative state after restart
+before retrying. Noble-ridge.6 and.8 have completed. Task.9 was READY but pinned
+to disabled deep-high-claude(max0); public routing now selects enabled
+deep-high-codex at the same intelligence level, behind root priority1.
+
+Matter baseline sharp-nexus completed at a1aa19993e59bf25245deda3d8decff3203b7a52,
+PR7. Exact Actions34333158883 succeeded at09:22:09UTC; worker also reports a
+clean local canonical run with98/98 CTest and package validation. Reviewed
+candidate delivery remains outstanding; feature entry holds remain in place.
