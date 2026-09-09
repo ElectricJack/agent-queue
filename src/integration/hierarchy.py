@@ -553,7 +553,6 @@ class HierarchyIntegration:
             ).limit(1))).scalar_one_or_none()
             attempt = (await conn.execute(select(task_session_attempts.c.id).where(
                 task_session_attempts.c.task_id == task_id,
-                task_session_attempts.c.project_id == task["project_id"],
                 task_session_attempts.c.started_at >= task["created_at"],
             ).limit(1))).scalar_one_or_none()
             manually_paused = (await conn.execute(select(task_metadata.c.value).where(

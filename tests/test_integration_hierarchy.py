@@ -21,6 +21,7 @@ from src.database.tables import (
     tasks,
 )
 from src.git.manager import GitManager
+from src.integration.branch_materialization import BranchMaterializationService
 from src.integration.hierarchy import (
     HierarchyIntegration,
     materialize_exact_branch,
@@ -716,7 +717,10 @@ async def test_never_run_container_starts_collection_only_at_untouched_origin(db
 
 
 @pytest.mark.parametrize("current", [False, True])
-async def test_container_collection_ignores_old_attempt_but_refuses_current_one(db, hierarchy, current):
+@pytest.mark.parametrize("attempt_project", ["p", None, "previous-project"])
+async def test_container_collection_ignores_old_attempt_but_refuses_current_one(
+    db, hierarchy, current, attempt_project
+):
     await _create(db, "epic")
     await hierarchy.file_children("epic", [{"title": "child"}], 0)
     task = await db.get_task("epic")
@@ -728,7 +732,7 @@ async def test_container_collection_ignores_old_attempt_but_refuses_current_one(
             id="old" if not current else "current",
             session_id="old-session",
             task_id="epic",
-            project_id="p",
+            project_id=attempt_project,
             profile_id="worker",
             name="old session",
             lifecycle="task",
@@ -744,6 +748,85 @@ async def test_container_collection_ignores_old_attempt_but_refuses_current_one(
     assert result["outcome"] == ("waiting" if current else "checkpointed")
     if current:
         assert result["reason"] == "current_incarnation_attempt"
+
+
+@pytest.mark.parametrize("attempt_project", [None, "previous-project"])
+async def test_materialization_does_not_select_current_container_attempt_from_any_project(
+    db, hierarchy, monkeypatch, attempt_project
+):
+    await _create(db, "epic")
+    await hierarchy.file_children("epic", [{"title": "child"}], 0)
+    task = await db.get_task("epic")
+    async with db.immediate() as conn:
+        await conn.execute(update(task_branch_origins).where(
+            task_branch_origins.c.task_id.in_(("epic", "epic.1"))
+        ).values(materialized=True, materialized_at=2.0))
+        await conn.execute(insert(task_session_attempts).values(
+            id=f"current-{attempt_project or 'null'}",
+            session_id="old-session",
+            task_id="epic",
+            project_id=attempt_project,
+            profile_id="worker",
+            name="old session",
+            lifecycle="task",
+            harness="test",
+            provider="test",
+            state="stopped",
+            work_dir="/tmp/old",
+            started_at=task.created_at,
+            session_started_at=task.created_at,
+            ended_at=task.created_at,
+        ))
+
+    selected = []
+
+    async def selected_container(task_id):
+        selected.append(task_id)
+        return {"outcome": "checkpointed", "task_id": task_id}
+
+    monkeypatch.setattr(hierarchy, "bootstrap_container_collection", selected_container)
+    service = BranchMaterializationService(db, hierarchy_service_factory=lambda: hierarchy)
+    assert await service.drain_due() == []
+    assert selected == []
+
+
+@pytest.mark.parametrize("operator_hold", [False, True])
+async def test_container_bootstrap_recovers_after_reservation_before_transfer(
+    db, hierarchy, monkeypatch, operator_hold
+):
+    await _create(db, "epic")
+    await hierarchy.file_children("epic", [{"title": "child"}], 0)
+    async with db.immediate() as conn:
+        await conn.execute(update(task_branch_origins).where(
+            task_branch_origins.c.task_id == "epic"
+        ).values(materialized=True, materialized_at=2.0))
+    transfer = hierarchy.ownership.transfer
+
+    async def interrupted(*args, **kwargs):
+        raise RuntimeError("crash before transfer")
+
+    monkeypatch.setattr(hierarchy.ownership, "transfer", interrupted)
+    with pytest.raises(RuntimeError, match="crash before transfer"):
+        await hierarchy.bootstrap_container_collection("epic")
+    reserved = await db.get_integration_checkpoint("epic")
+    assert reserved["episode_id"]
+    monkeypatch.setattr(hierarchy.ownership, "transfer", transfer)
+    if operator_hold:
+        await db.pause_task("epic")
+    result = await hierarchy.bootstrap_container_collection("epic")
+    if operator_hold:
+        assert result["outcome"] == "waiting"
+        assert result["reason"] == "manual_pause"
+        owner = await hierarchy.ownership.get_owner(
+            BranchKey(repository_id="repo", branch="aq/epic")
+        )
+        assert owner["owner_role"] == "worker"
+        assert owner["owner_id"] == "epic"
+        assert (await db.get_integration_checkpoint("epic"))["episode_id"] == reserved["episode_id"]
+        return
+    assert result["outcome"] == "checkpointed"
+    recovered = await db.get_integration_checkpoint("epic")
+    assert recovered["episode_id"] == reserved["episode_id"]
 
 
 async def test_sibling_prerequisite_needs_current_delivery_receipt_before_claim(db, hierarchy):
