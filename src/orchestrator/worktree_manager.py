@@ -1064,6 +1064,7 @@ class WorktreeSlotManager:
         claiming worker is allowed to disturb.
         """
         from src.claim_file import read_claim_file
+        from src.orchestrator.workspace_claim_recovery import retire_stopped_slot_claim
 
         base_ws = await self._base_of_slot_dir(slot_dir)
         if base_ws is None:
@@ -1079,7 +1080,9 @@ class WorktreeSlotManager:
             path = entry.get("path")
             if not path or entry.get("branch") != branch or _norm_path(path) == mine:
                 continue
-            if read_claim_file(path) is not None or _norm_path(path) in live_work_dirs:
+            if _norm_path(path) in live_work_dirs:
+                raise GitError(f"branch {branch} is already used by worktree at {path}")
+            if read_claim_file(path) is not None and not await retire_stopped_slot_claim(self.db, path):
                 raise GitError(f"branch {branch} is already used by worktree at {path}")
             logger.warning("Detaching stale worktree %s from %s before claim preparation", path, branch)
             await self.git._arun_unlocked(["switch", "--detach"], cwd=path)

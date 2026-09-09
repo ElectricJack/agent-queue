@@ -134,8 +134,10 @@ async def resolve_integration_route(
             if (
                 isinstance(playbook_id, str)
                 and playbook_id
-                and isinstance(activation_id, str)
-                and activation_id
+                # The historical activation is optional audit metadata. The
+                # runtime admits the pinned artifact through the currently
+                # enabled activation at this stable playbook/scope address.
+                and (activation_id is None or isinstance(activation_id, str))
                 and isinstance(sha, str)
                 and sha
                 and (

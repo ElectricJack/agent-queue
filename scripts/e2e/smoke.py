@@ -761,6 +761,11 @@ def s5_fence_and_scope(state: dict) -> str:
         f"cross-project prime refused for the wrong reason: {err}",
     )
 
+    # Pool bounds are global. Remove this scope-only fixture before closing
+    # the holder frees capacity, or OTHER_PROJECT starts a worker that consumes
+    # one of S7's two required slots for the entire scale-down grace period.
+    aq("task", "delete", "--task-id", foreign)
+    state.pop("s5_foreign", None)
     holder.close(summary="S5 held task")
     return f"cross-session heartbeat and cross-project prime both refused ({foreign})"
 

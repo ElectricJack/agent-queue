@@ -368,7 +368,7 @@ class _AuditForge:
     def calls(self):
         return self.backing["calls"]
 
-    async def lookup_audit_pr(self, *, idempotency_key):
+    async def lookup_audit_pr(self, *, idempotency_key, branch):
         result = self.backing["result"]
         if result is not None and result.idempotency_key == idempotency_key:
             return result
@@ -421,6 +421,7 @@ class _LocalPushGit:
         self.delegate = GitManager()
         self.origin = origin
         self.pushes = []
+        self.fetches = []
 
     def __getattr__(self, name):
         return getattr(self.delegate, name)
@@ -440,6 +441,7 @@ class _LocalPushGit:
         return kwargs["tip_oid"]
 
     async def afetch_exact_oid_with_app_auth(self, destination_git_dir, **kwargs):
+        self.fetches.append(kwargs["oid"])
         result = await self.delegate.arun_git_result(
             [
                 "fetch",
@@ -485,6 +487,7 @@ async def test_many_members_build_in_ordinal_order_without_moving_sources(db, tm
         app_client=app,
         clock=lambda: 100.0,
     ).build("batch")
+    initial_fetches = list(git.fetches)
     replay = await CandidateService(
         db,
         data_dir=tmp_path / "data",
@@ -494,6 +497,7 @@ async def test_many_members_build_in_ordinal_order_without_moving_sources(db, tm
         clock=lambda: 100.0,
     ).build("batch")
 
+    assert git.fetches == initial_fetches
     assert result.outcome == "built"
     assert result.revision == 0
     assert result.head_sha and result.head_sha != base
@@ -577,8 +581,12 @@ async def test_one_member_build_and_local_replay_are_deterministic(db, tmp_path)
     )
 
     built = await service.build("batch")
+    fetched = list(service.git.fetches)
     replay = await service.build("batch")
 
+    assert set(fetched) == {base, members[0][1]}
+    assert len(fetched) == 2  # the member base is shared with the batch base
+    assert service.git.fetches == fetched  # restart/replay downloads no retained input
     assert built.outcome == "built"
     assert replay.outcome == "already_built"
     assert replay.head_sha == built.head_sha
@@ -2742,3 +2750,108 @@ async def test_rebuild_rejects_non_authoritative_base_without_superseding(db, tm
         revision = (await conn.execute(select(integration_candidate_revisions))).mappings().one()
     assert batch["current_revision"] == 0
     assert revision["state"] == "built"
+
+
+@pytest.mark.parametrize("missing_publication", [False, True])
+async def test_background_candidate_ci_recovers_publication_before_attestation(
+    db, tmp_path, missing_publication
+):
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    from src.git.github_app import GitHubRepositoryBinding
+    from src.integration.candidate_ci import CandidateCIService
+    from src.integration.candidates import CandidateService
+
+    origin, _work, base, members = _make_origin(tmp_path)
+    await db.update_repo("repo", url=str(origin))
+    await _seed_batch(db, members=members, base_sha=base)
+    app = _AppClient(origin)
+    app.repository = GitHubRepositoryBinding(repository_id=9, full_name="example/repo")
+    git, forge = _LocalPushGit(origin), _AuditForge()
+    options = {"db": db, "data_dir": tmp_path / "data", "git_manager": git,
+               "app_client": app, "forge_provider": forge, "clock": lambda: 100.0}
+    class BeforePublicationCrash(CandidateService):
+        async def _publish(self, state, revision, store):
+            raise RuntimeError("before_publication")
+
+    crashed = (BeforePublicationCrash(**options) if missing_publication else CandidateService(
+        **options, crash_hook=_CrashOnce("after_candidate_push")
+    ))
+    with pytest.raises(RuntimeError, match="before_publication|after_candidate_push"):
+        await crashed.build("batch")
+    async with db._engine.connect() as conn:
+        revision = (await conn.execute(select(integration_candidate_revisions))).mappings().one()
+    row = {"batch_id": "batch", "revision": 0, "candidate_sha": revision["head_sha"],
+           "repository_id": "repo", "operation_id": "repair-batch-batch"}
+
+    async def observe(row, now):
+        async with db._engine.connect() as conn:
+            publication = (await conn.execute(
+                select(integration_candidate_publications)
+            )).mappings().one()
+        assert publication["state"] == "pr_published"
+        assert publication["head_sha"] == row["candidate_sha"]
+        return {"outcome": "observed"}
+
+    factory = AsyncMock(return_value=CandidateService(**options))
+    poller = CandidateCIService(db, candidate_service_factory=factory,
+                               attestation=SimpleNamespace(handle_candidate_ci=observe))
+    assert await poller.handle(row, 100.0) == {"outcome": "observed"}
+    assert await poller.handle(row, 101.0) == {"outcome": "observed"}
+    factory.assert_awaited_once()
+    assert len(git.pushes) == 1
+    assert len(forge.calls) == 1
+
+
+@pytest.mark.parametrize("case", ["closed", "running", "wrong_subject", "not_adopted"])
+async def test_candidate_reclaims_only_exact_closed_adopted_repair(db, tmp_path, case):
+    from src.git.github_app import GitHubRepositoryBinding
+    from src.integration.candidates import CandidateService
+    from src.integration.models import BranchKey, Fence
+    from src.models import Task, TaskStatus
+
+    origin, _work, base, members = _make_origin(tmp_path)
+    await db.update_repo("repo", url=str(origin))
+    await _seed_batch(db, members=members[:1], base_sha=base)
+    app = _AppClient(origin)
+    app.repository = GitHubRepositoryBinding(repository_id=9, full_name="example/repo")
+    service = CandidateService(db, data_dir=tmp_path / "data", git_manager=_LocalPushGit(origin),
+                               app_client=app, forge_provider=_AuditForge(), clock=lambda: 100.0)
+    await service.build("batch")
+    state = await service._locked_state("batch")
+    target = BranchKey(repository_id="repo", branch=state["batch"]["integration_branch"])
+    await db.create_task(Task(
+        id="closed-repair", project_id="p", repo_id="repo", title="Repair", description="Adopted candidate repair",
+        status=TaskStatus.IN_PROGRESS if case == "running" else TaskStatus.COMPLETED,
+        branch_name=target.branch, created_by_kind="integration_repair",
+        created_by_id=state["operation"]["id"],
+    ))
+    owner = await service.ownership.get_owner(target)
+    repair_fence = await service.ownership.transfer(
+        Fence(target=target, owner_id=owner["owner_id"], token=owner["fence_token"]),
+        "closed-repair", "repair",
+    )
+    async with db.immediate() as conn:
+        old = dict((await conn.execute(select(integration_candidate_revisions))).mappings().one())
+        old.update(revision=1, repair_parent_revision=None if case == "not_adopted" else 0)
+        await conn.execute(insert(integration_candidate_revisions).values(**old))
+        await conn.execute(update(integration_batches).where(
+            integration_batches.c.id == "batch").values(current_revision=1))
+        await conn.execute(update(integration_repair_stages).where(
+            integration_repair_stages.c.operation_id == state["operation"]["id"]
+        ).values(repair_task_id="closed-repair", writer_kind="repair_delegate",
+                 current_subject={"kind": "batch", "revision": 1,
+                                  "candidate_sha": "f" * 40 if case == "wrong_subject"
+                                  else old["head_sha"]}))
+    recovered = await service._locked_state("batch")
+    owner = await service.ownership.get_owner(target)
+    if case == "closed":
+        assert not recovered.get("authority_wait")
+        assert owner["owner_role"] == "collector"
+        assert owner["owner_id"] == state["operation"]["id"]
+        assert owner["fence_token"] > repair_fence.token
+    else:
+        assert recovered["authority_wait"]
+        assert owner["owner_id"] == "closed-repair"
+        assert owner["fence_token"] == repair_fence.token
