@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import time
 from collections.abc import Callable
 from typing import Any
@@ -23,6 +24,8 @@ from src.database.tables import (
     integration_repair_stages,
     task_integration_checkpoints,
     task_metadata,
+    sessions,
+    workspaces,
     tasks,
 )
 from src.database.queries.task_queries import TERMINAL_BLOCKED_META_KEY
@@ -65,6 +68,11 @@ class IntegrationRecoveryControls:
                     or not self._has_operator_resume_evidence(operation, stage)
                 ):
                     return self._state_result("invalid_state", operation, project_id)
+                _, delegate_recovery = await self._restore_completed_delegate_on(
+                    conn, operation, stage, validate_only=True
+                )
+                if delegate_recovery is not None:
+                    return self._state_result(delegate_recovery, operation, project_id)
                 transition, recovery = await self._restore_parent_collection_on(
                     conn, operation, allow_paused=True
                 )
@@ -79,6 +87,10 @@ class IntegrationRecoveryControls:
                     return self._state_result(delegate_recovery, operation, project_id)
                 if delegate_transition is not None:
                     transitions.append(delegate_transition)
+                if transitions:
+                    await self._event_on(
+                        conn, operation, project_id, "integration.repair_exhausted", now
+                    )
                 result = {
                     "outcome": "resumed",
                     "operation_id": operation_id,
@@ -92,6 +104,11 @@ class IntegrationRecoveryControls:
             elif stage["state"] not in {"failed", "expired", "cancelled"}:
                 return self._state_result("invalid_state", operation, project_id)
             else:
+                _, delegate_recovery = await self._restore_completed_delegate_on(
+                    conn, operation, stage, validate_only=True
+                )
+                if delegate_recovery is not None:
+                    return self._state_result(delegate_recovery, operation, project_id)
                 transition, recovery = await self._restore_parent_collection_on(
                     conn, operation, allow_paused=False
                 )
@@ -237,6 +254,11 @@ class IntegrationRecoveryControls:
                 )
             )
         ).scalar_one_or_none()
+        encoded_terminal_context = terminal_context
+        try:
+            terminal_context = json.loads(terminal_context)
+        except (TypeError, ValueError):
+            pass  # Older metadata may store the context without JSON encoding.
         if (
             parent["status"] != TaskStatus.BLOCKED.value
             or terminal_context != "integration_repair_exhausted"
@@ -257,7 +279,7 @@ class IntegrationRecoveryControls:
                 .where(
                     task_metadata.c.task_id == operation["parent_task_id"],
                     task_metadata.c.key == TERMINAL_BLOCKED_META_KEY,
-                    task_metadata.c.value == "integration_repair_exhausted",
+                    task_metadata.c.value == encoded_terminal_context,
                 )
                 .exists(),
             ),
@@ -268,7 +290,8 @@ class IntegrationRecoveryControls:
         return transition, None
 
     async def _restore_completed_delegate_on(
-        self, conn: Any, operation: dict[str, Any], stage: dict[str, Any]
+        self, conn: Any, operation: dict[str, Any], stage: dict[str, Any],
+        *, validate_only: bool = False,
     ) -> tuple[Any | None, str | None]:
         """Make an exact, safely released repair delegate dispatchable again.
 
@@ -289,8 +312,39 @@ class IntegrationRecoveryControls:
             return None, "stale"
         if await self.db._read_manual_pause(conn, repair_task_id) is not None:
             return None, "invalid_state"
-        if delegate["status"] != TaskStatus.COMPLETED.value:
-            return None, None
+        if operation["target_kind"] == "parent":
+            target = (await conn.execute(select(tasks).where(
+                tasks.c.id == operation["parent_task_id"]
+            ).with_for_update())).mappings().one()
+            project_id, repo_id, branch = target["project_id"], target["repo_id"], target["branch_name"]
+        else:
+            target = (await conn.execute(select(integration_batches).where(
+                integration_batches.c.id == operation["batch_id"]
+            ).with_for_update())).mappings().one()
+            project_id, repo_id, branch = target["project_id"], target["repository_id"], target["integration_branch"]
+        if (
+            delegate["project_id"] != project_id
+            or delegate["repo_id"] != repo_id
+            or delegate["branch_name"] != branch
+            or delegate["created_by_kind"] != "integration_repair"
+            or delegate["created_by_id"] != operation["id"]
+            or delegate["assigned_agent_id"] is not None
+            or delegate["parent_task_id"] is not None
+        ):
+            return None, "invalid_state"
+        live_session = (await conn.execute(select(sessions.c.id).where(
+            sessions.c.task_id == repair_task_id,
+            (sessions.c.state != "stopped") | sessions.c.claim_phase.is_not(None),
+        ).limit(1))).first()
+        locked_workspace = (await conn.execute(select(workspaces.c.id).where(
+            workspaces.c.locked_by_task_id == repair_task_id
+        ).limit(1))).first()
+        if live_session is not None or locked_workspace is not None:
+            return None, "invalid_state"
+        if delegate["status"] not in {
+            TaskStatus.COMPLETED.value, TaskStatus.PAUSED.value, TaskStatus.READY.value,
+        }:
+            return None, "invalid_state"
         owner = (
             await conn.execute(
                 select(integration_branch_owners)
@@ -302,6 +356,15 @@ class IntegrationRecoveryControls:
             )
         ).mappings().one_or_none()
         if (
+            owner is not None
+            and owner["owner_id"] == operation["id"]
+            and owner["owner_role"] == "collector"
+            and owner["handoff_state"] == "reserved"
+            and owner["session_id"] is None
+            and owner["workspace_id"] is None
+        ):
+            return None, None
+        if (
             owner is None
             or owner["owner_id"] != repair_task_id
             or owner["owner_role"] != "repair"
@@ -310,6 +373,8 @@ class IntegrationRecoveryControls:
             or owner["workspace_id"] is not None
         ):
             return None, "invalid_state"
+        if validate_only or delegate["status"] != TaskStatus.COMPLETED.value:
+            return None, None
         transition = await self.db._apply_transition(
             conn,
             repair_task_id,

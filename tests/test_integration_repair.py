@@ -1582,9 +1582,25 @@ async def test_resumed_event_redispatches_established_repair_delegate(db):
             .values(status=TaskStatus.COMPLETED.value)
         )
 
+    # Delegate rejection must not commit the parent's transition first.
+    async with db.immediate() as conn:
+        await conn.execute(update(tasks).where(
+            tasks.c.id == established["repair_task_id"]
+        ).values(created_by_id="unrelated-operation"))
+    rejected = await IntegrationControlService(db, clock=lambda: 190.0).resume("operation")
+    assert rejected["outcome"] == "invalid_state"
+    assert (await db.get_task("parent")).status is TaskStatus.BLOCKED
+    assert (await db.get_integration_operation("operation"))["state"] == "human_required"
+    assert await db.get_task_meta("parent", "blocked_terminal") == "integration_repair_exhausted"
+    async with db.immediate() as conn:
+        await conn.execute(update(tasks).where(
+            tasks.c.id == established["repair_task_id"]
+        ).values(created_by_id="operation"))
+
     resumed = await IntegrationControlService(db, clock=lambda: 200.0).resume(
         "operation"
     )
+    assert resumed["outcome"] == "resumed", resumed
     async with db._engine.connect() as conn:
         resumed_event = (
             await conn.execute(
