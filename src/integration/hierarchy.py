@@ -97,13 +97,17 @@ async def materialize_exact_branch(git, checkout: str, branch: str, base_sha: st
 async def resolve_workspace_checkpoint(db, git, task: dict, repo: RepoConfig) -> str:
     """Return an owned writer workspace's clean, exactly-pushed current HEAD."""
     workspace = await db.get_workspace_for_task(task["id"])
-    if (
-        workspace is None
-        or workspace.locked_by_task_id != task["id"]
-        or task["repo_id"] != repo.id
-        or not task["branch_name"]
-    ):
-        raise HierarchyError("dirty", "task has no exact owned integration workspace")
+    # Three unrelated causes used to share one message ("task has no exact
+    # owned integration workspace"), which made a refusal indistinguishable
+    # from a genuinely dirty tree and sent operators into the source to tell
+    # them apart.  Name each one: only the workspace causes are something the
+    # holder can act on from the slot.
+    if not task["branch_name"]:
+        raise HierarchyError("dirty", "task has no recorded branch")
+    if workspace is None or workspace.locked_by_task_id != task["id"]:
+        raise HierarchyError("dirty", "workspace is not locked by this task")
+    if task["repo_id"] != repo.id:
+        raise HierarchyError("dirty", "task and integration repository do not match")
     checkout = workspace.workspace_path
     branch = await git.aget_current_branch(checkout, strict=True)
     if branch != task["branch_name"].removeprefix("refs/heads/"):
@@ -170,7 +174,10 @@ async def resolve_workspace_repair_proof(
     head_sha = await resolve_workspace_checkpoint(db, git, task, repo)
     workspace = await db.get_workspace_for_task(task["id"])
     if workspace is None:
-        raise HierarchyError("dirty", "task has no exact owned integration workspace")
+        # ``resolve_workspace_checkpoint`` already proved ownership; only a
+        # concurrent release can land here, so say that rather than repeat its
+        # (now split) refusal wording.
+        raise HierarchyError("dirty", "workspace was released while proving the repair")
     return await resolve_repair_commit_proof(
         git, workspace.workspace_path, base_sha=base_sha, head_sha=head_sha
     )

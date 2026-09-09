@@ -202,6 +202,59 @@ class TestClaim:
         )
         return ownership, fence
 
+    async def test_claim_records_the_branch_its_slot_reset_produced(
+        self, handler, db, tmp_path
+    ):
+        """``tasks.branch_name`` is daemon-owned, and the claim is what knows it.
+
+        The pull path used to throw away ``reset_slot_for_task``'s return
+        value, so every claimed task kept ``branch_name`` NULL.  The push path
+        writes it from ``_prepare_slot_workspace``, and a task that never
+        pushed had no other backfill — which made a development-mode close
+        refuse with "task has no recorded branch" until an operator repaired
+        the row by hand.
+        """
+        await mktask(db, "t1", profile_id="worker")
+        sid, _wd = await pool_session(db, tmp_path)
+
+        result = await scoped(handler, sid)._cmd_task_claim({"next": True})
+
+        assert result["result"] == "claimed"
+        assert result["task"]["branch_name"] == "aq/t"
+        assert (await db.get_task("t1")).branch_name == "aq/t"
+
+    async def test_development_mode_claim_records_the_branch(self, handler, db, tmp_path):
+        """The reported case: development mode's close reads ``branch_name``.
+
+        Development mode is not one of the hierarchy modes, so a claim takes
+        the plain reset path — the one that dropped the branch.  Unlike the
+        hierarchy path (which refuses a claim whose ``branch_name`` disagrees
+        with its canonical origin, and so can never reach activation without
+        one), nothing here required the column to be set, and the omission
+        only surfaced at close time.
+        """
+        await db.create_repo(
+            RepoConfig(
+                id="repo",
+                project_id=PROJECT_ID,
+                source_type=RepoSourceType.LINK,
+                source_path=str(tmp_path),
+            )
+        )
+        await db.update_project(
+            PROJECT_ID,
+            hierarchical_integration_mode="development",
+            integration_repository_id="repo",
+        )
+        await mktask(db, "t-dev", profile_id="worker", repo_id="repo")
+        assert (await db.get_task("t-dev")).branch_name is None
+        sid, _wd = await pool_session(db, tmp_path)
+
+        result = await scoped(handler, sid)._cmd_task_claim({"next": True})
+
+        assert result["result"] == "claimed"
+        assert (await db.get_task("t-dev")).branch_name == "aq/t"
+
     async def test_hierarchy_pool_claim_resets_from_exact_origin_and_attaches(
         self, handler, db, tmp_path
     ):

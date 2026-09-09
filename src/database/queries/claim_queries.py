@@ -471,7 +471,7 @@ class ClaimQueryMixin:
         return slot
 
     async def activate_claim(
-        self, session_id, task_id, *, epoch: int, now: float, conn=None
+        self, session_id, task_id, *, epoch: int, now: float, conn=None, branch_name=None
     ) -> SessionRecord | None:
         """Flip ``preparing`` -> ``active``; the updated row, or ``None``.
 
@@ -479,6 +479,18 @@ class ClaimQueryMixin:
         the caller a re-read to build the response's session block.  Falsy
         on failure, so the old ``if not await activate_claim(...)`` callers
         read unchanged.
+
+        *branch_name* is the branch the caller's slot reset just put the
+        worktree on.  ``tasks.branch_name`` is daemon-owned state that every
+        later git surface reads (`resolve_workspace_checkpoint`, the
+        completion pipeline, `aq task show`), and on the pull path this
+        activation is the only place that knows it: the push path writes it
+        from ``_prepare_slot_workspace``, while a claim used to drop the
+        branch ``reset_slot_for_task`` returned.  A task that never pushed
+        then had no other backfill, so a no-change close in development mode
+        was refused for good.  Writing it here — inside the transaction that
+        already holds this task's row lock, in the same sessions-then-tasks
+        order — makes "claimed" and "branch recorded" the same commit.
         """
 
         async def _run(c):
@@ -510,6 +522,12 @@ class ClaimQueryMixin:
             ).scalar_one_or_none()
             if claim is None:
                 return None
+            if branch_name:
+                await c.execute(
+                    update(tasks)
+                    .where(tasks.c.id == task_id)
+                    .values(branch_name=branch_name, updated_at=now)
+                )
             stmt = (
                 update(sessions)
                 .where(

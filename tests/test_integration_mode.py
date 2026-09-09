@@ -14,7 +14,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from src.config import DatabaseConfig, AppConfig
-from src.git.manager import GitError
+from src.git.manager import GitError, RemoteRefResult, RemoteRefState
 from src.models import (
     Agent,
     AgentProfile,
@@ -1395,3 +1395,87 @@ class TestEmptyBranchIsFlaggedNoCode:
 
         assert await orch._task_proves_no_work(ctx) is False
         assert ctx.no_work_proven is False
+
+
+class TestDevelopmentModeCompletion:
+    """``hierarchical_integration_mode == "development"`` proves the published branch.
+
+    Regression cover for the pull-path bug that made *every* pulled task
+    uncloseable here: ``aq task claim`` never wrote ``tasks.branch_name``, so
+    ``resolve_workspace_checkpoint`` refused the close on its branchless
+    clause — and did it with a message ("task has no exact owned integration
+    workspace") that named none of its three causes, which read like a dirty
+    tree the worker could fix from the slot.  A task with no commits never
+    pushes, so nothing else ever backfilled the column.
+    """
+
+    HEAD = "a" * 40
+
+    async def _dev_ctx(self, orch, task_id, branch):
+        from sqlalchemy import update as sa_update
+
+        from src.database.tables import workspaces as workspaces_table
+
+        await orch.db.create_repo(
+            RepoConfig(
+                id="r-1",
+                project_id="p-1",
+                source_type=RepoSourceType.LINK,
+                default_branch="main",
+            )
+        )
+        await orch.db.update_project(
+            "p-1", hierarchical_integration_mode="development", integration_repository_id="r-1"
+        )
+        task = _direct_task(task_id, branch_name=branch, repo_id="r-1")
+        await orch.db.create_task(task)
+        async with orch.db._engine.begin() as conn:
+            await conn.execute(
+                sa_update(workspaces_table)
+                .where(workspaces_table.c.id == "ws-1")
+                .values(locked_by_task_id=task_id)
+            )
+        # A clean slot sitting on the task branch with nothing ahead of the
+        # target ref: `status --porcelain` empty, HEAD an exact OID, the branch
+        # present on the remote at that same commit.
+        orch.git.aget_current_branch = AsyncMock(return_value=branch or "main")
+        orch.git._arun = AsyncMock(side_effect=["", self.HEAD])
+        orch.git.als_remote_ref = AsyncMock(
+            return_value=RemoteRefResult(RemoteRefState.PRESENT, oid=self.HEAD)
+        )
+        orch.git.areserved_paths_in_diff = AsyncMock(return_value=[])
+        ws = await orch.db.get_workspace("ws-1")
+        return task, _ctx(orch, task, ws.workspace_path)
+
+    async def test_a_no_change_task_on_its_pushed_branch_closes_pass(self, orch):
+        """Zero commits ahead is a clean delivery, not a verification failure."""
+        _task, ctx = await self._dev_ctx(orch, "t-dev-noop", "aq/t-dev-noop")
+
+        assert await orch._run_completion_pipeline(ctx) == (None, True)
+        assert ctx.verification_issues == []
+        assert ctx.verification_retry_in_session is False
+
+    async def test_a_task_with_no_recorded_branch_says_so(self, orch):
+        """The branchless cause is named, not folded into the workspace one."""
+        _task, ctx = await self._dev_ctx(orch, "t-dev-nobranch", None)
+
+        assert await orch._run_completion_pipeline(ctx) == (None, False)
+        assert ctx.verification_issues == ["dirty: task has no recorded branch"]
+        assert ctx.verification_retry_in_session is True
+
+    async def test_an_unowned_workspace_says_so(self, orch):
+        """A recorded branch whose workspace lock is gone reports the lock."""
+        from sqlalchemy import update as sa_update
+
+        from src.database.tables import workspaces as workspaces_table
+
+        _task, ctx = await self._dev_ctx(orch, "t-dev-unowned", "aq/t-dev-unowned")
+        async with orch.db._engine.begin() as conn:
+            await conn.execute(
+                sa_update(workspaces_table)
+                .where(workspaces_table.c.id == "ws-1")
+                .values(locked_by_task_id=None)
+            )
+
+        assert await orch._run_completion_pipeline(ctx) == (None, False)
+        assert ctx.verification_issues == ["dirty: workspace is not locked by this task"]

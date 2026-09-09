@@ -64,6 +64,11 @@ def _task_block(task) -> dict:
         "assigned_agent": task.assigned_agent_id,
         "retry_count": task.retry_count,
         "max_retries": task.max_retries,
+        # The branch the claim's slot reset put the worktree on.  ``task_show``
+        # carries it for the same reason (see its payload comment): every git
+        # surface reads it, and a claim response that omitted it made the
+        # worker guess.
+        "branch_name": task.branch_name,
         "integration_mode": task.integration_mode,
         "is_blocked": task.is_blocked,
         "is_plan_subtask": task.is_plan_subtask,
@@ -697,7 +702,13 @@ class ClaimCommandsMixin:
                 reset_kwargs = {"base_branch": base_branch} if base_branch else {}
                 if target_branch is not None:
                     reset_kwargs["target_branch"] = target_branch
-                await self.orchestrator._worktree_slots().reset_slot_for_task(
+                # The reset *is* what decides the task's branch, and the
+                # daemon owns ``tasks.branch_name`` — hand it to
+                # ``activate_claim`` so the row records it in the same
+                # transaction that publishes the claim.  Dropping it left the
+                # column NULL on every pulled task, which reads downstream as
+                # "task has no exact owned integration workspace".
+                branch = await self.orchestrator._worktree_slots().reset_slot_for_task(
                     slot, task, **reset_kwargs
                 )
                 # Writing the claim file joins the same guard as the slot
@@ -713,9 +724,20 @@ class ClaimCommandsMixin:
                         "claimed_at": time.time(),
                     },
                 )
-                return await self.db.activate_claim(
-                    session.id, task.id, epoch=epoch, now=time.time(), conn=conn
+                activated = await self.db.activate_claim(
+                    session.id,
+                    task.id,
+                    epoch=epoch,
+                    now=time.time(),
+                    conn=conn,
+                    branch_name=branch,
                 )
+                if activated and branch:
+                    # Keep the in-memory row the response and the task.claimed
+                    # / task.started events are built from consistent with
+                    # what was just committed.
+                    task.branch_name = branch
+                return activated
 
             if hierarchy_enabled:
                 from src.integration.ownership import BranchOwnership
