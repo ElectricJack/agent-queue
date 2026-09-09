@@ -290,7 +290,8 @@ async def test_start_activates_reserved_parent_operation_once(db):
     assert stage["writer_kind"] is None
 
 
-async def test_start_accepts_only_exact_persisted_conflict_trigger(db):
+@pytest.mark.parametrize("trigger_id", ["conflict-intent", "operation"])
+async def test_start_accepts_only_exact_persisted_conflict_trigger(db, trigger_id):
     """A caller's trigger string is not proof without the conflicted intent."""
     from src.integration.repair import RepairService
 
@@ -318,9 +319,18 @@ async def test_start_accepts_only_exact_persisted_conflict_trigger(db):
             )
         )
     started = await RepairService(db).start(
-        "operation", STARTING_SHA, "conflict-intent", now=100.0
+        "operation", STARTING_SHA, trigger_id, now=100.0
     )
     assert started["outcome"] == "started"
+    replay = await RepairService(db).start("operation", STARTING_SHA, trigger_id, now=200.0)
+    assert replay["outcome"] == "already_started"
+    async with db._engine.connect() as conn:
+        stage = (await conn.execute(select(integration_repair_stages).where(
+            integration_repair_stages.c.operation_id == "operation",
+            integration_repair_stages.c.ordinal == 0,
+        ))).mappings().one()
+    assert stage["trigger_id"] == "conflict-intent"
+    assert stage["started_at"] == 100.0
 
 
 @pytest.mark.parametrize("corruption", ["policy", "checkpoint", "batch_revision"])

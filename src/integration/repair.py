@@ -203,6 +203,26 @@ class RepairService:
                     )
                 )
             ).mappings().one_or_none()
+            # The shipped parent policy passes its operation key on a merge
+            # conflict. Resolve that alias to the exact durable intent, never
+            # treat the operation ID itself as failure evidence. Older pinned
+            # policy artifacts must keep working for their entire episode.
+            if trigger_id == operation_id and operation["target_kind"] == "parent":
+                matches = select(integration_promotion_intents.c.id).where(
+                    integration_promotion_intents.c.operation_key == operation_id,
+                    integration_promotion_intents.c.target_task_id == operation["parent_task_id"],
+                    integration_promotion_intents.c.expected_target == starting_sha,
+                )
+                if existing is None:
+                    matches = matches.where(integration_promotion_intents.c.state == "conflict")
+                else:
+                    matches = matches.where(
+                        integration_promotion_intents.c.id == existing["trigger_id"]
+                    )
+                intent_ids = (await conn.execute(matches.limit(2))).scalars().all()
+                if len(intent_ids) != 1:
+                    return {"outcome": "stale", "operation_id": operation_id}
+                trigger_id = intent_ids[0]
             if existing is not None:
                 if (
                     existing["starting_sha"] != starting_sha
