@@ -981,3 +981,47 @@ async def test_collector_queues_only_current_approved_child_once(db, hierarchy, 
         assert payload["source_base"] == payload["expected_target"] == BASE
         assert payload["fence"]["target"]["branch"] == "aq/epic"
         assert payload["operation_id"] == payload["fence"]["owner_id"]
+
+
+@pytest.mark.parametrize('blocker', ['none', 'live_task', 'attached', 'pending', 'wrong_stage'])
+async def test_collector_recovers_only_completed_detached_delivered_repair(db, hierarchy, blocker):
+    from src.database.tables import integration_branch_owners, integration_repair_stages
+    from src.integration.collection import CollectionService
+    from src.integration.models import Fence
+
+    await _create(db, 'epic')
+    await hierarchy.file_children('epic', [{'title': 'child'}], 0)
+    async with db.immediate() as conn:
+        await conn.execute(update(task_branch_origins).values(materialized=True, materialized_at=2.0))
+    result = await hierarchy.bootstrap_container_collection('epic')
+    operation_id = result['operation_id']
+    await db.create_task(Task(
+        id='repair', project_id='p', title='Repair', description='', repo_id='repo', branch_name='aq/epic',
+        status=TaskStatus.IN_PROGRESS if blocker == 'live_task' else TaskStatus.COMPLETED,
+        created_by_kind='integration_repair', created_by_id=operation_id,
+    ))
+    fence = await hierarchy.ownership.transfer(Fence.model_validate(result['fence']),
+                                               'repair', 'repair_delegate')
+    async with db.immediate() as conn:
+        await conn.execute(insert(integration_repair_stages).values(
+            operation_id=operation_id, ordinal=0, policy={}, starting_sha=BASE,
+            repair_task_id='other' if blocker == 'wrong_stage' else 'repair',
+            writer_kind='repair_delegate', state='active',
+        ))
+        if blocker == 'attached':
+            await conn.execute(update(integration_branch_owners).where(
+                integration_branch_owners.c.owner_id == 'repair'
+            ).values(handoff_state='attached'))
+        if blocker == 'pending':
+            await conn.execute(insert(integration_promotion_intents).values(
+                id='pending', domain_key='pending', receipt_id='pending',
+                source_head=NEXT, source_base=BASE, repository_id='repo',
+                target_branch='aq/epic', expected_target=BASE, fence_owner_id='repair',
+                fence_token=fence.token, state='conflict', created_at=1.0, updated_at=1.0,
+            ))
+    collector = CollectionService(db, hierarchy_service_factory=lambda: hierarchy)
+    await collector.tick(3.0)
+    await collector.tick(4.0)
+    owner = await hierarchy.ownership.get_owner(fence.target)
+    assert owner['owner_id'] == (operation_id if blocker == 'none' else 'repair')
+    assert owner['fence_token'] == fence.token + (1 if blocker == 'none' else 0)

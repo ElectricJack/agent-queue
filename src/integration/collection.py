@@ -10,6 +10,7 @@ from sqlalchemy import select
 from src.database.tables import (
     integration_promotion_intents,
     integration_repair_operations,
+    integration_repair_stages,
     projects,
     task_integration_checkpoints,
     tasks,
@@ -75,6 +76,9 @@ class CollectionService:
             return "waiting"
         target = BranchKey(repository_id=parent.repo_id, branch=parent.branch_name)
         owner = await hierarchy.ownership.get_owner(target)
+        if owner is not None and owner["owner_role"] == "repair_delegate":
+            await self.return_repaired_branch(hierarchy, parent, checkpoint, target, owner)
+            owner = await hierarchy.ownership.get_owner(target)
         if (
             owner is None
             or owner["owner_role"] != "collector"
@@ -189,3 +193,48 @@ class CollectionService:
                 )
             return "queued"
         return "waiting"
+
+    async def return_repaired_branch(self, hierarchy, parent, checkpoint, target, owner):
+        """Recover collection only after a completed repair detached and delivered."""
+        if owner["handoff_state"] not in {"reserved", "released"}:
+            return
+        async with self.db.immediate() as conn:
+            await self.db.lock_hierarchy_project(conn, parent.project_id)
+            operation = (await conn.execute(select(integration_repair_operations).where(
+                integration_repair_operations.c.parent_task_id == parent.id,
+                integration_repair_operations.c.episode_id == checkpoint["episode_id"],
+                integration_repair_operations.c.state == "active",
+            ).with_for_update())).mappings().one_or_none()
+            if operation is None:
+                return
+            stage = (await conn.execute(select(integration_repair_stages).where(
+                integration_repair_stages.c.operation_id == operation["id"],
+                integration_repair_stages.c.ordinal == operation["active_stage"],
+            ).with_for_update())).mappings().one_or_none()
+            repair = (await conn.execute(select(tasks).where(
+                tasks.c.id == owner["owner_id"],
+            ).with_for_update())).mappings().one_or_none()
+            current = (await conn.execute(select(task_integration_checkpoints).where(
+                task_integration_checkpoints.c.task_id == parent.id,
+                task_integration_checkpoints.c.episode_id == operation["episode_id"],
+                task_integration_checkpoints.c.state == "awaiting_children",
+            ))).first()
+            if (stage is None or repair is None or current is None
+                    or stage["state"] not in {"active", "awaiting_completion"}
+                    or stage["writer_kind"] != "repair_delegate"
+                    or repair["status"] != "COMPLETED"
+                    or repair["created_by_kind"] != "integration_repair"
+                    or repair["created_by_id"] != operation["id"]
+                    or stage["repair_task_id"] != repair["id"]):
+                return
+            pending = (await conn.execute(select(integration_promotion_intents.c.id).where(
+                integration_promotion_intents.c.repository_id == parent.repo_id,
+                integration_promotion_intents.c.target_branch == parent.branch_name,
+                integration_promotion_intents.c.state != "committed",
+            ).limit(1))).first()
+            if pending is not None:
+                return
+            await hierarchy.ownership.transfer_detached_on(
+                conn, Fence(target=target, owner_id=owner["owner_id"],
+                            token=owner["fence_token"]), operation["id"], "collector",
+            )
