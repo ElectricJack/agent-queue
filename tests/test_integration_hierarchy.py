@@ -11,10 +11,10 @@ from sqlalchemy import insert, select, update
 from src.database import Database
 from src.database.queries.hierarchy_queries import HierarchyError
 from src.database.tables import (
-    task_delivery_receipts,
     integration_outbox,
     playbook_artifacts,
     task_branch_origins,
+    task_delivery_receipts,
     task_integration_checkpoints,
     tasks,
 )
@@ -34,7 +34,6 @@ from src.integration.models import (
 )
 from src.models import Project, RepoConfig, RepoSourceType, Task, TaskStatus, Workspace
 from tests.db_fixtures import lease_dsn
-
 
 BASE = "a" * 40
 NEXT = "b" * 40
@@ -679,3 +678,200 @@ async def test_checkpoint_verifies_actual_clean_and_pushed_workspace_head(db, tm
     assert await verify_workspace_checkpoint(
         db, git, task.__dict__, repo, next_head
     ) == next_head
+
+
+@pytest.mark.parametrize("mode", ["hierarchy", "train"])
+@pytest.mark.parametrize("operation", ["create_task", "task_batch_commit"])
+async def test_new_root_bootstraps_default_branch_before_its_branch_exists(
+    db, internal_plugins_handler, mode, operation
+):
+    from src.git.manager import GitError
+
+    await db.update_project("p", hierarchical_integration_mode=mode)
+    requested = []
+
+    def resolve(repo, branch):
+        requested.append(branch)
+        if branch != repo.default_branch:
+            raise GitError(f"repository branch {branch!r} does not exist")
+        return BASE
+
+    handler = await internal_plugins_handler(db=db)
+    handler.orchestrator.hierarchy_integration = HierarchyIntegration(
+        db, default_head_resolver=resolve
+    )
+    if operation == "create_task":
+        result = await handler.execute(operation, {
+            "project_id": "p", "title": "New root", "description": "No branch exists yet",
+        })
+        assert "created" in result, result
+        task_id = result["created"]
+    else:
+        proposal = await handler.execute("task_batch_propose", {
+            "project_id": "p", "source": "regression:new-root",
+            "tasks": [{"tempId": "root", "title": "New root", "description": "No branch"}],
+            "edges": [],
+        })
+        result = await handler.execute(operation, {"proposal_id": proposal["proposal_id"]})
+        assert result["success"], result
+        task_id = result["task_ids"][0]
+    repo = await db.get_repo("repo")
+    assert requested == [repo.default_branch]
+    task = await db.get_task(task_id)
+    assert task.branch_name == f"aq/{task_id}"
+    checkpoint = await db.get_integration_checkpoint(task_id)
+    assert checkpoint["checkpoint_sha"] == BASE
+    origins = await _origins(db)
+    assert len(origins) == 1
+    assert origins[0]["base_sha"] == BASE
+    assert origins[0]["parent_ref"] == repo.default_branch
+    assert not origins[0]["materialized"]
+
+
+async def test_existing_root_adoption_keeps_its_bound_branch(db):
+    await _create(db, "existing")
+    await db.update_task("existing", branch_name="existing-work")
+    requested = []
+
+    def resolve(_repo, branch):
+        requested.append(branch)
+        assert branch == "existing-work"
+        return NEXT
+
+    service = HierarchyIntegration(db, default_head_resolver=resolve)
+    result = await service.file_children("existing", [{"title": "Child"}], 0)
+    assert requested == ["existing-work"]
+    assert result["origins"][0]["base_sha"] == NEXT
+
+
+@pytest.mark.parametrize("existing_parent", [False, True])
+async def test_graph_creation_uses_atomic_filing_and_rewrites_all_graph_ids(
+    db, internal_plugins_handler, existing_parent
+):
+    from src.database.tables import task_context, task_criteria
+    from src.task_graph import parse_graph
+    from src.task_graph.creator import FormulaProvenance, create_graph
+
+    def resolve(repo, branch):
+        assert branch == repo.default_branch
+        return BASE
+
+    handler = await internal_plugins_handler(db=db)
+    handler.orchestrator.hierarchy_integration = HierarchyIntegration(
+        db, default_head_resolver=resolve
+    )
+    parent_id = None
+    if existing_parent:
+        await _create(db, "existing")
+        parent_id = "existing"
+    document = {
+        "version": 1,
+        "parent": {"title": "Graph epic", "labels": ["epic"]},
+        "nodes": [
+            {"key": "first", "title": "First", "description": "Do the work",
+             "task_type": "bugfix", "priority": 42,
+             "deliverables": [{"id": "source", "kind": "file", "target": "src/cli/tasks.py"}],
+             "acceptance": ["Evidence is retained"], "labels": ["regression"],
+             "context": [{"type": "file", "path": "src/cli/tasks.py"}]},
+            {"key": "second", "title": "Second", "needs": ["first"]},
+        ],
+    }
+    graph = parse_graph(document)
+    provenance = FormulaProvenance(
+        name="audit", scope="system", path="formulas/audit.md", vars={},
+        chain_sha="test", snapshot=document,
+    )
+    dry = await create_graph(handler, graph, project_id="p", parent_id=parent_id, dry_run=True)
+    assert not await _origins(db)
+    report = await create_graph(
+        handler, graph, project_id="p", parent_id=parent_id, provenance=provenance
+    )
+    parent_id = report["parent_id"]
+    first, second = report["task_ids"]
+    assert first == f"{parent_id}.1"
+    assert second == f"{parent_id}.2"
+    if existing_parent:
+        assert dry["parent_id"] == parent_id == "existing"
+    first_task = await db.get_task(first)
+    assert first_task.parent_task_id == parent_id
+    assert first_task.priority == 42
+    assert first_task.task_type.value == "bugfix"
+    assert first_task.deliverables[0]["target"] == "src/cli/tasks.py"
+    assert "Evidence is retained" in first_task.description
+    assert "regression" in await db.get_task_labels(first)
+    assert "formula:audit" in await db.get_task_labels(parent_id)
+    if not existing_parent:
+        assert "epic" in await db.get_task_labels(parent_id)
+    assert (await db.get_task(second)).is_blocked
+    assert report["nodes"][1]["needs"][0]["task_id"] == first
+    assert {row["task_id"] for row in await _origins(db)} == {parent_id, first, second}
+    assert (await db.get_integration_checkpoint(parent_id))["generation"] == 1
+    async with db._engine.connect() as conn:
+        assert await conn.scalar(select(task_criteria.c.task_id)) == first
+        contexts = (await conn.execute(select(task_context))).mappings().all()
+    assert {(row["task_id"], row["type"]) for row in contexts} == {
+        (first, "file"), (parent_id, "formula_snapshot"),
+    }
+
+
+async def test_hierarchical_graph_failure_rolls_back_roots_children_and_origins(
+    db, hierarchy, internal_plugins_handler, monkeypatch
+):
+    from src.task_graph import parse_graph
+    from src.task_graph.creator import create_graph
+
+    handler = await internal_plugins_handler(db=db)
+    handler.orchestrator.hierarchy_integration = hierarchy
+    original = hierarchy.file_prepared_children_on
+
+    async def fail_after_children(*args, **kwargs):
+        await original(*args, **kwargs)
+        raise RuntimeError("failed after sibling origins")
+
+    monkeypatch.setattr(hierarchy, "file_prepared_children_on", fail_after_children)
+    graph = parse_graph({"parent": {"title": "Epic"}, "nodes": [
+        {"key": "a", "title": "A"}, {"key": "b", "title": "B", "needs": ["a"]},
+    ]})
+    with pytest.raises(RuntimeError, match="failed after sibling origins"):
+        await create_graph(handler, graph, project_id="p")
+    assert not await _origins(db)
+    async with db._engine.connect() as conn:
+        assert not (await conn.execute(select(tasks.c.id))).all()
+        assert not (await conn.execute(select(task_integration_checkpoints))).all()
+
+
+async def test_concurrent_graph_commands_allocate_distinct_sibling_ids(
+    db, hierarchy, internal_plugins_handler
+):
+    await _create(db, "parent")
+    handler = await internal_plugins_handler(db=db)
+    handler.orchestrator.hierarchy_integration = hierarchy
+    args = {"project_id": "p", "parent_id": "parent", "graph": {
+        "nodes": [{"key": "a", "title": "A"}, {"key": "b", "title": "B"}],
+    }}
+    results = await asyncio.gather(
+        handler._cmd_create_task_graph(args), handler._cmd_create_task_graph(args)
+    )
+    assert all(result.get("created") for result in results), results
+    assert {task_id for result in results for task_id in result["task_ids"]} == {
+        "parent.1", "parent.2", "parent.3", "parent.4",
+    }
+    assert (await db.get_integration_checkpoint("parent"))["generation"] == 2
+    assert len(await _origins(db)) == 5
+
+
+async def test_new_root_missing_base_rolls_back_task_and_origin(db):
+    from src.git.manager import GitError
+
+    def missing_base(_repo, _branch):
+        raise GitError("default branch is missing")
+
+    service = HierarchyIntegration(db, default_head_resolver=missing_base)
+    with pytest.raises(GitError, match="default branch is missing"):
+        async with db.immediate() as conn:
+            await service.file_root_on(conn, Task(
+                id="", project_id="p", title="Root", description="No base",
+            ))
+    assert not await _origins(db)
+    async with db._engine.connect() as conn:
+        assert not (await conn.execute(select(tasks.c.id))).all()

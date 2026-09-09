@@ -1,0 +1,66 @@
+[
+  {
+    "argv": [
+      "--json",
+      "task",
+      "create",
+      "-p",
+      "flag-project",
+      "-t",
+      "Flag title",
+      "-d",
+      "Description"
+    ],
+    "exit": 0,
+    "output": "\nTask created: audit-mocked\n  Mock title\n",
+    "wizard_called": false,
+    "requests": [
+      {
+        "command": "create_task",
+        "args": {
+          "project_id": "flag-project",
+          "title": "Flag title",
+          "description": "Description",
+          "priority": 100,
+          "task_type": null
+        }
+      }
+    ]
+  },
+  {
+    "argv": [
+      "task",
+      "create",
+      "-p",
+      "flag-project",
+      "-t",
+      "Flag title",
+      "--priority",
+      "50",
+      "--type",
+      "bugfix",
+      "--integration-mode",
+      "direct"
+    ],
+    "exit": 0,
+    "output": "\nTask created: audit-mocked\n  Mock title\n",
+    "wizard_called": true,
+    "requests": [
+      {
+        "command": "list_projects",
+        "args": null
+      },
+      {
+        "command": "create_task",
+        "args": {
+          "project_id": "wizard-project",
+          "title": "Wizard title",
+          "description": "Wizard description",
+          "priority": 100,
+          "task_type": "feature",
+          "integration_mode": "pull_request"
+        }
+      }
+    ]
+  }
+]

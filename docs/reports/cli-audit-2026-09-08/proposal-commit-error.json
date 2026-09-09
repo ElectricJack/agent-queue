@@ -1,0 +1,1 @@
+{"schema_version": 1, "error": {"code": "command_error", "message": "commit failed: repository branch 'aq/prime-vault' does not exist", "details": {"success": false}}, "data": null}

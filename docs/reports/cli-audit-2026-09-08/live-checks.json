@@ -1,0 +1,251 @@
+[
+  {
+    "command": "aq --json status",
+    "exit": 0,
+    "seconds": 0.068,
+    "output_format": "raw JSON",
+    "error": null
+  },
+  {
+    "command": "aq --json project list",
+    "exit": 0,
+    "seconds": 0.051,
+    "output_format": "raw JSON",
+    "error": null
+  },
+  {
+    "command": "aq --json task list --project agent-queue",
+    "exit": 0,
+    "seconds": 0.035,
+    "output_format": "envelope",
+    "error": null
+  },
+  {
+    "command": "aq --json task recent-activity --project-id agent-queue",
+    "exit": 0,
+    "seconds": 0.124,
+    "output_format": "raw JSON",
+    "error": null
+  },
+  {
+    "command": "aq --json agent list",
+    "exit": 0,
+    "seconds": 0.627,
+    "output_format": "raw JSON",
+    "error": null
+  },
+  {
+    "command": "aq --json agent list-profiles",
+    "exit": 0,
+    "seconds": 0.048,
+    "output_format": "raw JSON",
+    "error": null
+  },
+  {
+    "command": "aq --json pool status",
+    "exit": 0,
+    "seconds": 0.251,
+    "output_format": "raw JSON",
+    "error": null
+  },
+  {
+    "command": "aq --json formula list --project-id agent-queue",
+    "exit": 0,
+    "seconds": 0.032,
+    "output_format": "raw JSON",
+    "error": null
+  },
+  {
+    "command": "aq --json playbook list --project-id agent-queue",
+    "exit": 0,
+    "seconds": 0.058,
+    "output_format": "raw JSON",
+    "error": null
+  },
+  {
+    "command": "aq --json playbook list-runs --limit 2",
+    "exit": 0,
+    "seconds": 0.041,
+    "output_format": "raw JSON",
+    "error": null
+  },
+  {
+    "command": "aq --json playbook health",
+    "exit": 0,
+    "seconds": 0.154,
+    "output_format": "raw JSON",
+    "error": null
+  },
+  {
+    "command": "aq --json mcp list-servers",
+    "exit": 0,
+    "seconds": 0.03,
+    "output_format": "raw JSON",
+    "error": null
+  },
+  {
+    "command": "aq --json mcp list-tool-catalog",
+    "exit": 0,
+    "seconds": 0.372,
+    "output_format": "raw JSON",
+    "error": null
+  },
+  {
+    "command": "aq --json session list",
+    "exit": 0,
+    "seconds": 0.13,
+    "output_format": "envelope",
+    "error": null
+  },
+  {
+    "command": "aq --json system list-intelligence-classes",
+    "exit": 0,
+    "seconds": 0.053,
+    "output_format": "raw JSON",
+    "error": null
+  },
+  {
+    "command": "aq --json system list-event-triggers",
+    "exit": 0,
+    "seconds": 0.044,
+    "output_format": "raw JSON",
+    "error": null
+  },
+  {
+    "command": "aq --json system list-workflows",
+    "exit": 0,
+    "seconds": 0.037,
+    "output_format": "raw JSON",
+    "error": null
+  },
+  {
+    "command": "aq --json system get-stuck-tasks",
+    "exit": 0,
+    "seconds": 0.037,
+    "output_format": "raw JSON",
+    "error": null
+  },
+  {
+    "command": "aq --json project list-workspaces --project-id agent-queue",
+    "exit": 0,
+    "seconds": 0.207,
+    "output_format": "raw JSON",
+    "error": null
+  },
+  {
+    "command": "aq --json project list-workspace-kinds --project-id agent-queue",
+    "exit": 0,
+    "seconds": 0.037,
+    "output_format": "raw JSON",
+    "error": null
+  },
+  {
+    "command": "aq --json project list-roots",
+    "exit": 0,
+    "seconds": 0.034,
+    "output_format": "raw JSON",
+    "error": null
+  },
+  {
+    "command": "aq --json task gate-list",
+    "exit": 0,
+    "seconds": 0.243,
+    "output_format": "raw JSON",
+    "error": null
+  },
+  {
+    "command": "aq --json system get-costs",
+    "exit": 0,
+    "seconds": 0.738,
+    "output_format": "raw JSON",
+    "error": null
+  },
+  {
+    "command": "aq --json note list --project-id agent-queue",
+    "exit": 0,
+    "seconds": 0.043,
+    "output_format": "raw JSON",
+    "error": null
+  },
+  {
+    "command": "aq --json git get-status --project-id agent-queue",
+    "exit": 0,
+    "seconds": 0.348,
+    "output_format": "raw JSON",
+    "error": null
+  },
+  {
+    "command": "aq --json file list-directory --project-id agent-queue --path .",
+    "exit": 0,
+    "seconds": 0.045,
+    "output_format": "raw JSON",
+    "error": null
+  },
+  {
+    "command": "aq --json task get --task-id keen-forge",
+    "exit": 0,
+    "seconds": 0.048,
+    "output_format": "raw JSON",
+    "error": null
+  },
+  {
+    "command": "aq --json task explain --task-id keen-forge",
+    "exit": 0,
+    "seconds": 0.092,
+    "output_format": "raw JSON",
+    "error": null
+  },
+  {
+    "command": "aq --json task deps --task-id keen-forge",
+    "exit": 0,
+    "seconds": 0.033,
+    "output_format": "raw JSON",
+    "error": null
+  },
+  {
+    "command": "aq --json task tree --help",
+    "exit": 2,
+    "seconds": 0.002,
+    "output_format": "text",
+    "error": "Usage: cli task [OPTIONS] COMMAND [ARGS]...\nTry 'cli task --help' for help.\n\nError: No such command 'tree'. (Did you mean one of: 'create', 'get-tree', 'resume'?)\n",
+    "exception": "2"
+  },
+  {
+    "command": "aq --json task result --help",
+    "exit": 2,
+    "seconds": 0.001,
+    "output_format": "text",
+    "error": "Usage: cli task [OPTIONS] COMMAND [ARGS]...\nTry 'cli task --help' for help.\n\nError: No such command 'result'. (Did you mean one of: 'get-result', 'restart', 'resume'?)\n",
+    "exception": "2"
+  },
+  {
+    "command": "aq --json task dep --help",
+    "exit": 2,
+    "seconds": 0.0,
+    "output_format": "text",
+    "error": "Usage: cli task [OPTIONS] COMMAND [ARGS]...\nTry 'cli task --help' for help.\n\nError: No such command 'dep'. Did you mean 'deps'?\n",
+    "exception": "2"
+  },
+  {
+    "command": "aq --json task input-response --help",
+    "exit": 2,
+    "seconds": 0.0,
+    "output_format": "text",
+    "error": "Usage: cli task [OPTIONS] COMMAND [ARGS]...\nTry 'cli task --help' for help.\n\nError: No such command 'input-response'.\n",
+    "exception": "2"
+  },
+  {
+    "command": "aq --json task close --help",
+    "exit": 0,
+    "seconds": 0.001,
+    "output_format": "text",
+    "error": null
+  },
+  {
+    "command": "aq --json test --aq-help",
+    "exit": 0,
+    "seconds": 0.002,
+    "output_format": "text",
+    "error": null
+  }
+]

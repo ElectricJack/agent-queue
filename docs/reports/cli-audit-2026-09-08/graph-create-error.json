@@ -1,0 +1,1 @@
+{"schema_version": 1, "error": {"code": "command_error", "message": "integration_required: bulk parent writes must use atomic hierarchy filing"}, "data": null}
