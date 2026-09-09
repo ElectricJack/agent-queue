@@ -341,3 +341,28 @@ reservation and push (head5f41738e remains unpublished). Calm-dune tracks anothe
 restart gap: completed keen-harbor.8 still has an attached pool claim, consuming
 capacity. Sound-apex covers first-human-resume conflict continuation. Full final
 reviewed delivery and hundreds/day capacity proof remain incomplete.
+
+
+## First-resume verification and observed delivery bottleneck
+
+Sound-apex82712d1a is applied locally as51f01a84. Combined repair and operational
+control verification passed109 tests in42.45s, log
+/tmp/aq-first-resume-combined-tests.log. This commit is not yet loaded; the
+currently running daemon remains throughb79c9e10. Sharp-beacon c7b963ac/9a82e953
+is not loaded: review required exact ambiguity exclusions and explicit legacy
+pre-push-marker migration semantics. No production migration for that patch
+has been run. Calm-dune is assigned and working on completed-attached-claim
+recovery.
+
+Activity sample07:54:13–08:54:13UTC:24 distinct currently pass-completed tasks,
+including repair/support work, versus2 code delivery receipts (one per original
+epic). The safe aggregate is activity-window-20260909-0854.json. Remote AQ main
+still equals6d2b07db0ea59aae1c2230091c6863b5d178da78. This sample identifies an
+integration bottleneck; it is not a claim of sustained hundreds/day capacity.
+
+Sharp-nexus confirmed exact incorporation of baseline72867a10, but its clean
+native rebuild exposed missing ordering for shaders_gen/embedded_spirv.h:
+matter_engine_core depended on shader text generation without the SPIR-V header
+generator. The worker is correcting both generation dependencies and rerunning
+native validation. Prior green CI remains evidence only for that one run.
+Feature entry tasks remain explicitly paused pending corrected baseline delivery.
