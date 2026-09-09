@@ -675,6 +675,7 @@ async def detach_slot_for_integration_handoff(
     workspace,
     *,
     expected_branch: str,
+    allow_published_detached_head: bool = False,
 ) -> bool:
     """Detach a clean, fully pushed slot without resetting its contents.
 
@@ -697,6 +698,7 @@ async def detach_slot_for_integration_handoff(
         workspace,
         mutex_path=base.workspace_path,
         expected_branch=expected_branch,
+        allow_published_detached_head=allow_published_detached_head,
     )
 
 
@@ -707,6 +709,7 @@ async def detach_workspace_for_integration_handoff(
     *,
     mutex_path: str | None = None,
     expected_branch: str,
+    allow_published_detached_head: bool = False,
 ) -> bool:
     """Prove and detach an exact pushed checkout before releasing its lock."""
 
@@ -729,8 +732,19 @@ async def detach_workspace_for_integration_handoff(
         local_tip = await git._arun_unlocked(["rev-parse", branch_ref], cwd=checkout)
         remote_tip = await git._arun_unlocked(["rev-parse", remote_ref], cwd=checkout)
         head = await git._arun_unlocked(["rev-parse", "HEAD"], cwd=checkout)
-        if not local_tip or local_tip != remote_tip or head != local_tip:
+        if not local_tip or local_tip != remote_tip:
             return False
+        if head != local_tip:
+            if current != "HEAD" or not allow_published_detached_head:
+                return False
+            # Failed verifier preparation can leave the published default
+            # branch detached. Preserve it and prove publication afresh;
+            # a stale remote-tracking ref cannot authorize release.
+            remote_head = await git._arun_unlocked(
+                ["ls-remote", "--exit-code", "origin", "HEAD"], cwd=checkout
+            )
+            if remote_head.split() != [head, "HEAD"]:
+                return False
 
         if current == expected_branch:
             await git._arun_unlocked(["switch", "--detach", head], cwd=checkout)

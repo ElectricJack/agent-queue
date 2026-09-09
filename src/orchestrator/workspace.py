@@ -1355,7 +1355,7 @@ class WorkspaceMixin:
             or session.lifecycle != "pool"
             or session.state != "stopped"
             or session.desired_state != "stopped"
-            or owner.get("owner_role") not in {"worker", "repair"}
+            or owner.get("owner_role") not in {"worker", "repair", "verifier"}
             or session.task_id != owner.get("owner_id")
             or workspace.locked_by_task_id != owner.get("owner_id")
             or workspace.locked_by_agent_id != session.agent_id
@@ -1392,6 +1392,7 @@ class WorkspaceMixin:
                     self._git_mutex,
                     workspace,
                     expected_branch=str(owner["ref"]),
+                    allow_published_detached_head=owner.get("owner_role") == "verifier",
                 )
             else:
                 detached = await detach_workspace_for_integration_handoff(
@@ -1399,6 +1400,7 @@ class WorkspaceMixin:
                     self._git_mutex,
                     workspace,
                     expected_branch=str(owner["ref"]),
+                    allow_published_detached_head=owner.get("owner_role") == "verifier",
                 )
             if not detached:
                 return False

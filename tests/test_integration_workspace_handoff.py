@@ -1414,6 +1414,7 @@ async def test_pool_close_of_a_suspended_parent_releases_its_owner_row(
     orchestrator.git._arun = AsyncMock(return_value="a" * 40)
     orchestrator._get_default_branch = AsyncMock(return_value="main")
     orchestrator._phase_verify = AsyncMock(return_value=PhaseResult.CONTINUE)
+    orchestrator._phase_verify_hierarchy_producer = AsyncMock(return_value=PhaseResult.CONTINUE)
     orchestrator.release_session_task_resources = AsyncMock(
         side_effect=AssertionError("a pool close must not run the full release")
     )
@@ -1825,3 +1826,95 @@ async def test_historical_recovery_requires_the_same_repair_operation(
     assert not await recover_stopped_integration_pool_claim(orchestrator.db, "task")
     assert (await orchestrator.db.get_task("task")).status is TaskStatus.BLOCKED
     assert (await orchestrator.db.get_session("session")).claim_phase == "active"
+
+
+@pytest.mark.parametrize("published", [True, False])
+async def test_stopped_verifier_recovery_preserves_detached_published_baseline(
+    orchestrator_factory, tmp_path, monkeypatch, published
+):
+    """Recover failed verifier preparation only with fresh remote publication proof."""
+    orchestrator = await _stopped_stale_pool_orchestrator(orchestrator_factory, tmp_path)
+    async with orchestrator.db.immediate() as conn:
+        await conn.execute(update(integration_branch_owners).where(
+            integration_branch_owners.c.id == "owner"
+        ).values(owner_role="verifier"))
+    events = []
+    provider = SimpleNamespace(confirm_stopped=AsyncMock(return_value=True))
+    monkeypatch.setattr(orchestrator.session_providers, "create", lambda *_: provider)
+    current_branch, original_run = _clean_git(
+        events, already_detached=True, detached_head_matches=False
+    )
+
+    async def run(args, *, cwd):
+        if args == ["ls-remote", "--exit-code", "origin", "HEAD"]:
+            events.append("remote-publication")
+            return ("c" if published else "d") * 40 + "\tHEAD"
+        return await original_run(args, cwd=cwd)
+
+    orchestrator.git.aget_current_branch = AsyncMock(side_effect=current_branch)
+    orchestrator.git._arun_unlocked = AsyncMock(side_effect=run)
+    if published:
+        result = await orchestrator.command_handler.execute("integration_transfer_owner", {
+            "target": {"repository_id": "repo", "branch": "aq/parent"},
+            "expected_token": 4, "next_owner_id": "task", "next_role": "worker",
+        })
+        assert result["outcome"] == "transferred"
+        assert (await orchestrator.db.get_session("session")).task_id is None
+        assert (await orchestrator.db.get_workspace("slot")).locked_by_task_id is None
+    else:
+        async with orchestrator.db.immediate() as conn:
+            await conn.execute(update(integration_branch_owners).where(
+                integration_branch_owners.c.id == "owner"
+            ).values(handoff_state="handoff_pending"))
+        assert not await orchestrator.aconfirm_integration_owner_handoff(
+            _owner(owner_role="verifier")
+        )
+        assert (await orchestrator.db.get_session("session")).task_id == "task"
+        assert (await orchestrator.db.get_workspace("slot")).locked_by_task_id == "task"
+    assert "remote-publication" in events
+    assert "detach" not in events
+    assert (await orchestrator.db.get_task("task")).claim_epoch == 3
+
+
+async def test_real_git_detached_verifier_baseline_requires_current_publication(tmp_path):
+    """Real Git must preserve both published and refused unpublished detached commits."""
+    import asyncio
+
+    from src.git.manager import GitManager
+    from src.orchestrator.workspace_attachments import detach_workspace_for_integration_handoff
+
+    git = GitManager()
+    remote = tmp_path / "remote.git"
+    checkout = tmp_path / "checkout"
+    await git._arun_unlocked(["init", "--bare", str(remote)], cwd=str(tmp_path))
+    await git._arun_unlocked(["clone", str(remote), str(checkout)], cwd=str(tmp_path))
+
+    async def run(*args):
+        return await git._arun_unlocked(list(args), cwd=str(checkout))
+
+    await run("config", "user.name", "Test")
+    await run("config", "user.email", "test@example.invalid")
+    await run("switch", "-c", "main")
+    await run("commit", "--allow-empty", "-m", "published baseline")
+    baseline = await run("rev-parse", "HEAD")
+    await run("push", "origin", "main")
+    await git._arun_unlocked(["symbolic-ref", "HEAD", "refs/heads/main"], cwd=str(remote))
+    await run("switch", "-c", "aq/parent")
+    await run("commit", "--allow-empty", "-m", "aggregate")
+    await run("push", "origin", "aq/parent")
+    await run("switch", "--detach", baseline)
+    workspace = SimpleNamespace(workspace_path=str(checkout))
+    lock = asyncio.Lock()
+    assert await detach_workspace_for_integration_handoff(
+        git, lambda _: lock, workspace, expected_branch="aq/parent",
+        allow_published_detached_head=True,
+    )
+    assert await run("rev-parse", "HEAD") == baseline
+    await run("commit", "--allow-empty", "-m", "unpublished detached work")
+    unpublished = await run("rev-parse", "HEAD")
+    assert not await detach_workspace_for_integration_handoff(
+        git, lambda _: lock, workspace, expected_branch="aq/parent",
+        allow_published_detached_head=True,
+    )
+    assert await run("rev-parse", "HEAD") == unpublished
+    assert await run("rev-parse", "--abbrev-ref", "HEAD") == "HEAD"
