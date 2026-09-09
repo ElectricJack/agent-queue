@@ -49,6 +49,26 @@ cleanup work, or schema.
 aq doctor --check db.migrations --check integration.operational --check integration.unreviewed_prs
 ```
 
+`integration.stranded_fences` reports branches whose ownership row is still
+held `attached` (or `handoff_pending`) for a task that has no writer left — no
+live session, no workspace lock, and not ASSIGNED/IN_PROGRESS:
+
+```bash
+aq doctor --check integration.stranded_fences
+```
+
+Such a row blocks every subsequent claim of the owning task with *"canonical
+branch is not reserved by this task"*, and because the task stays READY the
+scheduler keeps offering it, so the failure repeats silently until an operator
+intervenes. The check has no `--fix`, and that is deliberate: doctor sees only
+a database snapshot, which cannot show that the writer's provider is really
+stopped or that its checkout is clean and published, and a row can be rebound
+by a guarded recovery path without any of the fields doctor compares changing.
+Returning the row to `reserved` from here would hand the branch to the next
+claim on that snapshot alone. Recovery is the integration recovery path's job,
+which takes those proofs; use this check to find the wedged refs and to confirm
+afterwards that they are gone.
+
 Do not change database backends during this release. Both
 `src/database/migrate_sqlite_to_pg.py` and `scripts/migrate_sqlite_to_pg.py`
 omit integration state. Pointing a populated SQLite installation at

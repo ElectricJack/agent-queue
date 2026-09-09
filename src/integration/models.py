@@ -6,6 +6,25 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+# Owner roles whose ``owner_id`` is a task id and whose reservation therefore
+# survives its writer session.  ``arelease_integration_writer_for_retry``
+# self-transfers one of these back to ``reserved``; ``collector`` (owned by an
+# operation/batch) and ``verifier`` (reused while still attached, see
+# ``RepairService._reuse_verifier_on``) are deliberately absent.
+RETRYABLE_INTEGRATION_OWNER_ROLES = frozenset({"worker", "repair"})
+
+# Owner roles a *re-queue* may return to ``reserved``.  Returning a task to
+# the frontier is a self-transfer -- same ``owner_id``, same ``owner_role``,
+# no successor -- so design spec 9.1's transfer rule, which is why
+# ``verifier`` and ``collector`` are absent above, is not engaged.
+# ``verifier`` is admissible here for the same reason it is excluded there:
+# ``RepairService._reuse_verifier_on`` reuses a verifier only while it is
+# still ``attached`` to a *live* session with an ASSIGNED/IN_PROGRESS task,
+# and a re-queued verifier has neither, so its ``attached`` row is dead
+# weight that blocks every subsequent claim rather than a reusable writer.
+# ``collector`` stays out: its ``owner_id`` is an operation/batch, not a task.
+REQUEUE_INTEGRATION_OWNER_ROLES = RETRYABLE_INTEGRATION_OWNER_ROLES | {"verifier"}
+
 
 class BranchKey(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")

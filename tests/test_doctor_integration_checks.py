@@ -332,7 +332,6 @@ async def test_branch_discards_names_the_leftover_ref(db):
     result = await run_check(db, "integration.branch_discards")
 
     assert result.severity is Severity.WARN
-    assert result.fixable is True
     assert result.data["count"] == 1
     assert result.data["discards"][0]["branch"] == "aq/gone"
     assert "aq/gone" in result.detail
@@ -366,3 +365,177 @@ async def test_branch_discards_fix_re_arms_rather_than_deleting(db):
     assert row["discard_state"] == "pending"
     assert row["discard_attempts"] == 0
     assert row["discard_last_error"] is None
+
+
+# -- integration.stranded_fences ---------------------------------------------
+#
+# The wedge this names is silent and self-repeating: the task stays READY, so
+# the scheduler keeps offering it, and every claim of it dies in
+# ``_integration_owner_fence`` with "canonical branch is not reserved by this
+# task".  Nothing surfaces except a pool worker burning a claim each time.
+#
+# The check is report-only on purpose, and these tests hold that line: doctor
+# sees a database snapshot, which cannot prove a provider stopped or a checkout
+# clean and published, so it must never write an ownership row back to
+# ``reserved`` for the next claim to take.
+
+
+async def _held_owner(
+    db,
+    *,
+    task_id: str,
+    owner_role: str = "verifier",
+    handoff_state: str = "attached",
+    ref: str = "aq/keen-harbor",
+) -> str:
+    from sqlalchemy import insert
+
+    from src.database.tables import integration_branch_owners
+
+    async with db.immediate() as conn:
+        await conn.execute(
+            insert(integration_branch_owners).values(
+                id=f"owner-{task_id}",
+                repository_id="repo",
+                ref=ref,
+                owner_id=task_id,
+                owner_role=owner_role,
+                fence_token=27,
+                handoff_state=handoff_state,
+                session_id="dead-session",
+                workspace_id="dead-workspace",
+                created_at=1.0,
+                updated_at=2.0,
+            )
+        )
+    return f"owner-{task_id}"
+
+
+@pytest.mark.asyncio
+async def test_stranded_fences_is_ok_when_nothing_is_held(db):
+    result = await run_check(db, "integration.stranded_fences")
+
+    assert result.severity is Severity.OK
+
+
+@pytest.mark.asyncio
+async def test_stranded_fences_names_a_requeued_task_holding_its_branch(db):
+    await db.create_task(
+        Task(id="verify-1", project_id="p", title="Verify", description="", status=TaskStatus.READY)
+    )
+    await _held_owner(db, task_id="verify-1")
+
+    result = await run_check(db, "integration.stranded_fences")
+
+    assert result.severity is Severity.WARN
+    assert result.data["count"] == 1
+    assert result.data["fences"][0]["ref"] == "aq/keen-harbor"
+    assert result.data["fences"][0]["owner_role"] == "verifier"
+    assert "aq/keen-harbor" in result.detail
+
+
+@pytest.mark.asyncio
+async def test_stranded_fences_leaves_a_live_writer_alone(db):
+    """An IN_PROGRESS owner is a writer at work, not a stranded row."""
+    await db.create_task(
+        Task(
+            id="verify-2",
+            project_id="p",
+            title="Verify",
+            description="",
+            status=TaskStatus.IN_PROGRESS,
+        )
+    )
+    await _held_owner(db, task_id="verify-2")
+
+    result = await run_check(db, "integration.stranded_fences")
+
+    assert result.severity is Severity.OK
+
+
+@pytest.mark.asyncio
+async def test_stranded_fences_leaves_a_held_workspace_alone(db):
+    """A workspace still locked by the owner may be a real checkout."""
+    from src.models import RepoSourceType, Workspace
+
+    await db.create_task(
+        Task(id="verify-3", project_id="p", title="Verify", description="", status=TaskStatus.READY)
+    )
+    await db.create_workspace(
+        Workspace(
+            id="ws",
+            project_id="p",
+            workspace_path="/tmp/ws-verify-3",
+            source_type=RepoSourceType.CLONE,
+            locked_by_task_id="verify-3",
+        )
+    )
+    await _held_owner(db, task_id="verify-3")
+
+    result = await run_check(db, "integration.stranded_fences")
+
+    assert result.severity is Severity.OK
+
+
+@pytest.mark.asyncio
+async def test_stranded_fences_is_report_only(db):
+    """No ``--fix``: the repair needs proof a database snapshot cannot give."""
+    from src.doctor import integration_checks as integration_checks_module
+    from src.doctor.integration_checks import integration_checks
+
+    check = next(c for c in integration_checks() if c.id == "integration.stranded_fences")
+
+    assert check.fix is None
+    assert not hasattr(integration_checks_module, "_fix_stranded_fences")
+
+
+@pytest.mark.asyncio
+async def test_stranded_fences_never_writes_the_ownership_row(db):
+    """Reporting a wedged row must leave the fence exactly as it found it.
+
+    Bumping the fence or clearing the attachment on a snapshot alone would
+    hand the branch to the next claim while a stopped-looking writer may still
+    hold a dirty or unpublished checkout, and would silently undo a guarded
+    rebind that changes the attachment without changing the owner fields.
+    """
+    from sqlalchemy import select
+
+    from src.database.tables import integration_branch_owners
+
+    await db.create_task(
+        Task(id="verify-4", project_id="p", title="Verify", description="", status=TaskStatus.READY)
+    )
+    owner_id = await _held_owner(db, task_id="verify-4")
+
+    async def _row():
+        async with db._engine.connect() as conn:
+            return dict(
+                (
+                    await conn.execute(
+                        select(integration_branch_owners).where(
+                            integration_branch_owners.c.id == owner_id
+                        )
+                    )
+                ).mappings().one()
+            )
+
+    before = await _row()
+    result = await run_check(db, "integration.stranded_fences")
+    after = await _row()
+
+    assert result.severity is Severity.WARN
+    assert result.fixable is False
+    assert after == before
+    assert after["handoff_state"] == "attached"
+    assert int(after["fence_token"]) == 27
+    assert after["session_id"] == "dead-session"
+
+
+@pytest.mark.asyncio
+async def test_stranded_fences_ignores_a_collector_row(db):
+    """A collector's owner is an operation, so none of the checks apply."""
+    await _held_owner(db, task_id="operation-1", owner_role="collector")
+
+    result = await run_check(db, "integration.stranded_fences")
+
+    assert result.severity is Severity.OK

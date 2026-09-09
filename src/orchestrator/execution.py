@@ -1742,7 +1742,38 @@ class ExecutionMixin:
                 completed_owner and completed_owner["owner_id"] == task.id
                 and completed_owner["owner_role"] in {"worker", "repair"}
             )
-        release_needed = repair_writer_closed or managed_parent_suspended or completed_writer
+        # A close that puts the task back on the frontier -- git verification
+        # returning fixable issues to a session that is already gone, or a
+        # transient failure inside the retry budget -- leaves the task still
+        # owning its integration branch with no writer attached to it.  That
+        # row has to go back to ``reserved`` here, while the session/workspace
+        # evidence the handoff proof reads is still intact: the next claim of
+        # this same task requires ``handoff_state == 'reserved'``
+        # (``workspace.py`` ``_integration_owner_fence``), so an ``attached``
+        # row left behind fails *every* future claim with "canonical branch is
+        # not reserved by this task" and burns a pool worker each time
+        # (fair-willow, observed on a re-queued ``verifier``).
+        requeued_writer = False
+        if new_status == TaskStatus.READY and task.repo_id and task.branch_name:
+            from src.integration.models import BranchKey
+            from src.integration.ownership import BranchOwnership
+            from src.orchestrator.workspace import REQUEUE_INTEGRATION_OWNER_ROLES
+
+            requeued_owner = await BranchOwnership(self.db).get_owner(
+                BranchKey(repository_id=task.repo_id, branch=task.branch_name)
+            )
+            requeued_writer = bool(
+                requeued_owner
+                and requeued_owner["owner_id"] == task.id
+                and requeued_owner["owner_role"] in REQUEUE_INTEGRATION_OWNER_ROLES
+                and requeued_owner["handoff_state"] != "reserved"
+            )
+        release_needed = (
+            repair_writer_closed
+            or managed_parent_suspended
+            or completed_writer
+            or requeued_writer
+        )
         handoff_unproven = False
         if release_needed:
             # Stop/detach the writer while preserving its durable reserved
@@ -1750,14 +1781,29 @@ class ExecutionMixin:
             # keeps the owner's own role -- a repair delegate ends up
             # ``repair``/``reserved``, not stuck ``attached`` to the session
             # this close is about to tear down.
+            from src.orchestrator.workspace import (
+                REQUEUE_INTEGRATION_OWNER_ROLES,
+                RETRYABLE_INTEGRATION_OWNER_ROLES,
+            )
+
+            # ``requeued_writer`` is exclusive with the other three legs --
+            # they are COMPLETED/PAUSED closes and this one is READY -- so the
+            # pre-existing reason wording is left exactly as it was.
+            if requeued_writer:
+                release_reason = context
+            elif repair_writer_closed:
+                release_reason = "integration_repair_delegate_closed"
+            else:
+                release_reason = "integration_parent_suspended"
             released = await self.arelease_integration_writer_for_retry(
                 task,
-                reason=(
-                    "integration_repair_delegate_closed"
-                    if repair_writer_closed
-                    else "integration_parent_suspended"
-                ),
+                reason=release_reason,
                 pool=pool,
+                roles=(
+                    REQUEUE_INTEGRATION_OWNER_ROLES
+                    if requeued_writer
+                    else RETRYABLE_INTEGRATION_OWNER_ROLES
+                ),
             )
             # ``False`` is a *failed proof*, not a no-op: the writer may still
             # hold the checkout.  Releasing the workspace or the claim anyway

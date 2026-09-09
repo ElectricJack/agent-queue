@@ -537,12 +537,15 @@ async def _release_owner_for_retry(
     pool: bool = False,
     session_lifecycle: str | None = None,
     dirty: bool = False,
+    roles: frozenset[str] | None = None,
 ):
     """Run the close-path release against an ``attached`` owner in *owner_role*.
 
     ``pool=True`` takes the pull-model leg, which proves the checkout detached
     instead of stopping the session.  ``session_lifecycle`` overrides what the
     session row says independently of the leg, so the mismatch can be tested.
+    ``roles`` overrides the admissible owner roles, as the re-queue call site
+    does.
     """
     await orchestrator.db.update_project(
         "p",
@@ -565,8 +568,9 @@ async def _release_owner_for_retry(
     orchestrator.git.aget_current_branch = AsyncMock(side_effect=current_branch)
     orchestrator.git._arun_unlocked = AsyncMock(side_effect=run)
     task = await orchestrator.db.get_task("task")
+    extra = {} if roles is None else {"roles": roles}
     return await orchestrator.arelease_integration_writer_for_retry(
-        task, reason="integration_repair_delegate_closed", pool=pool
+        task, reason="integration_repair_delegate_closed", pool=pool, **extra
     )
 
 
@@ -1097,3 +1101,158 @@ async def test_pool_close_of_a_suspended_parent_releases_its_owner_row(
     # path's job — the writer release must not have pre-empted it.
     assert (await db.get_workspace("slot")).locked_by_task_id == "task"
     assert (await db.get_session("session")).task_id == "task"
+
+
+async def test_default_roles_leave_an_attached_verifier_fenced(
+    orchestrator_factory, tmp_path, monkeypatch
+):
+    """The ordinary close-path release still refuses a ``verifier`` owner.
+
+    ``RepairService._reuse_verifier_on`` rebinds a verifier that is *still*
+    attached to a live session, so the generic release must not race it.  The
+    widening added for the re-queue leg is opt-in per call site, and this is
+    the test that keeps it that way.
+    """
+    orchestrator = await _orchestrator(orchestrator_factory, tmp_path)
+    events: list[str] = []
+
+    released = await _release_owner_for_retry(
+        orchestrator, monkeypatch, owner_role="verifier", events=events, pool=True
+    )
+
+    assert released is False
+    assert events == []
+    owner = await BranchOwnership(orchestrator.db).get_owner(
+        BranchKey(repository_id="repo", branch="aq/parent")
+    )
+    assert owner["handoff_state"] == "attached"
+
+
+async def test_requeue_roles_return_an_attached_verifier_to_reserved(
+    orchestrator_factory, tmp_path, monkeypatch
+):
+    """A re-queued verifier self-transfers back to its own reserved fence.
+
+    ``_integration_owner_fence`` requires ``handoff_state == 'reserved'``, so
+    an ``attached`` row left behind by a re-queue fails every future claim of
+    that same task with "canonical branch is not reserved by this task"
+    (fair-willow).  The transfer keeps the owner and the role: nothing is
+    handed to a successor, so design spec 9.1's transfer rule is untouched.
+    """
+    from src.orchestrator.workspace import REQUEUE_INTEGRATION_OWNER_ROLES
+
+    orchestrator = await _orchestrator(orchestrator_factory, tmp_path)
+    events: list[str] = []
+
+    released = await _release_owner_for_retry(
+        orchestrator,
+        monkeypatch,
+        owner_role="verifier",
+        events=events,
+        pool=True,
+        roles=REQUEUE_INTEGRATION_OWNER_ROLES,
+    )
+
+    assert released is True
+    assert events == ["clean-check", "fetch", "detach"]
+    owner = await BranchOwnership(orchestrator.db).get_owner(
+        BranchKey(repository_id="repo", branch="aq/parent")
+    )
+    assert owner["owner_id"] == "task"
+    assert owner["owner_role"] == "verifier"
+    assert owner["handoff_state"] == "reserved"
+    assert int(owner["fence_token"]) == 5
+
+
+async def _close_into_requeue(orchestrator, monkeypatch, tmp_path, *, owner_role: str):
+    """Close a pool session whose completion pipeline re-queues the task.
+
+    This is the shape of the live wedge: git verification found only fixable
+    issues, the closing session was already gone, so
+    ``_reopen_with_verification_feedback`` put the task back on the frontier
+    while its ownership row was still ``attached``.
+    """
+    db = orchestrator.db
+    await db.update_project(
+        "p", hierarchical_integration_mode="hierarchy", integration_repository_id="repo"
+    )
+    async with db.immediate() as conn:
+        await conn.execute(
+            update(integration_branch_owners)
+            .where(integration_branch_owners.c.id == "owner")
+            .values(owner_role=owner_role, handoff_state="attached")
+        )
+        await conn.execute(
+            update(sessions).where(sessions.c.id == "session").values(lifecycle="pool")
+        )
+    events: list[str] = []
+    current_branch, run = _clean_git(events)
+    orchestrator.git.aget_current_branch = AsyncMock(side_effect=current_branch)
+    orchestrator.git._arun_unlocked = AsyncMock(side_effect=run)
+    orchestrator.git._arun = AsyncMock(side_effect=run)
+    monkeypatch.setattr(
+        orchestrator, "_get_default_branch", AsyncMock(return_value="main")
+    )
+
+    async def reopen(ctx):
+        await db.transition_task(
+            ctx.task.id,
+            TaskStatus.READY,
+            context="verification_reopen",
+            assigned_agent_id=None,
+        )
+        ctx.verification_reopened = True
+        return None, False
+
+    monkeypatch.setattr(orchestrator, "_run_completion_pipeline", reopen)
+    task = await db.get_task("task")
+    result = await orchestrator.complete_session_task(
+        task, outcome="pass", pool=True, session_id="session"
+    )
+    return result, events
+
+
+async def test_verification_requeue_returns_the_verifier_fence_to_reserved(
+    orchestrator_factory, tmp_path, monkeypatch
+):
+    """The close that re-queues a verifier must not strand its fence.
+
+    Before this, the close-time release only ran for COMPLETED/PAUSED legs, so
+    a READY re-queue left ``handoff_state='attached'`` behind forever: the
+    scheduler kept offering the READY task and every claim of it died with
+    ``prepare_failed: canonical branch is not reserved by this task``, burning
+    a pool worker each time (fair-willow, seen live on ``aq/keen-harbor``).
+    """
+    orchestrator = await _orchestrator(orchestrator_factory, tmp_path)
+
+    result, events = await _close_into_requeue(
+        orchestrator, monkeypatch, tmp_path, owner_role="verifier"
+    )
+
+    assert result["status"] == "READY"
+    assert (await orchestrator.db.get_task("task")).status is TaskStatus.READY
+    assert events == ["clean-check", "fetch", "detach"]
+    owner = await BranchOwnership(orchestrator.db).get_owner(
+        BranchKey(repository_id="repo", branch="aq/parent")
+    )
+    assert owner["owner_id"] == "task"
+    assert owner["owner_role"] == "verifier"
+    assert owner["handoff_state"] == "reserved"
+
+
+async def test_verification_requeue_also_re_reserves_a_worker_fence(
+    orchestrator_factory, tmp_path, monkeypatch
+):
+    """The re-queue leg is about the transition, not about one role."""
+    orchestrator = await _orchestrator(orchestrator_factory, tmp_path)
+
+    result, _events = await _close_into_requeue(
+        orchestrator, monkeypatch, tmp_path, owner_role="worker"
+    )
+
+    assert result["status"] == "READY"
+    owner = await BranchOwnership(orchestrator.db).get_owner(
+        BranchKey(repository_id="repo", branch="aq/parent")
+    )
+    assert owner["owner_role"] == "worker"
+    assert owner["handoff_state"] == "reserved"

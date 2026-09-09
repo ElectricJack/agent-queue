@@ -7,7 +7,16 @@ import os
 from dataclasses import dataclass, field
 
 from src.git.manager import GitError, GitManager, is_valid_git_oid
-from src.integration.models import BranchKey, Fence
+
+# ``*_INTEGRATION_OWNER_ROLES`` live in that leaf module so this module and
+# ``workspace_attachments`` share one definition without an import cycle; see
+# there for what each set admits and why.
+from src.integration.models import (
+    REQUEUE_INTEGRATION_OWNER_ROLES,
+    RETRYABLE_INTEGRATION_OWNER_ROLES,
+    BranchKey,
+    Fence,
+)
 from src.integration.ownership import (
     BranchBusy,
     BranchOwnership,
@@ -30,14 +39,6 @@ logger = logging.getLogger(__name__)
 # phrasings are in the wild depending on which command refused (`switch`,
 # `checkout`, `worktree add`).
 _BRANCH_BUSY_MARKERS = ("already checked out", "already used by worktree")
-
-# Owner roles whose ``owner_id`` is a task id and whose reservation therefore
-# survives its writer session.  ``arelease_integration_writer_for_retry``
-# self-transfers one of these back to ``reserved``; ``collector`` (owned by an
-# operation/batch) and ``verifier`` (reused while still attached, see
-# ``RepairService._reuse_verifier_on``) are deliberately absent.
-RETRYABLE_INTEGRATION_OWNER_ROLES = frozenset({"worker", "repair"})
-
 
 def _is_branch_busy_error(exc: Exception) -> bool:
     """True when a git failure is "that branch lives in another worktree"."""
@@ -1294,7 +1295,11 @@ class WorkspaceMixin:
             or repository is None
             or task is None
             or session.lifecycle != "pool"
-            or owner.get("owner_role") not in {"worker", "repair"}
+            # Every task-owned role: the proof this method takes is the claim
+            # protocol plus a detached checkout, and a pool verifier holds
+            # both exactly as a worker or repair delegate does.  ``collector``
+            # is owned by an operation, so it has no claim to read.
+            or owner.get("owner_role") not in REQUEUE_INTEGRATION_OWNER_ROLES
             or task.id != owner.get("owner_id")
             or workspace.locked_by_task_id != session.task_id
             or workspace.project_id != repository.project_id
@@ -1446,7 +1451,12 @@ class WorkspaceMixin:
         }
 
     async def arelease_integration_writer_for_retry(
-        self, task, *, reason: str, pool: bool = False
+        self,
+        task,
+        *,
+        reason: str,
+        pool: bool = False,
+        roles: frozenset[str] = RETRYABLE_INTEGRATION_OWNER_ROLES,
     ) -> bool | None:
         """Prove an enabled writer stopped, then restore its task reservation.
 
@@ -1477,6 +1487,13 @@ class WorkspaceMixin:
         reserved".  Only the roles a *task* can own are accepted;
         ``collector`` and ``verifier`` handoffs keep the general rule
         (design spec 9.1).
+
+        ``roles`` names the owner roles this particular call site may
+        self-transfer, defaulting to :data:`RETRYABLE_INTEGRATION_OWNER_ROLES`.
+        The re-queue leg passes :data:`REQUEUE_INTEGRATION_OWNER_ROLES` to
+        include ``verifier``; see that constant for why the exclusion does
+        not apply when a task returns to the frontier still owning its own
+        branch.
         """
         project = await self.db.get_project(task.project_id)
         if getattr(project, "hierarchical_integration_mode", "disabled") not in {
@@ -1500,7 +1517,7 @@ class WorkspaceMixin:
         if owner is None or owner["owner_id"] != task.id:
             return False
         role = str(owner["owner_role"] or "")
-        if role not in RETRYABLE_INTEGRATION_OWNER_ROLES:
+        if role not in roles:
             return False
         if owner["handoff_state"] == "reserved":
             return True
