@@ -700,3 +700,23 @@ Matter rebuilt revision1 has live CI34339238909 on7a39e65a; still in progress at
 last observation. CLI parent collector is running its14-scenario acceptance after
 fixing a real cross-child CLI list-envelope compatibility failure. No new main
 or epic delivery is claimed from these intermediate observations.
+
+
+### 2026-09-09 — fleet capacity explanation corrected
+
+Operator commit b4abefe0 makes task explain measure all projects before comparing
+with the global profile cap, while displaying both project and fleet counts.
+Real database regression uses two projects sharing one profile. Full pool
+lifecycle module20passed in12.77s; changed-file Ruff and diff checks passed.
+Evidence /tmp/aq-fleet-explain-tests.log. Published source
+origin/aq/operator-fleet-explain-20260909; AQ delivery task fresh-flare covers
+review and delivery. This is a diagnostic change only, not a capacity or routing
+change; daemon616568 has not yet loaded it.
+
+Matter revision1 CI34339238909 completed/success, but AQ still reports built/testing
+with no revision1 CI evidence and its repair ladder has escalated to stage1.
+Do not count this batch released yet. wise-nexus reports four isolated database
+regressions passing and broader suites in progress; its attempted default e2e
+port was occupied, so operator supplied the unique-port/private-DB swarm helper.
+CLI collector's14-scenario run reached13passing; it corrected the remaining old
+stderr expectation to validate structured usage_error and is rerunning acceptance.
