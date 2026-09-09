@@ -43,4 +43,25 @@ Foundation establishes the complete inventory and page ownership. Subsystem tick
 
 Every tracked production module and existing documentation file receives an explicit coverage/disposition entry. Guides reflect current main and distinguish shipped defaults, configured policy, optional compatibility and historical plans. Commands and paths are checked locally; no full application test run is required for documentation-only changes. GitHub-native Markdown and relative links are the required publication format; introducing a separate documentation hosting platform is not part of this epic.
 
-See [task graph](tasks.graph.json) for each scope and acceptance checklist, and [inventory snapshot](module-inventory.json) for the initial file list.
+See [task graph](tasks.graph.json) for each scope and acceptance checklist.
+
+## Foundation outputs
+
+The `foundation` ticket has landed. Everything below is the contract the other
+23 tickets work against:
+
+| Artefact | What it is |
+|---|---|
+| [`docs/README.md`](../../README.md) | The documentation home: navigation and beginner reading order. |
+| [`docs/documentation-map.md`](../../documentation-map.md) | The tree, the page ownership table and the shard rules. **Read this before writing a page.** |
+| [`docs/reference/glossary.md`](../../reference/glossary.md) | Shared vocabulary. |
+| [`docs/contributing/documentation-style.md`](../../contributing/documentation-style.md) | Page shape, accuracy rules and the runnable-example rules. |
+| [`docs/reference/modules/README.md`](../../reference/modules/README.md) | Module catalog index and the shard entry format. |
+| [`module-ownership.json`](module-ownership.json) | Every tracked path → owning shard, component page and category. |
+| [`module-inventory.json`](module-inventory.json) | The refreshed inventory, regenerated against implementation `HEAD`. |
+| [`known-inaccuracies.md`](known-inaccuracies.md) | Where existing pages contradict current behaviour, with evidence. |
+| [`refresh_inventory.py`](refresh_inventory.py) | Regenerates and checks the two JSON artefacts. |
+
+```bash
+python3 docs/plans/documentation-overhaul/refresh_inventory.py --check
+```
