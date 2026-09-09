@@ -487,6 +487,10 @@ class Orchestrator(
         self.integration_app_client_factory = None
         self.integration_repository_binding_resolver = None
         self.branch_discard_service = None
+        # Reconciles reserved hierarchy origins into their pinned task
+        # branches.  It is constructed during initialize, once the command
+        # handler's hierarchy-service factory is available.
+        self.branch_materialization_service = None
         self.integration_release_service = None
         self.integration_cleanup_service = None
         self.integration_control_service = None
@@ -1125,6 +1129,18 @@ class Orchestrator(
             return
         await service.drain_due(now=now)
 
+    async def _drain_branch_materializations(self, now: float) -> None:
+        """Materialize pending hierarchy origins and start untouched containers.
+
+        Unlike integration outbox events, reserved branch origins have no
+        playbook consumer.  Keep their durable reconciliation on the normal
+        daemon cycle, alongside the other integration recovery drains.
+        """
+        service = self.branch_materialization_service
+        if service is None:
+            return
+        await service.drain_due(now=now)
+
     async def stop_task(self, task_id: str) -> str | None:
         """Forcibly stop an in-progress task and release its agent.
 
@@ -1644,6 +1660,22 @@ class Orchestrator(
             git_manager=self.git,
             app_client_factory=self.integration_app_client_factory,
             repository_binding_resolver=self.integration_repository_binding_resolver,
+        )
+        from src.integration.branch_materialization import BranchMaterializationService
+
+        def hierarchy_service_factory():
+            # CommandHandler owns the production hierarchy factory because it
+            # supplies the retained-repository Git closures.  The factory is
+            # late-bound: embedded/test orchestrators can initialize before a
+            # handler is installed and will simply retry next cycle.
+            handler = self._command_handler
+            if handler is None:
+                return None
+            return handler._hierarchy_integration_service()
+
+        self.branch_materialization_service = BranchMaterializationService(
+            self.db,
+            hierarchy_service_factory=hierarchy_service_factory,
         )
         self.integration_control_service = IntegrationControlService(
             self.db,
@@ -2471,7 +2503,16 @@ class Orchestrator(
             #    unblock dependents within the same cycle.
             await self._check_defined_tasks()
 
-            # 3a. Tell the playbook layer about work that still lacks a class
+            # 3a. Cut reserved hierarchy branches and start a released,
+            # untouched container's collection episode.  This must precede
+            # scheduling so a newly materialized child can be prepared on a
+            # following assignment without waiting for an outbox consumer.
+            try:
+                await self._drain_branch_materializations(time.time())
+            except Exception:
+                logger.error("Branch materialization reconciliation failed", exc_info=True)
+
+            # 3b. Tell the playbook layer about work that still lacks a class
             # or a profile.  The orchestrator decides nothing here; the
             # ``default-assignment-routing`` playbook answers the event.
             try:

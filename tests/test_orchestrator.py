@@ -4,6 +4,8 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from src.orchestrator import Orchestrator
+from src.commands.handler import CommandHandler
+from src.integration.hierarchy import HierarchyIntegration
 from src.models import (
     AgentProfile,
     DepType,
@@ -87,6 +89,7 @@ async def test_orchestrator_owns_single_integration_service_loop(orch):
     assert orch.integration_outbox is not None
     assert orch.integration_attestation_service is not None
     assert orch.integration_control_service is not None
+    assert orch.branch_materialization_service is not None
     assert service._drain_handler.__self__ is orch.integration_control_service
     assert orch.integration_control_service.external_preflight is not None
     assert (
@@ -110,6 +113,109 @@ async def test_orchestrator_owns_single_integration_service_loop(orch):
         )
     finally:
         orch.playbook_manager = original_runtime
+
+
+async def test_runtime_cycle_materializes_origins_and_starts_untouched_container(orch, tmp_path):
+    """The daemon cycle, not a direct service call, owns origin reconciliation."""
+    from sqlalchemy import insert
+
+    from src.database.tables import playbook_artifacts
+    from src.integration.models import (
+        ArtifactSnapshot,
+        HierarchicalIntegrationPolicy,
+        IntegrationBoundaryPolicy,
+        PlaybookRoute,
+        RepairPolicy,
+        RequiredCheckSet,
+    )
+
+    project_id = "materialization"
+    artifact = ArtifactSnapshot(
+        playbook_id="hierarchical-delivery",
+        artifact_sha256="sha256:" + "a" * 64,
+        schema_generation=2,
+        contract_fingerprint="sha256:" + "b" * 64,
+        source_digest="sha256:" + "c" * 64,
+        compiler_build="test",
+        version=1,
+    )
+    boundary = IntegrationBoundaryPolicy(
+        required_checks=RequiredCheckSet(
+            version="test", names=("unit",), producer_id="forge-observer"
+        ),
+        repair=RepairPolicy(debug_intelligence_class="high"),
+        route=PlaybookRoute(
+            playbook_id="hierarchical-delivery",
+            scope="project",
+            scope_identifier=project_id,
+            artifact=artifact,
+        ),
+    )
+    policy = HierarchicalIntegrationPolicy(
+        parent=boundary,
+        root=boundary,
+        branchless_parent="verifier",
+        on_failed_child="block",
+    )
+    await orch.db.create_project(Project(id=project_id, name="materialization"))
+    await orch.db.create_repo(
+        RepoConfig(
+            id="materialization-repo",
+            project_id=project_id,
+            source_type=RepoSourceType.LINK,
+            source_path=str(tmp_path),
+        )
+    )
+    await orch.db.update_project(
+        project_id,
+        hierarchical_integration_mode="hierarchy",
+        integration_repository_id="materialization-repo",
+        hierarchical_integration_policy=policy.model_dump(mode="json"),
+    )
+    async with orch.db.immediate() as conn:
+        await conn.execute(
+            insert(playbook_artifacts).values(
+                **artifact.model_dump(),
+                scope="project",
+                scope_identifier=project_id,
+                profile_fingerprint="",
+                path="/tmp/materialization-artifact",
+                size_bytes=1,
+                validation="{}",
+                created_at=1.0,
+            )
+        )
+    await orch.db.create_task(
+        Task(
+            id="materialization-epic",
+            project_id=project_id,
+            repo_id="materialization-repo",
+            title="materialization epic",
+            description="",
+            status=TaskStatus.IN_PROGRESS,
+        )
+    )
+    hierarchy = HierarchyIntegration(
+        orch.db,
+        default_head_resolver=lambda _repo, _branch: "a" * 40,
+        branch_materializer=lambda _repo, _branch, base_sha: base_sha,
+    )
+    await hierarchy.file_children("materialization-epic", [{"title": "child"}], 0)
+
+    # The production CommandHandler factory returns a daemon-owned instance
+    # when available.  This supplies a deterministic no-network instance
+    # while still exercising the factory through run_one_cycle().
+    orch.hierarchy_integration = hierarchy
+    orch.set_command_handler(CommandHandler(orch, orch.config))
+    await orch.run_one_cycle()
+
+    checkpoint = await orch.db.get_integration_checkpoint("materialization-epic")
+    assert checkpoint["episode_id"] is not None
+    assert (await orch.db.get_task("materialization-epic")).status is TaskStatus.PAUSED
+    origin = await orch.db.get_task_branch_origin_for_promotion(
+        "materialization-epic", "materialization-repo"
+    )
+    assert origin["materialized"] is True
 
 
 @pytest.mark.parametrize("use_app", [False, True])
