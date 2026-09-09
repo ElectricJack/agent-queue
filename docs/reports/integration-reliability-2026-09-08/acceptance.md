@@ -854,3 +854,16 @@ The initial manual replay without hydrated task fields produced terminal
 completed runs with `input_resolution_failed` command steps and no tasks.
 That attempt is explicitly not success evidence. Inspection of step receipts
 was necessary to distinguish the successful recovery from the failed attempt.
+
+### 2026-09-09 — CLI child .8 delivered through the guarded path
+
+Receipt `receipt-6bdf59a4-8082-57d9-b8ad-397d322212cf` records
+`keen-harbor.8` delivered to `keen-harbor` at
+`c5071ec35dcaba2a1620e92b7cde76cf10b4dc61`. Independent `git ls-remote`
+confirmed that exact parent head. The collector reported 1,053 passing
+area tests with two skips after fixing the stale inventory expectation for
+the retired plugin-log command. Final epic acceptance remains pending `.13`.
+
+Task `stark-cascade` records the manual replay hydration/partial-failure
+reporting defect exposed during the missing-review recovery, with scoped
+public-command regressions and normal AQ delivery required.
