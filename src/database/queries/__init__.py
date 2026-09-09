@@ -1,9 +1,14 @@
 """Query mixins for each database domain.
 
 Each mixin class provides the CRUD and query methods for one domain
-(projects, tasks, agents, etc.).  They expect ``self._db`` to be an
-open aiosqlite connection.  The SQLite adapter composes them via
-multiple inheritance.
+(projects, tasks, agents, etc.).  The methods are backend-neutral
+SQLAlchemy Core: self-contained ones expect ``self._engine`` to be an
+initialized :class:`~sqlalchemy.ext.asyncio.AsyncEngine` and open their
+own ``engine.begin()`` block, while caller-owned ones take an
+:class:`~sqlalchemy.ext.asyncio.AsyncConnection` so the caller controls
+the transaction boundary.
+:class:`~src.database.adapters.postgresql.PostgreSQLDatabaseAdapter` is
+the only adapter; it composes the mixins via multiple inheritance.
 """
 
 from src.database.queries.agent_queries import AgentQueryMixin
