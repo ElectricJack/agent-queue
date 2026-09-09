@@ -1129,6 +1129,47 @@ async def test_background_recovery_enters_pending_before_releasing_stale_pool_wr
     assert owner["handoff_state"] == "released" and owner["fence_token"] == 4
 
 
+@pytest.mark.parametrize("confirmed", [False, True])
+async def test_teardown_records_stopped_writer_when_owner_retains_claim(
+    orchestrator_factory, tmp_path, monkeypatch, confirmed
+):
+    orchestrator = await _stopped_stale_pool_orchestrator(orchestrator_factory, tmp_path)
+    async with orchestrator.db.immediate() as conn:
+        await conn.execute(update(sessions).where(sessions.c.id == "session").values(
+            state="draining"
+        ))
+    await orchestrator.db.update_agent("agent", state=AgentState.BUSY)
+    provider = SimpleNamespace(stop=AsyncMock(), confirm_stopped=AsyncMock(return_value=confirmed))
+    monkeypatch.setattr(orchestrator.session_providers, "create", lambda *_: provider)
+    session = await orchestrator.db.get_session("session")
+
+    await orchestrator._terminate_pool_session(session, reason="drained")
+
+    stopped = await orchestrator.db.get_session("session")
+    assert stopped.state == ("stopped" if confirmed else "draining")
+    assert stopped.desired_state == "stopped"
+    assert stopped.task_id == "task"
+    assert (await orchestrator.db.get_workspace("slot")).locked_by_task_id == "task"
+    assert (await orchestrator.db.get_task("task")).claim_epoch == 3
+    assert (await orchestrator.db.get_agent("agent")).state is AgentState.RETIRED
+    if confirmed:
+        from src.integration.completion_recovery import reconcile_closed_integration_owners
+
+        await orchestrator.db.update_project(
+            "p", hierarchical_integration_mode="hierarchy", integration_repository_id="repo"
+        )
+        events = []
+        current_branch, run = _clean_git(events, already_detached=True)
+        orchestrator.git.aget_current_branch = AsyncMock(side_effect=current_branch)
+        orchestrator.git._arun_unlocked = AsyncMock(side_effect=run)
+        assert await reconcile_closed_integration_owners(
+            orchestrator, "p", ready_only=True
+        ) == ["task"]
+        assert (await orchestrator.db.get_session("session")).task_id is None
+        assert (await orchestrator.db.get_workspace("slot")).locked_by_task_id is None
+        assert (await orchestrator.db.get_task("task")).claim_epoch == 3
+
+
 async def test_stopped_pool_recovery_refuses_a_reused_agent_before_git_proof(
     orchestrator_factory, tmp_path, monkeypatch
 ):
