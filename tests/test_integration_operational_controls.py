@@ -13,6 +13,7 @@ from sqlalchemy import insert, select, update
 from src.commands.principal import ExecutionPrincipal, PrincipalKind, principal_context
 from src.config import GitHubAppConfig
 from src.database import Database
+from src.database.queries.hierarchy_queries import HierarchyError
 from src.database.tables import (
     gates,
     integration_batches,
@@ -27,9 +28,14 @@ from src.database.tables import (
     integration_rollout_transitions,
     project_integration_schedules,
     projects,
+    task_branch_origins,
+    task_integration_checkpoints,
+    task_metadata,
+    tasks,
 )
 from src.git.github_app import GitHubAppClient, GitHubRepositoryBinding, HttpResponse
 from src.integration.controls import IntegrationControlService, daemon_functional_preflight
+from src.integration.hierarchy import HierarchyIntegration
 from src.integration.models import (
     ArtifactSnapshot,
     HierarchicalIntegrationPolicy,
@@ -40,7 +46,7 @@ from src.integration.models import (
 )
 from src.integration.scheduler import IntegrationScheduler
 from src.integration.status import IntegrationStatusService
-from src.models import Project, RepoConfig, RepoSourceType
+from src.models import Project, RepoConfig, RepoSourceType, Task, TaskStatus
 from src.playbooks.artifact_ref import ArtifactRef
 from src.playbooks.definition import PlaybookDefinition
 from src.profiles.capabilities import CapabilityPolicy
@@ -207,6 +213,125 @@ async def _schedule(db) -> dict:
     async with db._engine.connect() as conn:
         row = (await conn.execute(select(project_integration_schedules))).mappings().one()
         return dict(row)
+
+
+async def test_reconcile_unmaterialized_tasks_binds_legacy_graph_and_preserves_manual_hold(db):
+    """A disabled-era graph becomes normally materialized hierarchy work."""
+    await db.create_task(Task(id="legacy-parent", project_id="p", title="parent", description=""))
+    await db.create_task(Task(id="legacy-child", project_id="p", title="child", description=""))
+    async with db.immediate() as conn:
+        await db.set_parent("legacy-child", "legacy-parent", conn=conn)
+    await db.pause_task("legacy-parent")
+
+    controls = IntegrationControlService(db, external_preflight=_external_ready, clock=lambda: 10.0)
+    enabled = await controls.enable(
+        "p", mode="train", expected_generation=0, reason="enable", operator_id="local:test"
+    )
+    assert enabled["generation"] == 1
+    hierarchy = HierarchyIntegration(
+        db,
+        default_head_resolver=lambda _repo, _branch: "a" * 40,
+        branch_materializer=lambda _repo, _branch, base_sha: base_sha,
+        clock=lambda: 10.0,
+    )
+
+    result = await controls.reconcile_unmaterialized_tasks(
+        "p",
+        expected_generation=1,
+        reason="recover disabled-era graph",
+        operator_id="local:test",
+        hierarchy=hierarchy,
+    )
+
+    assert result == {
+        "outcome": "reconciled",
+        "project_id": "p",
+        "generation": 2,
+        "repository_id": "repo",
+        "task_ids": ["legacy-child", "legacy-parent"],
+    }
+    async with db._engine.connect() as conn:
+        recovered = {
+            row["id"]: dict(row)
+            for row in (await conn.execute(select(tasks).where(tasks.c.id.in_(result["task_ids"])))).mappings()
+        }
+        origins = list(
+            (await conn.execute(select(task_branch_origins).order_by(task_branch_origins.c.task_id))).mappings()
+        )
+        checkpoints = list(
+            (await conn.execute(select(task_integration_checkpoints))).mappings()
+        )
+        pause = (await conn.execute(
+            select(task_metadata.c.value).where(
+                task_metadata.c.task_id == "legacy-parent", task_metadata.c.key == "manual_pause"
+            )
+        )).scalar_one()
+    assert recovered["legacy-parent"]["parent_task_id"] is None
+    assert recovered["legacy-child"]["parent_task_id"] == "legacy-parent"
+    assert {row["repo_id"] for row in recovered.values()} == {"repo"}
+    assert recovered["legacy-parent"]["status"] == TaskStatus.PAUSED.value
+    assert pause
+    assert [(row["task_id"], row["parent_ref"], row["creation_generation"]) for row in origins] == [
+        ("legacy-child", "aq/legacy-parent", 2),
+        ("legacy-parent", "main", 2),
+    ]
+    assert {row["task_id"] for row in checkpoints} == {"legacy-parent", "legacy-child"}
+    for origin in origins:
+        assert (await hierarchy.materialize_origin(origin["id"]))["outcome"] == "materialized"
+
+    stale = await controls.reconcile_unmaterialized_tasks(
+        "p",
+        expected_generation=1,
+        reason="must not replay",
+        operator_id="local:test",
+        hierarchy=hierarchy,
+    )
+    assert stale == {"outcome": "stale", "project_id": "p", "generation": 2}
+
+
+async def test_reconcile_unmaterialized_rejects_mixed_repository_graph_atomically(db):
+    await db.create_repo(
+        RepoConfig(
+            id="other-repo",
+            project_id="p",
+            source_type=RepoSourceType.CLONE,
+            url="https://github.com/acme/other.git",
+            default_branch="main",
+        )
+    )
+    await db.create_task(Task(id="legacy-parent", project_id="p", title="parent", description=""))
+    await db.create_task(
+        Task(
+            id="foreign-child",
+            project_id="p",
+            title="child",
+            description="",
+            repo_id="other-repo",
+        )
+    )
+    async with db.immediate() as conn:
+        await db.set_parent("foreign-child", "legacy-parent", conn=conn)
+
+    controls = IntegrationControlService(db, external_preflight=_external_ready)
+    await controls.enable(
+        "p", mode="hierarchy", expected_generation=0, reason="enable", operator_id="local:test"
+    )
+    hierarchy = HierarchyIntegration(
+        db, default_head_resolver=lambda _repo, _branch: "a" * 40
+    )
+
+    with pytest.raises(HierarchyError, match="different repository"):
+        await controls.reconcile_unmaterialized_tasks(
+            "p",
+            expected_generation=1,
+            reason="must reject mixed graph",
+            operator_id="local:test",
+            hierarchy=hierarchy,
+        )
+    parent = await db.get_task("legacy-parent")
+    project = await db.get_project("p")
+    assert parent.repo_id is None
+    assert project.hierarchical_integration_generation == 1
 
 
 async def test_enable_is_atomic_and_stale_generation_changes_nothing(db):

@@ -987,7 +987,121 @@ class HierarchyIntegration:
             raise HierarchyError("invalid", "task has no live branch origin")
         return dict(row)
 
-    async def _ensure_origin_chain(self, conn, task_id: str, repo: RepoConfig) -> None:
+    async def reconcile_unmaterialized_tasks_on(
+        self,
+        conn,
+        *,
+        project_id: str,
+        repository_id: str,
+        origin_generation: int,
+    ) -> list[str]:
+        """Bind a pristine legacy graph to its designated hierarchy repository.
+
+        This is deliberately caller-transaction-owned: the operational control
+        has already taken the project hierarchy lock and generation fence.  It
+        first proves that *all* null-repository tasks can be recovered, so an
+        ambiguity never leaves a partially rebound graph behind.
+        """
+        repo = await self._repo_on(conn, repository_id)
+        if repo is None or repo.project_id != project_id:
+            raise HierarchyError("invalid", "designated repository is not in the project")
+
+        targets = list(
+            (
+                await conn.execute(
+                    select(tasks)
+                    .where(tasks.c.project_id == project_id, tasks.c.repo_id.is_(None))
+                    .order_by(tasks.c.id)
+                )
+            ).mappings()
+        )
+        if not targets:
+            return []
+
+        # Include ancestors because reserving a child necessarily reserves its
+        # full delivery chain.  No row in that chain may belong to a different
+        # repository or be active while this operator-only recovery runs.
+        candidates: dict[str, dict] = {}
+        # A null-bound parent with a differently-bound descendant is just as
+        # ambiguous as a differently-bound ancestor: recovering the parent
+        # would otherwise silently change that child's future delivery chain.
+        seed_ids: set[str] = set()
+        for target in targets:
+            seed_ids.update(await self.db.subtree_ids(target["id"], conn=conn))
+        for seed_id in sorted(seed_ids):
+            row = await self._task_row(conn, seed_id)
+            while True:
+                if row["project_id"] != project_id:
+                    raise HierarchyError("invalid", "task hierarchy crosses the selected project")
+                candidates[row["id"]] = row
+                parent_id = row["parent_task_id"]
+                if not parent_id:
+                    break
+                row = await self._task_row(conn, parent_id)
+
+        candidate_ids = sorted(candidates)
+        active_sessions = set(
+            (
+                await conn.execute(
+                    select(sessions.c.task_id).where(sessions.c.task_id.in_(candidate_ids))
+                )
+            ).scalars()
+        )
+        for row in candidates.values():
+            if row["repo_id"] not in {None, repository_id}:
+                raise HierarchyError("invalid", "task is bound to a different repository")
+            if (
+                row["assigned_agent_id"] is not None
+                or row["id"] in active_sessions
+                or row["status"] in {TaskStatus.ASSIGNED.value, TaskStatus.IN_PROGRESS.value}
+            ):
+                raise HierarchyError("busy", "task has an active assignment or claim")
+
+        origins = list(
+            (
+                await conn.execute(
+                    select(task_branch_origins).where(
+                        task_branch_origins.c.task_id.in_(candidate_ids),
+                        task_branch_origins.c.retired_at.is_(None),
+                    )
+                )
+            ).mappings()
+        )
+        if origins:
+            raise HierarchyError(
+                "invalid", "task already has a live branch origin and is not an unmaterialized rollout task"
+            )
+        checkpoints = list(
+            (
+                await conn.execute(
+                    select(task_integration_checkpoints.c.task_id).where(
+                        task_integration_checkpoints.c.task_id.in_(candidate_ids)
+                    )
+                )
+            ).scalars()
+        )
+        if checkpoints:
+            raise HierarchyError("invalid", "task already has an integration checkpoint")
+
+        for task_id in sorted(target["id"] for target in targets):
+            await self._ensure_origin_chain(
+                conn,
+                task_id,
+                repo,
+                origin_generation=origin_generation,
+                root_branch=repo.default_branch,
+            )
+        return sorted(target["id"] for target in targets)
+
+    async def _ensure_origin_chain(
+        self,
+        conn,
+        task_id: str,
+        repo: RepoConfig,
+        *,
+        origin_generation: int = 0,
+        root_branch: str | None = None,
+    ) -> None:
         chain: list[dict] = []
         current = await self._task_row(conn, task_id)
         while current is not None:
@@ -1009,7 +1123,9 @@ class HierarchyIntegration:
                 continue
             branch = f"aq/{row['id']}"
             if parent_checkpoint is None:
-                base_sha = await self._resolve_head(repo, row["branch_name"] or repo.default_branch)
+                base_sha = await self._resolve_head(
+                    repo, root_branch or row["branch_name"] or repo.default_branch
+                )
                 parent_ref = repo.default_branch
             else:
                 base_sha = parent_checkpoint["checkpoint_sha"]
@@ -1026,7 +1142,7 @@ class HierarchyIntegration:
                 parent_task_id=row["parent_task_id"],
                 parent_ref=parent_ref,
                 base_sha=base_sha,
-                generation=0,
+                generation=origin_generation,
             )
             await self._insert_checkpoint(
                 conn,

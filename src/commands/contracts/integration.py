@@ -56,6 +56,7 @@ DESIGN_INTEGRATION_COMMANDS = frozenset(
         "integration_status",
         "integration_flush",
         "integration_enable",
+        "integration_reconcile_unmaterialized",
         "integration_waive_history",
         "integration_resume",
         "integration_abort",
@@ -81,6 +82,12 @@ class IntegrationEnableArgs(CommandArgs):
     reason: str = Field(min_length=1)
     waiver_id: str | None = Field(default=None, min_length=1)
     interval_seconds: int | None = Field(default=None, gt=0, strict=True)
+
+
+class IntegrationReconcileUnmaterializedArgs(CommandArgs):
+    project_id: str = Field(min_length=1)
+    expected_generation: int = Field(ge=0)
+    reason: str = Field(min_length=1)
 
 
 class IntegrationWaiveHistoryArgs(CommandArgs):
@@ -513,6 +520,21 @@ INTEGRATION_ENABLE = _operational_contract(
     IntegrationEnableArgs,
     ("enabled", "disabled", "draining", "blocked", "stale", "not_found"),
     successes=frozenset({"enabled", "disabled", "draining"}),
+    side_effect=SideEffectClass.COMPOSITE,
+)
+INTEGRATION_RECONCILE_UNMATERIALIZED = _operational_contract(
+    "integration_reconcile_unmaterialized",
+    IntegrationReconcileUnmaterializedArgs,
+    (
+        "reconciled",
+        "nothing_to_reconcile",
+        "blocked",
+        "stale",
+        "not_found",
+        "hierarchy.invalid",
+        "hierarchy.busy",
+    ),
+    successes=frozenset({"reconciled", "nothing_to_reconcile"}),
     side_effect=SideEffectClass.COMPOSITE,
 )
 INTEGRATION_WAIVE_HISTORY = _operational_contract(
@@ -1640,6 +1662,26 @@ async def _enable_adapter(args: IntegrationEnableArgs, ctx: CommandContext | Non
     )
 
 
+async def _reconcile_unmaterialized_adapter(
+    args: IntegrationReconcileUnmaterializedArgs, ctx: CommandContext | None
+):
+    return await _hierarchy_adapter(
+        "integration_reconcile_unmaterialized",
+        args,
+        ctx,
+        IntegrationOperationalValue,
+        {
+            "reconciled",
+            "nothing_to_reconcile",
+            "blocked",
+            "stale",
+            "not_found",
+            "hierarchy.invalid",
+            "hierarchy.busy",
+        },
+    )
+
+
 async def _waive_history_adapter(
     args: IntegrationWaiveHistoryArgs, ctx: CommandContext | None
 ):
@@ -1705,6 +1747,7 @@ def register_integration_contracts(registry: ContractRegistry) -> None:
         (INTEGRATION_STATUS, _status_adapter),
         (INTEGRATION_FLUSH, _flush_adapter),
         (INTEGRATION_ENABLE, _enable_adapter),
+        (INTEGRATION_RECONCILE_UNMATERIALIZED, _reconcile_unmaterialized_adapter),
         (INTEGRATION_WAIVE_HISTORY, _waive_history_adapter),
         (INTEGRATION_RESUME, _resume_adapter),
         (INTEGRATION_ABORT, _abort_adapter),
