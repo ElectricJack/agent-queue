@@ -94,6 +94,9 @@ Migrations are managed by Alembic in `migrations/`.
 **After ANY change to `tables.py`** (add/remove/rename columns, add tables, change constraints):
 
 ```bash
+# Both commands need AGENT_QUEUE_DB_URL (or sqlalchemy.url in alembic.ini) —
+# there is no default, and no URL is a hard error rather than a local file.
+export AGENT_QUEUE_DB_URL=postgresql+asyncpg://user:pass@host/db
 alembic revision --autogenerate -m "description of change"
 # Review the generated file in migrations/versions/
 alembic upgrade head  # apply locally
