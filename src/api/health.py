@@ -22,6 +22,13 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
+# Task ids are ``adjective-noun[-NN]`` at the root and ``<parent>.<ordinal>`` for
+# every level below it (``solid-grove``, ``solid-grove.26``, ``solid-grove.26.1``),
+# so the plan viewer has to accept dots.  Matching dot-separated segments rather
+# than adding ``.`` to the character class keeps ``..`` — and with it any path
+# traversal — unrepresentable, and ``/`` was never in the allowlist.
+_TASK_ID_RE = _re.compile(r"^[a-zA-Z0-9_-]+(?:\.[a-zA-Z0-9_-]+)*$")
+
 
 def _check_ok(value: Any) -> bool:
     """Return True when a single check result indicates success."""
@@ -99,7 +106,7 @@ async def plan_viewer(task_id: str) -> HTMLResponse | JSONResponse:
     if deps._plan_content_provider is None:
         return JSONResponse({"error": "plan viewer not configured"}, status_code=404)
 
-    if not _re.match(r"^[a-zA-Z0-9_-]+$", task_id):
+    if not _TASK_ID_RE.match(task_id):
         return JSONResponse({"error": "invalid task id"}, status_code=400)
 
     content = await deps._plan_content_provider(task_id)
