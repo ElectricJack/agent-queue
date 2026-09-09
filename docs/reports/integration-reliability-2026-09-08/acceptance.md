@@ -640,3 +640,14 @@ Root batch 2c484c089 escalated to stage 1; explicitly routed its new delegate to
 enabled deep-high-codex without independently resuming its guarded handoff.
 Restart to load these validated fixes was requested via aq restart --no-dashboard;
 log /tmp/aq-routing-contained-restart.log. Running sessions are preserved.
+
+
+Post-restart: daemon PID 616568 responds and retained the active worker sessions.
+Doctor confirms schema a00000000006 and consistent claim holders, but reports
+an integration operational-check timeout and a stale stage-0 session whose task
+is READY while desired_state is stopped. Exact session a3326da2 was signalled via
+public session kill after confirming its slot-1 worktree clean; reconciler exit
+classification remains to be verified. Do not equate the doctor timeout with a
+stopped operation. Matter Engine CI34336931646 is now completed/success at6c3edde6;
+its batch promotion is not yet verified. Doctor evidence:
+/tmp/aq-routing-contained-doctor.json.
