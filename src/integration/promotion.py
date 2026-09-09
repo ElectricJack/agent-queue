@@ -600,20 +600,33 @@ class PromotionService:
         )
         if not commits or commits != intent["resolution_commit_shas"]:
             raise PromotionInvariantError("resolution commit range does not match reservation")
-        merges = await self.git.arun_git_result(
+        lineage = await self.git.arun_git_result(
             [
                 "rev-list",
-                "--min-parents=2",
+                "--parents",
+                "--first-parent",
+                "--reverse",
                 f"{intent['expected_target']}..{intent['resolution_head_sha']}",
             ],
             cwd=str(store),
             env={"LC_ALL": "C"},
             lock_held=True,
         )
-        if merges.returncode != 0:
-            raise PromotionRuntimeError((merges.stderr or "merge scan failed").strip())
-        if merges.stdout.strip():
-            raise PromotionInvariantError("resolution commit range contains a merge commit")
+        if lineage.returncode != 0:
+            raise PromotionRuntimeError((lineage.stderr or "resolution lineage scan failed").strip())
+        previous = intent["expected_target"]
+        source_merged = False
+        for line in lineage.stdout.splitlines():
+            commit, *parents = line.split()
+            if not parents or parents[0] != previous:
+                raise PromotionInvariantError("resolution first-parent chain changed its target")
+            if len(parents) > 1:
+                if source_merged or parents[1:] != [intent["source_head"]]:
+                    raise PromotionInvariantError("resolution contains an unreviewed merge commit")
+                source_merged = True
+            previous = commit
+        if previous != intent["resolution_head_sha"]:
+            raise PromotionInvariantError("resolution first-parent chain is incomplete")
 
     async def _resolution_commit_range(
         self, store: Path, expected_target: str, resolved_head: str

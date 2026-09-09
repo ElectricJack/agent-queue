@@ -1048,6 +1048,51 @@ async def test_resolution_push_rejects_merge_commit_range(db, conflict_resolutio
     )
 
 
+@pytest.mark.parametrize("merge_shape", ["reviewed", "reversed", "extra_parent"])
+async def test_resolution_preserves_only_the_exact_reviewed_child_ancestry(
+    db, conflict_resolution_case, merge_shape
+):
+    from src.commands.principal import principal_context
+    from src.integration.promotion import PromotionInvariantError, PromotionService
+
+    case = conflict_resolution_case
+    work = case["work"]
+    parents = [case["target"], case["source"]]
+    if merge_shape == "reversed":
+        parents.reverse()
+    elif merge_shape == "extra_parent":
+        parents.append(case["resolved_head"])
+    merged = _git([
+        "commit-tree", case["resolved_tree"],
+        *[arg for parent in parents for arg in ("-p", parent)],
+        "-m", "Resolve and retain reviewed child",
+    ], work)
+    _git(["reset", "--hard", merged], work)
+    (work / "repair.txt").write_text("verified follow-up repair\n")
+    _git(["commit", "-am", "Follow-up repair"], work)
+    head = _git(["rev-parse", "HEAD"], work)
+    request = _resolution_request(
+        case, resolved_head_sha=head,
+        resolved_tree_sha=_git(["rev-parse", "HEAD^{tree}"], work),
+        repair_commit_shas=tuple(_git([
+            "rev-list", "--reverse", f"{case['target']}..{head}",
+        ], work).splitlines()),
+    )
+    service = PromotionService(db, data_dir=case["data_dir"], git_manager=GitManager())
+    with principal_context(_resolution_principal()):
+        await service.reserve_resolution(request)
+        if merge_shape != "reviewed":
+            with pytest.raises(PromotionInvariantError, match="first-parent|merge commit"):
+                await service.push_resolution(case["intent_id"], request.fence)
+            assert _git(["ls-remote", "origin", "refs/heads/aq/parent"], work).split()[0] == case["target"]
+            return
+        await service.push_resolution(case["intent_id"], request.fence)
+    assert _git(["ls-remote", "origin", "refs/heads/aq/parent"], work).split()[0] == head
+    assert _git(["show", "-s", "--format=%P", merged], work) == (
+        f"{case['target']} {case['source']}"
+    )
+
+
 async def test_resolution_push_rejects_moved_target(db, conflict_resolution_case):
     from src.commands.principal import principal_context
     from src.integration.promotion import PromotionService, PromotionTargetMoved
