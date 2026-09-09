@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import time
 from collections.abc import Callable
 from typing import Any
@@ -18,12 +19,19 @@ from src.database.tables import (
     integration_candidate_resolutions,
     integration_cleanup_items,
     integration_promotion_intents,
+    integration_parent_episodes,
     integration_repair_operations,
     integration_repair_stages,
+    task_integration_checkpoints,
+    task_metadata,
+    sessions,
+    workspaces,
     tasks,
 )
+from src.database.queries.task_queries import TERMINAL_BLOCKED_META_KEY
 from src.integration.models import RepairPolicy
 from src.integration.outbox import enqueue_integration_event
+from src.models import TaskStatus
 
 
 class IntegrationRecoveryControls:
@@ -35,72 +43,351 @@ class IntegrationRecoveryControls:
 
     async def resume(self, operation_id: str) -> dict[str, Any]:
         now = self.clock()
+        transitions = []
         async with self.db.immediate() as conn:
             operation = await self._locked_operation_on(conn, operation_id)
             if operation is None:
                 return {"outcome": "not_found", "operation_id": operation_id}
             project_id = await self._project_id_on(conn, operation)
-            if operation["state"] != "human_required":
-                return self._state_result("invalid_state", operation, project_id)
             blockers = await self._ambiguous_writes_on(
                 conn, operation, allow_reserved_delegate=True
             )
             if blockers:
                 return self._ambiguous_result(operation, project_id, blockers)
             stage = await self._locked_stage_on(conn, operation)
-            if stage is None or stage["state"] not in {"failed", "expired", "cancelled"}:
+            if stage is None:
                 return self._state_result("invalid_state", operation, project_id)
-            policy = RepairPolicy.model_validate(stage["policy"])
-            timeout = policy.primary_seconds if int(stage["ordinal"]) == 0 else policy.debug_seconds
-            await conn.execute(
-                update(integration_repair_stages)
-                .where(
-                    integration_repair_stages.c.operation_id == operation_id,
-                    integration_repair_stages.c.ordinal == stage["ordinal"],
-                    integration_repair_stages.c.state == stage["state"],
+
+            if operation["state"] in {"active", "escalated"}:
+                # A retry after the first resume must not buy another timeout
+                # window.  The persisted deadline identity is intentionally
+                # the evidence: an active operation alone might be its
+                # original, never-human-resumed attempt.
+                if (
+                    stage["state"] not in {"active", "awaiting_completion"}
+                    or not self._has_operator_resume_evidence(operation, stage)
+                ):
+                    return self._state_result("invalid_state", operation, project_id)
+                _, delegate_recovery = await self._restore_completed_delegate_on(
+                    conn, operation, stage, validate_only=True
                 )
-                .values(
-                    # Consumed attempts are durable (revision 3f30b34c7e7c keeps
-                    # ``attempts`` monotone on both dialects): a human resume
-                    # re-arms the stage's clock, never its attempt budget, so a
-                    # resumed stage that fails again escalates or re-blocks
-                    # instead of silently earning a fresh ladder.
-                    state="active",
-                    started_at=now,
-                    deadline_at=now + timeout,
-                    deadline_event_id=f"repair-deadline-{operation_id}-resume-{uuid4().hex}",
-                    completed_at=None,
+                if delegate_recovery is not None:
+                    return self._state_result(delegate_recovery, operation, project_id)
+                transition, recovery = await self._restore_parent_collection_on(
+                    conn, operation, allow_paused=True
                 )
-            )
-            resumed_state = "active" if int(stage["ordinal"]) == 0 else "escalated"
-            await conn.execute(
-                update(integration_repair_operations)
-                .where(
-                    integration_repair_operations.c.id == operation_id,
-                    integration_repair_operations.c.state == "human_required",
+                if recovery is not None:
+                    return self._state_result(recovery, operation, project_id)
+                if transition is not None:
+                    transitions.append(transition)
+                delegate_transition, delegate_recovery = await self._restore_completed_delegate_on(
+                    conn, operation, stage
                 )
-                .values(state=resumed_state, updated_at=now)
-            )
-            if operation["target_kind"] == "batch":
-                await conn.execute(
-                    update(integration_batches)
-                    .where(
-                        integration_batches.c.id == operation["batch_id"],
-                        integration_batches.c.lifecycle == "human_blocked",
+                if delegate_recovery is not None:
+                    return self._state_result(delegate_recovery, operation, project_id)
+                if delegate_transition is not None:
+                    transitions.append(delegate_transition)
+                if transitions:
+                    await self._event_on(
+                        conn, operation, project_id, "integration.repair_exhausted", now
                     )
-                    .values(lifecycle="repairing", human_abort_reason=None, updated_at=now)
+                result = {
+                    "outcome": "resumed",
+                    "operation_id": operation_id,
+                    "project_id": project_id,
+                    "state": operation["state"],
+                    "stage": int(stage["ordinal"]),
+                    "deadline_at": float(stage["deadline_at"]),
+                }
+            elif operation["state"] != "human_required":
+                return self._state_result("invalid_state", operation, project_id)
+            elif stage["state"] not in {"failed", "expired", "cancelled"}:
+                return self._state_result("invalid_state", operation, project_id)
+            else:
+                _, delegate_recovery = await self._restore_completed_delegate_on(
+                    conn, operation, stage, validate_only=True
                 )
-            await self._event_on(
-                conn, operation, project_id, "integration.repair_exhausted", now
+                if delegate_recovery is not None:
+                    return self._state_result(delegate_recovery, operation, project_id)
+                transition, recovery = await self._restore_parent_collection_on(
+                    conn, operation, allow_paused=False
+                )
+                if recovery is not None:
+                    return self._state_result(recovery, operation, project_id)
+                if transition is not None:
+                    transitions.append(transition)
+                delegate_transition, delegate_recovery = await self._restore_completed_delegate_on(
+                    conn, operation, stage
+                )
+                if delegate_recovery is not None:
+                    return self._state_result(delegate_recovery, operation, project_id)
+                if delegate_transition is not None:
+                    transitions.append(delegate_transition)
+                policy = RepairPolicy.model_validate(stage["policy"])
+                timeout = (
+                    policy.primary_seconds
+                    if int(stage["ordinal"]) == 0
+                    else policy.debug_seconds
+                )
+                deadline_event_id = f"repair-deadline-{operation_id}-resume-{uuid4().hex}"
+                await conn.execute(
+                    update(integration_repair_stages)
+                    .where(
+                        integration_repair_stages.c.operation_id == operation_id,
+                        integration_repair_stages.c.ordinal == stage["ordinal"],
+                        integration_repair_stages.c.state == stage["state"],
+                    )
+                    .values(
+                        # Consumed attempts are durable (revision 3f30b34c7e7c keeps
+                        # ``attempts`` monotone on both dialects): a human resume
+                        # re-arms the stage's clock, never its attempt budget, so a
+                        # resumed stage that fails again escalates or re-blocks
+                        # instead of silently earning a fresh ladder.
+                        state="active",
+                        started_at=now,
+                        deadline_at=now + timeout,
+                        deadline_event_id=deadline_event_id,
+                        completed_at=None,
+                    )
+                )
+                resumed_state = "active" if int(stage["ordinal"]) == 0 else "escalated"
+                await conn.execute(
+                    update(integration_repair_operations)
+                    .where(
+                        integration_repair_operations.c.id == operation_id,
+                        integration_repair_operations.c.state == "human_required",
+                    )
+                    .values(state=resumed_state, updated_at=now)
+                )
+                if operation["target_kind"] == "batch":
+                    await conn.execute(
+                        update(integration_batches)
+                        .where(
+                            integration_batches.c.id == operation["batch_id"],
+                            integration_batches.c.lifecycle == "human_blocked",
+                        )
+                        .values(lifecycle="repairing", human_abort_reason=None, updated_at=now)
+                    )
+                await self._event_on(
+                    conn, operation, project_id, "integration.repair_exhausted", now
+                )
+                result = {
+                    "outcome": "resumed",
+                    "operation_id": operation_id,
+                    "project_id": project_id,
+                    "state": resumed_state,
+                    "stage": int(stage["ordinal"]),
+                    "deadline_at": now + timeout,
+                }
+        for transition in transitions:
+            await self.db.log_blocked_flips(transition.flipped)
+            await self.db._notify_settled(transition.settled)
+            await self.db._notify_ready(transition.ready)
+        return result
+
+    @staticmethod
+    def _has_operator_resume_evidence(
+        operation: dict[str, Any], stage: dict[str, Any]
+    ) -> bool:
+        return bool(stage["deadline_event_id"] and str(stage["deadline_event_id"]).startswith(
+            f"repair-deadline-{operation['id']}-resume-"
+        ))
+
+    async def _restore_parent_collection_on(
+        self,
+        conn: Any,
+        operation: dict[str, Any],
+        *,
+        allow_paused: bool,
+    ) -> tuple[Any | None, str | None]:
+        """Restore only the terminally blocked parent for this exact episode.
+
+        The transition owns terminal-block metadata and the blocked projection;
+        the surrounding checks are repeated in its UPDATE guard so an old
+        recovery request cannot revive a parent a newer writer has claimed.
+        """
+        if operation["target_kind"] != "parent":
+            return None, None
+        parent = (
+            await conn.execute(
+                select(tasks)
+                .where(tasks.c.id == operation["parent_task_id"])
+                .with_for_update()
             )
-        return {
-            "outcome": "resumed",
-            "operation_id": operation_id,
-            "project_id": project_id,
-            "state": resumed_state,
-            "stage": int(stage["ordinal"]),
-            "deadline_at": now + timeout,
-        }
+        ).mappings().one_or_none()
+        checkpoint = (
+            await conn.execute(
+                select(task_integration_checkpoints)
+                .where(task_integration_checkpoints.c.task_id == operation["parent_task_id"])
+                .with_for_update()
+            )
+        ).mappings().one_or_none()
+        episode = (
+            await conn.execute(
+                select(integration_parent_episodes)
+                .where(integration_parent_episodes.c.id == operation["episode_id"])
+                .with_for_update()
+            )
+        ).mappings().one_or_none()
+        if (
+            parent is None
+            or checkpoint is None
+            or episode is None
+            or checkpoint["episode_id"] != operation["episode_id"]
+            or episode["parent_task_id"] != operation["parent_task_id"]
+            or parent["repo_id"] != checkpoint["repository_id"]
+            or parent["branch_name"] != checkpoint["branch"]
+            or episode["repository_id"] != parent["repo_id"]
+            or int(checkpoint["generation"]) < int(episode["generation"])
+        ):
+            return None, "stale"
+        if await self.db._read_manual_pause(conn, operation["parent_task_id"]) is not None:
+            return None, "invalid_state"
+        if parent["assigned_agent_id"] is not None:
+            return None, "invalid_state"
+        if parent["status"] == TaskStatus.PAUSED.value:
+            return (None, None) if allow_paused else (None, "invalid_state")
+        terminal_context = (
+            await conn.execute(
+                select(task_metadata.c.value).where(
+                    task_metadata.c.task_id == operation["parent_task_id"],
+                    task_metadata.c.key == TERMINAL_BLOCKED_META_KEY,
+                )
+            )
+        ).scalar_one_or_none()
+        encoded_terminal_context = terminal_context
+        try:
+            terminal_context = json.loads(terminal_context)
+        except (TypeError, ValueError):
+            pass  # Older metadata may store the context without JSON encoding.
+        if (
+            parent["status"] != TaskStatus.BLOCKED.value
+            or terminal_context != "integration_repair_exhausted"
+        ):
+            return None, "invalid_state"
+        transition = await self.db._apply_transition(
+            conn,
+            operation["parent_task_id"],
+            TaskStatus.PAUSED,
+            context="integration_repair_resume",
+            force=True,
+            resume_after=None,
+            assigned_agent_id=None,
+            extra_where=and_(
+                tasks.c.status == TaskStatus.BLOCKED.value,
+                tasks.c.assigned_agent_id.is_(None),
+                select(task_metadata.c.task_id)
+                .where(
+                    task_metadata.c.task_id == operation["parent_task_id"],
+                    task_metadata.c.key == TERMINAL_BLOCKED_META_KEY,
+                    task_metadata.c.value == encoded_terminal_context,
+                )
+                .exists(),
+            ),
+            returning=True,
+        )
+        if transition.row is None:
+            return None, "stale"
+        return transition, None
+
+    async def _restore_completed_delegate_on(
+        self, conn: Any, operation: dict[str, Any], stage: dict[str, Any],
+        *, validate_only: bool = False,
+    ) -> tuple[Any | None, str | None]:
+        """Make an exact, safely released repair delegate dispatchable again.
+
+        A delegate may have closed after producing the failed CI evidence that
+        exhausted its stage.  Human resume keeps its attempt count, but must
+        return that same released writer to PAUSED so the durable repair event
+        can dispatch it; it never creates a second writer identity.
+        """
+        repair_task_id = stage["repair_task_id"]
+        if repair_task_id is None or stage["writer_kind"] != "repair_delegate":
+            return None, None
+        delegate = (
+            await conn.execute(
+                select(tasks).where(tasks.c.id == repair_task_id).with_for_update()
+            )
+        ).mappings().one_or_none()
+        if delegate is None:
+            return None, "stale"
+        if await self.db._read_manual_pause(conn, repair_task_id) is not None:
+            return None, "invalid_state"
+        if operation["target_kind"] == "parent":
+            target = (await conn.execute(select(tasks).where(
+                tasks.c.id == operation["parent_task_id"]
+            ).with_for_update())).mappings().one()
+            project_id, repo_id, branch = target["project_id"], target["repo_id"], target["branch_name"]
+        else:
+            target = (await conn.execute(select(integration_batches).where(
+                integration_batches.c.id == operation["batch_id"]
+            ).with_for_update())).mappings().one()
+            project_id, repo_id, branch = target["project_id"], target["repository_id"], target["integration_branch"]
+        if (
+            delegate["project_id"] != project_id
+            or delegate["repo_id"] != repo_id
+            or delegate["branch_name"] != branch
+            or delegate["created_by_kind"] != "integration_repair"
+            or delegate["created_by_id"] != operation["id"]
+            or delegate["assigned_agent_id"] is not None
+            or delegate["parent_task_id"] is not None
+        ):
+            return None, "invalid_state"
+        live_session = (await conn.execute(select(sessions.c.id).where(
+            sessions.c.task_id == repair_task_id,
+            (sessions.c.state != "stopped") | sessions.c.claim_phase.is_not(None),
+        ).limit(1))).first()
+        locked_workspace = (await conn.execute(select(workspaces.c.id).where(
+            workspaces.c.locked_by_task_id == repair_task_id
+        ).limit(1))).first()
+        if live_session is not None or locked_workspace is not None:
+            return None, "invalid_state"
+        if delegate["status"] not in {
+            TaskStatus.COMPLETED.value, TaskStatus.PAUSED.value, TaskStatus.READY.value,
+        }:
+            return None, "invalid_state"
+        owner = (
+            await conn.execute(
+                select(integration_branch_owners)
+                .where(
+                    integration_branch_owners.c.repository_id == delegate["repo_id"],
+                    integration_branch_owners.c.ref == delegate["branch_name"],
+                )
+                .with_for_update()
+            )
+        ).mappings().one_or_none()
+        if (
+            owner is not None
+            and owner["owner_id"] == operation["id"]
+            and owner["owner_role"] == "collector"
+            and owner["handoff_state"] == "reserved"
+            and owner["session_id"] is None
+            and owner["workspace_id"] is None
+        ):
+            return None, None
+        if (
+            owner is None
+            or owner["owner_id"] != repair_task_id
+            or owner["owner_role"] != "repair"
+            or owner["handoff_state"] != "reserved"
+            or owner["session_id"] is not None
+            or owner["workspace_id"] is not None
+        ):
+            return None, "invalid_state"
+        if validate_only or delegate["status"] != TaskStatus.COMPLETED.value:
+            return None, None
+        transition = await self.db._apply_transition(
+            conn,
+            repair_task_id,
+            TaskStatus.PAUSED,
+            context="integration_repair_resume_delegate",
+            force=True,
+            extra_where=tasks.c.status == TaskStatus.COMPLETED.value,
+            returning=True,
+        )
+        if transition.row is None:
+            return None, "stale"
+        return transition, None
 
     async def abort(self, operation_id: str, *, reason: str) -> dict[str, Any]:
         if not reason.strip():
@@ -299,6 +586,25 @@ class IntegrationRecoveryControls:
                 ~and_(
                     integration_branch_owners.c.owner_id.in_(exact_delegate),
                     integration_branch_owners.c.owner_role == "repair",
+                    integration_branch_owners.c.handoff_state == "reserved",
+                    integration_branch_owners.c.session_id.is_(None),
+                    integration_branch_owners.c.workspace_id.is_(None),
+                )
+            )
+        if allow_reserved_delegate and operation["batch_id"] is not None:
+            # A detached collector is the daemon's reservation, not a live
+            # worker. Applied writes are checked separately below; retain all
+            # ambiguity guards for attached collectors and other targets.
+            exact_target = select(integration_batches.c.id).where(
+                integration_batches.c.id == operation["batch_id"],
+                integration_batches.c.repository_id == integration_branch_owners.c.repository_id,
+                integration_batches.c.integration_branch == integration_branch_owners.c.ref,
+            ).exists()
+            writer = writer.where(
+                ~and_(
+                    integration_branch_owners.c.owner_id == operation_id,
+                    integration_branch_owners.c.owner_role == "collector",
+                    exact_target,
                     integration_branch_owners.c.handoff_state == "reserved",
                     integration_branch_owners.c.session_id.is_(None),
                     integration_branch_owners.c.workspace_id.is_(None),

@@ -1,0 +1,120 @@
+{
+  "version": 1,
+  "parent": {
+    "title": "Epic: Agent-facing scene inspection and precise selection",
+    "description": "Extend the procedural editor command surface for reliable inspect, pick, select, capture and verify loops. Shared selection state; typed stable IDs; exact scene/view revisions; native Windows acceptance. Operator-requested Matter Engine workload for AQ integration acceptance.",
+    "priority": 40
+  },
+  "nodes": [
+    {
+      "key": "contract",
+      "title": "Define discoverable agent command and response contracts",
+      "description": "Use the existing MatterEditor app-thread CommandRegistry, FIFO transport, SelectionSet, picker and procedural authoring model. Read CLAUDE.md and docs/agent/control-surface.md plus qa-cookbook.md first. Native Windows acceptance uses tools/build-windows-from-wsl.sh and the MSVC CMake graph, not MinGW. Preserve existing FIFO verbs and machine-readable stdout. Reuse source-of-truth libraries; no copied or symlinked sibling sources. Work only in the AQ-assigned branch/workspace. Record exact checks, resulting Git head, PR, and unresolved limitations on the AQ task. This graph is a real acceptance workload for recursive feature-branch integration: no direct main push or ad hoc merge of sibling branches. If a prerequisite artifact has not reached your branch, report the exact missing revision through AQ instead of silently copying it.\n\nDocument and implement a versioned request/result envelope over the existing control surface, including a scriptable client entry point. Reconcile existing ticketed registry acknowledgements rather than inventing an unrelated command dispatcher.",
+      "acceptance": [
+        "Expose command discovery/help/schema with arguments and availability; unknown or unsupported commands fail explicitly.",
+        "Correlate request IDs, command tickets and one terminal result; keep logs separate from parseable JSON output and preserve legacy text/FIFO commands.",
+        "Define typed object identity {kind,id} using lossless string IDs, scene/session generation, scene revision, selection revision and frame/view identity.",
+        "Bound request parsing, output size and wait time; distinguish invalid input, not-ready, not-found, stale revision, timeout and execution failure.",
+        "Test partial/malformed input, escaping, duplicate request IDs, mixed logs, delayed completion, disconnect/reconnect and native Windows file polling."
+      ],
+      "needs": [],
+      "profile": "deep-high-codex",
+      "intelligence_class": "deep-high",
+      "task_type": "feature",
+      "priority": 40
+    },
+    {
+      "key": "inspect",
+      "title": "List and inspect scene objects with typed stable IDs",
+      "description": "Use the existing MatterEditor app-thread CommandRegistry, FIFO transport, SelectionSet, picker and procedural authoring model. Read CLAUDE.md and docs/agent/control-surface.md plus qa-cookbook.md first. Native Windows acceptance uses tools/build-windows-from-wsl.sh and the MSVC CMake graph, not MinGW. Preserve existing FIFO verbs and machine-readable stdout. Reuse source-of-truth libraries; no copied or symlinked sibling sources. Work only in the AQ-assigned branch/workspace. Record exact checks, resulting Git head, PR, and unresolved limitations on the AQ task. This graph is a real acceptance workload for recursive feature-branch integration: no direct main push or ad hoc merge of sibling branches. If a prerequisite artifact has not reached your branch, report the exact missing revision through AQ instead of silently copying it.\n\nProvide bounded scene enumeration and exact object inspection that joins authored entities and baked roots while preserving their distinct identity namespaces.",
+      "acceptance": [
+        "List objects with pagination/filtering and deterministic ordering; return scene revision and lossless typed IDs.",
+        "Inspect kind, authored name/path where available, world bounds/transform, visibility, selected/primary state, and supported operations.",
+        "Expose explicit provenance availability rather than fabricate source paths; do not expose Flecs handles as stable authored IDs.",
+        "Test overlapping numeric IDs across kinds, deleted objects, unloaded roots, rebakes and world switching."
+      ],
+      "needs": [
+        "contract"
+      ],
+      "profile": "deep-high-codex",
+      "intelligence_class": "deep-high",
+      "task_type": "feature",
+      "priority": 40
+    },
+    {
+      "key": "selection",
+      "title": "Select, deselect and list selections by object ID",
+      "description": "Use the existing MatterEditor app-thread CommandRegistry, FIFO transport, SelectionSet, picker and procedural authoring model. Read CLAUDE.md and docs/agent/control-surface.md plus qa-cookbook.md first. Native Windows acceptance uses tools/build-windows-from-wsl.sh and the MSVC CMake graph, not MinGW. Preserve existing FIFO verbs and machine-readable stdout. Reuse source-of-truth libraries; no copied or symlinked sibling sources. Work only in the AQ-assigned branch/workspace. Record exact checks, resulting Git head, PR, and unresolved limitations on the AQ task. This graph is a real acceptance workload for recursive feature-branch integration: no direct main push or ad hoc merge of sibling branches. If a prerequisite artifact has not reached your branch, report the exact missing revision through AQ instead of silently copying it.\n\nExtend the single viewer::SelectionSet through typed app-thread commands. Selection is editor state; selection commands do not modify procedural source or object geometry.",
+      "acceptance": [
+        "Implement replace, add, remove, toggle and clear with a deterministic primary-selection policy; support mixed entities and baked roots.",
+        "List selected objects and primary with typed IDs and revisions; repeated add/remove/clear have explicit idempotent results.",
+        "Validate the whole request before mutation; stale generation or invalid IDs do not silently retarget reused IDs.",
+        "GUI selection and command selection share exactly one SelectionSet and update existing outlines/gizmo state.",
+        "Cover rebake pruning, world switch, missing IDs, duplicate IDs and primary removal in focused tests."
+      ],
+      "needs": [
+        "inspect"
+      ],
+      "profile": "deep-high-codex",
+      "intelligence_class": "deep-high",
+      "task_type": "feature",
+      "priority": 40
+    },
+    {
+      "key": "pick",
+      "title": "Ray-cast viewport coordinates through the existing picker",
+      "description": "Use the existing MatterEditor app-thread CommandRegistry, FIFO transport, SelectionSet, picker and procedural authoring model. Read CLAUDE.md and docs/agent/control-surface.md plus qa-cookbook.md first. Native Windows acceptance uses tools/build-windows-from-wsl.sh and the MSVC CMake graph, not MinGW. Preserve existing FIFO verbs and machine-readable stdout. Reuse source-of-truth libraries; no copied or symlinked sibling sources. Work only in the AQ-assigned branch/workspace. Record exact checks, resulting Git head, PR, and unresolved limitations on the AQ task. This graph is a real acceptance workload for recursive feature-branch integration: no direct main push or ad hoc merge of sibling branches. If a prerequisite artifact has not reached your branch, report the exact missing revision through AQ instead of silently copying it.\n\nAccept viewport coordinates as a command and use the same camera/picking semantics as interactive selection. No OS mouse injection or second competing ray-caster.",
+      "acceptance": [
+        "Define viewport-local logical pixels versus framebuffer pixels explicitly; report viewport rectangle, scale, camera and frame identity.",
+        "Support a read-only pick and pick-and-select with replace/add/toggle modes; return hit/miss, typed ID, world hit position and available geometric detail.",
+        "Allow an expected screenshot/frame/view revision and reject stale coordinates when the view changed; document any supported current-frame mode.",
+        "Test perspective/orthographic if supported, resize/DPI, viewport offsets, occlusion, out-of-bounds coordinates and unavailable/unloaded geometry.",
+        "Ensure command and actual GUI picking resolve the same objects in a deterministic fixture scene."
+      ],
+      "needs": [
+        "selection"
+      ],
+      "profile": "deep-high-codex",
+      "intelligence_class": "deep-high",
+      "task_type": "feature",
+      "priority": 40
+    },
+    {
+      "key": "capture",
+      "title": "Capture selection-aware viewport evidence and focus selected objects",
+      "description": "Use the existing MatterEditor app-thread CommandRegistry, FIFO transport, SelectionSet, picker and procedural authoring model. Read CLAUDE.md and docs/agent/control-surface.md plus qa-cookbook.md first. Native Windows acceptance uses tools/build-windows-from-wsl.sh and the MSVC CMake graph, not MinGW. Preserve existing FIFO verbs and machine-readable stdout. Reuse source-of-truth libraries; no copied or symlinked sibling sources. Work only in the AQ-assigned branch/workspace. Record exact checks, resulting Git head, PR, and unresolved limitations on the AQ task. This graph is a real acceptance workload for recursive feature-branch integration: no direct main push or ad hoc merge of sibling branches. If a prerequisite artifact has not reached your branch, report the exact missing revision through AQ instead of silently copying it.\n\nConnect existing screenshot and camera commands to structured scene/view metadata so an agent can close the visual feedback loop.",
+      "acceptance": [
+        "Return screenshot path, dimensions, viewport bounds, frame/camera/scene/selection revisions and completion only after a successful presented-frame capture.",
+        "Provide focus/frame selected or exact object ID using existing camera/bounds behavior; return not-found/not-ready explicitly.",
+        "Provide optional selected-object overlay/ID annotations without changing authored content; preserve existing screenshot commands.",
+        "Test capture timeout, failed presentation, resize and pick-from-capture coherence."
+      ],
+      "needs": [
+        "pick"
+      ],
+      "profile": "deep-high-codex",
+      "intelligence_class": "deep-high",
+      "task_type": "feature",
+      "priority": 40
+    },
+    {
+      "key": "accept",
+      "title": "Verify native Windows agent selection workflow and document the CLI",
+      "description": "Use the existing MatterEditor app-thread CommandRegistry, FIFO transport, SelectionSet, picker and procedural authoring model. Read CLAUDE.md and docs/agent/control-surface.md plus qa-cookbook.md first. Native Windows acceptance uses tools/build-windows-from-wsl.sh and the MSVC CMake graph, not MinGW. Preserve existing FIFO verbs and machine-readable stdout. Reuse source-of-truth libraries; no copied or symlinked sibling sources. Work only in the AQ-assigned branch/workspace. Record exact checks, resulting Git head, PR, and unresolved limitations on the AQ task. This graph is a real acceptance workload for recursive feature-branch integration: no direct main push or ad hoc merge of sibling branches. If a prerequisite artifact has not reached your branch, report the exact missing revision through AQ instead of silently copying it.\n\nRun a real editor fixture through discovery, object listing, coordinate pick, ID selection/removal, focus and screenshot verification; publish reproducible command transcripts and artifacts.",
+      "acceptance": [
+        "Run focused parser/selection/picking tests plus the canonical MSVC editor build and relevant packaging checks.",
+        "Use a deterministic procedural fixture with overlapping entities and baked roots; demonstrate that screenshot coordinates select the expected typed ID.",
+        "Exercise malformed requests, idle/no-work behavior, rebake invalidation, asynchronous waits and command failure exit codes.",
+        "Update docs/agent/control-surface.md and qa-cookbook.md with exact tested commands and migration-compatible output rules.",
+        "Record AQ child review/delivery receipts and parent aggregate verification at exact Git heads; implementation completion alone is not delivery acceptance."
+      ],
+      "needs": [
+        "capture"
+      ],
+      "profile": "deep-high-codex",
+      "intelligence_class": "deep-high",
+      "task_type": "feature",
+      "priority": 40
+    }
+  ]
+}

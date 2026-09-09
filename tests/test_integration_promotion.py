@@ -733,6 +733,8 @@ async def conflict_resolution_case(db, promotion_case):
                 repair_task_id="repair-task",
                 writer_kind="repair_delegate",
                 starting_sha=target,
+                trigger_id=caught.value.value.intent_id,
+                current_subject={"kind": "parent", "generation": 0, "head_sha": target},
                 deadline_at=4_000_000_000.0,
                 attempts=1,
                 state="active",
@@ -901,8 +903,9 @@ async def test_clean_promotion_is_retained_attributed_pushed_and_reconciled(db, 
         assert expected_route.items() <= delivery["payload"].items()
 
 
+@pytest.mark.parametrize("pool_token", [False, True])
 async def test_conflict_resolution_push_reconcile_writes_original_receipt_and_events(
-    db, conflict_resolution_case, command_handler_factory
+    db, conflict_resolution_case, command_handler_factory, pool_token
 ):
     from src.commands.principal import principal_context
     from src.integration.promotion import PromotionService
@@ -914,7 +917,7 @@ async def test_conflict_resolution_push_reconcile_writes_original_receipt_and_ev
     handler.orchestrator.promotion_service = PromotionService(
         db, data_dir=case["data_dir"], git_manager=GitManager()
     )
-    principal = _resolution_principal()
+    principal = _resolution_principal(task_id=None if pool_token else "repair-task")
     reserve_args = {
         "intent_id": case["intent_id"],
         "operation_id": "resolution-op",
@@ -1045,6 +1048,51 @@ async def test_resolution_push_rejects_merge_commit_range(db, conflict_resolutio
     assert (
         _git(["ls-remote", "origin", "refs/heads/aq/parent"], work).split()[0]
         == case["target"]
+    )
+
+
+@pytest.mark.parametrize("merge_shape", ["reviewed", "reversed", "extra_parent"])
+async def test_resolution_preserves_only_the_exact_reviewed_child_ancestry(
+    db, conflict_resolution_case, merge_shape
+):
+    from src.commands.principal import principal_context
+    from src.integration.promotion import PromotionInvariantError, PromotionService
+
+    case = conflict_resolution_case
+    work = case["work"]
+    parents = [case["target"], case["source"]]
+    if merge_shape == "reversed":
+        parents.reverse()
+    elif merge_shape == "extra_parent":
+        parents.append(case["resolved_head"])
+    merged = _git([
+        "commit-tree", case["resolved_tree"],
+        *[arg for parent in parents for arg in ("-p", parent)],
+        "-m", "Resolve and retain reviewed child",
+    ], work)
+    _git(["reset", "--hard", merged], work)
+    (work / "repair.txt").write_text("verified follow-up repair\n")
+    _git(["commit", "-am", "Follow-up repair"], work)
+    head = _git(["rev-parse", "HEAD"], work)
+    request = _resolution_request(
+        case, resolved_head_sha=head,
+        resolved_tree_sha=_git(["rev-parse", "HEAD^{tree}"], work),
+        repair_commit_shas=tuple(_git([
+            "rev-list", "--reverse", f"{case['target']}..{head}",
+        ], work).splitlines()),
+    )
+    service = PromotionService(db, data_dir=case["data_dir"], git_manager=GitManager())
+    with principal_context(_resolution_principal()):
+        await service.reserve_resolution(request)
+        if merge_shape != "reviewed":
+            with pytest.raises(PromotionInvariantError, match="first-parent|merge commit"):
+                await service.push_resolution(case["intent_id"], request.fence)
+            assert _git(["ls-remote", "origin", "refs/heads/aq/parent"], work).split()[0] == case["target"]
+            return
+        await service.push_resolution(case["intent_id"], request.fence)
+    assert _git(["ls-remote", "origin", "refs/heads/aq/parent"], work).split()[0] == head
+    assert _git(["show", "-s", "--format=%P", merged], work) == (
+        f"{case['target']} {case['source']}"
     )
 
 
@@ -1275,6 +1323,14 @@ async def test_debug_successor_pushes_primary_reserved_oids_after_proved_handoff
                 repair_task_id="debug-repair-task",
                 writer_kind="repair_delegate",
                 starting_sha=case["target"],
+                trigger_id=case["intent_id"],
+                current_subject={
+                    "kind": "parent",
+                    "generation": 0,
+                    # The primary resolution may already have advanced the
+                    # parent before its debug successor replays the push.
+                    "head_sha": case["resolved_head"],
+                },
                 deadline_at=4_000_000_000.0,
                 attempts=1,
                 state="active",
@@ -2105,6 +2161,12 @@ async def _seed_conflict_resolution_writer(handler) -> tuple[dict, object]:
                 repair_task_id="repair-task",
                 writer_kind="repair_delegate",
                 starting_sha="c" * 40,
+                trigger_id="conflicted-intent",
+                current_subject={
+                    "kind": "parent",
+                    "generation": 0,
+                    "head_sha": "c" * 40,
+                },
                 deadline_at=4_000_000_000.0,
                 attempts=1,
                 state="active",
@@ -2390,3 +2452,99 @@ async def test_playbook_project_scope_cannot_be_mixed_with_another_promotion(
 
     assert result["outcome"] == "unauthorized"
     handler.orchestrator.promotion_service.prepare.assert_not_awaited()
+
+
+@pytest.mark.parametrize("mismatch", ["session", "instance", "project", "task"])
+async def test_pool_resolution_rejects_mismatched_live_authority(
+    db, conflict_resolution_case, mismatch
+):
+    from dataclasses import replace
+
+    from src.commands.principal import principal_context
+    from src.integration.promotion import PromotionService, PromotionTargetMoved
+
+    case = conflict_resolution_case
+    principal = _resolution_principal(task_id=None)
+    fields = {
+        "session": {"session_id": "unrelated-session"},
+        "instance": {"session_instance_token": "expired-instance"},
+        "project": {"project_id": "another-project"},
+        "task": {"task_id": "another-task"},
+    }
+    service = PromotionService(db, data_dir=case["data_dir"], git_manager=GitManager())
+    with (
+        principal_context(replace(principal, **fields[mismatch])),
+        pytest.raises(PromotionTargetMoved),
+    ):
+        await service.reserve_resolution(_resolution_request(case))
+
+
+@pytest.mark.parametrize("binding", ["trigger", "subject"])
+async def test_resolution_requires_the_stage_bound_to_the_exact_conflict(
+    db, conflict_resolution_case, binding
+):
+    """A live repair writer cannot spend its authority on a stale sibling intent."""
+    from src.commands.principal import principal_context
+    from src.integration.promotion import PromotionService, PromotionTargetMoved
+
+    case = conflict_resolution_case
+    async with db.immediate() as conn:
+        values = (
+            {"trigger_id": "stale-conflict"}
+            if binding == "trigger"
+            else {
+                "current_subject": {
+                    "kind": "parent",
+                    "generation": 0,
+                    "head_sha": "9" * 40,
+                }
+            }
+        )
+        await conn.execute(
+            update(integration_repair_stages)
+            .where(
+                integration_repair_stages.c.operation_id == "resolution-op",
+                integration_repair_stages.c.ordinal == 0,
+            )
+            .values(**values)
+        )
+    service = PromotionService(db, data_dir=case["data_dir"], git_manager=GitManager())
+
+    with (
+        principal_context(_resolution_principal()),
+        pytest.raises(PromotionTargetMoved, match="authority is stale"),
+    ):
+        await service.reserve_resolution(_resolution_request(case))
+
+
+async def test_resolution_push_rechecks_the_exact_conflict_stage_binding(
+    db, conflict_resolution_case
+):
+    """A continuation or stale event between reservation and push loses authority."""
+    from src.commands.principal import principal_context
+    from src.integration.promotion import PromotionService, PromotionTargetMoved
+
+    case = conflict_resolution_case
+    service = PromotionService(db, data_dir=case["data_dir"], git_manager=GitManager())
+    request = _resolution_request(case)
+    with principal_context(_resolution_principal()):
+        await service.reserve_resolution(request)
+    async with db.immediate() as conn:
+        await conn.execute(
+            update(integration_repair_stages)
+            .where(
+                integration_repair_stages.c.operation_id == "resolution-op",
+                integration_repair_stages.c.ordinal == 0,
+            )
+            .values(trigger_id="replacement-conflict")
+        )
+
+    with (
+        principal_context(_resolution_principal()),
+        pytest.raises(PromotionTargetMoved, match="authority is stale"),
+    ):
+        await service.push_resolution(case["intent_id"], request.fence)
+    assert (
+        _git(["ls-remote", "origin", "refs/heads/aq/parent"], case["work"]).split()[0]
+        == case["target"]
+    )

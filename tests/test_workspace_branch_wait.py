@@ -17,11 +17,11 @@ import time
 from types import SimpleNamespace
 
 import pytest
-from sqlalchemy import insert
+from sqlalchemy import insert, update
 
 from src.config import AppConfig, DatabaseConfig
 from src.database import Database
-from src.database.tables import task_branch_origins
+from src.database.tables import integration_branch_owners, task_branch_origins
 from src.git.manager import GitError
 from src.integration.models import BranchKey
 from src.integration.ownership import BranchOwnership, BranchOwnershipError
@@ -209,6 +209,43 @@ async def test_hierarchy_transfer_winning_before_prep_prevents_branch_reset(env)
         integration_fence=fence,
     ) is None
     assert slots.calls == []
+
+
+@pytest.mark.parametrize("released", [True, False])
+async def test_reopened_producer_reacquires_only_its_released_worker_branch(env, released):
+    await env.db.create_repo(
+        RepoConfig(id="repo", project_id="p", source_type=RepoSourceType.CLONE)
+    )
+    await env.db.update_project(
+        "p", hierarchical_integration_mode="hierarchy", integration_repository_id="repo"
+    )
+    task = await _task(env, "retry", repo_id="repo", branch_name="aq/retry")
+    async with env.db.immediate() as conn:
+        await conn.execute(insert(task_branch_origins).values(
+            id="retry-origin", task_id=task.id, repository_id="repo", parent_ref="aq/parent",
+            base_sha="a" * 40, creation_generation=0, reserved=True, materialized=True,
+            created_at=time.time(), materialized_at=time.time(),
+        ))
+    ownership = BranchOwnership(env.db)
+    target = BranchKey(repository_id="repo", branch="aq/retry")
+    old = await ownership.acquire(target, task.id, "worker")
+    if released:
+        async with env.db.immediate() as conn:
+            await conn.execute(update(integration_branch_owners).where(
+                integration_branch_owners.c.owner_id == task.id
+            ).values(handoff_state="released"))
+        _, current, role = await env.orch._hierarchy_origin_and_fence(
+            task, await env.db.get_project("p")
+        )
+        assert role == "worker"
+        assert current.token > old.token
+        await ownership.assert_current(current, expected_role="worker")
+        with pytest.raises(BranchOwnershipError):
+            await ownership.assert_current(old)
+    else:
+        await ownership.transfer(old, "collector", "collector")
+        with pytest.raises(BranchOwnershipError):
+            await env.orch._hierarchy_origin_and_fence(task, await env.db.get_project("p"))
 
 
 async def test_hierarchy_slot_prep_uses_pinned_origin_and_never_parent_resume(env):
