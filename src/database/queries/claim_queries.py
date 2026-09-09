@@ -564,6 +564,7 @@ class ClaimQueryMixin:
         expected_task_id=None,
         expected_claim_epoch=None,
         expected_task_status=None,
+        expected_task_claim_epoch=None,
         drain_after_release=False,
         release_workspace_lock=False,
         preserve_terminal_task=False,
@@ -659,11 +660,12 @@ class ClaimQueryMixin:
                     # assignment after a task moved out from under the claim.
                     _manual_pause_control=task_status is TaskStatus.PAUSED,
                 )
-                if task_status == TaskStatus.READY:
-                    # An active claim can only release the IN_PROGRESS,
-                    # unblocked task it holds.  Put that proof in the UPDATE
-                    # itself so _apply_transition may skip its validation read;
-                    # a concurrent close/pause simply leaves this task unchanged.
+                if expected_task_status is not None:
+                    guards = [tasks.c.status == expected_task_status.value]
+                    if expected_task_claim_epoch is not None:
+                        guards.append(tasks.c.claim_epoch == expected_task_claim_epoch)
+                    transition["extra_where"] = and_(*guards)
+                elif task_status == TaskStatus.READY:
                     transition.update(
                         assume_pre_state=(TaskStatus.IN_PROGRESS, False),
                         extra_where=and_(
@@ -671,12 +673,6 @@ class ClaimQueryMixin:
                             tasks.c.is_blocked == 0,
                         ),
                     )
-                elif expected_task_status is not None:
-                    # The reconciler observed a non-live task before entering
-                    # this transaction.  Do not replay that old state over a
-                    # concurrent resume: the guarded write is also the proof
-                    # that this session may release its claim and workspace.
-                    transition["extra_where"] = tasks.c.status == expected_task_status.value
                 out = await self._apply_transition(
                     conn,
                     task_id,
@@ -780,6 +776,7 @@ class ClaimQueryMixin:
         expected_task_id=None,
         expected_claim_epoch=None,
         expected_task_status=None,
+        expected_task_claim_epoch=None,
         drain_after_release=False,
         release_workspace_lock=False,
         prepare_backoff=False,
@@ -797,6 +794,7 @@ class ClaimQueryMixin:
             expected_task_id=expected_task_id,
             expected_claim_epoch=expected_claim_epoch,
             expected_task_status=expected_task_status,
+                expected_task_claim_epoch=expected_task_claim_epoch,
             drain_after_release=drain_after_release,
             release_workspace_lock=release_workspace_lock,
             prepare_backoff=prepare_backoff,

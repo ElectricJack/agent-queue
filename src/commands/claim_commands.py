@@ -391,7 +391,9 @@ class ClaimCommandsMixin:
             None,
         )
 
-    async def _attempt_claim(self, session, want_id, cap, default_profile, *, routing=None) -> dict:
+    async def _attempt_claim(
+        self, session, want_id, cap, default_profile, *, routing=None, repaired=False
+    ) -> dict:
         """Decide the outcome on one ``immediate()`` transaction, on *conn* only.
 
         Every read/write in here must take ``conn`` explicitly (never a
@@ -408,6 +410,7 @@ class ClaimCommandsMixin:
         # What to do once the transaction has committed — set inside the
         # block, acted on outside it.
         active_claim: tuple | None = None  # (task, epoch, row) — already active
+        stale_binding: tuple | None = None  # (task, row) — held task left IN_PROGRESS
         new_claim: tuple | None = None  # (row, task) — a fresh "slot" claim
         conflict_task_id: str | None = None  # a specific task_id held by someone else
         async with self.db.immediate() as conn:
@@ -429,7 +432,22 @@ class ClaimCommandsMixin:
                         row,
                         cap,
                     )
-                active_claim = (task, task.claim_epoch, row)
+                if (
+                    task.status is not TaskStatus.IN_PROGRESS
+                    or task.assigned_agent_id != row.agent_id
+                ):
+                    # The binding outlived the task's run.  Re-serving it
+                    # (what this branch used to do unconditionally) reports
+                    # ``claimed`` for a task the session can neither comment
+                    # on nor close -- see ``_recover_stale_binding``.  A task
+                    # that is IN_PROGRESS again under a *different* agent is
+                    # the same stale binding one step further on: another
+                    # worker reclaimed it after our release failed, and
+                    # handing it back here would give two sessions the same
+                    # task.
+                    stale_binding = (task, row)
+                else:
+                    active_claim = (task, task.claim_epoch, row)
             elif kind in ("preparing", "claiming"):
                 epoch = None
                 if row.task_id:
@@ -491,6 +509,18 @@ class ClaimCommandsMixin:
                     )
                     new_claim = (row, task, slot)
 
+        if stale_binding is not None:
+            task, row = stale_binding
+            return await self._recover_stale_binding(
+                session,
+                task,
+                row,
+                cap,
+                want_id=want_id,
+                default_profile=default_profile,
+                routing=routing,
+                repaired=repaired,
+            )
         if active_claim is not None:
             task, epoch, row = active_claim
             return await self._claimed_response(task, epoch, row, cap)
@@ -520,6 +550,101 @@ class ClaimCommandsMixin:
                 )
             return self._simple(ClaimResult.CLAIM_CONFLICT, "", row, cap)
         return self._simple(ClaimResult.NO_READY_WORK, "", row, cap)
+
+    async def _recover_stale_binding(
+        self, session, task, row, cap, *, want_id, default_profile, routing, repaired
+    ) -> dict:
+        """Unwind a claim binding whose task is no longer IN_PROGRESS.
+
+        ``take_claim_slot`` decides "this session is already active" from
+        ``sessions.task_id`` alone, so any release that did not land leaves a
+        binding pointing at a task that has moved on.  A close whose
+        ``release_claim`` was vetoed -- an attached integration owner is the
+        durable case -- produces exactly that: the task is back to READY with
+        no ``assigned_agent_id``, while the session still names it.
+
+        Re-serving it was the worst of the three possible answers.  The
+        session got ``claimed`` and a live-looking ``claim_epoch``, so
+        ``aq task heartbeat`` (which only checks ``sessions.task_id``)
+        succeeded, ``aq task comment`` refused because the task no longer
+        carries the agent, and ``aq task close`` refused because a READY task
+        is not closeable -- three different ownership answers inside one
+        minute, and a pool worker that could not close, could not record
+        findings, and was handed the same task on every claim until the lease
+        reaper killed it.
+
+        So: release the binding and claim again.  The release replays the
+        status we just observed and fences on it *and* on the observed
+        ``claim_epoch``, so it only ever clears this session's binding --
+        it never rewrites the task's own status, and a task that changed
+        between the observation and the release transaction is left
+        untouched.  When the release is refused the ownership evidence is
+        still load-bearing and must not be erased; drain instead, which
+        stops the loop and leaves the stall visible on the task.
+        """
+        logger.warning(
+            "claim %s: held task %s is %s under agent %s, not IN_PROGRESS under %s; "
+            "unwinding the stale binding",
+            session.id,
+            task.id,
+            task.status.value,
+            task.assigned_agent_id,
+            row.agent_id,
+        )
+        if (
+            task.status is TaskStatus.IN_PROGRESS
+            and task.assigned_agent_id
+            and task.assigned_agent_id != row.agent_id
+        ):
+            # Another worker holds it *right now*.  Any release from here
+            # transitions their task and clears their ``assigned_agent_id``,
+            # so do not touch the task at all -- only this session is wrong,
+            # and the reconciler unwinds a drained session's binding.
+            await self.db.update_session(session.id, desired_state="stopped")
+            return self._simple(
+                ClaimResult.DRAIN_REQUESTED,
+                f"session names {task.id}, which agent {task.assigned_agent_id} now holds",
+                row,
+                cap,
+            )
+        released = await self.db.release_claim(
+            session.id,
+            task_status=task.status,
+            context="claim_binding_stale",
+            now=time.time(),
+            result="stale_binding",
+            expected_task_id=task.id,
+            expected_task_status=task.status,
+            expected_task_claim_epoch=task.claim_epoch,
+        )
+        if not released.released:
+            current = await self.db.get_task(task.id)
+            moved = current is None or (
+                current.status is not task.status or current.claim_epoch != task.claim_epoch
+            )
+            if not moved:
+                # The task is exactly as observed, so the veto is the durable
+                # one: an integration owner still attached to this session.
+                # That evidence is load-bearing -- flag it and stop.
+                await self.db.set_task_meta(task.id, "needs_attention", "claim_binding_stale")
+            await self.db.update_session(session.id, desired_state="stopped")
+            reason = (
+                f"session still holds {task.id} ({task.status.value}) and its "
+                "release is refused while an integration handoff is outstanding"
+                if not moved
+                else f"{task.id} changed under the claim before its stale binding "
+                "could be released"
+            )
+            return self._simple(ClaimResult.DRAIN_REQUESTED, reason, row, cap)
+        remove_claim_file_if_matches(row.work_dir, task.id, task.claim_epoch)
+        if repaired:
+            # One repair per claim: a binding that comes straight back is a
+            # bug of its own, not something to spin on.
+            return self._simple(ClaimResult.NO_READY_WORK, "", row, cap)
+        fresh = await self.db.get_session(session.id) or session
+        return await self._attempt_claim(
+            fresh, want_id, cap, default_profile, routing=routing, repaired=True
+        )
 
     async def _prepare_and_activate(self, session, row, task, cap=None, *, slot=None) -> dict:
         async with self.orchestrator._task_control_lock(task.id):
