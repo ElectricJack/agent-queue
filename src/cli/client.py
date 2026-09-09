@@ -28,7 +28,7 @@ import httpx
 
 from src.config import is_postgres_url
 
-from .exceptions import CommandError, DaemonNotRunningError, ScopeDeniedError
+from .exceptions import CommandError, CommandResponseError, DaemonNotRunningError, ScopeDeniedError
 
 logger = logging.getLogger(__name__)
 
@@ -188,10 +188,16 @@ class CLIClient:
         try:
             resp = await self._http.get("/api/health")
             resp.raise_for_status()
-        except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
+        except httpx.RequestError as exc:
             await self._http.aclose()
             self._http = None
             raise DaemonNotRunningError(self._base_url, cause=exc) from exc
+        except httpx.HTTPStatusError as exc:
+            await self._http.aclose()
+            self._http = None
+            raise CommandError(
+                "health_check", f"Daemon health check returned HTTP {exc.response.status_code}."
+            ) from exc
 
         # Set up the generated client, sharing the same httpx.AsyncClient
         try:
@@ -276,13 +282,24 @@ class CLIClient:
             )
         except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
             raise DaemonNotRunningError(self._base_url, cause=exc) from exc
+        except httpx.RequestError as exc:
+            # A read/write failure can occur after the daemon committed the
+            # command. Do not turn it into the daemon-start-and-retry path.
+            raise CommandResponseError(command) from exc
 
         if resp.status_code in (401, 403):
             # aq-surface §4.1 exit code 4: auth/scope denial is not a command
             # error the caller can fix by changing its arguments.
             raise ScopeDeniedError(command, _relay_error(resp))
 
-        data = resp.json()
+        try:
+            data = resp.json()
+        except ValueError as exc:
+            raise CommandResponseError(command) from exc
+        if not isinstance(data, dict) or not isinstance(data.get("ok"), bool):
+            raise CommandResponseError(command)
+        if resp.status_code >= 400 and data.get("ok"):
+            raise CommandResponseError(command)
         if not data.get("ok"):
             raise CommandError(
                 command,
