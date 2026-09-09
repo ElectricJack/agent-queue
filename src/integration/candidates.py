@@ -1523,6 +1523,22 @@ class CandidateService:
                     state, revision, member, current, "reserved_path", operation_id
                 )
             parent_repair = await self._accepted_parent_repair(revision, ordinal, store)
+            if parent_repair is None and await self.git.ais_ancestor(
+                str(store), member["reviewed_head_sha"], current
+            ):
+                # The reviewed head already landed in the running candidate (typically
+                # via main before the batch base was cut). The natural merge is empty,
+                # but merging against the member's historical source base would replay
+                # its whole diff over newer content and manufacture conflicts on files
+                # the member never touched. Record it applied as a no-op: the reviewed
+                # head stays reachable from the candidate, so identity and ancestry hold.
+                await self._pin(
+                    store, self._recovery_ref(batch_id, int(revision["revision"])), current
+                )
+                await self._crash("after_member_mutation")
+                revision = await self._applied(state, revision, member, current)
+                await self._crash("after_member_progress")
+                continue
             if parent_repair is None:
                 merge_args = [
                     "merge-tree",

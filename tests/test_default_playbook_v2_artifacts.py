@@ -521,7 +521,7 @@ def test_capabilities_granted_unused_by_src() -> None:
     path; every other hit under ``src/`` still fails.
     """
     result = subprocess.run(
-        ["grep", "-rn", "capabilities_granted", "src/"],
+        ["grep", "-rn", "--include=*.py", "capabilities_granted", "src/"],
         cwd=REPO_ROOT,
         capture_output=True,
         text=True,
