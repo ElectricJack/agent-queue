@@ -112,7 +112,11 @@ describe("TaskActions deletion", () => {
       within(dialog).getByRole("button", { name: "Delete task and descendants" }),
     );
 
-    expect(mockDelete.mock.calls[0][0]).toEqual({ task_id: "task/with space", cascade: true });
+    expect(mockDelete).toHaveBeenNthCalledWith(
+      1,
+      { task_id: "task/with space", cascade: true },
+      expect.anything(),
+    );
     expect(within(dialog).getByText("aq/azure-beacon")).toBeInTheDocument();
 
     // Keep is preselected: leaving a ref behind is recoverable, deleting one
@@ -120,11 +124,11 @@ describe("TaskActions deletion", () => {
     await user.click(within(dialog).getByLabelText(/Delete the branch/));
     await user.click(within(dialog).getByRole("button", { name: "Delete task and branches" }));
 
-    expect(mockDelete.mock.calls[1][0]).toEqual({
-      task_id: "task/with space",
-      cascade: true,
-      branches: "delete",
-    });
+    expect(mockDelete).toHaveBeenNthCalledWith(
+      2,
+      { task_id: "task/with space", cascade: true, branches: "delete" },
+      expect.anything(),
+    );
   });
 
   it("keeps the branch when the operator leaves the default alone", async () => {
@@ -150,11 +154,11 @@ describe("TaskActions deletion", () => {
       within(dialog).getByRole("button", { name: "Delete task and descendants" }),
     );
 
-    expect(mockDelete.mock.calls[1][0]).toEqual({
-      task_id: "task/with space",
-      cascade: true,
-      branches: "keep",
-    });
+    expect(mockDelete).toHaveBeenNthCalledWith(
+      2,
+      { task_id: "task/with space", cascade: true, branches: "keep" },
+      expect.anything(),
+    );
   });
 });
 
