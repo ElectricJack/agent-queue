@@ -833,3 +833,24 @@ its new source has not been loaded into the operator daemon.
 Post-restart doctor confirms current schema and consistent claim holders.
 Integration warnings and other configuration warnings remain; a running
 daemon is not evidence that the end-to-end goal is complete.
+
+### 2026-09-09 — native feature CI passed; missing review recovered
+
+GitHub run `34345801131` completed successfully at exact Matter Engine head
+`870fcc84fcfee94dcfd5daf685ea1aa3b3d01ff7`. This independently verifies the
+replacement native run after the source-census correction. Fresh review and
+child delivery are still required; native green alone is not epic acceptance.
+
+Doctor identified completed `prime-ridge` / PR476 at `50050ae8` without a
+current review task. Durable evidence contained only two older rejections.
+Public replay of `default-pipeline` with the current hydrated task created
+`nimble-falcon` and `fair-ember`, including their blocking review dependency.
+Successful run IDs: `8ff3efbfd5cb4c97af209e6c5cb2c4fb` and
+`b2efcb737e1443aa9ec09e565ac6d37b`; all command step receipts passed. The
+reviewer subsequently became IN_PROGRESS automatically after its branch
+materialized. No review approval or merge was bypassed.
+
+The initial manual replay without hydrated task fields produced terminal
+completed runs with `input_resolution_failed` command steps and no tasks.
+That attempt is explicitly not success evidence. Inspection of step receipts
+was necessary to distinguish the successful recovery from the failed attempt.
