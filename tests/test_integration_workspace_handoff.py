@@ -1097,3 +1097,27 @@ async def test_pool_close_of_a_suspended_parent_releases_its_owner_row(
     # path's job — the writer release must not have pre-empted it.
     assert (await db.get_workspace("slot")).locked_by_task_id == "task"
     assert (await db.get_session("session")).task_id == "task"
+
+
+@pytest.mark.parametrize('pool', [False, True])
+async def test_full_root_ref_handoff_proves_and_detaches_short_git_branch(
+    orchestrator_factory, tmp_path, monkeypatch, pool,
+):
+    from src.database.tables import tasks
+
+    orchestrator = await _orchestrator(orchestrator_factory, tmp_path)
+    owner = _owner() | {'ref': 'refs/heads/aq/parent'}
+    async with orchestrator.db.immediate() as conn:
+        await conn.execute(update(tasks).where(tasks.c.id == 'task').values(branch_name=owner['ref']))
+        await conn.execute(update(integration_branch_owners).values(ref=owner['ref']))
+        if pool:
+            await conn.execute(update(sessions).values(lifecycle='pool'))
+    events = []
+    monkeypatch.setattr(orchestrator.session_providers, 'create', lambda *_: _provider(events))
+    current_branch, run = _clean_git(events)
+    orchestrator.git.aget_current_branch = AsyncMock(side_effect=current_branch)
+    orchestrator.git._arun_unlocked = AsyncMock(side_effect=run)
+    confirm = (orchestrator.aconfirm_integration_pool_owner_handoff if pool
+               else orchestrator.aconfirm_integration_owner_handoff)
+    assert await confirm(owner)
+    assert 'detach' in events

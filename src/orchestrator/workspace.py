@@ -1195,7 +1195,7 @@ class WorkspaceMixin:
         current_branch = await self.git.aget_current_branch(
             workspace.workspace_path, strict=True
         )
-        if current_branch not in {owner.get("ref"), "HEAD"}:
+        if current_branch not in {str(owner.get("ref") or "").removeprefix("refs/heads/"), "HEAD"}:
             return False
         try:
             provider = self.session_providers.create(session.provider, self.config)

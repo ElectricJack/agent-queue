@@ -1008,7 +1008,7 @@ async def test_collector_recovers_only_completed_detached_delivered_repair(db, h
         created_by_kind='integration_repair', created_by_id=operation_id,
     ))
     fence = await hierarchy.ownership.transfer(Fence.model_validate(result['fence']),
-                                               'repair', 'repair_delegate')
+                                               'repair', 'repair')
     async with db.immediate() as conn:
         await conn.execute(insert(integration_repair_stages).values(
             operation_id=operation_id, ordinal=0, policy={}, starting_sha=BASE,
