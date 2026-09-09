@@ -1375,15 +1375,9 @@ async def _invoke_adapter(
             value=value_model(),
             summary=f"{command} returned an invalid outcome",
         )
+    fields = set(value_model.model_fields)
     try:
-        if value_model is DeliveryReceiptsValue:
-            value = value_model(receipts=tuple(raw.get("receipts") or ()))
-        else:
-            value = value_model(
-                intent_id=raw.get("intent_id"),
-                receipt_id=raw.get("receipt_id"),
-                prepared_sha=raw.get("prepared_sha"),
-            )
+        value = value_model(**{key: raw[key] for key in fields if key in raw})
     except Exception as exc:
         return CommandResult(
             outcome="contract_violation",

@@ -479,6 +479,58 @@ def test_promotion_contracts_declare_retry_and_domain_identity():
     }
 
 
+@pytest.mark.parametrize("outcome", ["accepted", "already_accepted"])
+@pytest.mark.asyncio
+async def test_candidate_member_contract_adapter_preserves_typed_result_fields(outcome):
+    continuation = {
+        "outcome": "built",
+        "batch_id": "batch-1",
+        "revision": 4,
+        "head_sha": "f" * 40,
+    }
+    raw = {
+        "success": True,
+        "outcome": outcome,
+        "reservation_id": "reservation-1",
+        "batch_id": "batch-1",
+        "revision": 3,
+        "member_ordinal": 2,
+        "partial_head_sha": "e" * 40,
+        "continuation": continuation,
+    }
+
+    class StubHandler:
+        async def execute(self, command, payload):
+            assert command == "integration_resolve_candidate_member"
+            assert payload["claim_epoch"] == 7
+            return raw
+
+    registry = ContractRegistry()
+    register_integration_contracts(registry)
+    registration = registry.require("integration_resolve_candidate_member")
+    args = registration.contract.execution.args_model(
+        resolved_head_sha="b" * 40,
+        resolved_tree_sha="c" * 40,
+        repair_commit_shas=("d" * 40,),
+        claim_epoch=7,
+    )
+    set_handler_provider(StubHandler)
+    try:
+        result = await registration.invoke(args, None)
+    finally:
+        set_handler_provider(None)
+
+    assert result.outcome == outcome
+    assert result.value.model_dump() == {
+        "reservation_id": "reservation-1",
+        "batch_id": "batch-1",
+        "revision": 3,
+        "member_ordinal": 2,
+        "partial_head_sha": "e" * 40,
+        "continuation": continuation,
+    }
+
+
 @pytest.mark.asyncio
 async def test_root_promotion_command_is_registered_and_strictly_typed():
     handler = object.__new__(CommandHandler)
