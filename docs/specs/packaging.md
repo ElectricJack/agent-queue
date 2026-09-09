@@ -133,25 +133,31 @@ change and confirms the spec-divergence outcome (see §6).
 
 Extras group features that aren't needed for the minimal install:
 
-| Extra        | Purpose                                                                 |
-|--------------|-------------------------------------------------------------------------|
-| `anthropic`  | Claude via the Anthropic SDK (`anthropic>=0.42.0`)                      |
-| `gemini`     | Google Gemini via `google-genai>=1.0.0`                                 |
-| `inbox`      | Gmail/OAuth helpers (`google-api-python-client`, `google-auth-oauthlib`) |
-| `postgresql` | Postgres backend driver (`asyncpg>=0.29.0`)                             |
-| `ollama`     | Local models via the `openai>=1.0.0` client                             |
-| `mcp`        | MCP server dependencies (`mcp>=1.0.0`)                                  |
-| `cli`        | `aq` CLI (`click`, `prompt-toolkit`, `agent-queue-api-client`)          |
-| `memory`     | Semantic memory via the vendored memsearch fork                         |
-| `docs`       | `mkdocs` + `mkdocs-material` + `mkdocstrings[python]`                   |
-| `dev`        | Test + lint tools — see §3.4                                            |
+| Extra           | Purpose                                                                 |
+|-----------------|-------------------------------------------------------------------------|
+| `anthropic`     | Claude via the Anthropic SDK (`anthropic>=0.42.0`)                      |
+| `google`        | Google Gemini via `google-genai>=1.0.0`                                 |
+| `openai`        | OpenAI, and OpenAI-compatible local endpoints, via `openai>=1.0.0`      |
+| `llm`           | All three direct-LLM SDKs at once (`anthropic` + `google` + `openai`)   |
+| `inbox`         | Gmail/OAuth helpers (`google-api-python-client`, `google-auth-oauthlib`) |
+| `postgresql`    | Empty — retained so old install lines keep working; `asyncpg` is core   |
+| `sqlite-import` | `aiosqlite` for the one-way `aq db import-sqlite` path                  |
+| `mcp`           | MCP server dependencies (`mcp>=1.28.1,<2`)                              |
+| `cli`           | `aq` CLI (`click`, `prompt-toolkit`, `agent-queue-api-client`)          |
+| `docs`          | `mkdocs` + `mkdocs-material` + `mkdocstrings[python]`                   |
+| `dev`           | Test + lint tools — see §3.4                                            |
+
+There is no `gemini` extra (the Google one is `google`) and no `memory` extra —
+semantic memory ships as the external `aq-memory` plugin, installed with
+`aq plugin install`.  `tests/test_setup_script.py` holds `setup.sh` to the
+extras that actually exist.
 
 Install examples:
 
 ```bash
 pip install -e ".[dev,cli]"            # the typical development install
-pip install -e ".[dev,cli,memory]"     # add semantic memory (installs memsearch)
-pip install -e ".[anthropic,postgresql]"  # production-style install
+pip install -e ".[dev,cli,llm]"        # what setup.sh installs: adds the LLM SDKs
+pip install -e ".[anthropic]"          # production-style install
 ```
 
 ### 3.4 Dev dependencies
