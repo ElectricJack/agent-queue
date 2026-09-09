@@ -180,7 +180,9 @@ async def mark_integration_handoff_released(
                 raise RuntimeError("integration pool handoff claim changed before release")
             claim_release = await db.release_claim(
                 session_row["id"],
-                task_status=TaskStatus.READY,
+                # The handoff's successor, not an unrelated pool worker,
+                # decides when this repair writer is runnable again.
+                task_status=TaskStatus.PAUSED,
                 context="integration_handoff",
                 now=time.time(),
                 expected_task_id=task_id,
@@ -329,7 +331,9 @@ async def recover_stopped_integration_pool_claim(db, task_id: str) -> bool:
             return False
         claim_release = await db.release_claim(
             session_row["id"],
-            task_status=TaskStatus.READY,
+            # Preserve the human-repair boundary until ``integration resume``
+            # re-arms this exact delegate under its existing attempt budget.
+            task_status=TaskStatus.PAUSED,
             context="integration_handoff_recovery",
             now=time.time(),
             expected_task_id=task_id,

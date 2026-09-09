@@ -1166,7 +1166,7 @@ async def test_stopped_pool_writer_handoff_releases_its_exact_active_claim(
     session = await orchestrator.db.get_session("session")
     workspace = await orchestrator.db.get_workspace("slot")
     agent = await orchestrator.db.get_agent("agent")
-    assert task.status is TaskStatus.READY
+    assert task.status is TaskStatus.PAUSED
     assert task.claim_epoch == 7
     assert (session.task_id, session.claim_phase, session.last_claim_epoch) == (None, None, 7)
     assert session.claims == 0
@@ -1230,7 +1230,7 @@ async def test_recovery_releases_only_the_durably_proven_stopped_pool_claim(
     assert await recover_stopped_integration_pool_claim(orchestrator.db, "task")
     task = await orchestrator.db.get_task("task")
     session = await orchestrator.db.get_session("session")
-    assert task.status is TaskStatus.READY
+    assert task.status is TaskStatus.PAUSED
     assert task.claim_epoch == 7
     assert (session.task_id, session.claim_phase, session.last_claim_epoch) == (None, None, 7)
 
