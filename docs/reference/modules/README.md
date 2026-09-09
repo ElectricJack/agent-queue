@@ -34,7 +34,7 @@ own modules; this page is only the index.
 | `vault.md` | `vault` | 19 | — | `concepts/configuration-and-vault.md`, `reference/configuration.md` |
 | `providers.md` | `providers` | 22 | — | `concepts/providers.md` |
 | `plugins.md` | `plugins` | 24 | — | `guides/plugins-and-mcp.md` |
-| `communications.md` | `communications` | 38 | — | `concepts/messaging.md` |
+| [`communications.md`](communications.md) | `communications` | 38 | — | `concepts/messaging.md`, `guides/escalations.md` |
 | `operations.md` | `operations` | 24 | — | `guides/operations.md` |
 | `contributing.md` | `contributing` | 0 | — | — |
 
