@@ -4223,12 +4223,11 @@ class TaskCommandsMixin:
                 detail += f": {quarantine_reason}"
             return Reason(code="awaiting_pool_session", detail=detail, ref=profile_id)
 
-        measurement = await orchestrator._measure_pools({task.project_id})
+        measurement = await orchestrator._measure_pools()
         from src.scheduler import PoolKey
 
-        # Pools are sized fleet-wide now, but the question here is local:
-        # "what is standing between *this* task and a worker?" — so read the
-        # project's own slice of the pool, not the fleet aggregate.
+        # The cap is fleet-wide. Keep the project slice for context, but
+        # compare the cap with every project's occupancy of this profile.
         pool = measurement.supply.get(PoolKey(profile_id))
         sup = pool.by_project.get(task.project_id) if pool is not None else None
         if sup is None:
@@ -4238,14 +4237,15 @@ class TaskCommandsMixin:
                 ref=profile_id,
             )
         _lo, hi = measurement.bounds.get(PoolKey(profile_id), (0, None))
-        live = sup.running_idle + sup.running_busy + sup.starting
+        live = pool.running_idle + pool.running_busy + pool.starting
         detail = (
             f"awaiting a '{profile_id}' pool session to claim it "
-            f"({sup.running_busy} busy, {sup.running_idle} idle, {sup.starting} starting"
+            f"(project: {sup.running_busy} busy, {sup.running_idle} idle, {sup.starting} starting; "
+            f"fleet: {pool.running_busy} busy, {pool.running_idle} idle, {pool.starting} starting"
             + (f", max_active={hi}" if hi is not None else "")
             + ")"
         )
-        if hi is not None and live >= hi and sup.running_idle == 0:
+        if hi is not None and live >= hi and pool.running_idle == 0:
             detail += " — the pool is at max_active with no idle worker"
         return Reason(code="awaiting_pool_session", detail=detail, ref=profile_id)
 
