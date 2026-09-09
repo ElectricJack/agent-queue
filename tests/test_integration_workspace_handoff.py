@@ -32,7 +32,6 @@ from src.models import (
     Workspace,
 )
 
-
 pytestmark = pytest.mark.asyncio
 
 
@@ -1166,7 +1165,7 @@ async def test_stopped_pool_writer_handoff_releases_its_exact_active_claim(
     session = await orchestrator.db.get_session("session")
     workspace = await orchestrator.db.get_workspace("slot")
     agent = await orchestrator.db.get_agent("agent")
-    assert task.status is TaskStatus.READY
+    assert task.status is TaskStatus.PAUSED
     assert task.claim_epoch == 7
     assert (session.task_id, session.claim_phase, session.last_claim_epoch) == (None, None, 7)
     assert session.claims == 0
@@ -1180,7 +1179,8 @@ async def _seed_damaged_stopped_pool_handoff(orchestrator):
         await conn.execute(
             update(tasks)
             .where(tasks.c.id == "task")
-            .values(status=TaskStatus.BLOCKED.value, assigned_agent_id=None, claim_epoch=7)
+            .values(status=TaskStatus.BLOCKED.value, assigned_agent_id=None, claim_epoch=7,
+                    created_by_kind="integration_repair", created_by_id="operation")
         )
         await conn.execute(
             update(sessions)
@@ -1457,3 +1457,25 @@ async def test_recovery_refuses_stale_or_ambiguous_historical_claims(
         assert (session.task_id, session.claim_phase) == ("replacement", "active")
     else:
         assert (session.task_id, session.claim_phase) == ("task", "active")
+
+
+@pytest.mark.parametrize("corruption", ["owner", "creator"])
+async def test_historical_recovery_requires_the_same_repair_operation(
+    orchestrator_factory, tmp_path, corruption
+):
+    from src.orchestrator.workspace_attachments import recover_stopped_integration_pool_claim
+
+    orchestrator = await _pool_orchestrator(orchestrator_factory, tmp_path)
+    await _seed_damaged_stopped_pool_handoff(orchestrator)
+    async with orchestrator.db.immediate() as conn:
+        if corruption == "owner":
+            await conn.execute(update(integration_branch_owners).where(
+                integration_branch_owners.c.id == "owner"
+            ).values(owner_id="different-operation"))
+        else:
+            await conn.execute(update(tasks).where(tasks.c.id == "task").values(
+                created_by_id="different-operation"
+            ))
+    assert not await recover_stopped_integration_pool_claim(orchestrator.db, "task")
+    assert (await orchestrator.db.get_task("task")).status is TaskStatus.BLOCKED
+    assert (await orchestrator.db.get_session("session")).claim_phase == "active"

@@ -15,16 +15,15 @@ from sqlalchemy import select, update
 
 from src.database.tables import agents, integration_branch_owners, sessions, tasks, workspaces
 from src.models import (
+    SYSTEM_KIND_SCOPE,
     AgentState,
     ResolvedRequirement,
-    SYSTEM_KIND_SCOPE,
     Task,
     TaskStatus,
     WorkspaceAttachment,
     WorkspaceAttachmentSet,
     WorkspaceKind,
 )
-
 
 # Auto-attach kinds get positions 10000+ so they always sort *after* explicit
 # and synthesized requirements within their kind_id group.  This isn't
@@ -180,7 +179,8 @@ async def mark_integration_handoff_released(
                 raise RuntimeError("integration pool handoff claim changed before release")
             claim_release = await db.release_claim(
                 session_row["id"],
-                task_status=TaskStatus.READY,
+                # The successor decides when the old writer may run again.
+                task_status=TaskStatus.PAUSED,
                 context="integration_handoff",
                 now=time.time(),
                 expected_task_id=task_id,
@@ -295,6 +295,11 @@ async def recover_stopped_integration_pool_claim(db, task_id: str) -> bool:
         ).first()
         if (
             owner_row is None
+            or task_row["created_by_kind"] != "integration_repair"
+            or not task_row["created_by_id"]
+            or (owner_row["owner_id"], owner_row["owner_role"]) not in {
+                (task_id, "repair"), (task_row["created_by_id"], "collector"),
+            }
             or owner_row["handoff_state"] not in {"reserved", "released"}
             or owner_row["session_id"] is not None
             or owner_row["workspace_id"] is not None
@@ -763,8 +768,8 @@ async def acquire_for_task(
 
 # Re-export for callers that just want the constants/types.
 __all__ = [
-    "AcquisitionFailed",
     "SYSTEM_KIND_SCOPE",
+    "AcquisitionFailed",
     "acquire_for_task",
     "effective_requirements",
 ]
