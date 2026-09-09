@@ -483,3 +483,22 @@ its helper mutates the legacy intent BEFORE checking competing-owner ambiguity;
 a refused resume could therefore commit cleared uncertainty/evidence. Reopened
 through public feedback requiring full-row atomic refusal and composition with
 current parent/delegate recovery. Its two new migrations remain unapplied.
+
+## Green-candidate root repair recovery (09:37 UTC)
+
+The resumed root close exposed another real state gap: revision1 was GREEN at
+371391a1, but adopt_batch_repair_on admitted a differing head only from
+built/testing/red, even after proving the exact moved-main rebuild conflict.
+Operator fix22f8d73d permits GREEN only in that verified conflict path. The new
+revision still clears candidate/batch CI evidence and cannot promote on old
+checks. Adoption/rebuild10passed, including complete_delegate fromGREEN and
+ci_missing for the replacement; Ruffpassed. Log/tmp/aq-green-rebuild-tests.log.
+Loaded daemon452786; sourceorigin/aq/operator-green-rebuild-20260909 and review
+delivery taskbrisk-crest preserve the pipeline follow-through.
+
+The old stage deadline expired before its worker retried. Public guarded
+integration-transfer-owner stopped/detached the clean published writer and
+transferred fence8→9 to the same operation's collector. Public integration
+resume then succeeded, preserving attempts and giving stage1 deadline
+1788950234.998555. No SQL overrides or changed candidate states were used.
+Noble-ridge.9 is now IN_PROGRESS on the enabled deep-high-codex pool.
