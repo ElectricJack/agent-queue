@@ -1716,7 +1716,7 @@ async def test_resumed_event_redispatches_established_repair_delegate(db):
     ]
 
 
-@pytest.mark.parametrize("corruption", ["wrong_episode", "unrelated_block", "manual_pause"])
+@pytest.mark.parametrize("corruption", ["wrong_episode", "unrelated_block", "manual_pause", "advanced_generation"])
 async def test_parent_resume_rejects_non_current_or_operator_held_collection(db, corruption):
     """Only this operation's exhausted parent episode may be restored."""
     from src.integration.repair import RepairService
@@ -1732,7 +1732,12 @@ async def test_parent_resume_rejects_non_current_or_operator_held_collection(db,
         "human_required"
     )
 
-    if corruption == "wrong_episode":
+    if corruption == "advanced_generation":
+        async with db.immediate() as conn:
+            await conn.execute(update(task_integration_checkpoints).where(
+                task_integration_checkpoints.c.task_id == "parent"
+            ).values(generation=4))
+    elif corruption == "wrong_episode":
         async with db.immediate() as conn:
             await conn.execute(
                 insert(integration_parent_episodes).values(
@@ -1763,6 +1768,10 @@ async def test_parent_resume_rejects_non_current_or_operator_held_collection(db,
         await db.pause_task("parent")
 
     rejected = await IntegrationControlService(db, clock=lambda: 200.0).resume("operation")
+    if corruption == "advanced_generation":
+        assert rejected["outcome"] == "resumed"
+        assert (await db.get_task("parent")).status is TaskStatus.PAUSED
+        return
     assert rejected["outcome"] == ("stale" if corruption == "wrong_episode" else "invalid_state")
     assert (await db.get_integration_operation("operation"))["state"] == "human_required"
 

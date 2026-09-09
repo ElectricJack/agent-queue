@@ -237,7 +237,8 @@ class IntegrationRecoveryControls:
             or episode["parent_task_id"] != operation["parent_task_id"]
             or parent["repo_id"] != checkpoint["repository_id"]
             or parent["branch_name"] != checkpoint["branch"]
-            or int(checkpoint["generation"]) != int(episode["generation"])
+            or episode["repository_id"] != parent["repo_id"]
+            or int(checkpoint["generation"]) < int(episode["generation"])
         ):
             return None, "stale"
         if await self.db._read_manual_pause(conn, operation["parent_task_id"]) is not None:
