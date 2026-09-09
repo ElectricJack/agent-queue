@@ -130,3 +130,61 @@ async def test_flush_recovers_only_exact_completed_root_pr(review_case, monkeypa
     assert (await db.get_task("leaf")).pr_url == (None if moved_head else pr_url)
     assert result == ([] if moved_head else ["leaf"])
     assert await recover_completed_pr_links(db, case["promotion"], "p") == []
+
+
+async def test_pr_recovery_releases_git_before_waiting_for_project_lock(
+    review_case, monkeypatch,  # noqa: F811
+):
+    """A materializer holding SQL must finish while PR recovery waits for it."""
+    import asyncio
+    from contextlib import asynccontextmanager
+    from unittest.mock import AsyncMock
+
+    from src.integration.completion_recovery import recover_completed_pr_links
+
+    case = review_case
+    db = case["db"]
+    await db.update_project("p", hierarchical_integration_mode="train")
+    async with db.immediate() as conn:
+        await conn.execute(update(tasks).where(tasks.c.id == "leaf").values(parent_task_id=None))
+    git = case["promotion"].git
+    repository_lock = asyncio.Lock()
+    observing = asyncio.Event()
+    project_locked = asyncio.Event()
+    materialized = asyncio.Event()
+    pr_url = "https://github.com/acme/widgets/pull/123"
+
+    @asynccontextmanager
+    async def repository_transaction(_path):
+        async with repository_lock:
+            yield
+
+    async def identity(*_args):
+        observing.set()
+        await project_locked.wait()
+        return SimpleNamespace(base_ref="main", head_ref="aq/leaf", head_oid=case["head"])
+
+    async def materialize():
+        await observing.wait()
+        async with db.immediate() as conn:
+            await db.lock_hierarchy_project(conn, "p")
+            project_locked.set()
+            async with repository_lock:
+                materialized.set()
+
+    monkeypatch.setattr(git, "arepository_transaction", repository_transaction)
+    monkeypatch.setattr(git, "afind_open_pr", AsyncMock(return_value=pr_url))
+    monkeypatch.setattr(git, "aget_pr_identity", identity)
+    jobs = [
+        asyncio.create_task(materialize()),
+        asyncio.create_task(recover_completed_pr_links(db, case["promotion"], "p")),
+    ]
+    try:
+        _, recovered = await asyncio.wait_for(asyncio.gather(*jobs), timeout=5)
+    finally:
+        for job in jobs:
+            job.cancel()
+        await asyncio.gather(*jobs, return_exceptions=True)
+    assert materialized.is_set()
+    assert recovered == ["leaf"]
+    assert (await db.get_task("leaf")).pr_url == pr_url

@@ -358,10 +358,14 @@ async def recover_completed_pr_links(db, promotion, project_id: str) -> list[str
     resolved = await promotion._resolve_repository(project.integration_repository_id)
     await promotion._ensure_retained_repository(resolved)
     recovered = []
+    # Git observations precede SQL locking: origin materialization takes the
+    # project lock before the repository lock, so retaining the latter while
+    # waiting for SQL here would deadlock filing and the integration sweep.
     async with promotion.git.arepository_transaction(str(resolved.retained_git_dir)):
         await promotion._fetch_all_heads(resolved.retained_git_dir)
-        for row in rows:
-            try:
+    for row in rows:
+        try:
+            async with promotion.git.arepository_transaction(str(resolved.retained_git_dir)):
                 checkout = str(resolved.retained_git_dir)
                 remote = await promotion.git.als_remote_ref(checkout, row["branch_name"])
                 if (
@@ -381,46 +385,46 @@ async def recover_completed_pr_links(db, promotion, project_id: str) -> list[str
                     or identity.base_ref != resolved.repo.default_branch
                 ):
                     continue
-                async with db.immediate() as conn:
-                    await db.lock_hierarchy_project(conn, project_id)
-                    current_project = (
-                        (await conn.execute(select(projects).where(projects.c.id == project_id)))
-                        .mappings()
-                        .one()
+            async with db.immediate() as conn:
+                await db.lock_hierarchy_project(conn, project_id)
+                current_project = (
+                    (await conn.execute(select(projects).where(projects.c.id == project_id)))
+                    .mappings()
+                    .one()
+                )
+                if (
+                    current_project["hierarchical_integration_mode"] != "train"
+                    or current_project["hierarchical_integration_draining"]
+                    or current_project["integration_repository_id"]
+                    != project.integration_repository_id
+                ):
+                    break
+                current_head = (
+                    select(cp.c.task_id)
+                    .where(
+                        cp.c.task_id == row["id"],
+                        cp.c.checkpoint_sha == remote.oid,
+                        cp.c.generation == row["generation"],
+                        cp.c.version == row["version"],
                     )
-                    if (
-                        current_project["hierarchical_integration_mode"] != "train"
-                        or current_project["hierarchical_integration_draining"]
-                        or current_project["integration_repository_id"]
-                        != project.integration_repository_id
-                    ):
-                        break
-                    current_head = (
-                        select(cp.c.task_id)
-                        .where(
-                            cp.c.task_id == row["id"],
-                            cp.c.checkpoint_sha == remote.oid,
-                            cp.c.generation == row["generation"],
-                            cp.c.version == row["version"],
-                        )
-                        .exists()
+                    .exists()
+                )
+                changed = await conn.execute(
+                    update(tasks)
+                    .where(
+                        tasks.c.id == row["id"],
+                        tasks.c.project_id == project_id,
+                        tasks.c.repo_id == project.integration_repository_id,
+                        tasks.c.branch_name == row["branch_name"],
+                        tasks.c.parent_task_id.is_(None),
+                        tasks.c.status == TaskStatus.COMPLETED.value,
+                        missing,
+                        current_head,
                     )
-                    changed = await conn.execute(
-                        update(tasks)
-                        .where(
-                            tasks.c.id == row["id"],
-                            tasks.c.project_id == project_id,
-                            tasks.c.repo_id == project.integration_repository_id,
-                            tasks.c.branch_name == row["branch_name"],
-                            tasks.c.parent_task_id.is_(None),
-                            tasks.c.status == TaskStatus.COMPLETED.value,
-                            missing,
-                            current_head,
-                        )
-                        .values(pr_url=url)
-                    )
-                    if changed.rowcount:
-                        recovered.append(row["id"])
-            except Exception:
-                logger.warning("Could not recover integration PR for %s", row["id"], exc_info=True)
+                    .values(pr_url=url)
+                )
+                if changed.rowcount:
+                    recovered.append(row["id"])
+        except Exception:
+            logger.warning("Could not recover integration PR for %s", row["id"], exc_info=True)
     return recovered
