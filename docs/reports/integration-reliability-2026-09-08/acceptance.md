@@ -605,3 +605,38 @@ frozen conflict evidence and accepted-repair semantics. quick-falcon remains que
 for the distinct guarded candidate-member conflict CLI gap. Live keen-harbor repair
 session 0826969e-ca31-45b1-958f-836a134faf3e reports 87 focused tests passing and is
 running its broader CLI checks before delivery. No broad completion claim is made.
+
+
+### 2026-09-09 10:12 UTC — routing and contained-member fixes validated
+
+brisk-pinnacle was claimed by session 9afcaf6c-f2a4-4ca6-b5fd-069fa8129f8e,
+published b0dfc395 / PR #552, and its patch was merged locally as 82699bf9.
+The additive test conflict was resolved by retaining existing publication and
+closed-repair regressions and the new contained-member regression. The complete
+candidate module passed 70 tests in 81.85s; changed-file Ruff passed. Evidence:
+/tmp/aq-contained-member-operator-tests.log. Existing frozen conflicts remain
+unchanged; the fix avoids creating these false conflicts in future construction.
+
+fresh-beacon completed at 3136b02f / PR #551. Operator merged it and corrected
+its invalid suggested recovery command in e1888186: use
+`aq pool set-enabled --profile-id PROFILE --enabled`. Combined routing tests:
+31 passed in 14.61s, Ruff passed. Full isolated swarm: 8/8 scenarios passed,
+with its private daemon/database cleaned up. Evidence:
+/tmp/aq-disabled-routing-operator-tests.log and /tmp/aq-disabled-routing-e2e.log.
+Source e1888186 is published at aq/operator-routing-diagnostics-20260909;
+grand-vault has the exact follow-through instruction. The fleet/project occupancy
+explanation defect remains separate and is not claimed fixed by this patch.
+
+brisk-crest was blocked because the original instruction omitted prerequisite
+ed8e8acc. Corrected the task description to authorize that exact commit before
+22f8d73d, preserve its published attempt/revert ancestry, and run both moved-main
+repair test modules. Public reopen-with-feedback succeeded. grand-vault is now
+IN_PROGRESS; quick-falcon, brisk-crest and keen-harbor.13 are still READY.
+
+Live receipt receipt-3f06dc17-fc08-5f87-b404-1fe6a9b6659b proves delivery of
+keen-harbor.3 to parent head 5e36a924fe70769d45ef9f41c928c449c05bb308;
+independent git ls-remote matches. The collector has moved to its next child.
+Root batch 2c484c089 escalated to stage 1; explicitly routed its new delegate to
+enabled deep-high-codex without independently resuming its guarded handoff.
+Restart to load these validated fixes was requested via aq restart --no-dashboard;
+log /tmp/aq-routing-contained-restart.log. Running sessions are preserved.
