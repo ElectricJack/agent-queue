@@ -212,3 +212,36 @@ test executables. The 98-test CTest run is active; shader_source_tests and
 vulkan_smoke_tests passed. Log: /tmp/aq-matter-native-ci.log, handle23927.
 Package validation, remote Actions execution, runner registration, baseline
 delivery, feature execution and throughput acceptance remain pending.
+
+## Live recovery and native package results
+
+Parent recovery 067a5112 required review fixes140c1a3e (encoded terminal
+metadata and prevalidation) and4db76c8d (checkpoint progress within an episode).
+103 area tests passed; targeted atomic rejection and generation tests passed.
+Loaded through4db76c8d. Public resume restored keen-harbor to PAUSED and kept
+deadline1788942168.182611. Explicit start/dispatch of the current .6 conflict
+then refreshed the dossier and granted repair fence8; delegate is IN_PROGRESS.
+This required manual replay: nimble-cascade now implements the missing durable
+automatic resume-to-current-conflict dispatch.
+
+Root repair pushed exact two-parent merge e13900405da3eacc523510a3513afa31df22da87.
+The stage expired before close. Guarded handoff stopped/detached the writer and
+granted collector fence7, but left stopped session ff7c0266-bda8-49fa-8bc9-25172b03ff98
+with active claim state; its task became BLOCKED/session_not_live. Grand-apex
+is implementing atomic cleanup and safe replay recovery. No fabricated close,
+receipt, CI result, or operator-DB mutation was used.
+
+Native Matter build passed. CTest passed97/98, then the sole failed wrapper
+contract passed after executable-bit fix72867a10. Viewer logic passed238.67s.
+Packaging passed111 hashed files plus manifest,9 imports,0 runtime DLLs and
+a clean-PATH launch. Windows Git needed the isolated worktree .git pointer
+converted from an absolute WSL path to its equivalent relative path. Logs:
+/tmp/aq-native-package-rerun.log and /tmp/aq-native-package-validation.log.
+Remote native CI, runner setup and baseline publication remain incomplete.
+
+Noble-ridge.2 completed and .3 claimed. Task explain falsely described its
+released PAUSED parent as blocking while is_blocked=0; amber-zenith tracks
+typed dependency diagnostic parity. Grand-apex and nimble-cascade are live.
+Workers have the isolated /tmp/aq_goal_test.py invocation for actual DB tests.
+Full parent collection, final reviewed promotion, and capacity proof remain
+incomplete; this report does not equate implementation close with delivery.
