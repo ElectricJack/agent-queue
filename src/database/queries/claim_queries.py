@@ -471,7 +471,8 @@ class ClaimQueryMixin:
         return slot
 
     async def activate_claim(
-        self, session_id, task_id, *, epoch: int, now: float, conn=None
+        self, session_id, task_id, *, epoch: int, now: float, conn=None,
+        branch_name: str | None = None,
     ) -> SessionRecord | None:
         """Flip ``preparing`` -> ``active``; the updated row, or ``None``.
 
@@ -479,6 +480,14 @@ class ClaimQueryMixin:
         the caller a re-read to build the response's session block.  Falsy
         on failure, so the old ``if not await activate_claim(...)`` callers
         read unchanged.
+
+        *branch_name* is the branch the claim's slot reset just put the
+        worktree on.  It is persisted to ``tasks.branch_name`` under the same
+        row lock and in the same transaction as the activation, so a claim
+        either publishes both or neither: a prepare that fails after the
+        reset leaves no half-written branch for a later close to trust.  The
+        push-assignment path writes the same field from
+        ``WorkspaceMixin._assign_worktree_slot``.
         """
 
         async def _run(c):
@@ -499,7 +508,7 @@ class ClaimQueryMixin:
             # can observe a pre-pause PostgreSQL statement snapshot.
             claim = (
                 await c.execute(
-                    select(tasks.c.id)
+                    select(tasks.c.id, tasks.c.branch_name)
                     .where(
                         tasks.c.id == task_id,
                         tasks.c.status == TaskStatus.IN_PROGRESS.value,
@@ -507,7 +516,7 @@ class ClaimQueryMixin:
                     )
                     .with_for_update()
                 )
-            ).scalar_one_or_none()
+            ).fetchone()
             if claim is None:
                 return None
             stmt = (
@@ -551,6 +560,16 @@ class ClaimQueryMixin:
                     task_metadata.c.key == "needs_attention",
                 )
             )
+            if branch_name is not None and claim.branch_name != branch_name:
+                # Written only past every activation guard, and under the row
+                # lock taken above: an activation that bails leaves the branch
+                # exactly as it found it, so no failed prepare can publish a
+                # branch the task never got.
+                await c.execute(
+                    update(tasks)
+                    .where(tasks.c.id == task_id)
+                    .values(branch_name=branch_name, updated_at=now)
+                )
             return _row_to_session(row)
 
         if conn is not None:

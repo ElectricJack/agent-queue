@@ -188,6 +188,11 @@ class TestClaimStatementBudgets:
         # whether the claim takes the hierarchical-integration branch path
         # from the project's *current* ``hierarchical_integration_mode`` —
         # the outer loop's read may be a full ``--wait`` old by then.
+        # ``activate_claim``'s ``tasks.branch_name`` write (+1) publishes the
+        # branch the slot reset just created, past every activation guard and
+        # under the task row lock it already holds; it is skipped entirely
+        # when the row already names that branch (a resume or a hierarchy
+        # claim, whose branch is pinned at filing).
         budget = 18
         print(f"\ntask_claim happy path: {c['n']} statements (budget {budget})")
         assert c["n"] <= budget, f"{c['n']} statements > budget {budget}"
