@@ -1254,6 +1254,18 @@ async def test_recovery_refuses_reused_or_active_handoff_resources(
             description="",
         )
     )
+    if reuse == "slot":
+        # PostgreSQL enforces the workspace's agent lock FK.  This is a real
+        # successor slot assignment, not merely a non-null sentinel.
+        await orchestrator.db.create_agent(
+            Agent(
+                id="replacement-agent",
+                name="Replacement",
+                profile_id="worker",
+                state=AgentState.BUSY,
+                current_task_id="replacement",
+            )
+        )
     async with orchestrator.db.immediate() as conn:
         if reuse == "active_writer":
             await conn.execute(
