@@ -78,16 +78,24 @@ class DigestCommandsMixin:
     async def _known_project_ids(self) -> frozenset[str]:
         return frozenset(project.id for project in await self.db.list_projects())
 
-    async def _reported_so_far(self, destination: str) -> tuple[frozenset[str], frozenset[str]]:
+    async def _reported_so_far(
+        self, destination: str, generation: int
+    ) -> tuple[frozenset[str], frozenset[str]]:
         """Fact keys and highlight wordings earlier windows already reported.
 
         Without this a preview would happily re-offer a highlight the channel
         has already seen, and disagree with the delivery it claims to predict.
+        Only this generation's windows count: settings that redefine a window
+        start a fresh generation, which must not inherit the old one's
+        suppression history.
         """
         keys: set[str] = set()
         highlights: set[str] = set()
         for window in await self.db.list_digest_windows(
-            destination=destination, statuses=["sent"], limit=_RECENT_WINDOWS
+            destination=destination,
+            config_generation=generation,
+            statuses=["sent"],
+            limit=_RECENT_WINDOWS,
         ):
             payload = window.get("payload") or {}
             if isinstance(payload, dict):
@@ -107,13 +115,21 @@ class DigestCommandsMixin:
             return error
 
         now = float(args.get("now") or time.time())
-        windows = await self.db.list_digest_windows(destination=schedule.destination, limit=1)
+        windows = await self.db.list_digest_windows(
+            destination=schedule.destination, config_generation=schedule.generation, limit=1
+        )
         last_end = float(windows[0]["window_end"]) if windows else None
         window = schedule.window_for(now, last_window_end=last_end)
 
-        reported_keys, reported_highlights = await self._reported_so_far(schedule.destination)
+        reported_keys, reported_highlights = await self._reported_so_far(
+            schedule.destination, schedule.generation
+        )
         open_escalations = len(
-            await self.db.list_escalations(states=["needs_human", "reply_received"], limit=500)
+            await self.db.list_escalations(
+                project_ids=list(scope) if scope is not None else None,
+                states=["needs_human", "reply_received"],
+                limit=500,
+            )
         )
         inputs = await self.db.collect_digest_activity(
             window,
@@ -158,23 +174,30 @@ class DigestCommandsMixin:
         schedule = schedule_for(config)
         known = await self._known_project_ids()
 
-        _, error = self._digest_scope(schedule.project_ids)
+        scope, error = self._digest_scope(schedule.project_ids)
         if error:
             return error
 
         now = float(args.get("now") or time.time())
         recent = await self.db.list_digest_windows(
-            destination=schedule.destination, limit=_RECENT_WINDOWS
+            destination=schedule.destination,
+            config_generation=schedule.generation,
+            limit=_RECENT_WINDOWS,
         )
         last_end = float(recent[0]["window_end"]) if recent else None
         health = {status: 0 for status in _ATTENTION_STATUSES}
         for window in await self.db.list_digest_windows(
-            destination=schedule.destination, statuses=list(_ATTENTION_STATUSES), limit=500
+            destination=schedule.destination,
+            config_generation=schedule.generation,
+            statuses=list(_ATTENTION_STATUSES),
+            limit=500,
         ):
             health[window["send_status"]] = health.get(window["send_status"], 0) + 1
 
         escalations = await self.db.list_escalations(
-            states=["needs_human", "reply_received", "resolving"], limit=500
+            project_ids=list(scope) if scope is not None else None,
+            states=["needs_human", "reply_received", "resolving"],
+            limit=500,
         )
         pending_escalation_deliveries = 0
         for incident in escalations:

@@ -95,6 +95,39 @@ async def progress_note(db, task_id, body, *, project_id="p", at=NOW - 300):
         )
 
 
+def generation(config) -> int:
+    """The generation the commands will actually query for this config."""
+    from src.digest.schedule import config_generation
+
+    return config_generation(config.discord)
+
+
+async def open_escalation(db, escalation_id, *, project_id, with_pending_delivery=False):
+    incident, _created = await db.create_escalation(
+        id=escalation_id,
+        now=NOW,
+        task_id=None,
+        project_id=project_id,
+        source_kind="task_failed",
+        source_identity=f"attempt-{escalation_id}",
+        incident_key=f"incident-{escalation_id}",
+        supervisor_owner=f"supervisor-{project_id}",
+        summary="Blocked",
+        investigation="looked",
+        decision_requested="retry or hold?",
+        severity="high",
+    )
+    if with_pending_delivery:
+        await db.enqueue_escalation_delivery(
+            escalation_id=incident["id"],
+            kind="root",
+            dedup_key=f"{escalation_id}:root",
+            payload={"text": "blocked"},
+            available_at=NOW,
+        )
+    return incident
+
+
 def session_principal(project_id: str | None, *, elevated: bool = False) -> ExecutionPrincipal:
     return ExecutionPrincipal(
         kind=PrincipalKind.SESSION,
@@ -201,7 +234,7 @@ class TestPreview:
         sent = build_digest(inputs)
         window, _created = await db.reserve_digest_window(
             destination=f"discord:{CHANNEL}",
-            config_generation=0,
+            config_generation=generation(_config),
             window_start=NOW - 2 * HOUR,
             window_end=NOW - 1200,
             activity_cursor=None,
@@ -224,6 +257,82 @@ class TestPreview:
         again = await handler.execute("digest_preview", {"now": NOW})
         assert again["would_send"] is False
         assert again["suppression_reason"] == "already_reported"
+
+    async def test_a_scoped_preview_does_not_count_another_projects_escalations(self, env):
+        handler, db, _config = env
+        await open_escalation(db, "esc-mine", project_id="p")
+        await open_escalation(db, "esc-theirs", project_id="other")
+        with principal_context(session_principal("p")):
+            scoped = await handler.execute("digest_preview", {"now": NOW})
+        unscoped = await handler.execute("digest_preview", {"now": NOW})
+        assert scoped["open_escalations"] == 1
+        assert unscoped["open_escalations"] == 2
+
+    async def test_the_configured_selection_bounds_the_escalation_count(self, env):
+        handler, db, config = env
+        await open_escalation(db, "esc-mine", project_id="p")
+        await open_escalation(db, "esc-theirs", project_id="other")
+        config.discord = discord(project_ids=["p"])
+        result = await handler.execute("digest_preview", {"now": NOW})
+        assert result["open_escalations"] == 1
+
+    async def test_a_new_generation_does_not_inherit_old_window_timing(self, env):
+        handler, db, config = env
+        await db.reserve_digest_window(
+            destination=f"discord:{CHANNEL}",
+            config_generation=generation(config),
+            window_start=NOW - 4 * HOUR,
+            window_end=NOW - 3 * HOUR,
+            activity_cursor=None,
+            due_at=NOW - 3 * HOUR,
+        )
+        inherited = await handler.execute("digest_preview", {"now": NOW})
+        assert inherited["window"]["since"] == NOW - 3 * HOUR
+        assert inherited["window"]["catchup"] is True
+
+        config.discord = discord(interval_minutes=30)
+        fresh = await handler.execute("digest_preview", {"now": NOW})
+        assert fresh["window"]["since"] == NOW - 1800
+        assert fresh["window"]["catchup"] is False
+
+    async def test_a_new_generation_does_not_inherit_reported_history(self, env):
+        handler, db, config = env
+        await completed_task(db, "t1", title="Ship the digest")
+        assert (await handler.execute("digest_preview", {"now": NOW}))["would_send"] is True
+
+        from src.digest import DigestWindow, build_digest
+
+        inputs = await db.collect_digest_activity(
+            DigestWindow(since=NOW - HOUR, until=NOW), now=NOW
+        )
+        sent = build_digest(inputs)
+        window, _created = await db.reserve_digest_window(
+            destination=f"discord:{CHANNEL}",
+            config_generation=generation(config),
+            window_start=NOW - 2 * HOUR,
+            window_end=NOW - 1200,
+            activity_cursor=None,
+            due_at=NOW - 1200,
+        )
+        async with db._engine.begin() as conn:
+            await conn.execute(
+                update(digest_windows)
+                .where(digest_windows.c.id == window["id"])
+                .values(
+                    send_status="sent",
+                    external_receipt_id="receipt",
+                    receipt_confirmed_at=NOW - 1200,
+                    payload={
+                        "reported_keys": sorted(sent.reported_keys),
+                        "reported_highlights": sorted(sent.reported_highlights),
+                    },
+                )
+            )
+        assert (await handler.execute("digest_preview", {"now": NOW}))["would_send"] is False
+
+        config.discord = discord(categories=["work"])
+        fresh = await handler.execute("digest_preview", {"now": NOW})
+        assert fresh["would_send"] is True
 
 
 class TestStatus:
@@ -252,7 +361,7 @@ class TestStatus:
         handler, db, _config = env
         await db.reserve_digest_window(
             destination=f"discord:{CHANNEL}",
-            config_generation=1,
+            config_generation=generation(_config),
             window_start=NOW - HOUR,
             window_end=NOW - 600,
             activity_cursor=None,
@@ -267,7 +376,7 @@ class TestStatus:
         for index, status in enumerate(("pending", "retry", "unknown", "suppressed")):
             window, _ = await db.reserve_digest_window(
                 destination=f"discord:{CHANNEL}",
-                config_generation=1,
+                config_generation=generation(_config),
                 window_start=NOW - HOUR - index * 10,
                 window_end=NOW - index * 10,
                 activity_cursor=None,
@@ -321,6 +430,47 @@ class TestStatus:
         result = await handler.execute("digest_status", {"now": NOW})
         assert result["open_escalations"] == 1
         assert result["pending_escalation_deliveries"] == 1
+
+    async def test_a_scoped_status_hides_another_projects_escalation_health(self, env):
+        handler, db, _config = env
+        await open_escalation(db, "esc-mine", project_id="p", with_pending_delivery=True)
+        await open_escalation(db, "esc-theirs", project_id="other", with_pending_delivery=True)
+        with principal_context(session_principal("p")):
+            scoped = await handler.execute("digest_status", {"now": NOW})
+        unscoped = await handler.execute("digest_status", {"now": NOW})
+        assert scoped["open_escalations"] == 1
+        assert scoped["pending_escalation_deliveries"] == 1
+        assert unscoped["open_escalations"] == 2
+        assert unscoped["pending_escalation_deliveries"] == 2
+
+    async def test_a_settings_change_starts_a_fresh_schedule(self, env):
+        handler, db, config = env
+        window, _ = await db.reserve_digest_window(
+            destination=f"discord:{CHANNEL}",
+            config_generation=generation(config),
+            window_start=NOW - 2 * HOUR,
+            window_end=NOW - HOUR,
+            activity_cursor=None,
+            due_at=NOW - HOUR,
+        )
+        async with db._engine.begin() as conn:
+            await conn.execute(
+                update(digest_windows)
+                .where(digest_windows.c.id == window["id"])
+                .values(send_status="retry")
+            )
+        before = await handler.execute("digest_status", {"now": NOW})
+        assert before["last_window_end"] == NOW - HOUR
+        assert before["delivery_health"]["retry"] == 1
+        assert len(before["recent_windows"]) == 1
+
+        config.discord = discord(project_ids=["p"])
+        after = await handler.execute("digest_status", {"now": NOW})
+        assert after["config_generation"] != before["config_generation"]
+        assert after["last_window_end"] is None
+        assert after["next_evaluation_at"] == NOW + HOUR
+        assert after["delivery_health"]["retry"] == 0
+        assert after["recent_windows"] == []
 
 
 class TestSurface:

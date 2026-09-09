@@ -187,15 +187,25 @@ class EscalationQueriesMixin:
         self,
         *,
         project_id: str | None = None,
+        project_ids: Sequence[str] | None = None,
         states: Sequence[str] | None = None,
         task_id: str | None = None,
         limit: int = 100,
     ) -> list[dict[str, Any]]:
+        """Incidents, optionally narrowed to one project or a set of them.
+
+        ``project_ids`` is the caller's *visibility*: an empty sequence means
+        "no project is visible" and matches nothing, which is what a scoped
+        reader outside the configured selection must see.  ``None`` means the
+        caller is unrestricted.
+        """
         if limit <= 0:
             return []
         statement = select(escalations)
         if project_id is not None:
             statement = statement.where(escalations.c.project_id == project_id)
+        if project_ids is not None:
+            statement = statement.where(escalations.c.project_id.in_(tuple(project_ids)))
         if states is not None:
             statement = statement.where(escalations.c.state.in_(tuple(states)))
         if task_id is not None:
@@ -1264,14 +1274,25 @@ class EscalationQueriesMixin:
         self,
         *,
         destination: str | None = None,
+        config_generation: int | None = None,
         statuses: Sequence[str] | None = None,
         limit: int = 100,
     ) -> list[dict[str, Any]]:
+        """Windows for a destination, optionally within one generation.
+
+        A window belongs to ``(destination, config_generation)``.  Readers that
+        answer "when is the next evaluation" or "what has this schedule already
+        said" must pass ``config_generation``: a settings change that redefines
+        a window starts a new generation, and the new generation must not
+        inherit the previous one's timing, history or delivery health (§8).
+        """
         if limit <= 0:
             return []
         statement = select(digest_windows)
         if destination is not None:
             statement = statement.where(digest_windows.c.destination == destination)
+        if config_generation is not None:
+            statement = statement.where(digest_windows.c.config_generation == config_generation)
         if statuses is not None:
             statement = statement.where(digest_windows.c.send_status.in_(tuple(statuses)))
         statement = statement.order_by(
