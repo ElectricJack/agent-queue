@@ -422,8 +422,11 @@ one line in the docs.
 These are places where the repo and the task list, or two parts of the repo,
 disagree. Each should become a task or be resolved in the sweep.
 
-1. `setup.sh` still installs `acpx` and references `runtime: acpx` profiles;
-   both were removed from the codebase.
+1. ~~`setup.sh` still installs `acpx` and references `runtime: acpx` profiles;
+   both were removed from the codebase.~~ Resolved 2026-09-09: the acpx block
+   is gone and the undefined `gemini` extra became `llm`. `tests/
+   test_setup_script.py` is the ratchet. The rest of item 1 under §1 (fresh
+   macOS / WSL2 runs recorded under `docs/gates/`) is still open.
 2. `docs/guides/getting-started.md` lists a Discord bot token as a
    prerequisite; the README documents `messaging_platform: none`.
 3. `docs/guides/getting-started.md` references `aq project onboard`, which the
