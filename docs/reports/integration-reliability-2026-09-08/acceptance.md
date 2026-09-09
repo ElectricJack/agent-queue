@@ -245,3 +245,35 @@ typed dependency diagnostic parity. Grand-apex and nimble-cascade are live.
 Workers have the isolated /tmp/aq_goal_test.py invocation for actual DB tests.
 Full parent collection, final reviewed promotion, and capacity proof remain
 incomplete; this report does not equate implementation close with delivery.
+
+
+## Guarded recovery rollout and live native CI
+
+Loaded local commit 08786ee2 with stopped handoff recovery and current-conflict
+resume continuation. Combined isolated PostgreSQL checks passed 139 tests in
+48.83s (workspace handoff, repair, operational controls), log
+/tmp/aq-combined-recovery-tests-v2.log. The corrected assertion snapshots the
+prior-resume deadline after fixture setup; recovery now locks project before
+operation. Recovery module Ruff passed; a pre-existing ASYNC221 in an unrelated
+Git fixture remains in test_integration_repair.py. Restart completed as PID
+150014, with degraded health still reported.
+
+Keen-harbor.6 now has durable receipt receipt-b16da8dd-f85a-5694-898e-b49b17503576
+at exact parent head 3eada329ea1707a77d151b7d728352a2041971a2. Worker recorded
+431 CLI test passes and successfully corrected historical fence5 to live fence8.
+Parent collection has moved on to another conflict; full epic delivery remains
+incomplete. Noble-ridge has three completed children and two running children.
+
+Public root resume still returns invalid_state: former slot ws-hidden-hall is
+now held by amber-zenith. Current cleanup correctly refuses to clear successor
+ownership. New AQ task amber-crest covers exact historical-claim release while
+preserving reused agents/slots. Sound-apex covers first human_required resume
+with a newer conflict; current coverage proves only the active-stage replay.
+
+Matter baseline is pushed as 72867a102a263d07d0a3de2b9c0ec52fe6841040, draft
+PR https://github.com/ElectricJack/matter-engine/pull/6. Dedicated native runner
+aq-matter-windows is registered and executing Actions run34326903928. Checkout
+passed and build/test/package is in progress; no remote success claimed.
+Feature project remains gated. Its two live epics and twelve children retain
+explicit AQ dependency, workspace, review, recursive integration and exact-CI
+acceptance. Hundreds/day throughput remains unmeasured.
