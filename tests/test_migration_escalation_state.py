@@ -8,6 +8,7 @@ import sys
 
 import pytest
 
+from tests.alembic_revisions import previous_revision
 from tests.pg_dsn import create_scratch_database, ensure_worker_postgres_dsn
 
 pytestmark = [pytest.mark.migration, pytest.mark.integration]
@@ -15,6 +16,11 @@ pytestmark = [pytest.mark.migration, pytest.mark.integration]
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 POSTGRES_DSN = ensure_worker_postgres_dsn()
 TABLES = ("escalations", "escalation_messages", "escalation_deliveries", "digest_windows")
+# The revision that creates the four relations, and whatever it currently
+# chains onto — deriving the predecessor keeps the pair correct when a later
+# revision is inserted ahead of it.
+ESCALATION_REVISION = "a00000000009"
+PRECEDING_REVISION = previous_revision(ESCALATION_REVISION)
 
 
 def alembic(dsn: str, *args: str) -> subprocess.CompletedProcess:
@@ -34,23 +40,24 @@ async def connection(dsn: str):
     return await asyncpg.connect(dsn.replace("postgresql+asyncpg://", "postgresql://"))
 
 
-async def test_upgrade_from_a4_creates_relations_and_downgrade_removes_them():
+async def test_escalation_revision_creates_relations_and_downgrade_removes_them():
     if not POSTGRES_DSN:
         pytest.skip("POSTGRES_TEST_DSN is not set")
     dsn = await create_scratch_database("escalationmigration")
-    before = alembic(dsn, "upgrade", "a00000000004")
+    before = alembic(dsn, "upgrade", PRECEDING_REVISION)
     assert before.returncode == 0, before.stderr
 
     conn = await connection(dsn)
     try:
         # The live-metadata baseline already knows about post-baseline tables.
-        # Remove them to reproduce a real existing a4 installation.
+        # Remove them to reproduce a real installation stamped at the revision
+        # immediately before the one that introduces them.
         for table in reversed(TABLES):
             await conn.execute(f'DROP TABLE IF EXISTS "{table}" CASCADE')
     finally:
         await conn.close()
 
-    upgraded = alembic(dsn, "upgrade", "a00000000005")
+    upgraded = alembic(dsn, "upgrade", ESCALATION_REVISION)
     assert upgraded.returncode == 0, upgraded.stderr
     conn = await connection(dsn)
     try:
@@ -81,7 +88,7 @@ async def test_upgrade_from_a4_creates_relations_and_downgrade_removes_them():
     finally:
         await conn.close()
 
-    downgraded = alembic(dsn, "downgrade", "a00000000004")
+    downgraded = alembic(dsn, "downgrade", PRECEDING_REVISION)
     assert downgraded.returncode == 0, downgraded.stderr
     conn = await connection(dsn)
     try:
