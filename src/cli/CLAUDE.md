@@ -46,7 +46,10 @@ styles.py       Theme, status icons, color maps
   Hand-crafted modules are imported in `app.py` *before* `register_auto_commands()` so their
   command names win over any auto-generated command of the same name.
 - **Plugin CLI extensions**: Plugins can add their own `aq <plugin-name> ...` subcommands via
-  the `aq.plugins` entry point group. These are loaded dynamically at startup in `app.py`.
+  the `aq.plugins` entry point group. Command metadata is registered at startup in `app.py`,
+  but saved plugin configuration is fetched only when that plugin group is invoked. The
+  config reader is read-only and bounded; import, help, version, schema, and `aq test`
+  discovery must never initialize or migrate a database.
 
 ## Conventions
 

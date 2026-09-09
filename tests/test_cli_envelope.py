@@ -648,15 +648,11 @@ class TestSchemaCLI:
     def test_schema_json_envelope(self, runner):
         from src.cli.app import cli
 
-        mock = _mock_client(
-            {
-                "get_schema": {
-                    "schema_version": 1,
-                    "enums": {"task_status": ["DEFINED", "READY"]},
-                }
-            }
-        )
-        with patch("src.cli.agent_surface._get_client", return_value=mock):
+        schema = {
+            "schema_version": 1,
+            "enums": {"task_status": ["DEFINED", "READY"]},
+        }
+        with patch("src.surface_schema.get_surface_schema", return_value=schema):
             result = runner.invoke(cli, ["--json", "schema"])
         assert result.exit_code == 0, result.output
         payload = json.loads(result.output)
@@ -666,15 +662,11 @@ class TestSchemaCLI:
     def test_schema_human_mode_renders_table(self, runner):
         from src.cli.app import cli
 
-        mock = _mock_client(
-            {
-                "get_schema": {
-                    "schema_version": 1,
-                    "enums": {"task_status": ["DEFINED", "READY"]},
-                }
-            }
-        )
-        with patch("src.cli.agent_surface._get_client", return_value=mock):
+        schema = {
+            "schema_version": 1,
+            "enums": {"task_status": ["DEFINED", "READY"]},
+        }
+        with patch("src.surface_schema.get_surface_schema", return_value=schema):
             result = runner.invoke(cli, ["schema"])
         assert result.exit_code == 0, result.output
         assert "task_status" in result.output
