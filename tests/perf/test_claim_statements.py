@@ -15,6 +15,16 @@ selected::
 
     aq test tests/perf/test_claim_statements.py -q -p no:xdist -s --aq-all-markers
 
+The one budget that is not a statement count is ``TestClaimLatency``.
+Statements are only half of what a round trip costs: this path opens ten
+pooled *transactions* per claim + release, and a pooled transaction is
+about six statements' worth of wire (``BEGIN``, ``COMMIT``, and a
+``pool_pre_ping`` that is itself three round trips on asyncpg).
+``test_claim_release_round_trip_budget`` pins both counts, and the latency
+budget is derived from them against a wire floor measured on the box the
+test is running on -- see its docstring for why a flat millisecond number
+stopped meaning anything.
+
 Scope note: every fixture below stubs ``orch.bus.emit = AsyncMock()``, so
 event fan-out (whatever a real subscriber -- a playbook trigger, message
 delivery, a Discord notifier -- would do in response to ``task.claimed``
@@ -31,6 +41,7 @@ import time
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from sqlalchemy import event, text
 
 from src.models import (
     Agent,
@@ -403,19 +414,221 @@ class TestClaimStatementBudgets:
         assert c["n"] <= budget, f"{c['n']} statements > budget {budget}"
 
 
+#: One ``task_claim`` happy path plus one ``release_claim``, as
+#: ``test_claim_release_round_trip_budget`` asserts them.  The statement
+#: halves are the same 20 and 9 the budgets above own; the transaction halves
+#: are new here, and they are what a millisecond budget on this path is
+#: actually spending.  A pooled checkout is not free: SQLAlchemy's asyncpg
+#: pre-ping is ``BEGIN``/``;``/``ROLLBACK`` (three round trips, ``asyncpg.py``
+#: ``_async_ping``) and the transaction itself adds ``BEGIN`` and ``COMMIT``,
+#: so one transaction costs about six times what one statement on an
+#: already-held connection costs.
+CLAIM_STATEMENTS = 20
+CLAIM_TRANSACTIONS = 8
+RELEASE_STATEMENTS = 9
+RELEASE_TRANSACTIONS = 2
+ROUND_TRIP_STATEMENTS = CLAIM_STATEMENTS + RELEASE_STATEMENTS
+ROUND_TRIP_TRANSACTIONS = CLAIM_TRANSACTIONS + RELEASE_TRANSACTIONS
+
+#: How much of the claim/release round trip may be work rather than wire,
+#: as a multiple of the floor those two budgets imply.  Measured across
+#: eleven runs on 2026-09-09 (PostgreSQL 18 in Docker over localhost, load
+#: average 7-16): median 2.6-3.2x once the floor is averaged over both
+#: sides of the loop, p99 3.9-8.0x.
+#:
+#: The median is the assertion because it is the statistic that measures
+#: this code -- it held within 0.5x across that whole load range.  A p99
+#: over 50 samples is the second-worst sample, and on a shared box that was
+#: 2x the median and moved by 3x between runs no matter what the claim path
+#: did; its bound is kept loose enough to be a "one iteration in fifty took
+#: seconds" guard rather than a budget.
+#:
+#: Neither number is the regression detector for *count* growth -- an added
+#: statement or transaction is a few percent of the median and no
+#: wall-clock slack can see it.  ``test_claim_release_round_trip_budget``
+#: catches those deterministically.  What these catch is a statement
+#: getting much slower without the count changing: a dropped index, a
+#: planner regression, a correlated subquery added to the §10 work query.
+MEDIAN_SLACK = 4.0
+P99_SLACK = 12.0
+
+
+async def measure_round_trip_shape(db, h, sid) -> dict:
+    """Statements and transactions for one claim + one release.
+
+    Both are counted from the engine: ``before_cursor_execute`` for
+    statements (as ``count_statements`` does) and the connection pool's
+    ``checkout`` for transactions, since every ``begin()`` in this path
+    takes a fresh pooled connection.
+    """
+    counts = {"claim_statements": 0, "claim_transactions": 0}
+    bucket = {"statements": 0, "transactions": 0}
+
+    def _statement(conn, cursor, statement, parameters, context, executemany):
+        bucket["statements"] += 1
+
+    def _checkout(dbapi_connection, record, proxy):
+        bucket["transactions"] += 1
+
+    sync_engine = db._engine.sync_engine
+    event.listen(sync_engine, "before_cursor_execute", _statement)
+    event.listen(sync_engine.pool, "checkout", _checkout)
+    try:
+        res = await h._cmd_task_claim({"next": True})
+        assert res["result"] == "claimed"
+        counts["claim_statements"] = bucket["statements"]
+        counts["claim_transactions"] = bucket["transactions"]
+        bucket["statements"] = bucket["transactions"] = 0
+        await db.release_claim(sid, task_status=TaskStatus.READY, context="perf", now=time.time())
+    finally:
+        event.remove(sync_engine, "before_cursor_execute", _statement)
+        event.remove(sync_engine.pool, "checkout", _checkout)
+    counts["release_statements"] = bucket["statements"]
+    counts["release_transactions"] = bucket["transactions"]
+    return counts
+
+
+async def measure_wire_floor(db, samples: int = 40) -> tuple[float, float]:
+    """``(per transaction, per statement)`` seconds on *this* box's wire.
+
+    A budget written in milliseconds is a budget on the machine as much as
+    on the code -- which is the objection CLAUDE.md raises against every
+    wall-clock budget in this suite, and the reason the flat ``60 ms`` this
+    file used to assert stopped meaning anything once it was read on a
+    different box.  Measuring the floor in the same process, from the same
+    pool, against the same server, is what keeps the assertion below about
+    the claim path rather than about the hardware: the two numbers returned
+    here are the cost of doing *nothing* in the shape the claim path does
+    it.
+
+    Medians, not means: one descheduled sample would otherwise inflate the
+    floor and hide a real regression.  Call it on both sides of the loop it
+    normalises and average -- the floor takes a third of a second and the
+    loop takes five, so a single reading taken in a quiet moment before a
+    busy one is how a normalised budget still turns into a coin flip.
+    """
+    one = text("SELECT 1")
+    async with db._engine.connect() as conn:
+        await conn.execute(one)  # warm the pool and the statement cache
+        held = []
+        for _ in range(samples):
+            started = time.perf_counter()
+            await conn.execute(one)
+            held.append(time.perf_counter() - started)
+    fresh = []
+    for _ in range(samples):
+        started = time.perf_counter()
+        async with db._engine.begin() as conn:
+            await conn.execute(one)
+        fresh.append(time.perf_counter() - started)
+    held.sort()
+    fresh.sort()
+    return fresh[len(fresh) // 2], held[len(held) // 2]
+
+
 class TestClaimLatency:
+    async def test_claim_release_round_trip_budget(self, any_db, tmp_path):
+        """Round trips -- statements *and* transactions -- for claim + release.
+
+        The statement halves duplicate ``TestClaimStatementBudgets`` on
+        purpose: this test's subject is the pair, because the latency budget
+        below is derived from both and a change to either has to move a
+        number here first.
+
+        The transaction halves are the part nothing else in this file
+        guards, and they are the larger cost.  A statement on an
+        already-held connection was 0.54 ms on the box this was measured on
+        (2026-09-09, PostgreSQL 18, load ~7-10); a ``begin()`` around the
+        same statement was 3.38 ms, of which ``pool_pre_ping`` (enabled in
+        ``create_postgres_engine``) is 1.56 ms -- SQLAlchemy's asyncpg
+        pre-ping opens and rolls back a transaction to stay pgbouncer-safe,
+        so it is three round trips, not one.  Ten transactions is therefore
+        ~34 ms of the round trip before any row is read.
+
+        The eight claim transactions, in order:
+        ``get_session_with_profile``, ``touch_session_activity`` and
+        ``get_project`` in the outer admission loop; ``_attempt_claim``'s
+        ``immediate()`` block; ``claim_preparation_is_current``;
+        ``_prepare_and_activate_locked``'s second ``get_project``;
+        ``activate_claim``'s ``immediate()`` block; and
+        ``clear_claim_preparation_metadata``.  Release is two:
+        ``release_claim``'s own block, and the ready listener's post-commit
+        ``get_task``.
+        """
+        await _seed_worker_scale(any_db)
+        sid, _wd = await pool_session(any_db, tmp_path)
+        handler = await build_handler(any_db, tmp_path)
+        handler.config.swarm.fresh_context_per_task = False
+        h = scoped(handler, sid)
+
+        counts = await measure_round_trip_shape(any_db, h, sid)
+        print(
+            f"\nclaim+release round trips: "
+            f"claim {counts['claim_statements']} statements "
+            f"(budget {CLAIM_STATEMENTS}) / {counts['claim_transactions']} transactions "
+            f"(budget {CLAIM_TRANSACTIONS}), "
+            f"release {counts['release_statements']} statements "
+            f"(budget {RELEASE_STATEMENTS}) / {counts['release_transactions']} transactions "
+            f"(budget {RELEASE_TRANSACTIONS})"
+        )
+        for label, measured, budget in (
+            ("claim statements", counts["claim_statements"], CLAIM_STATEMENTS),
+            ("claim transactions", counts["claim_transactions"], CLAIM_TRANSACTIONS),
+            ("release statements", counts["release_statements"], RELEASE_STATEMENTS),
+            ("release transactions", counts["release_transactions"], RELEASE_TRANSACTIONS),
+        ):
+            assert measured <= budget, f"{label}: {measured} > budget {budget}"
+
     @pytest.mark.perf
-    async def test_claim_release_p99_latency(self, perf_strict, any_db, tmp_path):
-        """Claim/release p99 over 50 iterations at 5,000 tasks (PostgreSQL).
+    async def test_claim_release_latency_against_the_wire_floor(
+        self, perf_strict, any_db, tmp_path
+    ):
+        """Claim/release latency over 50 iterations at 5,000 tasks (PostgreSQL).
 
         The spec's ``<= 50 ms`` (§15.2, ``task_claim --next, DB portion``
         row) is the claim transaction alone; this measures claim + release
-        end-to-end through the handler.  Before the task-11 trim that was
-        82-127 ms across runs (38 + 17 statements); after it the same loop
-        runs well inside the ``<= 60 ms`` budget below.  ``xdist`` load
-        makes wall-clock latency flaky under parallel test execution, so
-        this only runs with ``AQ_PERF_STRICT=1`` set (the ``perf_strict``
-        fixture, shared with the layout budgets).
+        end-to-end through the handler.
+
+        **The flat ``<= 60 ms`` this used to assert is gone**, and so is
+        asserting on the p99.  The 60 ms was set against 43.65 ms measured
+        in b2769aa0, and the test then went dark: the ``perf`` marker hides
+        it from every default run, and once ``swarm.fresh_context_per_task``
+        defaulted to true its cap of one claim per session made every
+        iteration after the first ``session_exhausted``, so between that
+        default and 58b9d944 the loop was not measuring anything at all.
+        Run again it missed by 2x -- and the reason is not a regression in
+        the claim path.  On the box it was re-measured on (2026-09-09,
+        PostgreSQL 18 in Docker over localhost, load average 7-14) one
+        statement on a held connection costs 0.46-0.54 ms and one pooled
+        transaction costs 2.5-3.4 ms, so the ``ROUND_TRIP_TRANSACTIONS``
+        transactions and ``ROUND_TRIP_STATEMENTS`` statements that
+        ``test_claim_release_round_trip_budget`` pins are a 34-44 ms wire
+        floor on their own: 60-73% of a 60 ms budget spent before a row is
+        read.  A number of milliseconds cannot separate that from a
+        regression, which is CLAUDE.md's standing objection to every
+        wall-clock budget in this suite.
+
+        So the budget is derived rather than declared.  ``measure_wire_floor``
+        measures what a transaction and a statement cost on *this* box, on
+        both sides of the loop; the floor is computed from the two budget
+        constants rather than from what the path actually issued -- an added
+        transaction has to raise the measurement without raising the floor
+        or this would absorb it silently -- and the median is allowed
+        ``MEDIAN_SLACK`` times that, the p99 ``P99_SLACK`` times.
+
+        Measured across eleven runs here, load average 7-16: floor
+        31-50 ms, median 79-153 ms, p99 118-284 ms.  In absolute
+        milliseconds that is a 2x spread with the claim path unchanged; as a
+        multiple of the floor the median is 2.6-3.2x throughout, which is
+        the whole point.  Of the ~50 ms above the floor at the median,
+        ~19 ms is the §10 work query alone: it walks the 2,499-row frontier
+        and top-N sorts it because the ``ORDER BY`` leads with the affinity
+        ``CASE``, and it costs ~30 ms rather than ~19 ms once the planner
+        has real statistics for the seeded rows.
+
+        Still ``perf_strict``-gated: normalising by the wire floor removes
+        the machine, not the neighbours, and ``xdist`` makes any wall-clock
+        latency flaky under parallel execution.
         """
         await _seed_worker_scale(any_db)
         sid, _wd = await pool_session(any_db, tmp_path)
@@ -429,6 +642,7 @@ class TestClaimLatency:
         # the loop, not the budgets asserted above.
         handler.config.swarm.fresh_context_per_task = False
 
+        before = await measure_wire_floor(any_db)
         times = []
         for _ in range(50):
             started = time.perf_counter()
@@ -438,10 +652,34 @@ class TestClaimLatency:
                 sid, task_status=TaskStatus.READY, context="perf", now=time.time()
             )
             times.append(time.perf_counter() - started)
-        times.sort()
-        p99 = times[48]
-        budget_s = 0.060
-        print(
-            f"\nclaim/release p99 over 50 iters: {p99 * 1000:.2f}ms (budget {budget_s * 1000:.0f}ms)"
+        after = await measure_wire_floor(any_db)
+
+        transaction_s = (before[0] + after[0]) / 2
+        statement_s = (before[1] + after[1]) / 2
+        # ``transaction_s`` already carries one statement, so only the
+        # statements beyond one per transaction are charged again.
+        floor_s = (
+            ROUND_TRIP_TRANSACTIONS * transaction_s
+            + (ROUND_TRIP_STATEMENTS - ROUND_TRIP_TRANSACTIONS) * statement_s
         )
-        assert p99 < budget_s, f"p99 {p99 * 1000:.2f}ms >= {budget_s * 1000:.0f}ms"
+        times.sort()
+        median, p99 = times[25], times[48]
+        print(
+            f"\nclaim/release over 50 iters: median {median * 1000:.2f}ms "
+            f"({median / floor_s:.1f}x, budget {MEDIAN_SLACK}x), "
+            f"p99 {p99 * 1000:.2f}ms ({p99 / floor_s:.1f}x, budget {P99_SLACK}x); "
+            f"wire floor {floor_s * 1000:.2f}ms for {ROUND_TRIP_TRANSACTIONS} "
+            f"transactions and {ROUND_TRIP_STATEMENTS} statements "
+            f"({transaction_s * 1000:.2f}ms/transaction, "
+            f"{statement_s * 1000:.2f}ms/statement on this box)"
+        )
+        assert median < MEDIAN_SLACK * floor_s, (
+            f"median {median * 1000:.2f}ms is {median / floor_s:.1f}x the "
+            f"{floor_s * 1000:.2f}ms wire floor for {ROUND_TRIP_TRANSACTIONS} "
+            f"transactions and {ROUND_TRIP_STATEMENTS} statements "
+            f"(budget {MEDIAN_SLACK}x)"
+        )
+        assert p99 < P99_SLACK * floor_s, (
+            f"p99 {p99 * 1000:.2f}ms is {p99 / floor_s:.1f}x the "
+            f"{floor_s * 1000:.2f}ms wire floor (budget {P99_SLACK}x)"
+        )
