@@ -20,7 +20,7 @@ def alembic(dsn: str, *args: str) -> subprocess.CompletedProcess:
     return subprocess.run(
         [sys.executable, "-m", "alembic", *args],
         cwd=ROOT,
-        env=dict(os.environ, AGENT_QUEUE_DB_URL=dsn),
+        env=dict(os.environ, AGENT_QUEUE_DB_URL=dsn.replace("postgresql://", "postgresql+asyncpg://", 1)),
         capture_output=True,
         text=True,
         check=False,

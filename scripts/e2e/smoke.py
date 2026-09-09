@@ -479,7 +479,6 @@ def ensure_project(project_id: str, workspaces: list[str]) -> None:
             "project", "create",
             "--name", project_id,
             "--default-profile-id", POOL_PROFILE,
-            "--no-auto-create-channels",
         )
     have = {
         w["workspace_path"]
