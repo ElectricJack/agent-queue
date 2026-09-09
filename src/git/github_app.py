@@ -325,12 +325,14 @@ class GitHubAppClient:
         if payload.get("number") != number or payload.get("state") != "closed":
             raise GitHubAppError("conflict_or_invalid", "GitHub PR close was not confirmed")
 
-    async def lookup_audit_pr(self, *, idempotency_key: str):
+    async def lookup_audit_pr(self, *, idempotency_key: str, branch: str | None = None):
         """Reconcile a candidate audit PR by its stable server-owned marker."""
         marker = self._audit_marker(idempotency_key)
-        pulls = await self.paged_list(
-            f"/repositories/{self.repository.repository_id}/pulls?state=all&per_page=100"
-        )
+        path = f"/repositories/{self.repository.repository_id}/pulls?state=all&per_page=100"
+        if branch is not None:
+            owner = self.repository.full_name.split("/", 1)[0]
+            path += "&head=" + quote(f"{owner}:{branch}", safe="")
+        pulls = await self.paged_list(path)
         matches = [pull for pull in pulls if marker in str(pull.get("body") or "")]
         if not matches:
             return None
@@ -369,6 +371,7 @@ class GitHubAppClient:
         marker = self._audit_marker(idempotency_key)
         pulls = await self.paged_list(
             f"/repositories/{self.repository.repository_id}/pulls?state=open&per_page=100"
+            + "&head=" + quote(f"{self.repository.full_name.split('/', 1)[0]}:{branch}", safe="")
         )
         matches = [
             pull

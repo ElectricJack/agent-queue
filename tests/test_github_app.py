@@ -254,7 +254,7 @@ async def test_audit_pr_transport_reconciles_by_marker_and_creates_exact_bound_p
     client._token = "installation-secret"
     client._token_expires_at = 1_800_001_000.0
 
-    found = await client.lookup_audit_pr(idempotency_key=key)
+    found = await client.lookup_audit_pr(idempotency_key=key, branch="aq/integration/batch")
     created = await client.create_audit_pr(
         repository_id="repo",
         branch="aq/integration/batch",
@@ -268,7 +268,7 @@ async def test_audit_pr_transport_reconciles_by_marker_and_creates_exact_bound_p
 
     assert found == created
     assert found.idempotency_key == key
-    assert transport.requests[0][1].endswith("/repositories/303/pulls?state=all&per_page=100")
+    assert transport.requests[0][1].endswith("/repositories/303/pulls?state=all&per_page=100&head=acme%3Aaq%2Fintegration%2Fbatch")
     assert transport.requests[2][3] == {
         "title": "Integration train batch",
         "head": "aq/integration/batch",

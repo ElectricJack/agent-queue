@@ -125,7 +125,9 @@ class CandidateResolutionInput(BaseModel):
 
 
 class AuditForgeProvider(Protocol):
-    async def lookup_audit_pr(self, *, idempotency_key: str) -> AuditPullRequest | None: ...
+    async def lookup_audit_pr(
+        self, *, idempotency_key: str, branch: str
+    ) -> AuditPullRequest | None: ...
 
     async def create_audit_pr(
         self,
@@ -1631,7 +1633,9 @@ class CandidateService:
                 )
                 .values(state="pr_reserved", updated_at=self.clock())
             )
-        pr = await self.forge_provider.lookup_audit_pr(idempotency_key=publication_key)
+        pr = await self.forge_provider.lookup_audit_pr(
+            idempotency_key=publication_key, branch=branch
+        )
         if pr is None:
             pr = await self.forge_provider.create_audit_pr(
                 repository_id=batch["repository_id"],

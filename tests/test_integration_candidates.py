@@ -368,7 +368,7 @@ class _AuditForge:
     def calls(self):
         return self.backing["calls"]
 
-    async def lookup_audit_pr(self, *, idempotency_key):
+    async def lookup_audit_pr(self, *, idempotency_key, branch):
         result = self.backing["result"]
         if result is not None and result.idempotency_key == idempotency_key:
             return result
