@@ -783,6 +783,7 @@ _CANONICAL_PAYLOADS["pool.enabled_changed"] = {
     "profile_id": "worker",
     "enabled": False,
 }
+# This switch event is also the wake-up contract for already-parked pool claims.
 # Global worker pools §6.3 / §4 — emitted by ``_emit_placement_starved`` and
 # ``_announce_bounds_rescoped``.  No ``project_id``: a pool is a fleet now, and
 # both events are about the profile, with projects appearing only as the
