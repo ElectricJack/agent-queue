@@ -277,3 +277,28 @@ passed and build/test/package is in progress; no remote success claimed.
 Feature project remains gated. Its two live epics and twelve children retain
 explicit AQ dependency, workspace, review, recursive integration and exact-CI
 acceptance. Hundreds/day throughput remains unmeasured.
+
+
+## Native CI success and real rollout blocker
+
+Matter Actions run34326903928 completed successfully on exact baseline
+72867a102a263d07d0a3de2b9c0ec52fe6841040: 98/98 CTest cases and native package
+validation passed. Complete remote log: /tmp/aq-matter-remote-ci.log.
+Policy is recorded in matter-integration-policy.json and configured at generation3;
+observe then train enable succeeded at generations4 and5. Project is ACTIVE.
+Both feature epics have explicit manual pauses withholding children while
+sharp-nexus delivers the baseline through AQ review and the exact-CI train.
+
+Live task explain now exposes repository_not_designated for sharp-nexus: it was
+created while disabled and has no repository binding. Clear-quest tracks guarded
+binding and origin materialization for this rollout shape, preserving the existing
+graph. Bootstrap has not started and native success alone is not delivery.
+
+Applied grand-apex public resume regression as8be1903a (1 passed) and amber-zenith
+typed dependency diagnostics as43798453 (118 passed in44.06s). Loaded through
+04def40b; restart PID177684 completed with degraded health warning. Live
+keen-harbor.12 explain no longer falsely reports its released PAUSED parent as
+an unmet dependency. Amber-crest is now assigned and working on reused-slot
+historical-claim recovery. Sound-apex remains queued for first-resume continuation.
+Neither original epic nor all local AQ fixes have reached final reviewed main
+promotion; hundreds/day throughput remains unverified.
