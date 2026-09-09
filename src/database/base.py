@@ -588,6 +588,9 @@ class DatabaseBackend(Protocol):
     async def record_integration_resolution_push_on(
         self, conn, intent_id: str, evidence: dict
     ) -> dict: ...
+    async def mark_integration_resolution_push_started_on(
+        self, conn, intent_id: str, *, started_at: float
+    ) -> dict: ...
     async def mark_integration_promotion_prepared(
         self, intent_id: str, *, prepared_sha: str, recovery_ref: str
     ) -> dict: ...

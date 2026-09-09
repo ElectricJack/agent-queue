@@ -1936,6 +1936,11 @@ integration_promotion_intents = Table(
     Column("resolution_workspace_id", Text, nullable=True),
     Column("resolution_fence_owner_id", Text, nullable=True),
     Column("resolution_fence_token", Integer, nullable=True),
+    # Committed immediately before the resolution's only external push.  NULL
+    # is therefore durable proof of a never-started write only for rows made
+    # after the start fence was introduced; legacy reservations use the 0.0
+    # unknown-start sentinel and remain deliberately ambiguous.
+    Column("resolution_push_started_at", Float, nullable=True),
     Column("resolution_push_evidence", JSON, nullable=True),
     Column("remote_evidence", JSON, nullable=True),
     Column("committed_at", Float, nullable=True),
@@ -1995,7 +2000,8 @@ integration_promotion_intents = Table(
         "resolution_stage_ordinal IS NULL AND resolution_task_id IS NULL AND "
         "resolution_session_id IS NULL AND resolution_session_instance_token IS NULL AND "
         "resolution_workspace_id IS NULL AND resolution_fence_owner_id IS NULL AND "
-        "resolution_fence_token IS NULL AND resolution_push_evidence IS NULL) OR "
+        "resolution_fence_token IS NULL AND resolution_push_started_at IS NULL AND "
+        "resolution_push_evidence IS NULL) OR "
         "(resolution_head_sha IS NOT NULL AND resolution_tree_sha IS NOT NULL AND "
         "resolution_commit_shas IS NOT NULL AND resolution_operation_id IS NOT NULL AND "
         "resolution_stage_ordinal IS NOT NULL AND resolution_task_id IS NOT NULL AND "
