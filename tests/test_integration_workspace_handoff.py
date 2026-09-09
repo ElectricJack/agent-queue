@@ -9,7 +9,14 @@ from unittest.mock import AsyncMock
 import pytest
 from sqlalchemy import insert, select, update
 
-from src.database.tables import integration_branch_owners, sessions, task_integration_checkpoints, workspaces
+from src.database.tables import (
+    agents,
+    integration_branch_owners,
+    sessions,
+    task_integration_checkpoints,
+    tasks,
+    workspaces,
+)
 from src.git.manager import GitError
 from src.integration.models import BranchKey, Fence
 from src.integration.ownership import BranchOwnership
@@ -1121,3 +1128,154 @@ async def test_full_root_ref_handoff_proves_and_detaches_short_git_branch(
                else orchestrator.aconfirm_integration_owner_handoff)
     assert await confirm(owner)
     assert 'detach' in events
+
+
+async def test_stopped_pool_writer_handoff_releases_its_exact_active_claim(
+    orchestrator_factory, tmp_path, monkeypatch
+):
+    """The stop-path handoff cannot leave a dead pool claim behind."""
+    orchestrator = await _pool_orchestrator(orchestrator_factory, tmp_path)
+    async with orchestrator.db.immediate() as conn:
+        await conn.execute(
+            update(tasks)
+            .where(tasks.c.id == "task")
+            .values(
+                status=TaskStatus.IN_PROGRESS.value,
+                assigned_agent_id="agent",
+                claim_epoch=7,
+            )
+        )
+        await conn.execute(
+            update(sessions)
+            .where(sessions.c.id == "session")
+            .values(
+                state="stopped",
+                desired_state="stopped",
+                claim_phase="active",
+                last_claim_epoch=7,
+            )
+        )
+    events: list[str] = []
+    monkeypatch.setattr(orchestrator.session_providers, "create", lambda *_: _provider(events))
+    current_branch, run = _clean_git(events)
+    orchestrator.git.aget_current_branch = AsyncMock(side_effect=current_branch)
+    orchestrator.git._arun_unlocked = AsyncMock(side_effect=run)
+
+    assert await orchestrator.aconfirm_integration_owner_handoff(_owner())
+    task = await orchestrator.db.get_task("task")
+    session = await orchestrator.db.get_session("session")
+    workspace = await orchestrator.db.get_workspace("slot")
+    agent = await orchestrator.db.get_agent("agent")
+    assert task.status is TaskStatus.READY
+    assert task.claim_epoch == 7
+    assert (session.task_id, session.claim_phase, session.last_claim_epoch) == (None, None, 7)
+    assert session.claims == 0
+    assert workspace.locked_by_task_id is None and workspace.locked_by_agent_id is None
+    assert agent.state is AgentState.IDLE and agent.current_task_id is None
+
+
+async def _seed_damaged_stopped_pool_handoff(orchestrator):
+    """Model the historical crash after detach proof but before claim release."""
+    async with orchestrator.db.immediate() as conn:
+        await conn.execute(
+            update(tasks)
+            .where(tasks.c.id == "task")
+            .values(status=TaskStatus.BLOCKED.value, assigned_agent_id=None, claim_epoch=7)
+        )
+        await conn.execute(
+            update(sessions)
+            .where(sessions.c.id == "session")
+            .values(
+                lifecycle="pool",
+                state="stopped",
+                desired_state="stopped",
+                claim_phase="active",
+                last_claim_epoch=7,
+            )
+        )
+        await conn.execute(
+            update(workspaces)
+            .where(workspaces.c.id == "slot")
+            .values(locked_by_task_id=None, locked_by_agent_id=None)
+        )
+        await conn.execute(
+            update(agents)
+            .where(agents.c.id == "agent")
+            .values(state=AgentState.IDLE.value, current_task_id=None)
+        )
+        await conn.execute(
+            update(integration_branch_owners)
+            .where(integration_branch_owners.c.id == "owner")
+            .values(
+                owner_id="operation",
+                owner_role="collector",
+                fence_token=5,
+                handoff_state="reserved",
+                session_id=None,
+                workspace_id=None,
+                confirmed_workspace_id="slot",
+            )
+        )
+
+
+async def test_recovery_releases_only_the_durably_proven_stopped_pool_claim(
+    orchestrator_factory, tmp_path
+):
+    """A transferred reservation retains enough proof to repair the old claim."""
+    from src.orchestrator.workspace_attachments import recover_stopped_integration_pool_claim
+
+    orchestrator = await _pool_orchestrator(orchestrator_factory, tmp_path)
+    await _seed_damaged_stopped_pool_handoff(orchestrator)
+
+    assert await recover_stopped_integration_pool_claim(orchestrator.db, "task")
+    task = await orchestrator.db.get_task("task")
+    session = await orchestrator.db.get_session("session")
+    assert task.status is TaskStatus.READY
+    assert task.claim_epoch == 7
+    assert (session.task_id, session.claim_phase, session.last_claim_epoch) == (None, None, 7)
+
+
+@pytest.mark.parametrize("reuse", ["active_writer", "slot", "agent"])
+async def test_recovery_refuses_reused_or_active_handoff_resources(
+    orchestrator_factory, tmp_path, reuse
+):
+    """The replay path must not clean up any successor assignment."""
+    from src.orchestrator.workspace_attachments import recover_stopped_integration_pool_claim
+
+    orchestrator = await _pool_orchestrator(orchestrator_factory, tmp_path)
+    await _seed_damaged_stopped_pool_handoff(orchestrator)
+    await orchestrator.db.create_task(
+        Task(
+            id="replacement",
+            project_id="p",
+            repo_id="repo",
+            branch_name="aq/replacement",
+            title="Replacement",
+            description="",
+        )
+    )
+    async with orchestrator.db.immediate() as conn:
+        if reuse == "active_writer":
+            await conn.execute(
+                update(integration_branch_owners)
+                .where(integration_branch_owners.c.id == "owner")
+                .values(handoff_state="attached", session_id="successor", workspace_id="other")
+            )
+        elif reuse == "slot":
+            await conn.execute(
+                update(workspaces)
+                .where(workspaces.c.id == "slot")
+                .values(locked_by_task_id="replacement", locked_by_agent_id="replacement-agent")
+            )
+        else:
+            await conn.execute(
+                update(agents)
+                .where(agents.c.id == "agent")
+                .values(state=AgentState.BUSY.value, current_task_id="replacement")
+            )
+
+    assert not await recover_stopped_integration_pool_claim(orchestrator.db, "task")
+    task = await orchestrator.db.get_task("task")
+    session = await orchestrator.db.get_session("session")
+    assert task.status is TaskStatus.BLOCKED
+    assert (session.task_id, session.claim_phase) == ("task", "active")
