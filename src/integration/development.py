@@ -587,7 +587,7 @@ class DevelopmentIntegration:
             evidence, passed = await self.validate(store, policy)
             evidence["head_sha"] = head
             if await self.run_git(store, "rev-parse", "HEAD") != head or await self.run_git(
-                store, "status", "--porcelain"
+                store, "status", "--porcelain", "--untracked-files=no"
             ):
                 raise ValueError("validation modified the candidate; refusing publication")
             # Retain the candidate remotely even if validation fails; no worker owns this ref.

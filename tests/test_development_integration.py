@@ -444,3 +444,11 @@ def test_development_prime_omits_strict_review_protocol():
     assert "no squash, PR, hosted CI, or parent verifier is required" in body
     assert "squash its" not in body
     assert "Name that PR" not in body
+
+
+async def test_untracked_test_output_does_not_block_publication(setup):
+    _db, service, _source, _remote, _repo = setup
+    await feature(setup, "artifact")
+    await service.configure("p", {"commands": ["mkdir -p test-cache; echo generated > test-cache/output"]},
+                            reason="test artifacts are not candidate source", operator_id="operator")
+    assert (await service.sweep("p"))["outcome"] == "delivered"

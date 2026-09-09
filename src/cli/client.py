@@ -93,6 +93,9 @@ _COMMAND_TIMEOUTS: dict[str, float] = {
     # this) — see src/cli/agent_surface.py's task_claim/task_close commands.
     "task_claim": 180.0,
     "task_close": 180.0,
+    "integration_development_sweep": 1800.0,
+    "integration_flush": 1800.0,
+    "integration_adopt": 180.0,
 }
 
 

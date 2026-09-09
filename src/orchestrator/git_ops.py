@@ -886,6 +886,7 @@ class GitOpsMixin:
                 return (ctx.pr_url, True)
             try:
                 from src.integration.hierarchy import resolve_workspace_checkpoint
+                from src.database.queries.hierarchy_queries import HierarchyError
                 repo = await self.db.get_repo(ctx.task.repo_id or project.integration_repository_id or "")
                 if repo is None:
                     raise ValueError("development task has no repository")
@@ -898,7 +899,7 @@ class GitOpsMixin:
                 if failure:
                     raise ValueError(failure[0])
                 return (ctx.pr_url, True)
-            except (ValueError, RuntimeError) as exc:
+            except (ValueError, RuntimeError, HierarchyError) as exc:
                 self._aggregate_verifier_retry(ctx, str(exc))
                 return (ctx.pr_url, False)
 
