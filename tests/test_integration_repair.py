@@ -246,6 +246,19 @@ async def _add_parent_evidence(
         )
 
 
+async def _repair_stage(db, operation_id: str, ordinal: int) -> dict:
+    async with db._engine.connect() as conn:
+        row = (
+            await conn.execute(
+                select(integration_repair_stages).where(
+                    integration_repair_stages.c.operation_id == operation_id,
+                    integration_repair_stages.c.ordinal == ordinal,
+                )
+            )
+        ).mappings().one()
+    return dict(row)
+
+
 async def test_start_activates_reserved_parent_operation_once(db):
     """Replaying start must not reset the stage clock or immutable trigger binding."""
     from src.integration.repair import RepairService
@@ -331,6 +344,327 @@ async def test_start_accepts_only_exact_persisted_conflict_trigger(db, trigger_i
         ))).mappings().one()
     assert stage["trigger_id"] == "conflict-intent"
     assert stage["started_at"] == 100.0
+
+
+async def _seed_repeated_parent_conflict(db, *, deadline_at: float = 300.0):
+    """Leave a completed debug delegate detached after its first repair."""
+    await _seed_parent_operation(db)
+    await db.create_task(
+        Task(
+            id="first-child",
+            project_id="p",
+            parent_task_id="parent",
+            title="First child",
+            description="",
+            status=TaskStatus.COMPLETED,
+            repo_id="repo",
+            branch_name="aq/first-child",
+        )
+    )
+    await db.create_task(
+        Task(
+            id="second-child",
+            project_id="p",
+            parent_task_id="parent",
+            title="Second child",
+            description="",
+            status=TaskStatus.COMPLETED,
+            repo_id="repo",
+            branch_name="aq/second-child",
+        )
+    )
+    await db.create_task(
+        Task(
+            id="repair-operation-1",
+            project_id="p",
+            title="Repair integration stage 1",
+            description="old repair dossier",
+            status=TaskStatus.COMPLETED,
+            repo_id="repo",
+            branch_name="aq/parent",
+            profile_id="debugger",
+            intelligence_class="debug-high",
+            created_by_kind="integration_repair",
+            created_by_id="operation",
+        )
+    )
+    first_head = "b" * 40
+    current_head = "d" * 40
+    async with db.immediate() as conn:
+        await conn.execute(
+            update(integration_repair_operations)
+            .where(integration_repair_operations.c.id == "operation")
+            .values(active_stage=1, state="escalated", updated_at=110.0)
+        )
+        await conn.execute(
+            insert(integration_repair_stages).values(
+                operation_id="operation",
+                ordinal=0,
+                policy=_boundary().repair.model_dump(mode="json"),
+                starting_sha=STARTING_SHA,
+                trigger_id="failed-check",
+                current_subject={"kind": "parent", "generation": 3, "head_sha": STARTING_SHA},
+                deadline_event_id="repair-deadline-operation-0",
+                started_at=100.0,
+                deadline_at=130.0,
+                attempts=2,
+                dossier={"budget": {"attempts": 2}},
+                state="failed",
+                completed_at=110.0,
+            )
+        )
+        await conn.execute(
+            insert(integration_repair_stages).values(
+                operation_id="operation",
+                ordinal=1,
+                policy=_boundary().repair.model_dump(mode="json"),
+                repair_task_id="repair-operation-1",
+                writer_kind="repair_delegate",
+                starting_sha=first_head,
+                trigger_id="stage-exhausted:operation:0",
+                current_subject={"kind": "parent", "generation": 3, "head_sha": first_head},
+                deadline_event_id="repair-deadline-operation-1",
+                started_at=110.0,
+                deadline_at=deadline_at,
+                attempts=1,
+                dossier={
+                    "operation_id": "operation",
+                    "starting_sha": first_head,
+                    "trigger_id": "stage-exhausted:operation:0",
+                    "branch_sha": first_head,
+                    "budget": {
+                        "ordinal": 1,
+                        "started_at": 110.0,
+                        "deadline_at": deadline_at,
+                        "attempt_limit": 1,
+                        "attempts": 1,
+                    },
+                },
+                state="active",
+            )
+        )
+        await conn.execute(
+            insert(task_delivery_receipts).values(
+                id="first-repair-receipt",
+                domain_key="first-repair-domain",
+                source_task_id="first-child",
+                target_task_id="parent",
+                repository_id="repo",
+                target_branch="aq/parent",
+                reviewed_head_sha="c" * 40,
+                before_sha=STARTING_SHA,
+                after_sha=first_head,
+                disposition="code",
+                parent_operation_id="operation",
+                parent_episode_id="episode",
+                created_at=120.0,
+            )
+        )
+        await conn.execute(
+            insert(integration_promotion_intents).values(
+                id="second-conflict",
+                domain_key="second-conflict-domain",
+                operation_key="operation",
+                project_id="p",
+                receipt_id="second-conflict-receipt",
+                source_task_id="second-child",
+                target_task_id="parent",
+                source_head="e" * 40,
+                source_base=first_head,
+                repository_id="repo",
+                target_branch="aq/parent",
+                expected_target=current_head,
+                fence_owner_id="operation",
+                fence_token=7,
+                state="conflict",
+                conflict_diagnostics={"paths": ["shared.py"]},
+                created_at=140.0,
+                updated_at=140.0,
+            )
+        )
+        await conn.execute(
+            insert(integration_branch_owners).values(
+                id="continued-owner",
+                repository_id="repo",
+                ref="aq/parent",
+                owner_id="operation",
+                owner_role="collector",
+                fence_token=7,
+                handoff_state="reserved",
+                created_at=1.0,
+                updated_at=140.0,
+            )
+        )
+        await conn.execute(
+            update(task_integration_checkpoints)
+            .where(task_integration_checkpoints.c.task_id == "parent")
+            .values(state="awaiting_children")
+        )
+    return current_head
+
+
+async def test_second_parent_conflict_reuses_current_stage_without_resetting_budget(db):
+    """A later exact conflict resumes the detached debugger under its frozen budget."""
+    from src.integration.repair import RepairService
+
+    current_head = await _seed_repeated_parent_conflict(db)
+    service = RepairService(db)
+    before = await _repair_stage(db, "operation", 1)
+
+    continued = await service.start("operation", current_head, "operation", now=150.0)
+    replay = await service.start("operation", current_head, "operation", now=151.0)
+
+    assert continued["outcome"] == replay["outcome"] == "already_started"
+    assert continued["continued"] is True
+    assert "continued" not in replay
+    assert continued["stage"] == replay["stage"] == 1
+    task = await db.get_task("repair-operation-1")
+    assert task.status is TaskStatus.PAUSED
+    assert "second-conflict" in task.description
+    after = await _repair_stage(db, "operation", 1)
+    for field in ("started_at", "deadline_at", "attempts", "policy", "deadline_event_id"):
+        assert after[field] == before[field]
+    assert after["starting_sha"] == current_head
+    assert after["trigger_id"] == "second-conflict"
+    assert after["current_subject"] == {
+        "kind": "parent",
+        "generation": 3,
+        "head_sha": current_head,
+    }
+    assert after["dossier"]["budget"] == before["dossier"]["budget"]
+    assert after["dossier"]["receipts"][0]["id"] == "first-repair-receipt"
+    assert after["dossier"]["current_conflict"] == {
+        "intent_id": "second-conflict",
+        "source_task_id": "second-child",
+        "source_head": "e" * 40,
+        "source_base": "b" * 40,
+        "expected_target": current_head,
+        "diagnostics": {"paths": ["shared.py"]},
+    }
+
+    # This is the literal stage pinned in the already-running playbook artifact.
+    dispatched = await service.dispatch("operation", 0)
+    assert dispatched["outcome"] == "dispatched"
+    assert dispatched["stage"] == 1
+    assert dispatched["repair_task_id"] == "repair-operation-1"
+    assert (await db.get_task("repair-operation-1")).status is TaskStatus.READY
+    owner = await BranchOwnership(db).get_owner(
+        BranchKey(repository_id="repo", branch="aq/parent")
+    )
+    assert owner["owner_id"] == "repair-operation-1"
+    assert owner["owner_role"] == "repair"
+    assert owner["fence_token"] == 8
+
+    # Replayed events from the first conflict cannot reopen or retake the writer.
+    stale = await service.start(
+        "operation", "b" * 40, "stage-exhausted:operation:0", now=152.0
+    )
+    assert stale["outcome"] == "stale"
+    assert (await db.get_task("repair-operation-1")).status is TaskStatus.READY
+
+
+@pytest.mark.parametrize(
+    "blocker",
+    ["multiple", "expired", "live_session", "workspace", "collector_owner", "fence"],
+)
+async def test_parent_repair_continuation_requires_one_detached_current_conflict(db, blocker):
+    """Ambiguous or still-attached completion evidence never reopens the delegate."""
+    from src.integration.repair import RepairService
+
+    current_head = await _seed_repeated_parent_conflict(
+        db, deadline_at=149.0 if blocker == "expired" else 300.0
+    )
+    async with db.immediate() as conn:
+        if blocker == "multiple":
+            await conn.execute(
+                insert(integration_promotion_intents).values(
+                    id="other-conflict",
+                    domain_key="other-conflict-domain",
+                    operation_key="operation",
+                    project_id="p",
+                    receipt_id="other-conflict-receipt",
+                    source_task_id="first-child",
+                    target_task_id="parent",
+                    source_head="f" * 40,
+                    source_base="b" * 40,
+                    repository_id="repo",
+                    target_branch="aq/parent",
+                    expected_target=current_head,
+                    fence_owner_id="operation",
+                    fence_token=7,
+                    state="conflict",
+                    created_at=140.0,
+                    updated_at=140.0,
+                )
+            )
+        elif blocker == "workspace":
+            await conn.execute(
+                insert(workspaces).values(
+                    id="leftover-workspace",
+                    project_id="p",
+                    workspace_path="/tmp/leftover-repair",
+                    source_type="link",
+                    locked_by_task_id="repair-operation-1",
+                    enabled=True,
+                    created_at=140.0,
+                )
+            )
+        elif blocker in {"collector_owner", "fence"}:
+            values = (
+                {"owner_id": "replacement-collector"}
+                if blocker == "collector_owner"
+                else {"fence_token": 8}
+            )
+            await conn.execute(
+                update(integration_branch_owners)
+                .where(integration_branch_owners.c.id == "continued-owner")
+                .values(**values)
+            )
+    if blocker == "live_session":
+        await db.create_session(
+            SessionRecord(
+                id="leftover-session",
+                task_id="repair-operation-1",
+                project_id="p",
+                profile_id="debugger",
+                harness="fake",
+                provider="fake",
+                name="leftover-repair",
+                lifecycle="task",
+                state="running",
+                work_dir="/tmp/leftover-repair",
+                epoch="epoch",
+                instance_token="old-instance",
+                started_at=140.0,
+            )
+        )
+
+    service = RepairService(db)
+    result = await service.start("operation", current_head, "operation", now=150.0)
+
+    assert result["outcome"] == "stale"
+    assert (await db.get_task("repair-operation-1")).status is TaskStatus.COMPLETED
+    stage = await _repair_stage(db, "operation", 1)
+    assert stage["trigger_id"] == "stage-exhausted:operation:0"
+    assert stage["starting_sha"] == "b" * 40
+    if blocker == "expired":
+        expired = await service.expire("operation", 1, now=150.0)
+        assert expired == {
+            "outcome": "expired",
+            "action": "block_for_human",
+            "operation_id": "operation",
+            "stage": 1,
+        }
+        assert (await db.get_integration_operation("operation"))["state"] == "human_required"
+        async with db._engine.connect() as conn:
+            event = (
+                await conn.execute(
+                    select(integration_outbox).where(
+                        integration_outbox.c.event_type == "integration.human_blocked"
+                    )
+                )
+            ).mappings().one()
+        assert event["payload"]["operation_id"] == "operation"
 
 
 @pytest.mark.parametrize("corruption", ["policy", "checkpoint", "batch_revision"])

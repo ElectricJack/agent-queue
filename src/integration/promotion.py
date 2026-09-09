@@ -375,6 +375,8 @@ class PromotionService:
                 or scope["project_id"] != principal.project_id
                 or scope["repository_id"] != intent["repository_id"]
                 or scope["writer_kind"] != "repair_delegate"
+                or scope["trigger_id"] != intent["id"]
+                or not self._repair_subject_matches_intent(scope, intent)
                 or scope["session_id"] != principal.session_id
                 or scope["workspace_id"] is None
                 or not scope["instance_token"]
@@ -447,6 +449,8 @@ class PromotionService:
                 or scope["project_id"] != principal.project_id
                 or scope["repository_id"] != intent["repository_id"]
                 or scope["writer_kind"] != "repair_delegate"
+                or scope["trigger_id"] != intent["id"]
+                or not self._repair_subject_matches_intent(scope, intent)
                 or scope["session_id"] != principal.session_id
                 or scope["workspace_id"] is None
                 or scope["workspace_path"] is None
@@ -1108,6 +1112,24 @@ class PromotionService:
             or intent["origin_url"] != repository.origin_url
         ):
             raise PromotionInvariantError("promotion repository identity changed")
+
+    @staticmethod
+    def _repair_subject_matches_intent(scope: dict, intent: dict) -> bool:
+        """Accept only the conflict's old tip or its frozen resolution tip.
+
+        A crash after the resolution push can leave the stage rebound to the
+        resolved parent HEAD before the intent is finalized.  That exact
+        durable resolution remains valid for replay; an unrelated parent
+        subject does not.
+        """
+        subject = scope.get("current_subject") or {}
+        allowed_heads = {intent["expected_target"]}
+        if intent.get("resolution_head_sha"):
+            allowed_heads.add(intent["resolution_head_sha"])
+        return (
+            subject.get("kind") == "parent"
+            and subject.get("head_sha") in allowed_heads
+        )
 
     @staticmethod
     def _value(intent: dict) -> PromotionValue:
