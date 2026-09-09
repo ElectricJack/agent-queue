@@ -1716,6 +1716,144 @@ async def test_resumed_event_redispatches_established_repair_delegate(db):
     ]
 
 
+async def test_integration_resume_recovers_damaged_stopped_pool_handoff_and_rearms_repair(
+    command_handler_factory,
+):
+    """The public resume command repairs the old stopped-pool claim before dispatch.
+
+    This is the historical shape after the checkout detach and owner transfer
+    committed, but the stopped pool session's active claim did not.  Driving
+    ``integration_resume`` through the CommandHandler matters: direct helper
+    coverage alone cannot show that the operator's recovery path re-arms the
+    existing bounded repair operation.
+    """
+    from src.integration.repair import RepairService
+
+    handler = await command_handler_factory()
+    await _configure_db(handler.db)
+    await _seed_parent_operation(handler.db)
+    await _add_parent_evidence(
+        handler.db, "failed-check-2", run_id="run-2", conclusion="failure"
+    )
+    await _add_parent_evidence(
+        handler.db, "debug-failed", run_id="run-debug", conclusion="failure"
+    )
+    async with handler.db.immediate() as conn:
+        await conn.execute(
+            insert(integration_branch_owners).values(
+                id="resume-owner",
+                repository_id="repo",
+                ref="aq/parent",
+                owner_id="operation",
+                owner_role="collector",
+                fence_token=4,
+                handoff_state="attached",
+                session_id="old-session",
+                workspace_id="old-workspace",
+                created_at=1.0,
+                updated_at=1.0,
+            )
+        )
+    repair = RepairService(
+        handler.db,
+        confirm_handoff=lambda _owner: True,
+        route_validator=lambda _intelligence_class, _profile_id: True,
+    )
+    await repair.start("operation", STARTING_SHA, "failed-check", now=100.0)
+    await repair.record_result("operation", "failed-check", now=101.0)
+    await repair.record_result("operation", "failed-check-2", now=102.0)
+    dispatched = await repair.dispatch("operation", 1)
+    assert (await repair.record_result("operation", "debug-failed", now=103.0))["outcome"] == (
+        "human_required"
+    )
+    repair_task_id = dispatched["repair_task_id"]
+
+    # Reproduce the old crash precisely: the successor collector owns the
+    # branch reservation and durable detached-slot proof, while a stopped pool
+    # session still names the now-blocked delegate as an active claim.
+    await handler.db.create_agent(
+        Agent(
+            id="stopped-pool-agent",
+            name="Stopped pool repairer",
+            profile_id="debugger",
+            state=AgentState.IDLE,
+        )
+    )
+    await handler.db.create_workspace(
+        Workspace(
+            id="stopped-pool-slot",
+            project_id="p",
+            workspace_path="/tmp/stopped-pool-slot",
+            source_type=RepoSourceType.LINK,
+        )
+    )
+    await handler.db.create_session(
+        SessionRecord(
+            id="stopped-pool-session",
+            task_id=repair_task_id,
+            agent_id="stopped-pool-agent",
+            project_id="p",
+            profile_id="debugger",
+            harness="fake",
+            provider="fake",
+            name="stopped-pool-repair",
+            lifecycle="pool",
+            state="stopped",
+            desired_state="stopped",
+            claim_phase="active",
+            last_claim_epoch=7,
+            work_dir="/tmp/stopped-pool-slot",
+            epoch="epoch",
+            instance_token="instance",
+            started_at=104.0,
+        )
+    )
+    async with handler.db.immediate() as conn:
+        await conn.execute(
+            update(tasks)
+            .where(tasks.c.id == repair_task_id)
+            .values(status=TaskStatus.BLOCKED.value, assigned_agent_id=None, claim_epoch=7)
+        )
+        await conn.execute(
+            update(integration_branch_owners)
+            .where(integration_branch_owners.c.id == "resume-owner")
+            .values(
+                owner_id="operation",
+                owner_role="collector",
+                handoff_state="reserved",
+                session_id=None,
+                workspace_id=None,
+                confirmed_workspace_id="stopped-pool-slot",
+            )
+        )
+
+    resumed = await handler.execute("integration_resume", {"operation_id": "operation"})
+
+    assert resumed["outcome"] == "resumed", resumed
+    assert resumed["state"] == "escalated"
+    stopped_session = await handler.db.get_session("stopped-pool-session")
+    assert (
+        stopped_session.task_id,
+        stopped_session.claim_phase,
+        stopped_session.last_claim_epoch,
+    ) == (None, None, 7)
+    assert stopped_session.claims == 0
+    assert (await handler.db.get_task(repair_task_id)).status is TaskStatus.PAUSED
+    assert (await handler.db.get_task("parent")).status is TaskStatus.PAUSED
+    stage = await _repair_stage(handler.db, "operation", 1)
+    assert stage["state"] == "active"
+    assert stage["attempts"] == 1
+
+    # The emitted resume event returns the same delegate to the bounded stage;
+    # it does not create another writer or replenish its consumed attempt.
+    rearmed = await repair.dispatch("operation", 1)
+    assert rearmed["outcome"] == "dispatched"
+    assert rearmed["repair_task_id"] == repair_task_id
+    assert rearmed["fence"]["token"] > dispatched["fence"]["token"]
+    assert (await handler.db.get_task(repair_task_id)).status is TaskStatus.READY
+    assert (await _repair_stage(handler.db, "operation", 1))["attempts"] == 1
+
+
 @pytest.mark.parametrize("corruption", ["wrong_episode", "unrelated_block", "manual_pause", "advanced_generation"])
 async def test_parent_resume_rejects_non_current_or_operator_held_collection(db, corruption):
     """Only this operation's exhausted parent episode may be restored."""
