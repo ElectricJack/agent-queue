@@ -989,3 +989,22 @@ worker fence1 retains stopped session36cb470b despite session task_id now NULL.
 Public transfer refused stopped/detached proof. Priority-one fresh-rapids tracks
 safe existing-state recovery and prevention at failed claim release. keen-bridge
 is actively implementing verifier close repair; private test helper supplied.
+
+
+### Main receipt and remaining live repair findings
+
+Matter baseline batch b5798e8 is now promoted. Receipt for sharp-nexus targets
+refs/heads/main, revision1, after7a39e65a; two conclusive success check-evidence
+rows and independently queried remote main agree. The prior stale_subject was
+a post-promotion observation, not an outstanding CI failure.
+
+Initial keen-bridge source e61c23d4 is integrated locally at936ca29f but NOT
+loaded: 4 failed/118 passed in session-command and parent-completion tests.
+Fixture Git methods and manual-pause modeling failed, and completed-parent
+final-close replay needs correction. Task was reopened and is running.
+
+Discord collector is blocked on an immutable malformed resolution: intent
+2f290cf6 reserved nonexistent de34e9653111a3c98224e7d94b727af0290c12ff;
+actual local resolution de34e965e1fda18329bf95f5dd98df7f2fa69571. Guarded push
+refused before remote mutation. bright-journey tracks pre-reservation validation
+and explicitly guarded recovery preserving old evidence.
