@@ -175,6 +175,9 @@ class RunPlaybookResponse(BaseModel):
     node_trace: list[dict[str, Any]] = []
     error: str | None = None
     final_response: str | None = None
+    run_ids: list[str] = []
+    runs: list[dict[str, Any]] = []
+    failed_steps: list[dict[str, Any]] = []
 
 
 class DryRunPlaybookResponse(BaseModel):

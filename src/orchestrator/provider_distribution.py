@@ -35,7 +35,11 @@ class ProviderDistributionMixin:
         options = {}
         for project_id in projects:
             rows = build_route_options(project_id, profiles, agents, self.harness_registry, classes)
-            options[project_id] = [row for row in rows if row["configured_capacity"] > 0 and (
+            # ``build_route_options`` deliberately retains disabled profiles
+            # for pinned-route diagnostics.  Distribution, however, is an
+            # automatic route chooser and must never reserve work on one.
+            options[project_id] = [row for row in rows if row.get("enabled", True)
+                                   and row["configured_capacity"] > 0 and (
                 row["lifecycle"] != "pool" or (
                     self.config.swarm.enabled
                     and not self._pool_quarantine_state(project_id, row["profile_id"], now)[0]

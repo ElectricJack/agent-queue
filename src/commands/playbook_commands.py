@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import time
 from dataclasses import asdict
@@ -63,6 +64,11 @@ class PlaybookCommandsMixin:
     ) -> dict[str, Any]:
         from src.commands.principal import ExecutionPrincipal, current_principal
 
+        if not dry_run:
+            prepared = await self._prepare_manual_event(event)
+            if isinstance(prepared, str):
+                return {"error": prepared}
+            event = prepared
         ref = await self._v2_artifact_for(playbook_id, event.get("project_id"))
         if ref is None:
             return {"error": f"No ready V2 artifact is active for '{playbook_id}'"}
@@ -81,18 +87,145 @@ class PlaybookCommandsMixin:
         event_type = engine._event_type(event)
         rules = [
             rule for rule in artifact.rules
-            if engine._trigger_matches(rule, event_type, event)
+            # Match the ordinary dispatch path exactly: a trigger alone is
+            # not admission.  In particular, the default pipeline's review
+            # guards prevent no-code/review tasks and absent PR context from
+            # reaching command steps.
+            if engine._rule_selected(rule, event_type, event)
         ]
         if not rules:
             return {"error": f"No rule in '{playbook_id}' matches event '{event_type}'"}
         outcomes = [await engine.run_rule(ref, rule.id, event, principal) for rule in rules]
+        runs = [self._manual_run_summary(outcome, rule.id) for outcome, rule in zip(outcomes, rules)]
+        failed_steps = [
+            failure
+            for run in runs
+            for failure in run["failed_steps"]
+        ]
         return {
             "run_id": outcomes[0].run_id,
             "run_ids": [outcome.run_id for outcome in outcomes],
             "playbook_id": playbook_id,
             "version": ref.version,
             "status": outcomes[0].lifecycle.value,
+            "runs": runs,
+            # A completed lifecycle only means the graph reached a terminal
+            # node.  A rule may intentionally handle a failed command edge,
+            # so retain that lifecycle while making the failed effects
+            # impossible for an operator to miss in the manual-run result.
+            "failed_steps": failed_steps,
         }
+
+    @staticmethod
+    def _manual_run_summary(outcome: Any, rule_id: str) -> dict[str, Any]:
+        """Project one manual rule outcome without exposing receipt inputs.
+
+        Receipts intentionally redact most inputs/results.  The step id,
+        engine outcome and already-sanitised diagnostic are enough to explain
+        a handled failure without weakening that projection boundary.
+        """
+        failed_steps = [
+            {
+                "run_id": outcome.run_id,
+                "rule_id": receipt.rule_id,
+                "step_id": receipt.step_id,
+                "outcome": receipt.error_code or receipt.outcome,
+                "error": receipt.error,
+            }
+            for receipt in outcome.receipts
+            if receipt.receipt_kind == "step"
+            and (receipt.outcome == "failure" or receipt.error_code is not None)
+        ]
+        return {
+            "run_id": outcome.run_id,
+            "rule_id": rule_id,
+            "status": outcome.lifecycle.value,
+            "outcome": outcome.outcome,
+            "failed_steps": failed_steps,
+        }
+
+    async def _prepare_manual_event(self, event: dict[str, Any]) -> dict[str, Any] | str:
+        """Authenticate task context before a manual task-event run writes.
+
+        Ordinary event dispatch calls ``PlaybookEngine._hydrate_event`` before
+        selecting a rule.  Manual runs used to bypass that path, leaving
+        ``event.task`` absent and allowing a graph to take its handled failure
+        edge after every command input had failed.  Manual task events now use
+        the database task as their identity authority before looking up an
+        artifact or starting a run.  A supplied task snapshot remains useful
+        for replay, but only after its identity agrees with that authority.
+        """
+        from src.commands.principal import current_principal
+
+        prepared = dict(event)
+        event_type = str(prepared.get("_event_type") or prepared.get("type") or "")
+        if not event_type.startswith("task."):
+            return prepared
+
+        task_id = prepared.get("task_id")
+        if not isinstance(task_id, str) or not task_id.strip():
+            return "event.task_id is required for manual task events"
+        task_id = task_id.strip()
+        prepared["task_id"] = task_id
+
+        task = await self.db.get_task(task_id)
+        if task is None:
+            return "event.task_id does not name an accessible task"
+        project_id = getattr(task, "project_id", None)
+        if not isinstance(project_id, str) or not project_id:
+            return "event.task_id resolved to a task without project_id"
+
+        supplied_project_id = prepared.get("project_id")
+        if supplied_project_id is not None and supplied_project_id != project_id:
+            return "event.project_id does not match event.task_id"
+        principal = current_principal()
+        principal_project_id = getattr(principal, "project_id", None)
+        if principal_project_id is not None and principal_project_id != project_id:
+            return "out of scope: project_id mismatch"
+        prepared["project_id"] = project_id
+        # Task emitters always carry this top-level summary.  It is needed by
+        # the shipped review title and makes ``{type, task_id}`` a useful
+        # minimal authenticated manual replay rather than a delayed template
+        # resolution failure.
+        prepared.setdefault("title", getattr(task, "title", ""))
+
+        engine = self._v2_engine()
+        snapshot = prepared.get("task")
+        if snapshot is not None:
+            if not isinstance(snapshot, dict):
+                return "event.task must be an object"
+            snapshot_task_id = snapshot.get("id")
+            if snapshot_task_id is not None and snapshot_task_id != task_id:
+                return "event.task.id does not match event.task_id"
+            snapshot_project_id = snapshot.get("project_id")
+            if snapshot_project_id is not None and snapshot_project_id != project_id:
+                return "event.task.project_id does not match event.project_id"
+            # This is a valid frozen event snapshot.  Do not replace fields
+            # such as a historic branch/PR state with a later database row.
+            return self._with_manual_replay_id(await engine._hydrate_event(prepared))
+
+        hydrated = await engine._hydrate_event(prepared)
+        if not isinstance(hydrated.get("task"), dict):
+            # Do not let a graph turn this into an apparently-successful
+            # handled failure.  The path names the missing context precisely.
+            return "event.task could not be hydrated from event.task_id"
+        return self._with_manual_replay_id(hydrated)
+
+    @staticmethod
+    def _with_manual_replay_id(event: dict[str, Any]) -> dict[str, Any]:
+        """Give an otherwise-unidentified manual task replay a stable identity.
+
+        Event-bus deliveries already have an ``event_id``.  A CLI replay
+        commonly does not, and the engine correctly treats an id-less *live*
+        event as a fresh dispatch.  The manual surface is different: submitting
+        the same authenticated task context again is a replay.  Callers can
+        still request a distinct manual run by providing their own event id.
+        """
+        if event.get("event_id"):
+            return event
+        canonical = json.dumps(event, sort_keys=True, separators=(",", ":"), default=str)
+        event["event_id"] = "manual:" + hashlib.sha256(canonical.encode()).hexdigest()[:24]
+        return event
 
     async def _cmd_run_playbook(self, args: dict) -> dict:
         playbook_id = str(args.get("playbook_id") or "").strip()

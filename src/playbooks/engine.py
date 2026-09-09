@@ -1032,9 +1032,10 @@ class PlaybookEngine:
             if existing is None:  # pragma: no cover - the index said it exists
                 raise
             result_value = None
+            receipts: tuple[StepReceipt, ...] = ()
             list_receipts = getattr(repository, "list_receipts", None)
             if callable(list_receipts):
-                receipts = await list_receipts(existing.run_id)
+                receipts = tuple(await list_receipts(existing.run_id))
                 result_value = next(
                     (
                         receipt.result["value"]
@@ -1048,6 +1049,7 @@ class PlaybookEngine:
                 existing.lifecycle,
                 "deduplicated",
                 existing,
+                receipts=receipts,
                 result_value=result_value,
             )
 
