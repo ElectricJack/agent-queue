@@ -505,6 +505,7 @@ class EscalationCommandsMixin:
                     reply["text"],
                     actor=reply["verified_actor"],
                     human=True,
+                    verified_escalation_id=incident["id"],
                 )
             elif args["action_kind"] == "gate_resolve":
                 flipped = await self.orchestrator._resolve_gate_and_emit(
@@ -545,6 +546,18 @@ class EscalationCommandsMixin:
             result=action_result,
             error=None if succeeded else str(action_result.get("error") or "action refused"),
         )
+        if not succeeded:
+            await self.db.append_escalation_message(
+                incident["id"],
+                direction="outbound",
+                transport="core",
+                verified_actor=principal.describe(),
+                text=(
+                    "The requested recovery action failed and this escalation remains open: "
+                    + str(action_result.get("error") or "action refused")
+                ),
+                external_message_id=f"action-failed:{reservation['action']['id']}",
+            )
         await self._emit_escalation(
             "escalation.updated.v1",
             {

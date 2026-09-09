@@ -18,7 +18,7 @@ Two unrelated facts share the word:
 
 | Fact | Bus event | Meaning | Escalate? |
 |---|---|---|---|
-| A session close left the task `BLOCKED` | `task.failed` with `status: BLOCKED` | the agent could not finish: hard failure, retry budget spent, pipeline stopped short, attempt timed out | **yes** |
+| A session close left the task `BLOCKED` | `task.failed` with `status: BLOCKED` | the agent could not finish: hard failure, retry budget spent, pipeline stopped short, attempt timed out | supervisor triage; human only if a real decision remains |
 | The dependency graph's blocked projection flipped | `task.blocked` / `task.unblocked` | an upstream task is unfinished | no: there is no session to read |
 
 The playbook triggers on the first and deliberately ignores the second. The
@@ -43,8 +43,10 @@ agent, and instructs the supervisor to:
 
 1. find the task's session in `aq session list` and read `aq session logs <session-id> -n 200`;
 2. read `aq task show` and `aq task explain` for the task;
-3. decide: retry with concrete feedback (`aq task recover`), hold, spawn a
-   follow-up, or ask the human via `aq message send --to user:dashboard`.
+3. check whether an integration operation owns the repair/verification and preserve its controls
+   and budgets;
+4. decide: retry with concrete feedback (`aq task recover`), hold, or spawn a follow-up; create a
+   source-bound durable escalation only when a real human decision remains.
 
 Why a message rather than a task or an inline LLM step:
 
@@ -72,8 +74,9 @@ playbook's principal is what dispatch authorizes.
 
 ## Cardinality and failure
 
-One message per blocked event, no dedup: each terminal close is a distinct
-fact and the supervisor's inbox coalesces delivery. A failed step (messages
+One triage message per blocked event: each terminal close is a distinct fact
+and the supervisor's inbox coalesces delivery. Replayed human incidents reuse
+the stable task-recovery source/incident key. A failed step (messages
 substrate disabled, project missing) ends the run `failed` for the overlay; the
 next blocked task starts a fresh run.
 

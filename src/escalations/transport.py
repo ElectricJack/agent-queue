@@ -149,8 +149,11 @@ class SinkTransport:
         self._maybe_fail("post_thread_message")
         if thread_id not in self.threads:
             raise TransportMissing(f"thread {thread_id} is gone")
-        if thread_id in self.archived:
-            raise TransportMissing(f"thread {thread_id} is archived")
+        # Archived is not gone.  Discord un-archives an unlocked thread when a
+        # message is sent to it, and ``DiscordEscalationTransport`` does that
+        # explicitly, so the sink must too: the closed-state guidance a late
+        # reply earns is posted into a thread §7 already archived.
+        self.archived.discard(thread_id)
         message = self.record(thread_id, content, thread_id=thread_id)
         return SendOutcome(receipt_id=message.id, thread_id=thread_id)
 

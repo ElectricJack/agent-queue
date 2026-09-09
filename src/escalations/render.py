@@ -174,18 +174,30 @@ def render_thread_opener(facts: EscalationFacts, *, base_url: str, dedup_key: st
 
 
 def render_ack(facts: EscalationFacts, *, dedup_key: str) -> str:
-    """Acknowledge one persisted human reply, once."""
-    return _clamp(
-        "\n".join(
-            [
-                (
-                    f"📥 Got it — your reply is recorded and the `{facts.project_id}` "
-                    "supervisor is reviewing it."
-                ),
-                f"-# {marker_for(dedup_key)}",
-            ]
+    """Acknowledge one persisted human reply, once.
+
+    A reply that arrived after the incident closed is still kept as history,
+    but saying "the supervisor is reviewing it" would be a lie: no supervisor
+    work was queued for it.  §7 asks for closed-state guidance instead, and
+    the reply must not read as though it reopened anything.
+    """
+    if facts.is_terminal:
+        verb = {
+            "resolved": "already resolved",
+            "cancelled": "cancelled",
+            "stale": "closed as stale",
+        }.get(facts.state, f"closed ({facts.state})")
+        headline = (
+            f"🔒 This escalation was {verb} before your reply arrived, so it is "
+            "recorded for the record but has not reopened the work. Raise a new "
+            f"escalation in `{facts.project_id}` if a decision is still needed."
         )
-    )
+    else:
+        headline = (
+            f"📥 Got it — your reply is recorded and the `{facts.project_id}` "
+            "supervisor is reviewing it."
+        )
+    return _clamp("\n".join([headline, f"-# {marker_for(dedup_key)}"]))
 
 
 def render_relay(text: str, *, dedup_key: str) -> str:

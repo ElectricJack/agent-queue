@@ -51,8 +51,18 @@ then ends.
    requires human action, escalate with its operation ID; an authorized operator
    can use `aq integration resume` or `aq integration abort` after inspecting it.
    For ordinary tasks not owned by an integration operation, decide: retry with
-   concrete feedback via `aq task recover`, hold, spawn a follow-up task, or message the human
-   with `aq message send --to user:dashboard` when human judgment is needed.
+   concrete feedback via `aq task recover`, hold, or spawn a follow-up task. A
+   blocked event is only a supervisor triage notice: ordinary dependency waits,
+   active retry legs, and unchanged queue state are not human incidents. When a
+   real human decision remains, call `aq escalation create` with `source_kind`
+   `task_recovery`, the exact current recovery incident ID as `source_identity`,
+   and `task-recovery:<incident-id>` as the stable `incident_key`. Include what
+   was tried, the precise decision needed, and task/dashboard links. Replayed
+   terminal notices must reuse that incident rather than creating another.
+   Process a later reply only through `aq escalation apply-reply` after reloading
+   the task, claim, operation/gate and unseen conversation entries. Resolve the
+   escalation only after recovery succeeds or the human deliberately chooses
+   hold/cancel; a failed recovery remains open in the same conversation.
    Bind the result as `notice`. A `queued` outcome ends the rule; a
    `rejected` or `runtime_error` outcome fails it.
 
@@ -61,8 +71,9 @@ then ends.
 The rule has no retry. A failed step ends the run with a `failed` terminal so
 the run overlay shows what broke — a project without a supervisor address, a
 disabled messages substrate — and the next blocked task starts a fresh run.
-One message per blocked event is the intended cardinality: the message is the
-escalation, and the supervisor's own delivery cascade wakes the on-demand
-supervisor session or holds the notice until it is next primed. The event's
+One message per blocked event is the intended playbook-run cardinality: the
+message is a triage notice, not a human escalation. The supervisor's own
+delivery cascade wakes the on-demand supervisor session or durably holds the
+notice for a restarted/replacement supervisor. The event's
 `project_id` is the authorization boundary: the message is addressed only to
 that project's supervisor and carries only that project's task.
