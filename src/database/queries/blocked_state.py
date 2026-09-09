@@ -23,7 +23,7 @@ from __future__ import annotations
 import logging
 import time
 
-from sqlalchemy import and_, case, insert, literal, not_, or_, select, update
+from sqlalchemy import and_, case, false, insert, literal, not_, or_, select, update
 
 from src.database.tables import (
     events,
@@ -44,6 +44,7 @@ __all__ = [
     "BlockedStateMixin",
     "apply_label_filters",
     "blocked_predicate",
+    "unmet_dependency_predicate",
 ]
 
 
@@ -69,9 +70,94 @@ _WITHHOLDING_PARENT_STATUSES = (
 # correlated ``EXISTS`` over **anonymous** aliases, so the same factory can be
 # called from several predicates — even twice inside one statement — without
 # alias collisions: SQLAlchemy names them ``anon_1``, ``anon_2``, … per
-# compiled statement.  That is what lets :func:`blocked_predicate` and
-# :func:`_blocked_ignoring_conditional` share the clauses instead of
-# restating them.
+# compiled statement.  The per-edge rule itself lives in
+# :func:`unmet_dependency_predicate`; this lets the explain read path ask the
+# exact same question as the persisted projection instead of approximating
+# every edge as ``status != COMPLETED``.
+
+
+def unmet_dependency_predicate(dependency, depends_on, *, dep_types=None):
+    """Return whether one typed dependency edge is currently unsatisfied.
+
+    ``dependency`` is a ``task_dependencies`` table or alias and
+    ``depends_on`` is the joined target ``tasks`` table or alias.  Supplying
+    ``dep_types`` narrows the expression for projection clause factories;
+    omitting it covers every blocking type and is used by diagnostic queries.
+    Provenance edge types deliberately produce ``false``.
+    """
+    effective = BLOCKING_DEP_TYPES if dep_types is None else dep_types
+    clauses = []
+
+    if DepType.BLOCKS.value in effective:
+        clauses.append(
+            and_(
+                dependency.c.dep_type == DepType.BLOCKS.value,
+                depends_on.c.status != TaskStatus.COMPLETED.value,
+            )
+        )
+
+    if DepType.PARENT_CHILD.value in effective:
+        hold = task_metadata.alias()
+        approval_held = (
+            select(literal(1))
+            .select_from(hold)
+            .where(
+                and_(
+                    hold.c.task_id == depends_on.c.id,
+                    hold.c.key == "manual_pause_withholds_children",
+                    hold.c.value == "true",
+                )
+            )
+            .exists()
+        )
+        clauses.append(
+            and_(
+                dependency.c.dep_type == DepType.PARENT_CHILD.value,
+                or_(
+                    depends_on.c.status.in_(_WITHHOLDING_PARENT_STATUSES),
+                    and_(depends_on.c.status == TaskStatus.PAUSED.value, approval_held),
+                ),
+            )
+        )
+
+    if DepType.WAITS_FOR.value in effective:
+        parent_child = task_dependencies.alias()
+        child = tasks.alias()
+        open_child = (
+            select(literal(1))
+            .select_from(parent_child.join(child, child.c.id == parent_child.c.task_id))
+            .where(
+                and_(
+                    parent_child.c.dep_type == DepType.PARENT_CHILD.value,
+                    parent_child.c.depends_on_task_id == dependency.c.depends_on_task_id,
+                    child.c.status != TaskStatus.COMPLETED.value,
+                )
+            )
+            .exists()
+        )
+        clauses.append(
+            and_(
+                dependency.c.dep_type == DepType.WAITS_FOR.value,
+                open_child,
+            )
+        )
+
+    if DepType.CONDITIONAL_BLOCKS.value in effective:
+        terminal_failure = or_(
+            depends_on.c.status == TaskStatus.BLOCKED.value,
+            and_(
+                depends_on.c.status == TaskStatus.FAILED.value,
+                depends_on.c.retry_count >= depends_on.c.max_retries,
+            ),
+        )
+        clauses.append(
+            and_(
+                dependency.c.dep_type == DepType.CONDITIONAL_BLOCKS.value,
+                not_(terminal_failure),
+            )
+        )
+
+    return or_(*clauses) if clauses else false()
 
 
 def _blocks_unsat():
@@ -84,8 +170,7 @@ def _blocks_unsat():
         .where(
             and_(
                 bd.c.task_id == tasks.c.id,
-                bd.c.dep_type == DepType.BLOCKS.value,
-                bt.c.status != TaskStatus.COMPLETED.value,
+                unmet_dependency_predicate(bd, bt, dep_types={DepType.BLOCKS.value}),
             )
         )
         .exists()
@@ -96,23 +181,13 @@ def _parent_child_unsat():
     """``parent-child`` — satisfied once the container has been released."""
     pd = task_dependencies.alias()
     pt = tasks.alias()
-    hold = task_metadata.alias()
-    approval_held = select(literal(1)).where(
-        hold.c.task_id == pt.c.id,
-        hold.c.key == "manual_pause_withholds_children",
-        hold.c.value == "true",
-    ).exists()
     return (
         select(literal(1))
         .select_from(pd.join(pt, pt.c.id == pd.c.depends_on_task_id))
         .where(
             and_(
                 pd.c.task_id == tasks.c.id,
-                pd.c.dep_type == DepType.PARENT_CHILD.value,
-                or_(
-                    pt.c.status.in_(_WITHHOLDING_PARENT_STATUSES),
-                    and_(pt.c.status == TaskStatus.PAUSED.value, approval_held),
-                ),
+                unmet_dependency_predicate(pd, pt, dep_types={DepType.PARENT_CHILD.value}),
             )
         )
         .exists()
@@ -126,28 +201,13 @@ def _waits_for_unsat():
     COMPLETED.  Vacuously satisfied when the container has no children.
     """
     wd = task_dependencies.alias()
-    pc = task_dependencies.alias()
-    ch = tasks.alias()
-    open_child = (
-        select(literal(1))
-        .select_from(pc.join(ch, ch.c.id == pc.c.task_id))
-        .where(
-            and_(
-                pc.c.dep_type == DepType.PARENT_CHILD.value,
-                pc.c.depends_on_task_id == wd.c.depends_on_task_id,
-                ch.c.status != TaskStatus.COMPLETED.value,
-            )
-        )
-        .exists()
-    )
     return (
         select(literal(1))
         .select_from(wd)
         .where(
             and_(
                 wd.c.task_id == tasks.c.id,
-                wd.c.dep_type == DepType.WAITS_FOR.value,
-                open_child,
+                unmet_dependency_predicate(wd, tasks, dep_types={DepType.WAITS_FOR.value}),
             )
         )
         .exists()
@@ -161,21 +221,13 @@ def _conditional_unsat():
     """
     cd = task_dependencies.alias()
     ct = tasks.alias()
-    terminal_failure = or_(
-        ct.c.status == TaskStatus.BLOCKED.value,
-        and_(
-            ct.c.status == TaskStatus.FAILED.value,
-            ct.c.retry_count >= ct.c.max_retries,
-        ),
-    )
     return (
         select(literal(1))
         .select_from(cd.join(ct, ct.c.id == cd.c.depends_on_task_id))
         .where(
             and_(
                 cd.c.task_id == tasks.c.id,
-                cd.c.dep_type == DepType.CONDITIONAL_BLOCKS.value,
-                not_(terminal_failure),
+                unmet_dependency_predicate(cd, ct, dep_types={DepType.CONDITIONAL_BLOCKS.value}),
             )
         )
         .exists()
