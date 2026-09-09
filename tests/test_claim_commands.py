@@ -240,6 +240,7 @@ class TestClaim:
         sid, _wd = await pool_session(db, tmp_path)
         reset = handler.orchestrator._worktree_slots.return_value.reset_slot_for_task
         reset.side_effect = [RuntimeError("stale predecessor checkout"), "aq/child"]
+        handler.orchestrator.arelease_integration_writer_for_retry = AsyncMock(return_value=False)
         h = scoped(handler, sid)
         failed = await h._cmd_task_claim({"next": True})
         assert failed["result"] == "prepare_failed"

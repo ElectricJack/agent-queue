@@ -800,7 +800,29 @@ class TmuxProvider(SessionProvider):
         # Exact text identity is what makes an edited AQ-looking draft a
         # draft, not a command to submit. Wrapped/truncated prompts fail
         # closed rather than accepting a marker collision.
-        return _normalize(pending.text) in input_text
+        # Strip only the rendered prompt and stop at the composer border.
+        # A substring match would submit human text prepended/appended to
+        # the original injection. Unknown layouts deliberately fail closed.
+        content = [lines[last_prompt].lstrip()[len(prefix_text):].lstrip(" ")]
+        for line in lines[last_prompt + 1:]:
+            border = line.strip()
+            if len(border) >= 8 and set(border) <= {"─", "━"}:
+                break
+            content.append(line)
+        if prefix_text == "›":
+            # Codex renders a blank separator and a status footer below input.
+            # Remove only recognizable footer text followed solely by padding.
+            for index in range(1, len(content)):
+                footer = content[index].strip()
+                known = bool(re.fullmatch(r"\d+% context left", footer)) or bool(
+                    re.fullmatch(r"(?:gpt|o\d)[\w. -]* · .+", footer)
+                )
+                if known and not content[index - 1].strip() and all(
+                    not row.strip() for row in content[index + 1:]
+                ):
+                    content = content[:index - 1]
+                    break
+        return "\n".join(content).strip() == _normalize(pending.text).strip()
 
     async def _submit(
         self,

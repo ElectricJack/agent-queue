@@ -271,6 +271,7 @@ def test_unimplemented_integration_operations_are_not_registered():
         "integration_abort",
         "integration_retry_cleanup",
         "integration_recover_candidate_member",
+        "integration_recover_unwritten_resolution",
     }
     assert registry.names() & DESIGN_INTEGRATION_COMMANDS == implemented
     assert not (registry.names() & (DESIGN_INTEGRATION_COMMANDS - implemented))

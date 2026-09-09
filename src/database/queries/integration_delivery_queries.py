@@ -397,6 +397,16 @@ class IntegrationDeliveryQueriesMixin:
         )
         if changed.rowcount != 1:  # pragma: no cover - locked row guards this
             raise ValueError("resolution changed during recovery")
+        # Bind the existing guarded repair stage to the new intent atomically.
+        # The old intent remains immutable and can no longer pass stage scope.
+        from src.database.tables import integration_repair_stages
+        await conn.execute(
+            update(integration_repair_stages).where(
+                integration_repair_stages.c.operation_id == intent["resolution_operation_id"],
+                integration_repair_stages.c.ordinal == intent["resolution_stage_ordinal"],
+                integration_repair_stages.c.trigger_id == intent_id,
+            ).values(trigger_id=successor_id)
+        )
         return successor_values
 
     async def record_integration_resolution_push_on(

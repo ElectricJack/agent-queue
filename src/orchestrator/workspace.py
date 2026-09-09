@@ -185,8 +185,6 @@ class WorkspaceMixin:
         from being returned.
         """
         from src.orchestrator.workspace_attachments import (
-    orphaned_integration_pool_handoff_exclusion,
-    _mark_orphaned_integration_pool_handoff_released_on,
             AcquisitionFailed,
             acquire_for_task,
         )
@@ -1200,6 +1198,8 @@ class WorkspaceMixin:
         workspace_id = owner.get("workspace_id")
         from src.orchestrator.workspace_attachments import (
             integration_handoff_release_is_confirmed,
+            orphaned_integration_pool_handoff_exclusion,
+            _mark_orphaned_integration_pool_handoff_released_on,
             mark_integration_handoff_released,
         )
 
@@ -1213,7 +1213,7 @@ class WorkspaceMixin:
         if (session is not None and session.lifecycle == "pool"
                 and session.state == "stopped" and session.desired_state == "stopped"):
             held_task = await self.db.get_task(session.task_id) if session.task_id else None
-            if held_task is None or held_task.status != TaskStatus.IN_PROGRESS:
+            if held_task is not None and held_task.status != TaskStatus.IN_PROGRESS:
                 return await self.aconfirm_stopped_integration_pool_owner_handoff(owner)
         workspace = await self.db.get_workspace(workspace_id)
         repository = await self.db.get_repo(str(owner.get("repository_id") or ""))

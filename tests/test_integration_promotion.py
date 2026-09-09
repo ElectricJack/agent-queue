@@ -2633,6 +2633,9 @@ async def test_operator_recovers_malformed_unwritten_resolution_with_fresh_succe
     await handler.orchestrator.db.close()
     handler.orchestrator.db = db
     handler.orchestrator.promotion_service = service
+    from src.database.tables import sessions
+    async with db.immediate() as conn:
+        await conn.execute(update(sessions).where(sessions.c.id == "resolution-session").values(state="stopped", desired_state="stopped"))
     recovered = await handler.execute(
         "integration_recover_unwritten_resolution", {"intent_id": case["intent_id"]}
     )
@@ -2652,6 +2655,8 @@ async def test_operator_recovers_malformed_unwritten_resolution_with_fresh_succe
         == case["target"]
     )
 
+    async with db.immediate() as conn:
+        await conn.execute(update(sessions).where(sessions.c.id == "resolution-session").values(state="running", desired_state="running"))
     successor_request = request.model_copy(update={"intent_id": successor_id})
     with principal_context(_resolution_principal()):
         await service.reserve_resolution(successor_request)
@@ -2685,6 +2690,9 @@ async def test_operator_recovery_refuses_ambiguous_resolution(
     else:
         _git(["push", "origin", "HEAD:aq/parent"], case["work"])
         error = PromotionTargetMoved
+    from src.database.tables import sessions
+    async with db.immediate() as conn:
+        await conn.execute(update(sessions).where(sessions.c.id == "resolution-session").values(state="stopped", desired_state="stopped"))
     with pytest.raises(error):
         await service.recover_unwritten_resolution(case["intent_id"])
     intent = await db.get_integration_promotion_intent(case["intent_id"])
@@ -2715,3 +2723,14 @@ async def test_resolution_reservation_rejects_changed_git_proof(
         _git(["ls-remote", "origin", "refs/heads/aq/parent"], case["work"]).split()[0]
         == case["target"]
     )
+
+
+async def test_unwritten_resolution_recovery_refuses_live_writer(db, conflict_resolution_case):
+    from src.commands.principal import principal_context
+    from src.integration.promotion import PromotionInvariantError, PromotionService
+    case = conflict_resolution_case
+    service = PromotionService(db, data_dir=case["data_dir"], git_manager=GitManager())
+    with principal_context(_resolution_principal()):
+        await service.reserve_resolution(_resolution_request(case))
+    with pytest.raises(PromotionInvariantError, match="not quiescent"):
+        await service.recover_unwritten_resolution(case["intent_id"])
