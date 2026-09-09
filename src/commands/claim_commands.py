@@ -34,6 +34,7 @@ __all__ = [
 # a worker keeps a claim call open for up to ``swarm.claim_wait_max`` seconds
 # after the operator turned its pool off.  Both waits below re-check
 # ``profile.enabled`` at the top of the loop, so waking either one is enough.
+# Keep the shared tuple explicit so both wait sites stay subscribed together.
 _POOL_EVENTS = ("pool.enabled_changed",)
 _ADMISSION_EVENTS = (
     "project.resumed",
