@@ -374,6 +374,82 @@ class RepairService:
         ).scalars().all()
         return str(intent_ids[0]) if len(intent_ids) == 1 else None
 
+    async def continue_current_parent_conflict_on(
+        self,
+        conn,
+        operation: dict[str, Any],
+        stage: dict[str, Any],
+        *,
+        project_id: str,
+        now: float,
+        validate_only: bool = False,
+    ) -> dict[str, Any]:
+        """Continue a resumed parent repair from its one current conflict.
+
+        Recovery owns the parent-state transition and already holds the
+        operation, parent, owner, and project locks. It must not reconstruct
+        a conflict from an event that may name a completed prior delegate.
+        Instead, resolve exactly one durable conflict while those locks are
+        held, then reuse the ordinary continuation checks below.
+        """
+        if operation["target_kind"] != "parent":
+            return {"outcome": "none"}
+        parent = (
+            await conn.execute(
+                select(tasks)
+                .where(tasks.c.id == operation["parent_task_id"])
+                .with_for_update()
+            )
+        ).mappings().one_or_none()
+        if parent is None:
+            return {"outcome": "stale"}
+        conflicts = (
+            await conn.execute(
+                select(integration_promotion_intents)
+                .where(
+                    integration_promotion_intents.c.operation_key == operation["id"],
+                    integration_promotion_intents.c.target_task_id == parent["id"],
+                    integration_promotion_intents.c.repository_id == parent["repo_id"],
+                    integration_promotion_intents.c.target_branch == parent["branch_name"],
+                    integration_promotion_intents.c.state.in_(("conflict", "resolution_reserved")),
+                )
+                .order_by(integration_promotion_intents.c.id)
+                .limit(2)
+                .with_for_update()
+            )
+        ).mappings().all()
+        if not conflicts:
+            return {"outcome": "none"}
+        if len(conflicts) != 1 or conflicts[0]["state"] != "conflict":
+            return {"outcome": "stale"}
+        conflict = dict(conflicts[0])
+        continuation = (stage["dossier"] or {}).get("continuations", [])
+        if (
+            continuation
+            and continuation[-1].get("intent_id") == conflict["id"]
+            and continuation[-1].get("starting_sha") == conflict["expected_target"]
+            and stage["trigger_id"] == conflict["id"]
+            and stage["starting_sha"] == conflict["expected_target"]
+        ):
+            return {"outcome": "already_continued"}
+        result = await self._continue_parent_stage_on(
+            conn,
+            operation=operation,
+            stage=stage,
+            starting_sha=conflict["expected_target"],
+            trigger_id=conflict["id"],
+            project_id=project_id,
+            now=now,
+            allow_blocked_parent=validate_only,
+            validate_only=validate_only,
+        )
+        if result is None:
+            return {"outcome": "stale"}
+        if validate_only:
+            return {"outcome": "ready"}
+        value, transition = result
+        return {"outcome": "continued", "value": value, "transition": transition}
+
     async def _continue_parent_stage_on(
         self,
         conn,
@@ -384,6 +460,8 @@ class RepairService:
         trigger_id: str,
         project_id: str,
         now: float,
+        allow_blocked_parent: bool = False,
+        validate_only: bool = False,
     ):
         """Rebind one detached delegate to a later conflict without new budget."""
         if (
@@ -491,7 +569,12 @@ class RepairService:
             parent is None
             or checkpoint is None
             or parent["project_id"] != project_id
-            or parent["status"] != TaskStatus.PAUSED.value
+            or parent["status"]
+            not in (
+                {TaskStatus.PAUSED.value, TaskStatus.BLOCKED.value}
+                if allow_blocked_parent
+                else {TaskStatus.PAUSED.value}
+            )
             or checkpoint["episode_id"] != operation["episode_id"]
             or checkpoint["state"] != "awaiting_children"
             or conflict["id"] != trigger_id
@@ -528,6 +611,9 @@ class RepairService:
             or live_mutation is not None
         ):
             return None
+
+        if validate_only:
+            return {"outcome": "ready"}
 
         dossier = dict(stage["dossier"] or {})
         continuations = list(dossier.get("continuations", []))

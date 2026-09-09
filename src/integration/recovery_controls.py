@@ -54,6 +54,7 @@ class IntegrationRecoveryControls:
             if operation is None:
                 return {"outcome": "not_found", "operation_id": operation_id}
             project_id = await self._project_id_on(conn, operation)
+            await self.db.lock_hierarchy_project(conn, project_id)
             blockers = await self._ambiguous_writes_on(
                 conn, operation, allow_reserved_delegate=True
             )
@@ -73,6 +74,25 @@ class IntegrationRecoveryControls:
                     or not self._has_operator_resume_evidence(operation, stage)
                 ):
                     return self._state_result("invalid_state", operation, project_id)
+                # A resumed parent can receive a newer conflict after its old
+                # delegate closed. Resolve it before changing either task so
+                # ambiguous/stale intent evidence leaves the durable resume
+                # projection untouched. The actual continuation below uses
+                # RepairService's same fence, detached-writer, dossier, and
+                # budget checks as a public repair-start replay.
+                from src.integration.repair import RepairService
+
+                repair = RepairService(self.db)
+                continuation = await repair.continue_current_parent_conflict_on(
+                    conn,
+                    operation,
+                    stage,
+                    project_id=project_id,
+                    now=now,
+                    validate_only=True,
+                )
+                if continuation["outcome"] == "stale":
+                    return self._state_result("stale", operation, project_id)
                 _, delegate_recovery = await self._restore_completed_delegate_on(
                     conn, operation, stage, validate_only=True
                 )
@@ -85,13 +105,25 @@ class IntegrationRecoveryControls:
                     return self._state_result(recovery, operation, project_id)
                 if transition is not None:
                     transitions.append(transition)
-                delegate_transition, delegate_recovery = await self._restore_completed_delegate_on(
-                    conn, operation, stage
-                )
-                if delegate_recovery is not None:
-                    return self._state_result(delegate_recovery, operation, project_id)
-                if delegate_transition is not None:
-                    transitions.append(delegate_transition)
+                if continuation["outcome"] == "ready":
+                    continued = await repair.continue_current_parent_conflict_on(
+                        conn,
+                        operation,
+                        stage,
+                        project_id=project_id,
+                        now=now,
+                    )
+                    if continued["outcome"] != "continued":
+                        raise RuntimeError("repair continuation changed during resume")
+                    transitions.append(continued["transition"])
+                else:
+                    delegate_transition, delegate_recovery = await self._restore_completed_delegate_on(
+                        conn, operation, stage
+                    )
+                    if delegate_recovery is not None:
+                        return self._state_result(delegate_recovery, operation, project_id)
+                    if delegate_transition is not None:
+                        transitions.append(delegate_transition)
                 if transitions:
                     await self._event_on(
                         conn, operation, project_id, "integration.repair_exhausted", now
