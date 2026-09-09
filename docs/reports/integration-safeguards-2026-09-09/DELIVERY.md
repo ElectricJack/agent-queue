@@ -64,3 +64,7 @@ Every listed tip must be reachable from the final AQ main before this delivery i
 | `origin/aq/sound-current.5` | `54aaca69793174cb1daaf6fea386e79e6453adb2` |
 | `origin/aq/wise-lantern` | `fa94941f8ab151c80695ade3dd0b216b15ac63de` |
 | `origin/main` | `d6277c3355e6884857ff3045b32e62698ba3a308` |
+
+## Verified Matter Engine publication
+
+`aq integration sweep matter-engine-cpp` delivered main `dc8a61acdd78bfebd62de4499162ece70a6d20c8`, journal `7e59dfcc-1fec-4f20-89af-ba92caec689f`. A fresh origin fetch reports zero unmerged remote branches. Project remains paused and unimplemented feature children remain open.
