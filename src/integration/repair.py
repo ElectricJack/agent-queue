@@ -772,6 +772,37 @@ class RepairService:
             if actual != expected:
                 return {"outcome": "stale"}
             if scope["target_kind"] == "parent":
+                # A pushed Git commit alone does not complete the delivery
+                # protocol. Keep the live writer attached until its exact
+                # resolution has a durable, fenced push observation.
+                pending = (await conn.execute(
+                    select(integration_promotion_intents).where(
+                        integration_promotion_intents.c.operation_key == operation_id,
+                        integration_promotion_intents.c.state.in_(
+                            ["conflict", "resolution_reserved"]
+                        ),
+                    ).with_for_update()
+                )).mappings().all()
+                for intent in pending:
+                    evidence = intent["resolution_push_evidence"] or {}
+                    if (
+                        intent["state"] != "resolution_reserved"
+                        or intent["resolution_head_sha"] != head_sha
+                        or evidence.get("kind") != "exact_resolution_push_observed"
+                        or evidence.get("remote_sha") != head_sha
+                    ):
+                        return {
+                            "outcome": "resolution_required",
+                            "intent_id": intent["id"],
+                            "feedback": (
+                                f"Conflict intent {intent['id']} has no recorded push "
+                                "of this exact resolution. While retaining this claim, "
+                                "run aq system integration-resolve-conflict and then "
+                                "aq system integration-push-conflict-resolution with "
+                                "the current repair fence (see --help), then close again. "
+                                "A direct Git push alone does not record delivery."
+                            ),
+                        }
                 await self.bind_current_parent_subject_on(
                     conn,
                     operation_id,

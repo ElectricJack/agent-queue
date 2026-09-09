@@ -3811,3 +3811,66 @@ async def test_active_repair_delegate_cannot_archive_and_legacy_archive_is_resto
         ))).mappings().one()
     assert after["attempts"] == before["attempts"]
     assert after["deadline_at"] == before["deadline_at"]
+
+
+@pytest.mark.parametrize("resolution", ["conflict", "reserved", "wrong_head", "observed", "none"])
+async def test_parent_delegate_close_requires_recorded_resolution(db, monkeypatch, resolution):
+    from src.integration.repair import RepairService
+
+    await _seed_parent_operation(db)
+    head = "d" * 40
+    if resolution != "none":
+        values = {
+            "id": "close-intent", "domain_key": "close-domain", "operation_key": "operation",
+            "project_id": "p", "receipt_id": "close-receipt", "source_task_id": "child",
+            "target_task_id": "parent", "source_head": "b" * 40, "source_base": "c" * 40,
+            "repository_id": "repo", "target_branch": "aq/parent", "expected_target": STARTING_SHA,
+            "fence_owner_id": "operation", "fence_token": 1, "state": "conflict",
+            "created_at": 1.0, "updated_at": 1.0,
+        }
+        if resolution != "conflict":
+            values.update(
+                state="resolution_reserved", resolution_head_sha=head,
+                resolution_tree_sha="e" * 40, resolution_commit_shas=[head],
+                resolution_operation_id="operation", resolution_stage_ordinal=0,
+                resolution_task_id="parent", resolution_session_id="session",
+                resolution_session_instance_token="instance", resolution_workspace_id="workspace",
+                resolution_fence_owner_id="parent", resolution_fence_token=2,
+                resolution_push_evidence=(None if resolution == "reserved" else {
+                    "kind": "exact_resolution_push_observed",
+                    "remote_sha": head if resolution == "observed" else "f" * 40,
+                }),
+            )
+        async with db.immediate() as conn:
+            await conn.execute(insert(integration_promotion_intents).values(**values))
+    scope = {
+        "active": True, "operation_id": "operation", "stage": 0, "writer_kind": "repair_delegate",
+        "session_id": "session", "instance_token": "instance", "workspace_id": "workspace",
+        "fence_token": 2, "target_kind": "parent", "project_id": "p",
+    }
+    monkeypatch.setattr(db, "get_repair_filing_scope", AsyncMock(return_value=scope))
+    transition = AsyncMock(return_value=SimpleNamespace(flipped=[], settled=[], ready=[]))
+    monkeypatch.setattr(db, "_apply_transition", transition)
+    service = RepairService(db)
+    bind = AsyncMock()
+    monkeypatch.setattr(service, "bind_current_parent_subject_on", bind)
+    result = await service.complete_delegate(
+        "parent", operation_id="operation", stage=0, session_id="session",
+        instance_token="instance", workspace_id="workspace", fence_token=2,
+        head_sha=head, now=110.0,
+    )
+    if resolution in {"observed", "none"}:
+        assert result["outcome"] == "completed"
+        transition.assert_awaited_once()
+        bind.assert_awaited_once()
+    else:
+        assert result["outcome"] == "resolution_required"
+        assert result["intent_id"] == "close-intent"
+        assert "integration-push-conflict-resolution" in result["feedback"]
+        transition.assert_not_awaited()
+        bind.assert_not_awaited()
+    async with db._engine.connect() as conn:
+        events = (await conn.execute(select(integration_outbox).where(
+            integration_outbox.c.event_type == "integration.repair_delegate_closed"
+        ))).all()
+    assert len(events) == (1 if resolution in {"observed", "none"} else 0)
