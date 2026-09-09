@@ -2225,6 +2225,37 @@ Playbook artifacts an outbox event pins until it is delivered.
 | `event_id` | TEXT | PK, REFERENCES integration_outbox(id) ON DELETE CASCADE | Outbox row |
 | `artifact_sha256` | TEXT | PK, REFERENCES playbook_artifacts(artifact_sha256) ON DELETE RESTRICT | Pinned artifact; indexed |
 
+### Table: `development_deliveries`
+
+The development-mode delivery journal (`src/integration/development.py`). One
+row per attempted write of a set of completed task branches onto a repository's
+target ref, recording the executed Git fact rather than a task episode: no
+synthetic review or CI receipt is written, and `evidence` holds only what was
+actually observed locally. The row is inserted `prepared` *before* the push, so
+a publisher that dies mid-push leaves a `publishing` row that `reconcile()`
+resolves against the remote on the next sweep — `delivered` when the prepared
+sha is the remote head (or an ancestor of it), `parked` when the remote is
+still at `expected_sha` and nothing was applied. `adopted` rows are written by
+`adopt()` when an operator accepts a ref that is already published; they carry
+`evidence.kind = "operator_accepted"` and are explicitly not CI-attested. The
+journal is append-mostly and is never discarded: the `a0000000000c` downgrade
+refuses to drop the table while any row exists.
+
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| `id` | TEXT | PRIMARY KEY | Delivery id (uuid4) |
+| `project_id` | TEXT | NOT NULL | Project; indexed with `state` |
+| `repository_id` | TEXT | NOT NULL | Repository the write targets |
+| `target_ref` | TEXT | NOT NULL | Full ref written, e.g. `refs/heads/main` |
+| `expected_sha` | TEXT | nullable | Remote head the write is leased against; NULL means the ref must not exist |
+| `prepared_sha` | TEXT | nullable | Head that was prepared for the push |
+| `state` | TEXT | NOT NULL, `IN ('prepared', 'publishing', 'delivered', 'parked', 'adopted', 'cancelled')` | Lifecycle; indexed with `project_id` |
+| `manifest` | JSON | NOT NULL | Tasks in the write: `task_id`, `source_sha`, `acceptance` (`ancestry` or `operator_equivalent`) |
+| `evidence` | JSON | NOT NULL | Local validation record (`kind`, `validation`, `checks`, `conclusion`) plus any reconciliation note |
+| `reason` | TEXT | NOT NULL | Why the write happened; operator-supplied for `adopted` |
+| `created_at` | REAL | NOT NULL | Unix timestamp |
+| `updated_at` | REAL | NOT NULL | Unix timestamp of the last state change |
+
 ---
 
 ## 4. Projects
