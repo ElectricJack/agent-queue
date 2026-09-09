@@ -411,6 +411,16 @@ class PromotionService:
             async with self.ownership.mutation_exclusion_on(
                 conn, request.fence, state="attached", expected_role="repair"
             ):
+                # Reject malformed local evidence before freezing its immutable identity.
+                # Keep the attached writer fence across proof and reservation,
+                # and serialize Git inspection; push repeats the proof.
+                async with self.git.arepository_transaction(scope["workspace_path"]):
+                    await self._assert_exact_resolution(Path(scope["workspace_path"]), {
+                        **intent,
+                        "resolution_head_sha": request.resolved_head_sha,
+                        "resolution_tree_sha": request.resolved_tree_sha,
+                        "resolution_commit_shas": list(request.repair_commit_shas),
+                    })
                 reserved = await self.db.reserve_integration_conflict_resolution(
                     conn,
                     request.intent_id,

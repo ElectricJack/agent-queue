@@ -1311,6 +1311,8 @@ class IntegrationCommandsMixin:
         from src.integration.promotion import (
             PromotionAuthorizationError,
             PromotionInvariantError,
+            PromotionSourceMoved,
+            PromotionRuntimeError,
             PromotionTargetMoved,
         )
 
@@ -1326,8 +1328,10 @@ class IntegrationCommandsMixin:
             return _failure("unauthorized", str(exc))
         except (PromotionTargetMoved, StaleFence, BranchBusy) as exc:
             return _failure("stale", str(exc))
-        except (PromotionInvariantError, ValueError) as exc:
+        except (PromotionInvariantError, PromotionSourceMoved, ValueError) as exc:
             return _failure("invariant_error", str(exc))
+        except (PromotionRuntimeError, GitError) as exc:
+            return _failure("runtime_error", str(exc))
         return self._promotion_result("already_reserved" if replay else "reserved", value)
 
     async def _cmd_integration_push_conflict_resolution(self, args: dict) -> dict:
