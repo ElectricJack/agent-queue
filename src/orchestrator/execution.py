@@ -1526,14 +1526,17 @@ class ExecutionMixin:
                     commit_proof=repair_commit_proof,
                 )
                 if closed["outcome"] != "completed":
+                    feedback = closed.get(
+                        "feedback", "Repair stage ownership changed during close."
+                    )
                     return {
                         "status": (await self.db.get_task(task.id)).status.value,
                         "pr_url": None,
                         "pipeline_ok": False,
                         "retry_count": None,
                         "verification_retry": True,
-                        "issues": ["Repair stage ownership changed during close."],
-                        "feedback": "Repair stage ownership changed during close.",
+                        "issues": [feedback],
+                        "feedback": feedback,
                     }
             elif review_evidence_snapshot is not None and new_status == TaskStatus.COMPLETED:
                 from src.integration.review_evidence import ReviewEvidenceProducer

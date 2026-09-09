@@ -362,8 +362,7 @@ class PromotionService:
         if principal is None or principal.kind is not PrincipalKind.SESSION:
             raise PromotionAuthorizationError("conflict resolution requires a repair session")
         if (
-            principal.task_id is None
-            or principal.session_id is None
+            principal.session_id is None
             or principal.project_id is None
             or principal.session_instance_token is None
         ):
@@ -380,9 +379,12 @@ class PromotionService:
         repository = await self._resolve_repository(intent["repository_id"])
         self._assert_resolution_repository(intent, repository)
 
+        # Pool tokens have no fixed task. The fenced owner is only a lookup key;
+        # get_repair_filing_scope locks and verifies its live session assignment.
+        repair_task_id = principal.task_id or request.fence.owner_id
         async with self.db.immediate() as conn:
             scope = await self.db.get_repair_filing_scope(
-                principal.task_id, session_id=principal.session_id, conn=conn
+                repair_task_id, session_id=principal.session_id, conn=conn
             )
             if (
                 scope is None
@@ -391,14 +393,17 @@ class PromotionService:
                 or scope["target_kind"] != "parent"
                 or scope["parent_task_id"] != intent["target_task_id"]
                 or scope["project_id"] != intent["project_id"]
+                or scope["project_id"] != principal.project_id
                 or scope["repository_id"] != intent["repository_id"]
                 or scope["writer_kind"] != "repair_delegate"
+                or scope["trigger_id"] != intent["id"]
+                or not self._repair_subject_matches_intent(scope, intent)
                 or scope["session_id"] != principal.session_id
                 or scope["workspace_id"] is None
                 or not scope["instance_token"]
                 or not matches_session_instance(principal, scope["instance_token"])
                 or scope["fence_token"] != request.fence.token
-                or request.fence.owner_id != principal.task_id
+                or request.fence.owner_id != repair_task_id
                 or scope["deadline_at"] is None
                 or self.clock() >= float(scope["deadline_at"])
             ):
@@ -415,7 +420,7 @@ class PromotionService:
                         "repair_commit_shas": list(request.repair_commit_shas),
                         "operation_id": request.operation_id,
                         "stage_ordinal": scope["stage"],
-                        "repair_task_id": principal.task_id,
+                        "repair_task_id": repair_task_id,
                         "repair_session_id": principal.session_id,
                         "repair_session_instance_token": scope["instance_token"],
                         "repair_workspace_id": scope["workspace_id"],
@@ -433,8 +438,7 @@ class PromotionService:
         if principal is None or principal.kind is not PrincipalKind.SESSION:
             raise PromotionAuthorizationError("resolution push requires a repair session")
         if (
-            principal.task_id is None
-            or principal.session_id is None
+            principal.session_id is None
             or principal.project_id is None
             or principal.session_instance_token is None
         ):
@@ -537,8 +541,9 @@ class PromotionService:
         return self._value(recorded), already_applied
 
     async def _resolution_push_scope_on(self, conn, intent, fence, principal):
+        repair_task_id = principal.task_id or fence.owner_id
         scope = await self.db.get_repair_filing_scope(
-            principal.task_id, session_id=principal.session_id, conn=conn
+            repair_task_id, session_id=principal.session_id, conn=conn
         )
         if (
             scope is None
@@ -547,15 +552,18 @@ class PromotionService:
             or scope["target_kind"] != "parent"
             or scope["parent_task_id"] != intent["target_task_id"]
             or scope["project_id"] != intent["project_id"]
+            or scope["project_id"] != principal.project_id
             or scope["repository_id"] != intent["repository_id"]
             or scope["writer_kind"] != "repair_delegate"
+            or scope["trigger_id"] != intent["id"]
+            or not self._repair_subject_matches_intent(scope, intent)
             or scope["session_id"] != principal.session_id
             or scope["workspace_id"] is None
             or scope["workspace_path"] is None
             or not scope["instance_token"]
             or not matches_session_instance(principal, scope["instance_token"])
             or scope["fence_token"] != fence.token
-            or fence.owner_id != principal.task_id
+            or fence.owner_id != repair_task_id
             or scope["deadline_at"] is None
             or self.clock() >= float(scope["deadline_at"])
         ):
@@ -571,7 +579,7 @@ class PromotionService:
                 "remote_sha": intent["resolution_head_sha"],
                 "operation_id": scope["operation_id"],
                 "stage_ordinal": scope["stage"],
-                "repair_task_id": principal.task_id,
+                "repair_task_id": principal.task_id or fence.owner_id,
                 "repair_session_id": principal.session_id,
                 "repair_session_instance_token": scope["instance_token"],
                 "repair_workspace_id": scope["workspace_id"],
@@ -669,20 +677,33 @@ class PromotionService:
         )
         if not commits or commits != intent["resolution_commit_shas"]:
             raise PromotionInvariantError("resolution commit range does not match reservation")
-        merges = await self.git.arun_git_result(
+        lineage = await self.git.arun_git_result(
             [
                 "rev-list",
-                "--min-parents=2",
+                "--parents",
+                "--first-parent",
+                "--reverse",
                 f"{intent['expected_target']}..{intent['resolution_head_sha']}",
             ],
             cwd=str(store),
             env={"LC_ALL": "C"},
             lock_held=True,
         )
-        if merges.returncode != 0:
-            raise PromotionRuntimeError((merges.stderr or "merge scan failed").strip())
-        if merges.stdout.strip():
-            raise PromotionInvariantError("resolution commit range contains a merge commit")
+        if lineage.returncode != 0:
+            raise PromotionRuntimeError((lineage.stderr or "resolution lineage scan failed").strip())
+        previous = intent["expected_target"]
+        source_merged = False
+        for line in lineage.stdout.splitlines():
+            commit, *parents = line.split()
+            if not parents or parents[0] != previous:
+                raise PromotionInvariantError("resolution first-parent chain changed its target")
+            if len(parents) > 1:
+                if source_merged or parents[1:] != [intent["source_head"]]:
+                    raise PromotionInvariantError("resolution contains an unreviewed merge commit")
+                source_merged = True
+            previous = commit
+        if previous != intent["resolution_head_sha"]:
+            raise PromotionInvariantError("resolution first-parent chain is incomplete")
 
     async def _resolution_commit_range(
         self, store: Path, expected_target: str, resolved_head: str
@@ -1160,6 +1181,24 @@ class PromotionService:
             or intent["origin_url"] != repository.origin_url
         ):
             raise PromotionInvariantError("promotion repository identity changed")
+
+    @staticmethod
+    def _repair_subject_matches_intent(scope: dict, intent: dict) -> bool:
+        """Accept only the conflict's old tip or its frozen resolution tip.
+
+        A crash after the resolution push can leave the stage rebound to the
+        resolved parent HEAD before the intent is finalized.  That exact
+        durable resolution remains valid for replay; an unrelated parent
+        subject does not.
+        """
+        subject = scope.get("current_subject") or {}
+        allowed_heads = {intent["expected_target"]}
+        if intent.get("resolution_head_sha"):
+            allowed_heads.add(intent["resolution_head_sha"])
+        return (
+            subject.get("kind") == "parent"
+            and subject.get("head_sha") in allowed_heads
+        )
 
     @staticmethod
     def _value(intent: dict) -> PromotionValue:

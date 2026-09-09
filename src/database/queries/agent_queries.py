@@ -13,6 +13,13 @@ from src.models import Agent, AgentState, TaskStatus
 class AgentQueryMixin:
     """Query mixin for agent operations.  Expects ``self._engine``."""
 
+    async def normalize_agent_state_casing(self) -> None:
+        """Repair known enum casing left by an older integration handoff writer."""
+        async with self._engine.begin() as conn:
+            await conn.execute(update(agents).where(
+                agents.c.state.in_([state.value.lower() for state in AgentState]),
+            ).values(state=func.upper(agents.c.state)))
+
     async def create_agent(self, agent: Agent) -> None:
         """Insert an explicitly requested definition, even after manual deletion."""
         async with self._engine.begin() as conn:
@@ -357,7 +364,7 @@ class AgentQueryMixin:
             model=row.get("model"),
             intelligence_class=row.get("intelligence_class"),
             deleted_at=row.get("deleted_at"),
-            state=AgentState(row["state"]),
+            state=AgentState(row["state"].upper()),
             current_task_id=row["current_task_id"],
             pid=row["pid"],
             last_heartbeat=row["last_heartbeat"],

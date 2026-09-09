@@ -51,6 +51,7 @@ from src.scheduler import (
     PoolProjectSupply,
     PoolSupply,
     place_pool_actions,
+    rebalance_idle_pools,
     size_pools,
 )
 from src.sessions.spec import pool_session_name
@@ -372,6 +373,16 @@ class PoolsMixin:
         starts, drains, starvations = place_pool_actions(
             actions=actions, candidates=measurement.candidates
         )
+        relocations, self._pool_rebalance_since = rebalance_idle_pools(
+            candidates=measurement.candidates,
+            starts=starts,
+            drains=drains,
+            surplus_since=getattr(self, "_pool_rebalance_since", {}),
+            now=now,
+            grace=self.config.swarm.scale_down_grace,
+            max_drains=self.config.swarm.max_drains_per_tick,
+        )
+        drains.extend(relocations)
 
         await self._report_pool_starvation(starvations)
 

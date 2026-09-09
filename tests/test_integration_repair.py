@@ -1386,6 +1386,16 @@ async def test_human_resume_rearms_exact_live_unstarted_resolution_writer(db):
             )
             .values(state="expired", completed_at=103.0)
         )
+        await conn.execute(
+            update(tasks).where(tasks.c.id == "parent").values(status=TaskStatus.BLOCKED.value)
+        )
+    async with db.immediate() as conn:
+        await conn.execute(
+            update(tasks)
+            .where(tasks.c.id == "parent")
+            .values(status=TaskStatus.BLOCKED.value, assigned_agent_id=None)
+        )
+    await db.set_task_meta("parent", "blocked_terminal", "integration_repair_exhausted")
 
     intent = await db.reserve_integration_promotion_intent(
         {
@@ -1511,6 +1521,92 @@ async def test_human_resume_rearms_exact_live_unstarted_resolution_writer(db):
             .where(integration_promotion_intents.c.id == intent["id"])
             .values(resolution_push_started_at=0.0)
         )
+        await conn.execute(
+            insert(integration_branch_owners).values(
+                id="legacy-duplicate-owner",
+                repository_id="repo",
+                ref="aq/legacy-duplicate",
+                owner_id=repair_task_id,
+                owner_role="repair",
+                fence_token=13,
+                handoff_state="attached",
+                session_id="resolution-session",
+                workspace_id="resolution-workspace",
+                created_at=202.0,
+                updated_at=202.0,
+            )
+        )
+    async with db._engine.connect() as conn:
+        legacy_intent_before = dict(
+            (
+                await conn.execute(
+                    select(integration_promotion_intents).where(
+                        integration_promotion_intents.c.id == intent["id"]
+                    )
+                )
+            ).mappings().one()
+        )
+        operation_before = dict(
+            (
+                await conn.execute(
+                    select(integration_repair_operations).where(
+                        integration_repair_operations.c.id == "operation"
+                    )
+                )
+            ).mappings().one()
+        )
+        stage_before = dict(
+            (
+                await conn.execute(
+                    select(integration_repair_stages).where(
+                        integration_repair_stages.c.operation_id == "operation",
+                        integration_repair_stages.c.ordinal == 1,
+                    )
+                )
+            ).mappings().one()
+        )
+    duplicate_legacy = await IntegrationControlService(
+        db,
+        clock=lambda: 202.0,
+        legacy_resolution_observer=AsyncMock(return_value="c" * 40),
+    ).resume("operation")
+    assert duplicate_legacy["outcome"] == "ambiguous"
+    assert {blocker["ref"] for blocker in duplicate_legacy["blockers"]} == {"writer"}
+    async with db._engine.connect() as conn:
+        assert dict(
+            (
+                await conn.execute(
+                    select(integration_promotion_intents).where(
+                        integration_promotion_intents.c.id == intent["id"]
+                    )
+                )
+            ).mappings().one()
+        ) == legacy_intent_before
+        assert dict(
+            (
+                await conn.execute(
+                    select(integration_repair_operations).where(
+                        integration_repair_operations.c.id == "operation"
+                    )
+                )
+            ).mappings().one()
+        ) == operation_before
+        assert dict(
+            (
+                await conn.execute(
+                    select(integration_repair_stages).where(
+                        integration_repair_stages.c.operation_id == "operation",
+                        integration_repair_stages.c.ordinal == 1,
+                    )
+                )
+            ).mappings().one()
+        ) == stage_before
+    async with db.immediate() as conn:
+        await conn.execute(
+            update(integration_branch_owners)
+            .where(integration_branch_owners.c.id == "legacy-duplicate-owner")
+            .values(handoff_state="released", updated_at=202.0)
+        )
     ambiguous = await IntegrationControlService(db, clock=lambda: 202.0).resume("operation")
     assert ambiguous["outcome"] == "ambiguous"
     assert {blocker["ref"] for blocker in ambiguous["blockers"]} == {"promotion", "writer"}
@@ -1535,6 +1631,13 @@ async def test_human_resume_rearms_exact_live_unstarted_resolution_writer(db):
     # observing its frozen old remote tip.  This retains the same writer,
     # fence and intent, records the observation, and opens a fresh deadline;
     # a remote mismatch remains the ambiguity above and writes nothing.
+    async with db.immediate() as conn:
+        await conn.execute(
+            update(tasks)
+            .where(tasks.c.id == "parent")
+            .values(status=TaskStatus.BLOCKED.value, assigned_agent_id=None)
+        )
+    await db.set_task_meta("parent", "blocked_terminal", "integration_repair_exhausted")
     observed_old = AsyncMock(return_value="c" * 40)
     legacy_resumed = await IntegrationControlService(
         db, clock=lambda: 203.0, legacy_resolution_observer=observed_old

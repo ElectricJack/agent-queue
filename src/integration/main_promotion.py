@@ -780,6 +780,20 @@ class RootPromotionService:
                     raise RootPromotionInvariantError(
                         "moved-main batch could not re-enter candidate building"
                     )
+                # Re-enter the sealed batch's pinned construction route in the
+                # same transaction. Without this outbox continuation a crash
+                # leaves a building batch excluded from both CI and intent polls.
+                event_id = f"integration-rebuild:{intent['id']}"
+                await enqueue_integration_event(
+                    conn, event_id=event_id, dedup_key=event_id,
+                    project_id=intent["project_id"], event_type="integration.sealed",
+                    payload={
+                        "project_id": intent["project_id"],
+                        "batch_id": intent["root_batch_id"],
+                        "operation_id": intent["operation_key"],
+                    },
+                    available_at=now,
+                )
 
     @staticmethod
     def _intent_matches_authority(intent: dict[str, Any], state: dict[str, Any]) -> bool:

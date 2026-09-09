@@ -780,3 +780,33 @@ async def test_a_quarantined_project_holds_no_warm_reservation_open(orch, db, tm
     measurement = await orch._measure_pools()
 
     assert measurement.bounds[PoolKey("worker")] == (1, 4)
+
+
+async def test_reconcile_relocates_idle_capacity_without_raising_global_cap(orch, db, tmp_path):
+    """A full pool can serve a new project's queue after its old queue empties."""
+    await second_project(db, path=str(tmp_path / "second-ws"))
+    await db.update_profile("worker", max_active=1)
+    orch.config.swarm.global_max_active = 1
+    orch.config.swarm.scale_down_grace = 0
+    await ready(db, "old-demand")
+    await db.update_task("old-demand", project_id="second")
+    await orch._reconcile_pools()
+    sessions = await db.list_sessions(lifecycle="pool")
+    assert len(sessions) == 1
+    old = sessions[0]
+    assert old.project_id == "second"
+    await db.update_session(old.id, state="running")
+    await db.delete_task("old-demand")
+    await ready(db, "new-demand")
+
+    await orch._reconcile_pools()
+
+    assert (await db.get_session(old.id)).desired_state == "stopped"
+    assert len(await db.list_sessions(lifecycle="pool")) == 1
+    # A later sizing pass, after retirement, may launch in the demanding project.
+    await db.update_session(old.id, state="stopped")
+    await orch._reconcile_pools()
+    successors = [s for s in await db.list_sessions(lifecycle="pool") if s.id != old.id]
+    assert len(successors) == 1
+    assert successors[0].project_id == PROJECT_ID
+    assert (await db.get_task("new-demand")).status is TaskStatus.READY

@@ -1051,6 +1051,26 @@ class SessionReconciler:
             if still_open:
                 continue
             if row.lifecycle == "pool":
+                # A terminal close can commit before its CLI response is
+                # lost to a daemon restart.  Its attached integration owner
+                # is intentionally a release guard, so ordinary reclaim
+                # cannot repair it.  Ask the orchestrator to prove this
+                # exact writer is gone and its terminal branch is clean and
+                # published; a live, dirty, stale, or reused holder remains
+                # untouched and the normal guard below keeps it fenced.
+                if task is not None and task.status is TaskStatus.COMPLETED:
+                    recover = getattr(
+                        self.orchestrator, "arecover_completed_integration_pool_claim", None
+                    )
+                    if recover is not None:
+                        try:
+                            if await recover(task, row):
+                                continue
+                        except Exception:
+                            logger.warning(
+                                "Could not recover completed pool claim %s", row.id,
+                                exc_info=True,
+                            )
                 # ``_cmd_task_close`` makes the task terminal before its
                 # subsequent ``release_claim`` clears ``sessions.task_id``.
                 # Releasing here is idempotent with that later close-path

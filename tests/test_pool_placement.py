@@ -331,3 +331,76 @@ def test_starts_and_drains_for_several_pools_stay_separated():
     )
     assert [(s.key, s.project_id) for s in starts] == [(K, "a")]
     assert [(d.key, d.session_ids) for d in drains] == [(other, ("r1",))]
+
+
+def rebalance(candidates, *, since=None, now=100, starts=(), drains=(), limit=2):
+    from src.scheduler import rebalance_idle_pools
+
+    return rebalance_idle_pools(
+        candidates={K: candidates}, starts=list(starts), drains=list(drains),
+        surplus_since=since or {}, now=now, grace=30, max_drains=limit,
+    )
+
+
+def test_full_global_pool_relocates_only_after_continuous_imbalance():
+    from src.scheduler import PoolSupply, size_pools
+
+    candidates = [
+        cand("quiet", live=1, idle_session_ids=("idle",)),
+        cand("working", live=2, ready=1, project_live_total=2),
+    ]
+    actions, _ = size_pools(
+        supply={K: PoolSupply(running_busy=2, running_idle=1, idle_session_ids=["idle"])},
+        demand={K: 1}, bounds={K: (0, 3)}, global_cap=3, surplus_since={},
+        now=100, scale_down_grace=30, max_starts_per_tick=2, max_drains_per_tick=2,
+    )
+    assert actions == []  # The previous global-only sizing stalled here forever.
+    drained, since = rebalance(candidates)
+    assert drained == []
+    assert since == {K: 100}
+    assert rebalance(candidates, since=since, now=129)[0] == []
+    drained, _ = rebalance(candidates, since=since, now=130)
+    assert [(d.project_id, d.session_ids) for d in drained] == [("quiet", ("idle",))]
+    # Only the subsequent normal sizing pass may replace retired capacity.
+    actions, _ = size_pools(
+        supply={K: PoolSupply(running_busy=2)}, demand={K: 1}, bounds={K: (0, 3)},
+        global_cap=3, surplus_since={}, now=131, scale_down_grace=30,
+        max_starts_per_tick=2, max_drains_per_tick=2,
+    )
+    starts, _, _ = place_pool_actions(actions=actions, candidates={K: [candidates[1]]})
+    assert placed(starts) == [("working", 1, "deficit")]
+
+
+def test_rebalance_preserves_warm_floor_and_capacity_for_local_demand():
+    target = cand("target", ready=3)
+    for donor in [
+        cand("source", live=1, idle_session_ids=("idle",), warm_floor=1),
+        cand("source", live=1, idle_session_ids=("idle",), ready=1),
+        cand("source", live=2, idle_session_ids=(), starting=1),
+    ]:
+        assert rebalance([donor, target], since={K: 0}) == ([], {})
+
+
+def test_rebalance_requires_a_destination_that_can_actually_start():
+    donor = cand("source", live=1, idle_session_ids=("idle",))
+    for target in [
+        cand("target", ready=1, quarantined=True),
+        cand("target", ready=1, workspace_capacity=0),
+        cand("target", ready=1, project_cap=1, project_live_total=1),
+        cand("target", ready=1, starting=1, live=1),
+        cand("target", ready=0),
+    ]:
+        assert rebalance([donor, target], since={K: 0}) == ([], {})
+
+
+def test_rebalance_respects_existing_actions_and_global_drain_budget():
+    from src.scheduler import PlacedDrain, PlacedStart
+
+    candidates = [cand("source", live=3, idle_session_ids=("a", "b", "c")),
+                  cand("target", ready=3)]
+    assert rebalance(candidates, since={K: 0}, starts=[PlacedStart(K, "target", 1, "deficit")]) == ([], {})
+    assert rebalance(candidates, since={K: 0}, drains=[PlacedDrain(K, "source", ("a",))]) == ([], {})
+    other = PlacedDrain(PoolKey("other"), "elsewhere", ("already-draining",))
+    drained, _ = rebalance(candidates, since={K: 0}, drains=[other], limit=2)
+    assert drained == [PlacedDrain(K, "source", ("a",))]
+    assert rebalance(candidates, since={K: 0}, limit=0)[0] == []

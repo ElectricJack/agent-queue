@@ -296,6 +296,13 @@ outright; the rest are ordered by idle surplus relative to their own demand
 session in the chosen project goes. That is what stops a quiet project's one
 warm worker from being reaped first simply for being idle and old.
 
+When global supply already matches demand but idle workers are in another
+project, the pool waits the scale-down grace period and drains only idle
+surplus above that project's warm floor. A destination must have unserved
+ready work, workspace capacity and room under its project cap. The next
+normal sizing pass replaces the retired capacity; rebalancing never grants
+extra starts or raises the configured limits.
+
 **Nowhere to put it.** When the sizer authorises a start and no project is
 eligible, the start is not silently dropped: it comes back as a starvation,
 logged once per condition (not per tick), persisted as
@@ -877,10 +884,27 @@ reseed command is the supported path.
 | `desired` is met but one project has no worker | placement chose elsewhere: read the `Projects` column and `pool.scaled`'s `placement_reason` |
 | Workers appear and vanish every minute | a quarantining launch failure; read `quarantined_reason` (§4a) |
 | A session holds a task that is already closed | `aq doctor --check pools.stuck --fix` |
+| A completed integration task still has a running pool claim and attached branch owner after a restart | As a local operator, run `aq integration flush <project-id>`; it recovers only a quiescent, clean, origin-published exact holder. |
 | A claim never completes | `aq doctor --check pools.preparing_stuck --fix` (releases as `prepare_failed`) |
 | Pools stopped growing and nothing is quarantined | a soft-deleted worker row is fencing `create_automatic_agent` — §5 |
 | A task is BLOCKED with `needs_attention: session_stall` | the session was quarantined (§4b); clear the task by hand |
 | The pool never scales down | `scale_down_grace` has not elapsed, or every session is busy |
+
+For the terminal-close recovery above, use the normal public integration
+surface; do not force the task READY or manually clear the session/workspace
+rows:
+
+```bash
+aq task get --task-id keen-harbor.8
+aq integration flush agent-queue
+aq task get --task-id keen-harbor.8
+aq pool status --project-id agent-queue
+```
+
+The flush preserves the task's COMPLETED status, completion/review evidence,
+and published head. It refuses a live or unprobeable writer, a dirty checkout,
+an unpublished head, a stale claim epoch, or a session/workspace that has been
+reused; those cases remain fenced for investigation rather than being unlocked.
 
 ---
 
