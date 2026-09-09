@@ -24,8 +24,9 @@ class CreateProjectRequest:
             after creation.  If false, skip channel creation.  When omitted, falls back to the global
             per_project_channels.auto_create config setting.
         default_profile_id (None | str | Unset): Agent profile used for tasks in this project that don't specify their
-            own profile_id.  When omitted, a system default is chosen automatically (claude-opus, then claude-sonnet, then
-            any general-purpose profile).
+            own profile_id.  When omitted, a system default is chosen automatically by src/profiles/default_selection.py
+            (PREFERRED_DEFAULT_PROFILE_IDS, then any remaining general-purpose profile alphabetically).  Run `aq agent list-
+            profiles` for the ids this install has.
     """
 
     name: str

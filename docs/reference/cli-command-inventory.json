@@ -2,24 +2,23 @@
   "schema_version": 1,
   "generated_by": "scripts/generate-cli-command-inventory.py",
   "counts": {
-    "leaf_commands": 318,
+    "leaf_commands": 317,
     "registration": {
-      "generated": 232,
+      "generated": 231,
       "handwritten": 86
     },
     "ownership": {
-      "core": 279,
+      "core": 278,
       "external-plugin": 2,
       "internal-plugin": 37
     },
     "support": {
       "deprecated": 1,
-      "supported": 316,
-      "unsupported": 1
+      "supported": 316
     },
     "evidence_level": {
       "behavioral": 7,
-      "dispatch": 232,
+      "dispatch": 231,
       "registration": 79
     }
   },
@@ -46,7 +45,11 @@
         "required": [
           "--profile-id"
         ],
-        "optional": [],
+        "optional": [
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
         "structured": [],
         "nullable": []
       }
@@ -78,7 +81,10 @@
           "--harness",
           "--model",
           "--intelligence-class",
-          "--enabled"
+          "--enabled",
+          "--json",
+          "--brief",
+          "--api-url"
         ],
         "structured": [],
         "nullable": []
@@ -116,7 +122,10 @@
           "--claude-dangerously-skip-permissions",
           "--allowed-tools",
           "--mcp-servers",
-          "--system-prompt-suffix"
+          "--system-prompt-suffix",
+          "--json",
+          "--brief",
+          "--api-url"
         ],
         "structured": [
           "--allowed-tools",
@@ -147,7 +156,11 @@
         "required": [
           "--agent-id"
         ],
-        "optional": [],
+        "optional": [
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
         "structured": [],
         "nullable": []
       }
@@ -175,7 +188,10 @@
           "--profile-id"
         ],
         "optional": [
-          "--reason"
+          "--reason",
+          "--json",
+          "--brief",
+          "--api-url"
         ],
         "structured": [],
         "nullable": []
@@ -209,7 +225,10 @@
           "--harness",
           "--model",
           "--intelligence-class",
-          "--enabled"
+          "--enabled",
+          "--json",
+          "--brief",
+          "--api-url"
         ],
         "structured": [],
         "nullable": []
@@ -248,7 +267,10 @@
           "--mcp-servers",
           "--system-prompt-suffix",
           "--default-class",
-          "--install"
+          "--install",
+          "--json",
+          "--brief",
+          "--api-url"
         ],
         "structured": [
           "--allowed-tools",
@@ -281,7 +303,10 @@
           "--profile-id"
         ],
         "optional": [
-          "--create-gist"
+          "--create-gist",
+          "--json",
+          "--brief",
+          "--api-url"
         ],
         "structured": [],
         "nullable": []
@@ -309,7 +334,11 @@
         "required": [
           "--agent-id"
         ],
-        "optional": [],
+        "optional": [
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
         "structured": [],
         "nullable": []
       }
@@ -336,7 +365,11 @@
         "required": [
           "--task-id"
         ],
-        "optional": [],
+        "optional": [
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
         "structured": [],
         "nullable": []
       }
@@ -363,7 +396,11 @@
         "required": [
           "--profile-id"
         ],
-        "optional": [],
+        "optional": [
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
         "structured": [],
         "nullable": []
       }
@@ -393,7 +430,10 @@
         "optional": [
           "--id",
           "--name",
-          "--overwrite"
+          "--overwrite",
+          "--json",
+          "--brief",
+          "--api-url"
         ],
         "structured": [],
         "nullable": []
@@ -421,7 +461,11 @@
         "required": [
           "--profile-id"
         ],
-        "optional": [],
+        "optional": [
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
         "structured": [],
         "nullable": []
       }
@@ -447,7 +491,10 @@
       "parameters": {
         "required": [],
         "optional": [
-          "--project-id"
+          "--project-id",
+          "--json",
+          "--brief",
+          "--api-url"
         ],
         "structured": [],
         "nullable": []
@@ -473,7 +520,11 @@
       ],
       "parameters": {
         "required": [],
-        "optional": [],
+        "optional": [
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
         "structured": [],
         "nullable": []
       }
@@ -498,7 +549,11 @@
       ],
       "parameters": {
         "required": [],
-        "optional": [],
+        "optional": [
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
         "structured": [],
         "nullable": []
       }
@@ -526,7 +581,10 @@
           "body",
           "--all-running",
           "--profile",
-          "--wait"
+          "--wait",
+          "--json",
+          "--brief",
+          "--api-url"
         ],
         "structured": [],
         "nullable": []
@@ -553,7 +611,10 @@
       "parameters": {
         "required": [],
         "optional": [
-          "--legacy-only"
+          "--legacy-only",
+          "--json",
+          "--brief",
+          "--api-url"
         ],
         "structured": [],
         "nullable": []
@@ -581,7 +642,10 @@
         "required": [],
         "optional": [
           "--profile-id",
-          "--drifted-only"
+          "--drifted-only",
+          "--json",
+          "--brief",
+          "--api-url"
         ],
         "structured": [],
         "nullable": []
@@ -610,7 +674,10 @@
           "--profile-id"
         ],
         "optional": [
-          "--backup"
+          "--backup",
+          "--json",
+          "--brief",
+          "--api-url"
         ],
         "structured": [],
         "nullable": []
@@ -639,7 +706,11 @@
           "--project-id",
           "--agent-type"
         ],
-        "optional": [],
+        "optional": [
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
         "structured": [],
         "nullable": []
       }
@@ -666,7 +737,11 @@
         "required": [
           "--agent-id"
         ],
-        "optional": [],
+        "optional": [
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
         "structured": [],
         "nullable": []
       }
@@ -692,7 +767,10 @@
           "project",
           "--once",
           "--thread-id",
-          "--timeout"
+          "--timeout",
+          "--json",
+          "--brief",
+          "--api-url"
         ],
         "structured": [],
         "nullable": []
@@ -720,7 +798,9 @@
           "--project",
           "--since",
           "--group-by",
-          "--json"
+          "--json",
+          "--brief",
+          "--api-url"
         ],
         "structured": [],
         "nullable": []
@@ -743,7 +823,11 @@
       ],
       "parameters": {
         "required": [],
-        "optional": [],
+        "optional": [
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
         "structured": [],
         "nullable": []
       }
@@ -768,7 +852,10 @@
           "sqlite_path"
         ],
         "optional": [
-          "--yes"
+          "--yes",
+          "--json",
+          "--brief",
+          "--api-url"
         ],
         "structured": [],
         "nullable": []
@@ -792,7 +879,10 @@
       "parameters": {
         "required": [],
         "optional": [
-          "--yes"
+          "--yes",
+          "--json",
+          "--brief",
+          "--api-url"
         ],
         "structured": [],
         "nullable": []
@@ -824,7 +914,10 @@
           "--mode",
           "--only-closed",
           "--limit",
-          "--confirm"
+          "--confirm",
+          "--json",
+          "--brief",
+          "--api-url"
         ],
         "structured": [],
         "nullable": []
@@ -854,7 +947,10 @@
           "--channel-id",
           "--project-id",
           "--limit",
-          "--confirm"
+          "--confirm",
+          "--json",
+          "--brief",
+          "--api-url"
         ],
         "structured": [],
         "nullable": []
@@ -881,7 +977,9 @@
         "optional": [
           "--fix",
           "--json",
-          "--check"
+          "--check",
+          "--brief",
+          "--api-url"
         ],
         "structured": [],
         "nullable": []
@@ -911,7 +1009,10 @@
           "--path"
         ],
         "optional": [
-          "--newer-than"
+          "--newer-than",
+          "--json",
+          "--brief",
+          "--api-url"
         ],
         "structured": [],
         "nullable": []
@@ -942,7 +1043,10 @@
           "--new-string"
         ],
         "optional": [
-          "--replace-all"
+          "--replace-all",
+          "--json",
+          "--brief",
+          "--api-url"
         ],
         "structured": [],
         "nullable": []
@@ -971,7 +1075,11 @@
           "--pattern",
           "--path"
         ],
-        "optional": [],
+        "optional": [
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
         "structured": [],
         "nullable": []
       }
@@ -1004,7 +1112,10 @@
           "--case-insensitive",
           "--glob",
           "--output-mode",
-          "--max-results"
+          "--max-results",
+          "--json",
+          "--brief",
+          "--api-url"
         ],
         "structured": [],
         "nullable": []
@@ -1034,7 +1145,10 @@
         ],
         "optional": [
           "--path",
-          "--workspace"
+          "--workspace",
+          "--json",
+          "--brief",
+          "--api-url"
         ],
         "structured": [],
         "nullable": []
@@ -1065,7 +1179,10 @@
         "optional": [
           "--max-lines",
           "--offset",
-          "--limit"
+          "--limit",
+          "--json",
+          "--brief",
+          "--api-url"
         ],
         "structured": [],
         "nullable": []
@@ -1094,7 +1211,11 @@
           "--project-id",
           "--path"
         ],
-        "optional": [],
+        "optional": [
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
         "structured": [],
         "nullable": []
       }
@@ -1125,7 +1246,10 @@
         "optional": [
           "--summary",
           "--findings-count",
-          "--category"
+          "--category",
+          "--json",
+          "--brief",
+          "--api-url"
         ],
         "structured": [],
         "nullable": []
@@ -1155,7 +1279,10 @@
           "--path"
         ],
         "optional": [
-          "--mode"
+          "--mode",
+          "--json",
+          "--brief",
+          "--api-url"
         ],
         "structured": [],
         "nullable": []
@@ -1189,7 +1316,10 @@
           "--weights",
           "--recent-days",
           "--history-lookback-days",
-          "--seed"
+          "--seed",
+          "--json",
+          "--brief",
+          "--api-url"
         ],
         "structured": [
           "--weights"
@@ -1220,7 +1350,11 @@
           "--path",
           "--content"
         ],
-        "optional": [],
+        "optional": [
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
         "structured": [],
         "nullable": []
       }
@@ -1249,7 +1383,10 @@
         "optional": [
           "--var",
           "--parent",
-          "--dry-run"
+          "--dry-run",
+          "--json",
+          "--brief",
+          "--api-url"
         ],
         "structured": [],
         "nullable": []
@@ -1276,7 +1413,10 @@
       "parameters": {
         "required": [],
         "optional": [
-          "--project-id"
+          "--project-id",
+          "--json",
+          "--brief",
+          "--api-url"
         ],
         "structured": [],
         "nullable": []
@@ -1304,7 +1444,10 @@
           "name",
           "--project-id",
           "--var",
-          "--as-cooked"
+          "--as-cooked",
+          "--json",
+          "--brief",
+          "--api-url"
         ],
         "structured": [],
         "nullable": []
@@ -1334,7 +1477,10 @@
         ],
         "optional": [
           "--name",
-          "--workspace"
+          "--workspace",
+          "--json",
+          "--brief",
+          "--api-url"
         ],
         "structured": [],
         "nullable": []
@@ -1363,7 +1509,10 @@
         "optional": [
           "--base-branch",
           "--project-id",
-          "--workspace"
+          "--workspace",
+          "--json",
+          "--brief",
+          "--api-url"
         ],
         "structured": [],
         "nullable": []
@@ -1393,7 +1542,10 @@
           "--branch"
         ],
         "optional": [
-          "--workspace"
+          "--workspace",
+          "--json",
+          "--brief",
+          "--api-url"
         ],
         "structured": [],
         "nullable": []
@@ -1423,7 +1575,10 @@
         ],
         "optional": [
           "--project-id",
-          "--workspace"
+          "--workspace",
+          "--json",
+          "--brief",
+          "--api-url"
         ],
         "structured": [],
         "nullable": []
@@ -1453,7 +1608,10 @@
         ],
         "optional": [
           "--ref",
-          "--max-attempts"
+          "--max-attempts",
+          "--json",
+          "--brief",
+          "--api-url"
         ],
         "structured": [],
         "nullable": []
@@ -1483,7 +1641,10 @@
         ],
         "optional": [
           "--project-id",
-          "--workspace"
+          "--workspace",
+          "--json",
+          "--brief",
+          "--api-url"
         ],
         "structured": [],
         "nullable": []
@@ -1513,7 +1674,10 @@
         ],
         "optional": [
           "--project-id",
-          "--workspace"
+          "--workspace",
+          "--json",
+          "--brief",
+          "--api-url"
         ],
         "structured": [],
         "nullable": []
@@ -1543,7 +1707,10 @@
         ],
         "optional": [
           "--project-id",
-          "--workspace"
+          "--workspace",
+          "--json",
+          "--brief",
+          "--api-url"
         ],
         "structured": [],
         "nullable": []
@@ -1574,7 +1741,10 @@
         "optional": [
           "--private",
           "--org",
-          "--description"
+          "--description",
+          "--json",
+          "--brief",
+          "--api-url"
         ],
         "structured": [],
         "nullable": []
@@ -1607,7 +1777,10 @@
           "--branch",
           "--base",
           "--project-id",
-          "--workspace"
+          "--workspace",
+          "--json",
+          "--brief",
+          "--api-url"
         ],
         "structured": [],
         "nullable": []
@@ -1637,7 +1810,10 @@
         ],
         "optional": [
           "--base-branch",
-          "--workspace"
+          "--workspace",
+          "--json",
+          "--brief",
+          "--api-url"
         ],
         "structured": [],
         "nullable": []
@@ -1668,7 +1844,10 @@
         "optional": [
           "--project-id",
           "--description",
-          "--tech-stack"
+          "--tech-stack",
+          "--json",
+          "--brief",
+          "--api-url"
         ],
         "structured": [],
         "nullable": []
@@ -1696,7 +1875,11 @@
         "required": [
           "--project-id"
         ],
-        "optional": [],
+        "optional": [
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
         "structured": [],
         "nullable": []
       }
@@ -1725,7 +1908,10 @@
         ],
         "optional": [
           "--count",
-          "--workspace"
+          "--workspace",
+          "--json",
+          "--brief",
+          "--api-url"
         ],
         "structured": [],
         "nullable": []
@@ -1756,7 +1942,10 @@
         "optional": [
           "--default-branch",
           "--project-id",
-          "--workspace"
+          "--workspace",
+          "--json",
+          "--brief",
+          "--api-url"
         ],
         "structured": [],
         "nullable": []
@@ -1786,7 +1975,10 @@
         ],
         "optional": [
           "--project-id",
-          "--workspace"
+          "--workspace",
+          "--json",
+          "--brief",
+          "--api-url"
         ],
         "structured": [],
         "nullable": []
@@ -1817,7 +2009,10 @@
         ],
         "optional": [
           "--method",
-          "--force"
+          "--force",
+          "--json",
+          "--brief",
+          "--api-url"
         ],
         "structured": [],
         "nullable": []
@@ -1846,7 +2041,10 @@
         "optional": [
           "--project-id",
           "--branch",
-          "--workspace"
+          "--workspace",
+          "--json",
+          "--brief",
+          "--api-url"
         ],
         "structured": [],
         "nullable": []
@@ -1875,7 +2073,10 @@
         "optional": [
           "--project-id",
           "--branch",
-          "--workspace"
+          "--workspace",
+          "--json",
+          "--brief",
+          "--api-url"
         ],
         "structured": [],
         "nullable": []
@@ -1904,7 +2105,10 @@
         "optional": [
           "--project-id",
           "--branch-name",
-          "--workspace"
+          "--workspace",
+          "--json",
+          "--brief",
+          "--api-url"
         ],
         "structured": [],
         "nullable": []
@@ -1933,7 +2137,10 @@
         "optional": [
           "--project-id",
           "--remote",
-          "--workspace"
+          "--workspace",
+          "--json",
+          "--brief",
+          "--api-url"
         ],
         "structured": [],
         "nullable": []
@@ -1961,7 +2168,11 @@
         "required": [
           "--project-id"
         ],
-        "optional": [],
+        "optional": [
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
         "structured": [],
         "nullable": []
       }
@@ -1989,7 +2200,10 @@
           "--project-id"
         ],
         "optional": [
-          "--variant"
+          "--variant",
+          "--json",
+          "--brief",
+          "--api-url"
         ],
         "structured": [],
         "nullable": []
@@ -2019,7 +2233,10 @@
           "--auto",
           "--task-id",
           "--session-id",
-          "--claim-epoch"
+          "--claim-epoch",
+          "--json",
+          "--brief",
+          "--api-url"
         ],
         "structured": [],
         "nullable": []
@@ -2049,7 +2266,10 @@
           "--to-kind",
           "--to-id",
           "--inject",
-          "--limit"
+          "--limit",
+          "--json",
+          "--brief",
+          "--api-url"
         ],
         "structured": [],
         "nullable": []
@@ -2075,7 +2295,11 @@
           "operation_id",
           "--reason"
         ],
-        "optional": [],
+        "optional": [
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
         "structured": [],
         "nullable": []
       }
@@ -2104,7 +2328,10 @@
         ],
         "optional": [
           "--waiver-id",
-          "--interval-seconds"
+          "--interval-seconds",
+          "--json",
+          "--brief",
+          "--api-url"
         ],
         "structured": [],
         "nullable": []
@@ -2129,7 +2356,11 @@
         "required": [
           "project_id"
         ],
-        "optional": [],
+        "optional": [
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
         "structured": [],
         "nullable": []
       }
@@ -2153,7 +2384,11 @@
         "required": [
           "operation_id"
         ],
-        "optional": [],
+        "optional": [
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
         "structured": [],
         "nullable": []
       }
@@ -2177,7 +2412,11 @@
         "required": [
           "batch_id"
         ],
-        "optional": [],
+        "optional": [
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
         "structured": [],
         "nullable": []
       }
@@ -2201,7 +2440,11 @@
         "required": [
           "project_id"
         ],
-        "optional": [],
+        "optional": [
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
         "structured": [],
         "nullable": []
       }
@@ -2227,7 +2470,11 @@
           "--reason",
           "--blocker-digest"
         ],
-        "optional": [],
+        "optional": [
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
         "structured": [],
         "nullable": []
       }
@@ -2267,7 +2514,9 @@
           "--since",
           "--json",
           "--no-color",
-          "--log-file"
+          "--log-file",
+          "--brief",
+          "--api-url"
         ],
         "structured": [],
         "nullable": []
@@ -2304,7 +2553,10 @@
           "--args",
           "--env",
           "--url",
-          "--headers"
+          "--headers",
+          "--json",
+          "--brief",
+          "--api-url"
         ],
         "structured": [
           "--args",
@@ -2337,7 +2589,10 @@
           "--name"
         ],
         "optional": [
-          "--project-id"
+          "--project-id",
+          "--json",
+          "--brief",
+          "--api-url"
         ],
         "structured": [],
         "nullable": []
@@ -2374,7 +2629,10 @@
           "--args",
           "--env",
           "--url",
-          "--headers"
+          "--headers",
+          "--json",
+          "--brief",
+          "--api-url"
         ],
         "structured": [
           "--args",
@@ -2407,7 +2665,10 @@
           "--name"
         ],
         "optional": [
-          "--project-id"
+          "--project-id",
+          "--json",
+          "--brief",
+          "--api-url"
         ],
         "structured": [],
         "nullable": []
@@ -2434,7 +2695,10 @@
       "parameters": {
         "required": [],
         "optional": [
-          "--project-id"
+          "--project-id",
+          "--json",
+          "--brief",
+          "--api-url"
         ],
         "structured": [],
         "nullable": []
@@ -2462,7 +2726,10 @@
         "required": [],
         "optional": [
           "--project-id",
-          "--server-names"
+          "--server-names",
+          "--json",
+          "--brief",
+          "--api-url"
         ],
         "structured": [
           "--server-names"
@@ -2493,7 +2760,10 @@
           "--name"
         ],
         "optional": [
-          "--project-id"
+          "--project-id",
+          "--json",
+          "--brief",
+          "--api-url"
         ],
         "structured": [],
         "nullable": []
@@ -2522,7 +2792,10 @@
           "--content"
         ],
         "optional": [
-          "--scope"
+          "--scope",
+          "--json",
+          "--brief",
+          "--api-url"
         ],
         "structured": [],
         "nullable": []
@@ -2552,7 +2825,10 @@
         ],
         "optional": [
           "--project-id",
-          "--scope"
+          "--scope",
+          "--json",
+          "--brief",
+          "--api-url"
         ],
         "structured": [],
         "nullable": []
@@ -2581,7 +2857,10 @@
           "--to-kind",
           "--to-id",
           "--inject",
-          "--limit"
+          "--limit",
+          "--json",
+          "--brief",
+          "--api-url"
         ],
         "structured": [],
         "nullable": []
@@ -2612,7 +2891,10 @@
           "--to-id",
           "--since",
           "--include-archived",
-          "--limit"
+          "--limit",
+          "--json",
+          "--brief",
+          "--api-url"
         ],
         "structured": [],
         "nullable": []
@@ -2639,7 +2921,10 @@
           "body"
         ],
         "optional": [
-          "--via"
+          "--via",
+          "--json",
+          "--brief",
+          "--api-url"
         ],
         "structured": [],
         "nullable": []
@@ -2676,7 +2961,10 @@
           "--thread-id",
           "--priority",
           "--archive-after-inject",
-          "--pane-open"
+          "--pane-open",
+          "--json",
+          "--brief",
+          "--api-url"
         ],
         "structured": [],
         "nullable": []
@@ -2702,7 +2990,11 @@
         "required": [
           "message_id"
         ],
-        "optional": [],
+        "optional": [
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
         "structured": [],
         "nullable": []
       }
@@ -2731,7 +3023,11 @@
           "--title",
           "--content"
         ],
-        "optional": [],
+        "optional": [
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
         "structured": [],
         "nullable": []
       }
@@ -2759,7 +3055,10 @@
           "--project-id"
         ],
         "optional": [
-          "--specs-path"
+          "--specs-path",
+          "--json",
+          "--brief",
+          "--api-url"
         ],
         "structured": [],
         "nullable": []
@@ -2788,7 +3087,11 @@
           "--project-id",
           "--title"
         ],
-        "optional": [],
+        "optional": [
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
         "structured": [],
         "nullable": []
       }
@@ -2815,7 +3118,11 @@
         "required": [
           "--project-id"
         ],
-        "optional": [],
+        "optional": [
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
         "structured": [],
         "nullable": []
       }
@@ -2843,7 +3150,11 @@
           "--project-id",
           "--title"
         ],
-        "optional": [],
+        "optional": [
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
         "structured": [],
         "nullable": []
       }
@@ -2871,7 +3182,11 @@
           "--project-id",
           "--title"
         ],
-        "optional": [],
+        "optional": [
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
         "structured": [],
         "nullable": []
       }
@@ -2900,7 +3215,11 @@
           "--title",
           "--content"
         ],
-        "optional": [],
+        "optional": [
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
         "structured": [],
         "nullable": []
       }
@@ -2929,7 +3248,10 @@
           "--artifact-sha256"
         ],
         "optional": [
-          "--enabled"
+          "--enabled",
+          "--json",
+          "--brief",
+          "--api-url"
         ],
         "structured": [],
         "nullable": []
@@ -2958,7 +3280,10 @@
         "optional": [
           "--playbook-id",
           "--scope",
-          "--health"
+          "--health",
+          "--json",
+          "--brief",
+          "--api-url"
         ],
         "structured": [],
         "nullable": []
@@ -2988,7 +3313,10 @@
           "--target-sha256"
         ],
         "optional": [
-          "--base-sha256"
+          "--base-sha256",
+          "--json",
+          "--brief",
+          "--api-url"
         ],
         "structured": [],
         "nullable": []
@@ -3017,7 +3345,10 @@
           "--playbook-id"
         ],
         "optional": [
-          "--limit"
+          "--limit",
+          "--json",
+          "--brief",
+          "--api-url"
         ],
         "structured": [],
         "nullable": []
@@ -3045,7 +3376,11 @@
         "required": [
           "--run-id"
         ],
-        "optional": [],
+        "optional": [
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
         "structured": [],
         "nullable": []
       }
@@ -3075,7 +3410,11 @@
           "--scope-identifier",
           "--artifact-sha256"
         ],
-        "optional": [],
+        "optional": [
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
         "structured": [],
         "nullable": []
       }
@@ -3103,7 +3442,10 @@
           "--playbook-id"
         ],
         "optional": [
-          "--event"
+          "--event",
+          "--json",
+          "--brief",
+          "--api-url"
         ],
         "structured": [
           "--event"
@@ -3133,7 +3475,11 @@
         "required": [
           "--playbook-id"
         ],
-        "optional": [],
+        "optional": [
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
         "structured": [],
         "nullable": []
       }
@@ -3162,7 +3508,11 @@
           "--artifact-sha256",
           "--positions"
         ],
-        "optional": [],
+        "optional": [
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
         "structured": [
           "--positions"
         ],
@@ -3198,7 +3548,10 @@
           "--include-live-state",
           "--include-metrics",
           "--include-history",
-          "--history-limit"
+          "--history-limit",
+          "--json",
+          "--brief",
+          "--api-url"
         ],
         "structured": [],
         "nullable": []
@@ -3227,7 +3580,10 @@
         "optional": [
           "--playbook-id",
           "--status",
-          "--limit"
+          "--limit",
+          "--json",
+          "--brief",
+          "--api-url"
         ],
         "structured": [],
         "nullable": []
@@ -3255,7 +3611,11 @@
         "required": [
           "--run-id"
         ],
-        "optional": [],
+        "optional": [
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
         "structured": [],
         "nullable": []
       }
@@ -3282,7 +3642,10 @@
         "required": [],
         "optional": [
           "--scope",
-          "--project-id"
+          "--project-id",
+          "--json",
+          "--brief",
+          "--api-url"
         ],
         "structured": [],
         "nullable": []
@@ -3311,7 +3674,10 @@
         "optional": [
           "--playbook-id",
           "--status",
-          "--limit"
+          "--limit",
+          "--json",
+          "--brief",
+          "--api-url"
         ],
         "structured": [],
         "nullable": []
@@ -3341,7 +3707,10 @@
           "--pending-event-ids"
         ],
         "optional": [
-          "--reason"
+          "--reason",
+          "--json",
+          "--brief",
+          "--api-url"
         ],
         "structured": [
           "--pending-event-ids"
@@ -3372,7 +3741,10 @@
         "optional": [
           "--playbook-id",
           "--reason",
-          "--limit"
+          "--limit",
+          "--json",
+          "--brief",
+          "--api-url"
         ],
         "structured": [],
         "nullable": []
@@ -3401,7 +3773,11 @@
           "--run-id",
           "--human-input"
         ],
-        "optional": [],
+        "optional": [
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
         "structured": [],
         "nullable": []
       }
@@ -3429,7 +3805,10 @@
           "--playbook-id"
         ],
         "optional": [
-          "--event"
+          "--event",
+          "--json",
+          "--brief",
+          "--api-url"
         ],
         "structured": [
           "--event"
@@ -3460,7 +3839,10 @@
           "--run-id"
         ],
         "optional": [
-          "--receipt-limit"
+          "--receipt-limit",
+          "--json",
+          "--brief",
+          "--api-url"
         ],
         "structured": [],
         "nullable": []
@@ -3489,7 +3871,11 @@
           "--playbook-id",
           "--enabled"
         ],
-        "optional": [],
+        "optional": [
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
         "structured": [],
         "nullable": []
       }
@@ -3519,7 +3905,10 @@
         "optional": [
           "--format",
           "--direction",
-          "--show-prompts"
+          "--show-prompts",
+          "--json",
+          "--brief",
+          "--api-url"
         ],
         "structured": [],
         "nullable": []
@@ -3549,7 +3938,10 @@
           "--markdown"
         ],
         "optional": [
-          "--expected-source-hash"
+          "--expected-source-hash",
+          "--json",
+          "--brief",
+          "--api-url"
         ],
         "structured": [],
         "nullable": []
@@ -3581,7 +3973,10 @@
           "--artifact-sha256",
           "--event-type",
           "--direction",
-          "--include-advanced"
+          "--include-advanced",
+          "--json",
+          "--brief",
+          "--api-url"
         ],
         "structured": [],
         "nullable": []
@@ -3609,7 +4004,11 @@
         "required": [
           "--path"
         ],
-        "optional": [],
+        "optional": [
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
         "structured": [],
         "nullable": []
       }
@@ -3638,7 +4037,10 @@
           "--semantic-body-path"
         ],
         "optional": [
-          "--baseline-artifact-path"
+          "--baseline-artifact-path",
+          "--json",
+          "--brief",
+          "--api-url"
         ],
         "structured": [],
         "nullable": []
@@ -3665,7 +4067,10 @@
       "parameters": {
         "required": [],
         "optional": [
-          "--scope"
+          "--scope",
+          "--json",
+          "--brief",
+          "--api-url"
         ],
         "structured": [],
         "nullable": []
@@ -3693,7 +4098,11 @@
         "required": [
           "--path"
         ],
-        "optional": [],
+        "optional": [
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
         "structured": [],
         "nullable": []
       }
@@ -3718,7 +4127,10 @@
           "name"
         ],
         "optional": [
-          "key_values"
+          "key_values",
+          "--json",
+          "--brief",
+          "--api-url"
         ],
         "structured": [],
         "nullable": []
@@ -3743,7 +4155,11 @@
         "required": [
           "name"
         ],
-        "optional": [],
+        "optional": [
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
         "structured": [],
         "nullable": []
       }
@@ -3767,7 +4183,11 @@
         "required": [
           "name"
         ],
-        "optional": [],
+        "optional": [
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
         "structured": [],
         "nullable": []
       }
@@ -3791,7 +4211,11 @@
         "required": [
           "name"
         ],
-        "optional": [],
+        "optional": [
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
         "structured": [],
         "nullable": []
       }
@@ -3815,7 +4239,11 @@
         "required": [
           "name"
         ],
-        "optional": [],
+        "optional": [
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
         "structured": [],
         "nullable": []
       }
@@ -3841,7 +4269,10 @@
         ],
         "optional": [
           "--branch",
-          "--name"
+          "--name",
+          "--json",
+          "--brief",
+          "--api-url"
         ],
         "structured": [],
         "nullable": []
@@ -3864,7 +4295,11 @@
       ],
       "parameters": {
         "required": [],
-        "optional": [],
+        "optional": [
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
         "structured": [],
         "nullable": []
       }
@@ -3890,7 +4325,10 @@
           "name"
         ],
         "optional": [
-          "--limit"
+          "--limit",
+          "--json",
+          "--brief",
+          "--api-url"
         ],
         "structured": [],
         "nullable": []
@@ -3915,7 +4353,11 @@
         "required": [
           "name"
         ],
-        "optional": [],
+        "optional": [
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
         "structured": [],
         "nullable": []
       }
@@ -3939,7 +4381,11 @@
         "required": [
           "name"
         ],
-        "optional": [],
+        "optional": [
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
         "structured": [],
         "nullable": []
       }
@@ -3964,7 +4410,10 @@
           "name"
         ],
         "optional": [
-          "--yes"
+          "--yes",
+          "--json",
+          "--brief",
+          "--api-url"
         ],
         "structured": [],
         "nullable": []
@@ -3990,7 +4439,10 @@
           "name"
         ],
         "optional": [
-          "--yes"
+          "--yes",
+          "--json",
+          "--brief",
+          "--api-url"
         ],
         "structured": [],
         "nullable": []
@@ -4015,7 +4467,11 @@
         "required": [
           "name"
         ],
-        "optional": [],
+        "optional": [
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
         "structured": [],
         "nullable": []
       }
@@ -4046,7 +4502,10 @@
           "--project-id",
           "--min",
           "--max",
-          "--now"
+          "--now",
+          "--json",
+          "--brief",
+          "--api-url"
         ],
         "structured": [],
         "nullable": [
@@ -4078,7 +4537,10 @@
           "--enabled"
         ],
         "optional": [
-          "--project-id"
+          "--project-id",
+          "--json",
+          "--brief",
+          "--api-url"
         ],
         "structured": [],
         "nullable": []
@@ -4108,7 +4570,10 @@
           "--lifecycle"
         ],
         "optional": [
-          "--project-id"
+          "--project-id",
+          "--json",
+          "--brief",
+          "--api-url"
         ],
         "structured": [],
         "nullable": []
@@ -4135,7 +4600,10 @@
       "parameters": {
         "required": [],
         "optional": [
-          "--project-id"
+          "--project-id",
+          "--json",
+          "--brief",
+          "--api-url"
         ],
         "structured": [],
         "nullable": []
@@ -4164,7 +4632,10 @@
           "--session-id",
           "--work-dir",
           "--hook-json",
-          "--hook-format"
+          "--hook-format",
+          "--json",
+          "--brief",
+          "--api-url"
         ],
         "structured": [],
         "nullable": []
@@ -4196,7 +4667,10 @@
         "optional": [
           "--path",
           "--name",
-          "--kind-id"
+          "--kind-id",
+          "--json",
+          "--brief",
+          "--api-url"
         ],
         "structured": [],
         "nullable": []
@@ -4225,7 +4699,10 @@
           "--root-id"
         ],
         "optional": [
-          "--relative-path"
+          "--relative-path",
+          "--json",
+          "--brief",
+          "--api-url"
         ],
         "structured": [],
         "nullable": []
@@ -4259,7 +4736,10 @@
           "--repo-url",
           "--default-branch",
           "--auto-create-channels",
-          "--default-profile-id"
+          "--default-profile-id",
+          "--json",
+          "--brief",
+          "--api-url"
         ],
         "structured": [],
         "nullable": []
@@ -4288,7 +4768,10 @@
           "--project-id"
         ],
         "optional": [
-          "--archive-channels"
+          "--archive-channels",
+          "--json",
+          "--brief",
+          "--api-url"
         ],
         "structured": [],
         "nullable": []
@@ -4313,7 +4796,11 @@
         "required": [
           "project_id"
         ],
-        "optional": [],
+        "optional": [
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
         "structured": [],
         "nullable": []
       }
@@ -4345,7 +4832,10 @@
           "--source-type",
           "--name",
           "--enabled",
-          "--force"
+          "--force",
+          "--json",
+          "--brief",
+          "--api-url"
         ],
         "structured": [],
         "nullable": [
@@ -4374,7 +4864,10 @@
       "parameters": {
         "required": [],
         "optional": [
-          "--project-id"
+          "--project-id",
+          "--json",
+          "--brief",
+          "--api-url"
         ],
         "structured": [],
         "nullable": []
@@ -4402,7 +4895,11 @@
         "required": [
           "--project-id"
         ],
-        "optional": [],
+        "optional": [
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
         "structured": [],
         "nullable": []
       }
@@ -4429,7 +4926,11 @@
         "required": [
           "--project-id"
         ],
-        "optional": [],
+        "optional": [
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
         "structured": [],
         "nullable": []
       }
@@ -4456,7 +4957,11 @@
         "required": [
           "--channel-id"
         ],
-        "optional": [],
+        "optional": [
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
         "structured": [],
         "nullable": []
       }
@@ -4481,7 +4986,11 @@
       ],
       "parameters": {
         "required": [],
-        "optional": [],
+        "optional": [
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
         "structured": [],
         "nullable": []
       }
@@ -4508,7 +5017,11 @@
         "required": [
           "--request-id"
         ],
-        "optional": [],
+        "optional": [
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
         "structured": [],
         "nullable": []
       }
@@ -4533,7 +5046,11 @@
       ],
       "parameters": {
         "required": [],
-        "optional": [],
+        "optional": [
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
         "structured": [],
         "nullable": []
       }
@@ -4558,7 +5075,11 @@
       ],
       "parameters": {
         "required": [],
-        "optional": [],
+        "optional": [
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
         "structured": [],
         "nullable": []
       }
@@ -4583,7 +5104,11 @@
       ],
       "parameters": {
         "required": [],
-        "optional": [],
+        "optional": [
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
         "structured": [],
         "nullable": []
       }
@@ -4609,7 +5134,10 @@
       "parameters": {
         "required": [],
         "optional": [
-          "--project-id"
+          "--project-id",
+          "--json",
+          "--brief",
+          "--api-url"
         ],
         "structured": [],
         "nullable": []
@@ -4636,7 +5164,10 @@
       "parameters": {
         "required": [],
         "optional": [
-          "--project-id"
+          "--project-id",
+          "--json",
+          "--brief",
+          "--api-url"
         ],
         "structured": [],
         "nullable": []
@@ -4675,7 +5206,10 @@
           "--github-repo",
           "--github-visibility",
           "--github-repository",
-          "--github-url"
+          "--github-url",
+          "--json",
+          "--brief",
+          "--api-url"
         ],
         "structured": [],
         "nullable": []
@@ -4703,7 +5237,11 @@
         "required": [
           "--project-id"
         ],
-        "optional": [],
+        "optional": [
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
         "structured": [],
         "nullable": []
       }
@@ -4729,7 +5267,10 @@
       "parameters": {
         "required": [],
         "optional": [
-          "--project-id"
+          "--project-id",
+          "--json",
+          "--brief",
+          "--api-url"
         ],
         "structured": [],
         "nullable": []
@@ -4760,7 +5301,9 @@
           "--labels",
           "--any-label",
           "--profile-id",
-          "--brief"
+          "--brief",
+          "--json",
+          "--api-url"
         ],
         "structured": [
           "--labels",
@@ -4792,7 +5335,10 @@
           "--project-id"
         ],
         "optional": [
-          "--fields"
+          "--fields",
+          "--json",
+          "--brief",
+          "--api-url"
         ],
         "structured": [
           "--fields"
@@ -4822,7 +5368,11 @@
         "required": [
           "--workspace-id"
         ],
-        "optional": [],
+        "optional": [
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
         "structured": [],
         "nullable": []
       }
@@ -4850,7 +5400,10 @@
           "--workspace-id"
         ],
         "optional": [
-          "--project-id"
+          "--project-id",
+          "--json",
+          "--brief",
+          "--api-url"
         ],
         "structured": [],
         "nullable": []
@@ -4878,7 +5431,11 @@
         "required": [
           "--project-id"
         ],
-        "optional": [],
+        "optional": [
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
         "structured": [],
         "nullable": []
       }
@@ -4907,7 +5464,10 @@
         ],
         "optional": [
           "--limit",
-          "--cursor"
+          "--cursor",
+          "--json",
+          "--brief",
+          "--api-url"
         ],
         "structured": [],
         "nullable": []
@@ -4936,7 +5496,10 @@
         ],
         "optional": [
           "--expected-integration-generation",
-          "--reason"
+          "--reason",
+          "--json",
+          "--brief",
+          "--api-url"
         ],
         "structured": [],
         "nullable": []
@@ -4968,7 +5531,10 @@
           "--exclusive",
           "--max-agents-by-type",
           "--pause-scheduling",
-          "--created-by"
+          "--created-by",
+          "--json",
+          "--brief",
+          "--api-url"
         ],
         "structured": [
           "--max-agents-by-type"
@@ -4999,7 +5565,11 @@
           "--project-id",
           "--channel-name"
         ],
-        "optional": [],
+        "optional": [
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
         "structured": [],
         "nullable": []
       }
@@ -5025,7 +5595,10 @@
       "parameters": {
         "required": [],
         "optional": [
-          "--project-id"
+          "--project-id",
+          "--json",
+          "--brief",
+          "--api-url"
         ],
         "structured": [],
         "nullable": []
@@ -5054,7 +5627,10 @@
         "optional": [
           "--workspace-id",
           "--all-retired",
-          "--project-id"
+          "--project-id",
+          "--json",
+          "--brief",
+          "--api-url"
         ],
         "structured": [],
         "nullable": []
@@ -5080,7 +5656,11 @@
           "question_id",
           "--body"
         ],
-        "optional": [],
+        "optional": [
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
         "structured": [],
         "nullable": []
       }
@@ -5105,7 +5685,11 @@
           "question_id",
           "--reason"
         ],
-        "optional": [],
+        "optional": [
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
         "structured": [],
         "nullable": []
       }
@@ -5128,7 +5712,10 @@
       "parameters": {
         "required": [],
         "optional": [
-          "--project"
+          "--project",
+          "--json",
+          "--brief",
+          "--api-url"
         ],
         "structured": [],
         "nullable": []
@@ -5156,7 +5743,10 @@
           "body"
         ],
         "optional": [
-          "--via"
+          "--via",
+          "--json",
+          "--brief",
+          "--api-url"
         ],
         "structured": [],
         "nullable": []
@@ -5180,7 +5770,10 @@
       "parameters": {
         "required": [],
         "optional": [
-          "--no-dashboard"
+          "--no-dashboard",
+          "--json",
+          "--brief",
+          "--api-url"
         ],
         "structured": [],
         "nullable": []
@@ -5203,7 +5796,11 @@
       ],
       "parameters": {
         "required": [],
-        "optional": [],
+        "optional": [
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
         "structured": [],
         "nullable": []
       }
@@ -5226,7 +5823,10 @@
       "parameters": {
         "required": [],
         "optional": [
-          "session_id"
+          "session_id",
+          "--json",
+          "--brief",
+          "--api-url"
         ],
         "structured": [],
         "nullable": []
@@ -5250,7 +5850,10 @@
       "parameters": {
         "required": [],
         "optional": [
-          "--session-id"
+          "--session-id",
+          "--json",
+          "--brief",
+          "--api-url"
         ],
         "structured": [],
         "nullable": []
@@ -5275,7 +5878,11 @@
         "required": [
           "session_id"
         ],
-        "optional": [],
+        "optional": [
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
         "structured": [],
         "nullable": []
       }
@@ -5300,7 +5907,10 @@
         "optional": [
           "--state",
           "--lifecycle",
-          "--live"
+          "--live",
+          "--json",
+          "--brief",
+          "--api-url"
         ],
         "structured": [],
         "nullable": []
@@ -5326,7 +5936,10 @@
         "optional": [
           "session_id",
           "--lines",
-          "--attempt"
+          "--attempt",
+          "--json",
+          "--brief",
+          "--api-url"
         ],
         "structured": [],
         "nullable": []
@@ -5352,7 +5965,11 @@
           "session_id",
           "text"
         ],
-        "optional": [],
+        "optional": [
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
         "structured": [],
         "nullable": []
       }
@@ -5376,7 +5993,10 @@
         "required": [],
         "optional": [
           "session_id",
-          "--lines"
+          "--lines",
+          "--json",
+          "--brief",
+          "--api-url"
         ],
         "structured": [],
         "nullable": []
@@ -5400,7 +6020,10 @@
       "parameters": {
         "required": [],
         "optional": [
-          "session_id"
+          "session_id",
+          "--json",
+          "--brief",
+          "--api-url"
         ],
         "structured": [],
         "nullable": []
@@ -5425,7 +6048,11 @@
         "required": [
           "session_id"
         ],
-        "optional": [],
+        "optional": [
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
         "structured": [],
         "nullable": []
       }
@@ -5449,7 +6076,11 @@
         "required": [
           "session_id"
         ],
-        "optional": [],
+        "optional": [
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
         "structured": [],
         "nullable": []
       }
@@ -5473,7 +6104,11 @@
         "required": [
           "session_id"
         ],
-        "optional": [],
+        "optional": [
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
         "structured": [],
         "nullable": []
       }
@@ -5496,7 +6131,10 @@
       "parameters": {
         "required": [],
         "optional": [
-          "--no-dashboard"
+          "--no-dashboard",
+          "--json",
+          "--brief",
+          "--api-url"
         ],
         "structured": [],
         "nullable": []
@@ -5520,7 +6158,11 @@
       ],
       "parameters": {
         "required": [],
-        "optional": [],
+        "optional": [
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
         "structured": [],
         "nullable": []
       }
@@ -5543,7 +6185,10 @@
       "parameters": {
         "required": [],
         "optional": [
-          "--keep-sessions"
+          "--keep-sessions",
+          "--json",
+          "--brief",
+          "--api-url"
         ],
         "structured": [],
         "nullable": []
@@ -5568,7 +6213,11 @@
         "required": [
           "stream_id"
         ],
-        "optional": [],
+        "optional": [
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
         "structured": [],
         "nullable": []
       }
@@ -5622,7 +6271,10 @@
           "stream_id"
         ],
         "optional": [
-          "--after-seq"
+          "--after-seq",
+          "--json",
+          "--brief",
+          "--api-url"
         ],
         "structured": [],
         "nullable": []
@@ -5651,7 +6303,10 @@
           "--event",
           "--subagent-id",
           "--agent-type",
-          "--turn-id"
+          "--turn-id",
+          "--json",
+          "--brief",
+          "--api-url"
         ],
         "structured": [],
         "nullable": []
@@ -5681,7 +6336,10 @@
           "--stage-name"
         ],
         "optional": [
-          "--task-ids"
+          "--task-ids",
+          "--json",
+          "--brief",
+          "--api-url"
         ],
         "structured": [
           "--task-ids"
@@ -5709,7 +6367,11 @@
       ],
       "parameters": {
         "required": [],
-        "optional": [],
+        "optional": [
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
         "structured": [],
         "nullable": []
       }
@@ -5731,7 +6393,11 @@
       ],
       "parameters": {
         "required": [],
-        "optional": [],
+        "optional": [
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
         "structured": [],
         "nullable": []
       }
@@ -5756,7 +6422,9 @@
         "required": [],
         "optional": [
           "section",
-          "--json"
+          "--json",
+          "--brief",
+          "--api-url"
         ],
         "structured": [],
         "nullable": []
@@ -5781,7 +6449,9 @@
       "parameters": {
         "required": [],
         "optional": [
-          "--json"
+          "--json",
+          "--brief",
+          "--api-url"
         ],
         "structured": [],
         "nullable": []
@@ -5807,7 +6477,10 @@
           "assignment"
         ],
         "optional": [
-          "--dry-run"
+          "--dry-run",
+          "--json",
+          "--brief",
+          "--api-url"
         ],
         "structured": [],
         "nullable": []
@@ -5839,7 +6512,10 @@
           "--project-id"
         ],
         "optional": [
-          "--current-stage"
+          "--current-stage",
+          "--json",
+          "--brief",
+          "--api-url"
         ],
         "structured": [],
         "nullable": []
@@ -5865,7 +6541,11 @@
       ],
       "parameters": {
         "required": [],
-        "optional": [],
+        "optional": [
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
         "structured": [],
         "nullable": []
       }
@@ -5897,7 +6577,11 @@
           "--expected-target",
           "--fence"
         ],
-        "optional": [],
+        "optional": [
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
         "structured": [
           "--fence"
         ],
@@ -5928,7 +6612,11 @@
           "--repository-id",
           "--target-branch"
         ],
-        "optional": [],
+        "optional": [
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
         "structured": [],
         "nullable": []
       }
@@ -5955,7 +6643,10 @@
         "required": [],
         "optional": [
           "--fix",
-          "--checks"
+          "--checks",
+          "--json",
+          "--brief",
+          "--api-url"
         ],
         "structured": [
           "--checks"
@@ -5989,7 +6680,10 @@
           "--mapping"
         ],
         "optional": [
-          "--expected-revision"
+          "--expected-revision",
+          "--json",
+          "--brief",
+          "--api-url"
         ],
         "structured": [
           "--mapping"
@@ -6020,7 +6714,10 @@
           "--description"
         ],
         "optional": [
-          "--top-k"
+          "--top-k",
+          "--json",
+          "--brief",
+          "--api-url"
         ],
         "structured": [],
         "nullable": []
@@ -6048,7 +6745,10 @@
         "required": [],
         "optional": [
           "--project-id",
-          "--since-hours"
+          "--since-hours",
+          "--json",
+          "--brief",
+          "--api-url"
         ],
         "structured": [],
         "nullable": []
@@ -6075,7 +6775,10 @@
       "parameters": {
         "required": [],
         "optional": [
-          "--section"
+          "--section",
+          "--json",
+          "--brief",
+          "--api-url"
         ],
         "structured": [],
         "nullable": []
@@ -6101,7 +6804,11 @@
       ],
       "parameters": {
         "required": [],
-        "optional": [],
+        "optional": [
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
         "structured": [],
         "nullable": []
       }
@@ -6129,7 +6836,10 @@
         "optional": [
           "--project-id",
           "--since",
-          "--group-by"
+          "--group-by",
+          "--json",
+          "--brief",
+          "--api-url"
         ],
         "structured": [],
         "nullable": []
@@ -6161,7 +6871,10 @@
           "--since",
           "--project-id",
           "--agent-id",
-          "--task-id"
+          "--task-id",
+          "--json",
+          "--brief",
+          "--api-url"
         ],
         "structured": [],
         "nullable": []
@@ -6187,7 +6900,11 @@
       ],
       "parameters": {
         "required": [],
-        "optional": [],
+        "optional": [
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
         "structured": [],
         "nullable": []
       }
@@ -6216,7 +6933,10 @@
           "--assigned-threshold-seconds",
           "--in-progress-threshold-seconds",
           "--now",
-          "--project-id"
+          "--project-id",
+          "--json",
+          "--brief",
+          "--api-url"
         ],
         "structured": [],
         "nullable": []
@@ -6244,7 +6964,11 @@
         "required": [
           "--name"
         ],
-        "optional": [],
+        "optional": [
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
         "structured": [],
         "nullable": []
       }
@@ -6271,7 +6995,10 @@
         "required": [],
         "optional": [
           "--project-id",
-          "--task-id"
+          "--task-id",
+          "--json",
+          "--brief",
+          "--api-url"
         ],
         "structured": [],
         "nullable": []
@@ -6299,7 +7026,11 @@
         "required": [
           "--workflow-id"
         ],
-        "optional": [],
+        "optional": [
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
         "structured": [],
         "nullable": []
       }
@@ -6326,7 +7057,11 @@
         "required": [
           "--batch-id"
         ],
-        "optional": [],
+        "optional": [
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
         "structured": [],
         "nullable": []
       }
@@ -6355,7 +7090,11 @@
           "--head-sha",
           "--generation"
         ],
-        "optional": [],
+        "optional": [
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
         "structured": [],
         "nullable": []
       }
@@ -6383,7 +7122,11 @@
           "--batch-id",
           "--revision"
         ],
-        "optional": [],
+        "optional": [
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
         "structured": [],
         "nullable": []
       }
@@ -6410,7 +7153,11 @@
         "required": [
           "--batch-id"
         ],
-        "optional": [],
+        "optional": [
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
         "structured": [],
         "nullable": []
       }
@@ -6439,7 +7186,11 @@
           "--generation",
           "--head-sha"
         ],
-        "optional": [],
+        "optional": [
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
         "structured": [],
         "nullable": []
       }
@@ -6466,7 +7217,11 @@
         "required": [
           "--task-id"
         ],
-        "optional": [],
+        "optional": [
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
         "structured": [],
         "nullable": []
       }
@@ -6495,7 +7250,11 @@
           "--children",
           "--expected-generation"
         ],
-        "optional": [],
+        "optional": [
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
         "structured": [
           "--children"
         ],
@@ -6526,7 +7285,11 @@
           "--mutation",
           "--arguments"
         ],
-        "optional": [],
+        "optional": [
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
         "structured": [
           "--arguments"
         ],
@@ -6558,7 +7321,11 @@
           "--head-sha",
           "--evidence-ids"
         ],
-        "optional": [],
+        "optional": [
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
         "structured": [
           "--evidence-ids"
         ],
@@ -6588,7 +7355,11 @@
           "--batch-id",
           "--revision"
         ],
-        "optional": [],
+        "optional": [
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
         "structured": [],
         "nullable": []
       }
@@ -6616,7 +7387,11 @@
           "--intent-id",
           "--fence"
         ],
-        "optional": [],
+        "optional": [
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
         "structured": [
           "--fence"
         ],
@@ -6645,7 +7420,11 @@
         "required": [
           "--intent-id"
         ],
-        "optional": [],
+        "optional": [
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
         "structured": [],
         "nullable": []
       }
@@ -6673,7 +7452,11 @@
           "--operation-id",
           "--evidence-id"
         ],
-        "optional": [],
+        "optional": [
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
         "structured": [],
         "nullable": []
       }
@@ -6700,7 +7483,11 @@
         "required": [
           "--batch-id"
         ],
-        "optional": [],
+        "optional": [
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
         "structured": [],
         "nullable": []
       }
@@ -6731,7 +7518,10 @@
           "--stage",
           "--batch-id",
           "--revision",
-          "--head-sha"
+          "--head-sha",
+          "--json",
+          "--brief",
+          "--api-url"
         ],
         "structured": [],
         "nullable": [
@@ -6766,7 +7556,11 @@
           "--starting-sha",
           "--trigger-id"
         ],
-        "optional": [],
+        "optional": [
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
         "structured": [],
         "nullable": []
       }
@@ -6794,7 +7588,11 @@
           "--operation-id",
           "--stage"
         ],
-        "optional": [],
+        "optional": [
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
         "structured": [],
         "nullable": []
       }
@@ -6826,7 +7624,11 @@
           "--repair-commit-shas",
           "--fence"
         ],
-        "optional": [],
+        "optional": [
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
         "structured": [
           "--repair-commit-shas",
           "--fence"
@@ -6858,7 +7660,11 @@
           "--now",
           "--trigger"
         ],
-        "optional": [],
+        "optional": [
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
         "structured": [],
         "nullable": []
       }
@@ -6887,7 +7693,10 @@
           "--request-id"
         ],
         "optional": [
-          "--now"
+          "--now",
+          "--json",
+          "--brief",
+          "--api-url"
         ],
         "structured": [],
         "nullable": [
@@ -6920,7 +7729,11 @@
           "--next-owner-id",
           "--next-role"
         ],
-        "optional": [],
+        "optional": [
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
         "structured": [
           "--target"
         ],
@@ -6947,7 +7760,11 @@
       ],
       "parameters": {
         "required": [],
-        "optional": [],
+        "optional": [
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
         "structured": [],
         "nullable": []
       }
@@ -6972,7 +7789,11 @@
       ],
       "parameters": {
         "required": [],
-        "optional": [],
+        "optional": [
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
         "structured": [],
         "nullable": []
       }
@@ -7001,7 +7822,10 @@
         ],
         "optional": [
           "--category",
-          "--tag"
+          "--tag",
+          "--json",
+          "--brief",
+          "--api-url"
         ],
         "structured": [],
         "nullable": []
@@ -7031,7 +7855,10 @@
           "--project-id",
           "--playbook-id",
           "--status",
-          "--limit"
+          "--limit",
+          "--json",
+          "--brief",
+          "--api-url"
         ],
         "structured": [],
         "nullable": []
@@ -7060,7 +7887,10 @@
         "optional": [
           "--dry-run",
           "--verify",
-          "--force"
+          "--force",
+          "--json",
+          "--brief",
+          "--api-url"
         ],
         "structured": [],
         "nullable": []
@@ -7088,7 +7918,11 @@
         "required": [
           "--action"
         ],
-        "optional": [],
+        "optional": [
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
         "structured": [],
         "nullable": []
       }
@@ -7116,7 +7950,11 @@
           "--task-id",
           "--input"
         ],
-        "optional": [],
+        "optional": [
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
         "structured": [],
         "nullable": []
       }
@@ -7142,7 +7980,10 @@
       "parameters": {
         "required": [],
         "optional": [
-          "--provider"
+          "--provider",
+          "--json",
+          "--brief",
+          "--api-url"
         ],
         "structured": [],
         "nullable": []
@@ -7175,7 +8016,10 @@
           "--component",
           "--task-id",
           "--project-id",
-          "--pattern"
+          "--pattern",
+          "--json",
+          "--brief",
+          "--api-url"
         ],
         "structured": [],
         "nullable": []
@@ -7204,7 +8048,10 @@
         "optional": [
           "--project-id",
           "--name",
-          "--path"
+          "--path",
+          "--json",
+          "--brief",
+          "--api-url"
         ],
         "structured": [],
         "nullable": []
@@ -7230,7 +8077,11 @@
       ],
       "parameters": {
         "required": [],
-        "optional": [],
+        "optional": [
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
         "structured": [],
         "nullable": []
       }
@@ -7259,7 +8110,10 @@
           "--project-id",
           "--name",
           "--path",
-          "--variables"
+          "--variables",
+          "--json",
+          "--brief",
+          "--api-url"
         ],
         "structured": [
           "--variables"
@@ -7288,7 +8142,10 @@
       "parameters": {
         "required": [],
         "optional": [
-          "--project-id"
+          "--project-id",
+          "--json",
+          "--brief",
+          "--api-url"
         ],
         "structured": [],
         "nullable": []
@@ -7318,7 +8175,10 @@
         ],
         "optional": [
           "--text",
-          "--key"
+          "--key",
+          "--json",
+          "--brief",
+          "--api-url"
         ],
         "structured": [],
         "nullable": []
@@ -7346,7 +8206,11 @@
         "required": [
           "--task-id"
         ],
-        "optional": [],
+        "optional": [
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
         "structured": [],
         "nullable": []
       }
@@ -7373,7 +8237,10 @@
         "required": [],
         "optional": [
           "--days",
-          "--project-id"
+          "--project-id",
+          "--json",
+          "--brief",
+          "--api-url"
         ],
         "structured": [],
         "nullable": []
@@ -7403,7 +8270,10 @@
           "--data"
         ],
         "optional": [
-          "--dry-run"
+          "--dry-run",
+          "--json",
+          "--brief",
+          "--api-url"
         ],
         "structured": [
           "--data"
@@ -7432,7 +8302,10 @@
       "parameters": {
         "required": [],
         "optional": [
-          "--with-summaries"
+          "--with-summaries",
+          "--json",
+          "--brief",
+          "--api-url"
         ],
         "structured": [],
         "nullable": []
@@ -7463,7 +8336,10 @@
         "optional": [
           "--direction",
           "--include-task-details",
-          "--include-affinity"
+          "--include-affinity",
+          "--json",
+          "--brief",
+          "--api-url"
         ],
         "structured": [],
         "nullable": []
@@ -7494,7 +8370,10 @@
         ],
         "optional": [
           "--dep-type",
-          "--reason"
+          "--reason",
+          "--json",
+          "--brief",
+          "--api-url"
         ],
         "structured": [],
         "nullable": []
@@ -7523,7 +8402,10 @@
         "optional": [
           "--task-id",
           "--project-id",
-          "--include-failed"
+          "--include-failed",
+          "--json",
+          "--brief",
+          "--api-url"
         ],
         "structured": [],
         "nullable": []
@@ -7549,35 +8431,10 @@
       ],
       "parameters": {
         "required": [],
-        "optional": [],
-        "structured": [],
-        "nullable": []
-      }
-    },
-    {
-      "path": "aq task ask-human",
-      "registration": "generated",
-      "owner_kind": "core",
-      "owner": "agent-queue",
-      "backend_command": "ask_human",
-      "callback": "src.cli.auto_commands.callback",
-      "support": "unsupported",
-      "alias_for": null,
-      "deprecation": null,
-      "unsupported_reason": "The command is reserved for the pending human-gate implementation.",
-      "evidence_level": "dispatch",
-      "evidence": [
-        "click-registration",
-        "json-schema",
-        "mock-dispatch",
-        "explicit-unsupported"
-      ],
-      "parameters": {
-        "required": [
-          "--question"
-        ],
         "optional": [
-          "--task-id"
+          "--json",
+          "--brief",
+          "--api-url"
         ],
         "structured": [],
         "nullable": []
@@ -7605,7 +8462,11 @@
         "required": [
           "--proposal-id"
         ],
-        "optional": [],
+        "optional": [
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
         "structured": [],
         "nullable": []
       }
@@ -7632,7 +8493,11 @@
         "required": [
           "--proposal-id"
         ],
-        "optional": [],
+        "optional": [
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
         "structured": [],
         "nullable": []
       }
@@ -7662,7 +8527,10 @@
         ],
         "optional": [
           "--project-id",
-          "--edges"
+          "--edges",
+          "--json",
+          "--brief",
+          "--api-url"
         ],
         "structured": [
           "--tasks",
@@ -7694,7 +8562,11 @@
           "--proposal-id",
           "--payload"
         ],
-        "optional": [],
+        "optional": [
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
         "structured": [
           "--payload"
         ],
@@ -7727,7 +8599,10 @@
           "--recursive",
           "--status",
           "--limit",
-          "--offset"
+          "--offset",
+          "--json",
+          "--brief",
+          "--api-url"
         ],
         "structured": [],
         "nullable": []
@@ -7754,7 +8629,10 @@
         "optional": [
           "task_id",
           "--next",
-          "--wait"
+          "--wait",
+          "--json",
+          "--brief",
+          "--api-url"
         ],
         "structured": [],
         "nullable": []
@@ -7795,7 +8673,10 @@
           "--abandon-children",
           "--claim-next",
           "--wait",
-          "--claim-epoch"
+          "--claim-epoch",
+          "--json",
+          "--brief",
+          "--api-url"
         ],
         "structured": [],
         "nullable": []
@@ -7823,7 +8704,10 @@
           "--body"
         ],
         "optional": [
-          "--claim-epoch"
+          "--claim-epoch",
+          "--json",
+          "--brief",
+          "--api-url"
         ],
         "structured": [],
         "nullable": []
@@ -7852,7 +8736,11 @@
           "--task-id",
           "--comment-id"
         ],
-        "optional": [],
+        "optional": [
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
         "structured": [],
         "nullable": []
       }
@@ -7881,7 +8769,11 @@
           "--comment-id",
           "--body"
         ],
-        "optional": [],
+        "optional": [
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
         "structured": [],
         "nullable": []
       }
@@ -7908,7 +8800,10 @@
         ],
         "optional": [
           "--limit",
-          "--offset"
+          "--offset",
+          "--json",
+          "--brief",
+          "--api-url"
         ],
         "structured": [],
         "nullable": []
@@ -7948,7 +8843,10 @@
           "--root",
           "--reason",
           "--deliverable",
-          "--requires-kind"
+          "--requires-kind",
+          "--json",
+          "--brief",
+          "--api-url"
         ],
         "structured": [],
         "nullable": []
@@ -7978,7 +8876,10 @@
         ],
         "optional": [
           "--cascade",
-          "--branches"
+          "--branches",
+          "--json",
+          "--brief",
+          "--api-url"
         ],
         "structured": [],
         "nullable": []
@@ -8006,7 +8907,11 @@
         "required": [
           "--task-id"
         ],
-        "optional": [],
+        "optional": [
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
         "structured": [],
         "nullable": []
       }
@@ -8031,7 +8936,11 @@
         "required": [
           "task_id"
         ],
-        "optional": [],
+        "optional": [
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
         "structured": [],
         "nullable": []
       }
@@ -8075,7 +8984,10 @@
           "--affinity-reason",
           "--workspace-mode",
           "--needs-attention",
-          "--clear-needs-attention"
+          "--clear-needs-attention",
+          "--json",
+          "--brief",
+          "--api-url"
         ],
         "structured": [],
         "nullable": [
@@ -8117,7 +9029,10 @@
           "--description",
           "--priority",
           "--profile-id",
-          "--intelligence-class"
+          "--intelligence-class",
+          "--json",
+          "--brief",
+          "--api-url"
         ],
         "structured": [],
         "nullable": []
@@ -8145,7 +9060,11 @@
         "required": [
           "--task-id"
         ],
-        "optional": [],
+        "optional": [
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
         "structured": [],
         "nullable": []
       }
@@ -8178,7 +9097,10 @@
           "--question",
           "--await-id",
           "--timeout-at",
-          "--waiter-task-ids"
+          "--waiter-task-ids",
+          "--json",
+          "--brief",
+          "--api-url"
         ],
         "structured": [
           "--waiter-task-ids"
@@ -8213,7 +9135,10 @@
         "optional": [
           "--project-id",
           "--status",
-          "--gate-type"
+          "--gate-type",
+          "--json",
+          "--brief",
+          "--api-url"
         ],
         "structured": [],
         "nullable": []
@@ -8243,7 +9168,10 @@
           "--resolved-by"
         ],
         "optional": [
-          "--resolution"
+          "--resolution",
+          "--json",
+          "--brief",
+          "--api-url"
         ],
         "structured": [],
         "nullable": [
@@ -8273,7 +9201,11 @@
         "required": [
           "--gate-id"
         ],
-        "optional": [],
+        "optional": [
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
         "structured": [],
         "nullable": []
       }
@@ -8300,7 +9232,11 @@
         "required": [
           "--task-id"
         ],
-        "optional": [],
+        "optional": [
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
         "structured": [],
         "nullable": []
       }
@@ -8327,7 +9263,10 @@
         "required": [],
         "optional": [
           "--task-id",
-          "--project-id"
+          "--project-id",
+          "--json",
+          "--brief",
+          "--api-url"
         ],
         "structured": [],
         "nullable": []
@@ -8355,7 +9294,11 @@
         "required": [
           "--task-id"
         ],
-        "optional": [],
+        "optional": [
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
         "structured": [],
         "nullable": []
       }
@@ -8382,7 +9325,11 @@
         "required": [
           "--task-id"
         ],
-        "optional": [],
+        "optional": [
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
         "structured": [],
         "nullable": []
       }
@@ -8409,7 +9356,11 @@
         "required": [
           "--task-id"
         ],
-        "optional": [],
+        "optional": [
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
         "structured": [],
         "nullable": []
       }
@@ -8438,7 +9389,10 @@
         ],
         "optional": [
           "--compact",
-          "--max-depth"
+          "--max-depth",
+          "--json",
+          "--brief",
+          "--api-url"
         ],
         "structured": [],
         "nullable": []
@@ -8464,7 +9418,10 @@
         "required": [],
         "optional": [
           "task_id",
-          "--claim-epoch"
+          "--claim-epoch",
+          "--json",
+          "--brief",
+          "--api-url"
         ],
         "structured": [],
         "nullable": []
@@ -8491,7 +9448,10 @@
         "optional": [
           "--project",
           "--status",
-          "--include-completed"
+          "--include-completed",
+          "--json",
+          "--brief",
+          "--api-url"
         ],
         "structured": [],
         "nullable": []
@@ -8518,7 +9478,10 @@
       "parameters": {
         "required": [],
         "optional": [
-          "--include-completed"
+          "--include-completed",
+          "--json",
+          "--brief",
+          "--api-url"
         ],
         "structured": [],
         "nullable": []
@@ -8546,7 +9509,10 @@
         "required": [],
         "optional": [
           "--project-id",
-          "--limit"
+          "--limit",
+          "--json",
+          "--brief",
+          "--api-url"
         ],
         "structured": [],
         "nullable": []
@@ -8574,7 +9540,11 @@
         "required": [
           "--task-id"
         ],
-        "optional": [],
+        "optional": [
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
         "structured": [],
         "nullable": []
       }
@@ -8601,7 +9571,11 @@
         "required": [
           "--task-id"
         ],
-        "optional": [],
+        "optional": [
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
         "structured": [],
         "nullable": []
       }
@@ -8629,7 +9603,10 @@
         "optional": [
           "--hours",
           "--project-id",
-          "--limit"
+          "--limit",
+          "--json",
+          "--brief",
+          "--api-url"
         ],
         "structured": [],
         "nullable": []
@@ -8660,7 +9637,11 @@
           "--decision",
           "--reason"
         ],
-        "optional": [],
+        "optional": [
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
         "structured": [],
         "nullable": []
       }
@@ -8689,7 +9670,10 @@
           "--depends-on"
         ],
         "optional": [
-          "--dep-type"
+          "--dep-type",
+          "--json",
+          "--brief",
+          "--api-url"
         ],
         "structured": [],
         "nullable": []
@@ -8718,7 +9702,11 @@
           "--task-id",
           "--feedback"
         ],
-        "optional": [],
+        "optional": [
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
         "structured": [],
         "nullable": []
       }
@@ -8747,7 +9735,10 @@
         ],
         "optional": [
           "--parent-id",
-          "--root"
+          "--root",
+          "--json",
+          "--brief",
+          "--api-url"
         ],
         "structured": [],
         "nullable": []
@@ -8774,7 +9765,10 @@
           "task_id"
         ],
         "optional": [
-          "--yes"
+          "--yes",
+          "--json",
+          "--brief",
+          "--api-url"
         ],
         "structured": [],
         "nullable": []
@@ -8802,7 +9796,11 @@
         "required": [
           "--task-id"
         ],
-        "optional": [],
+        "optional": [
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
         "structured": [],
         "nullable": []
       }
@@ -8832,7 +9830,10 @@
         ],
         "optional": [
           "--intelligence-class",
-          "--workspace-id"
+          "--workspace-id",
+          "--json",
+          "--brief",
+          "--api-url"
         ],
         "structured": [],
         "nullable": []
@@ -8859,7 +9860,10 @@
           "query"
         ],
         "optional": [
-          "--project"
+          "--project",
+          "--json",
+          "--brief",
+          "--api-url"
         ],
         "structured": [],
         "nullable": []
@@ -8883,7 +9887,10 @@
       "parameters": {
         "required": [],
         "optional": [
-          "--project"
+          "--project",
+          "--json",
+          "--brief",
+          "--api-url"
         ],
         "structured": [],
         "nullable": []
@@ -8918,7 +9925,10 @@
           "--expected-description",
           "--label",
           "--meta",
-          "--claim-epoch"
+          "--claim-epoch",
+          "--json",
+          "--brief",
+          "--api-url"
         ],
         "structured": [],
         "nullable": []
@@ -8947,7 +9957,11 @@
           "--task-id",
           "--status"
         ],
-        "optional": [],
+        "optional": [
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
         "structured": [],
         "nullable": []
       }
@@ -8972,7 +9986,11 @@
         "required": [
           "task_id"
         ],
-        "optional": [],
+        "optional": [
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
         "structured": [],
         "nullable": []
       }
@@ -8999,7 +10017,11 @@
         "required": [
           "--task-id"
         ],
-        "optional": [],
+        "optional": [
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
         "structured": [],
         "nullable": []
       }
@@ -9027,7 +10049,10 @@
           "--spec-path"
         ],
         "optional": [
-          "--project-id"
+          "--project-id",
+          "--json",
+          "--brief",
+          "--api-url"
         ],
         "structured": [],
         "nullable": []
@@ -9054,7 +10079,10 @@
           "task_id"
         ],
         "optional": [
-          "--yes"
+          "--yes",
+          "--json",
+          "--brief",
+          "--api-url"
         ],
         "structured": [],
         "nullable": []
@@ -9110,7 +10138,10 @@
         "optional": [
           "--dry-run",
           "--data-dir",
-          "--project"
+          "--project",
+          "--json",
+          "--brief",
+          "--api-url"
         ],
         "structured": [],
         "nullable": []
@@ -9137,7 +10168,10 @@
           "names",
           "--all",
           "--dry-run",
-          "--data-dir"
+          "--data-dir",
+          "--json",
+          "--brief",
+          "--api-url"
         ],
         "structured": [],
         "nullable": []

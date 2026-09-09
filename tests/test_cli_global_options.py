@@ -209,7 +209,7 @@ class TestExclusions:
         result = runner.invoke(cli, ["doctor", "--help"])
 
         assert result.exit_code == 0, result.output
-        assert "Emit the raw command result." in result.output
+        assert "Emit the versioned JSON envelope." in result.output
         assert result.output.count("--json") == 1
 
     def test_a_dash_dash_boundary_is_not_consumed(self):

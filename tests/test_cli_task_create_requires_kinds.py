@@ -416,9 +416,12 @@ INTENTIONALLY_EXCLUDED = {
 #: CLI options with no matching backend argument, and why.
 CLI_ONLY_PARAMS = {
     "agent_type": "Handler-level cascade override; not part of the contract model.",
+    "api_url": "Position-independent global daemon URL; not a create_task argument.",
+    "brief": "Position-independent global output projection; not a create_task argument.",
     "graph_file": "Selects the create_task_graph command instead.",
     "from_spec": "Selects the create_task_graph command instead.",
     "dry_run": "Graph-only validation switch.",
+    "output_json": "Position-independent global output mode; not a create_task argument.",
 }
 
 

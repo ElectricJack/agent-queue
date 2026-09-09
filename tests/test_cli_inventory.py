@@ -64,7 +64,7 @@ def test_deprecated_plugin_logs_command_explains_the_supported_replacement():
     assert "aq playbook list" in result.output
 
 
-def test_known_unimplemented_operation_is_explicit_and_new_ones_fail():
+def test_unimplemented_operations_must_be_classified_and_removed_commands_stay_absent():
     from rich.console import Console
 
     from src.cli.auto_commands import _make_auto_command
@@ -86,9 +86,7 @@ def test_known_unimplemented_operation_is_explicit_and_new_ones_fail():
 
     from src.cli.app import cli
 
-    row = _by_path(build_cli_inventory(cli))["aq task ask-human"]
-    assert row["support"] == "unsupported"
-    assert "explicit-unsupported" in row["evidence"]
+    assert "aq task ask-human" not in _by_path(build_cli_inventory(cli))
 
 
 class _FakeEntryPoint:

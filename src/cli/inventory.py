@@ -42,9 +42,7 @@ EXTERNAL_PLUGIN_COMMANDS: dict[str, str] = {
 # A newly advertised generated command without an implementation fails
 # inventory validation unless it is classified here.  Entries must remain
 # advertised and handler-less; validation rejects stale exceptions.
-EXPLICITLY_UNSUPPORTED: dict[str, str] = {
-    "ask_human": "The command is reserved for the pending human-gate implementation.",
-}
+EXPLICITLY_UNSUPPORTED: dict[str, str] = {}
 
 # These paths have focused payload/output/exit tests, rather than registration
 # or schema-dispatch evidence alone.  This is intentionally a small,

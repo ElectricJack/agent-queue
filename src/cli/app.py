@@ -27,7 +27,7 @@ import sys
 import click
 from rich.console import Console
 
-from .global_options import AQGroup
+from .global_options import AQGroup as GlobalOptionsAQGroup
 from .styles import AQ_THEME
 
 logger = logging.getLogger(__name__)
@@ -161,8 +161,8 @@ def _handle_errors(func):
     return wrapper
 
 
-class AQGroup(click.Group):
-    """Root group that preserves the JSON contract for Click usage errors."""
+class AQGroup(GlobalOptionsAQGroup):
+    """Root group with position-independent options and JSON usage errors."""
 
     @staticmethod
     def _wants_json(args) -> bool:
