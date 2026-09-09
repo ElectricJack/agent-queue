@@ -62,15 +62,38 @@ async def _cancel_readiness_tasks(pending: set[asyncio.Task]) -> None:
         )
 
 
+async def _report_long_scheduler_cycle(task: asyncio.Task, *, interval: float = 30.0) -> None:
+    """Report the await chain without interrupting a cycle or exposing locals."""
+    while not task.done():
+        await asyncio.sleep(interval)
+        if task.done():
+            return
+        current = task.get_coro()
+        chain = []
+        seen = set()
+        while current is not None and id(current) not in seen:
+            seen.add(id(current))
+            code = getattr(current, "cr_code", None) or getattr(current, "gi_code", None)
+            if code is not None:
+                chain.append(code.co_qualname)
+            current = getattr(current, "cr_await", None) or getattr(current, "gi_yieldfrom", None)
+        logger.warning("Scheduler cycle still running; await chain: %s", " -> ".join(chain))
+
+
 async def _run_scheduler_cycles(orch: Orchestrator, shutdown_event: asyncio.Event) -> None:
     """Keep periodic reconciliation alive after a single degraded cycle."""
     while not shutdown_event.is_set():
+        cycle = asyncio.create_task(orch.run_one_cycle(), name="aq-scheduler-cycle")
+        reporter = asyncio.create_task(_report_long_scheduler_cycle(cycle))
         try:
-            await orch.run_one_cycle()
+            await cycle
         except asyncio.CancelledError:
             raise
         except Exception:
             logger.exception("Orchestrator cycle failed; retrying on the next interval")
+        finally:
+            reporter.cancel()
+            await asyncio.gather(reporter, return_exceptions=True)
         if shutdown_event.is_set():
             break
         try:
