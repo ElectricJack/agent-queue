@@ -1463,7 +1463,7 @@ class TestTaskCommentKind:
 
         A fresh database gets the column from the squashed baseline's
         ``metadata.create_all``, so this shape is the only one that exercises
-        ``a00000000007``'s conditional ``add_column`` at all.
+        ``a00000000006``'s conditional ``add_column`` at all.
         """
         from sqlalchemy import inspect, text
 

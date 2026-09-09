@@ -1,7 +1,7 @@
 """Add ``task_comments.kind`` — the durable meaningful-progress marker.
 
-Revision ID: a00000000007
-Revises: a00000000006
+Revision ID: a00000000006
+Revises: a00000000005
 
 The hourly Discord digest (discord-simplification §8) may only report
 *explicit* recorded progress. A task comment is not intrinsically progress: a
@@ -24,8 +24,8 @@ every fresh database.
 import sqlalchemy as sa
 from alembic import op
 
-revision = "a00000000007"
-down_revision = "a00000000006"
+revision = "a00000000006"
+down_revision = "a00000000005"
 branch_labels = None
 depends_on = None
 

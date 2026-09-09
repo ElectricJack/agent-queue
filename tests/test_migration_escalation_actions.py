@@ -27,11 +27,11 @@ def alembic(dsn: str, *args: str) -> subprocess.CompletedProcess:
     )
 
 
-async def test_upgrade_from_a5_creates_action_relation_and_downgrade_removes_it():
+async def test_upgrade_from_a6_creates_action_relation_and_downgrade_removes_it():
     if not POSTGRES_DSN:
         pytest.skip("POSTGRES_TEST_DSN is not set")
     dsn = await create_scratch_database("escalationactionmigration")
-    before = alembic(dsn, "upgrade", "a00000000005")
+    before = alembic(dsn, "upgrade", "a00000000006")
     assert before.returncode == 0, before.stderr
 
     import asyncpg
@@ -42,7 +42,7 @@ async def test_upgrade_from_a5_creates_action_relation_and_downgrade_removes_it(
     finally:
         await conn.close()
 
-    upgraded = alembic(dsn, "upgrade", "a00000000006")
+    upgraded = alembic(dsn, "upgrade", "a00000000007")
     assert upgraded.returncode == 0, upgraded.stderr
     conn = await asyncpg.connect(dsn.replace("postgresql+asyncpg://", "postgresql://"))
     try:
@@ -58,7 +58,7 @@ async def test_upgrade_from_a5_creates_action_relation_and_downgrade_removes_it(
     finally:
         await conn.close()
 
-    downgraded = alembic(dsn, "downgrade", "a00000000005")
+    downgraded = alembic(dsn, "downgrade", "a00000000006")
     assert downgraded.returncode == 0, downgraded.stderr
     conn = await asyncpg.connect(dsn.replace("postgresql+asyncpg://", "postgresql://"))
     try:

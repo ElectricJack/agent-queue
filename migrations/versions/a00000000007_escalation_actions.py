@@ -1,7 +1,7 @@
 """Add durable verified-reply action reservations.
 
-Revision ID: a00000000006
-Revises: a00000000005
+Revision ID: a00000000007
+Revises: a00000000006
 """
 
 from __future__ import annotations
@@ -9,8 +9,8 @@ from __future__ import annotations
 import sqlalchemy as sa
 from alembic import op
 
-revision = "a00000000006"
-down_revision = "a00000000005"
+revision = "a00000000007"
+down_revision = "a00000000006"
 branch_labels = None
 depends_on = None
 
