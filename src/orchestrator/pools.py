@@ -952,6 +952,25 @@ class PoolsMixin:
             # reusable or remove its claim file until the owner handoff has
             # durably completed.
             if not release.released:
+                # Ownership may retain the claim until a guarded handoff,
+                # but that must not hide a confirmed process exit. Recovery
+                # needs this stopped state while the attachment stays locked.
+                try:
+                    handle = SessionHandle(
+                        name=session.name, provider=session.provider,
+                        instance_token=session.instance_token,
+                    )
+                    if await provider.confirm_stopped(handle):
+                        await self.db.update_session_instance(
+                            session.id, session.instance_token,
+                            require_desired_state="stopped", state="stopped",
+                            end_reason=reason,
+                        )
+                except Exception:
+                    logger.warning(
+                        "pool session %s: retained-owner stop proof unavailable",
+                        session.id, exc_info=True,
+                    )
                 return
             from src.claim_file import remove_claim_file
             try:
