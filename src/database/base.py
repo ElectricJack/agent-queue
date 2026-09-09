@@ -200,7 +200,12 @@ class DatabaseBackend(Protocol):
         **kwargs,
     ) -> set[str]: ...
     async def delete_task(
-        self, task_id: str, *, cascade: bool = False, conn=None
+        self,
+        task_id: str,
+        *,
+        cascade: bool = False,
+        conn=None,
+        branch_policy: str | None = None,
     ) -> "TransitionResult | None": ...
     async def get_task_updated_at(self, task_id: str) -> float | None: ...
     async def get_task_assignment_route(

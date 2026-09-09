@@ -35,8 +35,12 @@ class ArchiveQueryMixin:
 
         terminal = (TaskStatus.COMPLETED.value, TaskStatus.FAILED.value, TaskStatus.BLOCKED.value)
         async with self.immediate() as conn:
+            # Archiving moves a task out of the active view; it never destroys
+            # work, so the branch always stays on the remote.  Retiring the
+            # origin is what lets a task whose branch was materialized leave the
+            # queue at all (deletion-with-materialized-branches §2 decision 2).
             await self.guard_integration_mutation(
-                task_id, "archive", conn=conn, retire_pending=True
+                task_id, "archive", conn=conn, retire_pending=True, branch_policy="keep"
             )
             ids = await self.subtree_ids(task_id, conn=conn)
             if not ids:

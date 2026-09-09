@@ -1461,12 +1461,23 @@ class TestAgentProfilesMinPerProject:
             async with engine.begin() as conn:
                 assert "min_per_project" in await conn.run_sync(_cols)
                 version = (await conn.execute(text("SELECT version_num FROM alembic_version"))).scalar()
-            assert version == "a00000000003"
+            # Asserted against the checkout's head rather than a literal:
+            # ``run_schema_setup`` runs the whole remaining chain, so pinning
+            # ``a00000000003`` here made every later revision fail this test
+            # for a reason that has nothing to do with ``min_per_project``.
+            from src.database.schema_key import alembic_head_revisions
+
+            assert version in alembic_head_revisions()
         finally:
             await engine.dispose()
 
     def test_migration_is_in_the_linear_history(self):
-        """One head, and a00000000003 chains onto the restored-guards revision."""
+        """One head, and a00000000003 chains onto the restored-guards revision.
+
+        The head is asserted as "exactly one", not by id: a branch point is the
+        actual hazard (it wedges the daemon at boot), while a later revision
+        moving the head forward is ordinary.
+        """
         from pathlib import Path
 
         from alembic.config import Config
@@ -1476,7 +1487,124 @@ class TestAgentProfilesMinPerProject:
         script = ScriptDirectory.from_config(Config(str(root / "alembic.ini")))
         rev = script.get_revision("a00000000003")
         assert rev.down_revision == "a00000000002"
-        assert list(script.get_heads()) == ["a00000000003"]
+        heads = list(script.get_heads())
+        assert len(heads) == 1, f"migration history has branched: {heads}"
+        ancestry = {r.revision for r in script.iterate_revisions(heads[0], "base")}
+        assert "a00000000003" in ancestry
+
+
+class TestTaskBranchOriginDiscard:
+    """``a00000000004`` — the columns and the narrowed immutability trigger.
+
+    The trigger half is the load-bearing part: before this revision it raised
+    on *any* UPDATE of a materialized origin, which is what made a task with a
+    branch permanently undeletable
+    (``2026-09-08-task-deletion-with-materialized-branches-design`` §3.2).
+    """
+
+    async def test_discard_columns_are_present_in_a_fresh_database(self):
+        from sqlalchemy import inspect
+
+        from src.database import Database
+
+        db = Database(lease_dsn("origin_discard.db"))
+        await db.initialize()
+
+        def _cols(sync_conn):
+            return {c["name"] for c in inspect(sync_conn).get_columns("task_branch_origins")}
+
+        async with db._engine.begin() as conn:
+            cols = await conn.run_sync(_cols)
+        await db.close()
+        assert {
+            "discard_state",
+            "discard_requested_at",
+            "discard_attempts",
+            "discard_next_attempt_at",
+            "discard_last_error",
+        } <= cols
+
+    async def test_retiring_a_materialized_origin_is_allowed(self):
+        """The whole point: the trigger no longer freezes the entire row."""
+        from sqlalchemy import insert, select, update
+
+        from src.database import Database
+        from src.database.tables import task_branch_origins
+
+        db = Database(lease_dsn("origin_discard.db"))
+        await db.initialize()
+        async with db.immediate() as conn:
+            await conn.execute(
+                insert(task_branch_origins).values(
+                    id="o1",
+                    task_id="t1",
+                    repository_id="repo",
+                    parent_ref="main",
+                    base_sha="a" * 40,
+                    creation_generation=0,
+                    reserved=True,
+                    materialized=True,
+                    materialized_at=1.0,
+                    created_at=1.0,
+                )
+            )
+            await conn.execute(
+                update(task_branch_origins)
+                .where(task_branch_origins.c.id == "o1")
+                .values(retired_at=2.0, discard_state="pending", discard_requested_at=2.0)
+            )
+        async with db._engine.connect() as conn:
+            row = (
+                await conn.execute(
+                    select(task_branch_origins).where(task_branch_origins.c.id == "o1")
+                )
+            ).mappings().one()
+        await db.close()
+        assert row["retired_at"] == 2.0
+        assert row["discard_state"] == "pending"
+
+    async def test_identity_of_a_materialized_origin_is_still_frozen(self):
+        from sqlalchemy import delete, insert, update
+
+        from src.database import Database
+        from src.database.tables import task_branch_origins
+
+        db = Database(lease_dsn("origin_discard.db"))
+        await db.initialize()
+        async with db.immediate() as conn:
+            await conn.execute(
+                insert(task_branch_origins).values(
+                    id="o2",
+                    task_id="t2",
+                    repository_id="repo",
+                    parent_ref="main",
+                    base_sha="a" * 40,
+                    creation_generation=0,
+                    reserved=True,
+                    materialized=True,
+                    materialized_at=1.0,
+                    created_at=1.0,
+                )
+            )
+        for values in (
+            {"base_sha": "b" * 40},
+            {"materialized": False},
+            {"task_id": "somewhere-else"},
+        ):
+            with pytest.raises(Exception, match="materialized task branch origin is immutable"):
+                async with db.immediate() as conn:
+                    await conn.execute(
+                        update(task_branch_origins)
+                        .where(task_branch_origins.c.id == "o2")
+                        .values(**values)
+                    )
+        # And it still cannot be removed outright.
+        with pytest.raises(Exception, match="materialized task branch origin is immutable"):
+            async with db.immediate() as conn:
+                await conn.execute(
+                    delete(task_branch_origins).where(task_branch_origins.c.id == "o2")
+                )
+        await db.close()
 
 
 async def test_layout_tables_exist(tmp_path):

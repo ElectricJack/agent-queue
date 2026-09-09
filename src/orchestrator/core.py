@@ -486,6 +486,7 @@ class Orchestrator(
         self.integration_attestation_resolver = None
         self.integration_app_client_factory = None
         self.integration_repository_binding_resolver = None
+        self.branch_discard_service = None
         self.integration_release_service = None
         self.integration_cleanup_service = None
         self.integration_control_service = None
@@ -1112,6 +1113,18 @@ class Orchestrator(
         except Exception as exc:  # best-effort by contract
             logger.warning("Could not salvage paused workspace for %s: %s", task_id, exc)
 
+    async def _drain_branch_discards(self, now: float) -> None:
+        """Advance branch discards an operator asked for when deleting a task.
+
+        A no-op when the service is unwired (tests, integration disabled).
+        The service parks its own conflicts and failures, so nothing here
+        needs to distinguish outcomes.
+        """
+        service = self.branch_discard_service
+        if service is None:
+            return
+        await service.drain_due(now=now)
+
     async def stop_task(self, task_id: str) -> str | None:
         """Forcibly stop an in-progress task and release its agent.
 
@@ -1523,6 +1536,7 @@ class Orchestrator(
         # outbox dispatch. Later Task 10 phases attach their narrow handlers
         # without adding another timer or orchestration authority.
         from src.integration.outbox import IntegrationOutbox
+        from src.integration.branch_discard import BranchDiscardService
         from src.integration.cleanup import IntegrationCleanupService
         from src.integration.main_promotion import RootPromotionService
         from src.integration.release import IntegrationReleaseService
@@ -1621,6 +1635,16 @@ class Orchestrator(
             app_client_factory=self.integration_app_client_factory,
             attestation_resolver=self.integration_attestation_resolver,
         )
+        # Removes the branches an operator explicitly asked to discard when
+        # deleting a task.  Its work is recorded on the retired origin row, so
+        # it survives a restart and needs no other authority.
+        self.branch_discard_service = BranchDiscardService(
+            self.db,
+            data_dir=self.config.data_dir,
+            git_manager=self.git,
+            app_client_factory=self.integration_app_client_factory,
+            repository_binding_resolver=self.integration_repository_binding_resolver,
+        )
         self.integration_control_service = IntegrationControlService(
             self.db,
             scheduler=self.integration_scheduler,
@@ -1650,6 +1674,7 @@ class Orchestrator(
             unresolved_intent_handler=reconcile_root_intent,
             cleanup_handler=self.integration_cleanup_service.handle_item,
             drain_handler=self.integration_control_service.reconcile_drains,
+            branch_discard_handler=self._drain_branch_discards,
         )
         self.integration_service.start()
 

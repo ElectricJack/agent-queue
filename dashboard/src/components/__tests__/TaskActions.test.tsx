@@ -28,6 +28,8 @@ vi.mock("../../api/hooks", () => {
     useProvideInput: mutation,
     useDeleteTask: () => ({
       mutate: mockDelete,
+      // Opening the dialog clears any error left from a previous attempt.
+      reset: vi.fn(),
       isPending: false,
       isError: true,
       error: new Error("A descendant still has a live session"),
@@ -80,6 +82,83 @@ describe("TaskActions deletion", () => {
     );
     expect(onDeleted).toHaveBeenCalledOnce();
     expect(mockNavigate).not.toHaveBeenCalled();
+  });
+
+  it("asks about branches instead of reporting the refusal, then re-issues the delete", async () => {
+    // The server refuses the first attempt because the subtree has a branch on
+    // the remote, and names it.  That is a question, not a failure — the
+    // dialog has to turn it into a choice rather than a red alert.
+    mockDelete.mockReset();
+    mockDelete.mockImplementationOnce((_input, options) =>
+      options.onError(
+        Object.assign(new Error("API 422"), {
+          payload: {
+            code: "hierarchy.branch_discard_required",
+            branches: [
+              { task_id: "azure-beacon", branch: "aq/azure-beacon", base_sha: "abc" },
+            ],
+          },
+        }),
+      ),
+    );
+    mockDelete.mockImplementationOnce((_input, options) => options.onSuccess());
+
+    render(<TaskActions task={task} />);
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: "Delete" }));
+
+    const dialog = screen.getByRole("dialog");
+    await user.click(
+      within(dialog).getByRole("button", { name: "Delete task and descendants" }),
+    );
+
+    expect(mockDelete).toHaveBeenNthCalledWith(
+      1,
+      { task_id: "task/with space", cascade: true },
+      expect.anything(),
+    );
+    expect(within(dialog).getByText("aq/azure-beacon")).toBeInTheDocument();
+
+    // Keep is preselected: leaving a ref behind is recoverable, deleting one
+    // is not.
+    await user.click(within(dialog).getByLabelText(/Delete the branch/));
+    await user.click(within(dialog).getByRole("button", { name: "Delete task and branches" }));
+
+    expect(mockDelete).toHaveBeenNthCalledWith(
+      2,
+      { task_id: "task/with space", cascade: true, branches: "delete" },
+      expect.anything(),
+    );
+  });
+
+  it("keeps the branch when the operator leaves the default alone", async () => {
+    mockDelete.mockReset();
+    mockDelete.mockImplementationOnce((_input, options) =>
+      options.onError(
+        Object.assign(new Error("API 422"), {
+          payload: { code: "hierarchy.branch_discard_required", branches: [] },
+        }),
+      ),
+    );
+    mockDelete.mockImplementationOnce((_input, options) => options.onSuccess());
+
+    render(<TaskActions task={task} />);
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: "Delete" }));
+
+    const dialog = screen.getByRole("dialog");
+    await user.click(
+      within(dialog).getByRole("button", { name: "Delete task and descendants" }),
+    );
+    await user.click(
+      within(dialog).getByRole("button", { name: "Delete task and descendants" }),
+    );
+
+    expect(mockDelete).toHaveBeenNthCalledWith(
+      2,
+      { task_id: "task/with space", cascade: true, branches: "keep" },
+      expect.anything(),
+    );
   });
 });
 

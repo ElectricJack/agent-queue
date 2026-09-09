@@ -1792,10 +1792,32 @@ task_branch_origins = Table(
     Column("retired_at", Float, nullable=True),
     Column("created_at", Float, nullable=False),
     Column("materialized_at", Float, nullable=True),
+    # Branch discard.  A retired origin outlives its task (no FK to ``tasks``,
+    # and ``_delete_one`` leaves it alone), so the operator's "delete the work
+    # on the branch too" intent is recorded on the row itself and drained
+    # asynchronously by BranchDiscardService.
+    Column("discard_state", Text, nullable=True),
+    Column("discard_requested_at", Float, nullable=True),
+    Column("discard_attempts", Integer, nullable=False, server_default="0"),
+    Column("discard_next_attempt_at", Float, nullable=True),
+    Column("discard_last_error", Text, nullable=True),
     CheckConstraint("creation_generation >= 0", name="ck_task_branch_origins_generation"),
     CheckConstraint(
         "materialized = false OR reserved = true",
         name="ck_task_branch_origins_materialized_reserved",
+    ),
+    CheckConstraint(
+        "discard_state IS NULL OR discard_state IN "
+        "('pending', 'complete', 'conflict', 'failed')",
+        name="ck_task_branch_origins_discard_state",
+    ),
+    CheckConstraint(
+        "discard_attempts >= 0",
+        name="ck_task_branch_origins_discard_attempts",
+    ),
+    CheckConstraint(
+        "discard_state IS NULL OR (materialized = true AND retired_at IS NOT NULL)",
+        name="ck_task_branch_origins_discard_requires_retired",
     ),
     Index(
         "uq_task_branch_origins_live_task_repo",
@@ -1803,6 +1825,11 @@ task_branch_origins = Table(
         "repository_id",
         unique=True,
         postgresql_where=text("retired_at IS NULL"),
+    ),
+    Index(
+        "ix_task_branch_origins_discard_due",
+        "discard_next_attempt_at",
+        postgresql_where=text("discard_state = 'pending'"),
     ),
 )
 
