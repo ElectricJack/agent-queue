@@ -112,6 +112,45 @@ assert_safe_to_reset() {
     fi
 }
 
+# A reset drops the database and deletes the home out from under anything
+# still using them.  Doing that to a *live* daemon is how one checkout ruins
+# another's run: the daemon keeps answering `/api/health`, its log file is
+# unlinked from under its open descriptor so `e2e-daemon.sh logs` shows
+# nothing, and the next `e2e-smoke.sh` runs fifteen scenarios against an
+# empty schema (task vivid-rapids).  So: stop the daemon this home owns, and
+# refuse when something we do not own holds the port.
+e2e_port_answers() {
+    curl -fsS --max-time 10 "$AQ_E2E_API_URL/api/health" >/dev/null 2>&1
+}
+
+assert_no_live_daemon() {
+    e2e_port_answers || return 0
+
+    # Ours iff the pid file names a process that is still alive.  A stale
+    # file plus a live port means somebody else owns the daemon, and
+    # `e2e-daemon.sh stop` would report "not running" and let the reset
+    # proceed against their world.
+    local pid=""
+    [ -f "$E2E_PID_FILE" ] && pid="$(cat "$E2E_PID_FILE" 2>/dev/null || true)"
+    if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+        echo "==> a daemon from this home is running (pid $pid) — stopping it before the reset"
+        "$REPO_ROOT/scripts/e2e-daemon.sh" stop
+        e2e_port_answers || return 0
+    fi
+
+    echo "something is answering on $AQ_E2E_API_URL that $E2E_PID_FILE does not" >&2
+    echo "name it, so this reset would drop the database and delete the home of a" >&2
+    echo "daemon it does not own — most likely another checkout running the kit." >&2
+    echo >&2
+    echo "Stop it first, or export AQ_E2E_HOME, AQ_E2E_PORT and E2E_DB_NAME to run" >&2
+    echo "two kits side by side (see docs/guides/e2e-swarm.md)." >&2
+    exit 2
+}
+
+if [ "$RESET" = "1" ]; then
+    assert_no_live_daemon
+fi
+
 if [ "$RESET" = "1" ] && [ -d "$AQ_E2E_HOME" ]; then
     assert_safe_to_reset
     echo "==> resetting $AQ_E2E_HOME"

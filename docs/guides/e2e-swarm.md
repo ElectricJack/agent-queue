@@ -126,6 +126,7 @@ class and model constraints.
 | `scripts/e2e/aq.py` | runs *this worktree's* `aq` — see below |
 | `scripts/e2e/register.py` | creates the `e2e` / `other` projects + their workspaces (needs the daemon) |
 | `scripts/e2e/dbsetup.py` | creates/drops `agent_queue_e2e` via asyncpg (no `psql` needed) |
+| `scripts/e2e/probe.py` | asks `/ready` whether the daemon can actually use its schema — the readiness gate `e2e-daemon.sh` and `e2e-smoke.sh` refuse on |
 | `scripts/e2e-dashboard.sh` | the React dashboard pointed at the e2e daemon, for watching a run |
 
 ### Watching a run in the dashboard
@@ -287,6 +288,50 @@ modified.
 including a missing-project refusal. Vault migration is invoked only with
 `--dry-run --data-dir "$AQ_E2E_HOME"`; database upgrade and operator-daemon
 control remain explicitly untested.
+
+### Readiness is not liveness
+
+`GET /api/health` is a static stub: it answers `{"status": "ok"}` as soon as
+uvicorn is listening and never touches the database. `GET /ready` runs the
+daemon's own health provider, so its `checks.database` entry is a real query
+through the engine the daemon is using.
+
+The kit gates on `/ready`, through `scripts/e2e/probe.py`:
+
+* `e2e-daemon.sh start` waits for *ready*, not for a listening port, and fails
+  — printing the database error and the log tail — if readiness never arrives;
+* `e2e-daemon.sh status` exits non-zero when the daemon is answering but cannot
+  reach its schema, which is what stops `e2e-smoke.sh` from reusing it;
+* `e2e-smoke.sh` re-probes immediately before the first scenario.
+
+This exists because the failure it catches is invisible otherwise. A daemon
+whose schema setup died, or whose database was dropped out from under it, keeps
+serving `/api/health`; the fifteen scenarios then run against an empty database
+and every one fails with `relation "projects" does not exist`, which reads like
+fifteen product regressions rather than one broken environment.
+
+### Running two kits at once
+
+`AQ_E2E_HOME`, `AQ_E2E_PORT` and `E2E_DB_NAME` default to per-box values, not
+per-worktree ones, so two checkouts running the kit share one home, one port
+and one database unless you say otherwise:
+
+```bash
+export AQ_E2E_HOME=~/.agent-queue-e2e-$(basename "$PWD") \
+       AQ_E2E_PORT=8123 \
+       E2E_DB_NAME=agent_queue_e2e_myslot
+scripts/e2e-env.sh --reset && scripts/e2e-smoke.sh
+```
+
+Without that, one checkout's `e2e-env.sh --reset` terminates the other's
+database connections, drops its database and deletes its home — including the
+log file, which the running daemon keeps writing to an unlinked inode, so
+`e2e-daemon.sh logs` shows nothing.
+
+`--reset` refuses to do this to a daemon it does not own: if something is
+answering on `$AQ_E2E_API_URL` and `$AQ_E2E_HOME/daemon.pid` does not name a
+live process, it exits 2 and points here. When the pid file *does* name one,
+the reset stops it first rather than orphaning it.
 
 ### Reading a failure
 
