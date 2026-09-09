@@ -1407,6 +1407,10 @@ class TestDevelopmentModeCompletion:
     workspace") that named none of its three causes, which read like a dirty
     tree the worker could fix from the slot.  A task with no commits never
     pushes, so nothing else ever backfilled the column.
+
+    ``tests/test_repair_checkout_refs.py`` pins the split messages at the
+    resolver; these run the whole development branch of the completion
+    pipeline, which is where a worker actually meets them.
     """
 
     HEAD = "a" * 40
@@ -1460,7 +1464,7 @@ class TestDevelopmentModeCompletion:
         _task, ctx = await self._dev_ctx(orch, "t-dev-nobranch", None)
 
         assert await orch._run_completion_pipeline(ctx) == (None, False)
-        assert ctx.verification_issues == ["dirty: task has no recorded branch"]
+        assert ctx.verification_issues == ["dirty: task has no recorded delivery branch"]
         assert ctx.verification_retry_in_session is True
 
     async def test_an_unowned_workspace_says_so(self, orch):
@@ -1478,4 +1482,4 @@ class TestDevelopmentModeCompletion:
             )
 
         assert await orch._run_completion_pipeline(ctx) == (None, False)
-        assert ctx.verification_issues == ["dirty: workspace is not locked by this task"]
+        assert ctx.verification_issues == ["dirty: task has no exact owned integration workspace"]

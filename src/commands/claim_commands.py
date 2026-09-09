@@ -702,12 +702,12 @@ class ClaimCommandsMixin:
                 reset_kwargs = {"base_branch": base_branch} if base_branch else {}
                 if target_branch is not None:
                     reset_kwargs["target_branch"] = target_branch
-                # The reset *is* what decides the task's branch, and the
-                # daemon owns ``tasks.branch_name`` — hand it to
-                # ``activate_claim`` so the row records it in the same
-                # transaction that publishes the claim.  Dropping it left the
-                # column NULL on every pulled task, which reads downstream as
-                # "task has no exact owned integration workspace".
+                # The reset is the moment the task acquires a delivery
+                # branch, and ``tasks.branch_name`` is daemon-owned, so hand
+                # what it produced to ``activate_claim``: that transaction
+                # already holds this task's row lock in the canonical
+                # sessions-then-tasks order, which makes "claimed" and "branch
+                # recorded" one commit rather than two a crash can separate.
                 branch = await self.orchestrator._worktree_slots().reset_slot_for_task(
                     slot, task, **reset_kwargs
                 )
@@ -732,10 +732,11 @@ class ClaimCommandsMixin:
                     conn=conn,
                     branch_name=branch,
                 )
-                if activated and branch:
-                    # Keep the in-memory row the response and the task.claimed
-                    # / task.started events are built from consistent with
-                    # what was just committed.
+                if activated and branch and not task.branch_name:
+                    # Keep the in-memory row the response and the
+                    # task.claimed / task.started events are built from
+                    # consistent with what was just committed, fill-only rule
+                    # included.
                     task.branch_name = branch
                 return activated
 

@@ -13,7 +13,20 @@ from __future__ import annotations
 import json
 import time
 
-from sqlalchemy import Float, and_, case, cast, delete, exists, false, func, literal, select, update
+from sqlalchemy import (
+    Float,
+    and_,
+    case,
+    cast,
+    delete,
+    exists,
+    false,
+    func,
+    literal,
+    or_,
+    select,
+    update,
+)
 
 from src.database.queries.blocked_state import apply_label_filters
 from src.database.queries.hierarchy_queries import (
@@ -480,17 +493,18 @@ class ClaimQueryMixin:
         on failure, so the old ``if not await activate_claim(...)`` callers
         read unchanged.
 
-        *branch_name* is the branch the caller's slot reset just put the
-        worktree on.  ``tasks.branch_name`` is daemon-owned state that every
-        later git surface reads (`resolve_workspace_checkpoint`, the
-        completion pipeline, `aq task show`), and on the pull path this
-        activation is the only place that knows it: the push path writes it
-        from ``_prepare_slot_workspace``, while a claim used to drop the
-        branch ``reset_slot_for_task`` returned.  A task that never pushed
-        then had no other backfill, so a no-change close in development mode
-        was refused for good.  Writing it here — inside the transaction that
-        already holds this task's row lock, in the same sessions-then-tasks
-        order — makes "claimed" and "branch recorded" the same commit.
+        *branch_name* fills ``tasks.branch_name`` if — and only if — the row
+        has none.  That column is daemon-owned state every later git surface
+        reads (``resolve_workspace_checkpoint``, the completion pipeline, ``aq
+        task show``), and on the pull path this activation is the only place
+        that knows it: the push path writes it from
+        ``_prepare_slot_workspace``, while a claim used to drop the branch
+        ``reset_slot_for_task`` returned.  A task that never pushed had no
+        other backfill, so a development-mode close was refused for good.
+        Writing it here — inside the transaction that already holds this
+        task's row lock, in the same sessions-then-tasks order — makes
+        "claimed" and "branch recorded" the same commit instead of two a crash
+        can separate.
         """
 
         async def _run(c):
@@ -523,9 +537,19 @@ class ClaimQueryMixin:
             if claim is None:
                 return None
             if branch_name:
+                # Fill only.  A recorded name belongs to whichever authority
+                # reserved it — hierarchy and train reserve one under a branch
+                # fence in ``HierarchyIntegration._ensure_origin_chain`` — and
+                # must not be replaced by whatever a checkout happened to land
+                # on.  The predicate lives in the statement rather than in the
+                # caller so it is decided under the task row lock this
+                # transaction already holds.
                 await c.execute(
                     update(tasks)
-                    .where(tasks.c.id == task_id)
+                    .where(
+                        tasks.c.id == task_id,
+                        or_(tasks.c.branch_name.is_(None), tasks.c.branch_name == ""),
+                    )
                     .values(branch_name=branch_name, updated_at=now)
                 )
             stmt = (
