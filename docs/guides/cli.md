@@ -108,6 +108,10 @@ aq --json task create -p proj -t "Title" -d "Description"
 #    "task_id": "keen-harbor.4", "status": "DEFINED", "title": "Title", ...}}
 new_id=$(aq --json task create -p proj -t "Title" -d "D" | jq -r .data.created)
 
+# Workspace requirements (workspaces-v2 §5) — repeatable, KIND[=ALIAS]
+aq task create -p proj -t "Port the level loader" -d "..." \
+    --requires-kind game-repo --requires-kind engine-repo=engine
+
 # Task actions
 aq task approve <task-id>              # Approve for execution
 aq task approve <task-id> -y           # Skip confirmation
@@ -236,6 +240,30 @@ steps; only missing required values are prompted. In a non-interactive shell
 `--description`; the command otherwise exits with usage guidance without
 contacting the daemon. `--json` is always non-interactive and follows the same
 rule. Press `Ctrl+C` at a wizard step to cancel cleanly without creating a task.
+
+### Declaring workspace requirements
+
+`--requires-kind` tells the daemon which workspace *kinds* a task needs, so the
+orchestrator can acquire one workspace per kind before the agent starts. It is
+repeatable and takes two forms:
+
+| Form | Sent as | Use it when |
+| --- | --- | --- |
+| `--requires-kind game-repo` | `"game-repo"` | The task needs one workspace of that kind. |
+| `--requires-kind game-repo=primary` | `{"kind": "game-repo", "alias": "primary"}` | The same kind is needed more than once, or the agent refers to it by alias. |
+
+Notes:
+
+- **Omitting it changes nothing.** A task with no `--requires-kind` keeps the
+  implicit single `project-repo` requirement.
+- **Auto-attached kinds need no flag.** `vault` is attached to every task.
+- **Unknown kinds are the daemon's call.** The CLI only rejects locally
+  malformed values (a missing kind before `=`, a missing alias after it, more
+  than one `=`); whether `game-repo` resolves is answered by the daemon against
+  `vault/[projects/<pid>/]workspace-kinds/`, and its error is what you see.
+- **Not available on `--graph` / `--from-spec`.** Graph documents carry no
+  per-node workspace requirements, so combining the flags is rejected rather
+  than silently dropped. Create such a task on its own.
 
 ### Fuzzy Task Selection
 
