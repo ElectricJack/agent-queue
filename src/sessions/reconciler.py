@@ -377,16 +377,19 @@ class SessionReconciler:
         for row in live:
             if row.lifecycle == "pool":
                 # Pool sessions never send a provider-side drain ack -- an
-                # idle one (no held task) marked ``desired_state="stopped"``
-                # is simply done and gets torn down the pool way.
-                if row.desired_state == "stopped" and row.task_id is None:
+                # idle one (no held task) marked stopped or sleeping is
+                # simply done and gets torn down the pool way.  ``sleep`` is
+                # intentionally deferred while a claim is active: public
+                # session control must not interrupt a worker's task.
+                if row.desired_state in ("stopped", "sleeping") and row.task_id is None:
                     if self.orchestrator is None:
                         logger.warning(
                             "Pool session %s wants draining but no orchestrator is wired "
                             "— skipping", row.id,
                         )
                         continue
-                    await self.orchestrator._terminate_pool_session(row, reason="drained")
+                    reason = "sleeping" if row.desired_state == "sleeping" else "drained"
+                    await self.orchestrator._terminate_pool_session(row, reason=reason)
                 continue
             provider = self._provider_for(row)
             if provider is None:

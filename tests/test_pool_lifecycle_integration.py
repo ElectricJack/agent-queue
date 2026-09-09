@@ -42,6 +42,7 @@ from src.models import (
 )
 from src.orchestrator import Orchestrator
 from src.sessions.harness_parser import Harness
+from src.sessions.reconciler import SessionReconciler
 from tests.pg_dsn import ensure_worker_postgres_dsn
 from tests.db_fixtures import lease_dsn
 
@@ -318,6 +319,81 @@ class TestFullPullLoop:
         orch.config.swarm.scale_down_grace = 0
         await orch._reconcile_pools()
         assert (await db.get_session(session.id)).desired_state == "stopped"
+
+
+class TestPublicPoolSleep:
+    async def test_sleep_terminates_idle_pool_and_reconciliation_replaces_it(
+        self, orch, db, handler
+    ):
+        """Public sleep retires the exact idle worker instance, not its successor."""
+        await single_worker_pool(db)
+        await ready(db, "t1")
+        await orch._reconcile_pools()
+        first = await only_pool_session(db)
+        provider = orch.session_providers.create(first.provider, orch.config)
+        reconciler = SessionReconciler(
+            db, orch.config, orch.session_providers, bus=orch.bus, orchestrator=orch
+        )
+
+        slept = await handler.execute("session_sleep", {"session_id": first.id})
+        assert slept["success"] is True
+        assert (await db.get_session(first.id)).desired_state == "sleeping"
+        assert [h.name for h in await provider.list_running("")] == [first.name]
+
+        # This is the production reconciliation path, rather than directly
+        # calling the drain helper: it observes the live provider instance,
+        # stops that exact instance, then releases the pool capacity.
+        await reconciler.tick()
+        stopped = await db.get_session(first.id)
+        assert (stopped.state, stopped.desired_state, stopped.end_reason) == (
+            "stopped",
+            "stopped",
+            "sleeping",
+        )
+        assert await provider.list_running("") == []
+        assert (await db.get_agent(first.agent_id)).state is AgentState.IDLE
+        assert await db.get_workspace_for_agent(first.agent_id) is None
+
+        # Sleeping a pool instance does not leave a stale desired state that
+        # can stop the worker launched to meet still-ready demand.
+        await orch._reconcile_pools()
+        successor = await only_pool_session(db)
+        assert successor.id != first.id
+        assert successor.agent_id == first.agent_id
+        assert successor.instance_token != first.instance_token
+        assert (successor.state, successor.desired_state) == ("running", "running")
+        assert [h.name for h in await provider.list_running("")] == [successor.name]
+
+    async def test_sleep_defers_while_pool_holds_a_task(self, orch, db, handler):
+        """Sleeping a busy pool worker never interrupts its active claim."""
+        orch.config.swarm.fresh_context_per_task = False
+        await ready(db, "t1")
+        await orch._reconcile_pools()
+        session = await only_pool_session(db)
+        provider = orch.session_providers.create(session.provider, orch.config)
+        reconciler = SessionReconciler(
+            db, orch.config, orch.session_providers, bus=orch.bus, orchestrator=orch
+        )
+        claim = await scoped(handler, session.id)._cmd_task_claim({"next": True})
+        assert claim["result"] == "claimed"
+
+        slept = await handler.execute("session_sleep", {"session_id": session.id})
+        assert slept["success"] is True
+        await reconciler.tick()
+        busy = await db.get_session(session.id)
+        assert (busy.task_id, busy.state, busy.desired_state) == ("t1", "running", "sleeping")
+        assert [h.name for h in await provider.list_running("")] == [session.name]
+
+        # The normal completion path releases the claim; the next tick then
+        # consumes the already-recorded sleep intent and performs teardown.
+        closed = await handler._cmd_task_close(
+            {"outcome": "pass", "summary": "done", "claim_epoch": claim["claim_epoch"]}
+        )
+        assert closed["success"], closed
+        assert (await db.get_session(session.id)).task_id is None
+        await reconciler.tick()
+        assert (await db.get_session(session.id)).state == "stopped"
+        assert await provider.list_running("") == []
 
 
 class TestClaimAdmissibility:
