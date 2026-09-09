@@ -1,6 +1,7 @@
 import { createContext, useCallback, useContext, useMemo, type ReactNode } from "react";
-import { useParams, useSearchParams } from "react-router-dom";
+import { useLocation, useParams, useSearchParams } from "react-router-dom";
 import { useProjects } from "../../api/hooks";
+import { projectNavigation } from "../../shell/projectNavigation";
 import { useGraphLive } from "./useGraphLive";
 import { FINISHED_STATUSES, readTaskFilters, writeTaskFilters, type TaskFilters } from "./taskFilters";
 
@@ -26,20 +27,28 @@ const TaskWorkspaceContext = createContext<TaskWorkspaceValue | null>(null);
 /** The route is the only project scope; query parameters travel with every tab. */
 export function TaskWorkspaceProvider({ children }: { children: ReactNode }) {
   const { projectId } = useParams<{ projectId: string }>();
+  const location = useLocation();
   const { data: projects = EMPTY_PROJECTS, isLoading: isLoadingProjects, error: projectsError } = useProjects();
   const [params, setParams] = useSearchParams();
   const rawFilters = useMemo(() => readTaskFilters(params), [params]);
   const focusId = rawFilters.focus || null;
-  // A time window is a statement about work done, so it must not hide the
-  // completed half of it — the "show completed" toggle is implied by it.
-  const filters = useMemo(() => ({ ...rawFilters,
-    showCompleted: rawFilters.showCompleted || !!focusId || !!rawFilters.window }), [rawFilters, focusId]);
+  const graphDefaultShowsCompleted = projectNavigation(location.pathname).tab === "graph";
+  const filters = useMemo(() => ({
+    ...rawFilters,
+    showCompleted: rawFilters.showCompleted || !!focusId || !!rawFilters.window || (graphDefaultShowsCompleted && params.get("completed") !== "0"),
+  }), [rawFilters, focusId, graphDefaultShowsCompleted, params]);
   const projectIds = useMemo(() => projectId ? [projectId] : projects.map((p) => p.id), [projectId, projects]);
   useGraphLive(projectIds);
 
   const update = useCallback((patch: Partial<TaskFilters>) => {
-    setParams((previous) => writeTaskFilters(previous, { ...readTaskFilters(previous), ...patch }), { replace: true });
-  }, [setParams]);
+    setParams((previous) => {
+      const next = writeTaskFilters(previous, { ...readTaskFilters(previous), ...patch });
+      if (graphDefaultShowsCompleted && previous.get("completed") === "0" && !("showCompleted" in patch)) {
+        next.set("completed", "0");
+      }
+      return next;
+    }, { replace: true });
+  }, [setParams, graphDefaultShowsCompleted]);
   const setQuery = useCallback((query: string) => update({ query }), [update]);
   const setStatus = useCallback((status: string) => {
     update({ status, ...(FINISHED_STATUSES.has(status) ? { showCompleted: true } : {}) });
@@ -48,12 +57,14 @@ export function TaskWorkspaceProvider({ children }: { children: ReactNode }) {
     setParams((previous) => {
       const current = readTaskFilters(previous);
       if (current.focus) return previous;
-      return writeTaskFilters(previous, {
+      const next = writeTaskFilters(previous, {
         ...current, showCompleted: show,
         status: !show && FINISHED_STATUSES.has(current.status) ? "" : current.status,
       });
+      if (graphDefaultShowsCompleted && !show) next.set("completed", "0");
+      return next;
     }, { replace: true });
-  }, [setParams]);
+  }, [setParams, graphDefaultShowsCompleted]);
   const setWindow = useCallback((window: string) => update({ window }), [update]);
   const setFocus = useCallback((id: string | null) => update({ focus: id ?? "" }), [update]);
   const clearFilters = useCallback(() => {
