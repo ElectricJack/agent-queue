@@ -52,7 +52,7 @@ class CollectionService:
                             tasks.c.id > self.after,
                             tasks.c.status == "PAUSED",
                             checkpoint.c.state == "awaiting_children",
-                            operation.c.state == "active",
+                            operation.c.state.in_(("active", "escalated")),
                             projects.c.hierarchical_integration_mode.in_(("hierarchy", "train")),
                         )
                         .order_by(tasks.c.id)
@@ -88,7 +88,7 @@ class CollectionService:
         operation = await self.db.get_integration_operation(owner["owner_id"])
         if (
             operation is None
-            or operation["state"] != "active"
+            or operation["state"] not in {"active", "escalated"}
             or operation["parent_task_id"] != task_id
             or operation["episode_id"] != checkpoint["episode_id"]
         ):
@@ -147,7 +147,7 @@ class CollectionService:
                         .join(projects, projects.c.id == tasks.c.project_id)
                         .where(
                             integration_repair_operations.c.id == operation["id"],
-                            integration_repair_operations.c.state == "active",
+                            integration_repair_operations.c.state.in_(("active", "escalated")),
                             task_integration_checkpoints.c.state == "awaiting_children",
                             tasks.c.id == task_id,
                             tasks.c.status == "PAUSED",
@@ -203,7 +203,7 @@ class CollectionService:
             operation = (await conn.execute(select(integration_repair_operations).where(
                 integration_repair_operations.c.parent_task_id == parent.id,
                 integration_repair_operations.c.episode_id == checkpoint["episode_id"],
-                integration_repair_operations.c.state == "active",
+                integration_repair_operations.c.state.in_(("active", "escalated")),
             ).with_for_update())).mappings().one_or_none()
             if operation is None:
                 return

@@ -983,9 +983,11 @@ async def test_collector_queues_only_current_approved_child_once(db, hierarchy, 
         assert payload["operation_id"] == payload["fence"]["owner_id"]
 
 
-@pytest.mark.parametrize('blocker', ['none', 'live_task', 'attached', 'pending', 'wrong_stage'])
+@pytest.mark.parametrize('blocker', ['none', 'escalated', 'live_task', 'attached', 'pending', 'wrong_stage'])
 async def test_collector_recovers_only_completed_detached_delivered_repair(db, hierarchy, blocker):
-    from src.database.tables import integration_branch_owners, integration_repair_stages
+    from src.database.tables import (
+        integration_branch_owners, integration_repair_operations, integration_repair_stages,
+    )
     from src.integration.collection import CollectionService
     from src.integration.models import Fence
 
@@ -995,6 +997,11 @@ async def test_collector_recovers_only_completed_detached_delivered_repair(db, h
         await conn.execute(update(task_branch_origins).values(materialized=True, materialized_at=2.0))
     result = await hierarchy.bootstrap_container_collection('epic')
     operation_id = result['operation_id']
+    if blocker == 'escalated':
+        async with db.immediate() as conn:
+            await conn.execute(update(integration_repair_operations).where(
+                integration_repair_operations.c.id == operation_id
+            ).values(state='escalated'))
     await db.create_task(Task(
         id='repair', project_id='p', title='Repair', description='', repo_id='repo', branch_name='aq/epic',
         status=TaskStatus.IN_PROGRESS if blocker == 'live_task' else TaskStatus.COMPLETED,
@@ -1023,5 +1030,5 @@ async def test_collector_recovers_only_completed_detached_delivered_repair(db, h
     await collector.tick(3.0)
     await collector.tick(4.0)
     owner = await hierarchy.ownership.get_owner(fence.target)
-    assert owner['owner_id'] == (operation_id if blocker == 'none' else 'repair')
-    assert owner['fence_token'] == fence.token + (1 if blocker == 'none' else 0)
+    assert owner['owner_id'] == (operation_id if blocker in {'none', 'escalated'} else 'repair')
+    assert owner['fence_token'] == fence.token + (1 if blocker in {'none', 'escalated'} else 0)
