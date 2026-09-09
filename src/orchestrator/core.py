@@ -487,6 +487,7 @@ class Orchestrator(
         self.integration_app_client_factory = None
         self.integration_repository_binding_resolver = None
         self.branch_discard_service = None
+        self.branch_materialization_service = None
         self.integration_release_service = None
         self.integration_cleanup_service = None
         self.integration_control_service = None
@@ -1113,6 +1114,16 @@ class Orchestrator(
         except Exception as exc:  # best-effort by contract
             logger.warning("Could not salvage paused workspace for %s: %s", task_id, exc)
 
+    async def _drain_branch_materializations(self, now: float) -> None:
+        """Materialize reserved task refs through the fenced hierarchy service."""
+        if self.branch_materialization_service is not None:
+            await self.branch_materialization_service.drain_due(now=now)
+
+    def _branch_materialization_hierarchy(self):
+        if self._command_handler is None:
+            return None
+        return self._command_handler._hierarchy_integration_service()
+
     async def _drain_branch_discards(self, now: float) -> None:
         """Advance branch discards an operator asked for when deleting a task.
 
@@ -1537,6 +1548,7 @@ class Orchestrator(
         # without adding another timer or orchestration authority.
         from src.integration.outbox import IntegrationOutbox
         from src.integration.branch_discard import BranchDiscardService
+        from src.integration.branch_materialization import BranchMaterializationService
         from src.integration.cleanup import IntegrationCleanupService
         from src.integration.main_promotion import RootPromotionService
         from src.integration.release import IntegrationReleaseService
@@ -1638,6 +1650,9 @@ class Orchestrator(
         # Removes the branches an operator explicitly asked to discard when
         # deleting a task.  Its work is recorded on the retired origin row, so
         # it survives a restart and needs no other authority.
+        self.branch_materialization_service = BranchMaterializationService(
+            self.db, hierarchy_service_factory=self._branch_materialization_hierarchy
+        )
         self.branch_discard_service = BranchDiscardService(
             self.db,
             data_dir=self.config.data_dir,
@@ -1675,6 +1690,7 @@ class Orchestrator(
             cleanup_handler=self.integration_cleanup_service.handle_item,
             drain_handler=self.integration_control_service.reconcile_drains,
             branch_discard_handler=self._drain_branch_discards,
+            branch_materialization_handler=self._drain_branch_materializations,
         )
         self.integration_service.start()
 

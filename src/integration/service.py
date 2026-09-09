@@ -30,6 +30,7 @@ class IntegrationService:
         cleanup_handler: IntegrationHandler | None = None,
         drain_handler: DrainHandler | None = None,
         branch_discard_handler: DrainHandler | None = None,
+        branch_materialization_handler: DrainHandler | None = None,
         page_size: int = 100,
         interval_seconds: float = 5.0,
         clock: Callable[[], float] = time.time,
@@ -48,6 +49,7 @@ class IntegrationService:
         self._cleanup_handler = cleanup_handler
         self._drain_handler = drain_handler
         self._branch_discard_handler = branch_discard_handler
+        self._branch_materialization_handler = branch_materialization_handler
         self._page_size = page_size
         self._interval_seconds = interval_seconds
         self._clock = clock
@@ -67,6 +69,10 @@ class IntegrationService:
             return
         await self._tick_lock.acquire()
         try:
+            if self._branch_materialization_handler is not None:
+                await self._source(
+                    "branch materialization", self._branch_materialization_handler, now
+                )
             await self._source("schedule", self._tick_schedules, now)
             await self._source("repair deadline", self._tick_repair_stages, now)
             await self._source("candidate CI", self._tick_candidate_ci, now)

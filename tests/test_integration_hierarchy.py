@@ -600,6 +600,16 @@ async def test_materialization_creates_only_absent_or_exact_remote_ref(tmp_path)
     base = _git(["rev-parse", "HEAD"], work)
     _git(["remote", "add", "origin", str(remote)], work)
     git = GitManager()
+    # Clone before a subsequent remote commit, reproducing a stale daemon store.
+    _git(["push", "origin", f"{base}:refs/heads/main"], work)
+    retained = tmp_path / "retained.git"
+    _git(["clone", "--bare", str(remote), str(retained)], tmp_path)
+    (work / "value.txt").write_text("new pinned base\n")
+    _git(["commit", "-am", "new base"], work)
+    base = _git(["rev-parse", "HEAD"], work)
+    _git(["push", "origin", f"{base}:refs/heads/main"], work)
+    assert await materialize_exact_branch(git, str(retained), "aq/fetched", base) == base
+    assert _git(["rev-parse", "refs/heads/aq/fetched"], remote) == base
 
     assert await materialize_exact_branch(git, str(work), "aq/child", base) == base
     assert _git(["rev-parse", "refs/heads/aq/child"], remote) == base

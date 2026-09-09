@@ -66,6 +66,17 @@ async def materialize_exact_branch(git, checkout: str, branch: str, base_sha: st
                 "delivery_target_fixed", "branch exists at an unexpected commit"
             )
         return base_sha
+    # Retained repositories outlive filing: ls-remote can resolve a newer
+    # base without bringing its commit object into the local object store.
+    present = await git.arun_git_result(
+        ["cat-file", "-e", f"{base_sha}^{{commit}}"], cwd=checkout, lock_held=True
+    )
+    if present.returncode != 0:
+        fetched = await git.arun_git_result(
+            ["fetch", "--no-tags", "origin", base_sha], cwd=checkout, lock_held=True
+        )
+        if fetched.returncode != 0:
+            raise GitError(fetched.stderr or "could not fetch pinned materialization base")
     try:
         await git.apush_validated_ref(checkout, base_sha, branch)
     except GitError:
