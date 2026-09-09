@@ -1,5 +1,5 @@
 {
-  "source_commit": "0ccebe62277d34a1c5327285e2100c3f43cd37ab",
+  "source_commit": "f493321636da4256e43b280bb219e51688ad87bd",
   "generated_by": "docs/plans/documentation-overhaul/refresh_inventory.py",
   "note": "Assignment, not authored coverage.  Each entry's `purpose` is the rule-level description of the family the path belongs to; the per-module sentence is written by the owning shard's catalog page (`shards[<shard>].catalog`).  `component` is the prose page that explains the module.  There is no catch-all rule: a tracked path matching nothing is an error, not a default assignment.",
   "shards": {
@@ -4417,6 +4417,48 @@
       "purpose": "Existing page; the legacy ticket records its disposition.",
       "catalog": null
     },
+    "docs/reference/api/README.md": {
+      "shard": "api",
+      "component": "docs/reference/api/README.md",
+      "category": "documentation",
+      "purpose": "Overhaul page owned by the `api` ticket.",
+      "catalog": null
+    },
+    "docs/reference/api/conventions.md": {
+      "shard": "api",
+      "component": "docs/reference/api",
+      "category": "documentation",
+      "purpose": "Overhaul page owned by the `api` ticket.",
+      "catalog": null
+    },
+    "docs/reference/api/events.md": {
+      "shard": "api",
+      "component": "docs/reference/api",
+      "category": "documentation",
+      "purpose": "Overhaul page owned by the `api` ticket.",
+      "catalog": null
+    },
+    "docs/reference/api/models.md": {
+      "shard": "api",
+      "component": "docs/reference/api",
+      "category": "documentation",
+      "purpose": "Overhaul page owned by the `api` ticket.",
+      "catalog": null
+    },
+    "docs/reference/api/python-client.md": {
+      "shard": "api",
+      "component": "docs/reference/api",
+      "category": "documentation",
+      "purpose": "Overhaul page owned by the `api` ticket.",
+      "catalog": null
+    },
+    "docs/reference/api/typescript-client.md": {
+      "shard": "api",
+      "component": "docs/reference/api",
+      "category": "documentation",
+      "purpose": "Overhaul page owned by the `api` ticket.",
+      "catalog": null
+    },
     "docs/reference/cli-command-inventory.json": {
       "shard": "legacy",
       "component": "docs/history/README.md",
@@ -4520,6 +4562,13 @@
       "component": "docs/reference/modules/README.md",
       "category": "documentation",
       "purpose": "Overhaul page owned by the `foundation` ticket.",
+      "catalog": null
+    },
+    "docs/reference/modules/api.md": {
+      "shard": "api",
+      "component": "docs/reference/modules/api.md",
+      "category": "documentation",
+      "purpose": "Overhaul page owned by the `api` ticket.",
       "catalog": null
     },
     "docs/reference/modules/cli.md": {
@@ -16744,13 +16793,6 @@
       "purpose": "Repository script.",
       "catalog": null
     },
-    "scripts/register-merge-conflict-hook.py": {
-      "shard": "contributing",
-      "component": "docs/contributing/scripts.md",
-      "category": "supporting",
-      "purpose": "Repository script.",
-      "catalog": null
-    },
     "scripts/seed_layout_perf.py": {
       "shard": "contributing",
       "component": "docs/contributing/scripts.md",
@@ -20804,13 +20846,6 @@
       "purpose": "Token accounting and budgets.",
       "catalog": "docs/reference/modules/providers.md"
     },
-    "src/tokens/tracker.py": {
-      "shard": "providers",
-      "component": "docs/concepts/providers.md",
-      "category": "production",
-      "purpose": "Token accounting and budgets.",
-      "catalog": "docs/reference/modules/providers.md"
-    },
     "src/tools/__init__.py": {
       "shard": "cli",
       "component": "docs/reference/cli/agent-tools.md",
@@ -24255,7 +24290,7 @@
       "purpose": "Test module or fixture.",
       "catalog": null
     },
-    "tests/test_merge_conflict_hook.py": {
+    "tests/test_merge_conflict_check.py": {
       "shard": "contributing",
       "component": "docs/contributing/testing.md",
       "category": "test",
@@ -25488,6 +25523,13 @@
       "catalog": null
     },
     "tests/test_set_default_branch_command.py": {
+      "shard": "contributing",
+      "component": "docs/contributing/testing.md",
+      "category": "test",
+      "purpose": "Test module or fixture.",
+      "catalog": null
+    },
+    "tests/test_setup_script.py": {
       "shard": "contributing",
       "component": "docs/contributing/testing.md",
       "category": "test",
