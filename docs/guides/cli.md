@@ -207,6 +207,14 @@ aq test --aq-all-markers tests/perf    # skip the default marker deselects
 aq test --aq-help                      # help (-h/--help belong to pytest)
 ```
 
+The suite requires `POSTGRES_TEST_DSN`. For the repository's disposable local
+server, run `docker compose up -d postgres` and export
+`POSTGRES_TEST_DSN=postgresql+asyncpg://agent_queue:agent_queue_dev@localhost:5533/postgres`.
+The wrapper fails before taking a slot when the variable is missing. Test runs
+derive unique, owner-tracked databases from that maintenance DSN and remove
+only their own databases during normal teardown; they never reuse, repair, or
+stamp an unexpected existing database.
+
 `aq test` acquires one of `resources.test_slots` `flock` slots before
 running, so concurrent agents cannot each spawn a full-width test run. It
 adds `-n <per-session cap> --dist loadfile` and `-m "not perf and not migration and not slow and

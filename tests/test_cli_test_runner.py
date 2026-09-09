@@ -21,6 +21,7 @@ from src.cli.test_runner import (
     _positional_args,
     _run_forwarding_signals,
     _xdist_disabled,
+    postgres_test_dsn_error,
 )
 from src.config import ResourcesConfig
 
@@ -34,7 +35,10 @@ def _args(argv: list[str]) -> list[str]:
 
 
 @pytest.fixture
-def runner():
+def runner(monkeypatch):
+    # Command tests mock the pytest child; a non-production placeholder lets
+    # them exercise the wrapper past its required-DSN preflight.
+    monkeypatch.setenv("POSTGRES_TEST_DSN", "postgresql://test:test@localhost/postgres")
     return CliRunner()
 
 
@@ -145,9 +149,9 @@ class TestMissingPathsAreRefused:
         (tmp_path / "tests").mkdir()
         (tmp_path / "tests" / "test_real.py").write_text("")
         assert _missing_paths(("tests/test_real.py",)) == []
-        assert _missing_paths(
-            ("tests/test_real.py", "tests/test_typo.py")
-        ) == ["tests/test_typo.py"]
+        assert _missing_paths(("tests/test_real.py", "tests/test_typo.py")) == [
+            "tests/test_typo.py"
+        ]
 
     def test_a_node_id_suffix_is_stripped_before_the_stat(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
@@ -190,7 +194,9 @@ class TestMissingPathsAreRefused:
 
     def test_an_existing_path_still_runs(self, runner, monkeypatch, tmp_path):
         monkeypatch.setattr("src.cli.test_runner.CONFIG_PATH", str(tmp_path / "config.yaml"))
-        monkeypatch.setattr("src.cli.test_runner._run_forwarding_signals", lambda _argv: 0)
+        monkeypatch.setattr(
+            "src.cli.test_runner._run_forwarding_signals", lambda _argv, **_kwargs: 0
+        )
         result = runner.invoke(cli, ["test", "tests/test_cli_test_runner.py"])
         assert result.exit_code == 0
 
@@ -198,7 +204,9 @@ class TestMissingPathsAreRefused:
 class TestEmptyCollectionIsNotASuccess:
     def test_exit_code_five_is_explained(self, runner, monkeypatch, tmp_path):
         monkeypatch.setattr("src.cli.test_runner.CONFIG_PATH", str(tmp_path / "config.yaml"))
-        monkeypatch.setattr("src.cli.test_runner._run_forwarding_signals", lambda _argv: 5)
+        monkeypatch.setattr(
+            "src.cli.test_runner._run_forwarding_signals", lambda _argv, **_kwargs: 5
+        )
         result = runner.invoke(cli, ["test", "tests/test_cli_test_runner.py", "-k", "nothing"])
         assert result.exit_code == 5
         assert "no tests were collected" in result.output
@@ -234,6 +242,57 @@ class TestCapResolution:
 
 
 class TestCommand:
+    def test_missing_dsn_fails_once_before_taking_a_slot(self, runner, monkeypatch, tmp_path):
+        monkeypatch.setattr("src.cli.test_runner.CONFIG_PATH", str(tmp_path / "config.yaml"))
+        monkeypatch.delenv("POSTGRES_TEST_DSN")
+
+        def _boom(*_args, **_kwargs):  # pragma: no cover - must not be reached
+            raise AssertionError("pytest launched without its required DSN")
+
+        monkeypatch.setattr("src.cli.test_runner._run_forwarding_signals", _boom)
+        result = runner.invoke(cli, ["test", "tests/test_config.py"])
+
+        assert result.exit_code == 4
+        assert result.output.count("POSTGRES_TEST_DSN is not set") == 1
+        assert "docker compose up -d postgres" in result.output
+        assert "Nothing was run" in result.output
+        assert "aq test: slot" not in result.output
+
+    def test_present_dsn_has_no_preflight_error(self):
+        assert postgres_test_dsn_error({"POSTGRES_TEST_DSN": "postgresql://host/base"}) is None
+
+    def test_bare_pytest_aborts_collection_once_when_dsn_is_missing(self):
+        import os
+        import subprocess
+        import sys
+        from pathlib import Path
+
+        root = Path(__file__).resolve().parent.parent
+        env = os.environ.copy()
+        env.pop("POSTGRES_TEST_DSN", None)
+        proc = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "pytest",
+                "-p",
+                "no:xdist",
+                "--co",
+                "-q",
+                "tests/test_config.py",
+            ],
+            cwd=root,
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=300,
+            check=False,
+        )
+        output = proc.stdout + proc.stderr
+        assert proc.returncode == 4
+        assert output.count("POSTGRES_TEST_DSN is not set") == 1
+        assert "docker compose up -d postgres" in output
+
     def test_dry_run_prints_the_command(self, runner, monkeypatch, tmp_path):
         monkeypatch.setenv("AQ_TEST_WORKERS", "4")
         result = runner.invoke(cli, ["test", "--aq-dry-run", "tests/test_config.py"])
@@ -264,13 +323,39 @@ class TestCommand:
         )
         monkeypatch.setattr("src.cli.test_runner.CONFIG_PATH", str(config_path))
         monkeypatch.setenv("AQ_TEST_SLOTS", "1")
-        monkeypatch.setattr("src.cli.test_runner._run_forwarding_signals", lambda _argv: 0)
+        monkeypatch.setattr(
+            "src.cli.test_runner._run_forwarding_signals", lambda _argv, **_kwargs: 0
+        )
 
         result = runner.invoke(cli, ["test", "tests/test_config.py"])
 
         assert result.exit_code == 0
         assert (data_dir / "locks" / "test-slots").is_dir()
         assert not (tmp_path / "locks" / "test-slots").exists()
+
+    def test_each_invocation_passes_a_fresh_database_ownership_token(
+        self, runner, monkeypatch, tmp_path
+    ):
+        monkeypatch.setattr("src.cli.test_runner.CONFIG_PATH", str(tmp_path / "config.yaml"))
+        monkeypatch.setenv("AQ_DB_SCOPE", "worker")
+        monkeypatch.setenv("AQ_DATABASE_URL", "refuse-worker-database")
+        monkeypatch.setenv("AGENT_QUEUE_DB", "refuse-worker-database")
+        seen: list[dict[str, str]] = []
+
+        def _capture(_argv, *, env):
+            seen.append(env)
+            return 0
+
+        monkeypatch.setattr("src.cli.test_runner._run_forwarding_signals", _capture)
+
+        assert runner.invoke(cli, ["test", "tests/test_config.py"]).exit_code == 0
+        assert runner.invoke(cli, ["test", "tests/test_config.py"]).exit_code == 0
+        assert len(seen) == 2
+        assert seen[0]["AQ_TEST_RUN_ID"] != seen[1]["AQ_TEST_RUN_ID"]
+        for child_env in seen:
+            assert child_env["AQ_DB_SCOPE"] == "worker"
+            assert child_env["AQ_DATABASE_URL"] == "refuse-worker-database"
+            assert child_env["AGENT_QUEUE_DB"] == "refuse-worker-database"
 
     def test_a_full_box_fails_retryably_rather_than_hanging(self, runner, monkeypatch, tmp_path):
         monkeypatch.setattr("src.cli.test_runner.CONFIG_PATH", str(tmp_path / "config.yaml"))
@@ -285,9 +370,7 @@ class TestCommand:
         held = SlotSemaphore(lock_dir, 1).try_acquire({"task_id": "someone-else"})
         assert held is not None
         try:
-            result = runner.invoke(
-                cli, ["test", "--aq-no-wait", "tests/test_config.py"]
-            )
+            result = runner.invoke(cli, ["test", "--aq-no-wait", "tests/test_config.py"])
         finally:
             import os
 
@@ -317,9 +400,9 @@ class TestSignalForwarding:
             "else: path.write_text('inherited')\n"
         )
         try:
-            assert _run_forwarding_signals(
-                [sys.executable, "-c", script, str(fd), str(observed)]
-            ) == 0
+            assert (
+                _run_forwarding_signals([sys.executable, "-c", script, str(fd), str(observed)]) == 0
+            )
         finally:
             os.close(fd)
 
@@ -432,10 +515,9 @@ class TestPerfSuiteStaysOutOfTheDefaultRun:
 
         root = Path(__file__).resolve().parent.parent
         env = os.environ.copy()
-        # Collection alone must not reach for a live Postgres: without a DSN
-        # the perf modules still import (their skipif does the rest), and
-        # AQ_REQUIRE_POSTGRES_TESTS would otherwise turn that into an error.
-        env.pop("POSTGRES_TEST_DSN", None)
+        # Perf's conftest resolves its run-owned database at import time, so
+        # preserve this parent test run's disposable server configuration.
+        assert env.get("POSTGRES_TEST_DSN")
         env.pop("AQ_REQUIRE_POSTGRES_TESTS", None)
         proc = subprocess.run(
             [
