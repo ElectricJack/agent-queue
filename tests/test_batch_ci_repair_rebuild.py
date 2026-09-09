@@ -214,6 +214,28 @@ async def test_conflicting_main_rebuild_uses_current_stage_and_requires_fresh_ci
     assert "candidate_rebuild_conflict" not in before_record
     _git(origin, "update-ref", adopted.branch, repaired_head)
 
+    # A stage pointer cannot authorize rewriting a task bound to other work.
+    for field, bad_value in (
+        ("created_by_id", "other-operation"),
+        ("created_by_kind", "user"),
+        ("branch_name", "aq/unrelated"),
+    ):
+        async with db.immediate() as conn:
+            original = (await conn.execute(
+                select(tasks.c[field]).where(tasks.c.id == old_delegate_id)
+            )).scalar_one()
+            await conn.execute(update(tasks).where(tasks.c.id == old_delegate_id)
+                               .values({field: bad_value}))
+        refused = await service.rebuild("batch", adopted.revision, new_main)
+        assert refused.outcome == "wait"
+        async with db.immediate() as conn:
+            untouched = (await conn.execute(select(tasks).where(
+                tasks.c.id == old_delegate_id))).mappings().one()
+            assert untouched["status"] == "COMPLETED"
+            assert untouched["description"] == "prior repair"
+            await conn.execute(update(tasks).where(tasks.c.id == old_delegate_id)
+                               .values({field: original}))
+
     # The conflict write is restartable independently of dispatch. A lost
     # response after the transaction leaves the exact subject durable and the
     # collector fence untouched; the next instance performs the handoff once.

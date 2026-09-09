@@ -1637,31 +1637,39 @@ class RepairService:
                     select(tasks).where(tasks.c.id == repair_task_id).with_for_update()
                 )
             ).mappings().one_or_none()
-            if task is None:
+            if (
+                task is None
+                or task["project_id"] != batch["project_id"]
+                or task["repo_id"] != batch["repository_id"]
+                or task["branch_name"] != batch["integration_branch"]
+                or task["parent_task_id"] is not None
+                or task["created_by_kind"] != "integration_repair"
+                or task["created_by_id"] != operation_id
+                or task["assigned_agent_id"] is not None
+                or stage["writer_kind"] != "repair_delegate"
+            ):
+                return {"outcome": "busy"}
+            sessions_for_delegate = (
+                await conn.execute(
+                    select(sessions).where(sessions.c.task_id == repair_task_id)
+                )
+            ).mappings().all()
+            locked_workspace = (
+                await conn.execute(
+                    select(workspaces.c.id)
+                    .where(workspaces.c.locked_by_task_id == repair_task_id)
+                    .limit(1)
+                )
+            ).first()
+            if (
+                any(
+                    row["state"] != "stopped" or row["claim_phase"] is not None
+                    for row in sessions_for_delegate
+                )
+                or locked_workspace is not None
+            ):
                 return {"outcome": "busy"}
             if task["status"] == TaskStatus.COMPLETED.value:
-                sessions_for_delegate = (
-                    await conn.execute(
-                        select(sessions).where(sessions.c.task_id == repair_task_id)
-                    )
-                ).mappings().all()
-                locked_workspace = (
-                    await conn.execute(
-                        select(workspaces.c.id)
-                        .where(workspaces.c.locked_by_task_id == repair_task_id)
-                        .limit(1)
-                    )
-                ).first()
-                if (
-                    stage["writer_kind"] != "repair_delegate"
-                    or task["assigned_agent_id"] is not None
-                    or any(
-                        row["state"] != "stopped" or row["claim_phase"] is not None
-                        for row in sessions_for_delegate
-                    )
-                    or locked_workspace is not None
-                ):
-                    return {"outcome": "busy"}
                 # This is the root counterpart to parent-conflict continuation:
                 # collector ownership plus stopped sessions and no task-locked
                 # workspace prove the completed delegate is detached. Reuse its
