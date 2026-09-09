@@ -70,13 +70,19 @@ def test_acceptance_statuses_are_conservative_and_preserve_removed_surfaces():
     assert rows["aq task archive"]["acceptance_evidence"] == []
     assert rows["aq plugin logs"]["acceptance_status"] == "obsolete"
 
-    assert inventory["counts"]["acceptance_status"] == {
+    # The audited statuses are pinned: nothing may become "working" without the
+    # evidence that earns it, and no command may regress into broken/unsupported.
+    # "untested" is deliberately derived rather than pinned so that a CLI command
+    # added after the audit lands there and does not turn this gate red on its own.
+    counts = inventory["counts"]["acceptance_status"]
+    assert {k: counts[k] for k in ("working", "broken", "obsolete", "unsupported")} == {
         "working": 55,
         "broken": 0,
         "obsolete": 1,
         "unsupported": 0,
-        "untested": 261,
     }
+    assert counts["untested"] >= 261
+    assert sum(counts.values()) == inventory["counts"]["leaf_commands"]
     historical = {row["path"]: row for row in inventory["historical_commands"]}
     assert historical["aq task ask-human"]["acceptance_status"] == "unsupported"
     assert historical["aq task tree"]["acceptance_status"] == "obsolete"
