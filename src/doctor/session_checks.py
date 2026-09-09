@@ -126,6 +126,9 @@ async def _find_stuck(ctx: DoctorContext, *, resubmit: bool = False) -> list[dic
             "task_id": row.task_id,
             "project_id": row.project_id,
             "marker": marker,
+            # Providers can expose durable provenance without publishing the
+            # injected text itself. Legacy/third-party hooks remain honest.
+            "evidence": getattr(provider, "pending_submit_evidence", "provider_pending_submit"),
         }
         if resubmit:
             fix = getattr(provider, "resubmit_pending", None)

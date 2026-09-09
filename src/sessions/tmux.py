@@ -17,7 +17,11 @@ module on Windows raises ``ImportError`` so
 from __future__ import annotations
 
 import asyncio
+import base64
+import binascii
 import contextlib
+import hashlib
+import json
 import logging
 import os
 import re
@@ -25,6 +29,7 @@ import shlex
 import time
 import uuid
 from collections import defaultdict
+from dataclasses import dataclass
 from pathlib import Path
 from typing import ClassVar
 
@@ -87,10 +92,60 @@ _SUBMIT_POLLS: tuple[tuple[float, ...], ...] = (
 _CLEAR_ATTEMPTS = 3
 
 _META_TOKEN_KEY = "AQ_INSTANCE_TOKEN"
+_PENDING_SUBMIT_KEY = "AQ_PENDING_SUBMIT"
+_PENDING_SUBMIT_VERSION = 1
 
 
 def _normalize(text: str) -> str:
     return text.replace(_NBSP, " ")
+
+
+@dataclass(frozen=True)
+class _PendingSubmit:
+    """One AQ injection which may still be in a session's composer.
+
+    The record is written to tmux's session environment before the text is
+    injected.  That makes the narrow "typed, then daemon died before Enter
+    was confirmed" window recoverable, while the token and exact text keep a
+    recycled session or an edited draft from being submitted.
+    """
+
+    instance_token: str
+    marker: str
+    text: str
+
+    def encode(self) -> str:
+        payload = {
+            "v": _PENDING_SUBMIT_VERSION,
+            "instance_token": self.instance_token,
+            "marker": self.marker,
+            "text": self.text,
+            "text_sha256": hashlib.sha256(self.text.encode()).hexdigest(),
+        }
+        raw = json.dumps(payload, separators=(",", ":"), ensure_ascii=False).encode()
+        return base64.urlsafe_b64encode(raw).decode()
+
+    @classmethod
+    def decode(cls, value: str | None) -> "_PendingSubmit | None":
+        if not value:
+            return None
+        try:
+            raw = base64.urlsafe_b64decode(value.encode())
+            payload = json.loads(raw)
+            instance_token = payload["instance_token"]
+            marker = payload["marker"]
+            text = payload["text"]
+            digest = payload["text_sha256"]
+        except (binascii.Error, KeyError, TypeError, ValueError, UnicodeDecodeError):
+            return None
+        if (
+            payload.get("v") != _PENDING_SUBMIT_VERSION
+            or not all(isinstance(value, str) for value in (instance_token, marker, text, digest))
+            or marker != _marker_for(text)
+            or digest != hashlib.sha256(text.encode()).hexdigest()
+        ):
+            return None
+        return cls(instance_token=instance_token, marker=marker, text=text)
 
 
 class TmuxCommandError(SessionError):
@@ -107,6 +162,8 @@ class TmuxProvider(SessionProvider):
     """Attachable tmux panes, one per session, on a dedicated socket."""
 
     name: ClassVar[str] = "tmux"
+    #: Exposed on doctor output without revealing the injected prompt text.
+    pending_submit_evidence: ClassVar[str] = "durable_tmux_session_environment"
     capabilities: ClassVar[frozenset[Cap]] = frozenset(
         {Cap.ATTACH, Cap.PEEK, Cap.NUDGE, Cap.ACTIVITY, Cap.RELAUNCH, Cap.INPUT}
     )
@@ -133,12 +190,10 @@ class TmuxProvider(SessionProvider):
         #: Session-env instance tokens, so list_running does not need one
         #: ``show-environment`` per session per tick.
         self._token_cache: dict[str, str] = {}
-        #: name -> (marker, first seen monotonic) for a nudge that was typed
-        #: into the composer and never confirmed submitted.  This is what
-        #: turns "the retry is deferred forever because the composer is not
-        #: empty" into "the retry knows the text is *ours* and presses
-        #: Enter", and it is what ``sessions.stuck_composer`` reports on.
-        self._unsubmitted: dict[str, tuple[str, float]] = {}
+        #: In-process cache of the durable tmux-environment records.  The
+        #: cache avoids an environment lookup on each submit poll; the
+        #: environment is authoritative after a daemon restart.
+        self._unsubmitted: dict[str, _PendingSubmit] = {}
 
     # -- plumbing ----------------------------------------------------------
 
@@ -244,6 +299,10 @@ class TmuxProvider(SessionProvider):
         self._cache.mark_server_seen()
         self._cache.invalidate()
         self._token_cache.pop(spec.session_name, None)
+        # A new tmux session may reuse an old derived name. Its environment
+        # is fresh and its instance token is different, so never let this
+        # provider object's cache carry a predecessor's pending injection.
+        self._unsubmitted.pop(spec.session_name, None)
 
         # Persist the nudge quirks on the *session* environment: the tmux
         # server owns it, so both survive a daemon restart (the spec
@@ -555,7 +614,10 @@ class TmuxProvider(SessionProvider):
             if pane is None:
                 raise SessionError("No live terminal pane")
             observed = await self._tmux(
-                "show-environment", "-t", f"={h.name}", _META_TOKEN_KEY,
+                "show-environment",
+                "-t",
+                f"={h.name}",
+                _META_TOKEN_KEY,
             )
             if _parse_environment_value(observed, _META_TOKEN_KEY) != h.instance_token:
                 raise SessionError("Terminal session instance changed")
@@ -563,9 +625,15 @@ class TmuxProvider(SessionProvider):
             # Unpark copy mode. A detached TUI may also need a one-time
             # resize signal before accepting input after an idle period.
             with contextlib.suppress(TmuxCommandError):
-                in_mode = (await self._tmux(
-                    "display-message", "-p", "-t", pane, "#{pane_in_mode}",
-                )).strip()
+                in_mode = (
+                    await self._tmux(
+                        "display-message",
+                        "-p",
+                        "-t",
+                        pane,
+                        "#{pane_in_mode}",
+                    )
+                ).strip()
                 if in_mode == "1":
                     await self._tmux("send-keys", "-t", pane, "-X", "cancel")
                 if time.monotonic() - self._last_input_at.get(h.name, 0) > 5:
@@ -616,22 +684,30 @@ class TmuxProvider(SessionProvider):
                 raise NotSubmitted(f"no live pane found for {h.name!r}", session_name=h.name)
 
             prefix = await self._ready_prefix_hint(h.name)
-            marker = _marker_for(text)
-
             # Record pre-send activity for poke discounting.
             before = await self._raw_activity(h.name)
 
-            # Resubmit path: a previous attempt typed *this* text and never
-            # got Enter confirmed.  The composer is therefore not empty, and
-            # the guard below would defer — forever, because nothing else
-            # ever clears it.  Recognising our own marker on the input line
-            # and simply pressing Enter is what stops the stall ladder from
-            # silently stopping (see :class:`NotSubmitted`).
-            if await self._composer_holds(pane, marker, prefix):
-                self._last_nudge_at[h.name] = time.monotonic()
-                self._poke[h.name] = (time.time(), before)
-                await self._submit(h, pane, marker, prefix, before)
-                return
+            # Resubmit only an exact, durable AQ injection.  A marker by
+            # itself is deliberately insufficient: a human can edit a draft
+            # while preserving the last line that supplied the marker.
+            pending = await self._pending_record(h)
+            if pending is not None:
+                state = await self._pending_composer_state(pane, prefix, pending)
+                if state is True:
+                    if pending.text != text:
+                        raise NudgeDeferred(
+                            f"terminal {h.name!r} is holding a different AQ injection"
+                        )
+                    self._last_nudge_at[h.name] = time.monotonic()
+                    self._poke[h.name] = (time.time(), before)
+                    await self._submit(h, pane, prefix, pending, before)
+                    return
+                if state is False:
+                    await self._forget_pending(h)
+                else:
+                    # No safe observation means no key press and no record
+                    # removal. A later doctor/reconciler pass can recover it.
+                    raise NudgeDeferred(f"terminal {h.name!r} input is unknown")
 
             # Never append a reminder to a user's draft or compete with an
             # attached terminal. This guard shares send_input's lock and runs
@@ -646,6 +722,15 @@ class TmuxProvider(SessionProvider):
             # A repaint or a newly attached client can invalidate the first
             # observation. Recheck immediately before writing the reminder.
             await self._require_empty_composer(h.name, pane, prefix)
+            pending = _PendingSubmit(
+                instance_token=h.instance_token,
+                marker=_marker_for(text),
+                text=text,
+            )
+            # Store before sending any characters. If the daemon dies after
+            # the paste lands but before Enter is confirmed, a fresh provider
+            # can recover exactly this injection from tmux's session env.
+            await self._remember_pending(h, pending)
             payload = text.encode("utf-8")
             if len(payload) <= _SEND_KEYS_MAX_BYTES:
                 await self._tmux("send-keys", "-t", pane, "-l", "--", text)
@@ -663,10 +748,10 @@ class TmuxProvider(SessionProvider):
             # Require the marker to render before pressing Enter.  Paste-
             # buffer pastes are exempt: harnesses collapse large pastes to
             # a placeholder, so the marker legitimately never renders.
-            if marker and len(payload) <= _SEND_KEYS_MAX_BYTES:
+            if pending.marker and len(payload) <= _SEND_KEYS_MAX_BYTES:
                 for _poll in range(8):
                     tail = await self._capture_tail(pane, lines=40)
-                    if marker in _normalize(tail):
+                    if pending.marker in _normalize(tail):
                         break
                     await asyncio.sleep(0.15)
                 else:
@@ -680,39 +765,101 @@ class TmuxProvider(SessionProvider):
                 await self._tmux("send-keys", "-t", pane, "Escape")
                 await asyncio.sleep(0.05)
 
-            await self._submit(h, pane, marker, prefix, before)
+            await self._submit(h, pane, prefix, pending, before)
 
-    async def _composer_holds(self, pane: str, marker: str, prefix: str) -> bool:
-        """True when *our own* text is sitting on the harness's input line.
+    async def _pending_composer_state(
+        self, pane: str, prefix: str, pending: _PendingSubmit
+    ) -> bool | None:
+        """Whether the composer holds *pending* (or is safely observed clear).
 
-        Deliberately stricter than :func:`_submit_pending`, which fails
-        *safe* for a submit confirmation (an unrecognised screen counts as
-        "still pending", costing one extra Enter).  Here the same guess
-        would be read as "there is a draft to submit" and could replay an
-        already-delivered message, so both of that function's conservative
-        fallbacks are dropped: no ``ready_prompt_prefix`` hint, or no
-        visible prompt line, means "not ours" and the empty-composer guard
-        decides instead.  A pane in copy mode is nobody's composer.
+        ``True`` is deliberately stricter than the old marker-only test:
+        both the marker and the complete persisted AQ text must remain after
+        the last visible prompt. ``False`` means a recognizable composer no
+        longer contains it (submitted or deleted); ``None`` is unknown and
+        must never trigger Enter or erase recovery evidence.
         """
-        if not marker or not _normalize(prefix).strip():
-            return False
+        if not pending.marker or not _normalize(prefix).strip():
+            return None
         try:
-            in_mode = (await self._tmux(
-                "display-message", "-p", "-t", pane, "#{pane_in_mode}",
-            )).strip()
+            in_mode = (
+                await self._tmux(
+                    "display-message",
+                    "-p",
+                    "-t",
+                    pane,
+                    "#{pane_in_mode}",
+                )
+            ).strip()
         except TmuxCommandError:
-            return False
+            return None
         if in_mode == "1":
+            return None
+        # ``-J`` joins soft terminal wraps while retaining explicit newlines,
+        # allowing an exact injected multi-line payload comparison instead
+        # of mistaking a narrow pane's wrapping for an edited composer.
+        tail = await self._capture_tail(pane, lines=40, join_wrapped=True)
+        if not tail:
+            return None
+        prefix_text = _normalize(prefix).strip()
+        rendered_prefix = _normalize(prefix).lstrip()
+        lines = _normalize(tail).splitlines()
+        last_prompt = next(
+            (
+                index
+                for index in range(len(lines) - 1, -1, -1)
+                if lines[index].lstrip().startswith(prefix_text)
+            ),
+            None,
+        )
+        if last_prompt is None:
+            return None
+        input_text = "\n".join(lines[last_prompt:])
+        if pending.marker not in input_text:
             return False
-        tail = await self._capture_tail(pane, lines=40)
-        return _marker_on_input_line(tail, marker, prefix)
+        # Exact text identity is what makes an edited AQ-looking draft a
+        # draft, not a command to submit. Wrapped/truncated prompts fail
+        # closed rather than accepting a marker collision.
+        # Strip the known rendered prompt and stop at the composer border.
+        # A substring match would submit human text prepended/appended to
+        # the original injection. Unknown layouts deliberately fail closed.
+        prompt_line = lines[last_prompt].lstrip()
+        if not prompt_line.startswith(rendered_prefix):
+            return None
+        content = [prompt_line[len(rendered_prefix) :]]
+        for line in lines[last_prompt + 1 :]:
+            border = line.strip()
+            if len(border) >= 8 and set(border) <= {"─", "━"}:
+                break
+            content.append(line)
+        if prefix_text == "›":
+            # Codex renders a blank separator and a status footer below input.
+            # Remove only a recognisable footer followed solely by literal
+            # terminal-padding lines; arbitrary text remains part of the draft.
+            for index in range(1, len(content)):
+                footer = content[index].strip()
+                known = bool(re.fullmatch(r"\d+% context left", footer)) or bool(
+                    re.fullmatch(r"(?:gpt|o\d)[\w. -]* · .+", footer)
+                )
+                if (
+                    known
+                    and not content[index - 1].strip()
+                    and all(row == "" for row in content[index + 1 :])
+                ):
+                    content = content[: index - 1]
+                    break
+            # ``capture-pane`` includes the frame's empty padding below the
+            # Codex composer.  It is not payload; remove literal empty rows
+            # only, never whitespace or any user-supplied text.
+            while content and content[-1] == "":
+                content.pop()
+        return "\n".join(content) == _normalize(pending.text)
 
     async def _submit(
         self,
         h: SessionHandle,
         pane: str,
-        marker: str,
         prefix: str,
+        pending: _PendingSubmit,
         before: float | None,
     ) -> None:
         """Press Enter until the typed text leaves the input line.
@@ -734,18 +881,23 @@ class TmuxProvider(SessionProvider):
         declares a clear sequence, the composer is emptied.
         """
         for polls in _SUBMIT_POLLS:
+            if await self._pending_composer_state(pane, prefix, pending) is not True:
+                raise NotSubmitted(
+                    f"AQ injection changed or became unobservable in {h.name!r}",
+                    session_name=h.name,
+                    composer_dirty=True,
+                )
             await self._tmux("send-keys", "-t", pane, "Enter")
             for delay in polls:
                 await asyncio.sleep(delay)
                 tail = await self._capture_tail(pane, lines=40)
-                if not _submit_pending(tail, marker, prefix):
-                    self._unsubmitted.pop(h.name, None)
+                if not _submit_pending(tail, pending.marker, prefix):
+                    await self._forget_pending(h)
                     self._poke[h.name] = (time.time(), before)
                     return
-        self._unsubmitted.setdefault(h.name, (marker, time.monotonic()))
-        cleared = await self._clear_composer(h.name, pane, marker, prefix)
+        cleared = await self._clear_composer(h, pane, prefix, pending)
         if cleared:
-            self._unsubmitted.pop(h.name, None)
+            await self._forget_pending(h)
         raise NotSubmitted(
             f"submit unconfirmed for {h.name!r} after {len(_SUBMIT_POLLS)} attempts"
             + ("; composer cleared" if cleared else "; text left in composer"),
@@ -753,7 +905,9 @@ class TmuxProvider(SessionProvider):
             composer_dirty=not cleared,
         )
 
-    async def _clear_composer(self, name: str, pane: str, marker: str, prefix: str) -> bool:
+    async def _clear_composer(
+        self, h: SessionHandle, pane: str, prefix: str, pending: _PendingSubmit
+    ) -> bool:
         """Empty a composer still holding *our* unsubmitted text.
 
         Only ever runs while :func:`_submit_pending` can still see this
@@ -763,10 +917,12 @@ class TmuxProvider(SessionProvider):
         something else in that TUI is worse than leaving text the resubmit
         path can recover.
         """
-        keys = await self._clear_keys_hint(name)
-        if not keys or not marker or not _normalize(prefix).strip():
+        keys = await self._clear_keys_hint(h.name)
+        if not keys or not pending.marker or not _normalize(prefix).strip():
             return False
         for _attempt in range(_CLEAR_ATTEMPTS):
+            if await self._pending_composer_state(pane, prefix, pending) is not True:
+                return False
             try:
                 for key in keys:
                     await self._tmux("send-keys", "-t", pane, key)
@@ -774,11 +930,50 @@ class TmuxProvider(SessionProvider):
                 return False
             await asyncio.sleep(0.15)
             tail = await self._capture_tail(pane, lines=40)
-            if not _submit_pending(tail, marker, prefix):
+            if not _submit_pending(tail, pending.marker, prefix):
                 return True
         return False
 
     # -- stuck-composer recovery (doctor: ``sessions.stuck_composer``) ------
+
+    async def _pending_record(self, h: SessionHandle) -> _PendingSubmit | None:
+        """Load this exact instance's persisted pending-injection record."""
+        cached = self._unsubmitted.get(h.name)
+        if cached is not None:
+            return cached if cached.instance_token == h.instance_token else None
+        try:
+            value = await self._tmux("show-environment", "-t", f"={h.name}", _PENDING_SUBMIT_KEY)
+        except TmuxCommandError:
+            return None
+        pending = _PendingSubmit.decode(_parse_environment_value(value, _PENDING_SUBMIT_KEY))
+        if pending is None or pending.instance_token != h.instance_token:
+            return None
+        self._unsubmitted[h.name] = pending
+        return pending
+
+    async def _remember_pending(self, h: SessionHandle, pending: _PendingSubmit) -> None:
+        """Persist before typing, or leave the composer untouched."""
+        if pending.instance_token != h.instance_token:
+            raise NotSubmitted(
+                f"pending injection token mismatch for {h.name!r}", session_name=h.name
+            )
+        try:
+            await self._tmux(
+                "set-environment", "-t", f"={h.name}", _PENDING_SUBMIT_KEY, pending.encode()
+            )
+        except TmuxCommandError as exc:
+            raise NotSubmitted(
+                f"could not persist AQ injection for {h.name!r}", session_name=h.name
+            ) from exc
+        self._unsubmitted[h.name] = pending
+
+    async def _forget_pending(self, h: SessionHandle) -> None:
+        """Clear cache and durable evidence once the AQ text is gone."""
+        self._unsubmitted.pop(h.name, None)
+        if not await self._fenced(h):
+            return
+        with contextlib.suppress(TmuxCommandError):
+            await self._tmux("set-environment", "-u", "-t", f"={h.name}", _PENDING_SUBMIT_KEY)
 
     async def pending_submit(self, h: SessionHandle) -> str | None:
         """The marker of a nudge still sitting unsubmitted in the composer.
@@ -788,20 +983,21 @@ class TmuxProvider(SessionProvider):
         in which case the record is dropped.  Read-only: it never presses a
         key, so ``aq doctor`` without ``--fix`` cannot disturb a session.
         """
-        record = self._unsubmitted.get(h.name)
-        if record is None:
-            return None
-        marker = record[0]
         if not await self._fenced(h):
             self._unsubmitted.pop(h.name, None)
+            return None
+        record = await self._pending_record(h)
+        if record is None:
             return None
         pane = await self._find_agent_pane(h.name, await self._process_names_hint(h.name))
         if pane is None:
             return None
         prefix = await self._ready_prefix_hint(h.name)
-        if await self._composer_holds(pane, marker, prefix):
-            return marker
-        self._unsubmitted.pop(h.name, None)
+        state = await self._pending_composer_state(pane, prefix, record)
+        if state is True:
+            return record.marker
+        if state is False:
+            await self._forget_pending(h)
         return None
 
     async def resubmit_pending(self, h: SessionHandle) -> bool:
@@ -812,20 +1008,23 @@ class TmuxProvider(SessionProvider):
         composer still holding the marker this provider typed.
         """
         async with self._nudge_locks[h.name]:
-            record = self._unsubmitted.get(h.name)
-            if record is None or not await self._fenced(h):
+            if not await self._fenced(h):
                 return False
-            marker = record[0]
+            record = await self._pending_record(h)
+            if record is None:
+                return False
             pane = await self._find_agent_pane(h.name, await self._process_names_hint(h.name))
             if pane is None:
                 return False
             prefix = await self._ready_prefix_hint(h.name)
-            if not await self._composer_holds(pane, marker, prefix):
-                self._unsubmitted.pop(h.name, None)
+            state = await self._pending_composer_state(pane, prefix, record)
+            if state is not True:
+                if state is False:
+                    await self._forget_pending(h)
                 return False
             before = await self._raw_activity(h.name)
             try:
-                await self._submit(h, pane, marker, prefix, before)
+                await self._submit(h, pane, prefix, record, before)
             except NotSubmitted:
                 return False
             return True
@@ -914,7 +1113,7 @@ class TmuxProvider(SessionProvider):
         stamps = [float(line) for line in out.split() if line.isdigit()]
         return max(stamps) if stamps else None
 
-    async def _capture_tail(self, pane: str, lines: int = 5) -> str:
+    async def _capture_tail(self, pane: str, lines: int = 5, *, join_wrapped: bool = False) -> str:
         # ``capture-pane -S -N`` starts N lines *above the visible screen*
         # and captures through the bottom — the whole screen plus history,
         # not a tail.  The nudge submit-confirm relies on genuinely seeing
@@ -924,7 +1123,11 @@ class TmuxProvider(SessionProvider):
         # NotSubmitted (observed live: envelope delivered twice, row never
         # marked).  Trim to the last N non-blank-padded lines here.
         try:
-            out = await self._tmux("capture-pane", "-p", "-t", pane)
+            args = ["capture-pane", "-p"]
+            if join_wrapped:
+                args.append("-J")
+            args.extend(("-t", pane))
+            out = await self._tmux(*args)
         except TmuxCommandError:
             return ""
         trimmed = out.rstrip("\n")
