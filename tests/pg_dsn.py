@@ -1,135 +1,230 @@
-"""Per-xdist-worker Postgres database derivation.
+"""Run-owned PostgreSQL databases for pytest and pytest-xdist.
 
-Three suites each parametrize/fixture a live Postgres connection against
-``POSTGRES_TEST_DSN``: ``tests/perf`` (``any_db``), ``tests/test_claim_queries.py``
-(its ``db`` fixture), and ``tests/test_database_postgresql.py``. CI runs the
-whole suite under ``pytest -n auto`` (pytest-xdist) — if every worker process
-pointed at the *same* Postgres database, one worker's ``reset_for_tests()``
-truncate would race against another worker's in-flight seed/assert, corrupting
-both. Giving each xdist worker its own database (named after the worker id)
-makes the suites independent again, the same way each SQLite branch already
-gets its own ``tmp_path`` file per test.
+``POSTGRES_TEST_DSN`` names a maintenance database on a disposable PostgreSQL
+server. The suite never runs against that database itself. Each pytest process
+creates an exclusively owned database whose name includes a fresh run token and
+the xdist worker id, and migration tests create further unique scratch
+databases. A graceful session teardown removes only names this process
+successfully created.
 
-Usage: call :func:`ensure_worker_postgres_dsn` once per module (at import
-time is fine — it's a no-op when ``POSTGRES_TEST_DSN`` isn't set, which is
-the common case on a dev machine with no Postgres at all) and use its return
-value instead of reading ``POSTGRES_TEST_DSN`` directly. It rewrites the
-``POSTGRES_TEST_DSN`` env var in this worker process to the per-worker DSN,
-so ``PostgreSQLDatabaseAdapter.reset_for_tests()``'s own guard (which compares
-against ``os.environ["POSTGRES_TEST_DSN"]``) keeps working unmodified.
+An unexpected existing target is treated as an ownership collision. Its
+Alembic state is inspected read-only for an actionable stale/unknown-revision
+diagnostic; it is never reused, dropped, migrated, or stamped.
 """
 
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import os
 import re
+import uuid
+from functools import lru_cache
+from pathlib import Path
+from urllib.parse import urlsplit, urlunsplit
 
 _WORKER_ENV = "PYTEST_XDIST_WORKER"
+_RUN_ENV = "AQ_TEST_RUN_ID"
+_MAX_DATABASE_NAME = 63
+_IDENT_RE = re.compile(r"[^a-zA-Z0-9_]")
 
-#: Sentinel distinguishing "not derived yet" from "derived, and the answer
-#: is ``None``" (no ``POSTGRES_TEST_DSN`` set).
+# Sentinels distinguish "not resolved" from a cached ``None`` DSN.
 _UNSET = object()
-
-#: The derived DSN for this process, computed once.  Without this the
-#: second call re-derives from the *already rewritten* env var and appends
-#: another ``_master``/``_gwN`` suffix, so the three importing modules end
-#: up disagreeing about which database they are using and
-#: ``reset_for_tests`` refuses the mismatch.
 _CACHED_DSN: object | str | None = _UNSET
+_CACHED_RUN_ID: object | str = _UNSET
+
+# Creation order is ownership proof. Teardown walks it backwards so scratch
+# children disappear before the process's worker database.
+_OWNED_DATABASES: list[tuple[str, str]] = []
 
 
 def _worker_id() -> str:
-    """xdist worker id (``gw0``, ``gw1``, ...), or ``master`` outside ``-n``."""
+    """Sanitised xdist worker id, or ``master`` for a serial pytest run."""
     raw = os.environ.get(_WORKER_ENV, "master")
-    # Never trust environment input blindly for a value that ends up in a
-    # SQL identifier, even though pytest-xdist's own ids are already alnum.
-    return re.sub(r"[^a-zA-Z0-9_]", "_", raw) or "master"
+    return _IDENT_RE.sub("_", raw) or "master"
 
 
-def _derive_worker_dsn(base_dsn: str) -> str:
-    prefix, _, dbname = base_dsn.rpartition("/")
-    return f"{prefix}/{dbname}_{_worker_id()}"
+def _run_id() -> str:
+    """One ownership token per pytest process (shared when ``aq test`` sets it)."""
+    global _CACHED_RUN_ID
+    if _CACHED_RUN_ID is _UNSET:
+        raw = os.environ.get(_RUN_ENV) or uuid.uuid4().hex[:16]
+        _CACHED_RUN_ID = (_IDENT_RE.sub("_", raw) or uuid.uuid4().hex[:16])[:32]
+    return str(_CACHED_RUN_ID)
 
 
-async def _create_database_if_missing(base_dsn: str, target_db: str) -> None:
+def _unique_token() -> str:
+    return uuid.uuid4().hex[:12]
+
+
+def _database_name(dsn: str) -> str:
+    name = urlsplit(dsn).path.lstrip("/")
+    if not name:
+        raise RuntimeError("POSTGRES_TEST_DSN must include a maintenance database name")
+    return name
+
+
+def _replace_database(dsn: str, name: str, *, asyncpg: bool = False) -> str:
+    parts = urlsplit(dsn)
+    scheme = parts.scheme.replace("+asyncpg", "") if asyncpg else parts.scheme
+    return urlunsplit((scheme, parts.netloc, f"/{name}", parts.query, parts.fragment))
+
+
+def _maintenance_dsn(dsn: str) -> str:
+    """A plain-asyncpg URL independent of every database this run owns."""
+    return _replace_database(dsn, "postgres", asyncpg=True)
+
+
+def _owned_name(*parts: str) -> str:
+    """Readable, collision-resistant PostgreSQL identifier of at most 63 bytes."""
+    raw = "_".join(parts)
+    slug = _IDENT_RE.sub("_", raw).strip("_") or "run"
+    candidate = f"aq_test_{slug}"
+    if len(candidate) <= _MAX_DATABASE_NAME:
+        return candidate
+    digest = hashlib.sha256(raw.encode()).hexdigest()[:10]
+    return f"{candidate[: _MAX_DATABASE_NAME - len(digest) - 1]}_{digest}"
+
+
+async def _database_exists(conn, name: str) -> bool:
+    return bool(await conn.fetchval("SELECT 1 FROM pg_database WHERE datname = $1", name))
+
+
+@lru_cache(maxsize=1)
+def _known_revisions() -> tuple[frozenset[str], frozenset[str]]:
+    from alembic.config import Config
+    from alembic.script import ScriptDirectory
+
+    root = Path(__file__).resolve().parent.parent
+    script = ScriptDirectory.from_config(Config(str(root / "alembic.ini")))
+    return (
+        frozenset(revision.revision for revision in script.walk_revisions()),
+        frozenset(script.get_heads()),
+    )
+
+
+async def _revision_diagnostic(base_dsn: str, target: str) -> str:
+    """Describe an existing target's stamp without changing it."""
     import asyncpg
 
-    prefix, _, dbname = base_dsn.rpartition("/")
-    # asyncpg's own connect() wants the plain "postgresql://" scheme, not
-    # SQLAlchemy's "+asyncpg" driver suffix.
-    admin_dsn = f"{prefix}/{dbname}".replace("postgresql+asyncpg://", "postgresql://")
-    conn = await asyncpg.connect(admin_dsn)
     try:
-        exists = await conn.fetchval("SELECT 1 FROM pg_database WHERE datname = $1", target_db)
-        if not exists:
-            # CREATE DATABASE cannot run inside a transaction on Postgres;
-            # asyncpg connections are autocommit by default for a bare
-            # execute() outside an explicit transaction block, so this is
-            # already fine as written.
-            try:
-                await conn.execute(f'CREATE DATABASE "{target_db}"')
-            except asyncpg.exceptions.DuplicateDatabaseError:
-                pass  # another worker won the race to create it first
+        conn = await asyncpg.connect(_replace_database(base_dsn, target, asyncpg=True))
+    except Exception as exc:  # pragma: no cover - server-specific denial text
+        return f"Alembic state unavailable ({type(exc).__name__}: {exc})"
+    try:
+        table = await conn.fetchval("SELECT to_regclass('public.alembic_version')")
+        if not table:
+            return "database is unstamped"
+        rows = await conn.fetch("SELECT version_num FROM alembic_version ORDER BY version_num")
+        current = frozenset(str(row["version_num"]) for row in rows)
+        known, heads = _known_revisions()
+        unknown = sorted(current - known)
+        if unknown:
+            return f"alembic_version contains unknown revision(s) {unknown!r}"
+        if current != heads:
+            return (
+                f"alembic_version is stale at {sorted(current)!r}; "
+                f"this checkout's head(s) are {sorted(heads)!r}"
+            )
+        return f"alembic_version is at this checkout's head(s) {sorted(current)!r}"
+    except Exception as exc:  # pragma: no cover - malformed foreign database
+        return f"Alembic state unreadable ({type(exc).__name__}: {exc})"
     finally:
         await conn.close()
+
+
+async def _create_owned_database(base_dsn: str, target: str) -> None:
+    """Create *target* exclusively and register it for owner-only cleanup."""
+    import asyncpg
+
+    admin_dsn = _maintenance_dsn(base_dsn)
+    conn = await asyncpg.connect(admin_dsn)
+    collision = False
+    try:
+        collision = await _database_exists(conn, target)
+        if not collision:
+            try:
+                await conn.execute(f'CREATE DATABASE "{target}"')
+            except asyncpg.exceptions.DuplicateDatabaseError:
+                collision = True
+    finally:
+        await conn.close()
+
+    if collision:
+        state = await _revision_diagnostic(base_dsn, target)
+        raise RuntimeError(
+            f"Refusing to reuse PostgreSQL test database {target!r}: it already exists; "
+            f"{state}. It was not created by this test process and was not dropped or "
+            "stamped. Retry with a fresh AQ_TEST_RUN_ID, or remove it explicitly only "
+            "after confirming that no other run owns it."
+        )
+
+    _OWNED_DATABASES.append((admin_dsn, target))
+
+
+async def dispose_owned_databases() -> None:
+    """Drop only databases created by this process, in reverse creation order."""
+    if not _OWNED_DATABASES:
+        return
+
+    import asyncpg
+
+    failures: list[str] = []
+    while _OWNED_DATABASES:
+        admin_dsn, target = _OWNED_DATABASES[-1]
+        conn = None
+        try:
+            conn = await asyncpg.connect(admin_dsn)
+            await conn.execute(f'DROP DATABASE IF EXISTS "{target}" WITH (FORCE)')
+        except Exception as exc:  # pragma: no cover - teardown server failure
+            failures.append(f"{target}: {type(exc).__name__}: {exc}")
+            _OWNED_DATABASES.pop()
+        else:
+            _OWNED_DATABASES.pop()
+        finally:
+            if conn is not None:
+                await conn.close()
+    if failures:
+        raise RuntimeError(
+            "could not clean owned PostgreSQL test databases: " + "; ".join(failures)
+        )
 
 
 async def create_scratch_database(suffix: str) -> str:
-    """Drop and recreate ``<worker_db>_<suffix>``; return its DSN.
-
-    For migration tests that drive ``alembic`` up and down against a
-    database of their own — the shared per-worker database holds live
-    schema for the adapter suites and must never be downgraded under
-    them.  The suffix rides on the per-worker name, so parallel xdist
-    workers cannot collide either.
-    """
-    import asyncpg
-
+    """Create a unique empty database for a schema-mutating test."""
     base = ensure_worker_postgres_dsn()
     if not base:
         raise RuntimeError("create_scratch_database requires POSTGRES_TEST_DSN")
-    prefix, _, dbname = base.rpartition("/")
-    target = f"{dbname}_{suffix}"
-    admin_dsn = f"{prefix}/{dbname}".replace("postgresql+asyncpg://", "postgresql://")
-    conn = await asyncpg.connect(admin_dsn)
-    try:
-        await conn.execute(f'DROP DATABASE IF EXISTS "{target}"')
-        await conn.execute(f'CREATE DATABASE "{target}"')
-    finally:
-        await conn.close()
-    return f"{prefix}/{target}"
+    target = _owned_name(
+        _database_name(base),
+        "scratch",
+        suffix,
+        _unique_token(),
+    )
+    await _create_owned_database(base, target)
+    return _replace_database(base, target)
 
 
 def ensure_worker_postgres_dsn() -> str | None:
-    """Rewrite ``POSTGRES_TEST_DSN`` to this worker's own database in-place.
+    """Point this process at a fresh, exclusively owned PostgreSQL database.
 
-    Creates that database first if it doesn't exist yet. Returns the
-    (possibly unchanged) DSN, or ``None`` when ``POSTGRES_TEST_DSN`` isn't
-    set at all (the common local-dev case — this never touches the network
-    then). Idempotent within one worker process: the derived DSN is cached
-    on first call and returned verbatim thereafter, so the three importing
-    modules always agree.
+    The derived DSN is cached so every importing test module agrees. The base
+    DSN is used only to reach the disposable server's maintenance database.
     """
     global _CACHED_DSN
     if _CACHED_DSN is not _UNSET:
         return _CACHED_DSN  # type: ignore[return-value]
-    base = os.environ.get("POSTGRES_TEST_DSN")
+    base = os.environ.get("POSTGRES_TEST_DSN", "").strip()
     if not base:
         if os.environ.get("AQ_REQUIRE_POSTGRES_TESTS") == "1":
-            # CI sets this alongside its Postgres service: a missing DSN
-            # there means every PostgreSQL contract arm would silently
-            # skip, which is exactly the regression this guard exists to
-            # catch.  Fail collection loudly instead.
-            raise RuntimeError(
-                "AQ_REQUIRE_POSTGRES_TESTS=1 but POSTGRES_TEST_DSN is not set — "
-                "the PostgreSQL test arms would silently skip"
-            )
+            from src.cli.test_runner import postgres_test_dsn_error
+
+            raise RuntimeError(postgres_test_dsn_error() or "POSTGRES_TEST_DSN is required")
         _CACHED_DSN = None
         return None
-    worker_dsn = _derive_worker_dsn(base)
-    _, _, target_db = worker_dsn.rpartition("/")
-    asyncio.run(_create_database_if_missing(base, target_db))
+    target = _owned_name(_database_name(base), _run_id(), _worker_id())
+    asyncio.run(_create_owned_database(base, target))
+    worker_dsn = _replace_database(base, target)
     os.environ["POSTGRES_TEST_DSN"] = worker_dsn
     _CACHED_DSN = worker_dsn
     return worker_dsn

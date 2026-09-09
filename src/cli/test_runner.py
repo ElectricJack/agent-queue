@@ -12,13 +12,14 @@ What it does, in order:
    from inside a worktree); otherwise the ``resources:`` section of
    ``~/.agent-queue/config.yaml``; otherwise built-in defaults.  A worktree
    with no config still gets gating.
-2. Take one of N ``flock`` slots, printing a "waiting" line every poll so a
+2. Preflight the required ``POSTGRES_TEST_DSN`` and every path-shaped
+   argument. Refuse before taking a slot when configuration is absent or a
+   path does not exist, rather than producing hundreds of fixture errors or
+   xdist's misleading "no tests ran".
+3. Take one of N ``flock`` slots, printing a "waiting" line every poll so a
    queued agent looks queued rather than hung.
-3. Stat every path-shaped argument first and refuse to launch when one of
-   them does not exist.  Under xdist a mistyped path is reported as
-   "no tests ran", which reads like a clean run to an agent that then
-   closes its task believing it verified something.
-4. Exec pytest with ``-n <cap> --dist loadfile`` and the default marker
+4. Exec pytest with a fresh database-ownership token, ``-n <cap> --dist
+   loadfile``, and the default marker
    deselects folded in — only when the caller did not pass their own, so
    an explicit ``-n 0`` / ``-p no:xdist`` / ``-m perf`` is always honoured.
 5. Treat pytest's exit code 5 ("no tests collected") as the failure it is,
@@ -33,11 +34,13 @@ would be worse than no wrapper.
 from __future__ import annotations
 
 import os
+import secrets
 import shlex
 import signal
 import subprocess
 import sys
 import time
+from collections.abc import Mapping
 
 import click
 
@@ -49,6 +52,26 @@ CONFIG_PATH = os.path.expanduser("~/.agent-queue/config.yaml")
 _FALLBACK_SLOTS = 2
 _FALLBACK_WORKERS = 4
 _FALLBACK_MARKERS = "not perf and not migration and not slow and not tmux and not integration"
+
+_POSTGRES_SETUP = """POSTGRES_TEST_DSN is not set; PostgreSQL is required by this test suite.
+Nothing was run. Start the repository's disposable PostgreSQL service and set a base DSN:
+
+  docker compose up -d postgres
+  export POSTGRES_TEST_DSN=postgresql+asyncpg://agent_queue:agent_queue_dev@localhost:5533/postgres
+
+The test harness creates uniquely named databases under that server and removes only the
+databases it owns. Do not point POSTGRES_TEST_DSN at the daemon database from config.yaml."""
+
+
+def postgres_test_dsn_error(environ: Mapping[str, str] | None = None) -> str | None:
+    """Actionable setup error when the required PostgreSQL test DSN is absent."""
+    values = os.environ if environ is None else environ
+    return None if values.get("POSTGRES_TEST_DSN", "").strip() else _POSTGRES_SETUP
+
+
+def _new_test_run_id() -> str:
+    """Opaque ownership token inherited by every pytest-xdist child."""
+    return secrets.token_hex(8)
 
 
 def _load_config():
@@ -110,8 +133,10 @@ def _has_flag(args: tuple[str, ...], *flags: str) -> bool:
     """
     for arg in args:
         for flag in flags:
-            if arg == flag or arg.startswith(f"{flag}=") or (
-                len(flag) == 2 and flag.startswith("-") and arg.startswith(flag)
+            if (
+                arg == flag
+                or arg.startswith(f"{flag}=")
+                or (len(flag) == 2 and flag.startswith("-") and arg.startswith(flag))
             ):
                 return True
     return False
@@ -240,7 +265,7 @@ def _compose_pytest_argv(
     return argv
 
 
-def _run_forwarding_signals(argv: list[str]) -> int:
+def _run_forwarding_signals(argv: list[str], *, env: dict[str, str] | None = None) -> int:
     """Run *argv*, passing SIGINT/SIGTERM on to it, and return its code.
 
     Without the forwarding, a targeted ``SIGTERM`` (the daemon's stall
@@ -253,7 +278,7 @@ def _run_forwarding_signals(argv: list[str]) -> int:
     # SlotSemaphore deliberately marks its flock descriptor inheritable.
     # Preserve inheritable descriptors so a hard-killed wrapper cannot
     # release the slot while the pytest child continues running.
-    proc = subprocess.Popen(argv, close_fds=False)
+    proc = subprocess.Popen(argv, close_fds=False, env=env)
     previous: dict[int, object] = {}
 
     def _forward(signum, _frame):
@@ -400,6 +425,11 @@ def test_command(
         click.echo(shlex.join(argv))
         return
 
+    dsn_error = postgres_test_dsn_error()
+    if dsn_error:
+        console.print(f"[red]aq test:[/] {dsn_error}")
+        ctx.exit(4)
+
     meta = {
         "pid": os.getpid(),
         "task_id": os.environ.get("AQ_TASK_ID"),
@@ -431,7 +461,12 @@ def test_command(
         ) as slot:
             console.print(f"[dim]aq test: slot {slot} of {slots}, -n {workers}[/]")
             click.echo(f"$ {shlex.join(argv)}", err=True)
-            returncode = _run_forwarding_signals(argv)
+            child_env = os.environ.copy()
+            # Always replace an inherited token. Nested or concurrent `aq test`
+            # invocations are separate owners and must never derive the same
+            # PostgreSQL database names.
+            child_env["AQ_TEST_RUN_ID"] = _new_test_run_id()
+            returncode = _run_forwarding_signals(argv, env=child_env)
         if returncode == 5:
             # pytest's EXIT_NOTESTSCOLLECTED.  Nonzero already, but silent
             # about *why*: say plainly that nothing was verified.
