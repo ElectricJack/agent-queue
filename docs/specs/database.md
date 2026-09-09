@@ -101,6 +101,11 @@ Durable questions raised by worker turns. Session identity, instance token and c
 
 Indexes: `idx_agent_questions_pending` (`state`, `created_at`), `idx_agent_questions_session` (`session_id`, `instance_token`).
 
+Question reads also project a nullable `escalation_id` from the durable escalation whose
+`source_kind='question'` and `source_identity` matches the question ID. This is a derived link,
+not a mutable question column, so it cannot disagree with the escalation's authoritative source
+binding.
+
 ### Table: `escalations`
 
 Transport-neutral, supervisor-owned human incidents. The unique project/incident key makes source replay idempotent while `source_identity` distinguishes separate attempts. Task and source references are soft audit identity so an incident survives task archival. Conversation changes compare and increment `revision`; terminal states retain an explicit outcome and optional structured evidence.
