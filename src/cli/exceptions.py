@@ -51,3 +51,18 @@ class ScopeDeniedError(CommandError):
 
     code = "out_of_scope"
     exit_code = 4
+
+
+class CommandResponseError(CommandError):
+    """The request has no trustworthy result; replay could duplicate a write."""
+
+    def __init__(self, command: str):
+        super().__init__(
+            command,
+            "No complete command response was received. The command may have completed; "
+            "check its current state before retrying.",
+            details={"outcome": "unknown", "automatic_retry": False},
+        )
+
+    def __str__(self) -> str:
+        return f"Command '{self.command}': {self.detail_message}"
