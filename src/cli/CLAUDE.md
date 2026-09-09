@@ -10,6 +10,8 @@ app.py          Entry point, shared helpers (_run, _get_client, console), status
                 global --json / --brief flags
 envelope.py     Versioned JSON envelope: envelope(), error_envelope(), emit(),
                 BRIEF_PROJECTIONS — see docs/specs/design/aq-surface.md §4
+global_options.py  install_global_options() — copies --json/--brief/--api-url onto every
+                command so they parse at any position (design §4.0)
 agent_surface.py  aq schema (aq prime|handoff join here in Phase S1)
 tasks.py        aq task {list,show,set,details,create,approve,stop,restart,search,select}
 agents.py       aq agent {list,details}
@@ -34,6 +36,13 @@ styles.py       Theme, status icons, color maps
 - **Auth**: `AQ_API_TOKEN`, when set, is sent as `Authorization: Bearer <token>` on every
   request (per-session bearer token injected by session-runtime, design §7). The daemon
   does not yet enforce it (lands in aq-surface Phase S2) — today it is accepted and ignored.
+- **Global options**: `--json`, `--brief` and `--api-url` parse at *any* position
+  (`aq task list --json` == `aq --json task list`), because `install_global_options()` in
+  `global_options.py` copies them onto every command after registration — so it must stay
+  the last thing `app.py` does. Two exclusions: passthrough commands
+  (`ignore_unknown_options`: `aq test`, `aq stream start`) keep their argv for the child
+  program, and a command that already declares `--json` (`aq doctor`, `aq logs`,
+  `aq system config get`) keeps its local meaning. Design §4.0.
 - **Output contract**: `--json` prints the versioned envelope from `envelope.py`
   (`{"schema_version", "data", "pagination"?}` / `{"schema_version", "error", "data": null}`);
   `--brief` trims list/detail entities to `BRIEF_PROJECTIONS`; `AQ_JSON_LEGACY=1` restores

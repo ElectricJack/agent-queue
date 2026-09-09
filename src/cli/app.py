@@ -24,6 +24,7 @@ import asyncio
 import click
 from rich.console import Console
 
+from .global_options import AQGroup
 from .styles import AQ_THEME
 
 # Create themed console
@@ -189,7 +190,7 @@ def _print_full_help(ctx: click.Context) -> None:
 # ---------------------------------------------------------------------------
 
 
-@click.group(invoke_without_command=True)
+@click.group(cls=AQGroup, invoke_without_command=True)
 @click.option(
     "--api-url",
     envvar="AGENT_QUEUE_API_URL",
@@ -393,6 +394,18 @@ def _load_plugin_cli_groups() -> None:
 
 
 _load_plugin_cli_groups()
+
+
+# ---------------------------------------------------------------------------
+# Global options at every position
+# ---------------------------------------------------------------------------
+# Must run last: it walks the finished command tree, so anything registered
+# after this point would not get the global options.  See
+# ``global_options.py`` for the grammar and the two exclusions.
+
+from .global_options import install_global_options  # noqa: E402
+
+install_global_options(cli)
 
 
 # ---------------------------------------------------------------------------
