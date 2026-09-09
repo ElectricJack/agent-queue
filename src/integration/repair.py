@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import inspect
 import time
 from collections.abc import Awaitable, Callable
@@ -1339,8 +1340,45 @@ class RepairService:
             raise ValueError("batch repair stage is no longer active")
         if stage["current_subject"] != self._batch_subject(revision):
             raise ValueError("batch repair subject changed during close")
+        stage_dossier = dict(stage["dossier"] or {})
+        rebuild_conflict = stage_dossier.get("candidate_rebuild_conflict")
+        construction_base_sha = revision["construction_base_sha"]
+        if rebuild_conflict is not None:
+            expected_parents = {
+                rebuild_conflict.get("candidate_sha"),
+                rebuild_conflict.get("new_base_sha"),
+            }
+            actual_parents = list(commit_proof.get("head_parents") or [])
+            if (
+                rebuild_conflict.get("kind") != "candidate_rebuild"
+                or rebuild_conflict.get("operation_id") != operation_id
+                or int(rebuild_conflict.get("operation_stage", -1))
+                != int(stage["ordinal"])
+                or rebuild_conflict.get("batch_id") != batch["id"]
+                or int(rebuild_conflict.get("revision", -1))
+                != int(revision["revision"])
+                or rebuild_conflict.get("candidate_sha") != revision["head_sha"]
+                or not is_valid_git_oid(rebuild_conflict.get("new_base_sha", ""))
+                or head_sha == revision["head_sha"]
+                or len(actual_parents) != 2
+                or set(actual_parents) != expected_parents
+            ):
+                raise ValueError(
+                    "batch rebuild repair must be the exact ancestry-preserving merge"
+                )
+            construction_base_sha = rebuild_conflict["new_base_sha"]
+            history = list(stage_dossier.get("candidate_rebuild_conflicts", []))
+            history.append(
+                {
+                    **rebuild_conflict,
+                    "resolved_head_sha": head_sha,
+                    "resolved_at": now,
+                }
+            )
+            stage_dossier["candidate_rebuild_conflicts"] = history
+            stage_dossier.pop("candidate_rebuild_conflict", None)
         dossier = self._dossier_with_repair_commits(
-            stage["dossier"], revision["head_sha"], head_sha, commit_proof
+            stage_dossier, revision["head_sha"], head_sha, commit_proof
         )
         if head_sha == revision["head_sha"]:
             return
@@ -1373,7 +1411,7 @@ class RepairService:
             insert(integration_candidate_revisions).values(
                 batch_id=batch["id"],
                 revision=next_revision,
-                construction_base_sha=revision["construction_base_sha"],
+                construction_base_sha=construction_base_sha,
                 next_member_ordinal=revision["next_member_ordinal"],
                 repair_parent_revision=revision["revision"],
                 head_sha=head_sha,
@@ -1467,6 +1505,222 @@ class RepairService:
             "stage": int(stage["ordinal"]),
             "subject": subject,
             "deadline_due": observed_at >= float(stage["deadline_at"]),
+        }
+
+    async def record_batch_rebuild_conflict_on(
+        self,
+        conn,
+        operation_id: str,
+        *,
+        revision_number: int,
+        candidate_sha: str,
+        new_base_sha: str,
+        diagnostics: str,
+        fence: Fence,
+        now: float,
+    ) -> dict[str, Any]:
+        """Freeze a conflicting main advance under the current root repair budget.
+
+        The candidate remains the stage subject and the integration branch remains
+        byte-for-byte where reviewed CI left it.  A delegate resolves the exact
+        ``candidate_sha``/``new_base_sha`` pair with a two-parent merge; its close
+        then adopts a new revision whose construction base is that frozen main.
+        """
+        if not is_valid_git_oid(candidate_sha) or not is_valid_git_oid(new_base_sha):
+            return {"outcome": "stale"}
+        operation = (
+            await conn.execute(
+                select(integration_repair_operations)
+                .where(integration_repair_operations.c.id == operation_id)
+                .with_for_update()
+            )
+        ).mappings().one_or_none()
+        if (
+            operation is None
+            or operation["target_kind"] != "batch"
+            or operation["state"] not in {"active", "escalated"}
+        ):
+            return {"outcome": "stale"}
+        batch, revision = await self._current_batch_subject_rows_on(conn, operation)
+        stage = (
+            await conn.execute(
+                select(integration_repair_stages)
+                .where(
+                    integration_repair_stages.c.operation_id == operation_id,
+                    integration_repair_stages.c.ordinal == operation["active_stage"],
+                )
+                .with_for_update()
+            )
+        ).mappings().one_or_none()
+        owner = (
+            await conn.execute(
+                select(integration_branch_owners)
+                .where(
+                    integration_branch_owners.c.repository_id == batch["repository_id"],
+                    integration_branch_owners.c.ref == batch["integration_branch"],
+                )
+                .with_for_update()
+            )
+        ).mappings().one_or_none()
+        live_mutation = (
+            await conn.execute(
+                select(integration_candidate_ref_mutations.c.id)
+                .where(
+                    integration_candidate_ref_mutations.c.repository_id
+                    == batch["repository_id"],
+                    integration_candidate_ref_mutations.c.branch
+                    == batch["integration_branch"],
+                    integration_candidate_ref_mutations.c.state == "reserved",
+                )
+                .limit(1)
+            )
+        ).first()
+        subject = self._batch_subject(revision)
+        if (
+            int(batch["current_revision"]) != revision_number
+            or int(revision["revision"]) != revision_number
+            or revision["head_sha"] != candidate_sha
+            or revision["state"] not in {"built", "testing", "green", "red"}
+            or stage is None
+            or stage["state"] not in {"active", "awaiting_completion"}
+            or stage["current_subject"] != subject
+            or fence.target.repository_id != batch["repository_id"]
+            or fence.target.branch != batch["integration_branch"]
+            or fence.owner_id != operation_id
+            or owner is None
+            or owner["owner_id"] != fence.owner_id
+            or owner["owner_role"] != "collector"
+            or int(owner["fence_token"]) != fence.token
+            or owner["handoff_state"] != "reserved"
+            or owner["session_id"] is not None
+            or owner["workspace_id"] is not None
+            or live_mutation is not None
+        ):
+            return {"outcome": "busy"}
+
+        conflict_id = hashlib.sha256(
+            f"{operation_id}:{revision_number}:{candidate_sha}:{new_base_sha}".encode()
+        ).hexdigest()
+        conflict = {
+            "kind": "candidate_rebuild",
+            "id": conflict_id,
+            "operation_id": operation_id,
+            "operation_stage": int(stage["ordinal"]),
+            "batch_id": batch["id"],
+            "revision": revision_number,
+            "candidate_sha": candidate_sha,
+            "new_base_sha": new_base_sha,
+            "integration_branch": batch["integration_branch"],
+            "diagnostics": diagnostics,
+            "resolution": {
+                "kind": "two_parent_merge",
+                "parents": [candidate_sha, new_base_sha],
+            },
+        }
+        dossier = dict(stage["dossier"] or {})
+        existing = dossier.get("candidate_rebuild_conflict")
+        if existing is not None and existing.get("id") != conflict_id:
+            return {
+                "outcome": "conflict_already_frozen",
+                "stage": int(stage["ordinal"]),
+                "deadline_due": now >= float(stage["deadline_at"]),
+            }
+        if existing is not None:
+            conflict = existing
+
+        dossier["candidate_rebuild_conflict"] = conflict
+        repair_task_id = stage["repair_task_id"]
+        transition = None
+        if repair_task_id is not None:
+            task = (
+                await conn.execute(
+                    select(tasks).where(tasks.c.id == repair_task_id).with_for_update()
+                )
+            ).mappings().one_or_none()
+            if task is None:
+                return {"outcome": "busy"}
+            if task["status"] == TaskStatus.COMPLETED.value:
+                sessions_for_delegate = (
+                    await conn.execute(
+                        select(sessions).where(sessions.c.task_id == repair_task_id)
+                    )
+                ).mappings().all()
+                locked_workspace = (
+                    await conn.execute(
+                        select(workspaces.c.id)
+                        .where(workspaces.c.locked_by_task_id == repair_task_id)
+                        .limit(1)
+                    )
+                ).first()
+                if (
+                    stage["writer_kind"] != "repair_delegate"
+                    or task["assigned_agent_id"] is not None
+                    or any(
+                        row["state"] != "stopped" or row["claim_phase"] is not None
+                        for row in sessions_for_delegate
+                    )
+                    or locked_workspace is not None
+                ):
+                    return {"outcome": "busy"}
+                # This is the root counterpart to parent-conflict continuation:
+                # collector ownership plus stopped sessions and no task-locked
+                # workspace prove the completed delegate is detached. Reuse its
+                # identity, but never its checkout or commits.
+                transition = await self.db._apply_transition(
+                    conn,
+                    repair_task_id,
+                    TaskStatus.PAUSED,
+                    context="integration_root_rebuild_continuation",
+                    force=True,
+                    _manual_pause_control=True,
+                    assigned_agent_id=None,
+                    description=self._delegate_description(
+                        operation, dict(stage) | {"dossier": dossier}
+                    ),
+                )
+            elif task["status"] not in {
+                TaskStatus.PAUSED.value,
+                TaskStatus.READY.value,
+            }:
+                return {"outcome": "busy"}
+
+        await conn.execute(
+            update(integration_repair_stages)
+            .where(
+                integration_repair_stages.c.operation_id == operation_id,
+                integration_repair_stages.c.ordinal == stage["ordinal"],
+            )
+            .values(
+                state="active",
+                success_subject=None,
+                success_evidence_id=None,
+                dossier=dossier,
+            )
+        )
+        await conn.execute(
+            update(integration_batches)
+            .where(
+                integration_batches.c.id == batch["id"],
+                integration_batches.c.current_revision == revision_number,
+            )
+            .values(lifecycle="repairing", updated_at=now)
+        )
+        if repair_task_id is not None:
+            await conn.execute(
+                update(tasks)
+                .where(tasks.c.id == repair_task_id)
+                .values(
+                    description=self._delegate_description(
+                        operation, dict(stage) | {"dossier": dossier}
+                    )
+                )
+            )
+        return {
+            "outcome": "replayed" if existing is not None else "recorded",
+            "stage": int(stage["ordinal"]),
+            "deadline_due": now >= float(stage["deadline_at"]),
+            "conflict_id": conflict_id,
+            "transition": transition,
         }
 
     async def bind_current_parent_subject_on(
