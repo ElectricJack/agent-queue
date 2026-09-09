@@ -74,3 +74,20 @@ checks. Claim consistency, preparation, slot checkouts and stuck sessions passed
 A stale attention flag on the completed root repair was cleared with the public
 `aq doctor --check tasks.stale_attention --fix` command and verified clear.
 Configuration/profile warnings remain; this does not establish full health.
+
+## Next conflict and throughput work
+
+`nimble-forge` was created through AQ for repeated-conflict continuation with
+frozen budgets and pinned-artifact compatibility; AQ assigned it automatically
+to `agent-e9dccce8a2e5`. This is implementation in progress, not a resolved conflict.
+
+Candidate recovery now reuses exact commit objects in the daemon retained store
+and pins each required recovery ref (`b1e60ea3`). Remote head and authority checks
+remain independent. The 63-test candidate suite passed; the added fresh-service
+restart assertion passed separately. A one-member build fetches two unique OIDs,
+not the shared base twice; replay fetches no retained inputs. This is a measured
+operation-count improvement, not proof of hundreds-of-tasks/day throughput.
+
+Matter Engine configuration inspection additionally found no registered `repos`
+row for `matter-engine-cpp`. Repository registration must precede designation and
+policy enablement. The project remains paused; its two feature epics are queued.
