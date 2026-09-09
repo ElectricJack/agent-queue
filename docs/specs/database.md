@@ -2225,6 +2225,29 @@ Playbook artifacts an outbox event pins until it is delivered.
 | `event_id` | TEXT | PK, REFERENCES integration_outbox(id) ON DELETE CASCADE | Outbox row |
 | `artifact_sha256` | TEXT | PK, REFERENCES playbook_artifacts(artifact_sha256) ON DELETE RESTRICT | Pinned artifact; indexed |
 
+### Table: `development_deliveries`
+
+Development-mode delivery journal: the executed Git facts of a batch published
+to a repository's default branch, kept separate from task episodes so a
+development project needs no synthetic review or CI receipts. Rows are never
+deleted — the journal is the audit trail for what reached the default branch
+(`src/integration/development.py`, surfaced by `aq integration status`).
+
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| `id` | TEXT | PRIMARY KEY | Delivery id (uuid4) |
+| `project_id` | TEXT | NOT NULL | Project; indexed with `state` |
+| `repository_id` | TEXT | NOT NULL | Repository the batch targets |
+| `target_ref` | TEXT | NOT NULL | Ref published to, e.g. `refs/heads/main` |
+| `expected_sha` | TEXT | nullable | Base observed when the batch was prepared; the `--force-with-lease` expectation |
+| `prepared_sha` | TEXT | nullable | Head that was (or would be) published; NULL when preparation never produced one |
+| `state` | TEXT | NOT NULL, `ck_development_delivery_state` in (`prepared`, `publishing`, `delivered`, `parked`, `adopted`, `cancelled`) | Journal state; indexed with `project_id` |
+| `manifest` | JSON | NOT NULL | Members of the batch: `task_id`, `source_sha`, `acceptance` |
+| `evidence` | JSON | NOT NULL | Validation or reconciliation facts (`kind`, `validation`, `checks`, `conclusion`, …) |
+| `reason` | TEXT | NOT NULL | Why the row exists (sweep, operator adoption, park) |
+| `created_at` | REAL | NOT NULL | Unix timestamp |
+| `updated_at` | REAL | NOT NULL | Unix timestamp of the last state change |
+
 ---
 
 ## 4. Projects
