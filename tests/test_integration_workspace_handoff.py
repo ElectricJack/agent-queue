@@ -12,7 +12,6 @@ import pytest
 from sqlalchemy import insert, select, update
 
 from src.database.tables import (
-    task_session_attempts,
     agents,
     integration_branch_owners,
     sessions,

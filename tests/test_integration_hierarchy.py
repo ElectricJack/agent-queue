@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import json
+from pathlib import Path
 import subprocess
 import time
 
@@ -1496,3 +1498,5 @@ async def test_cli_task_create_graph_files_the_audit_epic_through_the_real_api(
     )
     assert (await db.get_task(parent_id)).title == document["parent"]["title"]
     assert {row["task_id"] for row in await _origins(db)} == {parent_id, *real["data"]["task_ids"]}
+
+EPIC_GRAPH = Path(__file__).parent / "fixtures" / "task_graphs" / "cli_audit_2026_09_08_epic.json"
