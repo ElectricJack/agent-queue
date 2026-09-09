@@ -7,16 +7,18 @@ import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
+import pytest
 from sqlalchemy import insert, select, update
 
-import pytest
-
-from src.database import Database
 from src.commands.principal import ExecutionPrincipal, PrincipalKind, principal_context
+from src.config import GitHubAppConfig
+from src.database import Database
 from src.database.tables import (
     gates,
     integration_batches,
+    integration_branch_owners,
     integration_candidate_publications,
+    integration_candidate_ref_mutations,
     integration_candidate_revisions,
     integration_cleanup_items,
     integration_legacy_gate_applicability,
@@ -26,7 +28,6 @@ from src.database.tables import (
     project_integration_schedules,
     projects,
 )
-from src.config import GitHubAppConfig
 from src.git.github_app import GitHubAppClient, GitHubRepositoryBinding, HttpResponse
 from src.integration.controls import IntegrationControlService, daemon_functional_preflight
 from src.integration.models import (
@@ -1626,6 +1627,49 @@ async def test_human_resume_reconciles_ambiguous_publication_and_abort_is_db_onl
                 updated_at=60.0,
             )
         )
+    async with db.immediate() as conn:
+        await conn.execute(insert(integration_branch_owners).values(
+            id="collector-owner", repository_id="repo",
+            ref="refs/heads/aq/integration/human", owner_id="human-operation",
+            owner_role="collector", fence_token=1, handoff_state="reserved",
+            created_at=50.0, updated_at=50.0,
+        ))
+        await conn.execute(insert(integration_candidate_ref_mutations).values(
+            id="collector-write", batch_id="human-batch", revision=0,
+            purpose="candidate_final", repository_id="repo",
+            branch="refs/heads/aq/integration/human", target_branch="main",
+            expected_old_sha="b" * 40, desired_sha="c" * 40,
+            operation_id="human-operation", operation_episode_id="episode",
+            operation_stage=1, lease_owner_id="lease", lease_fence_token=1,
+            branch_owner_id="human-operation", branch_owner_role="collector",
+            branch_fence_token=1, nonce="nonce", state="reserved",
+            expires_at=100.0, created_at=50.0, updated_at=50.0,
+        ))
+    unresolved = await service.resume("human-operation")
+    assert {b["ref"] for b in unresolved["blockers"]} == {"ref_mutation"}
+    async with db.immediate() as conn:
+        await conn.execute(update(integration_candidate_ref_mutations).where(
+            integration_candidate_ref_mutations.c.id == "collector-write"
+        ).values(state="applied", remote_sha="c" * 40))
+        await conn.execute(update(integration_branch_owners).where(
+            integration_branch_owners.c.id == "collector-owner"
+        ).values(handoff_state="attached", session_id="live-session"))
+    attached = await service.resume("human-operation")
+    assert {b["ref"] for b in attached["blockers"]} == {"writer"}
+    async with db.immediate() as conn:
+        await conn.execute(update(integration_branch_owners).where(
+            integration_branch_owners.c.id == "collector-owner"
+        ).values(handoff_state="reserved", session_id=None))
+    async with db.immediate() as conn:
+        await conn.execute(update(integration_branch_owners).where(
+            integration_branch_owners.c.id == "collector-owner"
+        ).values(ref="refs/heads/aq/integration/another-target"))
+    wrong_target = await service.resume("human-operation")
+    assert {b["ref"] for b in wrong_target["blockers"]} == {"writer"}
+    async with db.immediate() as conn:
+        await conn.execute(update(integration_branch_owners).where(
+            integration_branch_owners.c.id == "collector-owner"
+        ).values(ref="refs/heads/aq/integration/human"))
     resumed = await service.resume("human-operation")
     assert resumed == {
         "outcome": "resumed",
@@ -1651,6 +1695,12 @@ async def test_human_resume_reconciles_ambiguous_publication_and_abort_is_db_onl
             .where(integration_batches.c.id == "human-batch")
             .values(lifecycle="human_blocked")
         )
+    refused = await service.abort("human-operation", reason="retain for diagnosis")
+    assert refused["outcome"] == "ambiguous"
+    async with db.immediate() as conn:
+        await conn.execute(update(integration_branch_owners).where(
+            integration_branch_owners.c.id == "collector-owner"
+        ).values(handoff_state="released"))
     aborted = await service.abort("human-operation", reason="retain for diagnosis")
     assert aborted["outcome"] == "aborted"
     batch = await db.get_integration_batch("human-batch")
