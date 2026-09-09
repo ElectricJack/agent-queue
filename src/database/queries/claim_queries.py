@@ -202,6 +202,14 @@ class ClaimQueryMixin:
         The pause checkpoint and prepare-backoff keys all become stale at the
         same activation boundary.  Clearing them together preserves that
         invariant without opening one short transaction for each key.
+
+        ``needs_attention`` is deliberately *not* cleared here.  The only
+        caller reaches this line after :meth:`activate_claim` returned a row,
+        and that activation already deleted every ``needs_attention`` row for
+        the task in the transaction that just committed -- so a second,
+        value-scoped delete of the same key was pure round trip on the claim
+        hot path (see the happy-path budget in
+        ``tests/perf/test_claim_statements.py``).
         """
         async with self._engine.begin() as conn:
             await conn.execute(
@@ -210,13 +218,6 @@ class ClaimQueryMixin:
                     task_metadata.c.key.in_(CLAIM_PREPARATION_METADATA_KEYS),
                 )
             )
-            await conn.execute(delete(task_metadata).where(
-                task_metadata.c.task_id == task_id,
-                task_metadata.c.key == "needs_attention",
-                task_metadata.c.value.in_([
-                    json.dumps("slot_reset_failed"), json.dumps("integration_prepare_failed"),
-                ]),
-            ))
 
     async def release_claim_slot(self, conn, session_id: str) -> None:
         await conn.execute(

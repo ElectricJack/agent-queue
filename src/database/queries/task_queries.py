@@ -873,10 +873,28 @@ class TaskQueryMixin:
         """
         values = self._coerce_task_values(kwargs)
         from src.database.tables import projects
-        development_mode = False
-        if new_status in {TaskStatus.READY, TaskStatus.COMPLETED}:
-            development_mode = await conn.scalar(select(projects.c.hierarchical_integration_mode)
-                .join(tasks, tasks.c.project_id == projects.c.id).where(tasks.c.id == task_id)) == "development"
+
+        # Only a *managed* parent (one holding an integration checkpoint) can
+        # be waived by development mode, and that is a rare shape.  Reading
+        # the project eagerly for every READY/COMPLETED transition put one
+        # extra statement on the hot release path -- see the release_claim
+        # budget in ``tests/perf/test_claim_statements.py``.  Cache it here
+        # so the two call sites below can ask for it at most once.
+        _development_mode: bool | None = None
+
+        async def in_development_mode() -> bool:
+            nonlocal _development_mode
+            if _development_mode is None:
+                _development_mode = (
+                    await conn.scalar(
+                        select(projects.c.hierarchical_integration_mode)
+                        .join(tasks, tasks.c.project_id == projects.c.id)
+                        .where(tasks.c.id == task_id)
+                    )
+                    == "development"
+                )
+            return _development_mode
+
         result = TransitionResult()
 
         if assume_pre_state is not None:
@@ -990,8 +1008,9 @@ class TaskQueryMixin:
                     )
                 ).scalar_one_or_none()
                 if (
-                    managed_parent is not None and not development_mode
+                    managed_parent is not None
                     and _integration_wake_token is not _INTEGRATION_WAKE_TOKEN
+                    and not await in_development_mode()
                 ):
                     from src.database.queries.hierarchy_queries import HierarchyError
 
@@ -1009,9 +1028,10 @@ class TaskQueryMixin:
                     )
                 ).scalar_one_or_none()
                 if (
-                    managed_parent is not None and not development_mode
+                    managed_parent is not None
                     and _operator_adoption_token is not _OPERATOR_ADOPTION_TOKEN
                     and _integration_completion_token is not _INTEGRATION_COMPLETION_TOKEN
+                    and not await in_development_mode()
                 ):
                     from src.database.queries.hierarchy_queries import HierarchyError
 
