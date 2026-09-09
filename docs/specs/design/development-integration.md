@@ -12,4 +12,4 @@ Implementation checklist:
 - [x] worker close and planning integration; no duplicate legacy review/merge path
 - [x] stopped-owner preservation and cancellation/adoption reconciliation
 - [x] status, docs and focused regression/e2e validation
-- [ ] live rollout and remaining branch delivery, including task records
+- [x] live rollout and remaining branch delivery, including task records
