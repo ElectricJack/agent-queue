@@ -5,9 +5,15 @@ the claim transaction alone; ``_apply_transition``, activation and metadata
 bring the whole command to a larger budget.  The measured numbers are
 recorded in each test's docstring.
 
-Ruling P2-7: ``any_db`` (``tests/perf/conftest.py``) provides PostgreSQL
-(always) and Postgres (only when ``POSTGRES_TEST_DSN`` is set), at
-``seed_scale(n_tasks=5000, profile_id="worker")``.
+Ruling P2-7: ``any_db`` (``tests/perf/conftest.py``) leases one PostgreSQL
+database -- the only supported backend -- at
+``seed_scale(n_tasks=5000, profile_id="worker")``.  Every number recorded
+below is a PostgreSQL count: the driver's transaction boundaries are not
+cursor statements, so no ``BEGIN``/``COMMIT`` is counted anywhere in this
+file.  Run it with ``POSTGRES_TEST_DSN`` set and the ``perf`` marker
+selected::
+
+    aq test tests/perf/test_claim_statements.py -q -p no:xdist -s --aq-all-markers
 
 Scope note: every fixture below stubs ``orch.bus.emit = AsyncMock()``, so
 event fan-out (whatever a real subscriber -- a playbook trigger, message
@@ -45,6 +51,25 @@ pytestmark = pytest.mark.perf
 
 PROJECT_ID = "proj"
 NOW = time.time()
+
+#: Statements ``_cmd_task_claim`` runs before it opens the claim transaction:
+#: the session+profile join, ``touch_session_activity``, and the project read
+#: ``_admission_reason`` judges.  The transaction budget subtracts exactly
+#: these, so a pre-read added without updating this constant would otherwise
+#: be charged to the transaction.
+_OUTER_PRE_READS = 3
+
+
+def _over(n: int, budget: int, statements) -> str:
+    """Failure message that names the drift *and* shows the trace.
+
+    A statement budget is only re-baselineable by someone who can see what
+    actually ran; printing the numbered trace on failure is the difference
+    between "20 > 18" and knowing which two statements to argue about.
+    """
+    lines = [f"{n} statements > budget {budget}:"]
+    lines += [f"{i:>3}. {' '.join(sql.split())}" for i, sql in enumerate(statements, 1)]
+    return "\n".join(lines)
 
 
 async def build_handler(any_db, tmp_path):
@@ -146,30 +171,57 @@ class TestClaimStatementBudgets:
     async def test_claim_happy_path_statement_budget(self, any_db, tmp_path):
         """Whole ``task_claim`` happy path (slot reset stubbed).
 
-        **Measured on SQLite after the task-11 trim: 14** (was 37-38).
-        The trace, in order: the session+profile join and the project read
-        (2, outer admission loop — ``max_event_id`` is skipped because
-        ``wait == 0``); the claim transaction (9, asserted separately by
-        ``test_claim_transaction_statement_budget`` below); and
-        ``activate_claim``'s own BEGIN/UPDATE…RETURNING/COMMIT (3).
+        **Measured on PostgreSQL: 20.**  The trace, statement by statement:
 
-        What went: the separate ``get_profile`` read; ``max_event_id``;
-        ``take_claim_slot``'s re-read (now ``UPDATE … RETURNING``); the
-        epoch-bump CAS and the transition pre-read and the post-write task
-        re-read (all folded into one fenced ``UPDATE … RETURNING`` through
-        ``_apply_transition``); ``_apply_transition``'s 5-statement
-        blocked-state recompute (``projection_stable`` — no clause of
-        ``blocked_predicate()`` can tell READY from IN_PROGRESS); one of
-        the two metadata upserts (batched); ``get_workspace_for_agent``
-        (``record_holder`` returns the row); the post-activation session
-        re-read (``activate_claim`` returns the row); and
-        ``_claimed_response``'s whole ``task_show`` payload build (~10 —
-        it now returns the task row; ``aq task show`` is the full view).
+        *Outer admission loop (3).*  1 the session+profile join (one read
+        for both — spec §15); 2 ``touch_session_activity``, the durable
+        proof that an idle worker's claim loop is alive when a long poll
+        leaves the harness silent for its whole wait window; 3 the project
+        read that ``_admission_reason`` judges.  ``max_event_id`` is
+        skipped because ``wait == 0``.
 
-        Postgres is 2 lower (no BEGIN/COMMIT cursor statements); it is
-        asserted through the same ``any_db`` parametrisation and runs in CI
-        where ``POSTGRES_TEST_DSN`` is set — Docker is unavailable on the
-        machine this was measured on.
+        *The claim transaction (9, statements 4-12).*  Asserted separately
+        by ``test_claim_transaction_statement_budget`` below, which
+        subtracts exactly the three outer pre-reads above.
+
+        *Preparation and activation (8, statements 13-20).*  13
+        ``claim_preparation_is_current`` — one join re-proving the task and
+        session fences before any filesystem work; 14
+        ``_prepare_and_activate_locked``'s project re-read, which decides
+        whether the claim takes the hierarchical-integration branch path
+        from the project's *current* ``hierarchical_integration_mode`` (the
+        outer loop's read may be a full ``--wait`` old by then); 15-16
+        ``activate_claim``'s two ``FOR UPDATE`` locks, taken session-then-
+        task in the same order as claim and release so activation cannot
+        deadlock against them, the task one also reading ``branch_name``;
+        17 the activation CAS (``UPDATE sessions … RETURNING``, so the
+        caller needs no re-read); 18 the ``needs_attention`` delete that
+        retires an earlier prepare/release warning at the instant the claim
+        becomes usable — the *only* clear on the ``preparing`` retry path,
+        which re-activates a task already IN_PROGRESS and so never reaches
+        ``_apply_transition``'s copy at statement 8; 19 ``tasks.branch_name``,
+        publishing the branch the slot reset just created past every
+        activation guard and under the task row lock already held (skipped
+        when the row already names that branch — a resume, or a hierarchy
+        claim whose branch is pinned at filing); 20
+        ``clear_claim_preparation_metadata``'s single delete of the pause
+        checkpoint and prepare-backoff ladder.
+
+        What went, historically: the separate ``get_profile`` read;
+        ``max_event_id``; ``take_claim_slot``'s re-read (now
+        ``UPDATE … RETURNING``); the epoch-bump CAS, the transition pre-read
+        and the post-write task re-read (all folded into one fenced
+        ``UPDATE … RETURNING`` through ``_apply_transition``);
+        ``_apply_transition``'s 5-statement blocked-state recompute
+        (``projection_stable`` — no clause of ``blocked_predicate()`` can
+        tell READY from IN_PROGRESS); one of the two metadata upserts
+        (batched); ``get_workspace_for_agent`` (``record_holder`` returns
+        the row); the post-activation session re-read; and
+        ``_claimed_response``'s whole ``task_show`` payload build (~10 — it
+        now returns the task row; ``aq task show`` is the full view).  Most
+        recently, ``clear_claim_preparation_metadata``'s second, value-scoped
+        ``needs_attention`` delete, which statement 18 had already made
+        redundant.
         """
         await _seed_worker_scale(any_db)
         sid, _wd = await pool_session(any_db, tmp_path)
@@ -178,42 +230,31 @@ class TestClaimStatementBudgets:
         async with count_statements(any_db) as c:
             res = await h._cmd_task_claim({"next": True})
         assert res["result"] == "claimed"
-        # The durable-worker eligibility guard (+1), pre-launch task/session
-        # revalidation (+2), activation claim fence (+1), and the durable
-        # task-session-attempt insert (+1) protect concurrent
-        # pause/reassignment and restart recovery. SQLite records two more
-        # transaction-boundary statements around that required insert; the
-        # backoff and pause keys are deliberately cleared by one DELETE.
-        # ``_prepare_and_activate_locked``'s project re-read (+1) decides
-        # whether the claim takes the hierarchical-integration branch path
-        # from the project's *current* ``hierarchical_integration_mode`` —
-        # the outer loop's read may be a full ``--wait`` old by then.
-        # ``activate_claim``'s ``tasks.branch_name`` write (+1) publishes the
-        # branch the slot reset just created, past every activation guard and
-        # under the task row lock it already holds; it is skipped entirely
-        # when the row already names that branch (a resume or a hierarchy
-        # claim, whose branch is pinned at filing).
-        budget = 18
+        budget = 20
         print(f"\ntask_claim happy path: {c['n']} statements (budget {budget})")
-        assert c["n"] <= budget, f"{c['n']} statements > budget {budget}"
+        assert c["n"] <= budget, _over(c["n"], budget, c["statements"])
 
     async def test_claim_transaction_statement_budget(self, any_db, tmp_path):
         """The claim transaction alone — spec §15's "≤ 6 logical statements".
 
         ``_prepare_and_activate`` is stubbed out, so this counts exactly
-        ``_attempt_claim``'s ``immediate()`` block plus the outer loop's two
-        pre-reads, which are then subtracted.
+        ``_attempt_claim``'s ``immediate()`` block plus the outer loop's
+        three pre-reads, which are then subtracted.
 
-        **Measured on SQLite: 10** — BEGIN, the slot CAS
-        (``UPDATE … RETURNING``), the §10 work query, the durable-flock
-        agent-eligibility guard (``SELECT agents.id … enabled/role/
-        deleted_at``), the fenced take (``UPDATE tasks SET status,
-        assigned_agent_id, claim_epoch+1 … RETURNING``), the session /
-        agent / workspace holder writes, the batched two-key metadata
-        upsert, COMMIT.  Eight of those are logical statements; BEGIN and
-        COMMIT are SQLite's explicit ``BEGIN IMMEDIATE`` / ``COMMIT``
-        (PostgreSQL does not emit them as cursor statements, hence the
-        lower budget there).
+        **Measured on PostgreSQL: 9**, in order: the slot CAS
+        (``UPDATE sessions … RETURNING``); the §10 work query; the
+        durable-worker eligibility guard, which reserves the agent and
+        fences its soft delete in one ``UPDATE agents … RETURNING``; the
+        fenced take (``UPDATE tasks SET status, assigned_agent_id,
+        claim_epoch+1 … RETURNING`` through ``_apply_transition``);
+        ``_apply_transition``'s ``needs_attention`` delete, which retires the
+        previous operational incident for every execution path that reaches
+        IN_PROGRESS, push or pull; ``record_holder``'s session write and its
+        workspace ``UPDATE … RETURNING``; the batched two-key metadata
+        upsert; and the durable ``task_session_attempts`` insert that gives
+        every pool claim restart/audit history.  Transaction boundaries are
+        not cursor statements on PostgreSQL, so no ``BEGIN``/``COMMIT`` is
+        counted.
         """
         await _seed_worker_scale(any_db)
         sid, _wd = await pool_session(any_db, tmp_path)
@@ -231,23 +272,26 @@ class TestClaimStatementBudgets:
             res = await h._cmd_task_claim({"next": True})
         assert res["result"] == "claimed"
         assert prepared["task"] is not None
-        # The two outer-loop pre-reads (session+profile join, project) are
-        # not part of the transaction.  The durable task-session-attempt
-        # insert is required so every pool claim has restart/audit history;
-        # it adds one logical statement after the original claim budget.
-        n = c["n"] - 2
+        # The three outer-loop pre-reads (session+profile join,
+        # ``touch_session_activity``, project) are not part of the
+        # transaction.  Keep this in step with the happy-path enumeration
+        # above: when a pre-read is added or removed there, this subtraction
+        # moves with it, or the drift is silently charged to the transaction.
+        n = c["n"] - _OUTER_PRE_READS
         budget = 9
         print(f"\nclaim transaction only: {n} statements (budget {budget})")
-        assert n <= budget, f"{n} statements > budget {budget}"
+        assert n <= budget, _over(n, budget, c["statements"][_OUTER_PRE_READS:])
 
     async def test_no_ready_work_statement_budget(self, any_db, tmp_path):
         """No matching ready task.
 
-        **Measured on SQLite after the task-11 trim: 7** (was 10) — the two
-        outer-loop pre-reads plus the 5-statement ``_attempt_claim``
-        transaction: BEGIN, the slot CAS (``UPDATE … RETURNING`` — no
-        re-read), the ready-task SELECT that finds nothing, the
-        release-slot UPDATE, COMMIT.
+        **Measured on PostgreSQL: 6** — the three outer-loop pre-reads
+        (session+profile join, ``touch_session_activity``, project) plus the
+        3-statement ``_attempt_claim`` transaction: the slot CAS
+        (``UPDATE … RETURNING`` — no re-read), the ready-task SELECT that
+        finds nothing, and the release-slot UPDATE.  This is the statement
+        cost of an *idle* worker's poll, so it is the one budget here a long
+        ``--wait`` loop pays repeatedly; keep it tight.
         """
         await any_db.create_profile(
             AgentProfile(id="worker", name="w", lifecycle="pool", needs_workspace=False)
@@ -262,25 +306,31 @@ class TestClaimStatementBudgets:
         async with count_statements(any_db) as c:
             res = await h._cmd_task_claim({"next": True})
         assert res["result"] == "no_ready_work"
-        budget = 8
+        budget = 6
         print(f"\nno_ready_work: {c['n']} statements (budget {budget})")
-        assert c["n"] <= budget, f"{c['n']} statements > budget {budget}"
+        assert c["n"] <= budget, _over(c["n"], budget, c["statements"])
 
     async def test_release_claim_statement_budget(self, any_db, tmp_path):
         """``release_claim`` on an active claim.
 
-        **Measured: PostgreSQL 9** — the session read,
-        integration-owner guard, status ``UPDATE … RETURNING``, merged
-        ``task.ready`` frontier ``INSERT … SELECT … RETURNING``, attempt
-        completion, workspace / agent / session writes, and the ready
-        listener's post-commit task read. Driver transaction boundaries
-        are not counted as SQL statements.
+        **Measured on PostgreSQL: 9** — the session read (``FOR UPDATE``),
+        the integration-owner guard, the status ``UPDATE … RETURNING``, the
+        merged ``task.ready`` frontier ``INSERT … SELECT … RETURNING``, the
+        attempt completion, the workspace / agent / session writes, and the
+        ready listener's post-commit task read.  Driver transaction
+        boundaries are not counted as SQL statements.
 
         The 5-statement blocked-state recompute is gone:
         IN_PROGRESS → READY is invisible to every clause of
         ``blocked_predicate()``, which is what ``projection_stable=True``
         asserts (and ``_apply_transition`` re-checks — a release to a
         terminal or BLOCKED status still recomputes in full).
+
+        So is ``_apply_transition``'s project read for
+        ``hierarchical_integration_mode``: development mode can only waive a
+        *managed* parent's wake/completion guard, so the read is taken
+        lazily behind that check instead of on every transition to READY or
+        COMPLETED — of which this release is one.
         """
         await _seed_worker_scale(any_db)
         sid, _wd = await pool_session(any_db, tmp_path)
@@ -294,9 +344,7 @@ class TestClaimStatementBudgets:
             )
         budget = 9
         print(f"\nrelease_claim: {c['n']} statements (budget {budget})")
-        assert c["n"] <= budget, f"{c['n']} statements > budget {budget}:\n" + "\n".join(
-            c["statements"]
-        )
+        assert c["n"] <= budget, _over(c["n"], budget, c["statements"])
 
     async def test_count_ready_by_profile_statement_budget(self, any_db):
         """``count_ready_by_profile`` is exactly one statement."""
@@ -358,7 +406,7 @@ class TestClaimStatementBudgets:
 class TestClaimLatency:
     @pytest.mark.perf
     async def test_claim_release_p99_latency(self, perf_strict, any_db, tmp_path):
-        """Claim/release p99 over 50 iterations at 5,000 tasks (SQLite).
+        """Claim/release p99 over 50 iterations at 5,000 tasks (PostgreSQL).
 
         The spec's ``<= 50 ms`` (§15.2, ``task_claim --next, DB portion``
         row) is the claim transaction alone; this measures claim + release
@@ -373,6 +421,13 @@ class TestClaimLatency:
         sid, _wd = await pool_session(any_db, tmp_path)
         handler = await build_handler(any_db, tmp_path)
         h = scoped(handler, sid)
+        # Measuring 50 claims on one session means opting out of
+        # ``fresh_context_per_task``, whose cap of 1 claim per session would
+        # otherwise make every iteration after the first
+        # ``session_exhausted``.  The cap is compared inside
+        # ``take_claim_slot`` and changes no statement, so this only affects
+        # the loop, not the budgets asserted above.
+        handler.config.swarm.fresh_context_per_task = False
 
         times = []
         for _ in range(50):
