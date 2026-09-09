@@ -574,3 +574,34 @@ batchb5798e8c remains frozen and is not silently rewritten. Source branch
 origin/aq/operator-recovery-followups-20260909 and delivery taskgrand-vault cover
 this fix plus recovery test/constraint follow-through. Corrected daemon restart
 is in progress, log/tmp/aq-receipt-normalization-restart.log.
+
+
+### 2026-09-09 10:03 UTC — disabled routes recovered; candidate replay defect routed
+
+Live CLI verification shows keen-harbor at 15/16 completed children, with its
+final audit keen-harbor.13 READY but pinned to deep-high-claude (max_active=0).
+Public task route moved that audit to deep-high-codex at the same deep-high class.
+Noble-ridge remains 8/12 complete, with noble-ridge.9 actively working. Its parent
+repair operation 640ced19-c324-4f6f-b50d-8f0181d181b7 had expired at stage 1 with
+zero attempts while its delegate was also pinned to the disabled pool. Routed
+that existing unclaimed delegate to deep-high-codex, then public integration
+resume succeeded: state escalated, stage 1 deadline 1788951713.3815386. Existing
+operation, receipts and attempt count were preserved. Both route changes and
+the live evidence are recorded in task comments; fresh-beacon tracks diagnostics.
+
+Matter Engine nimble-dune.1 has a running session
+8eae2ad5-bc46-43bd-bff9-a837d8da47e3 in its assigned project worktree. All twelve
+feature children were re-read via AQ: correct project/parents, acceptance criteria,
+sequential dependencies, and a cross-epic dependency are present. Duplicate frozen
+candidate 6c3edde6 still has live CI run 34336931646 in progress; it is not counted
+as delivered or silently removed.
+
+Batch repair session a3326da2-26f8-400f-8ca3-a9553eced43d identified already-contained
+reviewed heads being replayed with historical merge bases. Confirmed the missing
+ancestry guard in CandidateService._construct. Worker-filed brisk-pinnacle records
+reproduction and tests; operator resolved its routing gate using task route to
+standard-medium-claude/standard-medium. Prospective correction must preserve existing
+frozen conflict evidence and accepted-repair semantics. quick-falcon remains queued
+for the distinct guarded candidate-member conflict CLI gap. Live keen-harbor repair
+session 0826969e-ca31-45b1-958f-836a134faf3e reports 87 focused tests passing and is
+running its broader CLI checks before delivery. No broad completion claim is made.
