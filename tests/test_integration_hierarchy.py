@@ -1119,7 +1119,10 @@ async def test_sibling_prerequisite_needs_current_delivery_receipt_before_claim(
     assert not await db.is_hierarchy_task_runnable(second)
 
 
-async def test_container_bootstrap_recovers_after_reservation_before_transfer(db, hierarchy, monkeypatch):
+@pytest.mark.parametrize("operator_hold", [False, True])
+async def test_container_bootstrap_recovers_after_reservation_before_transfer(
+    db, hierarchy, monkeypatch, operator_hold
+):
     await _create(db, "epic")
     await hierarchy.file_children("epic", [{"title": "child"}], 0)
     async with db.immediate() as conn:
@@ -1137,7 +1140,19 @@ async def test_container_bootstrap_recovers_after_reservation_before_transfer(db
     reserved = await db.get_integration_checkpoint("epic")
     assert reserved["episode_id"]
     monkeypatch.setattr(hierarchy.ownership, "transfer", transfer)
+    if operator_hold:
+        await db.pause_task("epic")
     result = await hierarchy.bootstrap_container_collection("epic")
+    if operator_hold:
+        assert result["outcome"] == "waiting"
+        assert result["reason"] == "manual_pause"
+        owner = await hierarchy.ownership.get_owner(
+            BranchKey(repository_id="repo", branch="aq/epic")
+        )
+        assert owner["owner_role"] == "worker"
+        assert owner["owner_id"] == "epic"
+        assert (await db.get_integration_checkpoint("epic"))["episode_id"] == reserved["episode_id"]
+        return
     assert result["outcome"] == "checkpointed"
     recovered = await db.get_integration_checkpoint("epic")
     assert recovered["episode_id"] == reserved["episode_id"]
