@@ -519,6 +519,70 @@ class HierarchyIntegration:
         task.branch_name = f"aq/{task.id}"
         return {"task_id": task.id, "generation": 0, "gate_id": gate_id}
 
+    async def bootstrap_container_collection(self, task_id: str) -> dict:
+        """Checkpoint a never-run container at its confirmed, untouched origin."""
+        from src.integration.models import Fence
+
+        async with self.db._engine.connect() as conn:
+            task = await self._task_row(conn, task_id)
+            project, repo = await self._enabled_route(conn, task)
+        target = BranchKey(repository_id=repo.id, branch=f"aq/{task_id}")
+        owner = await self.ownership.get_owner(target)
+        if owner is None or owner["owner_id"] != task_id or owner["owner_role"] != "worker":
+            return {"outcome": "waiting", "task_id": task_id}
+        fence = Fence(target=target, owner_id=task_id, token=int(owner["fence_token"]))
+        transition = None
+        async with self.ownership.mutation_exclusion(fence, expected_role="worker") as conn:
+            await self.db.lock_hierarchy_project(conn, project["id"])
+            task = await self._task_row(conn, task_id)
+            checkpoint = await self._locked_checkpoint(conn, task_id)
+            origin = (await conn.execute(select(task_branch_origins).where(
+                task_branch_origins.c.task_id == task_id,
+                task_branch_origins.c.repository_id == repo.id,
+                task_branch_origins.c.retired_at.is_(None),
+            ))).mappings().one_or_none()
+            children = (await conn.execute(select(tasks.c.id).where(
+                tasks.c.parent_task_id == task_id
+            ).limit(1))).scalar_one_or_none()
+            live = (await conn.execute(select(sessions.c.id).where(
+                sessions.c.task_id == task_id,
+                sessions.c.state.in_(("starting", "running", "draining")),
+            ).limit(1))).scalar_one_or_none()
+            workspace = (await conn.execute(select(workspaces.c.id).where(
+                workspaces.c.locked_by_task_id == task_id
+            ).limit(1))).scalar_one_or_none()
+            if (origin is None or not origin["materialized"] or not origin["reserved"]
+                or children is None or live is not None or workspace is not None
+                or task["assigned_agent_id"] is not None
+                or task["claim_epoch"] != 0 or task["branch_name"] != target.branch
+                or task["status"] not in {"IN_PROGRESS", "PAUSED"}
+                or (task["status"] == "PAUSED" and checkpoint["episode_id"] is None)):
+                return {"outcome": "waiting", "task_id": task_id}
+            head = await self._resolve_head(repo, target.branch)
+            if head != origin["base_sha"] or checkpoint["checkpoint_sha"] != head:
+                return {"outcome": "waiting", "task_id": task_id}
+            operation = await self.parent_completion.reserve_episode_on(
+                conn, parent=task, project=project, checkpoint=checkpoint,
+                pre_collection_sha=head,
+            )
+            if checkpoint["episode_id"] is None:
+                await conn.execute(update(task_integration_checkpoints).where(
+                    task_integration_checkpoints.c.task_id == task_id
+                ).values(episode_id=operation["episode_id"], state="awaiting_children",
+                         version=task_integration_checkpoints.c.version + 1,
+                         updated_at=self.clock()))
+                transition = await self.db._apply_transition(
+                    conn, task_id, TaskStatus.PAUSED, context="integration_parent_suspended",
+                    assigned_agent_id=None, _manual_pause_control=True,
+                )
+        if transition is not None:
+            await self.db.log_blocked_flips(transition.flipped)
+        # Crash recovery re-enters above with the same episode and paused
+        # never-run task; transfer grants one fenced daemon collector.
+        collector = await self.ownership.transfer(fence, operation["id"], "collector")
+        return {"outcome": "checkpointed", "task_id": task_id,
+                "operation_id": operation["id"], "fence": collector.model_dump(mode="json")}
+
     async def checkpoint_parent(
         self,
         task_id: str,

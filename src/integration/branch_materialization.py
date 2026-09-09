@@ -32,7 +32,13 @@ from typing import Any
 
 from sqlalchemy import select
 
-from src.database.tables import projects, task_branch_origins, tasks
+from src.database.tables import (
+    integration_branch_owners,
+    projects,
+    task_branch_origins,
+    task_integration_checkpoints,
+    tasks,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -102,8 +108,6 @@ class BranchMaterializationService:
         """
         _ = now
         pending = await self.pending_origins(limit=limit)
-        if not pending:
-            return []
         service = self.hierarchy_service_factory()
         if service is None:
             logger.debug("branch materialization: no hierarchy service available")
@@ -133,6 +137,28 @@ class BranchMaterializationService:
                 logger.warning(
                     "Branch materialization for aq/%s failed: %s", row["task_id"], exc
                 )
+        # A code-bearing epic can be a container with no producer session.
+        # Its untouched materialized origin is its initial checkpoint.
+        async with self.db._engine.connect() as conn:
+            containers = (await conn.execute(
+                select(tasks.c.id).join(task_integration_checkpoints,
+                    task_integration_checkpoints.c.task_id == tasks.c.id)
+                .join(integration_branch_owners,
+                    (integration_branch_owners.c.owner_id == tasks.c.id)
+                    & (integration_branch_owners.c.ref == tasks.c.branch_name))
+                .where(tasks.c.claim_epoch == 0,
+                       tasks.c.status.in_(("IN_PROGRESS", "PAUSED")),
+                       integration_branch_owners.c.owner_role == "worker",
+                       integration_branch_owners.c.handoff_state == "reserved")
+                .order_by(tasks.c.created_at, tasks.c.id).limit(limit)
+            )).scalars().all()
+        for task_id in containers:
+            try:
+                outcome = await service.bootstrap_container_collection(task_id)
+                if outcome["outcome"] == "checkpointed":
+                    logger.info("Started collection for container %s", task_id)
+            except Exception:
+                logger.warning("Container collection startup failed for %s", task_id, exc_info=True)
         return results
 
 

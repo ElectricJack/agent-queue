@@ -26,6 +26,7 @@ from src.integration.hierarchy import (
 )
 from src.integration.models import (
     ArtifactSnapshot,
+    BranchKey,
     HierarchicalIntegrationPolicy,
     IntegrationBoundaryPolicy,
     PlaybookRoute,
@@ -885,3 +886,33 @@ async def test_new_root_missing_base_rolls_back_task_and_origin(db):
     assert not await _origins(db)
     async with db._engine.connect() as conn:
         assert not (await conn.execute(select(tasks.c.id))).all()
+
+
+@pytest.mark.parametrize("condition", ["untouched", "claimed", "changed_head", "manual_pause"])
+async def test_never_run_container_starts_collection_only_at_untouched_origin(db, hierarchy, condition):
+    await _create(db, "epic")
+    await hierarchy.file_children("epic", [{"title": "child"}], 0)
+    async with db.immediate() as conn:
+        await conn.execute(update(task_branch_origins).where(
+            task_branch_origins.c.task_id == "epic"
+        ).values(materialized=True, materialized_at=2.0))
+        if condition == "claimed":
+            await conn.execute(update(tasks).where(tasks.c.id == "epic").values(claim_epoch=1))
+        elif condition == "manual_pause":
+            await conn.execute(update(tasks).where(tasks.c.id == "epic").values(status="PAUSED"))
+    if condition == "changed_head":
+        hierarchy.default_head_resolver = lambda _repo, _branch: "b" * 40
+    result = await hierarchy.bootstrap_container_collection("epic")
+    checkpoint = await db.get_integration_checkpoint("epic")
+    if condition != "untouched":
+        assert result["outcome"] == "waiting"
+        assert checkpoint["episode_id"] is None
+        return
+    assert result["outcome"] == "checkpointed"
+    assert checkpoint["episode_id"]
+    assert (await db.get_task("epic")).status is TaskStatus.PAUSED
+    owner = await hierarchy.ownership.get_owner(BranchKey(repository_id="repo", branch="aq/epic"))
+    assert owner["owner_role"] == "collector"
+    assert owner["owner_id"] == result["operation_id"]
+    assert (await hierarchy.bootstrap_container_collection("epic"))["outcome"] == "waiting"
+    assert (await db.get_integration_checkpoint("epic"))["episode_id"] == checkpoint["episode_id"]
