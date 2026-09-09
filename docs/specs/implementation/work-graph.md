@@ -170,7 +170,7 @@ That is exact, not an approximation. `is_blocked` is a pure function of statuses
 - New `_cmd_task_label` (add/remove/list) and label filters on `_cmd_list_tasks` (line 220).
 - New `_cmd_close_task` — the completion-protocol shell: writes outcome metadata keys (`outcome`, `failure_class`, `work_outcome`, `work_commit`, `work_branch`, `verification`, `close_notes`) via `set_task_meta`, then `transition_task` to COMPLETED/FAILED. Consumed by `aq task close` per [[session-runtime]].
 - `_cmd_set_task_status` (line 2672): gains `force` arg passed to `transition_task`.
-- New `src/commands/gate_commands.py` mixin on `CommandHandler`: `_cmd_gate_create`, `_cmd_gate_list`, `_cmd_gate_show`, `_cmd_gate_resolve(gate_id, resolved_by, resolution="", …)`. Discord buttons ([[messaging-rework]]) and the dashboard call `gate_resolve` — no other resolution path for `human` gates.
+- New `src/commands/gate_commands.py` mixin on `CommandHandler`: `_cmd_gate_create`, `_cmd_gate_list`, `_cmd_gate_show`, `_cmd_gate_resolve(gate_id, resolved_by, resolution="", …)`. The CLI, API, and dashboard call `gate_resolve`; Discord gate buttons are retired.
 - `event_commands.py::_cmd_get_recent_events` (line 46): new `after: int` param → ascending replay (§8).
 
 ## 6. Orchestrator integration (exact functions)

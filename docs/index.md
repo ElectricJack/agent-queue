@@ -106,24 +106,7 @@ To uninstall, run `./uninstall.sh` from the repo root. It returns the repo to a 
 
 ### First steps
 
-Once the bot is online, everything happens through conversation in your control channel:
-
-```
-You:  link ~/code/my-app as my-app
-Bot:  ✓ Linked. Repo "my-app" registered.
-
-You:  create a project called my-app
-Bot:  ✓ Project my-app created.
-
-You:  create agent claude-1 and assign it to my-app
-Bot:  ✓ Agent claude-1 created.
-
-You:  add a task to add rate limiting to the API
-Bot:  Created task `task-1` — "Add rate limiting to API"
-      Assigned to claude-1. I'll post updates in the thread.
-```
-
-Or use the CLI:
+Use the CLI or dashboard for project and task operations. Discord is an optional notification surface for the hourly digest and durable human-escalation threads; it is not a general chat or command interface:
 
 ```bash
 aq status                                 # system overview
@@ -137,7 +120,7 @@ Or connect via MCP from Claude Code, Cursor, or any MCP-compatible client for pr
 
 **Guides:**
 - [[guides/getting-started|Getting Started]] — Installation and setup
-- [[guides/discord-commands|Discord Commands]] — Slash commands and chat interactions
+- [[guides/discord-commands|Discord Notifications]] — Digest and escalation behavior
 - [[guides/architecture|Architecture]] — How the system is designed
 - [[guides/cli|CLI]] — Terminal interface reference
 - [[guides/agent-tools|Agent Tools]] — Tool reference for AI agents

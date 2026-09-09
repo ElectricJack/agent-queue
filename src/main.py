@@ -254,19 +254,14 @@ async def run(config_path: str, profile: str | None = None) -> bool:
             failed_task.cancel()
             raise
 
-        # Register the event-driven notification handler.
-        # The handler subscribes to notify.* events on the orchestrator's
-        # EventBus and routes them to the messaging platform (Discord embeds,
-        # threads, interactive views, etc.).
+        # The legacy Discord notification handler is intentionally not
+        # registered. Shared notify.* events remain on the EventBus for the
+        # dashboard/plugins, while Discord receives only durable escalations
+        # and eligible hourly digests below.
         bot = getattr(adapter, "bot", None)
-        if bot is not None:
-            from src.discord.notification_handler import DiscordNotificationHandler
-
-            _notification_handler = DiscordNotificationHandler(bot, orch.bus)
-            logger.info("Discord notification handler registered on EventBus")
-        else:
+        if bot is None:
             logger.info(
-                "No bot instance on adapter (%s) — notification handler not registered",
+                "No bot instance on adapter (%s) — Discord transports not registered",
                 adapter.platform_name,
             )
 
@@ -288,7 +283,9 @@ async def run(config_path: str, profile: str | None = None) -> bool:
         # escalation records, the supervisor loop and the dashboard inbox are
         # unaffected, which is the §9 promise about disabling the external
         # surface.
-        if bot is not None:
+        cutover_report = getattr(bot, "_cutover_report", None)
+        cutover_ready = cutover_report is not None and cutover_report.status == "complete"
+        if bot is not None and config.discord.channel_id and cutover_ready:
             from src.discord.escalation_transport import DiscordEscalationTransport
             from src.escalations import EscalationDeliveryService
 
@@ -325,6 +322,12 @@ async def run(config_path: str, profile: str | None = None) -> bool:
                 escalation_priority=orch.db.count_due_escalation_deliveries,
             )
             logger.info("Digest scheduler wired to the Discord transport")
+        elif bot is not None:
+            logger.warning(
+                "Discord cutover is not ready or has no explicit shared channel; core "
+                "escalations and dashboard access remain active, but external delivery "
+                "is disabled"
+            )
 
         await _run_scheduler_cycles(orch, shutdown_event)
 
@@ -441,6 +444,13 @@ async def _health_checks(orch: Orchestrator, adapter: MessagingAdapter) -> dict:
         "platform": adapter.platform_name,
         "connected": connected,
     }
+    bot = getattr(adapter, "bot", None)
+    cutover = getattr(bot, "_cutover_report", None)
+    if cutover is not None:
+        checks["discord_cutover"] = {
+            "ok": cutover.status == "complete",
+            **cutover.as_dict(),
+        }
 
     # Discord rate guard — tracks invalid requests (401/403/429) toward
     # the 10,000 / 10 min Cloudflare ban threshold.

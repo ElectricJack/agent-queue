@@ -4,7 +4,7 @@ tags: [design, messaging, discord, dashboard, api, overhaul]
 
 # Messaging Rework — Out-of-Process Discord, Dashboard as Primary UI
 
-**Status:** Draft — approved direction (2026-08-19)
+**Status:** Superseded for Discord by [[../messaging/discord]] and the [Discord replacement checklist](../../guides/discord-replacement-checklist.md). The retained design history below does not describe the current Discord product surface.
 **Principles:** [[guiding-design-principles]] (#1 files as source of truth, #2 visible and editable, #5 reduce effort not judgment, #7 events not coupling, #10 fewer moving parts)
 **Related:** [[../analysis/framework-overhaul-todo]] (D7, Workstream F §9), [[session-runtime]] (notify events, transcripts, SSE), [[supervisor-agent]] (messages table, chat relay), [[work-graph]] (gates, event log, `after_seq`), [[aq-surface]] (commands, `--json` envelope), [[../messaging/base]] (superseded in part), [[../messaging/discord]] (superseded), [[../messaging/telegram]] (removed)
 

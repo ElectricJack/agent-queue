@@ -462,6 +462,47 @@ class EscalationQueriesMixin:
                 "terminal": terminal,
             }
 
+    async def resolve_legacy_accepted_escalation(
+        self,
+        escalation_id: str,
+        *,
+        expected_revision: int,
+        terminal_evidence: Mapping[str, Any],
+        now: float,
+    ) -> dict[str, Any] | None:
+        """Close an incident whose human answer was accepted before cutover.
+
+        This deliberately narrow migration primitive is the only path from
+        ``needs_human`` directly to ``resolved``. The immutable legacy answer
+        must be appended first; replay then either completes this CAS or sees
+        the already-terminal row, without enqueueing a supervisor message.
+        """
+        async with self.immediate() as conn:
+            row = (
+                (
+                    await conn.execute(
+                        update(escalations)
+                        .where(
+                            escalations.c.id == escalation_id,
+                            escalations.c.state == "needs_human",
+                            escalations.c.revision == expected_revision,
+                        )
+                        .values(
+                            state="resolved",
+                            revision=escalations.c.revision + 1,
+                            updated_at=now,
+                            terminal_at=now,
+                            terminal_outcome="Answer was accepted before the Discord cutover.",
+                            terminal_evidence=dict(terminal_evidence),
+                        )
+                        .returning(escalations)
+                    )
+                )
+                .mappings()
+                .one_or_none()
+            )
+        return _row_dict(row)
+
     async def append_escalation_message(
         self,
         escalation_id: str,
@@ -902,6 +943,87 @@ class EscalationQueriesMixin:
             if dict(existing["payload"]) != dict(payload):
                 raise EscalationConflict("delivery identity reused with different payload")
             return dict(existing), False
+
+    async def seed_legacy_escalation_root(
+        self,
+        escalation_id: str,
+        *,
+        channel_id: str,
+        root_message_id: str,
+        available_at: float,
+    ) -> tuple[dict[str, Any], bool]:
+        """Adopt a bot-owned legacy card without posting a second request.
+
+        The row remains pending with only the already-sent root bound. The
+        normal dispatcher opens the escalation thread and confirms the final
+        receipt. Restarts reuse the deterministic root dedup key and stored
+        root ID instead of sending another channel post.
+        """
+        _require_nonempty(
+            {
+                "escalation_id": escalation_id,
+                "channel_id": channel_id,
+                "root_message_id": root_message_id,
+            },
+            ("escalation_id", "channel_id", "root_message_id"),
+        )
+        dedup_key = f"{escalation_id}:root:0"
+        row, created = await self.enqueue_escalation_delivery(
+            escalation_id,
+            dedup_key=dedup_key,
+            kind="root",
+            payload={"replacement": False},
+            available_at=available_at,
+            generation=0,
+            delivery_id=f"legacy-root-{escalation_id}",
+        )
+        if not created:
+            for name, expected in (
+                ("channel_id", channel_id),
+                ("root_message_id", root_message_id),
+            ):
+                current = row.get(name)
+                if current is not None and str(current) != expected:
+                    raise EscalationConflict(f"legacy root reused with different {name}")
+            if row.get("channel_id") and row.get("root_message_id"):
+                return row, False
+
+        async with self.immediate() as conn:
+            seeded = (
+                (
+                    await conn.execute(
+                        update(escalation_deliveries)
+                        .where(
+                            escalation_deliveries.c.dedup_key == dedup_key,
+                            escalation_deliveries.c.escalation_id == escalation_id,
+                            escalation_deliveries.c.status.in_(("pending", "retry")),
+                            or_(
+                                escalation_deliveries.c.channel_id.is_(None),
+                                escalation_deliveries.c.channel_id == channel_id,
+                            ),
+                            or_(
+                                escalation_deliveries.c.root_message_id.is_(None),
+                                escalation_deliveries.c.root_message_id == root_message_id,
+                            ),
+                        )
+                        .values(
+                            channel_id=channel_id,
+                            root_message_id=root_message_id,
+                            next_attempt_at=available_at,
+                            updated_at=available_at,
+                        )
+                        .returning(escalation_deliveries)
+                    )
+                )
+                .mappings()
+                .one_or_none()
+            )
+        if seeded is None:
+            current = await self.get_escalation_delivery(row["id"])
+            if current is None:
+                raise EscalationConflict("legacy root disappeared while it was adopted")
+            return current, False
+        return dict(seeded), created
 
     async def claim_escalation_deliveries(
         self,

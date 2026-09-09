@@ -132,7 +132,6 @@ from .delete_profile_response_422 import DeleteProfileResponse422
 from .delete_project_request import DeleteProjectRequest
 from .delete_project_response import DeleteProjectResponse
 from .delete_project_response_422 import DeleteProjectResponse422
-from .delete_project_response_channel_ids_type_0 import DeleteProjectResponseChannelIdsType0
 from .delete_task_request import DeleteTaskRequest
 from .delete_task_response import DeleteTaskResponse
 from .delete_task_response_422 import DeleteTaskResponse422
@@ -146,9 +145,7 @@ from .digest_status_response import DigestStatusResponse
 from .digest_status_response_delivery_health import DigestStatusResponseDeliveryHealth
 from .digest_window_bounds import DigestWindowBounds
 from .digest_window_record import DigestWindowRecord
-from .discord_cleanup_threads_request import DiscordCleanupThreadsRequest
-from .discord_cleanup_threads_response import DiscordCleanupThreadsResponse
-from .discord_cleanup_threads_response_422 import DiscordCleanupThreadsResponse422
+from .discord_cutover_status import DiscordCutoverStatus
 from .discord_purge_channel_request import DiscordPurgeChannelRequest
 from .discord_purge_channel_response import DiscordPurgeChannelResponse
 from .discord_purge_channel_response_422 import DiscordPurgeChannelResponse422
@@ -336,12 +333,6 @@ from .get_profile_request import GetProfileRequest
 from .get_profile_response import GetProfileResponse
 from .get_profile_response_422 import GetProfileResponse422
 from .get_profile_response_install import GetProfileResponseInstall
-from .get_project_channels_request import GetProjectChannelsRequest
-from .get_project_channels_response import GetProjectChannelsResponse
-from .get_project_channels_response_422 import GetProjectChannelsResponse422
-from .get_project_for_channel_request import GetProjectForChannelRequest
-from .get_project_for_channel_response import GetProjectForChannelResponse
-from .get_project_for_channel_response_422 import GetProjectForChannelResponse422
 from .get_project_onboarding_request import GetProjectOnboardingRequest
 from .get_project_onboarding_response import GetProjectOnboardingResponse
 from .get_project_onboarding_response_422 import GetProjectOnboardingResponse422
@@ -941,8 +932,6 @@ from .session_token_response import SessionTokenResponse
 from .session_token_response_422 import SessionTokenResponse422
 from .session_wake_request import SessionWakeRequest
 from .session_wake_response_422 import SessionWakeResponse422
-from .set_control_interface_request import SetControlInterfaceRequest
-from .set_control_interface_response_422 import SetControlInterfaceResponse422
 from .set_default_branch_request import SetDefaultBranchRequest
 from .set_default_branch_response import SetDefaultBranchResponse
 from .set_default_branch_response_422 import SetDefaultBranchResponse422
@@ -950,9 +939,6 @@ from .set_playbook_activation_response import SetPlaybookActivationResponse
 from .set_playbook_enabled_request import SetPlaybookEnabledRequest
 from .set_playbook_enabled_response import SetPlaybookEnabledResponse
 from .set_playbook_enabled_response_422 import SetPlaybookEnabledResponse422
-from .set_project_channel_request import SetProjectChannelRequest
-from .set_project_channel_response import SetProjectChannelResponse
-from .set_project_channel_response_422 import SetProjectChannelResponse422
 from .set_project_constraint_request import SetProjectConstraintRequest
 from .set_project_constraint_request_max_agents_by_type_type_0 import SetProjectConstraintRequestMaxAgentsByTypeType0
 from .set_project_constraint_response import SetProjectConstraintResponse
@@ -1282,7 +1268,6 @@ __all__ = (
     "DeleteProjectRequest",
     "DeleteProjectResponse",
     "DeleteProjectResponse422",
-    "DeleteProjectResponseChannelIdsType0",
     "DeleteTaskRequest",
     "DeleteTaskResponse",
     "DeleteTaskResponse422",
@@ -1295,9 +1280,7 @@ __all__ = (
     "DigestStatusResponseDeliveryHealth",
     "DigestWindowBounds",
     "DigestWindowRecord",
-    "DiscordCleanupThreadsRequest",
-    "DiscordCleanupThreadsResponse",
-    "DiscordCleanupThreadsResponse422",
+    "DiscordCutoverStatus",
     "DiscordPurgeChannelRequest",
     "DiscordPurgeChannelResponse",
     "DiscordPurgeChannelResponse422",
@@ -1483,12 +1466,6 @@ __all__ = (
     "GetProfileResponse",
     "GetProfileResponse422",
     "GetProfileResponseInstall",
-    "GetProjectChannelsRequest",
-    "GetProjectChannelsResponse",
-    "GetProjectChannelsResponse422",
-    "GetProjectForChannelRequest",
-    "GetProjectForChannelResponse",
-    "GetProjectForChannelResponse422",
     "GetProjectOnboardingRequest",
     "GetProjectOnboardingResponse",
     "GetProjectOnboardingResponse422",
@@ -2080,8 +2057,6 @@ __all__ = (
     "SessionTokenResponse422",
     "SessionWakeRequest",
     "SessionWakeResponse422",
-    "SetControlInterfaceRequest",
-    "SetControlInterfaceResponse422",
     "SetDefaultBranchRequest",
     "SetDefaultBranchResponse",
     "SetDefaultBranchResponse422",
@@ -2089,9 +2064,6 @@ __all__ = (
     "SetPlaybookEnabledRequest",
     "SetPlaybookEnabledResponse",
     "SetPlaybookEnabledResponse422",
-    "SetProjectChannelRequest",
-    "SetProjectChannelResponse",
-    "SetProjectChannelResponse422",
     "SetProjectConstraintRequest",
     "SetProjectConstraintRequestMaxAgentsByTypeType0",
     "SetProjectConstraintResponse",

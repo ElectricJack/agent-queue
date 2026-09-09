@@ -67,8 +67,6 @@ def test_project_details_and_set_forward_correct_args_and_render_client_errors(r
          ("edit_project", {"project_id": "p1", "max_concurrent_agents": 5})),
         (["project", "set", "p1", "credit-weight", "1.5"],
          ("edit_project", {"project_id": "p1", "credit_weight": 1.5})),
-        (["project", "set", "p1", "channel", "123456"],
-         ("set_project_channel", {"project_id": "p1", "channel_id": "123456"})),
         (["project", "set", "p1", "branch", "develop"],
          ("set_default_branch", {"project_id": "p1", "branch": "develop"})),
         (["project", "set", "p1", "budget-limit", "unlimited"],

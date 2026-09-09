@@ -192,9 +192,8 @@ class Orchestrator(
 
     The orchestrator is deliberately decoupled from any messaging transport.
     All outbound notifications are emitted as typed events on the EventBus
-    via ``_emit_notify()``.  Transport handlers (e.g.
-    ``DiscordNotificationHandler``) subscribe to ``notify.*`` events and
-    handle formatting/delivery independently.  This makes the orchestrator
+    via ``_emit_notify()``. Plugins and other transport-neutral consumers may
+    subscribe independently. This makes the orchestrator
     testable in isolation and keeps the transport layer pluggable.
 
     Key internal state:

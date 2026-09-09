@@ -20,7 +20,7 @@ Direction source: [../analysis/framework-overhaul-todo.md](../../analysis/framew
 | [work-graph.md](work-graph.md) | D — typed edges, `is_blocked`, gates, labels, outcomes, explain | [design](../design/work-graph.md) |
 | [supervisor-agent.md](supervisor-agent.md) | B — supervisor as configured agent, messages, spec→graph | [design](../design/supervisor-agent.md) |
 | [aq-surface.md](aq-surface.md) | C/G.2 — `aq` CLI, prime/handoff, JSON envelope, tokens, MCP allowlist | [design](../design/aq-surface.md) |
-| [messaging-rework.md](messaging-rework.md) | F — out-of-process Discord adapter, task threads, dashboard | [design](../design/messaging-rework.md) |
+| [messaging-rework.md](messaging-rework.md) | F — historical plan, superseded for Discord by [current spec](../messaging/discord.md) | [design](../design/messaging-rework.md) |
 | [feature-pauses.md](feature-pauses.md) | E/P — memory & playbooks paused, not removed | [design](../design/feature-pauses.md) |
 | [trust-and-ops.md](trust-and-ops.md) | G — trust boundaries, env scrubbing, doctor, costs, invariants | [design](../design/trust-and-ops.md) |
 

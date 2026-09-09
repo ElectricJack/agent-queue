@@ -65,13 +65,9 @@ def sync_detailed(
     client: AuthenticatedClient | Client,
     body: CreateProjectRequest,
 ) -> Response[CreateProjectResponse | CreateProjectResponse422]:
-    """Create a new project.  Optionally auto-create a dedicated Discord channel for the project.  When
-    auto_create_channels is omitted the behaviour is determined by the per_project_channels.auto_create
-    config flag.
+    """Create a new project.
 
-     Create a new project.  Optionally auto-create a dedicated Discord channel for the project.  When
-    auto_create_channels is omitted the behaviour is determined by the per_project_channels.auto_create
-    config flag.
+     Create a new project.
 
     Args:
         body (CreateProjectRequest):
@@ -100,13 +96,9 @@ def sync(
     client: AuthenticatedClient | Client,
     body: CreateProjectRequest,
 ) -> CreateProjectResponse | CreateProjectResponse422 | None:
-    """Create a new project.  Optionally auto-create a dedicated Discord channel for the project.  When
-    auto_create_channels is omitted the behaviour is determined by the per_project_channels.auto_create
-    config flag.
+    """Create a new project.
 
-     Create a new project.  Optionally auto-create a dedicated Discord channel for the project.  When
-    auto_create_channels is omitted the behaviour is determined by the per_project_channels.auto_create
-    config flag.
+     Create a new project.
 
     Args:
         body (CreateProjectRequest):
@@ -130,13 +122,9 @@ async def asyncio_detailed(
     client: AuthenticatedClient | Client,
     body: CreateProjectRequest,
 ) -> Response[CreateProjectResponse | CreateProjectResponse422]:
-    """Create a new project.  Optionally auto-create a dedicated Discord channel for the project.  When
-    auto_create_channels is omitted the behaviour is determined by the per_project_channels.auto_create
-    config flag.
+    """Create a new project.
 
-     Create a new project.  Optionally auto-create a dedicated Discord channel for the project.  When
-    auto_create_channels is omitted the behaviour is determined by the per_project_channels.auto_create
-    config flag.
+     Create a new project.
 
     Args:
         body (CreateProjectRequest):
@@ -163,13 +151,9 @@ async def asyncio(
     client: AuthenticatedClient | Client,
     body: CreateProjectRequest,
 ) -> CreateProjectResponse | CreateProjectResponse422 | None:
-    """Create a new project.  Optionally auto-create a dedicated Discord channel for the project.  When
-    auto_create_channels is omitted the behaviour is determined by the per_project_channels.auto_create
-    config flag.
+    """Create a new project.
 
-     Create a new project.  Optionally auto-create a dedicated Discord channel for the project.  When
-    auto_create_channels is omitted the behaviour is determined by the per_project_channels.auto_create
-    config flag.
+     Create a new project.
 
     Args:
         body (CreateProjectRequest):

@@ -84,19 +84,17 @@ All git tools accept optional `project_id` (defaults to active project) and `wor
 
 ---
 
-## Project Category (16 tools)
+## Project Category
 
 | Tool | What It Does | Parameters |
 |------|-------------|------------|
 | `list_projects` | List all projects | *none* |
-| `create_project` | Create new project | `name` (required), `credit_weight` (float, default 1.0), `max_concurrent_agents` (int, default 2), `repo_url`, `default_branch` (default "main"), `auto_create_channels` (bool) |
+| `create_project` | Create new project | `name` (required), `credit_weight` (float, default 1.0), `max_concurrent_agents` (int, default 2), `repo_url`, `default_branch` (default "main") |
 | `pause_project` | Pause task scheduling | `project_id` (required) |
 | `resume_project` | Resume task scheduling | `project_id` (required) |
-| `edit_project` | Edit project properties | `project_id` (required), then any of: `name`, `credit_weight`, `max_concurrent_agents`, `budget_limit` (int or null), `discord_channel_id` (string or null), `default_profile_id` (string or null), `repo_default_branch` |
+| `edit_project` | Edit project properties | `project_id` (required), then any of: `name`, `credit_weight`, `max_concurrent_agents`, `budget_limit` (int or null), `default_profile_id` (string or null), `repo_default_branch` |
 | `set_default_branch` | Set default git branch (creates on remote if missing) | `project_id` (required), `branch` (required) |
-| `get_project_channels` | Get Discord channel ID for project | `project_id` (required) |
-| `get_project_for_channel` | Find project linked to a channel | `channel_id` (required) |
-| `delete_project` | Delete project and all data (fails if task IN_PROGRESS) | `project_id` (required), `archive_channels` (bool) |
+| `delete_project` | Delete project and all data (fails if task IN_PROGRESS) | `project_id` (required) |
 | `set_active_project` | Set/clear default project for commands | `project_id` (string, empty/null to clear) |
 | `add_workspace` | Add workspace (clone from repo or link existing dir) | `project_id` (required), `source` (required: "clone" or "link"), `path` (required for link), `name` |
 | `list_workspaces` | List workspaces with lock status | `project_id` (optional) |

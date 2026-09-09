@@ -119,7 +119,12 @@ def is_discord_snowflake(value: object) -> bool:
 
 @dataclass
 class PerProjectChannelsConfig:
-    """Configuration for automatic per-project Discord channel management."""
+    """Removed legacy shape retained only as an import compatibility shim.
+
+    The simplified Discord adapter never constructs or consults this class.
+    Old ``discord.per_project_channels`` YAML is accepted for a non-destructive
+    migration warning, but it cannot re-enable channel creation.
+    """
 
     auto_create: bool = False
     naming_convention: str = "{project_id}"
@@ -262,16 +267,10 @@ class DiscordEscalationConfig:
 
 @dataclass
 class DiscordConfig:
-    """Discord bot connection and channel routing settings."""
+    """Discord bot connection and the one shared destination."""
 
     bot_token: str = ""
     guild_id: str = ""
-    channels: dict[str, str] = field(
-        default_factory=lambda: {
-            "channel": "agent-queue",
-            "agent_questions": "agent-questions",
-        }
-    )
     authorized_users: list[str] = field(default_factory=list)
     #: The one configured destination.  A Discord channel ID, not a name: the
     #: single-channel model binds durable delivery to an ID that survives a
@@ -279,12 +278,31 @@ class DiscordConfig:
     channel_id: str = ""
     digest: DiscordDigestConfig = field(default_factory=DiscordDigestConfig)
     escalation: DiscordEscalationConfig = field(default_factory=DiscordEscalationConfig)
-    per_project_channels: PerProjectChannelsConfig = field(default_factory=PerProjectChannelsConfig)
     # Invalid request rate guard thresholds (Discord bans IPs at 10,000
     # invalid responses per 10 minutes).
     rate_guard_warn: int = 1000
     rate_guard_critical: int = 5000
     rate_guard_halt: int = 8000
+
+    @property
+    def legacy_destination_names(self) -> tuple[str, ...]:
+        """Distinct old global channel names captured by :func:`load_config`.
+
+        This is migration input, not an authored setting. Keeping it outside
+        the dataclass fields prevents the removed ``channels`` block from
+        reappearing in the config editor or generated schema.
+        """
+        return tuple(getattr(self, "_legacy_destination_names", ()))
+
+    @property
+    def legacy_inventory_names(self) -> tuple[str, ...]:
+        """Old channel names that may contain pending question/gate cards."""
+        return tuple(getattr(self, "_legacy_inventory_names", ()))
+
+    @property
+    def legacy_destination_conflict(self) -> bool:
+        """Whether old control/notification settings name multiple channels."""
+        return len(self.legacy_destination_names) > 1
 
     def validate(self) -> list[ConfigError]:
         errors: list[ConfigError] = []
@@ -325,6 +343,16 @@ class DiscordConfig:
             )
         if not self.digest.enabled:
             notes.append("Hourly digests are disabled; no routine activity message is sent.")
+        if self.legacy_destination_conflict and not self.channel_id:
+            notes.append(
+                "Legacy Discord destinations conflict: choose one explicit channel_id before "
+                "external delivery is enabled. No channel was selected automatically."
+            )
+        if getattr(self, "_legacy_per_project_channels", False):
+            notes.append(
+                "Legacy per_project_channels settings are ignored; simplified Discord never "
+                "creates or routes through project-specific channels."
+            )
         return notes
 
 
@@ -3346,29 +3374,24 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
 
     if "discord" in raw:
         d = raw["discord"]
-        ppc = PerProjectChannelsConfig()
-        if "per_project_channels" in d:
-            pp = d["per_project_channels"]
-            ppc = PerProjectChannelsConfig(
-                auto_create=pp.get("auto_create", False),
-                naming_convention=pp.get("naming_convention", "{project_id}"),
-                category_name=pp.get("category_name", ""),
-                private=pp.get("private", True),
+        # Preserve old names as migration input without choosing arbitrarily.
+        # ``agent_questions`` is scanned for pending cards, but it is not a
+        # candidate shared destination unless the operator explicitly selects
+        # its ID as ``channel_id``.
+        raw_channels = d.get("channels") if isinstance(d.get("channels"), dict) else {}
+        destination_names = tuple(
+            dict.fromkeys(
+                str(raw_channels[key]).strip()
+                for key in ("channel", "control", "notifications")
+                if raw_channels.get(key) and str(raw_channels[key]).strip()
             )
-        # Backward compat: if old config has separate control/notifications,
-        # merge into single "channel" entry (prefer control since that's where
-        # the bot listens for chat).
-        raw_channels = d.get("channels", config.discord.channels)
-        if "channel" not in raw_channels and (
-            "control" in raw_channels or "notifications" in raw_channels
-        ):
-            merged_name = raw_channels.get("control") or raw_channels.get(
-                "notifications", "agent-queue"
+        )
+        inventory_names = tuple(
+            dict.fromkeys(
+                (*destination_names, str(raw_channels.get("agent_questions") or "").strip())
             )
-            raw_channels = {
-                "channel": merged_name,
-                "agent_questions": raw_channels.get("agent_questions", "agent-questions"),
-            }
+        )
+        inventory_names = tuple(name for name in inventory_names if name)
         dg = d.get("digest", {}) or {}
         digest_cfg = DiscordDigestConfig(
             enabled=bool(dg.get("enabled", True)),
@@ -3390,16 +3413,17 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
         config.discord = DiscordConfig(
             bot_token=d.get("bot_token", ""),
             guild_id=d.get("guild_id", ""),
-            channels=raw_channels,
             authorized_users=d.get("authorized_users", []),
             channel_id=str(d.get("channel_id", "") or ""),
             digest=digest_cfg,
             escalation=escalation_cfg,
-            per_project_channels=ppc,
             rate_guard_warn=int(d.get("rate_guard_warn", 1000)),
             rate_guard_critical=int(d.get("rate_guard_critical", 5000)),
             rate_guard_halt=int(d.get("rate_guard_halt", 8000)),
         )
+        config.discord._legacy_destination_names = destination_names
+        config.discord._legacy_inventory_names = inventory_names
+        config.discord._legacy_per_project_channels = bool(d.get("per_project_channels"))
 
     if "agents" in raw:
         a = raw["agents"]

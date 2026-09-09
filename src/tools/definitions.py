@@ -11,9 +11,8 @@ from __future__ import annotations
 _TOOL_CATEGORIES: dict[str, str] = {
     # git — migrated to aq-git internal plugin (src/plugins/internal/git.py)
     # project
-    # discord — channel and thread housekeeping
+    # discord — explicit historical-message housekeeping
     "discord_purge_channel": "discord",
-    "discord_cleanup_threads": "discord",
     "list_projects": "project",
     "create_project": "project",
     "pause_project": "project",
@@ -23,8 +22,6 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "edit_project": "project",
     "set_default_branch": "project",
     "get_project": "project",
-    "get_project_channels": "project",
-    "get_project_for_channel": "project",
     "delete_project": "project",
     "add_workspace": "project",
     "list_workspaces": "project",
@@ -36,8 +33,6 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "queue_sync_workspaces": "project",
     "workspace_doctor": "project",
     "workspace_reap": "project",
-    "set_project_channel": "project",
-    "set_control_interface": "project",
     # project onboarding from the dashboard (design 2026-09-03 §5)
     "list_project_roots": "project",
     "browse_project_root": "project",
@@ -281,8 +276,8 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "pool_scale": "pool",
     "pool_set_lifecycle": "pool",
     "pool_set_enabled": "pool",
-    # NOTE: send_message, reply_to_user are intentionally NOT categorized —
-    # they are "core" tools always available to the supervisor LLM.
+    # NOTE: reply_to_user is intentionally NOT categorized: it is a core tool
+    # always available to the supervisor LLM.
     # NOTE: browse_tools / load_tools are intentionally NOT categorized —
     # they are "core" meta-tools always loaded in the supervisor LLM's context.
     # NOTE: create_task, list_tasks, get_task, edit_task are intentionally
@@ -619,12 +614,7 @@ _ALL_TOOL_DEFINITIONS = [
     },
     {
         "name": "create_project",
-        "description": (
-            "Create a new project.  Optionally auto-create a dedicated Discord "
-            "channel for the project.  When "
-            "auto_create_channels is omitted the behaviour is determined by "
-            "the per_project_channels.auto_create config flag."
-        ),
+        "description": "Create a new project.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -647,15 +637,6 @@ _ALL_TOOL_DEFINITIONS = [
                     "type": "string",
                     "description": "Default branch name (default: main)",
                     "default": "main",
-                },
-                "auto_create_channels": {
-                    "type": "boolean",
-                    "description": (
-                        "If true, auto-create dedicated Discord channels for "
-                        "this project after creation.  If false, skip channel "
-                        "creation.  When omitted, falls back to the global "
-                        "per_project_channels.auto_create config setting."
-                    ),
                 },
                 "default_profile_id": {
                     "type": "string",
@@ -765,10 +746,10 @@ _ALL_TOOL_DEFINITIONS = [
         "name": "edit_project",
         "description": (
             "Edit a project's properties: name, credit_weight, max_concurrent_agents, "
-            "budget_limit, discord_channel_id, default_profile_id, assignment_playbook_id, "
+            "budget_limit, default_profile_id, assignment_playbook_id, "
             "repo_default_branch, or LOCAL-only hierarchical integration configuration. "
             "Use this to rename projects, adjust scheduling weight, set token budgets, "
-            "link Discord channels, set a default agent profile, or change the default git branch."
+            "set a default agent profile, or change the default git branch."
         ),
         "input_schema": {
             "type": "object",
@@ -786,10 +767,6 @@ _ALL_TOOL_DEFINITIONS = [
                 "budget_limit": {
                     "type": ["integer", "null"],
                     "description": "Token budget limit (optional, null to clear)",
-                },
-                "discord_channel_id": {
-                    "type": ["string", "null"],
-                    "description": "Discord channel ID to link (optional, null to unlink)",
                 },
                 "default_profile_id": {
                     "type": ["string", "null"],
@@ -861,36 +838,6 @@ _ALL_TOOL_DEFINITIONS = [
                 "project_id": {"type": "string", "description": "Project ID to look up"},
             },
             "required": ["project_id"],
-        },
-    },
-    # Note: set_project_channel and set_control_interface have been removed.
-    # Use edit_project with discord_channel_id instead.
-    {
-        "name": "get_project_channels",
-        "description": "Get the Discord channel ID configured for a project.",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "project_id": {"type": "string", "description": "Project ID"},
-            },
-            "required": ["project_id"],
-        },
-    },
-    {
-        "name": "get_project_for_channel",
-        "description": (
-            "Reverse lookup: given a Discord channel ID, find which project it belongs to. "
-            "Returns the project ID, or null if no project is linked."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "channel_id": {
-                    "type": "string",
-                    "description": "Discord channel ID to look up",
-                },
-            },
-            "required": ["channel_id"],
         },
     },
     {
@@ -2558,16 +2505,11 @@ _ALL_TOOL_DEFINITIONS = [
     },
     {
         "name": "delete_project",
-        "description": "Delete a project and all associated data (tasks, repos, results, token ledger). Cannot delete if any task is IN_PROGRESS. In-memory channel caches are automatically purged. Optionally archive the project's Discord channels.",
+        "description": "Delete a project and all associated data (tasks, repos, results, token ledger). Cannot delete if any task is IN_PROGRESS. Historical Discord content is left untouched.",
         "input_schema": {
             "type": "object",
             "properties": {
                 "project_id": {"type": "string", "description": "Project ID to delete"},
-                "archive_channels": {
-                    "type": "boolean",
-                    "description": "If true, archive the project's Discord channels (rename + set read-only) instead of leaving them as-is. Default: false.",
-                    "default": False,
-                },
             },
             "required": ["project_id"],
         },
@@ -3271,49 +3213,6 @@ _ALL_TOOL_DEFINITIONS = [
             "required": ["task_id"],
         },
     },
-    {
-        "name": "set_project_channel",
-        "description": (
-            "Link an existing Discord channel to a project. "
-            "Deprecated — prefer edit_project with discord_channel_id."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "project_id": {
-                    "type": "string",
-                    "description": "Project ID",
-                },
-                "channel_id": {
-                    "type": "string",
-                    "description": "Discord channel ID to link",
-                },
-            },
-            "required": ["project_id", "channel_id"],
-        },
-    },
-    {
-        "name": "set_control_interface",
-        "description": (
-            "Set a project's channel by channel name (string lookup). "
-            "Resolves the channel name within the guild. "
-            "Deprecated — prefer edit_project with discord_channel_id."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "project_id": {
-                    "type": "string",
-                    "description": "Project ID or project name",
-                },
-                "channel_name": {
-                    "type": "string",
-                    "description": "Discord channel name to look up",
-                },
-            },
-            "required": ["project_id", "channel_name"],
-        },
-    },
     # GitHub operations + convenience git commands (create_github_repo, generate_readme,
     # create_branch, checkout_branch, commit_changes, push_branch, merge_branch)
     # migrated to aq-git internal plugin.
@@ -3330,10 +3229,6 @@ _ALL_TOOL_DEFINITIONS = [
             "type": "object",
             "properties": {
                 "channel_id": {"type": "string", "description": "Target channel id."},
-                "project_id": {
-                    "type": "string",
-                    "description": "Use this project's channel instead of channel_id.",
-                },
                 "limit": {
                     "type": "integer",
                     "description": "How many messages back to scan (default 1000).",
@@ -3343,88 +3238,6 @@ _ALL_TOOL_DEFINITIONS = [
                     "description": "Actually delete. Without it this is a dry run.",
                 },
             },
-        },
-    },
-    {
-        "name": "discord_cleanup_threads",
-        "description": (
-            "Archive or delete threads in a Discord channel. Defaults to "
-            "mode='archive' and only_closed=true, so threads for running tasks "
-            "are left alone. Dry-run unless confirm=true."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "channel_id": {"type": "string", "description": "Target channel id."},
-                "project_id": {
-                    "type": "string",
-                    "description": "Use this project's channel instead of channel_id.",
-                },
-                "mode": {
-                    "type": "string",
-                    "enum": ["archive", "delete"],
-                    "description": "archive (reversible, default) or delete (permanent).",
-                },
-                "only_closed": {
-                    "type": "boolean",
-                    "description": (
-                        "Only touch threads whose task is finished (default true). "
-                        "Matched via tasks.discord_thread_id."
-                    ),
-                },
-                "limit": {
-                    "type": "integer",
-                    "description": "How many archived threads to scan (default 500).",
-                },
-                "confirm": {
-                    "type": "boolean",
-                    "description": "Actually apply. Without it this is a dry run.",
-                },
-            },
-        },
-    },
-    {
-        "name": "get_system_channel",
-        "description": (
-            "Resolve a system-level Discord channel by its config key "
-            "(e.g. 'notifications', 'control', 'agent_questions') and return "
-            "its channel_id. Use this when a playbook or system-scope task "
-            "needs to post to a named channel from config without hardcoding "
-            "a channel id. Pass the returned channel_id to send_message."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "name": {
-                    "type": "string",
-                    "description": (
-                        "Config key under discord.channels (e.g. "
-                        "'notifications', 'control', 'agent_questions')"
-                    ),
-                },
-            },
-            "required": ["name"],
-        },
-    },
-    {
-        "name": "send_message",
-        "description": (
-            "Post a message to a Discord channel. Use this to notify users, "
-            "post updates, or communicate outside the current conversation thread."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "channel_id": {
-                    "type": "string",
-                    "description": "Discord channel ID to post to",
-                },
-                "content": {
-                    "type": "string",
-                    "description": "Message content to post",
-                },
-            },
-            "required": ["channel_id", "content"],
         },
     },
     # --- Commands that are intentionally excluded by default but still

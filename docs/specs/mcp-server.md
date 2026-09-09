@@ -6,8 +6,8 @@ tags: [spec, mcp, api]
 
 The MCP server exposes all [[specs/command-handler|CommandHandler]] commands as MCP tools via the
 [Model Context Protocol](https://modelcontextprotocol.io). Claude agents
-(or any MCP-compatible client) connect over stdio and get the same
-capabilities as the Discord bot and Supervisor LLM tool-use loop.
+(or any MCP-compatible client) connect over stdio to the operational command
+surface. Discord is notification-only and intentionally does not mirror it.
 
 ## Architecture
 
@@ -15,13 +15,11 @@ capabilities as the Discord bot and Supervisor LLM tool-use loop.
 
 The MCP server does **not** reimplement business logic. Every tool call
 delegates to `CommandHandler.execute(name, args)` and returns the JSON
-result. This guarantees feature parity with all other entry points:
+result. This guarantees feature parity with the CLI/API command entry points:
 
 ```
 MCP Client  -->  FastMCP tool handler  -->  CommandHandler.execute()
-                                               |
-Discord Bot  -->  slash command  ------------>  |
-Supervisor   -->  LLM tool use  ------------>  |
+Supervisor  -->  LLM tool use  ---------------->  |
 ```
 
 ### Initialization
@@ -81,7 +79,6 @@ They are grouped by category (see `src/tools/registry.py`):
 | `resume_project` | Resume a paused project |
 | `edit_project` | Edit project settings |
 | `set_default_branch` | Set repo default branch |
-| `get_project_channels` | Get Discord channel config |
 | `get_project_for_channel` | Find project for a channel |
 | `delete_project` | Delete a project |
 | `add_workspace` | Add a workspace to a project |

@@ -6,9 +6,9 @@ tags: [spec, supervisor, llm, core]
 
 > **Superseded.** `src/supervisor.py` and the in-process `Supervisor` class
 > described below were **deleted** in the llm-direct-path cutover
-> (2026-08-30) — there is no single in-process LLM entity anymore. Discord
-> slash commands, MCP tools, and CLI all delegate directly to
-> `CommandHandler`; the "supervisor" is now a **profile** (a `harness`-selected
+> (2026-08-30) — there is no single in-process LLM entity anymore. MCP tools
+> and CLI delegate directly to `CommandHandler`; Discord is notification-only.
+> The "supervisor" is now a **profile** (a `harness`-selected
 > tmux session, `vault/agent-types/supervisor/profile.md`), not code, and
 > playbook/plugin LLM calls go through the direct LLM path (`src/llm/`
 > `LLMClient`) instead of `Supervisor.chat()`. See

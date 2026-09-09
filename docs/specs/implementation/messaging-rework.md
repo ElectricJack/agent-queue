@@ -4,7 +4,7 @@ tags: [implementation, messaging, discord, dashboard, api, overhaul]
 
 # Messaging Rework — Implementation Plan
 
-**Status:** Draft — approved direction (2026-08-19)
+**Status:** Superseded for Discord by [[../messaging/discord]] and the [Discord replacement checklist](../../guides/discord-replacement-checklist.md). The retained implementation history below must not be used to restore task threads, streaming, chat, buttons, or mirrored commands.
 **Design:** [[../design/messaging-rework]]
 **Related:** [[../design/session-runtime]] (event producers, transcripts), [[../design/supervisor-agent]] (messages, chat relay), [[../design/work-graph]] (gates, event log, `after_seq`), [[../design/aq-surface]] (command surface), [[../messaging/base]], `dashboard/CLAUDE.md`
 

@@ -6,9 +6,9 @@ tags: [spec, command-handler, core]
 
 ## 1. Overview
 
-`CommandHandler` is the unified execution layer for all operational commands in AgentQueue. It is the single code path through which every operation must pass — both Discord slash commands and the LLM chat agent tools delegate their business logic here. Presentation and formatting are handled by the callers; this layer concerns itself only with execution and returning structured results.
+`CommandHandler` is the unified execution layer for operational commands in AgentQueue. CLI, API, and MCP callers delegate business logic here. Discord is deliberately not a general command transport: it only accepts replies in durable escalation threads. Presentation and formatting are handled by the callers; this layer concerns itself only with execution and returning structured results.
 
-The handler holds a reference to an [[specs/orchestrator|Orchestrator]] instance (which provides database access and git operations) and an `AppConfig`. It also maintains a small amount of conversational state: an optional `_active_project_id` (the currently focused project), and an optional `_on_project_deleted` callback that external layers (e.g. the Discord bot) can register to react to project deletions.
+The handler holds a reference to an [[specs/orchestrator|Orchestrator]] instance (which provides database access and git operations) and an `AppConfig`. It also maintains a small amount of conversational state, including an optional `_active_project_id` (the currently focused project).
 
 See [[design/playbooks]] Section 15 for playbook management commands.
 
@@ -44,7 +44,7 @@ CommandHandler(orchestrator: Orchestrator, config: AppConfig)
 ```
 See [[specs/models-and-state-machine]] for the domain models referenced throughout these commands.
 
-After construction, callers may set `handler._on_project_deleted = callback` to register a post-deletion hook (signature: `callback(project_id: str) -> None`).
+The retired Discord project-channel commands and project-deletion channel callback are not part of the handler surface. Historical sections below that describe those operations are retained only as implementation history and must not be treated as current API behavior.
 
 ---
 
@@ -122,8 +122,8 @@ Returns all projects.
 **Parameters:** None.
 
 **Behavior:** Fetches all projects from the database and returns their core
-fields. Repository URL, Discord channel, and assignment playbook are included
-only when set. `workspace` is the resolved primary workspace path (or null).
+fields. Repository URL and assignment playbook are included only when set.
+`workspace` is the resolved primary workspace path (or null).
 
 **Returns on success:**
 ```python
@@ -137,7 +137,6 @@ only when set. `workspace` is the resolved primary workspace path (or null).
             "max_concurrent_agents": <int>,
             "workspace": <str>,
             "repo_url": <str>,              # present only if set
-            "discord_channel_id": <str>,   # present only if set
             "assignment_playbook_id": <str>, # present only if set
         },
         ...
@@ -240,127 +239,24 @@ At least one optional field must be supplied.
 
 #### `delete_project`
 
-Deletes a project and all associated database records (cascade). Fires `_on_project_deleted` callback if registered.
+Deletes a project and all associated database records (cascade).
 
 **Parameters:**
 - `project_id` (required)
-- `archive_channels` (optional, default `False`): Passed through to the caller in the response so the Discord layer can act on it. This handler does not archive channels itself.
 
-**Behavior:** Checks whether any tasks are currently IN_PROGRESS and refuses deletion if so. Captures the project's Discord channel ID before deletion. After the database cascade completes, calls `_on_project_deleted(project_id)` if the callback is registered.
+**Behavior:** Checks whether any tasks are currently IN_PROGRESS and refuses deletion if so, then performs the database cascade.
 
 **Returns on success:**
 ```python
 {
     "deleted": <str: project_id>,
     "name": <str>,
-    "channel_ids": {"channel": <str>},   # present only if a channel was linked
-    "archive_channels": True,            # present only if archive_channels=True was passed
 }
 ```
 
 **Errors:**
 - Project not found.
 - One or more tasks are IN_PROGRESS (caller must stop them first).
-
----
-
-### Channels
-
----
-
-#### `set_project_channel`
-
-Links an existing Discord channel to a project by storing the channel ID on the project record.
-
-**Parameters:**
-- `project_id` (required)
-- `channel_id` (required): The Discord channel ID (as a string).
-
-**Returns on success:**
-```python
-{
-    "project_id": <str>,
-    "channel_id": <str>,
-    "status": "linked",
-}
-```
-
-**Errors:**
-- Project not found.
-
----
-
-#### `set_control_interface`
-
-Sets a project's channel by resolving a channel *name* to an ID, then delegating to `set_project_channel`.
-
-**Parameters:**
-- `project_id` (required; also accepted as `project_name`)
-- `channel_name` (required): The Discord channel name (leading `#` is stripped).
-- `_resolved_channel_id` (optional): If the caller (e.g. Discord slash command layer) has already resolved the channel ID, it may pass it here to skip the name-lookup step.
-- `guild_channels` (optional): A list of `{"id": <str/int>, "name": <str>}` dicts representing all text channels in the guild. Required if `_resolved_channel_id` is not provided.
-
-**Behavior:** Strips `#` from `channel_name`. Uses `_resolved_channel_id` if present; otherwise iterates `guild_channels` looking for a name match. If no match is found, returns an error. On success, delegates to `_cmd_set_project_channel`.
-
-**Returns on success:** Same as `set_project_channel`.
-
-**Errors:**
-- `project_id` or `channel_name` not provided.
-- Channel name not found in `guild_channels`.
-- No guild context available to resolve the name (neither `_resolved_channel_id` nor `guild_channels` was supplied).
-- Project not found (from delegated call).
-
----
-
-#### `get_project_channels`
-
-Returns the Discord channel ID configured for a project.
-
-**Parameters:**
-- `project_id` (required)
-
-**Returns on success:**
-```python
-{
-    "project_id": <str>,
-    "channel_id": <str | None>,
-}
-```
-
-**Errors:**
-- Project not found.
-
----
-
-#### `get_project_for_channel`
-
-Reverse lookup: given a Discord channel ID, returns the project linked to it.
-
-**Parameters:**
-- `channel_id` (required): The Discord channel ID (coerced to string).
-
-**Behavior:** Scans all projects, comparing `discord_channel_id` to the given channel ID. Returns the first match. If no project is linked to this channel, returns the response with `project_id: null`.
-
-**Returns on success (match found):**
-```python
-{
-    "channel_id": <str>,
-    "project_id": <str>,
-    "project_name": <str>,
-}
-```
-
-**Returns on success (no match):**
-```python
-{
-    "channel_id": <str>,
-    "project_id": None,
-    "project_name": None,
-}
-```
-
-**Errors:**
-- `channel_id` not provided.
 
 ---
 
@@ -1720,12 +1616,12 @@ Pauses, resumes, or checks the status of the orchestrator loop.
 
 #### `restart_daemon`
 
-Logs a restart notification to the notification channel, then sends `SIGTERM` to the current process, causing the daemon to shut down (and presumably restart via a process manager). Sets `orchestrator._restart_requested = True` before sending the signal.
+Sends `SIGTERM` to the current process, causing the daemon to shut down (and presumably restart via a process manager). Sets `orchestrator._restart_requested = True` before sending the signal. Discord does not emit a direct restart notification.
 
 When `wait_for_tasks` is true and there are running tasks, the orchestrator is paused (no new tasks scheduled) and the command waits up to 5 minutes for running tasks to complete before sending the restart signal.
 
 **Parameters:**
-- `reason` (optional, default `"No reason provided"`): Human-readable reason for the restart. Logged to the notification channel as `"🔄 **Daemon restart initiated** — {reason}"`.
+- `reason` (optional, default `"No reason provided"`): Human-readable reason recorded with the restart request.
 - `wait_for_tasks` (optional, default `false`): If true, pause the orchestrator and wait for all running tasks to complete before restarting.
 
 **Returns on success:**
@@ -1760,7 +1656,7 @@ When `wait_for_tasks` is true and there are running tasks, the orchestrator is p
 
 #### `read_file`
 
-Reads a file from within an allowed directory. Supports offset and line limits for reading specific sections of large files. Intended for the chat agent, not Discord slash commands.
+Reads a file from within an allowed directory. Supports offset and line limits for reading specific sections of large files. Intended for programmatic agent use.
 
 **Parameters:**
 - `path` (required): File path. If not absolute, it is joined with `config.workspace_dir`.

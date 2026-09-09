@@ -140,6 +140,59 @@ class TestValidation:
 
 
 class TestLoading:
+    def test_unambiguous_legacy_destination_is_inventory_only_until_gateway_resolution(
+        self, tmp_path
+    ):
+        import yaml
+
+        from src.config import load_config
+
+        path = tmp_path / "config.yaml"
+        path.write_text(
+            yaml.safe_dump(
+                {
+                    "database": {"url": "postgresql://u:p@localhost/db"},
+                    "discord": {
+                        "bot_token": "t",
+                        "guild_id": "1",
+                        "channels": {
+                            "control": "agent-queue",
+                            "notifications": "agent-queue",
+                            "agent_questions": "agent-questions",
+                        },
+                    },
+                }
+            )
+        )
+        config = load_config(str(path))
+        assert config.discord.channel_id == ""
+        assert config.discord.legacy_destination_names == ("agent-queue",)
+        assert set(config.discord.legacy_inventory_names) == {"agent-queue", "agent-questions"}
+        assert config.discord.legacy_destination_conflict is False
+
+    def test_conflicting_legacy_destinations_are_not_chosen(self, tmp_path):
+        import yaml
+
+        from src.config import load_config
+
+        path = tmp_path / "config.yaml"
+        path.write_text(
+            yaml.safe_dump(
+                {
+                    "database": {"url": "postgresql://u:p@localhost/db"},
+                    "discord": {
+                        "bot_token": "t",
+                        "guild_id": "1",
+                        "channels": {"control": "control", "notifications": "events"},
+                    },
+                }
+            )
+        )
+        config = load_config(str(path))
+        assert config.discord.channel_id == ""
+        assert config.discord.legacy_destination_conflict is True
+        assert any("choose one explicit channel_id" in warning for warning in config.discord.warnings())
+
     def test_yaml_round_trips_into_the_nested_settings(self, tmp_path):
         import yaml
 

@@ -21,7 +21,7 @@ Each has a paired implementation spec in [`docs/specs/implementation/`](../imple
 | [[work-graph]] | D | Typed dependency edges, persisted `is_blocked`, gates as records, labels, outcome metadata, `task explain`, state-machine enforcement |
 | [[supervisor-agent]] | B | Supervisor as a configured per-project agent; `messages` table; chat relay; spec→task-graph |
 | [[aq-surface]] | C | `aq` CLI as primary surface, `aq prime`/handoff/inbox, JSON envelope, session tokens, task-scoped MCP allowlist |
-| [[messaging-rework]] | F | Out-of-process Discord adapter (task threads, gate buttons, supervisor chat), Telegram removal, dashboard as primary UI |
+| [[messaging-rework]] | F | Historical messaging rework, superseded for Discord by [[../messaging/discord]] |
 | [[feature-pauses]] | E/P | Memory & playbooks paused (flags off, code frozen, data preserved, clean re-enable) |
 | [[trust-and-ops]] | G | Trust boundaries, env scrubbing, `aq doctor`, `aq costs`, invariant tests |
 

@@ -8,7 +8,7 @@ default project creation, and agent provisioning.  Run automatically by
 The wizard follows a linear multi-step flow:
 
 1. **Directories** — workspace and database paths.
-2. **Discord** — bot token, guild ID, channel names, connectivity test.
+2. **Discord** — bot token, guild ID, one shared channel ID, connectivity test.
 3. **Claude Code** — agent binary detection, API key or local model.
 4. **Chat provider** — which LLM backend the chat bot uses.
 5. **Scheduling & budget** — scheduling interval and optional token budget.
@@ -506,7 +506,7 @@ def step_database(existing: dict) -> dict:
 
 
 def step_discord(existing: dict) -> dict:
-    """Step 2: Configure Discord bot token, guild, and channels.
+    """Step 2: configure the Discord bot and its one shared channel.
 
     Collects the bot token and guild ID (prompting if not already saved),
     tests connectivity, and returns the Discord configuration dict.
@@ -515,12 +515,10 @@ def step_discord(existing: dict) -> dict:
         existing: Pre-loaded config values.
 
     Returns:
-        Dict with ``token``, ``guild_id``, and ``channels`` keys.
+        Dict with ``token``, ``guild_id``, and ``channel_id`` keys.
     """
     yaml_cfg = existing.get("_yaml", {})
     discord_cfg = yaml_cfg.get("discord", {})
-    existing_channels = discord_cfg.get("channels", {})
-
     existing_token = existing.get("DISCORD_BOT_TOKEN", "")
     existing_guild = discord_cfg.get("guild_id", "") or existing.get("DISCORD_GUILD_ID", "")
 
@@ -535,8 +533,8 @@ def step_discord(existing: dict) -> dict:
   3. Go to the {BOLD}Bot{RESET} tab and click {BOLD}Reset Token{RESET} to get your bot token
   4. Under {BOLD}Privileged Gateway Intents{RESET}, enable {BOLD}Message Content Intent{RESET}
   5. Go to {BOLD}OAuth2 > URL Generator{RESET}:
-     - Scopes: {BOLD}bot{RESET}, {BOLD}applications.commands{RESET}
-     - Bot Permissions: {BOLD}Send Messages{RESET}, {BOLD}Read Message History{RESET}, {BOLD}Use Slash Commands{RESET}
+     - Scope: {BOLD}bot{RESET}
+     - Bot Permissions: {BOLD}Send Messages{RESET}, {BOLD}Read Message History{RESET}, {BOLD}Create Public Threads{RESET}, {BOLD}Send Messages in Threads{RESET}
   6. Copy the generated URL, open it in your browser, and add the bot to your server
 """)
         bot_token = prompt_secret("Bot token")
@@ -560,39 +558,35 @@ def step_discord(existing: dict) -> dict:
             sys.exit(1)
         _save_env_value("DISCORD_GUILD_ID", guild_id)
 
-    # Channel names (before connectivity test)
-    channels = {
-        "control": existing_channels.get("control", "control"),
-        "notifications": existing_channels.get("notifications", "notifications"),
-        "agent_questions": existing_channels.get("agent_questions", "agent-questions"),
-    }
+    channel_id = str(discord_cfg.get("channel_id") or "").strip()
+    if not channel_id:
+        print()
+        info("Discord uses one shared channel for hourly digests and escalation threads.")
+        info("Enable Developer Mode, right-click that channel, and choose Copy Channel ID.")
+        channel_id = prompt("Shared channel ID")
+        if not channel_id:
+            error("Shared channel ID is required")
+            sys.exit(1)
 
     # Test connectivity with retry loop (including channel verification)
     print()
     info("Testing Discord connectivity...")
     discord_ok = False
     while True:
-        discord_ok, missing_channels = _test_discord(bot_token, guild_id, channels)
+        discord_ok, missing_channels = _test_discord(bot_token, guild_id, channel_id)
         if discord_ok:
             break
 
         if missing_channels:
             # Bot connected fine, just channels are wrong — offer to customize
             print()
-            warn("Bot connected successfully, but some channels weren't found.")
-            info("Either create them in Discord, or update the names here.")
+            warn("Bot connected successfully, but the shared channel wasn't found.")
             print()
-            if prompt_yes_no("Update channel names?", default=True):
-                channels["control"] = prompt("Control channel", channels["control"])
-                channels["notifications"] = prompt(
-                    "Notifications channel", channels["notifications"]
-                )
-                channels["agent_questions"] = prompt(
-                    "Agent questions channel", channels["agent_questions"]
-                )
-                info("Re-testing with updated channels...")
+            if prompt_yes_no("Update the shared channel ID?", default=True):
+                channel_id = prompt("Shared channel ID", channel_id)
+                info("Re-testing with updated channel...")
                 continue
-            elif not prompt_yes_no("Retry with current channel names?", default=True):
+            elif not prompt_yes_no("Retry with the current channel ID?", default=True):
                 break
         else:
             # Connection-level failure
@@ -613,8 +607,8 @@ def step_discord(existing: dict) -> dict:
   3. Click {BOLD}Reset Token{RESET} to get your bot token
   4. Under {BOLD}Privileged Gateway Intents{RESET}, enable {BOLD}Message Content Intent{RESET}
   5. Go to {BOLD}OAuth2 > URL Generator{RESET}:
-     - Scopes: {BOLD}bot{RESET}, {BOLD}applications.commands{RESET}
-     - Bot Permissions: {BOLD}Send Messages{RESET}, {BOLD}Read Message History{RESET}, {BOLD}Use Slash Commands{RESET}
+     - Scope: {BOLD}bot{RESET}
+     - Bot Permissions: {BOLD}Send Messages{RESET}, {BOLD}Read Message History{RESET}, {BOLD}Create Public Threads{RESET}, {BOLD}Send Messages in Threads{RESET}
   6. Copy the generated URL, open it in your browser, and add the bot to your server
 """)
                 new_token = prompt_secret("Bot token")
@@ -639,7 +633,7 @@ def step_discord(existing: dict) -> dict:
 
     # Authorized users
     authorized_users: list[str] = []
-    if prompt_yes_no("Restrict commands to specific Discord user IDs?", default=False):
+    if prompt_yes_no("Restrict escalation replies to specific Discord user IDs?", default=False):
         print("  Enter user IDs one per line (empty line to finish):")
         while True:
             uid = input("    > ").strip()
@@ -647,131 +641,21 @@ def step_discord(existing: dict) -> dict:
                 break
             authorized_users.append(uid)
 
-    # Per-project channel configuration
-    per_project_cfg = _step_per_project_channels(existing, discord_ok)
-
     return {
         "bot_token": bot_token,
         "guild_id": guild_id,
-        "channels": channels,
+        "channel_id": channel_id,
         "authorized_users": authorized_users,
         "connected": discord_ok,
-        "per_project_channels": per_project_cfg,
-    }
-
-
-def _step_per_project_channels(existing: dict, discord_ok: bool) -> dict:
-    """Guide users through per-project Discord channel configuration.
-
-    Returns a dict with per-project channel settings:
-        auto_create: bool — auto-create channels when projects are created
-        naming_convention: str — channel name pattern
-        category_name: str — Discord category name for project channels
-    """
-    yaml_cfg = existing.get("_yaml", {})
-    discord_cfg = yaml_cfg.get("discord", {})
-    existing_ppc = discord_cfg.get("per_project_channels", {})
-
-    defaults = {
-        "auto_create": existing_ppc.get("auto_create", False),
-        "naming_convention": existing_ppc.get("naming_convention", "{project_id}"),
-        "category_name": existing_ppc.get("category_name", ""),
-        "private": existing_ppc.get("private", True),
-    }
-
-    print()
-    print(f"  {BOLD}Per-Project Channels{RESET}")
-    info("Each project can have its own dedicated Discord channel")
-    info("instead of sharing the global channel.")
-    print()
-
-    if not prompt_yes_no(
-        "Enable automatic per-project channel creation?",
-        default=defaults["auto_create"],
-    ):
-        # User declined — show manual instructions and return defaults (disabled)
-        if discord_ok:
-            print()
-            info("You can still create per-project channels manually via Discord:")
-            info("  /create-channel <project-id>  — create & link a new channel")
-            info("  /set-channel <project-id>     — link an existing channel")
-            info("  /channel-map                  — view all project-channel mappings")
-            info("Projects without dedicated channels fall back to the global channels.")
-        return {
-            "auto_create": False,
-            "naming_convention": defaults["naming_convention"],
-            "category_name": defaults["category_name"],
-            "private": defaults["private"],
-        }
-
-    # ── Naming convention ──
-    print()
-    info("Channel naming convention uses {project_id} as a placeholder.")
-    info("Examples: for a project 'my-app',")
-    info("  '{project_id}'       →  #my-app")
-    info("  'aq-{project_id}'    →  #aq-my-app")
-    print()
-
-    naming_convention = prompt(
-        "Channel name pattern",
-        defaults["naming_convention"],
-    )
-    if "{project_id}" not in naming_convention:
-        warn("Pattern must contain {project_id} — resetting to default")
-        naming_convention = "{project_id}"
-
-    # ── Category ──
-    print()
-    info("You can organize project channels under a Discord category.")
-    info("If the category doesn't exist, it will be created automatically.")
-    print()
-
-    category_name = prompt(
-        "Discord category for project channels (blank to skip)",
-        defaults["category_name"],
-    )
-
-    # ── Private channels ──
-    print()
-    info("Private channels are only visible to the bot and users you grant access.")
-    private = prompt_yes_no(
-        "Make project channels private?",
-        default=defaults["private"],
-    )
-
-    # ── Summary ──
-    print()
-    success("Per-project channel configuration:")
-    info("  Auto-create:         enabled")
-    info(f"  Channel pattern:     {naming_convention}")
-    if category_name:
-        info(f"  Category:            {category_name}")
-    else:
-        info("  Category:            (none — channels created at top level)")
-    info(f"  Private:             {'yes' if private else 'no'}")
-
-    if discord_ok:
-        print()
-        info("Channels will be created automatically when you add projects.")
-        info("You can also manage them manually:")
-        info("  /create-channel <project-id>  — create & link a channel")
-        info("  /set-channel <project-id>     — link an existing channel")
-        info("  /channel-map                  — view all project-channel mappings")
-
-    return {
-        "auto_create": True,
-        "naming_convention": naming_convention,
-        "category_name": category_name,
-        "private": private,
     }
 
 
 def _test_discord(
-    token: str, guild_id: str, channels: dict | None = None
+    token: str, guild_id: str, channel_id: str | None = None
 ) -> tuple[bool, list[str]]:
-    """Test Discord bot connectivity and verify channels exist in the guild.
+    """Test Discord bot connectivity and verify the shared channel exists.
 
-    Returns (success, missing_channel_names).
+    Returns ``(success, missing_channel_ids)``.
     """
     try:
         # Import discord.py library, not our local src/discord/ package.
@@ -803,19 +687,16 @@ def _test_discord(
                     result["connected"] = True
                     result["ok"] = True
 
-                    # Verify channels exist
-                    if channels:
-                        guild_channel_names = {ch.name for ch in guild.text_channels}
-                        for key, channel_name in channels.items():
-                            if channel_name not in guild_channel_names:
-                                result["missing_channels"].append(channel_name)
-
-                        if result["missing_channels"]:
-                            result["ok"] = False
-                            for missing in result["missing_channels"]:
-                                error(f"Channel not found: #{missing}")
-                        else:
-                            success("All configured channels found")
+                    if channel_id and not channel_id.isdigit():
+                        result["missing_channels"].append(channel_id)
+                        result["ok"] = False
+                        error("Shared channel ID must contain digits only")
+                    elif channel_id and guild.get_channel(int(channel_id)) is None:
+                        result["missing_channels"].append(channel_id)
+                        result["ok"] = False
+                        error(f"Channel not found: {channel_id}")
+                    elif channel_id:
+                        success("Shared Discord channel found")
                 else:
                     error(f"Bot connected but cannot see guild {guild_id}")
                     warn("Make sure the bot has been invited to the server")
@@ -1192,7 +1073,6 @@ def step_write_config(
     success(f"Secrets written to {env_path} (mode 600)")
 
     # Build YAML
-    channels = discord_cfg["channels"]
     yaml_lines = [
         f"workspace_dir: {workspace}",
     ]
@@ -1213,29 +1093,13 @@ def step_write_config(
         "discord:",
         "  bot_token: ${DISCORD_BOT_TOKEN}",
         f'  guild_id: "{discord_cfg["guild_id"]}"',
-        "  channels:",
-        f"    control: {channels['control']}",
-        f"    notifications: {channels['notifications']}",
-        f"    agent_questions: {channels['agent_questions']}",
+        f'  channel_id: "{discord_cfg["channel_id"]}"',
     ]
 
     if discord_cfg["authorized_users"]:
         yaml_lines.append("  authorized_users:")
         for uid in discord_cfg["authorized_users"]:
             yaml_lines.append(f'    - "{uid}"')
-
-    # Per-project channel configuration
-    ppc = discord_cfg.get("per_project_channels", {})
-    if ppc.get("auto_create"):
-        yaml_lines.append("  per_project_channels:")
-        yaml_lines.append("    auto_create: true")
-        yaml_lines.append(f'    naming_convention: "{ppc["naming_convention"]}"')
-
-        if ppc.get("category_name"):
-            yaml_lines.append(f'    category_name: "{ppc["category_name"]}"')
-
-        private = ppc.get("private", True)
-        yaml_lines.append(f"    private: {'true' if private else 'false'}")
 
     yaml_lines.append("")
 

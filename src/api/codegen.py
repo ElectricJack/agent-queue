@@ -45,7 +45,6 @@ logger = logging.getLogger(__name__)
 # would otherwise reach the same commands through the back door.
 API_EXCLUDED = {
     "load_tools",
-    "send_message",
     "reply_to_user",
     # Runs an LLM-authored string through /bin/sh on the daemon host
     # (trust-and-ops §2.5).  Already out of MCP and the CLI; the API is the

@@ -326,13 +326,3 @@ class TestNotificationFormatting:
         assert "t-9" in result
         # Should NOT show task 11+
         assert "t-10" not in result
-
-
-class TestProjectContextPrefixing:
-    """Verify the bot's static _prepend_project_tag helper."""
-
-    def test_prepend_project_tag(self):
-        from src.discord.bot import AgentQueueBot
-
-        result = AgentQueueBot._prepend_project_tag("**Task Started:** `t-1`", "my-project")
-        assert result == "[`my-project`] **Task Started:** `t-1`"

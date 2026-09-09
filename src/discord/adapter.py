@@ -49,8 +49,9 @@ class DiscordMessagingAdapter(MessagingAdapter):
         await self._bot.start(self._config.discord.bot_token)
 
     async def wait_until_ready(self) -> None:
-        """Block until the Discord connection is established."""
+        """Block until the gateway is ready and the one-way cutover finished."""
         await self._bot.wait_until_ready()
+        await self._bot.wait_until_cutover_complete()
 
     async def close(self) -> None:
         """Disconnect from Discord gracefully."""
@@ -68,8 +69,8 @@ class DiscordMessagingAdapter(MessagingAdapter):
         embed: Any = None,
         view: Any = None,
     ) -> None:
-        """Send a notification to the appropriate Discord channel."""
-        await self._bot._send_message(text, project_id, embed=embed, view=view)
+        """Retired legacy notification callback; durable transports own sends."""
+        return None
 
     async def create_task_thread(
         self,
@@ -78,19 +79,12 @@ class DiscordMessagingAdapter(MessagingAdapter):
         project_id: str | None = None,
         task_id: str | None = None,
     ) -> tuple["ThreadSendCallback", "ThreadSendCallback"] | None:
-        """Create a Discord thread for task output streaming.
-
-        Returns ``(send_to_thread, notify_main_channel)`` callback pair,
-        or None if thread creation failed.
-        """
-        result = await self._bot._create_task_thread(
-            thread_name, initial_message, project_id, task_id
-        )
-        return result
+        """Task execution threads are retired; historical threads stay intact."""
+        return None
 
     async def get_thread_last_message_url(self, task_id: str) -> str | None:
-        """Return a Discord jump URL to the last message in a task's thread."""
-        return await self._bot.get_thread_last_message_url(task_id)
+        """Task execution threads are no longer a navigation surface."""
+        return None
 
     async def edit_thread_root_message(
         self,
@@ -98,8 +92,8 @@ class DiscordMessagingAdapter(MessagingAdapter):
         content: str | None = None,
         embed: Any = None,
     ) -> None:
-        """Edit the thread-root message for a task."""
-        await self._bot.edit_thread_root_message(task_id, content=content, embed=embed)
+        """Retired legacy callback; old thread roots are kept read-only."""
+        return None
 
     # -------------------------------------------------------------------
     # Component access

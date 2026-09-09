@@ -15,7 +15,6 @@ class ProjectSummary(BaseModel):
     max_concurrent_agents: int = 1
     workspace: str | None = None
     repo_url: str | None = None
-    discord_channel_id: str | None = None
     assignment_playbook_id: str | None = None
 
 
@@ -31,7 +30,6 @@ class GetProjectResponse(BaseModel):
     total_tokens_used: int = 0
     tokens_used_recent: int = 0
     budget_limit: int | None = None
-    discord_channel_id: str | None = None
     default_profile_id: str | None = None
     assignment_playbook_id: str | None = None
 
@@ -54,7 +52,7 @@ class ListProjectsResponse(BaseModel):
 class CreateProjectResponse(BaseModel):
     created: str
     name: str
-    auto_create_channels: bool = False
+    default_profile_id: str | None = None
 
 
 class EditProjectResponse(BaseModel):
@@ -65,8 +63,6 @@ class EditProjectResponse(BaseModel):
 class DeleteProjectResponse(BaseModel):
     deleted: str
     name: str
-    channel_ids: dict[str, str] | None = None
-    archive_channels: bool | None = None
 
 
 class PauseProjectResponse(BaseModel):
@@ -79,29 +75,12 @@ class ResumeProjectResponse(BaseModel):
     name: str
 
 
-class SetProjectChannelResponse(BaseModel):
-    project_id: str
-    channel_id: str
-    status: str = ""
-
-
 class SetDefaultBranchResponse(BaseModel):
     project_id: str
     default_branch: str
     previous_branch: str = ""
     status: str = ""
     branch_created: bool | None = None
-
-
-class GetProjectChannelsResponse(BaseModel):
-    project_id: str
-    channel_id: str | None = None
-
-
-class GetProjectForChannelResponse(BaseModel):
-    channel_id: str
-    project_id: str | None = None
-    project_name: str | None = None
 
 
 class AddWorkspaceResponse(BaseModel):
@@ -180,12 +159,8 @@ RESPONSE_MODELS: dict[str, type[BaseModel]] = {
     "delete_project": DeleteProjectResponse,
     "pause_project": PauseProjectResponse,
     "resume_project": ResumeProjectResponse,
-    "set_project_channel": SetProjectChannelResponse,
-    "set_control_interface": SetProjectChannelResponse,
     "set_default_branch": SetDefaultBranchResponse,
     "get_project": GetProjectResponse,
-    "get_project_channels": GetProjectChannelsResponse,
-    "get_project_for_channel": GetProjectForChannelResponse,
     "add_workspace": AddWorkspaceResponse,
     "list_workspaces": ListWorkspacesResponse,
     "remove_workspace": RemoveWorkspaceResponse,

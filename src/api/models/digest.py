@@ -59,6 +59,18 @@ class DigestWindowRecord(BaseModel):
     attempt_count: int = 0
 
 
+class DiscordCutoverStatus(BaseModel):
+    status: str
+    channel_id: str = ""
+    migrated_questions: int = 0
+    migrated_gates: int = 0
+    accepted_answers_preserved: int = 0
+    adopted_roots: int = 0
+    retired_task_threads: int = 0
+    inert_messages: int = 0
+    conflicts: list[str] = []
+
+
 class DigestStatusResponse(BaseModel):
     success: bool = True
     destination: str
@@ -73,6 +85,7 @@ class DigestStatusResponse(BaseModel):
     delivery_health: dict[str, int] = {}
     open_escalations: int = 0
     pending_escalation_deliveries: int = 0
+    cutover: DiscordCutoverStatus | None = None
     settings_errors: list[str] = []
     warnings: list[str] = []
 

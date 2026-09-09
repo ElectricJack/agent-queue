@@ -199,6 +199,13 @@ class DigestCommandsMixin:
                 1 for row in deliveries if row["status"] in _PENDING_DELIVERY_STATUSES
             )
 
+        bot = getattr(self.orchestrator, "_discord_bot", None)
+        cutover = getattr(bot, "_cutover_report", None)
+        cutover_status = cutover.as_dict() if cutover is not None else None
+        warnings = list(config.warnings())
+        if cutover is not None and cutover.status != "complete":
+            warnings.append(cutover.summary())
+
         return {
             "success": True,
             "destination": schedule.destination,
@@ -238,6 +245,7 @@ class DigestCommandsMixin:
             "delivery_health": health,
             "open_escalations": len(escalations),
             "pending_escalation_deliveries": pending_escalation_deliveries,
+            "cutover": cutover_status,
             "settings_errors": validate_settings(config, known),
-            "warnings": config.warnings(),
+            "warnings": warnings,
         }

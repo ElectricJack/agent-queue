@@ -84,7 +84,6 @@ HANDCRAFTED_COVERAGE = {
     # projects.py — composite/UX-heavy commands only
     "edit_project",
     "set_default_branch",
-    "set_project_channel",
     "onboard_project",
     # integration.py — positional identities and explicit rollout CAS fences.
     "integration_status",
@@ -120,8 +119,7 @@ EXCLUDED = {
     "update_and_restart",
     "run_command",
     "load_tools",  # supervisor-internal meta-tool
-    # Core messaging tools — not useful from CLI
-    "send_message",
+    # Core response tool — not useful from CLI
     "reply_to_user",
 }
 
@@ -157,7 +155,7 @@ CATEGORY_CLI_DESCRIPTIONS: dict[str, str] = {
     "message": "Inter-agent and user message queue.",
     "escalation": "Durable human escalations and supervisor-owned resolution.",
     "digest": "Hourly activity digest — dry preview and schedule health.",
-    "discord": "Discord channel and thread housekeeping.",
+    "discord": "Explicit Discord historical-message housekeeping.",
     "pool": "Worker pool sizing — status and scale.",
     "formula": "Reusable task-graph templates — list, resolve, and cook.",
 }

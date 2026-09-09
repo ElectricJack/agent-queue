@@ -426,14 +426,6 @@ class CommandHandler(
         # orchestrator, which ``OpsCommandsMixin.doctor_registry`` falls back
         # to.  Passing one explicitly is for tests and embedded uses.
         self._doctor_registry = doctor_registry
-        # Optional callback invoked after a project is deleted.
-        # Signature: callback(project_id: str) -> None
-        # The Discord bot registers this to clean in-memory channel caches.
-        self._on_project_deleted: Callable[[str], None] | None = None
-        # Optional async callback invoked after a project is created.
-        # Signature: async callback(project_id: str, auto_create_channels: bool) -> None
-        # The Discord bot registers this to auto-create per-project channels.
-        self._on_project_created: Callable | None = None
         # Optional callback invoked after a note is written or appended.
         # Signature: async callback(project_id, note_filename, note_path) -> None
         # The Discord bot registers this to auto-refresh viewed notes.
