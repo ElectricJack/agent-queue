@@ -329,7 +329,7 @@ async def recover_stopped_integration_pool_claim(db, task_id: str) -> bool:
             return False
         claim_release = await db.release_claim(
             session_row["id"],
-            task_status=TaskStatus.READY,
+            task_status=TaskStatus.PAUSED,
             context="integration_handoff_recovery",
             now=time.time(),
             expected_task_id=task_id,
