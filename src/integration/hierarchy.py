@@ -495,10 +495,10 @@ class HierarchyIntegration:
         task.id = await fresh_root_id(conn)
         task.parent_task_id = None
         task.repo_id = repo.id
-        # A freshly filed root has no remote task branch yet.  Resolve its
-        # immutable origin from the repository default branch, then record
-        # the canonical branch identity for materialization.
-        task.branch_name = None
+        # The ref itself is materialized later, but its canonical identity is
+        # durable from filing onward.  Keeping it on the inserted row lets
+        # collection and workspace preparation fence against that identity.
+        task.branch_name = f"aq/{task.id}"
         await self.db.create_task(task, conn=conn)
         await self._write_task_extras(
             conn,
@@ -509,7 +509,6 @@ class HierarchyIntegration:
         )
         gate_id = await self._maybe_create_routing_gate(conn, task, routing_policy)
         await self._ensure_origin_chain(conn, task.id, repo)
-        task.branch_name = f"aq/{task.id}"
         return {"task_id": task.id, "generation": 0, "gate_id": gate_id}
 
     async def bootstrap_container_collection(self, task_id: str) -> dict:
