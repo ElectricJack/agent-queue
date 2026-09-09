@@ -1,0 +1,308 @@
+{
+  "version": 1,
+  "parent": {
+    "title": "Epic: Install & Onboarding",
+    "description": "Deliver a seamless new-user AQ installation on Windows (WSL2) and macOS: PostgreSQL setup, optional agent CLI installation and guided login, portable excellent defaults excluding project memory and secrets, platform/provider-aware profiles, and clear human/agent documentation. Depends on documentation epic solid-grove. Plan: docs/plans/install-onboarding/README.md. All children standard-high without pinned profiles; use normal AQ integration without legacy review tickets.",
+    "priority": 60
+  },
+  "nodes": [
+    {
+      "key": "foundation",
+      "title": "Define seamless installation and onboarding contract",
+      "description": "Implement through the configured AQ integration pipeline. Use standard-high with no provider/profile pin. Re-read current source and official third-party installation/authentication documentation when implementing. Keep tests focused and use aq test for multi-file checks; do not add per-task or final-branch review tickets. \n\nAudit setup.sh, src/setup_wizard.py, packaging, doctor, configuration and project onboarding. Define one obvious newcomer path, supported WSL2 distributions and macOS versions/architectures, install ownership, step interfaces, page ownership and upgrade compatibility. Reuse the completed documentation hierarchy.",
+      "acceptance": [
+        "Publish platform matrix, happy-path walkthrough and measurable readiness criteria.",
+        "Define interactive and unattended contracts, human login checkpoints, retry/resume behavior and adapter ownership."
+      ],
+      "needs": [
+        "solid-grove"
+      ],
+      "intelligence_class": "standard-high",
+      "task_type": "feature",
+      "priority": 60
+    },
+    {
+      "key": "engine",
+      "title": "Build resumable installer and prerequisite detection",
+      "description": "Implement through the configured AQ integration pipeline. Use standard-high with no provider/profile pin. Re-read current source and official third-party installation/authentication documentation when implementing. Keep tests focused and use aq test for multi-file checks; do not add per-task or final-branch review tickets. \n\nImplement shared installer orchestration with platform detection, structured step results, prerequisite checks, progress, sensible defaults, dry-run and noninteractive options. Track installed resources and completed steps without storing secrets.",
+      "acceptance": [
+        "Rerunning and resuming after a failed step is safe and does not duplicate resources.",
+        "Failures identify the exact step and actionable recovery; machine-readable output and exit codes are documented."
+      ],
+      "needs": [
+        "foundation"
+      ],
+      "intelligence_class": "standard-high",
+      "task_type": "feature",
+      "priority": 60
+    },
+    {
+      "key": "wsl",
+      "title": "Implement Windows and WSL2 installation bootstrap",
+      "description": "Implement through the configured AQ integration pipeline. Use standard-high with no provider/profile pin. Re-read current source and official third-party installation/authentication documentation when implementing. Keep tests focused and use aq test for multi-file checks; do not add per-task or final-branch review tickets. \n\nProvide a simple Windows entry point and WSL-side installation path. Handle WSL2/distro detection, required Windows actions, reboot/resume, Linux filesystem placement, shell/PATH, browser handoff and Windows-to-WSL networking.",
+      "acceptance": [
+        "A new Windows user can reach AQ installation without prior WSL knowledge.",
+        "Existing WSL installations are reused; required elevation and reboot are clearly explained and resumable."
+      ],
+      "needs": [
+        "engine"
+      ],
+      "intelligence_class": "standard-high",
+      "task_type": "feature",
+      "priority": 60
+    },
+    {
+      "key": "mac",
+      "title": "Implement macOS installation bootstrap",
+      "description": "Implement through the configured AQ integration pipeline. Use standard-high with no provider/profile pin. Re-read current source and official third-party installation/authentication documentation when implementing. Keep tests focused and use aq test for multi-file checks; do not add per-task or final-branch review tickets. \n\nSupport Apple Silicon and Intel within the declared support matrix. Detect/install prerequisites through supported tooling, handle Homebrew locations, shell/PATH and runtime services without modifying system Python.",
+      "acceptance": [
+        "Clean supported macOS installs and existing developer machines reach the same working result.",
+        "Missing tools, permissions and architecture mismatches produce actionable results."
+      ],
+      "needs": [
+        "engine"
+      ],
+      "intelligence_class": "standard-high",
+      "task_type": "feature",
+      "priority": 60
+    },
+    {
+      "key": "packaging",
+      "title": "Ship installable AQ runtime and dashboard artifacts",
+      "description": "Implement through the configured AQ integration pipeline. Use standard-high with no provider/profile pin. Re-read current source and official third-party installation/authentication documentation when implementing. Keep tests focused and use aq test for multi-file checks; do not add per-task or final-branch review tickets. \n\nMake user installation independent of a development checkout. Package the runtime, CLI, built dashboard and required resources; define version selection, integrity verification and supported update behavior.",
+      "acceptance": [
+        "Installed aq CLI and dashboard work without building the repository manually.",
+        "Published artifacts contain required runtime assets and report their installed version."
+      ],
+      "needs": [
+        "engine"
+      ],
+      "intelligence_class": "standard-high",
+      "task_type": "feature",
+      "priority": 60
+    },
+    {
+      "key": "postgres",
+      "title": "Install and configure PostgreSQL end to end",
+      "description": "Implement through the configured AQ integration pipeline. Use standard-high with no provider/profile pin. Re-read current source and official third-party installation/authentication documentation when implementing. Keep tests focused and use aq test for multi-file checks; do not add per-task or final-branch review tickets. \n\nOffer managed PostgreSQL installation or reuse of a compatible existing instance. Configure dedicated role/database, protected credentials, connection checks, service lifecycle, reboot startup and port conflicts. Schema setup belongs to daemon/operator installation, never worker sessions.",
+      "acceptance": [
+        "Fresh installation reaches a healthy database without manual SQL.",
+        "Existing databases and unrelated roles are preserved; failures and credential changes have a documented recovery path.",
+        "Verify database startup and AQ reconnection after restart on both supported platforms."
+      ],
+      "needs": [
+        "engine"
+      ],
+      "intelligence_class": "standard-high",
+      "task_type": "feature",
+      "priority": 60
+    },
+    {
+      "key": "agents",
+      "title": "Offer installation and configuration of agent CLIs",
+      "description": "Implement through the configured AQ integration pipeline. Use standard-high with no provider/profile pin. Re-read current source and official third-party installation/authentication documentation when implementing. Keep tests focused and use aq test for multi-file checks; do not add per-task or final-branch review tickets. \n\nImplement an extensible provider installer registry for Claude Code, Codex and Gemini CLI, with optional additional supported providers. Verify current official installation methods during implementation. Detect existing installations, versions and PATH; let users select or skip providers.",
+      "acceptance": [
+        "Selected CLIs install or reuse a compatible installation and pass executable checks.",
+        "Unselected providers are optional and do not block AQ installation."
+      ],
+      "needs": [
+        "engine"
+      ],
+      "intelligence_class": "standard-high",
+      "task_type": "feature",
+      "priority": 60
+    },
+    {
+      "key": "logins",
+      "title": "Guide agent login and verify authentication",
+      "description": "Implement through the configured AQ integration pipeline. Use standard-high with no provider/profile pin. Re-read current source and official third-party installation/authentication documentation when implementing. Keep tests focused and use aq test for multi-file checks; do not add per-task or final-branch review tickets. \n\nGuide supported browser/device login and API-key configuration where supported using official provider flows. Explain human interaction checkpoints, support retry and headless instructions, and distinguish installed from authenticated. Keep credentials in supported protected local stores.",
+      "acceptance": [
+        "Each initial supported provider has a tested authentication readiness check and actionable failure instructions.",
+        "Tokens/passwords never appear in logs, task records or exported defaults; no unsupported automated password entry."
+      ],
+      "needs": [
+        "agents"
+      ],
+      "intelligence_class": "standard-high",
+      "task_type": "feature",
+      "priority": 60
+    },
+    {
+      "key": "portable",
+      "title": "Export and import portable configuration and agent profiles",
+      "description": "Implement through the configured AQ integration pipeline. Use standard-high with no provider/profile pin. Re-read current source and official third-party installation/authentication documentation when implementing. Keep tests focused and use aq test for multi-file checks; do not add per-task or final-branch review tickets. \n\nCreate a versioned allowlisted bundle for reusable AQ tuning and global agent profiles. Normalize paths and validate imports. Exclude project memory, project vault content, task/session history, logs, provider credentials, secrets and personal repository paths. Preview and curate the working configuration before using it as a shipped default.",
+      "acceptance": [
+        "Export/import roundtrip preserves portable settings and profile relationships.",
+        "Automated exclusion tests demonstrate that project memory and credentials cannot enter the bundle.",
+        "Import offers clear conflict handling and preserves existing user customization."
+      ],
+      "needs": [
+        "foundation"
+      ],
+      "intelligence_class": "standard-high",
+      "task_type": "feature",
+      "priority": 60
+    },
+    {
+      "key": "tuning",
+      "title": "Ship excellent resource-aware default tuning",
+      "description": "Implement through the configured AQ integration pipeline. Use standard-high with no provider/profile pin. Re-read current source and official third-party installation/authentication documentation when implementing. Keep tests focused and use aq test for multi-file checks; do not add per-task or final-branch review tickets. \n\nCurate production-informed portable defaults for scheduling, resource/test slots, routing, retry/recovery, integration and quiet idle behavior. Use standard-high for normal work and deep-high only for exceptional difficulty. Scale concurrency to available resources and avoid obsolete per-task/final-review defaults.",
+      "acceptance": [
+        "New users receive usable defaults without copying operator-specific projects, memory or machine paths.",
+        "Document tuning rationale and overrides; verify that resource limits and routing remain usable on smaller machines."
+      ],
+      "needs": [
+        "portable"
+      ],
+      "intelligence_class": "standard-high",
+      "task_type": "feature",
+      "priority": 60
+    },
+    {
+      "key": "profiles",
+      "title": "Enable agent profiles according to installed platforms and providers",
+      "description": "Implement through the configured AQ integration pipeline. Use standard-high with no provider/profile pin. Re-read current source and official third-party installation/authentication documentation when implementing. Keep tests focused and use aq test for multi-file checks; do not add per-task or final-branch review tickets. \n\nShip a reusable profile catalog and activate only profiles compatible with the OS and installed/authenticated provider CLIs. Distinguish installation availability from readiness; refresh activation after provider changes while preserving user choices.",
+      "acceptance": [
+        "No default route points to an unavailable provider or unusable pool.",
+        "Installing, authenticating or removing a provider refreshes eligibility predictably; missing providers have clear setup guidance."
+      ],
+      "needs": [
+        "logins",
+        "tuning"
+      ],
+      "intelligence_class": "standard-high",
+      "task_type": "feature",
+      "priority": 60
+    },
+    {
+      "key": "wizard",
+      "title": "Unify installation into a short onboarding wizard",
+      "description": "Implement through the configured AQ integration pipeline. Use standard-high with no provider/profile pin. Re-read current source and official third-party installation/authentication documentation when implementing. Keep tests focused and use aq test for multi-file checks; do not add per-task or final-branch review tickets. \n\nCompose installer steps into a single clear experience with good defaults, optional advanced configuration, terminal and machine-readable modes, and resumable authentication. Remove obsolete onboarding assumptions; Discord is optional. Explain where AQ stores data and how to open the dashboard.",
+      "acceptance": [
+        "A newcomer follows one documented entry point from prerequisites through a ready daemon/dashboard.",
+        "Skipping optional providers or Discord does not fail setup; interruption can resume without starting over."
+      ],
+      "needs": [
+        "wsl",
+        "mac",
+        "packaging",
+        "postgres",
+        "profiles"
+      ],
+      "intelligence_class": "standard-high",
+      "task_type": "feature",
+      "priority": 60
+    },
+    {
+      "key": "first-task",
+      "title": "Verify readiness and guide the first project and task",
+      "description": "Implement through the configured AQ integration pipeline. Use standard-high with no provider/profile pin. Re-read current source and official third-party installation/authentication documentation when implementing. Keep tests focused and use aq test for multi-file checks; do not add per-task or final-branch review tickets. \n\nAdd a readiness summary covering database, daemon, dashboard, agent authentication, profile routing and workspace prerequisites. Guide creation of a disposable first project and task through actual configured integration, with an explicitly chosen small live-agent demonstration and clear cost implications.",
+      "acceptance": [
+        "Readiness does not claim success just because a process started.",
+        "A user can observe a task claim, execution and integrated result, then clean up the sample project."
+      ],
+      "needs": [
+        "wizard"
+      ],
+      "intelligence_class": "standard-high",
+      "task_type": "feature",
+      "priority": 60
+    },
+    {
+      "key": "lifecycle",
+      "title": "Provide installation repair, upgrade and uninstall paths",
+      "description": "Implement through the configured AQ integration pipeline. Use standard-high with no provider/profile pin. Re-read current source and official third-party installation/authentication documentation when implementing. Keep tests focused and use aq test for multi-file checks; do not add per-task or final-branch review tickets. \n\nImplement supported repair/update/uninstall behavior using installer-owned resource records. Recover interrupted upgrades, preserve projects/configuration and PostgreSQL data by default, and clearly identify optional destructive removal.",
+      "acceptance": [
+        "Repeated repair and upgrade preserve working customization and data.",
+        "Uninstall removes owned runtime resources without deleting unrelated software or databases."
+      ],
+      "needs": [
+        "wizard"
+      ],
+      "intelligence_class": "standard-high",
+      "task_type": "feature",
+      "priority": 60
+    },
+    {
+      "key": "docs",
+      "title": "Write clear human and agent installation guides",
+      "description": "Implement through the configured AQ integration pipeline. Use standard-high with no provider/profile pin. Re-read current source and official third-party installation/authentication documentation when implementing. Keep tests focused and use aq test for multi-file checks; do not add per-task or final-branch review tickets. \n\nUpdate the documentation epic outputs to match the shipped installer. Provide WSL and macOS quickstarts, prerequisites, exact commands, expected output, login checkpoints, unattended configuration, defaults export/import and recovery. Maintain one authoritative command source where feasible.",
+      "acceptance": [
+        "A human new to AQ can complete install and first task without internal architecture knowledge.",
+        "An agent can discover options, interpret structured outcomes and stop for required human login steps using clear instructions.",
+        "GitHub navigation, README and troubleshooting links point to current platform guides."
+      ],
+      "needs": [
+        "first-task",
+        "lifecycle"
+      ],
+      "intelligence_class": "standard-high",
+      "task_type": "docs",
+      "priority": 60
+    },
+    {
+      "key": "tests",
+      "title": "Add focused installer integration and recovery coverage",
+      "description": "Implement through the configured AQ integration pipeline. Use standard-high with no provider/profile pin. Re-read current source and official third-party installation/authentication documentation when implementing. Keep tests focused and use aq test for multi-file checks; do not add per-task or final-branch review tickets. \n\nTest adapters and installer contracts using disposable environments and mocked external/provider interactions. Cover fresh install, rerun, interrupted steps, existing PostgreSQL, port conflicts, missing providers, auth failures, default activation and export exclusions. Use resource-aware focused test subsets.",
+      "acceptance": [
+        "Tests exercise failure recovery and observable outcomes rather than mirroring implementation.",
+        "No test touches the operator database or real credentials; document limits that require native acceptance."
+      ],
+      "needs": [
+        "first-task",
+        "lifecycle"
+      ],
+      "intelligence_class": "standard-high",
+      "task_type": "feature",
+      "priority": 60
+    },
+    {
+      "key": "accept-wsl",
+      "title": "Validate complete onboarding on native Windows and WSL",
+      "description": "Implement through the configured AQ integration pipeline. Use standard-high with no provider/profile pin. Re-read current source and official third-party installation/authentication documentation when implementing. Keep tests focused and use aq test for multi-file checks; do not add per-task or final-branch review tickets. \n\nExecute documented clean-machine and existing-WSL journeys on actual supported Windows/WSL environments. Exercise reboot/resume, database service, browser login, dashboard reachability and the first task. Record OS/tool versions, commands and results; fix discovered defects.",
+      "acceptance": [
+        "Provide actual Windows/WSL evidence for supported paths, including a rerun and repair scenario.",
+        "Do not substitute Linux-only tests for Windows acceptance; record unavailable environments as unmet evidence."
+      ],
+      "needs": [
+        "docs",
+        "tests"
+      ],
+      "intelligence_class": "standard-high",
+      "task_type": "feature",
+      "priority": 60
+    },
+    {
+      "key": "accept-mac",
+      "title": "Validate complete onboarding on native macOS",
+      "description": "Implement through the configured AQ integration pipeline. Use standard-high with no provider/profile pin. Re-read current source and official third-party installation/authentication documentation when implementing. Keep tests focused and use aq test for multi-file checks; do not add per-task or final-branch review tickets. \n\nExecute clean-machine and existing-developer-machine journeys on supported native macOS architectures. Exercise prerequisite setup, provider login, database lifecycle, dashboard, first task and upgrade/repair. Record versions and results; fix discovered defects.",
+      "acceptance": [
+        "Provide native macOS evidence for the declared architecture matrix and rerun/repair scenarios.",
+        "Do not treat cross-platform mocks as native proof; record unavailable environments as unmet evidence."
+      ],
+      "needs": [
+        "docs",
+        "tests"
+      ],
+      "intelligence_class": "standard-high",
+      "task_type": "feature",
+      "priority": 60
+    },
+    {
+      "key": "release",
+      "title": "Publish coherent installation release and final onboarding results",
+      "description": "Implement through the configured AQ integration pipeline. Use standard-high with no provider/profile pin. Re-read current source and official third-party installation/authentication documentation when implementing. Keep tests focused and use aq test for multi-file checks; do not add per-task or final-branch review tickets. \n\nAssemble shipped installers, portable defaults, profiles and GitHub documentation into a coherent versioned release through normal AQ integration. Verify published entry points and artifacts, resolve remaining onboarding defects and record the final support matrix and acceptance evidence. This is delivery/acceptance work, not a review-ticket workflow.",
+      "acceptance": [
+        "All required platform journeys have evidence, and published commands resolve to the intended artifacts.",
+        "Release includes discoverable upgrade/repair instructions and explicit supported-platform limitations."
+      ],
+      "needs": [
+        "accept-wsl",
+        "accept-mac"
+      ],
+      "intelligence_class": "standard-high",
+      "task_type": "feature",
+      "priority": 60
+    }
+  ]
+}
