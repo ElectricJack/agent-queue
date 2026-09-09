@@ -50,6 +50,7 @@ DESIGN_INTEGRATION_COMMANDS = frozenset(
         "integration_reconcile_promotion",
         "integration_resolve_conflict",
         "integration_push_conflict_resolution",
+        "integration_resolve_candidate_member",
         "integration_promote_main",
         "integration_release",
         "integration_cleanup",
@@ -223,6 +224,44 @@ class IntegrationResolveConflictArgs(CommandArgs):
 class IntegrationPushConflictResolutionArgs(CommandArgs):
     intent_id: str
     fence: Fence
+
+
+class IntegrationResolveCandidateMemberArgs(CommandArgs):
+    """Publish the exact repair produced by this session's candidate-member assignment."""
+
+    resolved_head_sha: str
+    resolved_tree_sha: str
+    repair_commit_shas: tuple[str, ...] = Field(min_length=1)
+    claim_epoch: int | None = Field(default=None, ge=0)
+    # These identities are injected by the authenticated API surface.  They
+    # are accepted by the model so they cannot be smuggled into the domain
+    # request; the handler compares them with the current principal instead.
+    task_id: str | None = Field(default=None, min_length=1)
+    session_id: str | None = Field(default=None, min_length=1)
+    project_id: str | None = Field(default=None, min_length=1)
+
+    @field_validator("resolved_head_sha", "resolved_tree_sha")
+    @classmethod
+    def exact_git_oid(cls, value: str) -> str:
+        if not is_valid_git_oid(value):
+            raise ValueError("candidate repair heads and trees must be exact lowercase Git OIDs")
+        return value
+
+    @field_validator("repair_commit_shas")
+    @classmethod
+    def exact_repair_commits(cls, values: tuple[str, ...]) -> tuple[str, ...]:
+        if len(values) != len(set(values)) or any(not is_valid_git_oid(value) for value in values):
+            raise ValueError("repair_commit_shas must be unique exact lowercase Git OIDs")
+        return values
+
+
+class IntegrationResolveCandidateMemberValue(CommandValue):
+    reservation_id: str | None = None
+    batch_id: str | None = None
+    revision: int | None = None
+    member_ordinal: int | None = None
+    partial_head_sha: str | None = None
+    continuation: dict[str, Any] | None = None
 
 
 class IntegrationPromoteMainArgs(CommandArgs):
@@ -926,6 +965,52 @@ INTEGRATION_PUSH_CONFLICT_RESOLUTION = CommandContract(
 )
 
 
+INTEGRATION_RESOLVE_CANDIDATE_MEMBER = CommandContract(
+    execution=ExecutionContract(
+        name="integration_resolve_candidate_member",
+        args_model=IntegrationResolveCandidateMemberArgs,
+        result_model=IntegrationResolveCandidateMemberValue,
+        outcomes=tuple(
+            OutcomeSpec(
+                name=name,
+                classification=(
+                    OutcomeClass.SUCCESS
+                    if name in {"accepted", "already_accepted"}
+                    else OutcomeClass.FAILURE
+                ),
+            )
+            for name in (
+                "accepted",
+                "already_accepted",
+                "wait",
+                "stale",
+                "invariant_error",
+            )
+        ),
+        capability="integration_resolve_candidate_member",
+        side_effect=SideEffectClass.COMPOSITE,
+        idempotency=IdempotencySpec(mode="natural"),
+        retry_safe=True,
+        effects=(
+            UpdateClause(subject=EffectSubject.BRANCH_OWNERSHIP),
+            UpdateClause(subject=EffectSubject.INTEGRATION_OPERATION),
+        ),
+        sensitive_args=frozenset(
+            {"resolved_head_sha", "resolved_tree_sha", "repair_commit_shas"}
+        ),
+        sensitive_result_fields=frozenset({"partial_head_sha", "continuation"}),
+        receipt_projection=("reservation_id", "batch_id", "revision", "member_ordinal"),
+    ),
+    presentation=CommandPresentation(
+        title="Resolve candidate member",
+        summary=(
+            "Reserve, publish, accept, and continue the exact conflicted candidate member "
+            "owned by the authenticated repair session."
+        ),
+    ),
+)
+
+
 INTEGRATION_PROMOTE_MAIN = CommandContract(
     execution=ExecutionContract(
         name="integration_promote_main",
@@ -1369,6 +1454,26 @@ async def _push_conflict_resolution_adapter(
     )
 
 
+async def _resolve_candidate_member_adapter(
+    args: IntegrationResolveCandidateMemberArgs, ctx: CommandContext | None
+) -> CommandResult:
+    return await _invoke_adapter(
+        "integration_resolve_candidate_member",
+        args,
+        ctx,
+        IntegrationResolveCandidateMemberValue,
+        {
+            "accepted",
+            "already_accepted",
+            "wait",
+            "stale",
+            "unauthorized",
+            "invariant_error",
+            "runtime_error",
+        },
+    )
+
+
 async def _promote_main_adapter(
     args: IntegrationPromoteMainArgs, ctx: CommandContext | None
 ) -> CommandResult:
@@ -1765,6 +1870,7 @@ def register_integration_contracts(registry: ContractRegistry) -> None:
         (INTEGRATION_RECONCILE_PROMOTION, _reconcile_adapter),
         (INTEGRATION_RESOLVE_CONFLICT, _resolve_conflict_adapter),
         (INTEGRATION_PUSH_CONFLICT_RESOLUTION, _push_conflict_resolution_adapter),
+        (INTEGRATION_RESOLVE_CANDIDATE_MEMBER, _resolve_candidate_member_adapter),
         (INTEGRATION_PROMOTE_MAIN, _promote_main_adapter),
         (INTEGRATION_CLEANUP, _cleanup_adapter),
         (INTEGRATION_BUILD_CANDIDATE, _build_candidate_adapter),

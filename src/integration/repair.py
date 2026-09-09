@@ -927,7 +927,9 @@ class RepairService:
                         id=repair_task_id,
                         project_id=project_id,
                         title=f"Repair integration stage {stage}",
-                        description=self._delegate_description(operation, repair_stage),
+                        description=await self._delegate_description_on(
+                            conn, operation, repair_stage
+                        ),
                         status=TaskStatus.PAUSED,
                         parent_task_id=None,
                         repo_id=target.repository_id,
@@ -2371,7 +2373,8 @@ class RepairService:
                 .where(tasks.c.id == debug_task_id)
                 .values(
                     preferred_workspace_id=workspace_id,
-                    description=self._delegate_description(
+                    description=await self._delegate_description_on(
+                        conn,
                         operation,
                         dict(current_debug)
                         | {"starting_sha": head_sha, "dossier": debug_dossier},
@@ -2466,14 +2469,78 @@ class RepairService:
             in {operation.get("verifier_task_id"), operation.get("parent_task_id")}
         )
 
+    async def _delegate_description_on(self, conn, operation, repair_stage) -> str:
+        conflict = None
+        if operation["target_kind"] == "batch" and operation.get("batch_id"):
+            batch = (
+                await conn.execute(
+                    select(integration_batches).where(
+                        integration_batches.c.id == operation["batch_id"]
+                    )
+                )
+            ).mappings().one_or_none()
+            revision = None
+            if batch is not None:
+                revision = (
+                    await conn.execute(
+                        select(integration_candidate_revisions).where(
+                            integration_candidate_revisions.c.batch_id == batch["id"],
+                            integration_candidate_revisions.c.revision
+                            == batch["current_revision"],
+                        )
+                    )
+                ).mappings().one_or_none()
+            member = None
+            if revision is not None:
+                member = (
+                    await conn.execute(
+                        select(integration_candidate_member_results).where(
+                            integration_candidate_member_results.c.batch_id == batch["id"],
+                            integration_candidate_member_results.c.revision
+                            == revision["revision"],
+                            integration_candidate_member_results.c.member_ordinal
+                            == revision["next_member_ordinal"],
+                            integration_candidate_member_results.c.result == "conflict",
+                        )
+                    )
+                ).mappings().one_or_none()
+            detail = member["conflict_evidence"] if member is not None else None
+            if detail and detail.get("operation_id") == operation["id"]:
+                conflict = detail
+        return self._delegate_description(operation, repair_stage, conflict=conflict)
+
     @staticmethod
-    def _delegate_description(operation, repair_stage) -> str:
-        return (
+    def _delegate_description(operation, repair_stage, *, conflict=None) -> str:
+        description = (
             "Execute the frozen hierarchical-integration repair stage.\n\n"
             f"Operation: {operation['id']}\n"
             f"Stage: {repair_stage['ordinal']}\n"
             f"Starting SHA: {repair_stage['starting_sha']}\n"
             f"Dossier: {repair_stage['dossier']}"
+        )
+        if not conflict:
+            return description
+        return (
+            f"{description}\n\n"
+            "## Candidate member conflict\n\n"
+            f"Batch: {conflict['batch_id']}\n"
+            f"Candidate revision: {conflict['revision']}\n"
+            f"Member ordinal: {conflict['ordinal']}\n"
+            f"Partial head: {conflict['partial_head_sha']}\n"
+            f"Member source base: {conflict['source_base_sha']}\n"
+            f"Member reviewed head: {conflict['source_head_sha']}\n\n"
+            "Start from the exact partial head above. Resolve only this member's conflict, "
+            "commit the repair as a linear non-merge range, and do not push the integration "
+            "branch yourself. Record `git rev-parse HEAD`, `git rev-parse HEAD^{tree}`, and "
+            "each commit from `git rev-list --reverse PARTIAL_HEAD..HEAD`, then run:\n\n"
+            "    aq integration resolve-candidate-member \\\n"
+            "      --resolved-head-sha RESOLVED_HEAD_SHA \\\n"
+            "      --resolved-tree-sha RESOLVED_TREE_SHA \\\n"
+            "      --repair-commit-sha REPAIR_COMMIT_SHA\n\n"
+            "Repeat `--repair-commit-sha` in oldest-to-newest order for every repair commit. "
+            "The command derives the batch, member, operation, partial head, claim, workspace, "
+            "and branch fence from this authenticated assignment; never supply or push a "
+            "replacement lineage by hand."
         )
 
     async def _current_batch_subject_rows_on(self, conn, operation):

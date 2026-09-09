@@ -56,6 +56,10 @@ AGENT_COMMAND_SET: frozenset[str] = frozenset(
         # filing path itself would have accepted.
         "reparent_task",
         "integration_status",
+        # The command derives the candidate/member/fence from this session's
+        # live repair assignment and separately fences pool calls by claim
+        # epoch.  No caller-selected integration identity reaches the service.
+        "integration_resolve_candidate_member",
     }
 )
 

@@ -12,6 +12,7 @@ from typing import Any
 import click
 
 from .app import _get_client, _handle_errors, _run, cli
+from .claim_epoch import claim_epoch_option, resolve_claim_epoch
 from .envelope import emit
 
 
@@ -37,6 +38,43 @@ def integration() -> None:
 def integration_status(ctx: click.Context, project_id: str) -> None:
     """Show rollout, readiness, active work, and cleanup for PROJECT_ID."""
     _execute(ctx, "integration_status", {"project_id": project_id})
+
+
+@integration.command("resolve-candidate-member")
+@click.option("--resolved-head-sha", required=True)
+@click.option("--resolved-tree-sha", required=True)
+@click.option(
+    "--repair-commit-sha",
+    "repair_commit_shas",
+    multiple=True,
+    required=True,
+    help="Exact repair commit in oldest-to-newest order; repeat for every commit.",
+)
+@claim_epoch_option
+@click.pass_context
+@_handle_errors
+def integration_resolve_candidate_member(
+    ctx: click.Context,
+    resolved_head_sha: str,
+    resolved_tree_sha: str,
+    repair_commit_shas: tuple[str, ...],
+    claim_epoch: int | None,
+) -> None:
+    """Resolve the candidate member assigned to this repair session.
+
+    The daemon derives the active batch, revision, member, operation, partial
+    head, and branch fence from the authenticated session.  This command never
+    accepts those authority-bearing values from the caller.
+    """
+    args: dict[str, Any] = {
+        "resolved_head_sha": resolved_head_sha,
+        "resolved_tree_sha": resolved_tree_sha,
+        "repair_commit_shas": list(repair_commit_shas),
+    }
+    resolved_epoch = resolve_claim_epoch(claim_epoch)
+    if resolved_epoch is not None:
+        args["claim_epoch"] = resolved_epoch
+    _execute(ctx, "integration_resolve_candidate_member", args)
 
 
 @integration.command("flush")

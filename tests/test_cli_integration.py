@@ -29,6 +29,28 @@ def _client(result):
         (["flush", "p"], "integration_flush", {"project_id": "p"}),
         (
             [
+                "resolve-candidate-member",
+                "--resolved-head-sha",
+                "a" * 40,
+                "--resolved-tree-sha",
+                "b" * 40,
+                "--repair-commit-sha",
+                "c" * 40,
+                "--repair-commit-sha",
+                "a" * 40,
+                "--claim-epoch",
+                "7",
+            ],
+            "integration_resolve_candidate_member",
+            {
+                "resolved_head_sha": "a" * 40,
+                "resolved_tree_sha": "b" * 40,
+                "repair_commit_shas": ["c" * 40, "a" * 40],
+                "claim_epoch": 7,
+            },
+        ),
+        (
+            [
                 "enable",
                 "p",
                 "--mode",
@@ -195,12 +217,22 @@ def test_integration_cli_is_handcrafted_and_has_no_deferred_probe_command():
         "integration_resume",
         "integration_abort",
         "integration_retry_cleanup",
+        "integration_resolve_candidate_member",
     }
     assert expected <= HANDCRAFTED_COVERAGE
 
     result = CliRunner().invoke(cli, ["integration", "--help"])
     assert result.exit_code == 0, result.output
-    for command in ("status", "flush", "enable", "waive-history", "resume", "abort", "retry-cleanup"):
+    for command in (
+        "status",
+        "flush",
+        "enable",
+        "waive-history",
+        "resume",
+        "abort",
+        "retry-cleanup",
+        "resolve-candidate-member",
+    ):
         assert command in result.output
     assert "probe" not in result.output
 
@@ -252,6 +284,7 @@ def test_operator_guide_uses_only_real_operational_commands_and_options():
         "aq integration resume OPERATION_ID",
         "aq integration abort OPERATION_ID --reason REASON",
         "aq integration retry-cleanup BATCH_ID",
+        "aq integration resolve-candidate-member",
         "aq project set PROJECT_ID integration-repository-id REPOSITORY_ID --expected-integration-generation GENERATION --reason REASON",
         "aq project set PROJECT_ID integration-policy POLICY_JSON --expected-integration-generation GENERATION --reason REASON",
     )
@@ -259,6 +292,15 @@ def test_operator_guide_uses_only_real_operational_commands_and_options():
         assert command in guide
     assert "aq integration probe" not in guide
 
-    for leaf in ("status", "flush", "enable", "waive-history", "resume", "abort", "retry-cleanup"):
+    for leaf in (
+        "status",
+        "flush",
+        "enable",
+        "waive-history",
+        "resume",
+        "abort",
+        "retry-cleanup",
+        "resolve-candidate-member",
+    ):
         result = CliRunner().invoke(cli, ["integration", leaf, "--help"])
         assert result.exit_code == 0, (leaf, result.output)
