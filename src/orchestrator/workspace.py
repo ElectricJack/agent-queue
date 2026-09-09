@@ -606,6 +606,19 @@ class WorkspaceMixin:
         target = BranchKey(repository_id=repository_id, branch=branch)
         ownership = BranchOwnership(self.db)
         owner = await ownership.get_owner(target)
+        if (
+            operation is None
+            and subject_id == task.id
+            and owner is not None
+            and owner["owner_id"] == task.id
+            and owner["owner_role"] == "worker"
+            and owner["handoff_state"] == "released"
+        ):
+            # A reopened producer retains its canonical origin, but its prior
+            # session released ownership at close. Reserve a fresh fence for
+            # the new attempt before preparing the workspace.
+            await ownership.acquire(target, task.id, "worker")
+            owner = await ownership.get_owner(target)
         role = str(owner["owner_role"]) if owner is not None else ""
         expected_role = "verifier" if operation is not None or subject_id == task.id and role == "verifier" else "worker"
         if (
