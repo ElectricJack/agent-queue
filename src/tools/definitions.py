@@ -196,12 +196,11 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "get_costs": "system",
     "db_preflight_hierarchy": "system",
     "get_schema": "system",
-    # aq-surface task-scope allowlist (design §8.2 DEFAULT_TASK_ALLOWLIST).
+    # aq-surface task commands.
     # Categorized (not core) so they don't inflate the supervisor's always-
     # loaded tool set — these are what a *task* session calls, not what the
     # supervisor LLM needs by default.  task_close/task_heartbeat land in
-    # src/commands/session_commands.py; ask_human is unscheduled beyond this
-    # inventory; memory_save/memory_search are normally provided by the
+    # src/commands/session_commands.py; memory_save/memory_search are normally provided by the
     # external aq-memory plugin — these entries give MCP a tight, intentional
     # schema regardless of which lane has implemented the backing `_cmd_*`
     # method yet (an unimplemented command still round-trips through
@@ -221,7 +220,6 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "task_close": "task",
     "task_heartbeat": "task",
     "task_claim": "task",
-    "ask_human": "task",
     "memory_save": "memory",
     "memory_search": "memory",
     # session — operator surface (session-runtime spec §3, §5)
@@ -4819,24 +4817,6 @@ _ALL_TOOL_DEFINITIONS = [
                     ),
                 },
             },
-        },
-    },
-    {
-        "name": "ask_human",
-        "description": (
-            "Ask a human a question via a human gate, blocking on their response. "
-            "Backs `aq task ask`. (Implementation pending.)"
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "question": {"type": "string", "description": "The question to ask"},
-                "task_id": {
-                    "type": "string",
-                    "description": "Task ID this question is about (optional)",
-                },
-            },
-            "required": ["question"],
         },
     },
     # -- messages (supervisor-agent spec §6.1) ------------------------------

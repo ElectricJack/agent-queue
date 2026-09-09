@@ -71,7 +71,7 @@ aq message reply <original_msg_id> "Yes, proceed. I've cleared the gate."
 
 ## Report a blocker
 
-The ask_human command is not available in the current build. For a mid-task
+The old ask_human command was retired. For a mid-task
 blocking question, report the blocker through the supported message queue:
 
 ```bash

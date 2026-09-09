@@ -532,7 +532,7 @@ class TestDriftDetection:
             "task_show",
             "task_set",
             # aq-surface Phase S1: CLI/hook-only commands, not part of the
-            # nine-command task-scope MCP allowlist (design §8.2), so they
+            # task-scope MCP allowlist (design §8.2), so they
             # are intentionally left to auto-discovery rather than given a
             # rich schema here — see docs/specs/implementation/aq-surface.md
             # §3, §9.
@@ -635,7 +635,7 @@ class TestDriftDetection:
             "task_show",
             "task_set",
             # aq-surface Phase S1: CLI/hook-only commands, not part of the
-            # nine-command task-scope MCP allowlist (design §8.2), so they
+            # task-scope MCP allowlist (design §8.2), so they
             # are intentionally left to auto-discovery rather than given a
             # rich schema here — see docs/specs/implementation/aq-surface.md
             # §3, §9.

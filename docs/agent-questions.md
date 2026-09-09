@@ -10,6 +10,13 @@ scope/design decisions, risky actions, and ambiguous questions go to the human.
 The supervisor can escalate a routine question and cannot supply a human-only
 approval. Unanswered supervisor questions escalate after five minutes.
 
+There is no separate `aq task ask-human` command. That never-implemented
+gate-plus-message surface was retired to avoid creating a second question
+identity and state flow. End a completed assistant turn with the question so
+AQ records it here. If the worker cannot continue and only needs to notify the
+operator, use `aq message send --to user:dashboard --project PROJECT_ID --body
+"Blocked: ..."`.
+
 ## Answer a question
 
 - In Discord, use **Reply** on the agent-question card. The button remains usable
