@@ -529,7 +529,8 @@ async def test_root_projection_requires_leaf_or_exact_current_parent_identity(db
     assert reviews[parent_key]["evidence"]["verification_id"] == "verification-parent"
 
 
-async def test_root_projection_excludes_each_common_near_miss(db):
+@pytest.mark.parametrize("receipt_branch", ["main", "refs/heads/main", "refs/heads/other"])
+async def test_root_projection_excludes_each_common_near_miss(db, receipt_branch):
     task_ids = (
         "good",
         "nested",
@@ -641,7 +642,7 @@ async def test_root_projection_excludes_each_common_near_miss(db):
                 source_task_id="already-delivered",
                 target_task_id=None,
                 repository_id="repo",
-                target_branch="main",
+                target_branch=receipt_branch,
                 disposition="code",
                 created_at=2.0,
             )
@@ -656,7 +657,8 @@ async def test_root_projection_excludes_each_common_near_miss(db):
             limit=100,
         )
 
-    assert [row["task_id"] for row in page] == ["good"]
+    expected = ["already-delivered", "good"] if receipt_branch.endswith("/other") else ["good"]
+    assert [row["task_id"] for row in page] == expected
 
 
 async def test_zero_root_seal_is_terminal_resource_free_and_request_replay(db):
