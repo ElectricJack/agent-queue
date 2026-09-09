@@ -39,7 +39,7 @@ from __future__ import annotations
 import logging
 import time
 
-from sqlalchemy import delete, insert, or_, select, update
+from sqlalchemy import and_, delete, func, insert, or_, select, update
 
 from src.database.tables import agent_profiles, agents, sessions, task_session_attempts
 from src.database.queries.task_session_queries import TERMINAL_SESSION_STATES, open_attempts
@@ -472,6 +472,43 @@ class SessionQueryMixin:
                 )
                 .values(last_activity=ts)
             )
+
+    async def request_idle_pool_recycle(
+        self, session_id: str, *, instance_token: str, stale_before: float
+    ) -> bool:
+        """Fence an abandoned post-prepare-failure pool worker for teardown.
+
+        The recovery caller has observed a stale idle worker, but that is not
+        enough to stop it: a concurrent ``task_claim`` may be taking its
+        slot.  This single conditional write is the hand-off fence.  Once it
+        wins, a new claim sees ``desired_state='stopped'`` and cannot acquire
+        work; if a claim won first, one of the ``NULL`` predicates loses and
+        recovery leaves the worker alone.
+
+        Requiring the durable instance token also prevents a stale observer
+        from draining a same-id successor.  Intentional sleep, drain, and
+        quarantine states never satisfy the running/running predicates.
+        """
+        async with self.immediate() as conn:
+            result = await conn.execute(
+                update(sessions)
+                .where(
+                    and_(
+                        sessions.c.id == session_id,
+                        sessions.c.instance_token == instance_token,
+                        sessions.c.lifecycle == "pool",
+                        sessions.c.state == "running",
+                        sessions.c.desired_state == "running",
+                        sessions.c.task_id.is_(None),
+                        sessions.c.claim_phase.is_(None),
+                        sessions.c.last_claim_result == "prepare_failed",
+                        func.coalesce(sessions.c.last_activity, sessions.c.started_at)
+                        <= stale_before,
+                    )
+                )
+                .values(desired_state="stopped")
+            )
+        return result.rowcount == 1
 
     async def delete_session(self, session_id: str) -> None:
         """Hard-delete a row.  Admin and tests only — stop() keeps history."""

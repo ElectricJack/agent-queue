@@ -873,6 +873,89 @@ class TestPoolPrepareTimeout:
         assert pool_reconciler.test_orch.terminations == []
         assert await db.list_tasks() == []
 
+
+class TestAbandonedPoolClaimLoop:
+    async def _failed_idle_pool(self, db, provider, *, sid="pool-idle", **overrides):
+        """A live worker which received ``prepare_failed`` and then went quiet."""
+        overrides.setdefault("last_activity", NOW - 1_000)
+        return await _session(
+            db,
+            provider,
+            sid=sid,
+            task_id=None,
+            name=f"p-{sid}",
+            lifecycle="pool",
+            last_claim_result="prepare_failed",
+            **overrides,
+        )
+
+    async def test_recycles_stale_unclaimed_prepare_failure(self, db, provider, pool_reconciler):
+        row = await self._failed_idle_pool(db, provider)
+
+        await pool_reconciler._step_abandoned_pool_claim_loop([row], NOW)
+
+        current = await db.get_session(row.id)
+        assert (current.state, current.desired_state) == ("stopped", "stopped")
+        assert pool_reconciler.test_orch.terminations == [(row.id, "claim_loop_stalled")]
+
+    async def test_successor_after_recycle_fence_is_not_terminated(
+        self, db, provider, pool_reconciler, monkeypatch
+    ):
+        row = await self._failed_idle_pool(db, provider)
+        recycle = db.request_idle_pool_recycle
+
+        async def replace_after_fence(*args, **kwargs):
+            result = await recycle(*args, **kwargs)
+            assert result
+            await db.update_session(
+                row.id, instance_token="successor-instance", desired_state="running"
+            )
+            return result
+
+        monkeypatch.setattr(db, "request_idle_pool_recycle", replace_after_fence)
+        await pool_reconciler._step_abandoned_pool_claim_loop([row], NOW)
+
+        current = await db.get_session(row.id)
+        assert current.instance_token == "successor-instance"
+        assert current.desired_state == "running"
+        assert pool_reconciler.test_orch.terminations == []
+
+    async def test_recent_claim_loop_progress_is_not_recycled(self, db, provider, pool_reconciler):
+        row = await self._failed_idle_pool(db, provider, last_activity=NOW - 1)
+
+        await pool_reconciler._step_abandoned_pool_claim_loop([row], NOW)
+
+        current = await db.get_session(row.id)
+        assert (current.state, current.desired_state) == ("running", "running")
+        assert pool_reconciler.test_orch.terminations == []
+
+    @pytest.mark.parametrize(
+        ("state", "desired_state"),
+        [("sleeping", "sleeping"), ("draining", "stopped"), ("quarantined", "stopped")],
+    )
+    async def test_respects_intentional_non_running_states(
+        self, db, provider, pool_reconciler, state, desired_state
+    ):
+        row = await self._failed_idle_pool(
+            db, provider, sid=f"pool-{state}", state=state, desired_state=desired_state
+        )
+
+        await pool_reconciler._step_abandoned_pool_claim_loop([row], NOW)
+
+        assert (await db.get_session(row.id)).state == state
+        assert pool_reconciler.test_orch.terminations == []
+
+    async def test_cas_refuses_a_worker_that_began_another_claim(self, db, provider, pool_reconciler):
+        row = await self._failed_idle_pool(db, provider)
+        await db.update_session(row.id, claim_phase="claiming", claim_phase_at=NOW)
+
+        await pool_reconciler._step_abandoned_pool_claim_loop([row], NOW)
+
+        current = await db.get_session(row.id)
+        assert current.state == "running" and current.desired_state == "running"
+        assert current.claim_phase == "claiming"
+        assert pool_reconciler.test_orch.terminations == []
+
     async def test_prepare_timeout_is_disabled_when_swarm_is_disabled(
         self, db, provider, pool_reconciler, bus, tmp_path
     ):

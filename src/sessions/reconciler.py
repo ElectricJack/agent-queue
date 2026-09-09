@@ -189,6 +189,7 @@ class SessionReconciler:
             self._step_drain_ack,
             self._step_prepare_timeout,
             self._step_exits,
+            self._step_abandoned_pool_claim_loop,
             self._step_orphans,
             self._step_stall_ladder,
             self._step_named,
@@ -494,6 +495,75 @@ class SessionReconciler:
                 await self._emit(
                     "session.claim_timeout", session_id=s.id, task_id=s.task_id
                 )
+
+    # -- pool: abandoned post-prepare claim loop -------------------------
+
+    def _pool_claim_loop_stall_seconds(self) -> float:
+        """Grace before recycling an idle worker stranded after preparation.
+
+        A healthy worker may sit in one server-side long poll for
+        ``claim_wait_max`` seconds, then need a scheduler tick to issue the
+        next one.  Two complete windows avoid confusing that normal silence
+        with abandonment.  ``prepare_timeout`` is also a lower bound: both
+        values are existing operator-facing bounds on the same preparation
+        and retry path, so this introduces no unbounded idle supply state.
+        """
+        swarm = self.config.swarm
+        return max(1.0, float(swarm.prepare_timeout), 2.0 * float(swarm.claim_wait_max))
+
+    async def _step_abandoned_pool_claim_loop(
+        self, live: list[SessionRecord], now: float
+    ) -> None:
+        """Recycle a worker that stopped after a released prepare failure.
+
+        ``prepare_failed`` already leaves the original task READY with its
+        exponential preparation backoff and diagnostic metadata.  What it
+        cannot prove is that the agent consumed the response and resumed its
+        loop.  ``task_claim`` stamps session activity at entry, so a stale
+        result plus no later claim for the bounded grace is evidence the loop
+        ceased.  The database CAS changes intent before teardown, closing the
+        race with a late claim and preserving all session/instance fences.
+        """
+        if not getattr(self.config.swarm, "enabled", True) or self.orchestrator is None:
+            return
+        stale_before = now - self._pool_claim_loop_stall_seconds()
+        for observed in live:
+            if (
+                observed.lifecycle != "pool"
+                or observed.state != "running"
+                or observed.desired_state != "running"
+                or observed.task_id is not None
+                or observed.claim_phase is not None
+                or observed.last_claim_result != "prepare_failed"
+            ):
+                continue
+            last = observed.last_activity or observed.started_at
+            if last is None or last > stale_before or self._is_deferred(observed.name):
+                continue
+            # Do not tear down based on an observation alone.  The guarded
+            # update proves this exact running instance remains unclaimed;
+            # a concurrent claim wins either the phase write or this intent
+            # write, never both.
+            fenced = await self.db.request_idle_pool_recycle(
+                observed.id,
+                instance_token=observed.instance_token,
+                stale_before=stale_before,
+            )
+            if not fenced:
+                continue
+            current = await self.db.get_session(observed.id)
+            # The recycle CAS protects the *observed* instance while it
+            # writes the stop intent.  A replacement with the same session
+            # id can still arrive before teardown; never terminate that
+            # successor with the stale handle.
+            if current is None or current.instance_token != observed.instance_token:
+                continue
+            logger.warning(
+                "Pool session %s stopped claiming after prepare failure; recycling", current.id
+            )
+            await self.orchestrator._terminate_pool_session(
+                current, reason="claim_loop_stalled"
+            )
 
     # -- step 3: exits -----------------------------------------------------
 
