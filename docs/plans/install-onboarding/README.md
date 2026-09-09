@@ -1,6 +1,6 @@
 # Install & Onboarding
 
-AQ epic: pending creation. Prerequisite: **solid-grove**, the complete GitHub documentation epic.
+AQ epic: **noble-apex** (19 children, `noble-apex.1` through `noble-apex.19`). Prerequisite: **solid-grove**, the complete GitHub documentation epic.
 
 Deliver one straightforward installation path on Windows through WSL2 and on macOS, from a fresh machine to a working first task. This plan specifies implementation work; it does not claim these capabilities already ship.
 
