@@ -90,6 +90,70 @@ def materialized_origin_when_hierarchical():
     )
 
 
+def delivered_same_parent_prerequisites_when_hierarchical():
+    """Require a direct sibling prerequisite to reach the shared parent first.
+
+    Graph blockedness intentionally releases a ``blocks`` dependent when its
+    predecessor completes.  In a hierarchy project that is too early: the
+    predecessor's reviewed head still belongs to its feature branch until a
+    receipt proves it was incorporated into their common parent branch.
+    """
+    dependency = task_dependencies.alias("hierarchy_prerequisite")
+    prerequisite = tasks.alias("hierarchy_prerequisite_task")
+    parent = tasks.alias("hierarchy_prerequisite_parent")
+    checkpoint = task_integration_checkpoints.alias("hierarchy_prerequisite_checkpoint")
+    receipt = task_delivery_receipts.alias("hierarchy_prerequisite_receipt")
+    origin = task_branch_origins.alias("hierarchy_prerequisite_origin")
+
+    delivered = exists(
+        select(literal(1)).where(
+            receipt.c.source_task_id == prerequisite.c.id,
+            receipt.c.target_task_id == tasks.c.parent_task_id,
+            receipt.c.repository_id == checkpoint.c.repository_id,
+            receipt.c.target_branch == parent.c.branch_name,
+            receipt.c.disposition == "code",
+            receipt.c.reviewed_head_sha == checkpoint.c.checkpoint_sha,
+            # A receipt from before a reopen must never authorize its new
+            # incarnation, even if it happens to name the same old SHA.
+            receipt.c.created_at >= prerequisite.c.updated_at,
+        )
+    )
+    prerequisite_is_undelivered = exists(
+        select(literal(1))
+        .select_from(
+            dependency.join(prerequisite, prerequisite.c.id == dependency.c.depends_on_task_id)
+            .join(parent, parent.c.id == tasks.c.parent_task_id)
+            .outerjoin(checkpoint, checkpoint.c.task_id == prerequisite.c.id)
+        )
+        .where(
+            dependency.c.task_id == tasks.c.id,
+            dependency.c.dep_type == DepType.BLOCKS.value,
+            tasks.c.parent_task_id.is_not(None),
+            prerequisite.c.parent_task_id == tasks.c.parent_task_id,
+            prerequisite.c.status == TaskStatus.COMPLETED.value,
+            ~delivered,
+        )
+    )
+    preserved_parent_origin = exists(
+        select(literal(1)).where(
+            origin.c.task_id == tasks.c.id,
+            origin.c.retired_at.is_(None),
+            origin.c.parent_task_id == tasks.c.parent_task_id,
+            origin.c.parent_ref == parent.c.branch_name,
+        )
+    )
+    return ~exists(
+        select(literal(1))
+        .select_from(projects.join(parent, parent.c.id == tasks.c.parent_task_id))
+        .where(
+            projects.c.id == tasks.c.project_id,
+            projects.c.hierarchical_integration_mode.in_(("hierarchy", "train")),
+            tasks.c.parent_task_id.is_not(None),
+            ~preserved_parent_origin,
+        )
+    ) & ~prerequisite_is_undelivered
+
+
 #: Session states that still hold their task — a container in one of these
 #: cannot be settled out from under a live worker (spec §7).
 LIVE_SESSION_STATES = ("starting", "running", "draining")
@@ -134,7 +198,8 @@ class HierarchyQueryMixin:
                 (
                     await conn.execute(
                         select(tasks.c.id).where(
-                            tasks.c.id.in_(task_ids), materialized_origin_when_hierarchical()
+                            tasks.c.id.in_(task_ids), materialized_origin_when_hierarchical(),
+                            delivered_same_parent_prerequisites_when_hierarchical(),
                         )
                     )
                 )
@@ -145,6 +210,69 @@ class HierarchyQueryMixin:
 
     async def is_hierarchy_task_runnable(self, task_id: str) -> bool:
         return task_id in await self.hierarchy_runnable_task_ids([task_id])
+
+    async def hierarchy_prerequisite_delivery_head(self, task_id: str) -> str | None:
+        """Return the latest exact parent head a sibling-dependent child needs.
+
+        The child origin remains immutable at its filing base.  This is only a
+        workspace-start overlay: a delivered parent head is a descendant of
+        that base and lets the child's normal branch preparation fast-forward
+        from the preserved origin without copying files or merging siblings.
+        ``None`` means either no sibling prerequisite exists or the task is
+        not currently receipt-eligible (the caller has already fail-closed via
+        :meth:`is_hierarchy_task_runnable`).
+        """
+        dependency = task_dependencies.alias("delivery_head_dependency")
+        prerequisite = tasks.alias("delivery_head_prerequisite")
+        checkpoint = task_integration_checkpoints.alias("delivery_head_checkpoint")
+        receipt = task_delivery_receipts.alias("delivery_head_receipt")
+        async with self._engine.connect() as conn:
+            task = (
+                await conn.execute(select(tasks).where(tasks.c.id == task_id))
+            ).mappings().one_or_none()
+            if task is None or task["parent_task_id"] is None:
+                return None
+            parent_branch = (
+                await conn.execute(
+                    select(tasks.c.branch_name).where(tasks.c.id == task["parent_task_id"])
+                )
+            ).scalar_one_or_none()
+            if not parent_branch:
+                return None
+            rows = (
+                await conn.execute(
+                    select(receipt.c.after_sha, receipt.c.created_at)
+                    .select_from(
+                        dependency.join(
+                            prerequisite,
+                            prerequisite.c.id == dependency.c.depends_on_task_id,
+                        )
+                        .join(checkpoint, checkpoint.c.task_id == prerequisite.c.id)
+                        .join(
+                            receipt,
+                            and_(
+                                receipt.c.source_task_id == prerequisite.c.id,
+                                receipt.c.target_task_id == task["parent_task_id"],
+                                receipt.c.repository_id == checkpoint.c.repository_id,
+                                receipt.c.target_branch == parent_branch,
+                                receipt.c.disposition == "code",
+                                receipt.c.reviewed_head_sha == checkpoint.c.checkpoint_sha,
+                                receipt.c.created_at >= prerequisite.c.updated_at,
+                            ),
+                        )
+                    )
+                    .where(
+                        dependency.c.task_id == task_id,
+                        dependency.c.dep_type == DepType.BLOCKS.value,
+                        prerequisite.c.parent_task_id == task["parent_task_id"],
+                    )
+                    .order_by(receipt.c.created_at.desc(), receipt.c.id.desc())
+                )
+            ).all()
+        for head, _created_at in rows:
+            if isinstance(head, str) and len(head) == 40:
+                return head
+        return None
 
     async def mark_container(self, task_id: str, *, conn) -> None:
         """Set ``task_metadata.container = true`` (idempotent).  Never cleared."""
