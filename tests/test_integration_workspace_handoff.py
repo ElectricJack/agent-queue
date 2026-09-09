@@ -2005,3 +2005,167 @@ async def test_unlocked_verifier_proves_later_workspace_users_before_release(
     assert "detach" not in events
     if case == "stopped":
         assert set(confirmed) == {"later", "instance"}
+
+
+async def _fail_close_orchestrator(orchestrator_factory, tmp_path, monkeypatch, *, dirty=False):
+    """A train-mode pool worker about to close its own task ``--outcome fail``."""
+    from src.orchestrator.stranded_work import StrandedWork
+
+    orchestrator = await _pool_orchestrator(
+        orchestrator_factory, tmp_path, handoff_state="attached"
+    )
+    await orchestrator.db.update_project(
+        "p", hierarchical_integration_mode="train", integration_repository_id="repo"
+    )
+    await orchestrator.db.transition_task("task", TaskStatus.IN_PROGRESS, force=True)
+
+    events: list[str] = []
+    # ``dirty`` flips clean once the slot restore has run, which is exactly
+    # what ``restore_slot_after_task`` does to a real slot.
+    state = {"dirty": dirty}
+
+    def _run_factory():
+        current_branch, run = _clean_git(events)
+
+        async def run_wrapper(args, *, cwd):
+            if args[:2] == ["status", "--porcelain"]:
+                events.append("clean-check")
+                return " M changed.py" if state["dirty"] else ""
+            return await run(args, cwd=cwd)
+
+        return current_branch, run_wrapper
+
+    current_branch, run = _run_factory()
+    orchestrator.git.aget_current_branch = AsyncMock(side_effect=current_branch)
+    orchestrator.git._arun_unlocked = AsyncMock(side_effect=run)
+    orchestrator.git._arun = AsyncMock(return_value="a" * 40)
+    orchestrator._get_default_branch = AsyncMock(return_value="main")
+    orchestrator.release_session_task_resources = AsyncMock(
+        side_effect=AssertionError("a pool close must not run the full release")
+    )
+    monkeypatch.setattr(
+        orchestrator.session_providers,
+        "create",
+        lambda *_args: (_ for _ in ()).throw(AssertionError("pool writer must not be stopped")),
+    )
+    orchestrator._preserve_unpushed_on_failure = AsyncMock(
+        return_value=StrandedWork(status="clean")
+    )
+
+    async def _restore(slot, *, task_id=None):
+        events.append(f"restore:{slot.id}:{task_id}")
+        state["dirty"] = False
+        return False
+
+    slots = SimpleNamespace(restore_slot_after_task=_restore)
+    orchestrator._worktree_slots = lambda: slots
+    return orchestrator, events
+
+
+async def test_pool_fail_close_returns_the_branch_fence_to_reserved(
+    orchestrator_factory, tmp_path, monkeypatch
+):
+    """The brisk-delta regression: only a COMPLETED close released the writer.
+
+    A ``--outcome fail`` close lands READY (retry) or BLOCKED (retries spent),
+    so ``release_needed`` was false and the fence stayed ``attached`` to a
+    session that was about to let go of the task.  Nothing downstream can undo
+    that -- ``_release_claim_on`` and ``_terminate_pool_session_locked`` both
+    protect an attached owner -- so the task's own retry failed forever with
+    ``prepare_failed`` / "canonical branch is not reserved by this task".
+    """
+    orchestrator, events = await _fail_close_orchestrator(
+        orchestrator_factory, tmp_path, monkeypatch
+    )
+    db = orchestrator.db
+
+    result = await orchestrator.complete_session_task(
+        await db.get_task("task"),
+        outcome="fail",
+        pool=True,
+        session_live=False,
+        session_id="session",
+        notes="could not finish",
+    )
+
+    assert result["status"] != TaskStatus.COMPLETED.value
+    assert not result.get("retain_claim")
+    owner = await BranchOwnership(db).get_owner(
+        BranchKey(repository_id="repo", branch="aq/parent")
+    )
+    # The same task owns a fresh *reserved* fence, which is precisely what the
+    # retry's ``_prepare_and_activate_locked`` requires.
+    assert owner["owner_id"] == "task"
+    assert owner["owner_role"] == "worker"
+    assert owner["handoff_state"] == "reserved"
+    assert owner["session_id"] is None and owner["workspace_id"] is None
+    # The claim release stays ``_cmd_task_close``'s job: the evidence the
+    # proof just read must still be here when it runs.
+    assert (await db.get_workspace("slot")).locked_by_task_id == "task"
+    assert (await db.get_session("session")).task_id == "task"
+
+
+async def test_pool_fail_close_restores_the_slot_before_proving_the_handoff(
+    orchestrator_factory, tmp_path, monkeypatch
+):
+    """A dirty fail close must not stall on ``retain_claim``.
+
+    The detach proof treats any uncommitted change as a failed proof, and a
+    failing close reaches the release with its tree still dirty -- the only
+    thing that cleans it, ``restore_slot_after_task``, ran later in
+    ``_cmd_task_close``.  The release now runs that restore first, so the
+    ordinary dirty fail close proves its handoff instead of wedging the worker.
+    """
+    orchestrator, events = await _fail_close_orchestrator(
+        orchestrator_factory, tmp_path, monkeypatch, dirty=True
+    )
+    db = orchestrator.db
+
+    result = await orchestrator.complete_session_task(
+        await db.get_task("task"),
+        outcome="fail",
+        pool=True,
+        session_live=False,
+        session_id="session",
+        notes="dirty and failing",
+    )
+
+    assert events.index("restore:slot:task") < events.index("clean-check")
+    assert not result.get("retain_claim")
+    # ``_cmd_task_close`` reads this to skip salvaging the same slot twice.
+    assert result["slot_restored"] is True
+    owner = await BranchOwnership(db).get_owner(
+        BranchKey(repository_id="repo", branch="aq/parent")
+    )
+    assert owner["handoff_state"] == "reserved"
+
+
+async def test_pool_fail_close_leaves_a_foreign_owner_alone(
+    orchestrator_factory, tmp_path, monkeypatch
+):
+    """Only the closing task's *own* branch is released -- never a neighbour's."""
+    orchestrator, events = await _fail_close_orchestrator(
+        orchestrator_factory, tmp_path, monkeypatch
+    )
+    db = orchestrator.db
+    async with db.immediate() as conn:
+        await conn.execute(
+            update(integration_branch_owners)
+            .where(integration_branch_owners.c.id == "owner")
+            .values(owner_id="someone-else")
+        )
+
+    await orchestrator.complete_session_task(
+        await db.get_task("task"),
+        outcome="fail",
+        pool=True,
+        session_live=False,
+        session_id="session",
+    )
+
+    owner = await BranchOwnership(db).get_owner(
+        BranchKey(repository_id="repo", branch="aq/parent")
+    )
+    assert owner["owner_id"] == "someone-else"
+    assert owner["handoff_state"] == "attached"
+    assert "restore:slot:task" not in events

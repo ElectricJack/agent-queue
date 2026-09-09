@@ -913,6 +913,7 @@ class SessionCommandsMixin:
         # not revoke.
         stale = False
         retry_in_session = False
+        claim_release_declined = False
         review_evidence_snapshot = None
         if outcome == "pass" and task.profile_id in {"reviewer", "final-reviewer"}:
             from src.database.queries.hierarchy_queries import HierarchyError
@@ -1085,17 +1086,24 @@ class SessionCommandsMixin:
             # Return a clean, pushed branch to detached HEAD before dropping
             # the task lock; unpushed work intentionally remains pinned for
             # the forensic retry path (worktree-execution §3.4).
-            slot = await self.orchestrator._slot_workspace_at(session.work_dir)
-            if slot is not None:
-                try:
-                    await self.orchestrator._worktree_slots().restore_slot_after_task(
-                        slot, task_id=task_id
-                    )
-                except Exception:
-                    logger.warning("Could not restore pool slot for %s", task_id, exc_info=True)
+            #
+            # A failing close has already been restored, by the failing-writer
+            # release inside ``complete_session_task`` -- that release needs a
+            # clean tree to prove its handoff, so it cannot wait for this call.
+            if not result.get("slot_restored"):
+                slot = await self.orchestrator._slot_workspace_at(session.work_dir)
+                if slot is not None:
+                    try:
+                        await self.orchestrator._worktree_slots().restore_slot_after_task(
+                            slot, task_id=task_id
+                        )
+                    except Exception:
+                        logger.warning(
+                            "Could not restore pool slot for %s", task_id, exc_info=True
+                        )
             # The workspace agent-lock is retained (``terminate_pool_session``
             # is the only path that drops it); only the task-hold is released.
-            await self.db.release_claim(
+            release = await self.db.release_claim(
                 session.id,
                 task_status=TaskStatus(result["status"]),
                 context="session_close",
@@ -1104,7 +1112,41 @@ class SessionCommandsMixin:
                 expected_claim_epoch=expect_claim_epoch,
                 drain_after_release=self.config.swarm.fresh_context_per_task,
             )
-            remove_claim_file_if_matches(session.work_dir, task_id, expect_claim_epoch)
+            if release.released:
+                remove_claim_file_if_matches(session.work_dir, task_id, expect_claim_epoch)
+            else:
+                # ``_release_claim_on`` declines silently in two very
+                # different situations, and only one of them is a problem.
+                #
+                # Benign: a pool reconciler already released the hold and the
+                # session claimed again, so the guarded write skipped an old
+                # close -- exactly what it is there for.  The session no
+                # longer holds this task; say nothing.
+                #
+                # Stuck: an integration owner is still attached to this
+                # session, so the protected-owner guard returned before
+                # clearing anything.  Reporting ``success: true`` over that
+                # left ``sessions.task_id`` and ``claim_phase='active'`` set
+                # on a task already back on the frontier, with the claim file
+                # deleted and no surface saying so (brisk-delta).  Keep the
+                # claim file -- the session really does still hold the task --
+                # and make the stall visible instead.
+                current = await self.db.get_session(session.id)
+                if current is not None and current.task_id == task_id:
+                    claim_release_declined = True
+                    logger.error(
+                        "Pool session %s closed %s but its claim was not released; "
+                        "the session still holds the task",
+                        session.id,
+                        task_id,
+                    )
+                    await self.db.set_task_meta(
+                        task_id, "needs_attention", "claim_release_declined"
+                    )
+                else:
+                    remove_claim_file_if_matches(
+                        session.work_dir, task_id, expect_claim_epoch
+                    )
         elif session is not None and session.lifecycle == "task" and session.work_dir:
             # Push launches join the claim fence too (execution.py) and
             # write the same claim file — clean it up on a task-session
@@ -1120,6 +1162,9 @@ class SessionCommandsMixin:
             "next_step": "run `aq session drain-ack` to release this session",
             **result,
         }
+        if claim_release_declined:
+            response["claim_released"] = False
+            response["needs_attention"] = "claim_release_declined"
         if args.get("claim_next"):
             response["next"] = await self._cmd_task_claim(
                 {"next": True, "wait": int(args.get("wait") or 0)}

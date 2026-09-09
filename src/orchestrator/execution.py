@@ -1734,21 +1734,68 @@ class ExecutionMixin:
         # (amber-delta).  A pool close takes the same path with the
         # detach-only proof (``pool=True``) also releases completed root and
         # suspended parent writers before their claim bindings disappear.
+        #
+        # A close that is *not* COMPLETED needs the same release, and for
+        # longer (brisk-delta).  Every claim in a managed project attaches an
+        # owner row to the session, so a ``--outcome fail`` close -- READY on
+        # a retry, BLOCKED once retries are spent -- used to walk past this
+        # block with the fence still ``attached`` to a session that was about
+        # to disappear.  Nothing could undo it afterwards: ``_release_claim_on``
+        # and ``_terminate_pool_session_locked`` both (correctly) protect an
+        # attached owner, so the claim never released, and the task's own
+        # retry then failed forever with ``prepare_failed`` / "canonical branch
+        # is not reserved by this task".  The self-transfer restores the same
+        # task's ``reserved`` fence, which is exactly what that retry needs.
         completed_writer = False
-        if completed_ok and new_status == TaskStatus.COMPLETED and task.repo_id and task.branch_name:
+        failed_writer = False
+        if task.repo_id and task.branch_name:
             from src.integration.models import BranchKey
             from src.integration.ownership import BranchOwnership
 
-            completed_owner = await BranchOwnership(self.db).get_owner(
+            close_owner = await BranchOwnership(self.db).get_owner(
                 BranchKey(repository_id=task.repo_id, branch=task.branch_name)
             )
-            completed_writer = bool(
-                completed_owner and completed_owner["owner_id"] == task.id
-                and completed_owner["owner_role"] in {"worker", "repair"}
+            owns_own_branch = bool(
+                close_owner and close_owner["owner_id"] == task.id
+                and close_owner["owner_role"] in {"worker", "repair"}
             )
-        release_needed = repair_writer_closed or managed_parent_suspended or completed_writer
+            if completed_ok and new_status == TaskStatus.COMPLETED:
+                completed_writer = owns_own_branch
+            elif (
+                new_status != TaskStatus.COMPLETED
+                # The parent/repair legs below own their own release and their
+                # own workspaces; a checkpointed-and-suspended parent in
+                # particular lands non-COMPLETED on a *passing* close and must
+                # never be handed the leaf restore this leg performs.
+                and not repair_writer_closed
+                and not managed_parent_suspended
+                and not managed_parent_completed
+            ):
+                failed_writer = owns_own_branch
+        release_needed = (
+            repair_writer_closed or managed_parent_suspended or completed_writer or failed_writer
+        )
         handoff_unproven = False
+        slot_restored = False
         if release_needed:
+            if failed_writer:
+                # Both handoff proofs end in ``detach_workspace_for_integration_handoff``,
+                # which requires a porcelain-clean checkout whose branch tip
+                # equals the freshly fetched origin tip.  A passing close
+                # arrives that way; a failing one does not.
+                # ``_preserve_unpushed_on_failure`` (above) has already pushed
+                # the commits, but the *dirt* is only cleared by
+                # ``restore_slot_after_task``, which the pool close runs later,
+                # after this point.  Run it here instead: it touches git and
+                # the salvage archive only -- never ``sessions.task_id`` or
+                # ``workspaces.locked_by_task_id``, which are the evidence the
+                # proof reads -- so it is safe this early, and without it an
+                # ordinary dirty fail close would fail the proof and stall on
+                # ``retain_claim``.  ``slot_restored`` tells ``_cmd_task_close``
+                # not to salvage a second time.
+                slot_restored = await self._restore_slot_before_handoff_proof(
+                    workspace_path, task.id
+                )
             # Stop/detach the writer while preserving its durable reserved
             # fence so the successor's transfer can be proven.  The release
             # keeps the owner's own role -- a repair delegate ends up
@@ -1759,6 +1806,8 @@ class ExecutionMixin:
                 reason=(
                     "integration_repair_delegate_closed"
                     if repair_writer_closed
+                    else "integration_writer_close_failed"
+                    if failed_writer
                     else "integration_parent_suspended"
                 ),
                 pool=pool,
@@ -1793,6 +1842,11 @@ class ExecutionMixin:
             "pr_url": pr_url,
             "pipeline_ok": completed_ok,
             "retry_count": new_retry,
+            # ``_cmd_task_close`` reads this to skip its own
+            # ``restore_slot_after_task``: the failing-writer release above
+            # already ran one, and salvaging a clean slot twice re-walks the
+            # archive path for nothing.
+            "slot_restored": slot_restored,
         }
         if handoff_unproven:
             # ``_cmd_task_close`` reads this to skip the pool teardown
@@ -1808,6 +1862,44 @@ class ExecutionMixin:
             response["unmerged_branch"] = stranded.branch
             response["unmerged_commit"] = stranded.commit
         return response
+
+    async def _restore_slot_before_handoff_proof(
+        self, workspace_path: str | None, task_id: str
+    ) -> bool:
+        """Clean a failing writer's slot so its handoff proof can succeed.
+
+        Both integration-handoff proofs finish in
+        ``detach_workspace_for_integration_handoff``, which treats any
+        uncommitted change as a failed proof.  A failing close reaches the
+        release with its commits already pushed
+        (:meth:`_preserve_unpushed_on_failure`) but its working tree still
+        dirty, because the only thing that cleans it --
+        ``WorktreeSlotManager.restore_slot_after_task`` -- runs later, in
+        ``_cmd_task_close``.  Running it here is what keeps an ordinary dirty
+        fail close from stalling on ``retain_claim``; it archives the dirt to
+        a task context exactly as the later call would, and touches no
+        database binding the proof reads.
+
+        Returns True when the restore actually ran, so ``_cmd_task_close``
+        can skip salvaging the same slot a second time.  Never raises: a slot
+        that cannot be restored simply fails the proof below, which is
+        already a handled outcome.
+        """
+        if not workspace_path:
+            return False
+        try:
+            slot = await self._slot_workspace_at(workspace_path)
+            if slot is None:
+                return False
+            await self._worktree_slots().restore_slot_after_task(slot, task_id=task_id)
+            return True
+        except Exception:
+            logger.warning(
+                "Task %s: could not restore slot before integration handoff proof",
+                task_id,
+                exc_info=True,
+            )
+            return False
 
     async def _preserve_unpushed_on_failure(
         self, task, workspace_path: str | None, *, project_id: str | None = None
