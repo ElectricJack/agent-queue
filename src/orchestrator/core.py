@@ -1674,10 +1674,14 @@ class Orchestrator(
                 return {"outcome": "declined"}
             return await self.root_promotion_service.reconcile(row["id"])
 
+        from src.integration.collection import CollectionService
         from src.integration.parent_ci import ParentCIService
 
         parent_ci = ParentCIService(
             self.integration_attestation_service, self.integration_repository_binding_resolver
+        )
+        collection = CollectionService(
+            self.db, hierarchy_service_factory=self._branch_materialization_hierarchy
         )
         self.integration_service = IntegrationService(
             self.db,
@@ -1686,6 +1690,7 @@ class Orchestrator(
             self.integration_outbox,
             candidate_ci_handler=self.integration_attestation_service.handle_candidate_ci,
             parent_ci_handler=parent_ci.tick,
+            collection_handler=collection.tick,
             unresolved_intent_handler=reconcile_root_intent,
             cleanup_handler=self.integration_cleanup_service.handle_item,
             drain_handler=self.integration_control_service.reconcile_drains,

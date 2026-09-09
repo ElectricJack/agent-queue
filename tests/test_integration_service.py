@@ -494,9 +494,10 @@ async def test_tick_is_bounded_nonoverlapping_and_isolates_sources():
     outbox = SimpleNamespace(dispatch_due=AsyncMock(return_value=0))
     drain = AsyncMock(return_value=())
     materialize = AsyncMock(side_effect=RuntimeError("temporary Git outage"))
+    collect = AsyncMock()
     service = IntegrationService(
         FakeDB(), scheduler, repair, outbox, drain_handler=drain,
-        branch_materialization_handler=materialize, page_size=1
+        branch_materialization_handler=materialize, collection_handler=collect, page_size=1
     )
 
     first = asyncio.create_task(service.tick(10.0))
@@ -506,6 +507,7 @@ async def test_tick_is_bounded_nonoverlapping_and_isolates_sources():
     await first
 
     materialize.assert_awaited_once_with(10.0)
+    collect.assert_awaited_once_with(10.0)
     scheduler.mark_due.assert_awaited_once_with("p", 10.0, "periodic")
     repair.expire.assert_awaited_once_with("op", 0, now=10.0)
     drain.assert_awaited_once_with(10.0)

@@ -12,6 +12,8 @@ from src.database import Database
 from src.database.queries.hierarchy_queries import HierarchyError
 from src.database.tables import (
     integration_outbox,
+    integration_promotion_intents,
+    integration_review_evidence,
     playbook_artifacts,
     task_branch_origins,
     task_delivery_receipts,
@@ -916,3 +918,64 @@ async def test_never_run_container_starts_collection_only_at_untouched_origin(db
     assert owner["owner_id"] == result["operation_id"]
     assert (await hierarchy.bootstrap_container_collection("epic"))["outcome"] == "waiting"
     assert (await db.get_integration_checkpoint("epic"))["episode_id"] == checkpoint["episode_id"]
+
+
+@pytest.mark.parametrize("review_state", [
+    "approved", "missing", "rejected", "stale", "conflict", "delivered",
+])
+async def test_collector_queues_only_current_approved_child_once(db, hierarchy, review_state):
+    from src.integration.collection import CollectionService
+
+    await _create(db, "epic")
+    await hierarchy.file_children("epic", [{"title": "child"}], 0)
+    async with db.immediate() as conn:
+        await conn.execute(update(task_branch_origins).values(materialized=True, materialized_at=2.0))
+        await conn.execute(update(tasks).where(tasks.c.id == "epic.1").values(status="COMPLETED"))
+        await conn.execute(update(task_integration_checkpoints).where(
+            task_integration_checkpoints.c.task_id == "epic.1"
+        ).values(checkpoint_sha=NEXT))
+        if review_state != "missing":
+            await conn.execute(insert(integration_review_evidence).values(
+                id="approval", source_task_id="epic.1", repository_id="repo",
+                source_base=BASE, reviewed_head_sha=BASE if review_state == "stale" else NEXT,
+                reviewed_tree_sha=NEXT, reviewer_task_id="review", review_kind="leaf",
+                generation=0, verdict="approved", evidence={}, created_at=1.0,
+            ))
+        if review_state == "rejected":
+            await conn.execute(insert(integration_review_evidence).values(
+                id="rejection", source_task_id="epic.1", repository_id="repo",
+                source_base=BASE, reviewed_head_sha=NEXT, reviewed_tree_sha=NEXT,
+                reviewer_task_id="review", review_kind="leaf", generation=0,
+                verdict="rejected", evidence={}, created_at=2.0,
+            ))
+    await hierarchy.bootstrap_container_collection("epic")
+    async with db.immediate() as conn:
+        if review_state == "conflict":
+            await conn.execute(insert(integration_promotion_intents).values(
+                id="unresolved", domain_key="unresolved", receipt_id="unresolved",
+                source_head=NEXT, source_base=BASE, repository_id="repo",
+                target_branch="aq/epic", expected_target=BASE,
+                fence_owner_id="collector", fence_token=1, state="conflict",
+                created_at=1.0, updated_at=1.0,
+            ))
+        if review_state == "delivered":
+            await conn.execute(insert(task_delivery_receipts).values(
+                id="delivered", domain_key="delivered", source_task_id="epic.1",
+                target_task_id="epic", repository_id="repo", target_branch="aq/epic",
+                reviewed_head_sha=NEXT, disposition="code", created_at=1.0,
+            ))
+    collector = CollectionService(db, hierarchy_service_factory=lambda: hierarchy)
+    await collector.tick(3.0)
+    await collector.tick(4.0)
+    async with db._engine.connect() as conn:
+        events = (await conn.execute(select(integration_outbox).where(
+            integration_outbox.c.event_type == "delivery.ready"
+        ))).mappings().all()
+    assert len(events) == (1 if review_state == "approved" else 0)
+    if events:
+        payload = events[0]["payload"]
+        assert payload["source_task_id"] == "epic.1"
+        assert payload["source_head"] == NEXT
+        assert payload["source_base"] == payload["expected_target"] == BASE
+        assert payload["fence"]["target"]["branch"] == "aq/epic"
+        assert payload["operation_id"] == payload["fence"]["owner_id"]
