@@ -200,6 +200,39 @@ async def _run_cycle_and_wait(orch):
     await orch.wait_for_running_tasks()
 
 
+async def test_scheduler_cycles_continue_while_workspace_scan_is_pending(orch, tmp_path):
+    from src.workspace_spec_watcher import WorkspaceSpecWatcher
+
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    calls = 0
+
+    async def scan():
+        nonlocal calls
+        calls += 1
+        entered.set()
+        await release.wait()
+        return []
+
+    watcher = WorkspaceSpecWatcher(
+        db=orch.db, bus=orch.bus, git=orch.git,
+        vault_projects_dir=str(tmp_path / "references"), poll_interval_seconds=0,
+    )
+    watcher._check_once = scan
+    orch.workspace_spec_watcher = watcher
+    try:
+        async with asyncio.timeout(15):
+            await orch.run_one_cycle()
+            await entered.wait()
+            await orch.run_one_cycle()
+            await orch.run_one_cycle()
+        assert calls == 1
+        assert not watcher._check_task.done()
+    finally:
+        release.set()
+        await watcher.stop()
+
+
 _SESSION_CLASSES = {
     "standard-medium": IntelligenceClass(
         "standard-medium", "Standard", "", {"anthropic": {"model": "claude-sonnet-5"}}
