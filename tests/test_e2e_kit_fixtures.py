@@ -30,6 +30,7 @@ from src.profiles.parser import parse_profile
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SMOKE = REPO_ROOT / "scripts" / "e2e" / "smoke.py"
 E2E_ENV = REPO_ROOT / "scripts" / "e2e-env.sh"
+DBSETUP = REPO_ROOT / "scripts" / "e2e" / "dbsetup.py"
 
 
 def _load_smoke():
@@ -141,3 +142,132 @@ def test_pool_worker_close_reports_a_no_op_work_outcome(monkeypatch):
     assert args[args.index("--claim-epoch") + 1] == "3"
     assert "--claim-next" in args
     assert kwargs == {"token": "tok", "session_id": "sess-1", "check_ok": True}
+
+
+def test_cli_subprocesses_replace_only_db_sentinels_with_disposable_resources(monkeypatch):
+    smoke = _load_smoke()
+    monkeypatch.setenv("AQ_E2E_HOME", "/tmp/aq-e2e-owned")
+    monkeypatch.setenv("E2E_DB_URL", "postgresql+asyncpg://example/e2e_only")
+    monkeypatch.setenv("AGENT_QUEUE_DB", "postgresql://refusal/sentinel")
+    monkeypatch.setenv("AQ_DATABASE_URL", "postgresql://refusal/sentinel")
+    monkeypatch.setenv("AQ_DB_SCOPE", "worker")
+
+    env = smoke._cli_env()
+
+    assert env["AGENT_QUEUE_DATA"] == "/tmp/aq-e2e-owned"
+    assert env["AGENT_QUEUE_DB"] == "postgresql+asyncpg://example/e2e_only"
+    assert env["AQ_DATABASE_URL"] == "postgresql+asyncpg://example/e2e_only"
+    assert env["AQ_DB_SCOPE"] == "worker"
+
+
+def test_fresh_workers_quiesces_every_project_in_the_global_profile(monkeypatch):
+    smoke = _load_smoke()
+    open_tasks = {
+        smoke.PROJECT: {"e2e-leftover"},
+        smoke.OTHER_PROJECT: {"other-leftover"},
+    }
+    live = [
+        {"id": "s-e2e", "project_id": smoke.PROJECT, "state": "running"},
+        {"id": "s-other", "project_id": smoke.OTHER_PROJECT, "state": "running"},
+    ]
+    created = []
+
+    def fake_aq(*args, **kwargs):
+        if args[:2] == ("task", "list"):
+            project = args[args.index("--project") + 1]
+            return [{"id": task_id} for task_id in sorted(open_tasks[project])]
+        if args[:2] == ("task", "delete"):
+            task_id = args[args.index("--task-id") + 1]
+            for task_ids in open_tasks.values():
+                task_ids.discard(task_id)
+            return {"success": True}
+        if args[:2] == ("session", "list"):
+            return {"sessions": list(live)}
+        if args[:2] == ("session", "kill"):
+            session_id = args[2]
+            live[:] = [row for row in live if row["id"] != session_id]
+            return {"success": True}
+        if args[:2] == ("session", "token"):
+            return {"token": f"token-{args[2]}"}
+        raise AssertionError(f"unexpected aq call: {args}")
+
+    def fake_create(title, **_kwargs):
+        created.append(title)
+        task_id = f"primer-{len(created)}"
+        open_tasks[smoke.PROJECT].add(task_id)
+        if len(created) == 2:
+            live.extend(
+                [
+                    {"id": "fresh-1", "project_id": smoke.PROJECT, "state": "running"},
+                    {"id": "fresh-2", "project_id": smoke.PROJECT, "state": "running"},
+                ]
+            )
+        return task_id
+
+    def immediate_wait(predicate, **_kwargs):
+        for _ in range(10):
+            value = predicate()
+            if value:
+                return value
+        raise AssertionError("predicate did not converge")
+
+    monkeypatch.setattr(smoke, "aq", fake_aq)
+    monkeypatch.setattr(smoke, "create_task", fake_create)
+    monkeypatch.setattr(smoke, "wait_for", immediate_wait)
+
+    workers = smoke.fresh_workers(2)
+
+    assert [worker.session_id for worker in workers] == ["fresh-1", "fresh-2"]
+    assert "other-leftover" not in open_tasks[smoke.OTHER_PROJECT]
+
+
+def test_capability_report_uses_exhaustive_status_vocabulary():
+    smoke = _load_smoke()
+    passed = smoke.Scenario("P", "pass", lambda _: None, ("passing family",), ok=True)
+    broken = smoke.Scenario("B", "break", lambda _: None, ("broken family",), ok=False)
+
+    statuses = {
+        row["status"] for row in smoke.Report(scenarios=[passed, broken]).capability_rows()
+    }
+
+    assert statuses == {
+        "passed",
+        "broken",
+        "unsupported",
+        "dependency-unavailable",
+        "explicitly-untested",
+    }
+
+
+def test_stateful_scenarios_cover_the_audited_mutation_families():
+    smoke = _load_smoke()
+    by_key = {scenario.key: scenario for scenario in smoke.SCENARIOS}
+
+    assert set(by_key) == {f"S{number}" for number in range(1, 15)}
+    assert by_key["S9"].families == ("task CRUD/rollback",)
+    assert set(by_key["S10"].families) == {"workspace CRUD", "file/git/note CRUD"}
+    assert by_key["S11"].families == ("message CRUD",)
+    assert by_key["S12"].families == ("MCP registry CRUD",)
+    assert by_key["S13"].families == ("plugin extension startup",)
+    assert by_key["S14"].families == ("graph/vault",)
+
+
+def test_e2e_env_generates_an_opt_in_plugin_entry_point_and_local_message_sink():
+    text = E2E_ENV.read_text()
+
+    assert "AQ_E2E_PLUGIN_FIXTURE/aq_e2e_fixture-1.0.dist-info/entry_points.txt" in text
+    assert "e2e-fixture = e2e_fixture_plugin:E2EFixturePlugin" in text
+    assert "messaging_platform: none" in text
+    assert re.search(r"^messages:\n  enabled: true$", text, re.MULTILINE)
+
+
+@pytest.mark.parametrize("name", ["agent_queue", "customer_production", "postgres_master"])
+def test_e2e_dbsetup_refuses_non_e2e_database_names_before_connecting(name):
+    result = subprocess.run(
+        [sys.executable, str(DBSETUP), "postgresql://unused/unused", name, "--drop"],
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 2
+    assert "refusing to manage" in result.stderr

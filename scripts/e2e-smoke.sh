@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# Tier 1 functional-test kit: eight scenarios, no LLM.
+# Tier 1 functional-test kit: fourteen scenarios, no LLM.
 #
 #   scripts/e2e-env.sh --reset
 #   scripts/e2e-daemon.sh start
-#   scripts/e2e-smoke.sh            # all eight
+#   scripts/e2e-smoke.sh            # all fourteen
 #   scripts/e2e-smoke.sh S2 S8      # just these
 #
 # Starts the daemon itself if one is not already up, and stops whatever it

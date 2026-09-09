@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Tier 1 functional-test kit — eight scenarios, no LLM.
+"""Tier 1 functional-test kit — stateful CLI scenarios, no LLM.
 
 Driven by ``scripts/e2e-smoke.sh`` against the daemon
 ``scripts/e2e-daemon.sh start`` put up.  Every assertion goes through a
@@ -24,6 +24,12 @@ Scenario map — see docs/guides/e2e-swarm.md for what each one proves:
     S6  doctor                 the swarm checks, clean and then warning
     S7  Postgres race          two concurrent claims, exactly one winner
     S8  project onboarding     link + init through the real CLI and daemon
+    S9  task lifecycle         partial/full create, update, delete, rollback
+    S10 workspace + writes     workspace, file, git and note CRUD
+    S11 messages               queue, read, inject, reply; no external delivery
+    S12 MCP registry           CRUD plus an unavailable optional endpoint
+    S13 plugin extensions      installed entry point present and absent
+    S14 graph + vault          layout mutations and isolated vault dry-run
 """
 
 from __future__ import annotations
@@ -82,6 +88,73 @@ class CliError(Exception):
         return self.details.get("result")
 
 
+@dataclass(frozen=True)
+class CliRun:
+    """One CLI process, including the exit contract hidden by convenience helpers."""
+
+    returncode: int
+    stdout: str
+    stderr: str
+
+
+def _cli_env(
+    *,
+    token: str | None = None,
+    session_id: str | None = None,
+    extra: dict[str, str] | None = None,
+) -> dict[str, str]:
+    """Build a subprocess environment fenced to the disposable e2e world.
+
+    Most commands use HTTP, but plugin management and a few filesystem commands
+    resolve the data directory/database directly during CLI startup.  A worker
+    running this kit normally carries the production-refusal sentinel, so each
+    child is pointed at the already-isolated e2e resources instead.  The worker's
+    ``AQ_DB_SCOPE`` is deliberately retained; this helper never authorizes an
+    upgrade or starts a daemon.
+    """
+    env = dict(os.environ)
+    env["AQ_API_URL"] = API_URL
+    env.pop("AQ_API_TOKEN", None)
+    env.pop("AQ_SESSION_ID", None)
+    if token:
+        env["AQ_API_TOKEN"] = token
+    if session_id:
+        env["AQ_SESSION_ID"] = session_id
+    e2e_home = env.get("AQ_E2E_HOME")
+    if e2e_home:
+        env["AGENT_QUEUE_DATA"] = e2e_home
+    e2e_db = env.get("E2E_DB_URL")
+    if e2e_db:
+        env["AGENT_QUEUE_DB"] = e2e_db
+        env["AQ_DATABASE_URL"] = e2e_db
+    if extra:
+        env.update(extra)
+    return env
+
+
+def run_aq(
+    *args: str,
+    json_mode: bool = True,
+    token: str | None = None,
+    session_id: str | None = None,
+    extra_env: dict[str, str] | None = None,
+    timeout: float = 120.0,
+) -> CliRun:
+    """Run the worktree CLI without interpreting success or failure."""
+    argv = [sys.executable, AQ_LAUNCHER]
+    if json_mode:
+        argv.append("--json")
+    argv.extend(args)
+    proc = subprocess.run(
+        argv,
+        capture_output=True,
+        text=True,
+        env=_cli_env(token=token, session_id=session_id, extra=extra_env),
+        timeout=timeout,
+    )
+    return CliRun(proc.returncode, proc.stdout.strip(), proc.stderr.strip())
+
+
 def aq(
     *args: str,
     token: str | None = None,
@@ -101,23 +174,13 @@ def aq(
     ``{"_error": ...}`` for the caller to inspect (several scenarios assert
     on a *refusal*).
     """
-    env = dict(os.environ)
-    env["AQ_API_URL"] = API_URL
-    env.pop("AQ_API_TOKEN", None)
-    env.pop("AQ_SESSION_ID", None)
-    if token:
-        env["AQ_API_TOKEN"] = token
-    if session_id:
-        env["AQ_SESSION_ID"] = session_id
-
-    proc = subprocess.run(
-        [sys.executable, AQ_LAUNCHER, "--json", *args],
-        capture_output=True,
-        text=True,
-        env=env,
+    proc = run_aq(
+        *args,
+        token=token,
+        session_id=session_id,
         timeout=timeout,
     )
-    stdout = proc.stdout.strip()
+    stdout = proc.stdout
     try:
         payload = json.loads(stdout) if stdout else {}
     except json.JSONDecodeError as exc:
@@ -146,23 +209,13 @@ def aq_text(*args: str, timeout: float = 120.0) -> str:
     onboarding is exercised through the exact public CLI operators run, not
     by calling the service or ``/api/execute`` directly.
     """
-    env = dict(os.environ)
-    env["AQ_API_URL"] = API_URL
-    env.pop("AQ_API_TOKEN", None)
-    env.pop("AQ_SESSION_ID", None)
-    proc = subprocess.run(
-        [sys.executable, AQ_LAUNCHER, *args],
-        capture_output=True,
-        text=True,
-        env=env,
-        timeout=timeout,
-    )
+    proc = run_aq(*args, json_mode=False, timeout=timeout)
     if proc.returncode != 0:
         raise Failure(
             f"aq {' '.join(args)} exited {proc.returncode}: "
             f"{proc.stdout[:400]!r} / stderr {proc.stderr[:400]!r}"
         )
-    return proc.stdout.strip()
+    return proc.stdout
 
 
 def api(command: str, args: dict | None = None, *, token: str | None = None) -> dict:
@@ -220,10 +273,14 @@ def pool_row(project_id: str = PROJECT, profile_id: str = POOL_PROFILE) -> dict:
     raise Failure(f"no pool row for {project_id}/{profile_id}")
 
 
-def pool_sessions(project_id: str = PROJECT) -> list[dict]:
+def pool_sessions(project_id: str | None = PROJECT) -> list[dict]:
     rows = aq("session", "list", "--lifecycle", "pool").get("sessions", [])
     live = ("starting", "running")
-    return [s for s in rows if s["project_id"] == project_id and s["state"] in live]
+    return [
+        s
+        for s in rows
+        if (project_id is None or s["project_id"] == project_id) and s["state"] in live
+    ]
 
 
 def session_token(session_id: str) -> str:
@@ -316,22 +373,28 @@ def fresh_workers(count: int) -> list[Worker]:
     task it creates is the only thing to race for.  Rebuilding beats
     guessing:
 
-    1. drain the pool profile's frontier and kill every live session, in a
-       loop.  Both halves are needed and neither is enough on its own: a
-       session holding a task blocks the delete, and demand that outlives a
-       kill just makes the sizer start a replacement on the next tick.  The
-       loop converges once the frontier is empty *and* no session is live.
+    1. drain the pool profile's frontier in both fixture projects and kill
+       every live session, in a loop.  Pool bounds are global per profile: an
+       ``other`` task left by S5 can otherwise consume one of S7's two slots
+       and make the race time out waiting for two workers in ``e2e``.  Both
+       halves are needed and neither is enough on its own: a session holding a
+       task blocks the delete, and demand that outlives a kill just makes the
+       sizer start a replacement on the next tick.  The loop converges once
+       both frontiers are empty and no session is live anywhere.
     2. create *count* filler tasks so the sizer starts *count* workers,
     3. delete the fillers again — nothing claims on its own under the fake
        provider, so they are still untouched and the frontier goes empty.
     """
 
     def _quiesced():
-        _delete_open_pool_tasks()
-        live = pool_sessions()
+        for project_id in (PROJECT, OTHER_PROJECT):
+            _delete_open_pool_tasks(project_id)
+        live = pool_sessions(None)
         for s in live:
             aq("session", "kill", s["id"], check_ok=False)
-        return not live and not _open_pool_tasks()
+        return not live and not any(
+            _open_pool_tasks(project_id) for project_id in (PROJECT, OTHER_PROJECT)
+        )
 
     wait_for(_quiesced, what="the pool to quiesce (no live sessions, empty frontier)")
 
@@ -345,8 +408,8 @@ def fresh_workers(count: int) -> list[Worker]:
     return [Worker.adopt(s["id"]) for s in live[:count]]
 
 
-def _open_pool_tasks() -> list[dict]:
-    """Every unfinished task in the project.
+def _open_pool_tasks(project_id: str = PROJECT) -> list[dict]:
+    """Every unfinished task in one fixture project.
 
     ``aq task list`` already hides COMPLETED/FAILED/BLOCKED and returns a
     bare list, and its rows carry no ``profile_id`` — so this cannot filter
@@ -354,11 +417,11 @@ def _open_pool_tasks() -> list[dict]:
     everything still open in ``e2e`` is leftover scenario scaffolding, and
     clearing all of it is exactly the point.
     """
-    rows = aq("task", "list", "--project", PROJECT)
+    rows = aq("task", "list", "--project", project_id)
     return list(rows) if isinstance(rows, list) else rows.get("tasks", [])
 
 
-def _delete_open_pool_tasks() -> None:
+def _delete_open_pool_tasks(project_id: str = PROJECT) -> None:
     """Clear the frontier so a scenario starts from zero.
 
     ``--cascade`` because a worker-filed task from S3 may still hang off
@@ -366,7 +429,7 @@ def _delete_open_pool_tasks() -> None:
     holding refuses deletion, and the caller's loop retries after the kill
     has released it.
     """
-    for task in _open_pool_tasks():
+    for task in _open_pool_tasks(project_id):
         aq("task", "delete", "--task-id", task["id"], "--cascade", check_ok=False)
 
 
@@ -990,6 +1053,385 @@ def s8_project_onboarding(state: dict) -> str:
     )
 
 
+def s9_task_lifecycle(state: dict) -> str:
+    """Create through the real CLI, persist edits, delete, and prove rollback."""
+    stamp = f"{os.getpid()}-{int(time.time())}"
+    partial_title = f"S9 partial flags {stamp}"
+    full_title = f"S9 full flags {stamp}"
+    created: list[str] = []
+    try:
+        partial = run_aq("task", "create", "--project", PROJECT, "--title", partial_title)
+        check(partial.returncode == 2, f"partial noninteractive create exited {partial.returncode}")
+        check("--description" in partial.stderr, f"partial refusal omitted missing flag: {partial}")
+        rows = aq("task", "list", "--project", PROJECT)
+        rows = list(rows) if isinstance(rows, list) else rows.get("tasks", [])
+        check(
+            all(row.get("title") != partial_title for row in rows),
+            "partial noninteractive create contacted the daemon and persisted a task",
+        )
+
+        full = aq(
+            "task",
+            "create",
+            "--project",
+            PROJECT,
+            "--title",
+            full_title,
+            "--description",
+            "stateful CLI full-flags receipt",
+            "--priority",
+            "137",
+            "--type",
+            "test",
+            "--profile",
+            POOL_PROFILE,
+            "--intelligence-class",
+            POOL_CLASS,
+            "--requires-kind",
+            "project-repo",
+        )
+        full_id = full.get("created") or full.get("task_id")
+        check(full_id, f"full task-create JSON omitted its id: {full}")
+        created.append(full_id)
+        check(
+            full.get("requires_kinds") == [{"kind": "project-repo", "alias": None}],
+            f"full task-create receipt lost requires_kinds: {full}",
+        )
+
+        changed = aq(
+            "task",
+            "set",
+            full_id,
+            "--description",
+            "stateful CLI updated description",
+            "--label",
+            "+e2e-stateful",
+            "--meta",
+            "source=smoke",
+        )
+        check(changed.get("success", True) is not False, f"task set failed: {changed}")
+        after = task_show(full_id)
+        check(after["description"] == "stateful CLI updated description", f"edit lost: {after}")
+        check("e2e-stateful" in after.get("labels", []), f"label did not persist: {after}")
+
+        invalid_title = f"S9 invalid priority {stamp}"
+        refused = run_aq(
+            "task",
+            "create",
+            "--project",
+            PROJECT,
+            "--title",
+            invalid_title,
+            "--description",
+            "must roll back",
+            "--priority",
+            "0",
+        )
+        check(refused.returncode != 0, "priority=0 unexpectedly exited zero")
+        rows = aq("task", "list", "--project", PROJECT)
+        rows = list(rows) if isinstance(rows, list) else rows.get("tasks", [])
+        check(
+            all(row.get("title") != invalid_title for row in rows),
+            "invalid priority persisted a task instead of rolling back",
+        )
+    finally:
+        for task_id in created:
+            aq("task", "delete", "--task-id", task_id, check_ok=False)
+
+    for task_id in created:
+        gone = run_aq("task", "show", task_id)
+        check(gone.returncode != 0, f"deleted task {task_id} is still readable")
+    return (
+        f"partial flags exited 2 without persistence; full JSON receipt yielded {created}; "
+        "update persisted; priority failure rolled back; task deleted"
+    )
+
+
+def _workspace_by_path(path: str) -> dict | None:
+    rows = aq("project", "list-workspaces", "--project-id", PROJECT).get("workspaces", [])
+    wanted = os.path.realpath(path)
+    return next(
+        (row for row in rows if os.path.realpath(row["workspace_path"]) == wanted),
+        None,
+    )
+
+
+def s10_workspace_file_git_note(state: dict) -> str:
+    """Exercise filesystem-backed families only inside a throwaway clone/vault."""
+    home = os.environ.get("AQ_E2E_HOME", os.path.expanduser("~/.agent-queue-e2e"))
+    workspace_path = os.environ.get(
+        "E2E_STATEFUL_WORKSPACE", os.path.join(home, "workspaces", "stateful-cli")
+    )
+    check(os.path.isdir(os.path.join(workspace_path, ".git")), f"missing clone {workspace_path}")
+    stamp = f"{os.getpid()}-{int(time.time())}"
+    workspace_name = f"stateful-cli-{stamp}"
+    note_title = f"stateful-cli-{stamp}"
+    target = os.path.join(workspace_path, f"stateful-{stamp}.txt")
+    forbidden = os.path.join(home, "not-a-workspace", f"stateful-{stamp}.txt")
+    workspace_id: str | None = None
+    try:
+        existing = _workspace_by_path(workspace_path)
+        if existing:
+            aq(
+                "project",
+                "remove-workspace",
+                "--workspace-id",
+                existing["id"],
+                "--project-id",
+                PROJECT,
+            )
+        aq(
+            "project",
+            "add-workspace",
+            "--project-id",
+            PROJECT,
+            "--source",
+            "link",
+            "--path",
+            workspace_path,
+            "--name",
+            workspace_name,
+        )
+        workspace = _workspace_by_path(workspace_path)
+        check(workspace is not None, "workspace add was not visible on a separate read")
+        workspace_id = workspace["id"]
+
+        duplicate = aq(
+            "project",
+            "add-workspace",
+            "--project-id",
+            PROJECT,
+            "--source",
+            "link",
+            "--path",
+            workspace_path,
+            "--name",
+            f"duplicate-{stamp}",
+            check_ok=False,
+        )
+        check(duplicate.get("_error") is not None, "duplicate workspace add was not refused")
+        matches = [
+            row
+            for row in aq("project", "list-workspaces", "--project-id", PROJECT).get(
+                "workspaces", []
+            )
+            if os.path.realpath(row["workspace_path"]) == os.path.realpath(workspace_path)
+        ]
+        check(len(matches) == 1, f"duplicate workspace add was not atomic: {matches}")
+
+        branch = f"e2e/stateful-{stamp}"
+        aq(
+            "git",
+            "create-branch",
+            "--project-id",
+            PROJECT,
+            "--workspace",
+            workspace_id,
+            "--branch-name",
+            branch,
+        )
+        aq("file", "write", "--path", target, "--content", "created")
+        read = aq("file", "read", "--path", target)
+        check(read.get("content") == "created", f"file read differed from write: {read}")
+        aq(
+            "file",
+            "edit",
+            "--path",
+            target,
+            "--old-string",
+            "created",
+            "--new-string",
+            "updated",
+        )
+        check(aq("file", "read", "--path", target).get("content") == "updated", "edit lost")
+
+        escaped = aq("file", "write", "--path", forbidden, "--content", "escape", check_ok=False)
+        check(escaped.get("_error") is not None, "file write outside registered workspaces succeeded")
+        check(not os.path.exists(forbidden), "refused file write left data outside the workspace")
+
+        commit = aq(
+            "git",
+            "commit",
+            "--project-id",
+            PROJECT,
+            "--workspace",
+            workspace_id,
+            "--message",
+            "e2e: stateful CLI write",
+        )
+        check(commit.get("success", True) is not False, f"git commit failed: {commit}")
+        aq(
+            "git",
+            "push",
+            "--project-id",
+            PROJECT,
+            "--workspace",
+            workspace_id,
+            "--branch",
+            branch,
+        )
+        log = aq(
+            "git", "log", "--project-id", PROJECT, "--workspace", workspace_id, "--count", "1"
+        )
+        check("stateful CLI write" in json.dumps(log), f"git log omitted committed mutation: {log}")
+
+        aq(
+            "note",
+            "write",
+            "--project-id",
+            PROJECT,
+            "--title",
+            note_title,
+            "--content",
+            "first",
+        )
+        aq(
+            "note",
+            "append",
+            "--project-id",
+            PROJECT,
+            "--title",
+            note_title,
+            "--content",
+            "second",
+        )
+        note = aq("note", "read", "--project-id", PROJECT, "--title", note_title)
+        check("first" in note.get("content", "") and "second" in note.get("content", ""), note)
+        aq("note", "delete", "--project-id", PROJECT, "--title", note_title)
+        missing_note = aq(
+            "note", "read", "--project-id", PROJECT, "--title", note_title, check_ok=False
+        )
+        check(missing_note.get("_error") is not None, "deleted note remained readable")
+    finally:
+        aq("note", "delete", "--project-id", PROJECT, "--title", note_title, check_ok=False)
+        if workspace_id:
+            aq(
+                "project",
+                "remove-workspace",
+                "--workspace-id",
+                workspace_id,
+                "--project-id",
+                PROJECT,
+                check_ok=False,
+            )
+        if os.path.exists(forbidden):
+            os.unlink(forbidden)
+
+    check(_workspace_by_path(workspace_path) is None, "workspace record survived removal")
+    return "workspace/file/git/note CRUD persisted across processes; refusals rolled back"
+
+
+def s11_messages(state: dict) -> str:
+    """Use a database-only sink recipient: no Discord, webhook, or real user."""
+    # Profile mailboxes are intentionally pull-only: the delivery engine does
+    # not wake or contact anything for them, so this is a deterministic sink
+    # whose queued -> injected transition belongs entirely to these CLI calls.
+    recipient = f"profile:e2e-sink-{os.getpid()}"
+    sent = aq(
+        "message",
+        "send",
+        "--project",
+        PROJECT,
+        "--to",
+        recipient,
+        "--body",
+        "stateful message",
+        "--subject",
+        "e2e only",
+        "--thread-id",
+        f"e2e-{os.getpid()}",
+    )
+    message_id = sent.get("message_id")
+    check(message_id, f"message send omitted id: {sent}")
+    inbox = aq("message", "inbox", "--to", recipient)
+    messages = inbox.get("messages", [])
+    check(any(row.get("id") == message_id for row in messages), f"message not persisted: {inbox}")
+    queued = aq("message", "status", message_id)
+    check(queued.get("state") == "queued", f"new sink message is not queued: {queued}")
+
+    injected = aq("message", "inbox", "--to", recipient, "--inject")
+    check(any(row.get("id") == message_id for row in injected.get("messages", [])), injected)
+    delivered = aq("message", "status", message_id)
+    check(delivered.get("state") in ("delivered", "acknowledged"), delivered)
+    reply = aq("message", "reply", message_id, "stateful reply", "--via", "e2e-sink")
+    check(reply.get("reply_id"), f"reply omitted id: {reply}")
+
+    malformed = run_aq("message", "send", "--to", "not-a-recipient", "--body", "nope")
+    check(malformed.returncode != 0, "malformed recipient unexpectedly exited zero")
+    return f"queued/injected/replied to {message_id} through database-only sink; bad target refused"
+
+
+def s12_mcp_registry(state: dict) -> str:
+    """Persist MCP registry changes while treating an absent service as a capability result."""
+    name = f"e2e-unavailable-{os.getpid()}"
+    aq("mcp", "delete-server", "--name", name, "--project-id", PROJECT, check_ok=False)
+    try:
+        aq(
+            "mcp",
+            "create-server",
+            "--name",
+            name,
+            "--transport",
+            "http",
+            "--project-id",
+            PROJECT,
+            "--description",
+            "deliberately unavailable e2e endpoint",
+            "--url",
+            "http://127.0.0.1:1/mcp",
+        )
+        shown = aq("mcp", "get-server", "--name", name, "--project-id", PROJECT)
+        check(shown.get("name") == name, f"MCP registry write did not persist: {shown}")
+        probe = aq(
+            "mcp", "probe-server", "--name", name, "--project-id", PROJECT, check_ok=False
+        )
+        if probe.get("_error") is None:
+            probe_text = json.dumps(probe).lower()
+            check(
+                any(word in probe_text for word in ("error", "failed", "unavailable", "refused")),
+                f"unreachable MCP endpoint was reported healthy: {probe}",
+            )
+    finally:
+        aq("mcp", "delete-server", "--name", name, "--project-id", PROJECT, check_ok=False)
+    visible = aq("mcp", "list-servers", "--project-id", PROJECT)
+    check(name not in json.dumps(visible), "deleted MCP server remained in the registry")
+    return "registry create/read/delete passed; loopback:1 probe = dependency-unavailable"
+
+
+def s13_plugin_extensions(state: dict) -> str:
+    """Prove CLI entry-point discovery both with and without a disposable plugin."""
+    fixture = os.environ.get("AQ_E2E_PLUGIN_FIXTURE", "")
+    check(os.path.isdir(fixture), f"missing generated plugin fixture directory: {fixture!r}")
+    inherited = os.environ.get("PYTHONPATH", "")
+    plugin_path = fixture + (os.pathsep + inherited if inherited else "")
+    present = run_aq(
+        "e2e-fixture", "ping", "--value", "stateful", json_mode=False,
+        extra_env={"PYTHONPATH": plugin_path},
+    )
+    check(present.returncode == 0, f"plugin-present CLI failed: {present}")
+    check(present.stdout == "e2e-plugin:stateful", f"unexpected plugin output: {present.stdout!r}")
+
+    absent = run_aq("e2e-fixture", "ping", json_mode=False)
+    check(absent.returncode == 2, f"plugin-absent command exited {absent.returncode}, expected 2")
+    check("No such command" in absent.stderr, f"plugin absence was not actionable: {absent}")
+    return "disposable entry point loaded when present and was an exit-2 unknown command when absent"
+
+
+def s14_graph_and_vault(state: dict) -> str:
+    """Exercise safe graph mutations and a read-only vault migration preview."""
+    rebuilt = aq("graph", "layout-rebuild", "--project-id", PROJECT)
+    check(set(rebuilt.get("versions", {})) == {"all", "active"}, f"layout rebuild: {rebuilt}")
+    tidy = aq("graph", "tidy", "--project-id", PROJECT, "--variant", "active")
+    check(len(tidy.get("jobs", [])) == 1, f"graph tidy did not enqueue one job: {tidy}")
+    missing = aq("graph", "layout-rebuild", "--project-id", "e2e-does-not-exist", check_ok=False)
+    check(missing.get("_error") is not None, "graph rebuild accepted a missing project")
+
+    home = os.environ.get("AQ_E2E_HOME", os.path.expanduser("~/.agent-queue-e2e"))
+    preview = aq_text("vault", "migrate", "--dry-run", "--data-dir", home, "--project", PROJECT)
+    check("dry" in preview.lower() or "would" in preview.lower(), f"vault preview unclear: {preview}")
+    return "layout rebuild/tidy persisted through daemon; isolated vault migration preview made no writes"
+
+
 # ---------------------------------------------------------------------------
 # Runner
 # ---------------------------------------------------------------------------
@@ -1000,6 +1442,7 @@ class Scenario:
     key: str
     title: str
     fn: object
+    families: tuple[str, ...] = ()
     result: str = ""
     ok: bool | None = None
     seconds: float = 0.0
@@ -1007,15 +1450,71 @@ class Scenario:
 
 
 SCENARIOS: list[Scenario] = [
-    Scenario("S1", "pool sizing", s1_pool_sizing),
-    Scenario("S2", "claim loop as a worker", s2_claim_loop),
-    Scenario("S3", "worker-filed work", s3_worker_filed_work),
-    Scenario("S4", "formulas", s4_formulas),
-    Scenario("S5", "fence + scope", s5_fence_and_scope),
-    Scenario("S6", "doctor", s6_doctor),
-    Scenario("S7", "PostgreSQL claim race", s7_claim_race),
-    Scenario("S8", "project onboarding", s8_project_onboarding),
+    Scenario("S1", "pool sizing", s1_pool_sizing, ("agent/session/pool",)),
+    Scenario("S2", "claim loop as a worker", s2_claim_loop, ("task/session/workspace",)),
+    Scenario("S3", "worker-filed work", s3_worker_filed_work, ("task/dependency/gate",)),
+    Scenario("S4", "formulas", s4_formulas, ("formula/task-graph",)),
+    Scenario("S5", "fence + scope", s5_fence_and_scope, ("authentication/scope",)),
+    Scenario("S6", "doctor", s6_doctor, ("config/doctor",)),
+    Scenario("S7", "PostgreSQL claim race", s7_claim_race, ("task/claim/postgresql",)),
+    Scenario("S8", "project onboarding", s8_project_onboarding, ("project/git/vault",)),
+    Scenario("S9", "task lifecycle", s9_task_lifecycle, ("task CRUD/rollback",)),
+    Scenario(
+        "S10",
+        "workspace + file/git/note writes",
+        s10_workspace_file_git_note,
+        ("workspace CRUD", "file/git/note CRUD"),
+    ),
+    Scenario("S11", "messages", s11_messages, ("message CRUD",)),
+    Scenario("S12", "MCP registry", s12_mcp_registry, ("MCP registry CRUD",)),
+    Scenario("S13", "plugin extensions", s13_plugin_extensions, ("plugin extension startup",)),
+    Scenario("S14", "graph + vault", s14_graph_and_vault, ("graph/vault",)),
 ]
+
+# These exclusions are intentional properties of Tier 1, not silent omissions.
+# The final report uses the same vocabulary for every family, including failures.
+EXPLICIT_CAPABILITIES: tuple[tuple[str, str, str], ...] = (
+    (
+        "memory semantic search",
+        "dependency-unavailable",
+        "memory.enabled=false; no Milvus/Ollama or aq-memory service is contacted",
+    ),
+    (
+        "MCP remote tools",
+        "dependency-unavailable",
+        "S12 probes only a deliberately closed loopback port",
+    ),
+    (
+        "agent questions",
+        "unsupported",
+        "questions belong to harness transcripts; no second CLI ask-human state machine",
+    ),
+    (
+        "plugin hook history",
+        "unsupported",
+        "hooks were replaced by playbooks; the compatibility command is not history",
+    ),
+    (
+        "real providers/tmux/external messaging",
+        "explicitly-untested",
+        "Tier 2 only; Tier 1 spends no tokens and sends no network messages",
+    ),
+    (
+        "plugin install/update/remove from remote git",
+        "explicitly-untested",
+        "would mutate the interpreter environment or require an external repository",
+    ),
+    (
+        "playbook activation/run",
+        "explicitly-untested",
+        "playbooks.enabled=false in deterministic Tier 1; formula mutation is covered by S4",
+    ),
+    (
+        "database upgrade/daemon control",
+        "explicitly-untested",
+        "workers never migrate databases or start/stop anything except the disposable daemon wrapper",
+    ),
+)
 
 
 @dataclass
@@ -1025,6 +1524,22 @@ class Report:
     @property
     def failed(self) -> list[Scenario]:
         return [s for s in self.scenarios if not s.ok]
+
+    def capability_rows(self) -> list[dict[str, str]]:
+        rows = [
+            {
+                "family": family,
+                "status": "passed" if scenario.ok else "broken",
+                "detail": f"{scenario.key}: {scenario.detail}",
+            }
+            for scenario in self.scenarios
+            for family in scenario.families
+        ]
+        rows.extend(
+            {"family": family, "status": status, "detail": detail}
+            for family, status, detail in EXPLICIT_CAPABILITIES
+        )
+        return rows
 
 
 def main() -> int:
@@ -1068,6 +1583,9 @@ def main() -> int:
 
     passed = len(report.scenarios) - len(report.failed)
     print(f"\n{passed}/{len(report.scenarios)} scenarios passed")
+    print("\nCapability report (passed | broken | unsupported | dependency-unavailable | explicitly-untested)")
+    for row in report.capability_rows():
+        print(f"  {row['status']:<22} {row['family']}: {row['detail']}")
     if report.failed:
         print("failed: " + ", ".join(s.key for s in report.failed))
         print("\nTriage: scripts/e2e-daemon.sh logs 200 | aq doctor | aq system get-recent-events")
