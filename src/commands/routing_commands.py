@@ -67,7 +67,10 @@ def build_route_options(
     A profile with a fixed ``default_class`` offers that class only; a generic
     task-lifecycle profile offers every class its provider maps.  A pool
     profile without a fixed class offers nothing — a pool worker only claims
-    its own class, so there would be nothing for it to claim.
+    its own class, so there would be nothing for it to claim.  Disabled pools
+    remain in this diagnostic catalog, marked ``enabled=False``: callers must
+    preserve an existing explicit pin, while automatic selection filters them
+    out.
     """
 
     enabled_agents = [
@@ -100,6 +103,7 @@ def build_route_options(
                 "provider": provider,
                 "profile_id": profile.id,
                 "lifecycle": profile.lifecycle,
+                "enabled": getattr(profile, "enabled", True),
                 "configured_capacity": max(1, potential or len(compatible)),
                 "idle_count": sum(a.state == AgentState.IDLE for a in compatible),
                 "busy_count": sum(a.state == AgentState.BUSY for a in compatible),
@@ -117,9 +121,11 @@ def profile_for_class(
 ) -> str | None:
     """The deterministic profile choice for a class the operator already fixed.
 
-    The task's own pin wins when it serves the class; otherwise a pool profile
-    fixed on that class, preferring the project default's provider, then the
-    lowest id; otherwise any task-lifecycle profile that can run it.
+    The task's own compatible pin wins even when its pool is disabled; an
+    explicit route must never silently change providers.  Otherwise disabled
+    pools are excluded, then a pool profile fixed on that class is preferred,
+    followed by the project default's provider and the lowest id; finally any
+    task-lifecycle profile that can run it is considered.
     """
 
     serving = [o for o in options if o["intelligence_class"] == intelligence_class]
@@ -127,6 +133,10 @@ def profile_for_class(
         return None
     if pinned_profile_id and any(o["profile_id"] == pinned_profile_id for o in serving):
         return pinned_profile_id
+
+    serving = [o for o in serving if o.get("enabled", True)]
+    if not serving:
+        return None
 
     def rank(option):
         return (
@@ -166,10 +176,22 @@ class RoutingCommandsMixin:
             getattr(orchestrator, "session_spec_builder", None), "_intelligence_classes", None
         ) or {}
         profiles = await self.db.list_profiles()
-        options = build_route_options(
+        catalog = build_route_options(
             task.project_id, profiles, await self.db.list_agents(),
             getattr(orchestrator, "harness_registry", None), classes,
         )
+        # ``catalog`` retains disabled pools for an existing profile pin and
+        # for diagnostics.  New automatic decisions may only see routes that
+        # can actually start a pool worker.  A profile field is itself an
+        # explicit constraint even before the task has an intelligence class:
+        # choosing another profile would silently substitute its provider.
+        pinned = task.profile_id or None
+        automatic_catalog = (
+            [option for option in catalog if option["profile_id"] == pinned]
+            if pinned else catalog
+        )
+        options = [option for option in automatic_catalog if option.get("enabled", True)]
+        disabled_options = [option for option in automatic_catalog if not option.get("enabled", True)]
         default_profile_id = project.default_profile_id
         resolver = getattr(orchestrator, "_effective_default_profile_id", None)
         if resolver is not None:
@@ -184,11 +206,10 @@ class RoutingCommandsMixin:
         )
 
         explicit = (task.intelligence_class or "").strip() or None
-        pinned = task.profile_id or None
         explicit_profile_id = None
         if explicit:
             explicit_profile_id = profile_for_class(
-                options, explicit, pinned_profile_id=pinned, prefer_provider=default_provider,
+                catalog, explicit, pinned_profile_id=pinned, prefer_provider=default_provider,
             )
             if explicit_profile_id is None:
                 outcome = "no_options"
@@ -213,4 +234,5 @@ class RoutingCommandsMixin:
             "default_profile_id": default_profile_id,
             "explicit_profile_id": explicit_profile_id,
             "options": options,
+            "disabled_options": disabled_options,
         }

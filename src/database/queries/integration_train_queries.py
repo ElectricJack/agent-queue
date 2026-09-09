@@ -133,7 +133,9 @@ class IntegrationTrainQueriesMixin:
                 task_delivery_receipts.c.source_task_id == tasks.c.id,
                 task_delivery_receipts.c.target_task_id.is_(None),
                 task_delivery_receipts.c.repository_id == repository_id,
-                task_delivery_receipts.c.target_branch == repository.c.default_branch,
+                func.regexp_replace(
+                    task_delivery_receipts.c.target_branch, "^refs/heads/", ""
+                ) == func.regexp_replace(repository.c.default_branch, "^refs/heads/", ""),
                 task_delivery_receipts.c.disposition == "code",
             )
         )
