@@ -1031,3 +1031,14 @@ corrected final two focused cases pass; malformed input now fails before
 immutable reservation. Existing-record recovery remains bright-journey work.
 Container hold regressiona18e68c8 passes both crash recovery and pause-after-
 reservation cases; unsafe follow-up noble-torrent was reopened.
+
+
+### Verifier rollout and handoff refusal
+
+The verifier isolated swarm passed8/8 and cleaned its private daemon1370445.
+Production restarted PID1379980 with afd54e73 plus pre-reservation validation.
+Public verifier transfer at fence27 refused stopped/detached proof and left
+handoff_pending. Sessionda613545 still running with verifier task and matching
+workspace locks. Actual slot0 checkout is detached at e1390040, rather than the
+published aggregatebd054e41. This mismatch is recorded on fresh-rapids; no force
+unlock, checkout reset, or fabricated completion was performed.
