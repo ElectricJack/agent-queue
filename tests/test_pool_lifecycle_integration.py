@@ -462,6 +462,46 @@ class TestReconcilerInterplay:
         detail = next(r["detail"] for r in res["reasons"] if r["code"] == "awaiting_pool_session")
         assert "swarm.enabled is false" in detail
 
+    async def test_explain_names_a_disabled_profile_instead_of_a_capacity_wait(
+        self, orch, db, handler,
+    ):
+        await db.update_profile("worker", enabled=False)
+        await ready(db, "t1")
+
+        res = await handler._cmd_explain_task({"task_id": "t1"})
+        assert "pool_disabled" in res["reason_codes"]
+        assert "awaiting_pool_session" not in res["reason_codes"]
+        detail = next(r["detail"] for r in res["reasons"] if r["code"] == "pool_disabled")
+        assert "aq pool set-enabled worker true" in detail
+
+    async def test_explain_names_a_disabled_route_for_an_integration_repair_delegate(
+        self, orch, db, handler,
+    ):
+        """Repair delegates retain their frozen route and use the same diagnosis."""
+        await db.update_profile("worker", enabled=False)
+        await ready(
+            db,
+            "repair-operation-0",
+            created_by_kind="integration_repair",
+            created_by_id="operation",
+        )
+
+        res = await handler._cmd_explain_task({"task_id": "repair-operation-0"})
+        assert "pool_disabled" in res["reason_codes"]
+        detail = next(r["detail"] for r in res["reasons"] if r["code"] == "pool_disabled")
+        assert "disabled pool profile 'worker'" in detail
+
+    async def test_explain_keeps_an_enabled_zero_cap_pool_as_a_capacity_wait(
+        self, orch, db, handler,
+    ):
+        await db.update_profile("worker", enabled=True, max_active=0)
+        await ready(db, "t1")
+
+        res = await handler._cmd_explain_task({"task_id": "t1"})
+        assert "pool_disabled" not in res["reason_codes"]
+        detail = next(r["detail"] for r in res["reasons"] if r["code"] == "awaiting_pool_session")
+        assert "max_active=0" in detail and "at max_active" in detail
+
     async def test_pool_task_keeps_the_capacity_reasons_that_still_bite(self, orch, db, handler):
         """Only the *push-supply* codes are filtered, not every capacity code.
 

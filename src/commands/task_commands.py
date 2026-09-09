@@ -4179,13 +4179,28 @@ class TaskCommandsMixin:
         if profile_id not in pool_ids:
             return None
 
+        # A disabled profile is not merely a pool at capacity: the pool
+        # reconciler has intentionally set its bounds to (0, 0), so waiting
+        # for capacity can never make this task runnable.  Keep the explicit
+        # route intact and tell the operator how to resolve it instead.
+        profiles = {p.id: p for p in await self.db.list_profiles()}
+        pool_profile = profiles.get(profile_id)
+        if pool_profile is not None and not getattr(pool_profile, "enabled", True):
+            return Reason(
+                code="pool_disabled",
+                detail=(
+                    f"routed to disabled pool profile '{profile_id}' — re-enable it with "
+                    f"`aq pool set-enabled {profile_id} true` or route the task to an "
+                    "enabled compatible profile"
+                ),
+                ref=profile_id,
+            )
+
         # A pool worker only claims its own fixed class.  A task whose class
         # the pool does not run waits until the routing playbook pins it to
         # a profile that does — say so instead of pointing at the idle pool.
         explicit = (task.intelligence_class or "").strip()
         if explicit:
-            profiles = {p.id: p for p in await self.db.list_profiles()}
-            pool_profile = profiles.get(profile_id)
             fixed = (getattr(pool_profile, "default_class", "") or "").strip()
             if fixed and fixed != explicit:
                 return Reason(
