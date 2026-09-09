@@ -339,6 +339,7 @@ class Orchestrator(
         # reason is optional -- a key quarantined without one still reports
         # its window.  ``PoolsMixin._quarantine_pool`` writes both.
         self._pool_surplus_since: dict = {}
+        self._pool_rebalance_since: dict = {}
         self._pool_quarantine: dict = {}
         self._pool_quarantine_reason: dict = {}
         # EventBus subscription that resolves ``event`` gates live.  Set by
