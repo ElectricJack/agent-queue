@@ -1134,3 +1134,19 @@ then CASes only owner identity/state, not session/workspace/task eligibility;
 it can erase a newly attached successor and lacks provider/Git proof. Its
 reported1323 tests do not prove those missing safety predicates. No source from
 that task was merged or deployed.
+
+### Live CLI verifier handoff succeeded
+
+After steady-current completed and released slot0, the public
+integration-transfer-owner command succeeded at expected fence27, returning
+verifier fence28. Read-only DB confirms owner verify-81d0aaee, role verifier,
+state reserved, session_id/workspace_id NULL. This is actual live recovery of
+the stale attachment through a409458f, not a test-only claim.
+
+Public integration resume then returned invalid_state. Stage1 remains expired
+with writer_kind repair_delegate and its old READY delegate. The recovery
+helper _restore_completed_delegate_on accepts only reserved old repair or
+collector ownership; it rejects the exact now-reserved verifier. Filed
+bright-vault through AQ with bounded exact verifier/episode/head resume
+requirements and regression cases. Parent remains BLOCKED; verification and
+final delivery are not yet achieved.
