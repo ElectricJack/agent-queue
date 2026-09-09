@@ -387,6 +387,70 @@ class ListActiveTasksAllProjectsResponse(BaseModel):
     hidden_completed: int = 0
 
 
+class TaskActivityAttempt(BaseModel):
+    """One session attempt on a task, with the model it actually reported."""
+
+    id: str
+    session_id: str
+    task_id: str
+    agent_id: str | None = None
+    agent_name: str | None = None
+    profile_id: str | None = None
+    model: str | None = None
+    intelligence_class: str | None = None
+    llm_provider: str | None = None
+    harness: str | None = None
+    provider: str | None = None
+    state: str = ""
+    started_at: float = 0.0
+    ended_at: float | None = None
+    end_reason: str | None = None
+    outcome: str | None = None
+
+
+class TaskActivityItem(BaseModel):
+    task_id: str
+    project_id: str | None = None
+    title: str = ""
+    status: str = ""
+    priority: int | None = None
+    parent_task_id: str | None = None
+    archived: bool = False
+    created_at: float | None = None
+    updated_at: float | None = None
+    last_activity_at: float = 0.0
+    attempts: list[TaskActivityAttempt] = []
+    attempt_count: int = 0
+    #: Distinct models across ``attempts``, most recent attempt first.  Empty
+    #: means nothing reported one -- not that no work happened.
+    models: list[str] = []
+    unattributed_attempts: int = 0
+    outcome: str | None = None
+    work_outcome: str | None = None
+    failure_class: str | None = None
+    completed_at: float | None = None
+    summary: str = ""
+    pr_url: str | None = None
+
+
+class TaskActivityModelTotal(BaseModel):
+    model: str | None = None
+    tasks: int = 0
+    attempts: int = 0
+
+
+class TaskRecentActivityResponse(BaseModel):
+    success: bool = True
+    since: float = 0.0
+    until: float = 0.0
+    hours: float = 24.0
+    project_id: str | None = None
+    items: list[TaskActivityItem] = []
+    total: int = 0
+    truncated: bool = False
+    by_model: list[TaskActivityModelTotal] = []
+
+
 class ExplainReason(BaseModel):
     code: str
     detail: str = ""
@@ -715,6 +779,7 @@ RESPONSE_MODELS: dict[str, type[BaseModel]] = {
     "reparent_task": ReparentTaskResponse,
     "get_chain_health": GetChainHealthResponse,
     "list_active_tasks_all_projects": ListActiveTasksAllProjectsResponse,
+    "task_recent_activity": TaskRecentActivityResponse,
     "explain_task": ExplainTaskResponse,
     "project_ready": ProjectReadyResponse,
     "ensure_task": EnsureTaskResponse,

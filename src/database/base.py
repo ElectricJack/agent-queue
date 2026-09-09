@@ -414,6 +414,15 @@ class DatabaseBackend(Protocol):
     ) -> int: ...
     async def count_free_slots(self, project_id: str, *, worktree_slot_cap: int) -> int: ...
 
+    async def list_recent_task_activity(
+        self,
+        *,
+        since: float,
+        until: float,
+        project_id: str | None = None,
+        limit: int = 200,
+    ) -> tuple[list[dict], int]: ...
+
     async def get_task_session_attempt(self, attempt_id: str) -> dict | None: ...
     async def list_task_session_attempts(
         self,

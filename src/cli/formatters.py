@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import time
+from datetime import datetime
 
 from rich.console import Group
 from rich.panel import Panel
@@ -1081,6 +1082,83 @@ def format_active_tasks_all(data: dict) -> Group:
             table.add_row(t.get("id", ""), f"{icon} {status}", _truncate(t.get("title", ""), 40))
         parts.append(table)
 
+    return Group(*parts)
+
+
+def _relative_age(seconds: float) -> str:
+    """Compact "how long ago" for an absolute epoch timestamp."""
+    delta = max(0.0, time.time() - seconds)
+    if delta < 60:
+        return f"{int(delta)}s ago"
+    if delta < 3600:
+        return f"{int(delta // 60)}m ago"
+    if delta < 86400:
+        return f"{int(delta // 3600)}h ago"
+    return f"{int(delta // 86400)}d ago"
+
+
+def format_task_recent_activity(data: dict) -> Group:
+    """Format task_recent_activity: what ran in the window, and on what model."""
+    items = data.get("items", [])
+    hours = data.get("hours", 24)
+    since = data.get("since", 0.0)
+    until = data.get("until", 0.0)
+    stamp = "%s → %s" % (
+        datetime.fromtimestamp(since).strftime("%Y-%m-%d %H:%M"),
+        datetime.fromtimestamp(until).strftime("%Y-%m-%d %H:%M"),
+    )
+    header = Text()
+    header.append(f"  {len(items)} task(s) with work in the last ", style="bold")
+    header.append(f"{hours:g}h", style="bold bright_cyan")
+    header.append(f"  ({stamp})", style="dim")
+    if data.get("truncated"):
+        header.append(
+            f"  — {data.get('total', 0)} matched, showing the most recent", style="yellow"
+        )
+    parts: list[Any] = [header]
+
+    table = Table(border_style="bright_black", expand=True)
+    table.add_column("ID", style="bold bright_cyan", no_wrap=True, max_width=22)
+    table.add_column("Status", max_width=18)
+    table.add_column("Title", ratio=1)
+    table.add_column("Outcome", max_width=14)
+    table.add_column("Models", max_width=34)
+    table.add_column("Last activity", no_wrap=True)
+    for item in items:
+        status = item.get("status", "")
+        models = item.get("models") or []
+        unattributed = item.get("unattributed_attempts", 0)
+        if models:
+            shown = ", ".join(models)
+            if unattributed:
+                shown += f" (+{unattributed} unattributed)"
+        elif item.get("attempt_count"):
+            shown = f"unattributed ({item['attempt_count']} attempt(s))"
+        else:
+            shown = "no agent session"
+        table.add_row(
+            item.get("task_id", ""),
+            f"{STATUS_ICONS.get(status, '⚪')} {status}",
+            _truncate(item.get("title", ""), 40),
+            item.get("outcome") or "—",
+            shown,
+            _relative_age(item.get("last_activity_at", 0.0)),
+        )
+    parts.append(table)
+
+    by_model = data.get("by_model", [])
+    if by_model:
+        totals = Table(title="By model", title_style="bold", border_style="bright_black")
+        totals.add_column("Model", style="bright_cyan")
+        totals.add_column("Tasks", justify="right")
+        totals.add_column("Attempts", justify="right")
+        for entry in by_model:
+            totals.add_row(
+                entry.get("model") or "(unattributed)",
+                str(entry.get("tasks", 0)),
+                str(entry.get("attempts", 0)),
+            )
+        parts.append(totals)
     return Group(*parts)
 
 

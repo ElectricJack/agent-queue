@@ -21,6 +21,7 @@ from src.database.engine import (
     run_schema_setup,
     run_startup_data_migrations,
 )
+from src.database.queries.activity_queries import ActivityQueryMixin
 from src.database.queries.agent_queries import AgentQueryMixin
 from src.database.queries.agent_question_queries import AgentQuestionQueriesMixin
 from src.database.queries.api_session_token_queries import ApiSessionTokenQueriesMixin
@@ -98,6 +99,7 @@ class PostgreSQLDatabaseAdapter(
     SessionQueryMixin,
     SubagentQueriesMixin,
     TaskSessionQueryMixin,
+    ActivityQueryMixin,
     TokenQueryMixin,
     TranscriptQueryMixin,
     ResultQueryMixin,

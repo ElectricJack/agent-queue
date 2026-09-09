@@ -595,6 +595,70 @@ class TaskCommandsMixin:
             "hidden_completed": hidden_completed,
         }
 
+    #: Bounds on ``task_recent_activity``'s window.  A day is the default the
+    #: Tasks tab labels; a month is as far back as one read is worth serving.
+    _ACTIVITY_DEFAULT_HOURS = 24.0
+    _ACTIVITY_MAX_HOURS = 24.0 * 31
+    _ACTIVITY_MAX_LIMIT = 1000
+
+    async def _cmd_task_recent_activity(self, args: dict) -> dict:
+        """What was worked on in the last N hours, and by which models.
+
+        Answers "what happened yesterday" in one read: every task whose
+        session attempts overlapped the window, that completed inside it, or
+        whose row changed inside it -- finished and still-running alike --
+        with its status, outcome, timestamps and the model recorded on each
+        attempt.  ``models`` is what the attempts actually reported;
+        ``unattributed_attempts`` counts the ones that reported nothing, and
+        is never papered over with the profile's configured model.
+        """
+        raw_hours = args.get("hours")
+        try:
+            hours = self._ACTIVITY_DEFAULT_HOURS if raw_hours is None else float(raw_hours)
+        except (TypeError, ValueError):
+            return {"success": False, "error": "hours must be a number"}
+        if hours <= 0:
+            return {"success": False, "error": "hours must be greater than 0"}
+        hours = min(hours, self._ACTIVITY_MAX_HOURS)
+        raw_limit = args.get("limit")
+        try:
+            limit = 200 if raw_limit is None else int(raw_limit)
+        except (TypeError, ValueError):
+            return {"success": False, "error": "limit must be an integer"}
+        limit = max(1, min(limit, self._ACTIVITY_MAX_LIMIT))
+
+        until = time.time()
+        since = until - hours * 3600
+        project_id = args.get("project_id") or self._active_project_id
+        items, total = await self.db.list_recent_task_activity(
+            since=since, until=until, project_id=project_id, limit=limit
+        )
+
+        by_model: dict[str | None, dict] = {}
+        for item in items:
+            seen: set[str | None] = set()
+            for attempt in item["attempts"]:
+                model = attempt["model"] or None
+                entry = by_model.setdefault(model, {"model": model, "tasks": 0, "attempts": 0})
+                entry["attempts"] += 1
+                if model not in seen:
+                    seen.add(model)
+                    entry["tasks"] += 1
+        return {
+            "success": True,
+            "since": since,
+            "until": until,
+            "hours": hours,
+            "project_id": project_id,
+            "items": items,
+            "total": total,
+            "truncated": total > len(items),
+            "by_model": sorted(
+                by_model.values(),
+                key=lambda e: (-e["attempts"], e["model"] or "\uffff"),
+            ),
+        }
+
     async def _list_tasks_hierarchical(
         self,
         args: dict,

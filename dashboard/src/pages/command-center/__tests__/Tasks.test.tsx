@@ -21,7 +21,9 @@ afterAll(() => {
 const mocks = vi.hoisted(() => ({
   open: vi.fn(), close: vi.fn(), edit: vi.fn(), stop: vi.fn(), list: vi.fn(),
   state: { kind: "closed" } as { kind: "closed" } | { kind: "open"; view: string; args: unknown; width: number },
-  filters: { query: "", status: "", showCompleted: false, focus: "" },
+  filters: { query: "", status: "", showCompleted: false, focus: "", window: "" },
+  activity: vi.fn(),
+  activityData: null as unknown,
   tasks: [
     { id: "first", title: "Fix checkout", project_id: "alpha", status: "IN_PROGRESS", priority: 25, assigned_agent: "Sol" },
     { id: "done", title: "Completed checkout", project_id: "alpha", status: "COMPLETED", priority: 100 },
@@ -39,6 +41,12 @@ vi.mock("../../../api/graph", () => ({
     }, isLoading: false, errors: [] };
   },
 }));
+vi.mock("../../../api/activity", () => ({
+  useRecentActivity: (hours: number | null, projectId?: string) => {
+    mocks.activity(hours, projectId);
+    return { data: mocks.activityData, isLoading: false, error: null };
+  },
+}));
 vi.mock("../../../panes/store", () => ({ useShellPaneStore: () => ({ open: mocks.open, close: mocks.close, state: mocks.state }) }));
 vi.mock("../../../api/hooks", () => ({
   useEditTask: () => ({ mutate: mocks.edit, isPending: false, error: null }),
@@ -51,7 +59,32 @@ vi.mock("../../../api/hooks", () => ({
   useApprovePlan: () => ({ mutate: vi.fn(), isPending: false, error: null }),
 }));
 afterEach(cleanup);
-beforeEach(() => { vi.clearAllMocks(); mocks.tasks[0]!.priority = 25; mocks.state = { kind: "closed" }; mocks.filters = { query: "", status: "", showCompleted: false, focus: "" }; });
+beforeEach(() => { vi.clearAllMocks(); mocks.tasks[0]!.priority = 25; mocks.state = { kind: "closed" }; mocks.filters = { query: "", status: "", showCompleted: false, focus: "", window: "" }; mocks.activityData = null; });
+
+const NOW = Date.now() / 1000;
+function activityItem(overrides: Record<string, unknown> = {}) {
+  return {
+    task_id: "first", project_id: "alpha", title: "Fix checkout", status: "IN_PROGRESS",
+    priority: 25, parent_task_id: null, archived: false, created_at: NOW - 7200,
+    updated_at: NOW - 600, last_activity_at: NOW - 600, attempts: [], attempt_count: 0,
+    models: [], unattributed_attempts: 0, outcome: null, work_outcome: null,
+    failure_class: null, completed_at: null, summary: "", pr_url: null, ...overrides,
+  };
+}
+function attempt(overrides: Record<string, unknown> = {}) {
+  return {
+    id: "att", session_id: "s", task_id: "first", agent_id: "a", agent_name: "Sol",
+    profile_id: "worker", model: "claude-opus-5", intelligence_class: "standard-medium",
+    llm_provider: "anthropic", harness: "claude", provider: "anthropic", state: "stopped",
+    started_at: NOW - 3600, ended_at: NOW - 600, end_reason: null, outcome: "pass", ...overrides,
+  };
+}
+function windowResponse(items: unknown[], extra: Record<string, unknown> = {}) {
+  return {
+    since: NOW - 86400, until: NOW, hours: 24, project_id: "alpha",
+    items, total: items.length, truncated: false, by_model: [], ...extra,
+  };
+}
 
 describe("unified task table", () => {
   it("scopes the query and filters, and opens details from any ordinary row cell", async () => {
@@ -143,11 +176,64 @@ describe("unified task table", () => {
     const original = mocks.tasks;
     mocks.tasks = [...Array.from({ length: 205 }, (_, i) => ({ id: `active-${i}`, title: `Active ${i}`, project_id: "alpha", status: "READY", priority: 100 })),
       { id: "historical", title: "Historical task", project_id: "alpha", status: "COMPLETED", priority: 100 }];
-    mocks.filters = { query: "historical", status: "", showCompleted: true, focus: "" };
+    mocks.filters = { query: "historical", status: "", showCompleted: true, focus: "", window: "" };
     try {
       render(<Tasks />);
       expect(screen.getByText("Historical task")).toBeInTheDocument();
     } finally { mocks.tasks = original; }
+  });
+
+  describe("last-24-hours view", () => {
+    it("asks for a labelled window and renders the work done in it", () => {
+      mocks.filters = { query: "", status: "", showCompleted: false, focus: "", window: "24h" };
+      mocks.activityData = windowResponse([
+        activityItem({ attempts: [attempt()], attempt_count: 1, models: ["claude-opus-5"] }),
+        activityItem({ task_id: "done", title: "Completed checkout", status: "COMPLETED",
+          outcome: "pass", completed_at: NOW - 300, last_activity_at: NOW - 300,
+          attempts: [attempt({ task_id: "done", model: "claude-sonnet-5" })],
+          attempt_count: 1, models: ["claude-sonnet-5"] }),
+      ]);
+      render(<Tasks />);
+
+      expect(mocks.activity).toHaveBeenCalledWith(24, "alpha");
+      expect(screen.getByRole("status")).toHaveTextContent("Last 24 hours");
+      // Completed work in the window is shown without "show completed".
+      expect(screen.getByText("Fix checkout")).toBeInTheDocument();
+      expect(screen.getByText("Completed checkout")).toBeInTheDocument();
+      expect(screen.getByText("claude-opus-5")).toBeInTheDocument();
+      expect(screen.getByText("claude-sonnet-5")).toBeInTheDocument();
+      expect(screen.getByRole("columnheader", { name: "Models" })).toBeInTheDocument();
+      expect(screen.getByRole("columnheader", { name: "Last activity" })).toBeInTheDocument();
+    });
+
+    it("reports every model on a retried task and never invents a missing one", () => {
+      mocks.filters = { query: "", status: "", showCompleted: false, focus: "", window: "24h" };
+      mocks.activityData = windowResponse([
+        activityItem({ attempts: [attempt({ id: "a2" }), attempt({ id: "a1", model: null })],
+          attempt_count: 2, models: ["claude-opus-5"], unattributed_attempts: 1 }),
+        activityItem({ task_id: "other", title: "Other project", status: "READY",
+          project_id: "alpha", attempts: [], attempt_count: 0, models: [] }),
+      ]);
+      render(<Tasks />);
+
+      expect(screen.getByText("claude-opus-5")).toBeInTheDocument();
+      expect(screen.getByText("+1 unattributed")).toBeInTheDocument();
+      expect(screen.getByText("2 attempts")).toBeInTheDocument();
+      expect(screen.getByText("No agent session")).toBeInTheDocument();
+    });
+
+    it("does not fetch activity when no time range is selected", () => {
+      render(<Tasks />);
+      expect(mocks.activity).toHaveBeenCalledWith(null, "alpha");
+      expect(screen.queryByRole("columnheader", { name: "Models" })).not.toBeInTheDocument();
+    });
+
+    it("says so when nothing was worked on in the range", () => {
+      mocks.filters = { query: "", status: "", showCompleted: false, focus: "", window: "24h" };
+      mocks.activityData = windowResponse([]);
+      render(<Tasks />);
+      expect(screen.getByText("No work recorded in this time range.")).toBeInTheDocument();
+    });
   });
 
   it("renders only the rows near the viewport when there are thousands of tasks", () => {

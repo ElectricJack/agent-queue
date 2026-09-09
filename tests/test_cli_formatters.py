@@ -99,3 +99,48 @@ def test_task_progress_renders_a_typed_response_model():
         in_progress=0, waves=[], max_parallelism=0, depth=0,
     ))
     assert "p-1: 0/0 done" in out
+
+
+def test_recent_activity_renders_models_attempts_and_a_labelled_window():
+    import time
+
+    now = time.time()
+    out = _render("task_recent_activity", {
+        "success": True,
+        "since": now - 86400,
+        "until": now,
+        "hours": 24.0,
+        "total": 2,
+        "truncated": False,
+        "items": [
+            {
+                "task_id": "nimble-current", "title": "Tasks tab activity",
+                "status": "COMPLETED", "outcome": "pass",
+                "models": ["claude-opus-5"], "unattributed_attempts": 1,
+                "attempt_count": 2, "last_activity_at": now - 600,
+            },
+            # A sparse row: no attempts, no outcome, no models.
+            {"task_id": "hand-edited", "last_activity_at": now - 90},
+        ],
+        "by_model": [
+            {"model": "claude-opus-5", "tasks": 1, "attempts": 1},
+            {"model": None, "tasks": 1, "attempts": 1},
+        ],
+    })
+    assert "last 24" in out
+    assert "claude-opus-5" in out
+    assert "unattributed" in out
+    assert "no agent session" in out
+    assert "10m ago" in out and "1m ago" in out
+
+
+def test_recent_activity_renders_an_empty_window_without_a_model_table():
+    import time
+
+    now = time.time()
+    out = _render("task_recent_activity", {
+        "success": True, "since": now - 3600, "until": now, "hours": 1.0,
+        "total": 0, "truncated": False, "items": [], "by_model": [],
+    })
+    assert "0 task(s)" in out
+    assert "By model" not in out

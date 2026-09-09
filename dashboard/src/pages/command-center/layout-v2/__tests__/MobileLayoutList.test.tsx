@@ -13,7 +13,7 @@ const n = (id: string) => ({
   agg_descendants: 0, agg_completed: 0, agg_running: 0, agg_blocked: 0, agg_active: 0,
 });
 
-const filters = { query: "", status: "", showCompleted: false, focus: "" };
+const filters = { query: "", status: "", showCompleted: false, focus: "", window: "" };
 const props = {
   projectId: "p1", variant: "active" as const, filters,
   expanded: new Set<string>(), toggleExpanded: () => {}, onTaskClick: () => {},

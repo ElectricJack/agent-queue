@@ -114,6 +114,7 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "remove_dependency": "task",
     "get_chain_health": "task",
     "list_active_tasks_all_projects": "task",
+    "task_recent_activity": "task",
     "create_task_graph": "task",
     # formula — reusable task-graph templates (swarm-work-model §13)
     "formula_list": "formula",
@@ -985,6 +986,50 @@ _ALL_TOOL_DEFINITIONS = [
                     "description": (
                         "When true, include completed/failed/blocked tasks too. "
                         "Default false (active tasks only)."
+                    ),
+                },
+            },
+        },
+    },
+    {
+        "name": "task_recent_activity",
+        "description": (
+            "Show what was worked on recently and by which models. Returns "
+            "every task with activity in the last N hours (default 24) — "
+            "tasks whose agent sessions ran during the window, tasks that "
+            "completed in it, and tasks whose state changed in it — so both "
+            "finished and still-in-progress work is included. Each item "
+            "carries status, outcome, timestamps, and one entry per session "
+            "attempt with the model that attempt actually reported "
+            "('models' is the distinct set, newest attempt first; "
+            "'unattributed_attempts' counts attempts that reported no model, "
+            "which is never guessed from the profile). The response also has "
+            "'by_model' totals across the window. Use this for 'what did we "
+            "do yesterday' or 'which models did the work'."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "hours": {
+                    "type": "number",
+                    "description": (
+                        "Size of the window ending now, in hours. Default 24; "
+                        "capped at 744 (31 days)."
+                    ),
+                },
+                "project_id": {
+                    "type": "string",
+                    "description": (
+                        "Restrict to one project. Defaults to the caller's "
+                        "active project; omit both for every project."
+                    ),
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": (
+                        "Maximum tasks to return, most recently active first. "
+                        "Default 200, maximum 1000. 'truncated' is true when "
+                        "more tasks matched than were returned."
                     ),
                 },
             },
