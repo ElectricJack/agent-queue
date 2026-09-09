@@ -851,6 +851,15 @@ agent_profiles = Table(
         nullable=False,
         server_default=false(),
     ),
+    # Operator kill-switch: a disabled profile is handed no new work (its
+    # pools drain to their busy sessions and ``task_claim`` refuses) while
+    # its definition stays intact so it can be re-enabled.
+    Column(
+        "enabled",
+        Boolean,
+        nullable=False,
+        server_default=true(),
+    ),
     # Opt-in for the base-checkout launch guard: without it a session whose
     # ``work_dir`` is a base workspace (the clone hosting the slot
     # worktrees, often a human's own tree) is refused.

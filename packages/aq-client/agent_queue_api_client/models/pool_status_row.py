@@ -29,6 +29,7 @@ class PoolStatusRow:
         starting (int):
         draining (int):
         ready (int):
+        enabled (bool | Unset):  Default: True.
         max_active (int | None | Unset):
         quarantined_until (float | None | Unset):
         quarantined_reason (None | str | Unset):
@@ -44,6 +45,7 @@ class PoolStatusRow:
     starting: int
     draining: int
     ready: int
+    enabled: bool | Unset = True
     max_active: int | None | Unset = UNSET
     quarantined_until: float | None | Unset = UNSET
     quarantined_reason: None | str | Unset = UNSET
@@ -68,6 +70,8 @@ class PoolStatusRow:
         draining = self.draining
 
         ready = self.ready
+
+        enabled = self.enabled
 
         max_active: int | None | Unset
         if isinstance(self.max_active, Unset):
@@ -109,6 +113,8 @@ class PoolStatusRow:
                 "ready": ready,
             }
         )
+        if enabled is not UNSET:
+            field_dict["enabled"] = enabled
         if max_active is not UNSET:
             field_dict["max_active"] = max_active
         if quarantined_until is not UNSET:
@@ -142,6 +148,8 @@ class PoolStatusRow:
         draining = d.pop("draining")
 
         ready = d.pop("ready")
+
+        enabled = d.pop("enabled", UNSET)
 
         def _parse_max_active(data: object) -> int | None | Unset:
             if data is None:
@@ -189,6 +197,7 @@ class PoolStatusRow:
             starting=starting,
             draining=draining,
             ready=ready,
+            enabled=enabled,
             max_active=max_active,
             quarantined_until=quarantined_until,
             quarantined_reason=quarantined_reason,

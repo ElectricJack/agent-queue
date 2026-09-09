@@ -116,6 +116,14 @@ def test_pool_lifecycle_command_is_part_of_the_generated_surface():
     assert d["pool_set_lifecycle"]["input_schema"]["required"] == ["profile_id", "lifecycle"]
 
 
+def test_pool_enable_command_is_part_of_the_generated_surface():
+    d = defs()
+    assert _TOOL_CATEGORIES["pool_set_enabled"] == "pool"
+    assert {"profile_id", "enabled"} <= set(d["pool_set_enabled"]["input_schema"]["properties"])
+    assert d["pool_set_enabled"]["input_schema"]["required"] == ["profile_id", "enabled"]
+    assert d["pool_set_enabled"]["input_schema"]["properties"]["enabled"]["type"] == "boolean"
+
+
 def test_project_scoped_profile_commands_are_gone():
     """Project-scoped profiles were retired; their CRUD must be off the surface."""
     d = defs()
@@ -455,6 +463,53 @@ async def test_pool_scale_preserves_author_prose(pool_handler, tmp_path):
     assert "Keep notes." in text
 
 
+async def test_pool_set_enabled_writes_the_vault_and_the_db_row(pool_handler, tmp_path):
+    """The switch is durable: a later vault re-sync must not silently re-enable."""
+    from src.event_bus import EventBus
+    from src.profiles.parser import parse_profile
+    from src.profiles.sync import sync_profile_text_to_db
+
+    pool_handler.orchestrator.bus = EventBus(env="dev")
+
+    res = await pool_handler._cmd_pool_set_enabled({"profile_id": "worker", "enabled": False})
+    assert res["success"], res
+    assert res["enabled"] is False
+
+    path = _system_path(tmp_path)
+    parsed = parse_profile(path.read_text(encoding="utf-8"))
+    assert parsed.config["enabled"] is False
+    assert parsed.config["lifecycle"] == "pool", "the rest of the config survives"
+    assert (await pool_handler.db.get_profile("worker")).enabled is False
+
+    result = await sync_profile_text_to_db(
+        path.read_text(encoding="utf-8"), pool_handler.db,
+        source_path=str(path), fallback_id="worker",
+    )
+    assert result.success, result.errors
+    assert (await pool_handler.db.get_profile("worker")).enabled is False
+
+    res = await pool_handler._cmd_pool_set_enabled({"profile_id": "worker", "enabled": True})
+    assert res["success"], res
+    assert (await pool_handler.db.get_profile("worker")).enabled is True
+    assert parse_profile(path.read_text(encoding="utf-8")).config["enabled"] is True
+
+
+async def test_pool_set_enabled_refuses_bad_input(pool_handler):
+    from src.event_bus import EventBus
+
+    pool_handler.orchestrator.bus = EventBus(env="dev")
+    assert await pool_handler._cmd_pool_set_enabled({"enabled": False}) == {
+        "success": False, "error": "profile_id is required",
+    }
+    assert await pool_handler._cmd_pool_set_enabled({"profile_id": "worker"}) == {
+        "success": False, "error": "enabled must be a boolean",
+    }
+    assert await pool_handler._cmd_pool_set_enabled(
+        {"profile_id": "nope", "enabled": False}
+    ) == {"success": False, "error": "no pool profile 'nope'"}
+    assert (await pool_handler.db.get_profile("worker")).enabled is True
+
+
 async def test_pool_lifecycle_is_global_durable_and_guarded(pool_handler, tmp_path):
     """Lifecycle lives on the system profile and a later sync must not revert it."""
     import time
@@ -560,6 +615,54 @@ async def test_pool_scale_reports_each_project_cap(pool_handler):
     caps = {row["project_id"]: row for row in capped["project_caps"]}
     assert caps[PROJECT_ID]["max_concurrent_agents"] == 2
     assert caps[PROJECT_ID]["effective_max_active"] == 2
+
+
+async def test_disabled_pool_stays_listed_and_is_sized_to_zero(pool_handler):
+    """A disabled pool keeps its row (that is what re-enables it) at desired 0.
+
+    Idle workers are surplus and drain; a worker holding a task is not, because
+    ``size_pools`` floors ``desired`` at ``busy + starting``.
+    """
+    import time
+
+    from src.event_bus import EventBus
+    from src.models import SessionRecord
+
+    pool_handler.orchestrator.bus = EventBus(env="dev")
+    now = time.time()
+    # A claim in flight is what makes a worker busy here; a real ``task_id``
+    # would need a task row and adds nothing to the sizing question.
+    for suffix, claim_phase in (("idle", None), ("busy", "active")):
+        await pool_handler.db.create_session(
+            SessionRecord(
+                id="pool-" + suffix, project_id=PROJECT_ID, profile_id="worker",
+                harness="fake", provider="fake", name="p-worker--proj--" + suffix,
+                lifecycle="pool", work_dir="/tmp/" + suffix, epoch="test",
+                instance_token="token-" + suffix, started_at=now - 30,
+                last_activity=now - 5, state="running", claim_phase=claim_phase,
+            )
+        )
+
+    before = (await pool_handler._cmd_pool_status({"project_id": PROJECT_ID}))["pools"][0]
+    assert before["enabled"] is True
+
+    assert (await pool_handler._cmd_pool_set_enabled(
+        {"profile_id": "worker", "enabled": False}
+    ))["success"]
+
+    row = (await pool_handler._cmd_pool_status({"project_id": PROJECT_ID}))["pools"][0]
+    assert row["enabled"] is False
+    assert (row["min_active"], row["max_active"]) == (0, 0)
+    # One busy worker keeps its session; the idle one is surplus.
+    assert row["desired"] == 1
+    assert (row["running_busy"], row["running_idle"]) == (1, 1)
+
+    assert (await pool_handler._cmd_pool_set_enabled(
+        {"profile_id": "worker", "enabled": True}
+    ))["success"]
+    restored = (await pool_handler._cmd_pool_status({"project_id": PROJECT_ID}))["pools"][0]
+    assert restored["enabled"] is True
+    assert (restored["min_active"], restored["max_active"]) == (1, 2)
 
 
 async def test_pool_status_includes_live_instance_detail(pool_handler):

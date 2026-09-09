@@ -77,6 +77,7 @@ import {
   uploadAttachmentApiTasksTaskIdAttachmentsPost,
   poolStatus,
   poolScale,
+  poolSetEnabled,
   playbookActivate,
   playbookActivationHealth,
   playbookArtifactDiff,
@@ -156,6 +157,8 @@ import type {
   PoolStatusRow,
   PoolScaleRequest,
   PoolScaleResponse,
+  PoolSetEnabledRequest,
+  PoolSetEnabledResponse,
   PlaybookActivationHealthResponse,
   PlaybookArtifactDiffResponse,
   ListPlaybookArtifactsResponse,
@@ -331,6 +334,33 @@ export function usePoolScale() {
       // pool_scale reports refusals in band (bad bounds, no such pool profile)
       // with a 200, so success has to be checked before React Query calls it one.
       if (!result.success) throw new Error(result.error || "Could not scale this pool");
+      return result;
+    },
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["pools"] });
+      void queryClient.invalidateQueries({ queryKey: ["sessions"] });
+    },
+  });
+}
+
+/**
+ * Turn a pool profile on or off (``pool_set_enabled``).
+ *
+ * The switch is written to the system profile's vault markdown like every
+ * other pool edit, so it survives the next vault sync. A disabled pool keeps
+ * its ``pool_status`` row — that is what the directory toggles back on — but
+ * is sized to zero: idle workers drain, a worker mid-task finishes the task
+ * it holds, and its next claim is refused.
+ */
+export function usePoolSetEnabled() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (input: PoolSetEnabledRequest) => {
+      const { data } = await poolSetEnabled({ body: input, throwOnError: true });
+      const result = data as PoolSetEnabledResponse;
+      // Refusals (no such pool profile) come back in band with a 200, exactly
+      // as they do for pool_scale, so success has to be checked here.
+      if (!result.success) throw new Error(result.error || "Could not update this pool");
       return result;
     },
     onSuccess: () => {

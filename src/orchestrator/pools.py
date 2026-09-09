@@ -170,7 +170,14 @@ class PoolsMixin:
             for profile_id, profile in pool_profiles.items():
                 key = PoolKey(project.id, profile_id)
                 profiles_by_key[key] = profile
-                bounds[key] = (profile.min_active or 0, profile.max_active)
+                if getattr(profile, "enabled", True):
+                    bounds[key] = (profile.min_active or 0, profile.max_active)
+                else:
+                    # Disabled by an operator: size the pool to zero.  The
+                    # sizer floors ``desired`` at ``busy + starting``, so a
+                    # worker mid-task keeps its session and only idle workers
+                    # drain — the same semantics as scaling max down to 0.
+                    bounds[key] = (0, 0)
                 ready = ready_by_profile.get(profile_id, 0)
                 if default_profile_id == profile_id:
                     ready += unrouted_ready

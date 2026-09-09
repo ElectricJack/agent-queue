@@ -18,7 +18,7 @@ const api = vi.hoisted(() => ({
   listAgents: vi.fn(), listProjects: vi.fn(), listProfiles: vi.fn(), listIntelligenceClasses: vi.fn(),
   getAgent: vi.fn(), editAgent: vi.fn(), createAgent: vi.fn(), deleteAgent: vi.fn(),
   sessionInput: vi.fn(), startAgentTerminal: vi.fn(),
-  poolStatus: vi.fn(), poolScale: vi.fn(), sessionList: vi.fn(),
+  poolStatus: vi.fn(), poolScale: vi.fn(), poolSetEnabled: vi.fn(), sessionList: vi.fn(),
 }));
 vi.mock("../../../api/client", () => api);
 
@@ -94,6 +94,7 @@ beforeEach(() => {
   api.poolStatus.mockResolvedValue({ data: { success: true, pools: [pool()] } });
   api.sessionList.mockResolvedValue({ data: { success: true, sessions: [instance("aaa"), instance("bbb", { task_id: "quick-torrent-39", started_at: 200 })], count: 2 } });
   api.poolScale.mockResolvedValue({ data: { success: true, profile_id: "worker-standard", min_active: 2, max_active: 6, project_caps: [], terminated: [], warnings: [] } });
+  api.poolSetEnabled.mockResolvedValue({ data: { success: true, profile_id: "worker-standard", enabled: false, warnings: [] } });
 });
 
 afterEach(() => {
@@ -426,6 +427,71 @@ describe("pool settings", () => {
     expect(within(section).getByText("agent-queue")).toBeInTheDocument();
     expect(within(section).getByText("other-repo")).toBeInTheDocument();
     expect(within(section).getAllByLabelText("Maximum active workers")[1]).toHaveValue(null);
+  });
+});
+
+describe("enabling and disabling a pool from the directory", () => {
+  // The rail hides pools without a task-holding worker, so an idle pool — the
+  // one an operator wants to switch off when its models run low — is only
+  // reachable here.  Both fixtures below are idle for exactly that reason.
+  const idle = { running_busy: 0, running_idle: 1 };
+
+  it("disables an idle pool and keeps its row listed for re-enabling", async () => {
+    api.poolStatus.mockResolvedValue({ data: { success: true, pools: [pool(idle)] } });
+    renderAgents("/agents");
+    const directory = within(await screen.findByRole("region", { name: "Worker pools" }, SLOW));
+
+    fireEvent.click(await directory.findByRole("switch", { name: "Disable worker-standard pool" }, SLOW));
+
+    await waitFor(() => expect(api.poolSetEnabled).toHaveBeenCalledTimes(1), SLOW);
+    expect(api.poolSetEnabled.mock.calls[0]![0].body).toEqual({
+      profile_id: "worker-standard", enabled: false,
+    });
+    // The next poll reports the persisted state; the row stays in the list.
+    api.poolStatus.mockResolvedValue({ data: { success: true, pools: [pool({ ...idle, enabled: false })] } });
+    expect(await directory.findByRole("switch", { name: "Enable worker-standard pool" }, SLOW)).toBeInTheDocument();
+    expect(directory.getByRole("button", { name: "Open pool worker-standard" })).toBeInTheDocument();
+    expect(directory.getByText(/no new work is claimed/i)).toBeInTheDocument();
+    expect(directory.getByText("disabled")).toBeInTheDocument();
+  });
+
+  it("enables a disabled pool again", async () => {
+    api.poolStatus.mockResolvedValue({ data: { success: true, pools: [pool({ ...idle, enabled: false })] } });
+    api.poolSetEnabled.mockResolvedValue({ data: { success: true, profile_id: "worker-standard", enabled: true, warnings: [] } });
+    renderAgents("/agents");
+    const directory = within(await screen.findByRole("region", { name: "Worker pools" }, SLOW));
+
+    fireEvent.click(await directory.findByRole("switch", { name: "Enable worker-standard pool" }, SLOW));
+
+    await waitFor(() => expect(api.poolSetEnabled).toHaveBeenCalledTimes(1), SLOW);
+    expect(api.poolSetEnabled.mock.calls[0]![0].body).toEqual({
+      profile_id: "worker-standard", enabled: true,
+    });
+  });
+
+  it("restores the shown state and reports an in-band refusal", async () => {
+    api.poolStatus.mockResolvedValue({ data: { success: true, pools: [pool(idle)] } });
+    api.poolSetEnabled.mockResolvedValue({ data: { success: false, error: "no pool profile 'worker-standard'" } });
+    renderAgents("/agents");
+    const directory = within(await screen.findByRole("region", { name: "Worker pools" }, SLOW));
+
+    fireEvent.click(await directory.findByRole("switch", { name: "Disable worker-standard pool" }, SLOW));
+
+    expect(await directory.findByRole("alert", undefined, SLOW)).toHaveTextContent(/no pool profile/);
+    // Nothing was persisted, so the switch goes back to what pool_status says.
+    expect(directory.getByRole("switch", { name: "Disable worker-standard pool" }))
+      .toHaveAttribute("aria-checked", "true");
+  });
+
+  it("does not open the pool view when the switch is clicked", async () => {
+    api.poolStatus.mockResolvedValue({ data: { success: true, pools: [pool(idle)] } });
+    renderAgents("/agents");
+    const directory = within(await screen.findByRole("region", { name: "Worker pools" }, SLOW));
+
+    fireEvent.click(await directory.findByRole("switch", { name: "Disable worker-standard pool" }, SLOW));
+
+    await waitFor(() => expect(api.poolSetEnabled).toHaveBeenCalled(), SLOW);
+    expect(screen.queryByRole("region", { name: "worker-standard pool agent window" })).not.toBeInTheDocument();
   });
 });
 

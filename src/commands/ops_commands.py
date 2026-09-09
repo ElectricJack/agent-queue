@@ -247,7 +247,7 @@ class OpsCommandsMixin:
             supply,
             demand,
             bounds,
-            _profiles,
+            profiles_by_key,
             _caps,
             _projects,
         ) = await self.orchestrator._measure_pools(project_ids)
@@ -268,6 +268,10 @@ class OpsCommandsMixin:
             row = {
                 "project_id": key.project_id,
                 "profile_id": key.profile_id,
+                # An operator kill-switch on the (global) profile.  Disabled
+                # pools keep their row — that is how the dashboard offers the
+                # toggle that turns them back on — and are sized to zero.
+                "enabled": getattr(profiles_by_key.get(key), "enabled", True),
                 "min_active": lo,
                 "max_active": hi,
                 "desired": desired,
@@ -475,6 +479,52 @@ class OpsCommandsMixin:
             "success": True,
             "profile_id": profile_id,
             "lifecycle": lifecycle,
+            "warnings": warnings,
+        }
+
+    async def _cmd_pool_set_enabled(self, args: dict) -> dict:
+        """Turn a pool profile on or off.  Backs ``aq pool set-enabled``.
+
+        ``enabled`` is the operator kill-switch for a whole pool profile: the
+        profile keeps its definition, its vault markdown and its
+        ``pool_status`` row, so a disabled pool stays visible and can be
+        switched back on.  What changes is eligibility for *new* work —
+
+        * sizing: ``_measure_pools`` reports bounds ``(0, 0)`` for a disabled
+          profile, so the sizer drains idle workers.  ``desired`` is still
+          floored at ``busy + starting``, so a worker mid-task keeps its
+          session and finishes the task it holds;
+        * claims: ``task_claim`` answers ``drain_requested`` for a disabled
+          profile, so a busy worker takes no further task after this one.
+
+        Like every other pool edit the switch lives on the (global) system
+        profile and therefore applies to every project's pool for it.
+        """
+        profile_id = args.get("profile_id")
+        enabled = args.get("enabled")
+        warnings = self._deprecated_project_id(args)
+        if not profile_id:
+            return {"success": False, "error": "profile_id is required"}
+        if not isinstance(enabled, bool):
+            return {"success": False, "error": "enabled must be a boolean"}
+        profile = await self._write_pool_profile_config(
+            profile_id, {"enabled": enabled}, require_pool=True
+        )
+        if profile is None:
+            return {"success": False, "error": f"no pool profile '{profile_id}'"}
+        for project in await self.db.list_projects():
+            await self.orchestrator.bus.emit(
+                "pool.enabled_changed",
+                {
+                    "project_id": project.id,
+                    "profile_id": profile_id,
+                    "enabled": enabled,
+                },
+            )
+        return {
+            "success": True,
+            "profile_id": profile_id,
+            "enabled": enabled,
             "warnings": warnings,
         }
 

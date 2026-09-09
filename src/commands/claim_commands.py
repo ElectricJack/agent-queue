@@ -29,8 +29,18 @@ __all__ = [
     "write_claim_file",
 ]
 
-_ADMISSION_EVENTS = ("project.resumed", "constraint.released", "snapshot.refreshed")
-_FRONTIER_EVENTS = ("task.ready", "gate.resolved", "task.restarted")
+# A pool profile's kill-switch has to reach a claim that is *already* parked in
+# a long poll: without it the disable is only noticed when the wait expires, and
+# a worker keeps a claim call open for up to ``swarm.claim_wait_max`` seconds
+# after the operator turned its pool off.  Both waits below re-check
+# ``profile.enabled`` at the top of the loop, so waking either one is enough.
+_POOL_EVENTS = ("pool.enabled_changed",)
+_ADMISSION_EVENTS = (
+    "project.resumed",
+    "constraint.released",
+    "snapshot.refreshed",
+) + _POOL_EVENTS
+_FRONTIER_EVENTS = ("task.ready", "gate.resolved", "task.restarted") + _POOL_EVENTS
 
 
 def _task_block(task) -> dict:
@@ -253,6 +263,14 @@ class ClaimCommandsMixin:
                 project = await self.db.get_project(session.project_id)
                 default_profile = getattr(project, "default_profile_id", None)
             refresh_routing = True
+            # An operator can disable a pool profile while a worker is
+            # finishing its current task.  The task it already holds runs to
+            # completion; what the switch stops is the *next* claim — including
+            # one a long poll is still waiting for.
+            if not getattr(profile, "enabled", True):
+                return self._simple(
+                    ClaimResult.DRAIN_REQUESTED, "pool is disabled", session
+                )
             # Subscribe before checking admissibility (same discipline as
             # the frontier waiter below) — otherwise a ``project.resumed`` /
             # ``constraint.released`` / ``snapshot.refreshed`` landing

@@ -7429,6 +7429,53 @@
         }
       }
     },
+    "/api/pool/set-enabled": {
+      "post": {
+        "tags": [
+          "pool"
+        ],
+        "summary": "Turn a pool profile on or off on the system profile (it applies to every project). A disabled pool keeps its definition and its pool_status row but is handed no new work: idle workers drain, a worker mid-task finishes the task it holds, and task_claim answers drain_requested. Backs `aq pool set-enabled`.",
+        "description": "Turn a pool profile on or off on the system profile (it applies to every project). A disabled pool keeps its definition and its pool_status row but is handed no new work: idle workers drain, a worker mid-task finishes the task it holds, and task_claim answers drain_requested. Backs `aq pool set-enabled`.",
+        "operationId": "pool_set_enabled",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PoolSetEnabledRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PoolSetEnabledResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/pool/set-lifecycle": {
       "post": {
         "tags": [
@@ -31818,6 +31865,92 @@
         ],
         "title": "PoolScaleResponse"
       },
+      "PoolSetEnabledRequest": {
+        "properties": {
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Id",
+            "description": "Deprecated and ignored \u2014 the switch is global. Accepted for one release so existing scripts keep working."
+          },
+          "profile_id": {
+            "type": "string",
+            "title": "Profile Id",
+            "description": "Pool profile (agent-type) ID."
+          },
+          "enabled": {
+            "type": "boolean",
+            "title": "Enabled",
+            "description": "True to accept new work, false to drain and stop claiming."
+          }
+        },
+        "type": "object",
+        "required": [
+          "profile_id",
+          "enabled"
+        ],
+        "title": "PoolSetEnabledRequest"
+      },
+      "PoolSetEnabledResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success"
+          },
+          "profile_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Profile Id"
+          },
+          "enabled": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Enabled"
+          },
+          "warnings": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Warnings",
+            "default": []
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          }
+        },
+        "type": "object",
+        "required": [
+          "success"
+        ],
+        "title": "PoolSetEnabledResponse"
+      },
       "PoolSetLifecycleRequest": {
         "properties": {
           "project_id": {
@@ -31950,6 +32083,11 @@
           "profile_id": {
             "type": "string",
             "title": "Profile Id"
+          },
+          "enabled": {
+            "type": "boolean",
+            "title": "Enabled",
+            "default": true
           },
           "min_active": {
             "type": "integer",
