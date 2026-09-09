@@ -153,7 +153,7 @@ class GitHubCLIClient(GitHubAppClient):
         if json_body is not None:
             args.extend(["--input", "-"])
         if paginate:
-            args.extend(["--paginate", "--slurp"])
+            args.append("--paginate")
         environment = self._env | {
             "GH_PROMPT_DISABLED": "1",
             "GH_NO_UPDATE_NOTIFIER": "1",
@@ -204,7 +204,19 @@ class GitHubCLIClient(GitHubAppClient):
         if len(stdout) > self.max_response_bytes:
             raise GitHubAppError("transient", "GitHub response exceeded size limit")
         try:
-            return json.loads(stdout)
+            if not paginate:
+                return json.loads(stdout)
+            # Older supported gh versions emit successive JSON documents and
+            # do not implement --slurp. Decode complete documents, not lines:
+            # a page may be pretty-printed or adjacent to the next page.
+            remaining = stdout.decode("utf-8").lstrip()
+            decoder = json.JSONDecoder()
+            pages = []
+            while remaining:
+                page, end = decoder.raw_decode(remaining)
+                pages.append(page)
+                remaining = remaining[end:].lstrip()
+            return pages
         except (UnicodeDecodeError, json.JSONDecodeError) as exc:
             raise GitHubAppError(
                 "conflict_or_invalid", "GitHub response was not valid JSON"

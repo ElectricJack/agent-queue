@@ -235,6 +235,25 @@ class TestClaim:
         reset.assert_not_awaited()
         assert (await db.get_session(sid)).claim_phase is None
 
+    async def test_failed_attached_prepare_retries_same_claim_and_fence(self, handler, db, tmp_path):
+        ownership, fence = await self._hierarchy_task(db, tmp_path)
+        sid, _wd = await pool_session(db, tmp_path)
+        reset = handler.orchestrator._worktree_slots.return_value.reset_slot_for_task
+        reset.side_effect = [RuntimeError("stale predecessor checkout"), "aq/child"]
+        h = scoped(handler, sid)
+        failed = await h._cmd_task_claim({"next": True})
+        assert failed["result"] == "prepare_failed"
+        held = await db.get_session(sid)
+        assert held.claim_phase == "preparing"
+        epoch = held.last_claim_epoch
+        retried = await h._cmd_task_claim({"next": True})
+        assert retried["result"] == "claimed"
+        assert (await db.get_session(sid)).last_claim_epoch == epoch
+        owner = await ownership.get_owner(fence.target)
+        assert owner["fence_token"] == fence.token
+        assert owner["session_id"] == sid
+        assert reset.await_count == 2
+
     async def test_reconciler_release_honors_fresh_context_drain(self, handler, db, config, tmp_path, monkeypatch):
         """A reconciler-won close release keeps fresh-context drain semantics."""
         await mktask(db, "t1", profile_id="worker")

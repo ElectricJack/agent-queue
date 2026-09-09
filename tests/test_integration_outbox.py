@@ -783,7 +783,10 @@ async def test_system_route_rejects_disabled_or_policyless_project(db, tmp_path)
     await runtime.shutdown()
 
 
-async def test_system_frozen_operation_route_rejects_another_project(db, tmp_path):
+@pytest.mark.parametrize("audit_activation_present", [True, False])
+async def test_system_frozen_operation_route_rejects_another_project(
+    db, tmp_path, audit_activation_present
+):
     compiled = tmp_path / "compiled"
     activation_id, artifact_sha = await _activate(
         db,
@@ -808,7 +811,7 @@ async def test_system_frozen_operation_route_rejects_another_project(db, tmp_pat
         operation_id="operation-1",
         playbook_id="root-integration-train",
         artifact_sha256=artifact_sha,
-        activation_id=activation_id,
+        activation_id=activation_id if audit_activation_present else None,
         scope="system",
         scope_identifier="",
         batch_project_id="p",
