@@ -78,8 +78,13 @@ class IntegrationService:
             await self._source("schedule", self._tick_schedules, now)
             if self._collection_handler is not None:
                 await self._source("child collection", self._collection_handler, now)
-            await self._source("repair deadline", self._tick_repair_stages, now)
+            # A candidate may have completed its exact CI run at the same time
+            # its repair-stage clock becomes due.  Observe it before advancing
+            # the deadline ladder: a conclusive result is still evidence, while
+            # pending, unknown, and failed observations leave the finite clock
+            # to the repair-deadline pass below.
             await self._source("candidate CI", self._tick_candidate_ci, now)
+            await self._source("repair deadline", self._tick_repair_stages, now)
             if self._parent_ci_handler is not None:
                 await self._source("parent CI", self._parent_ci_handler, now)
             await self._source("integration intent", self._tick_intents, now)

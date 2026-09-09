@@ -227,7 +227,12 @@ class CandidateService:
             return CandidateBuildResult(outcome="wait", batch_id=batch_id, revision=revision_number)
         was_built = revision["state"] == "built"
         operation_id = state["operation"]["id"]
-        if revision.get("repair_parent_revision") is None:
+        # Only stage zero is activated from the construction base. An escalated
+        # stage already has its own frozen starting SHA and finite budget;
+        # replaying the initial start would reject that valid continuation.
+        # Subsequent publication guards still validate current stage authority.
+        if (revision.get("repair_parent_revision") is None
+                and int(state["operation"]["active_stage"]) == 0):
             started = await self.repair.start(
                 operation_id,
                 revision["construction_base_sha"],
@@ -2095,6 +2100,29 @@ class CandidateService:
                     "expires_at": now + _MUTATION_CLAIM_SECONDS,
                 }
         if any(row[key] != value for key, value in identity.items()):
+            # A completed candidate ref write is immutable evidence, not a
+            # lease held by the fence that originally performed it.  A timeout
+            # can advance the repair stage before a live CI result is observed;
+            # once the collector resumes under its newer fence, retain an
+            # already remote-proved publication instead of trying to recreate
+            # its reservation with the new stage/fence identity.
+            adopted_fields = {
+                "operation_stage",
+                "branch_owner_id",
+                "branch_owner_role",
+                "branch_fence_token",
+            }
+            immutable_matches = all(
+                row[key] == value
+                for key, value in identity.items()
+                if key not in adopted_fields
+            )
+            if (
+                immutable_matches
+                and row["state"] == "applied"
+                and row["remote_sha"] == row["desired_sha"] == identity["desired_sha"]
+            ):
+                return dict(row), inserted
             raise CandidateStaleAuthority("candidate mutation identity changed")
         return dict(row), inserted
 

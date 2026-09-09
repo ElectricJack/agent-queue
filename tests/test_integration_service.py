@@ -542,6 +542,42 @@ async def test_tick_keeps_work_without_later_phase_handlers_retryable():
     outbox.dispatch_due.assert_awaited_once_with(10.0)
 
 
+async def test_tick_observes_candidate_ci_before_expiring_a_due_repair_stage():
+    """A conclusive exact CI result at the deadline must get first observation."""
+    events = []
+
+    class FakeDB:
+        async def due_integration_schedule_page(self, **kwargs):
+            return []
+
+        async def due_integration_repair_stage_page(self, **kwargs):
+            return [{"operation_id": "op", "stage": 0, "deadline_at": 10.0}]
+
+        async def pending_candidate_ci_page(self, **kwargs):
+            return [{"batch_id": "batch", "revision": 1, "updated_at": 1.0}]
+
+        async def unresolved_integration_intent_page(self, **kwargs):
+            return []
+
+    async def observe(row, now):
+        events.append(("candidate", row["batch_id"], now))
+
+    async def expire(operation_id, stage, *, now):
+        events.append(("deadline", operation_id, stage, now))
+
+    service = IntegrationService(
+        FakeDB(),
+        SimpleNamespace(mark_due=AsyncMock()),
+        SimpleNamespace(expire=expire),
+        SimpleNamespace(dispatch_due=AsyncMock(return_value=0)),
+        candidate_ci_handler=observe,
+    )
+
+    await service.tick(10.0)
+
+    assert events == [("candidate", "batch", 10.0), ("deadline", "op", 0, 10.0)]
+
+
 async def test_tick_isolates_item_failure_but_propagates_cancellation():
     class FakeDB:
         async def due_integration_schedule_page(self, **kwargs):
@@ -569,7 +605,8 @@ async def test_tick_isolates_item_failure_but_propagates_cancellation():
     with pytest.raises(asyncio.CancelledError):
         await service.tick(10.0)
 
-    repair.expire.assert_awaited_once_with("op", 0, now=10.0)
+    # Cancellation during CI observation precedes deadline processing.
+    repair.expire.assert_not_awaited()
     outbox.dispatch_due.assert_not_awaited()
 
 

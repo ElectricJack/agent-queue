@@ -41,7 +41,7 @@ from src.git.github_app import GitHubRepositoryBinding
 from src.git.manager import GitError, GitManager
 from src.integration.attestation import IntegrationAttestationService
 from src.integration.candidates import CandidateBuildResult, CandidateService
-from src.integration.ci import ATTESTATION_CHECK_NAME, AttestationPayload
+from src.integration.ci import ATTESTATION_CHECK_NAME, AttestationPayload, CIReceiptPayload
 from src.integration.main_promotion import (
     RootAttestationProof,
     RootPromotionInvariantError,
@@ -53,7 +53,7 @@ from src.integration.models import BranchKey, Fence
 from src.integration.ownership import BranchBusy, BranchOwnership
 from src.integration.promotion import PromotionInvariantError, PromotionService
 from src.integration.repair import RepairService
-from src.models import Project, RepoConfig, RepoSourceType
+from src.models import Agent, Project, RepoConfig, RepoSourceType, Task, TaskStatus
 from src.profiles.capabilities import DENY_ALL
 from tests.db_fixtures import lease_dsn
 from tests.pg_dsn import create_scratch_database, ensure_worker_postgres_dsn
@@ -399,6 +399,42 @@ def _root_attestation_payload() -> AttestationPayload:
     )
 
 
+def _root_ci_receipt_payload() -> CIReceiptPayload:
+    return CIReceiptPayload.model_validate(
+        {
+            "schema": "aq.integration-ci-receipt.v1",
+            "canonical_repository_id": "repo",
+            "repository_id": 99,
+            "full_name": "acme/widgets",
+            "producer_id": "404",
+            "head_sha": HEAD,
+            "required_check_set_version": "checks-v1",
+            "checks": [
+                {
+                    "name": name,
+                    "check_run_id": 11 + index,
+                    "check_suite_id": 21 + index,
+                    "producer_app_id": 404,
+                    "producer_id": "404",
+                    "head_sha": HEAD,
+                    "conclusion": "success",
+                }
+                for index, name in enumerate(("unit", "postgres"))
+            ],
+            "workflow_runs": [
+                {
+                    "workflow_run_id": 31 + index,
+                    "run_attempt": 1,
+                    "check_suite_id": 21 + index,
+                    "head_sha": HEAD,
+                    "conclusion": "success",
+                }
+                for index in range(2)
+            ],
+        }
+    )
+
+
 class RootAttestationProvider:
     def __init__(self):
         self.config = SimpleNamespace(app_id=101)
@@ -524,6 +560,80 @@ class RootTrustGit:
             stdout=json.dumps(trust, sort_keys=True, separators=(",", ":")),
             stderr="",
         )
+
+
+async def _escalate_to_unclaimed_root_delegate(db, *, attached=False, assigned=False):
+    """Put the real fixture at the deadline boundary before CI is observed."""
+    delegate_id = "repair-root-op-1"
+    if assigned:
+        await db.create_agent(Agent(id="assigned-agent", name="Assigned", profile_id="debug"))
+    async with db.immediate() as conn:
+        await conn.execute(
+            update(integration_batches)
+            .where(integration_batches.c.id == "batch")
+            .values(tested_candidate_sha=None, ci_evidence_id=None, lifecycle="testing")
+        )
+        await conn.execute(
+            update(integration_candidate_revisions)
+            .where(
+                integration_candidate_revisions.c.batch_id == "batch",
+                integration_candidate_revisions.c.revision == 0,
+            )
+            .values(state="built", ci_evidence_id=None)
+        )
+        await conn.execute(
+            update(integration_repair_operations)
+            .where(integration_repair_operations.c.id == "root-op")
+            .values(active_stage=1, state="escalated")
+        )
+        await conn.execute(
+            update(integration_repair_stages)
+            .where(
+                integration_repair_stages.c.operation_id == "root-op",
+                integration_repair_stages.c.ordinal == 0,
+            )
+            .values(state="expired")
+        )
+        await db.create_task(
+            Task(
+                id=delegate_id,
+                project_id="p",
+                repo_id="repo",
+                title="Deadline delegate",
+                description="reserved debug delegate",
+                status=TaskStatus.PAUSED,
+                assigned_agent_id="assigned-agent" if assigned else None,
+            ),
+            conn=conn,
+        )
+        await conn.execute(
+            insert(integration_repair_stages).values(
+                operation_id="root-op",
+                ordinal=1,
+                policy={"seconds": 60, "attempts": 1},
+                intelligence_class="debug",
+                repair_task_id=delegate_id,
+                writer_kind="repair_delegate",
+                starting_sha=HEAD,
+                current_subject={"kind": "batch", "revision": 0, "candidate_sha": HEAD},
+                deadline_at=70.0,
+                attempts=0,
+                state="active",
+            )
+        )
+        await conn.execute(
+            update(integration_branch_owners)
+            .where(integration_branch_owners.c.id == "branch-owner-row")
+            .values(
+                owner_id=delegate_id,
+                owner_role="repair",
+                fence_token=8,
+                handoff_state="attached" if attached else "reserved",
+                session_id="delegate-session" if attached else None,
+                workspace_id="delegate-workspace" if attached else None,
+            )
+        )
+    return delegate_id
 
 
 class ClockAdvancingApp(FakeAppClient):
@@ -915,6 +1025,271 @@ async def test_gh_live_candidate_receipt_allows_exact_oid_main_promotion(prepare
     assert provider.posts == 0
     assert provider.token_calls == 1
     assert len(git.pushes) == 1
+
+
+@pytest.mark.asyncio
+async def test_exact_green_ci_reclaims_only_unclaimed_delegate_and_promotes(prepared_db):
+    """A deadline-stage reservation cannot strand an otherwise exact green candidate."""
+    db, data_dir = prepared_db
+    delegate_id = await _escalate_to_unclaimed_root_delegate(db)
+    provider = GitHubCLIRootProvider()
+    receipt = IntegrationAttestationService(
+        db,
+        data_dir=data_dir,
+        git_manager=RootTrustGit(),
+        app_client_factory=lambda _binding: provider,
+        clock=lambda: 10.0,
+    )
+    row = {"operation_id": "root-op", "batch_id": "batch", "revision": 0, "candidate_sha": HEAD}
+
+    observed = await receipt.handle_candidate_ci(row, 10.0)
+    replayed = await IntegrationAttestationService(
+        db,
+        data_dir=data_dir,
+        git_manager=RootTrustGit(),
+        app_client_factory=lambda _binding: provider,
+        clock=lambda: 10.0,
+    ).handle_candidate_ci(row, 10.0)
+    async with db._engine.connect() as conn:
+        owner = (
+            await conn.execute(select(integration_branch_owners).where(
+                integration_branch_owners.c.id == "branch-owner-row"
+            ))
+        ).mappings().one()
+        stage = (
+            await conn.execute(select(integration_repair_stages).where(
+                integration_repair_stages.c.operation_id == "root-op",
+                integration_repair_stages.c.ordinal == 1,
+            ))
+        ).mappings().one()
+
+    assert observed["outcome"] == "published"
+    assert replayed["outcome"] == "already_published"
+    assert owner["owner_id"] == "root-op"
+    assert owner["owner_role"] == "collector"
+    assert owner["fence_token"] == 9
+    assert stage["state"] == "awaiting_completion"
+    assert stage["success_evidence_id"] is not None
+    assert (await db.get_task(delegate_id)).status is TaskStatus.PAUSED
+
+    result = await _RootPromotionService(
+        db,
+        data_dir=data_dir,
+        git_manager=GitHubCLIPushGit(provider),
+        app_client=provider,
+        attestation_resolver=receipt.resolve,
+        clock=lambda: 10.0,
+    ).promote("batch", 0)
+
+    assert result.outcome == "promoted"
+    assert provider.remote == HEAD
+
+
+@pytest.mark.asyncio
+async def test_already_green_candidate_retry_reclaims_unclaimed_delegate_and_promotes(prepared_db):
+    """Retry recovery does not depend on observing CI again in this process."""
+    db, data_dir = prepared_db
+    delegate_id = await _escalate_to_unclaimed_root_delegate(db)
+    async with db.immediate() as conn:
+        await conn.execute(
+            insert(integration_check_evidence).values(
+                id="ci-retry-green",
+                operation_id="root-op",
+                batch_id="batch",
+                candidate_revision=0,
+                producer_id="404",
+                workflow_id="aggregate:retry",
+                run_id=_root_ci_receipt_payload().external_id,
+                attempt=0,
+                required_check_version="checks-v1",
+                checks={"unit": "success", "postgres": "success"},
+                conclusion="success",
+                classification="conclusive",
+                observed_at=10.0,
+            )
+        )
+        await conn.execute(
+            update(integration_batches)
+            .where(integration_batches.c.id == "batch")
+            .values(
+                tested_candidate_sha=HEAD,
+                ci_evidence_id="ci-retry-green",
+                lifecycle="testing",
+            )
+        )
+        await conn.execute(
+            update(integration_candidate_revisions)
+            .where(
+                integration_candidate_revisions.c.batch_id == "batch",
+                integration_candidate_revisions.c.revision == 0,
+            )
+            .values(state="green", ci_evidence_id="ci-retry-green")
+        )
+        await conn.execute(
+            update(integration_repair_stages)
+            .where(
+                integration_repair_stages.c.operation_id == "root-op",
+                integration_repair_stages.c.ordinal == 1,
+            )
+            .values(
+                state="awaiting_completion",
+                current_subject={"kind": "batch", "revision": 0, "candidate_sha": HEAD},
+                success_subject={"kind": "batch", "revision": 0, "candidate_sha": HEAD},
+                success_evidence_id="ci-retry-green",
+            )
+        )
+
+    provider = GitHubCLIRootProvider()
+    retry = IntegrationAttestationService(
+        db,
+        data_dir=data_dir,
+        git_manager=RootTrustGit(),
+        app_client_factory=lambda _binding: provider,
+        clock=lambda: 10.0,
+    )
+    observed = await retry.handle_candidate_ci(
+        {"operation_id": "root-op", "batch_id": "batch", "revision": 0, "candidate_sha": HEAD},
+        10.0,
+    )
+    async with db._engine.connect() as conn:
+        owner = (
+            await conn.execute(
+                select(integration_branch_owners.c.owner_id).where(
+                    integration_branch_owners.c.id == "branch-owner-row"
+                )
+            )
+        ).scalar_one()
+
+    assert observed["outcome"] == "published"
+    assert owner == "root-op"
+    assert (await db.get_task(delegate_id)).status is TaskStatus.PAUSED
+
+    result = await _RootPromotionService(
+        db,
+        data_dir=data_dir,
+        git_manager=GitHubCLIPushGit(provider),
+        app_client=provider,
+        attestation_resolver=retry.resolve,
+        clock=lambda: 10.0,
+    ).promote("batch", 0)
+
+    assert result.outcome == "promoted"
+    assert provider.remote == HEAD
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("attached,assigned", [(True, False), (False, True)])
+async def test_exact_green_ci_never_reclaims_attached_or_assigned_delegate(
+    prepared_db, attached, assigned
+):
+    db, data_dir = prepared_db
+    delegate_id = await _escalate_to_unclaimed_root_delegate(
+        db, attached=attached, assigned=assigned
+    )
+    provider = GitHubCLIRootProvider()
+    receipt = IntegrationAttestationService(
+        db,
+        data_dir=data_dir,
+        git_manager=RootTrustGit(),
+        app_client_factory=lambda _binding: provider,
+        clock=lambda: 10.0,
+    )
+
+    observed = await receipt.handle_candidate_ci(
+        {"operation_id": "root-op", "batch_id": "batch", "revision": 0, "candidate_sha": HEAD},
+        10.0,
+    )
+    async with db._engine.connect() as conn:
+        owner = (
+            await conn.execute(select(integration_branch_owners.c.owner_id))
+        ).scalar_one()
+
+    assert observed["outcome"] == "published"
+    assert owner == delegate_id
+    task = await db.get_task(delegate_id)
+    assert task is not None
+    assert (task.assigned_agent_id is not None) is assigned
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("outcome", ["red", "unknown"])
+async def test_non_green_ci_keeps_deadline_delegate_reserved(prepared_db, outcome):
+    db, data_dir = prepared_db
+    delegate_id = await _escalate_to_unclaimed_root_delegate(db)
+    provider = GitHubCLIRootProvider()
+    original = provider.paged_items
+
+    async def non_green(path, *, key):
+        if outcome == "unknown" and key == "check_runs":
+            return []
+        rows = await original(path, key=key)
+        if outcome == "red" and key == "workflow_runs":
+            return [{**rows[0], "conclusion": "failure"}, *rows[1:]]
+        return rows
+
+    provider.paged_items = non_green
+    observed = await IntegrationAttestationService(
+        db,
+        data_dir=data_dir,
+        git_manager=RootTrustGit(),
+        app_client_factory=lambda _binding: provider,
+        clock=lambda: 10.0,
+    ).handle_candidate_ci(
+        {"operation_id": "root-op", "batch_id": "batch", "revision": 0, "candidate_sha": HEAD},
+        10.0,
+    )
+    async with db._engine.connect() as conn:
+        owner = (await conn.execute(select(integration_branch_owners.c.owner_id))).scalar_one()
+        candidate_state = (
+            await conn.execute(select(integration_candidate_revisions.c.state))
+        ).scalar_one()
+
+    assert observed["outcome"] == ("red" if outcome == "red" else "not_green")
+    assert owner == delegate_id
+    assert candidate_state != "green"
+
+
+@pytest.mark.asyncio
+async def test_changed_candidate_head_refuses_delegate_recovery(prepared_db):
+    db, _data_dir = prepared_db
+    delegate_id = await _escalate_to_unclaimed_root_delegate(db)
+    changed_head = "c" * 40
+    async with db.immediate() as conn:
+        await conn.execute(
+            update(integration_batches)
+            .where(integration_batches.c.id == "batch")
+            .values(tested_candidate_sha=changed_head, ci_evidence_id="changed-ci")
+        )
+        await conn.execute(
+            update(integration_candidate_revisions)
+            .where(
+                integration_candidate_revisions.c.batch_id == "batch",
+                integration_candidate_revisions.c.revision == 0,
+            )
+            .values(head_sha=changed_head, state="green", ci_evidence_id="changed-ci")
+        )
+        await conn.execute(
+            update(integration_repair_stages)
+            .where(
+                integration_repair_stages.c.operation_id == "root-op",
+                integration_repair_stages.c.ordinal == 1,
+            )
+            .values(
+                state="awaiting_completion",
+                current_subject={"kind": "batch", "revision": 0, "candidate_sha": changed_head},
+                success_subject={"kind": "batch", "revision": 0, "candidate_sha": changed_head},
+                success_evidence_id="changed-ci",
+            )
+        )
+
+    resumed = await RepairService(db, clock=lambda: 10.0).resume_root_collection(
+        "root-op", "batch", 0, HEAD
+    )
+    async with db._engine.connect() as conn:
+        owner = (await conn.execute(select(integration_branch_owners.c.owner_id))).scalar_one()
+
+    assert not resumed
+    assert owner == delegate_id
 
 
 @pytest.mark.asyncio
