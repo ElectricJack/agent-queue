@@ -22,15 +22,21 @@ T = TypeVar("T", bound="AgentMetrics")
 class AgentMetrics:
     """Live sessions, split the three ways the tab graphs them.
 
-    Attributes:
-        total (int | Unset):  Default: 0.
-        by_state (AgentMetricsByState | Unset):
-        by_harness (AgentMetricsByHarness | Unset):
-        by_profile (AgentMetricsByProfile | Unset):
-        by_lifecycle (AgentMetricsByLifecycle | Unset):
+    ``total`` is a float like every other counter here even though a single
+    1s sample always carries a whole number: the 1m and 1h tiers average
+    each numeric leaf (:func:`src.metrics.sampler.aggregate_samples`), so a
+    rolled-up row's ``total`` is fractional and an ``int`` here would turn
+    every coarse-tier read into a 500.
+
+        Attributes:
+            total (float | Unset):  Default: 0.0.
+            by_state (AgentMetricsByState | Unset):
+            by_harness (AgentMetricsByHarness | Unset):
+            by_profile (AgentMetricsByProfile | Unset):
+            by_lifecycle (AgentMetricsByLifecycle | Unset):
     """
 
-    total: int | Unset = 0
+    total: float | Unset = 0.0
     by_state: AgentMetricsByState | Unset = UNSET
     by_harness: AgentMetricsByHarness | Unset = UNSET
     by_profile: AgentMetricsByProfile | Unset = UNSET

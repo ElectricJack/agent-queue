@@ -9,12 +9,13 @@ from __future__ import annotations
 import pytest
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
+from pydantic import BaseModel
 
 from src.api.auth import LOCAL_SCOPE, RequestScope
 from src.api.metrics import MAX_POINTS, build_metrics_router, choose_step
 from src.api.websocket import _FORWARDED_PREFIXES, _metrics_event_allowed
 from src.database import Database
-from src.metrics.sampler import METRIC_TICK_EVENT
+from src.metrics.sampler import METRIC_TICK_EVENT, aggregate_samples
 from tests.db_fixtures import lease_dsn
 
 BASE = 1_700_000_000.0
@@ -158,6 +159,47 @@ async def test_hitting_the_row_limit_is_reported_as_truncation(db, client_factor
 
 def test_the_point_budget_is_a_real_number():
     assert MAX_POINTS > 0
+
+
+# ---------------------------------------------------------------------------
+# roll-up tiers carry fractional counters
+# ---------------------------------------------------------------------------
+
+
+async def test_a_rolled_up_sample_with_a_fractional_agent_total_is_served(db, client_factory):
+    """The 1m/1h tiers average every numeric leaf, so counters are fractional.
+
+    ``agents.total`` used to be the module's only ``int``, which made
+    ``MetricsSample.model_validate`` raise on any coarse-tier row and turned
+    the whole history/zoom path into a 500.
+    """
+    rolled = aggregate_samples(
+        [{"agents": {"total": 4}}, {"agents": {"total": 5}}, {"agents": {"total": 5}}]
+    )
+    assert rolled["agents"]["total"] == pytest.approx(4.6667, abs=1e-4)
+    await db.write_metrics_sample("1m", BASE, rolled)
+
+    async with client_factory() as ac:
+        response = await ac.get(
+            "/api/metrics/series", params={"from": BASE, "to": BASE + 60, "step": "1m"}
+        )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["samples"][0]["agents"]["total"] == pytest.approx(4.6667, abs=1e-4)
+
+
+def test_no_counter_on_a_sample_is_declared_int():
+    """A ratchet: an ``int`` leaf anywhere here cannot survive a roll-up."""
+    import src.api.models.metrics as metrics_models
+
+    offenders = [
+        f"{model.__name__}.{name}"
+        for model in vars(metrics_models).values()
+        if isinstance(model, type) and issubclass(model, BaseModel)
+        for name, field in model.model_fields.items()
+        if field.annotation is int
+    ]
+    assert offenders == []
 
 
 # ---------------------------------------------------------------------------
