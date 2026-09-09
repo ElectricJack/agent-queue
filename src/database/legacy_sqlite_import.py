@@ -28,6 +28,10 @@ from src.database.tables import (
     api_session_tokens,
     archived_tasks,
     chat_analyzer_suggestions,
+    digest_windows,
+    escalation_deliveries,
+    escalation_messages,
+    escalations,
     events,
     gates,
     hierarchy_migration_rejects,
@@ -152,6 +156,7 @@ _ORDERED_TABLES = [
     layout_dirty,
     layout_jobs,
     task_layout_cells,
+    digest_windows,
     # FK → playbook_artifacts
     playbook_activations,
     playbook_v2_runs,
@@ -171,6 +176,12 @@ _ORDERED_TABLES = [
     # FK → projects (reply_to_id is a self-FK — deferred)
     messages,
     message_discord_receipts,
+    # FK -> projects
+    escalations,
+    # FK -> escalations, messages
+    escalation_messages,
+    # FK -> escalations, escalation_messages
+    escalation_deliveries,
     # FK → repos (current_task_id deferred)
     agents,
     # FK → projects, repos, agents, agent_profiles, workflows

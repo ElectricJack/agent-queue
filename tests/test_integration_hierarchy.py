@@ -403,9 +403,9 @@ async def test_delete_unmaterialized_child_retires_origin_and_invalidates_parent
     assert origin["retired_at"] is not None
 
 
-async def test_materialized_child_cannot_be_deleted_or_archived(db, hierarchy):
-    await _create(db, "parent")
-    filed = await hierarchy.file_children("parent", [{"title": "child"}], 0)
+async def _materialized_child(db, hierarchy, *, title: str = "child") -> str:
+    """A terminal child whose branch reached the remote."""
+    filed = await hierarchy.file_children("parent", [{"title": title}], 0)
     child_id = filed["children"][0]["task_id"]
     async with db.immediate() as conn:
         await conn.execute(
@@ -416,13 +416,132 @@ async def test_materialized_child_cannot_be_deleted_or_archived(db, hierarchy):
         await conn.execute(
             update(tasks).where(tasks.c.id == child_id).values(status=TaskStatus.FAILED.value)
         )
+    return child_id
+
+
+async def _origin_row(db, task_id: str) -> dict:
+    async with db._engine.connect() as conn:
+        return dict(
+            (
+                await conn.execute(
+                    select(task_branch_origins).where(
+                        task_branch_origins.c.task_id == task_id
+                    )
+                )
+            ).mappings().one()
+        )
+
+
+async def test_deleting_a_materialized_child_requires_a_branch_choice(db, hierarchy):
+    """A caller that says nothing is told what to say — not silently obeyed."""
+    await _create(db, "parent")
+    child_id = await _materialized_child(db, hierarchy)
 
     with pytest.raises(HierarchyError) as deleted:
         await db.delete_task(child_id)
-    assert deleted.value.code == "delivery_target_fixed"
-    with pytest.raises(HierarchyError) as archived:
-        await db.archive_task(child_id)
-    assert archived.value.code == "delivery_target_fixed"
+    assert deleted.value.code == "branch_discard_required"
+    assert deleted.value.context["branches"] == [
+        {"task_id": child_id, "branch": f"aq/{child_id}", "base_sha": BASE}
+    ]
+    # Nothing moved: the refusal is a question, not a partial delete.
+    assert await db.get_task(child_id) is not None
+    assert (await _origin_row(db, child_id))["retired_at"] is None
+
+
+async def test_deleting_with_keep_retires_the_origin_and_spares_the_branch(db, hierarchy):
+    await _create(db, "parent")
+    child_id = await _materialized_child(db, hierarchy)
+
+    await db.delete_task(child_id, branch_policy="keep")
+
+    assert await db.get_task(child_id) is None
+    origin = await _origin_row(db, child_id)
+    assert origin["retired_at"] is not None
+    assert origin["discard_state"] is None
+
+
+async def test_deleting_with_discard_queues_the_branch_for_removal(db, hierarchy):
+    await _create(db, "parent")
+    child_id = await _materialized_child(db, hierarchy)
+
+    await db.delete_task(child_id, branch_policy="discard")
+
+    assert await db.get_task(child_id) is None
+    origin = await _origin_row(db, child_id)
+    assert origin["retired_at"] is not None
+    assert origin["discard_state"] == "pending"
+    assert origin["discard_requested_at"] is not None
+    assert origin["discard_attempts"] == 0
+
+
+async def test_discard_survives_the_task_it_describes(db, hierarchy):
+    """The drain must still find its work after the subtree is gone."""
+    await _create(db, "parent")
+    child_id = await _materialized_child(db, hierarchy)
+    await db.delete_task(child_id, branch_policy="discard")
+
+    async with db._engine.connect() as conn:
+        pending = (
+            await conn.execute(
+                select(task_branch_origins.c.task_id).where(
+                    task_branch_origins.c.discard_state == "pending"
+                )
+            )
+        ).scalars().all()
+    assert pending == [child_id]
+
+
+async def test_archiving_a_materialized_child_never_touches_the_branch(db, hierarchy):
+    """Archive is 'move out of my view', so it needs no choice and asks for none."""
+    await _create(db, "parent")
+    child_id = await _materialized_child(db, hierarchy)
+
+    assert await db.archive_task(child_id) is True
+
+    origin = await _origin_row(db, child_id)
+    assert origin["retired_at"] is not None
+    assert origin["discard_state"] is None
+
+
+async def test_deleting_a_materialized_child_advances_the_parent_generation(db, hierarchy):
+    await _create(db, "parent")
+    child_id = await _materialized_child(db, hierarchy)
+    before = (await db.get_integration_checkpoint("parent"))["generation"]
+
+    await db.delete_task(child_id, branch_policy="keep")
+
+    assert (await db.get_integration_checkpoint("parent"))["generation"] == before + 1
+
+
+async def test_delivered_identity_refuses_under_every_branch_policy(db, hierarchy):
+    """The relaxation is scoped to materialization; delivery is still fixed."""
+    await _create(db, "parent")
+    child_id = await _materialized_child(db, hierarchy)
+    async with db.immediate() as conn:
+        await conn.execute(
+            insert(task_delivery_receipts).values(
+                id="receipt-1",
+                domain_key="receipt:discard-policy",
+                source_task_id=child_id,
+                target_task_id="parent",
+                repository_id="repo",
+                target_branch="aq/parent",
+                disposition="code",
+                created_at=1.0,
+            )
+        )
+
+    for policy in (None, "keep", "discard"):
+        with pytest.raises(HierarchyError) as refused:
+            await db.delete_task(child_id, branch_policy=policy)
+        assert refused.value.code == "delivery_target_fixed"
+
+
+async def test_unknown_branch_policy_is_rejected(db, hierarchy):
+    await _create(db, "parent")
+    child_id = await _materialized_child(db, hierarchy)
+    with pytest.raises(ValueError, match="unknown branch_policy"):
+        await db.delete_task(child_id, branch_policy="nuke")
 
 
 async def test_delivered_task_cannot_be_reopened(db, hierarchy):

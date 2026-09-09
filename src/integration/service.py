@@ -29,6 +29,7 @@ class IntegrationService:
         unresolved_intent_handler: IntegrationHandler | None = None,
         cleanup_handler: IntegrationHandler | None = None,
         drain_handler: DrainHandler | None = None,
+        branch_discard_handler: DrainHandler | None = None,
         page_size: int = 100,
         interval_seconds: float = 5.0,
         clock: Callable[[], float] = time.time,
@@ -46,6 +47,7 @@ class IntegrationService:
         self._unresolved_intent_handler = unresolved_intent_handler
         self._cleanup_handler = cleanup_handler
         self._drain_handler = drain_handler
+        self._branch_discard_handler = branch_discard_handler
         self._page_size = page_size
         self._interval_seconds = interval_seconds
         self._clock = clock
@@ -75,6 +77,8 @@ class IntegrationService:
                 await self._source("integration cleanup", self._tick_cleanup, now)
             if self._drain_handler is not None:
                 await self._source("integration drain", self._drain_handler, now)
+            if self._branch_discard_handler is not None:
+                await self._source("branch discard", self._branch_discard_handler, now)
             await self._source("integration outbox", self._outbox.dispatch_due, now)
         finally:
             self._tick_lock.release()

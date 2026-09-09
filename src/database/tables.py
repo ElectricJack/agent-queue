@@ -1004,6 +1004,240 @@ messages = Table(
     Index("idx_messages_thread", "thread_id"),
 )
 
+# Transport-neutral human escalation state.  ``task_id`` and the source
+# identifiers are deliberately soft references: an escalation is an incident
+# record and must remain usable after its source task/session is archived or
+# deleted.  ``project_id`` remains a real ownership boundary.
+escalations = Table(
+    "escalations",
+    metadata,
+    Column("id", Text, primary_key=True),
+    Column("project_id", Text, ForeignKey("projects.id", ondelete="CASCADE"), nullable=False),
+    Column("task_id", Text, nullable=True),
+    Column("source_kind", Text, nullable=False),
+    Column("source_identity", Text, nullable=False),
+    Column("incident_key", Text, nullable=False),
+    Column("supervisor_owner", Text, nullable=False),
+    Column("task_title", Text, nullable=True),
+    Column("task_status", Text, nullable=True),
+    Column("summary", Text, nullable=False),
+    Column("investigation", Text, nullable=False),
+    Column("decision_requested", Text, nullable=False),
+    Column("choices", JSON, nullable=True),
+    Column("severity", Text, nullable=False),
+    Column("state", Text, nullable=False, server_default="needs_human"),
+    Column("revision", Integer, nullable=False, server_default="0"),
+    Column("terminal_outcome", Text, nullable=True),
+    Column("terminal_evidence", JSON, nullable=True),
+    Column("created_at", Float, nullable=False),
+    Column("updated_at", Float, nullable=False),
+    Column("terminal_at", Float, nullable=True),
+    UniqueConstraint("project_id", "incident_key", name="uq_escalations_incident"),
+    UniqueConstraint(
+        "project_id",
+        "source_kind",
+        "source_identity",
+        name="uq_escalations_source_identity",
+    ),
+    CheckConstraint(
+        "state IN ('needs_human','reply_received','resolving','resolved','cancelled','stale')",
+        name="ck_escalations_state",
+    ),
+    CheckConstraint("revision >= 0", name="ck_escalations_revision"),
+    CheckConstraint(
+        "length(source_kind) BETWEEN 1 AND 128 AND "
+        "length(source_identity) BETWEEN 1 AND 512 AND "
+        "length(incident_key) BETWEEN 1 AND 512",
+        name="ck_escalations_source_lengths",
+    ),
+    CheckConstraint(
+        "(task_title IS NULL OR length(task_title) <= 500) AND "
+        "(task_status IS NULL OR length(task_status) <= 64)",
+        name="ck_escalations_task_snapshot_lengths",
+    ),
+    CheckConstraint(
+        "length(summary) BETWEEN 1 AND 4000 AND "
+        "length(investigation) BETWEEN 1 AND 8000 AND "
+        "length(decision_requested) BETWEEN 1 AND 4000 AND "
+        "(terminal_outcome IS NULL OR length(terminal_outcome) BETWEEN 1 AND 4000)",
+        name="ck_escalations_content_lengths",
+    ),
+    CheckConstraint(
+        "severity IN ('critical','high','medium','low')",
+        name="ck_escalations_severity",
+    ),
+    CheckConstraint(
+        "(state IN ('needs_human','reply_received','resolving') AND terminal_at IS NULL "
+        "AND terminal_outcome IS NULL) OR (state IN ('resolved','cancelled','stale') "
+        "AND terminal_at IS NOT NULL AND terminal_outcome IS NOT NULL)",
+        name="ck_escalations_terminal_state",
+    ),
+    Index("idx_escalations_project_state", "project_id", "state", "updated_at"),
+    Index("idx_escalations_task", "task_id", "created_at"),
+)
+
+# Immutable conversation facts.  The supervisor message id is assigned in the
+# same transaction that inserts an inbound reply, before the row is visible;
+# there is intentionally no general-purpose update method for this table.
+escalation_messages = Table(
+    "escalation_messages",
+    metadata,
+    Column("id", Text, primary_key=True),
+    Column(
+        "escalation_id",
+        Text,
+        ForeignKey("escalations.id", ondelete="CASCADE"),
+        nullable=False,
+    ),
+    Column("direction", Text, nullable=False),
+    Column("transport", Text, nullable=False),
+    Column("verified_actor", Text, nullable=False),
+    Column("text", Text, nullable=False),
+    Column("external_message_id", Text, nullable=True),
+    Column("received_sequence", BigInteger, nullable=True),
+    Column("received_at", Float, nullable=False),
+    Column("supervisor_message_id", Text, ForeignKey("messages.id"), nullable=True),
+    Column("created_at", Float, nullable=False),
+    UniqueConstraint(
+        "transport",
+        "external_message_id",
+        name="uq_escalation_messages_external",
+    ),
+    CheckConstraint(
+        "direction IN ('inbound','outbound')",
+        name="ck_escalation_messages_direction",
+    ),
+    CheckConstraint(
+        "length(text) BETWEEN 1 AND 16000",
+        name="ck_escalation_messages_text_length",
+    ),
+    Index(
+        "idx_escalation_messages_history",
+        "escalation_id",
+        "received_at",
+        "received_sequence",
+        "id",
+    ),
+)
+
+# External delivery is separate from conversation state.  A row represents one
+# idempotent outbound operation (root, follow-up, acknowledgement, resolution),
+# not whether the underlying escalation itself is resolved.
+escalation_deliveries = Table(
+    "escalation_deliveries",
+    metadata,
+    Column("id", Text, primary_key=True),
+    Column(
+        "escalation_id",
+        Text,
+        ForeignKey("escalations.id", ondelete="CASCADE"),
+        nullable=False,
+    ),
+    Column(
+        "escalation_message_id",
+        Text,
+        ForeignKey("escalation_messages.id", ondelete="CASCADE"),
+        nullable=True,
+    ),
+    Column("dedup_key", Text, nullable=False),
+    Column("kind", Text, nullable=False),
+    Column("payload", JSON, nullable=False),
+    Column("priority", Integer, nullable=False, server_default="10"),
+    Column("generation", Integer, nullable=False, server_default="0"),
+    Column("status", Text, nullable=False, server_default="pending"),
+    Column("attempt_count", Integer, nullable=False, server_default="0"),
+    Column("next_attempt_at", Float, nullable=False),
+    Column("lease_owner", Text, nullable=True),
+    Column("lease_expires_at", Float, nullable=True),
+    Column("channel_id", Text, nullable=True),
+    Column("root_message_id", Text, nullable=True),
+    Column("thread_id", Text, nullable=True),
+    Column("external_receipt_id", Text, nullable=True),
+    Column("receipt_confirmed_at", Float, nullable=True),
+    Column("last_error", Text, nullable=True),
+    Column("created_at", Float, nullable=False),
+    Column("updated_at", Float, nullable=False),
+    UniqueConstraint("dedup_key", name="uq_escalation_deliveries_dedup"),
+    CheckConstraint(
+        "status IN ('pending','sending','sent','retry','unknown')",
+        name="ck_escalation_deliveries_status",
+    ),
+    CheckConstraint(
+        "attempt_count >= 0 AND generation >= 0",
+        name="ck_escalation_deliveries_counters",
+    ),
+    CheckConstraint(
+        "(status = 'sending' AND lease_owner IS NOT NULL AND lease_expires_at IS NOT NULL) "
+        "OR (status <> 'sending' AND lease_owner IS NULL AND lease_expires_at IS NULL)",
+        name="ck_escalation_deliveries_lease",
+    ),
+    CheckConstraint(
+        "status <> 'sent' OR (external_receipt_id IS NOT NULL "
+        "AND receipt_confirmed_at IS NOT NULL)",
+        name="ck_escalation_deliveries_sent_receipt",
+    ),
+    Index("idx_escalation_deliveries_due", "status", "next_attempt_at", "priority"),
+    Index("idx_escalation_deliveries_escalation", "escalation_id", "created_at"),
+)
+
+# One row is one evaluated installation-wide digest window, including silent
+# windows.  Uniqueness prevents restarts or concurrent schedulers from
+# evaluating the same configured window twice; the cursor is a durable JSON
+# value so the later aggregation package can use stable source identities.
+digest_windows = Table(
+    "digest_windows",
+    metadata,
+    Column("id", Text, primary_key=True),
+    Column("destination", Text, nullable=False),
+    Column("config_generation", Integer, nullable=False),
+    Column("window_start", Float, nullable=False),
+    Column("window_end", Float, nullable=False),
+    Column("activity_cursor", JSON, nullable=True),
+    Column("due_at", Float, nullable=False),
+    Column("is_catchup", Boolean, nullable=False, server_default=false()),
+    Column("output_hash", Text, nullable=True),
+    Column("payload", JSON, nullable=True),
+    Column("send_status", Text, nullable=False, server_default="pending"),
+    Column("suppression_reason", Text, nullable=True),
+    Column("attempt_count", Integer, nullable=False, server_default="0"),
+    Column("lease_owner", Text, nullable=True),
+    Column("lease_expires_at", Float, nullable=True),
+    Column("external_receipt_id", Text, nullable=True),
+    Column("receipt_confirmed_at", Float, nullable=True),
+    Column("last_error", Text, nullable=True),
+    Column("created_at", Float, nullable=False),
+    Column("updated_at", Float, nullable=False),
+    UniqueConstraint(
+        "destination",
+        "config_generation",
+        "window_start",
+        "window_end",
+        name="uq_digest_windows_schedule",
+    ),
+    CheckConstraint("config_generation >= 0", name="ck_digest_windows_generation"),
+    CheckConstraint("window_end > window_start", name="ck_digest_windows_bounds"),
+    CheckConstraint("attempt_count >= 0", name="ck_digest_windows_attempts"),
+    CheckConstraint(
+        "send_status IN ('pending','suppressed','sending','sent','retry','unknown')",
+        name="ck_digest_windows_status",
+    ),
+    CheckConstraint(
+        "(send_status = 'sending' AND lease_owner IS NOT NULL AND lease_expires_at IS NOT NULL) "
+        "OR (send_status <> 'sending' AND lease_owner IS NULL AND lease_expires_at IS NULL)",
+        name="ck_digest_windows_lease",
+    ),
+    CheckConstraint(
+        "send_status <> 'suppressed' OR suppression_reason IS NOT NULL",
+        name="ck_digest_windows_suppression",
+    ),
+    CheckConstraint(
+        "send_status <> 'sent' OR (external_receipt_id IS NOT NULL "
+        "AND receipt_confirmed_at IS NOT NULL)",
+        name="ck_digest_windows_sent_receipt",
+    ),
+    Index("idx_digest_windows_due", "send_status", "due_at"),
+)
+
 api_session_tokens = Table(
     "api_session_tokens",
     metadata,
@@ -1792,10 +2026,32 @@ task_branch_origins = Table(
     Column("retired_at", Float, nullable=True),
     Column("created_at", Float, nullable=False),
     Column("materialized_at", Float, nullable=True),
+    # Branch discard.  A retired origin outlives its task (no FK to ``tasks``,
+    # and ``_delete_one`` leaves it alone), so the operator's "delete the work
+    # on the branch too" intent is recorded on the row itself and drained
+    # asynchronously by BranchDiscardService.
+    Column("discard_state", Text, nullable=True),
+    Column("discard_requested_at", Float, nullable=True),
+    Column("discard_attempts", Integer, nullable=False, server_default="0"),
+    Column("discard_next_attempt_at", Float, nullable=True),
+    Column("discard_last_error", Text, nullable=True),
     CheckConstraint("creation_generation >= 0", name="ck_task_branch_origins_generation"),
     CheckConstraint(
         "materialized = false OR reserved = true",
         name="ck_task_branch_origins_materialized_reserved",
+    ),
+    CheckConstraint(
+        "discard_state IS NULL OR discard_state IN "
+        "('pending', 'complete', 'conflict', 'failed')",
+        name="ck_task_branch_origins_discard_state",
+    ),
+    CheckConstraint(
+        "discard_attempts >= 0",
+        name="ck_task_branch_origins_discard_attempts",
+    ),
+    CheckConstraint(
+        "discard_state IS NULL OR (materialized = true AND retired_at IS NOT NULL)",
+        name="ck_task_branch_origins_discard_requires_retired",
     ),
     Index(
         "uq_task_branch_origins_live_task_repo",
@@ -1803,6 +2059,11 @@ task_branch_origins = Table(
         "repository_id",
         unique=True,
         postgresql_where=text("retired_at IS NULL"),
+    ),
+    Index(
+        "ix_task_branch_origins_discard_due",
+        "discard_next_attempt_at",
+        postgresql_where=text("discard_state = 'pending'"),
     ),
 )
 

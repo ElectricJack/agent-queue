@@ -377,7 +377,7 @@ class TestCascadeDeleteLiveDescendants:
         await db.update_session("s1", state="stopped")
 
         res = await handler._cmd_delete_task({"task_id": "p", "cascade": True})
-        assert res == {"deleted": "p", "title": "p"}
+        assert res == {"deleted": "p", "title": "p", "discarded_branches": []}
 
         assert await db.get_task("p") is None
         assert await db.get_task("c") is None
@@ -438,3 +438,110 @@ class TestHierarchyCommands:
         from src.api.scope import AGENT_COMMAND_SET
 
         assert {"task_children", "task_progress"} <= AGENT_COMMAND_SET
+
+
+class TestDeleteBranchPolicy:
+    """``task_delete``'s ``branches`` argument, end to end through the handler.
+
+    The guard's own tests cover the database side; these pin the surface: the
+    refusal a UI has to act on, and that a discard actually reaches the row the
+    drain reads.
+    """
+
+    async def _hierarchical_task_with_a_branch(self, db, task_id: str) -> None:
+        from sqlalchemy import insert, update
+
+        from src.database.tables import projects, task_branch_origins
+
+        await mktask(db, task_id, status=TaskStatus.FAILED)
+        async with db.immediate() as conn:
+            await conn.execute(
+                update(projects)
+                .where(projects.c.id == PROJECT_ID)
+                .values(hierarchical_integration_mode="train", integration_repository_id="repo")
+            )
+            await conn.execute(
+                insert(task_branch_origins).values(
+                    id=f"origin-{task_id}",
+                    task_id=task_id,
+                    repository_id="repo",
+                    parent_ref="main",
+                    base_sha="a" * 40,
+                    creation_generation=0,
+                    reserved=True,
+                    materialized=True,
+                    materialized_at=1.0,
+                    created_at=1.0,
+                )
+            )
+
+    async def test_delete_without_a_choice_names_the_branches(self, db, handler):
+        await self._hierarchical_task_with_a_branch(db, "has-branch")
+
+        res = await handler.execute("delete_task", {"task_id": "has-branch"})
+
+        assert res["success"] is False
+        assert res["code"] == "hierarchy.branch_discard_required"
+        assert res["branches"] == [
+            {"task_id": "has-branch", "branch": "aq/has-branch", "base_sha": "a" * 40}
+        ]
+        assert await db.get_task("has-branch") is not None
+
+    async def test_delete_with_keep_leaves_no_discard_work(self, db, handler):
+        from sqlalchemy import select
+
+        from src.database.tables import task_branch_origins
+
+        await self._hierarchical_task_with_a_branch(db, "keep-branch")
+
+        res = await handler.execute(
+            "delete_task", {"task_id": "keep-branch", "branches": "keep"}
+        )
+
+        assert res["deleted"] == "keep-branch"
+        assert res["discarded_branches"] == []
+        async with db._engine.connect() as conn:
+            state = (
+                await conn.execute(
+                    select(task_branch_origins.c.discard_state).where(
+                        task_branch_origins.c.task_id == "keep-branch"
+                    )
+                )
+            ).scalar_one()
+        assert state is None
+
+    async def test_delete_with_delete_queues_the_branch_and_reports_it(self, db, handler):
+        from sqlalchemy import select
+
+        from src.database.tables import task_branch_origins
+
+        await self._hierarchical_task_with_a_branch(db, "drop-branch")
+
+        res = await handler.execute(
+            "delete_task", {"task_id": "drop-branch", "branches": "delete"}
+        )
+
+        assert res["deleted"] == "drop-branch"
+        assert res["discarded_branches"] == [
+            {"task_id": "drop-branch", "branch": "aq/drop-branch", "base_sha": "a" * 40}
+        ]
+        async with db._engine.connect() as conn:
+            state = (
+                await conn.execute(
+                    select(task_branch_origins.c.discard_state).where(
+                        task_branch_origins.c.task_id == "drop-branch"
+                    )
+                )
+            ).scalar_one()
+        assert state == "pending"
+
+    async def test_an_unknown_choice_is_rejected_before_anything_moves(self, db, handler):
+        await self._hierarchical_task_with_a_branch(db, "bad-choice")
+
+        res = await handler.execute(
+            "delete_task", {"task_id": "bad-choice", "branches": "shred"}
+        )
+
+        assert res["success"] is False
+        assert res["code"] == "invalid_branches"
+        assert await db.get_task("bad-choice") is not None

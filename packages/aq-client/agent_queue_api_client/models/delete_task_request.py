@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import Any, TypeVar
+from typing import Any, TypeVar, cast
 
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
@@ -17,16 +17,25 @@ class DeleteTaskRequest:
     Attributes:
         task_id (str): Task ID to delete
         cascade (bool | Unset):  Default: False.
+        branches (None | str | Unset): What to do with any branch the subtree already put on the remote. Omitted, a
+            subtree that has one is refused with hierarchy.branch_discard_required rather than guessed at.
     """
 
     task_id: str
     cascade: bool | Unset = False
+    branches: None | str | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         task_id = self.task_id
 
         cascade = self.cascade
+
+        branches: None | str | Unset
+        if isinstance(self.branches, Unset):
+            branches = UNSET
+        else:
+            branches = self.branches
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
@@ -37,6 +46,8 @@ class DeleteTaskRequest:
         )
         if cascade is not UNSET:
             field_dict["cascade"] = cascade
+        if branches is not UNSET:
+            field_dict["branches"] = branches
 
         return field_dict
 
@@ -47,9 +58,19 @@ class DeleteTaskRequest:
 
         cascade = d.pop("cascade", UNSET)
 
+        def _parse_branches(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        branches = _parse_branches(d.pop("branches", UNSET))
+
         delete_task_request = cls(
             task_id=task_id,
             cascade=cascade,
+            branches=branches,
         )
 
         delete_task_request.additional_properties = d

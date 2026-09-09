@@ -3416,6 +3416,20 @@ class TaskCommandsMixin:
             if error:
                 return {"error": f"Could not stop task before deleting: {error}"}
         cascade = bool(args.get("cascade", False))
+        branch_policy = args.get("branches")
+        if branch_policy not in (None, "keep", "delete"):
+            return {
+                "success": False,
+                "code": "invalid_branches",
+                "error": "branches must be 'keep' or 'delete'",
+            }
+        # The wire word is "delete" — it reads correctly next to the task being
+        # deleted.  The guard's vocabulary is "discard", because it is naming
+        # what happens to the origin rather than to the task.
+        guard_policy = {"keep": "keep", "delete": "discard"}.get(branch_policy)
+        discarded: list[dict] = []
+        if guard_policy == "discard":
+            discarded = await self._materialized_branches_under(task_id)
 
         if cascade:
             # A cascade delete removes the whole subtree; refuse rather than
@@ -3432,12 +3446,11 @@ class TaskCommandsMixin:
                 async with self.db.immediate() as conn:
                     live = await self.db.live_descendant_sessions(task_id, conn=conn)
                     if not live:
-                        result = await self.db.delete_task(task_id, cascade=True, conn=conn)
+                        result = await self.db.delete_task(
+                            task_id, cascade=True, conn=conn, branch_policy=guard_policy
+                        )
             except HierarchyError as exc:
-                return {
-                    "error": f"hierarchy.{exc.code}: {exc.detail}",
-                    "code": f"hierarchy.{exc.code}",
-                }
+                return self._hierarchy_failure(exc)
             if live:
                 return {
                     "success": False,
@@ -3456,14 +3469,71 @@ class TaskCommandsMixin:
             await self.db._notify_ready(result.ready)
         else:
             try:
-                await self.db.delete_task(task_id, cascade=False)
+                await self.db.delete_task(
+                    task_id, cascade=False, branch_policy=guard_policy
+                )
             except HierarchyError as exc:
-                return {
-                    "error": f"hierarchy.{exc.code}: {exc.detail}",
-                    "code": f"hierarchy.{exc.code}",
-                }
+                return self._hierarchy_failure(exc)
         await self._emit_task_graph_change("task.deleted", task)
-        return {"deleted": task_id, "title": task.title}
+        return {
+            "deleted": task_id,
+            "title": task.title,
+            "discarded_branches": discarded,
+        }
+
+    @staticmethod
+    def _hierarchy_failure(exc: HierarchyError) -> dict:
+        """Render a HierarchyError, carrying any structured context it holds.
+
+        ``branch_discard_required`` is the one refusal a surface is expected to
+        act on rather than just report, so its branch list has to survive the
+        trip out.
+        """
+        failure = {
+            "success": False,
+            "error": f"hierarchy.{exc.code}: {exc.detail}",
+            "code": f"hierarchy.{exc.code}",
+        }
+        failure.update(getattr(exc, "context", {}) or {})
+        return failure
+
+    async def _materialized_branches_under(self, task_id: str) -> list[dict]:
+        """The branches a discard is about to queue, read before the rows go.
+
+        Snapshotted for the response only: the delete transaction is what
+        actually marks them, and it re-reads under its own lock.
+        """
+        from sqlalchemy import select
+
+        from src.database.tables import task_branch_origins
+
+        async with self.db._engine.connect() as conn:
+            ids = await self.db.subtree_ids(task_id, conn=conn)
+            if not ids:
+                return []
+            rows = (
+                (
+                    await conn.execute(
+                        select(task_branch_origins)
+                        .where(
+                            task_branch_origins.c.task_id.in_(ids),
+                            task_branch_origins.c.retired_at.is_(None),
+                            task_branch_origins.c.materialized.is_(True),
+                        )
+                        .order_by(task_branch_origins.c.task_id)
+                    )
+                )
+                .mappings()
+                .all()
+            )
+        return [
+            {
+                "task_id": row["task_id"],
+                "branch": f"aq/{row['task_id']}",
+                "base_sha": row["base_sha"],
+            }
+            for row in rows
+        ]
 
     # -- Archive commands -----------------------------------------------------
     # Archive moves completed tasks out of the active view into the
