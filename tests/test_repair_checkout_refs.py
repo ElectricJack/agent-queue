@@ -3,6 +3,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from src.database.queries.hierarchy_queries import HierarchyError
 from src.git.manager import GitError, RemoteRefResult, RemoteRefState
 from src.integration.hierarchy import resolve_workspace_checkpoint
 from src.integration.ownership import BranchKey, Fence
@@ -45,3 +46,34 @@ async def test_repair_retry_fetches_published_tip_with_exact_ref(ancestor):
     assert git._arun.await_args_list[0].args[0][-1] == (
         '+refs/heads/aq/integration/batch:refs/remotes/origin/aq/integration/batch'
     )
+
+
+@pytest.mark.parametrize(
+    ('workspace_task', 'repo_id', 'branch_name', 'expected'),
+    [
+        (None, 'repo', 'aq/t', 'task has no exact owned integration workspace'),
+        ('other', 'repo', 'aq/t', 'task has no exact owned integration workspace'),
+        ('t', 'elsewhere', 'aq/t', 'task is not bound to the integration repository'),
+        ('t', 'repo', None, 'task has no recorded delivery branch'),
+        ('t', 'repo', '', 'task has no recorded delivery branch'),
+    ],
+)
+async def test_checkpoint_refusal_names_the_condition_that_failed(
+    workspace_task, repo_id, branch_name, expected
+):
+    """Each guard has a different remedy, so each names itself.
+
+    Folded into one message, a missing ``tasks.branch_name`` read as a
+    workspace-lock problem — the refusal a pool worker in a development-mode
+    project could neither diagnose nor fix.
+    """
+    ws = None if workspace_task is None else SimpleNamespace(
+        locked_by_task_id=workspace_task, workspace_path='/slot'
+    )
+    db = SimpleNamespace(get_workspace_for_task=AsyncMock(return_value=ws))
+    git = SimpleNamespace(aget_current_branch=AsyncMock(return_value='aq/t'))
+    task = {'id': 't', 'repo_id': repo_id, 'branch_name': branch_name}
+    with pytest.raises(HierarchyError, match=expected) as raised:
+        await resolve_workspace_checkpoint(db, git, task, SimpleNamespace(id='repo'))
+    assert raised.value.code == 'dirty'
+    git.aget_current_branch.assert_not_awaited()
