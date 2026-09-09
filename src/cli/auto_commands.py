@@ -88,6 +88,7 @@ HANDCRAFTED_COVERAGE = {
     "onboard_project",
     # integration.py — positional identities and explicit rollout CAS fences.
     "integration_status",
+    "integration_repair_fence",
     "integration_flush",
     "integration_enable",
     "integration_waive_history",

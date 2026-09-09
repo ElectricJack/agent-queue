@@ -54,6 +54,7 @@ DESIGN_INTEGRATION_COMMANDS = frozenset(
         "integration_release",
         "integration_cleanup",
         "integration_status",
+        "integration_repair_fence",
         "integration_flush",
         "integration_enable",
         "integration_waive_history",
@@ -72,6 +73,32 @@ class IntegrationScheduleDueArgs(CommandArgs):
 
 class IntegrationStatusArgs(CommandArgs):
     project_id: str = Field(min_length=1)
+
+
+class IntegrationRepairFenceArgs(CommandArgs):
+    """Read the fence of the caller's own live repair assignment.
+
+    A session token names nothing: ``task_id`` / ``session_id`` are pinned
+    from the token by ``check_command_scope``.  A local operator names the
+    repair task (and optionally the session) it wants to inspect.
+    """
+
+    task_id: str | None = Field(default=None, min_length=1)
+    session_id: str | None = Field(default=None, min_length=1)
+    project_id: str | None = Field(default=None, min_length=1)
+
+
+class IntegrationRepairFenceValue(CommandValue):
+    """The ``--fence`` a repair delegate passes to the conflict-resolution commands."""
+
+    fence: dict[str, Any] | None = None
+    operation_id: str | None = None
+    stage: int | None = None
+    target_kind: str | None = None
+    parent_task_id: str | None = None
+    writer_kind: str | None = None
+    deadline_at: float | None = None
+    active: bool | None = None
 
 
 class IntegrationEnableArgs(CommandArgs):
@@ -500,6 +527,33 @@ INTEGRATION_STATUS = _operational_contract(
     ("status", "not_found"),
     successes=frozenset({"status"}),
     side_effect=SideEffectClass.READ,
+)
+INTEGRATION_REPAIR_FENCE = CommandContract(
+    execution=ExecutionContract(
+        name="integration_repair_fence",
+        args_model=IntegrationRepairFenceArgs,
+        result_model=IntegrationRepairFenceValue,
+        outcomes=(
+            OutcomeSpec(name="found", classification=OutcomeClass.SUCCESS),
+            OutcomeSpec(name="not_found", classification=OutcomeClass.FAILURE),
+            OutcomeSpec(name="stale", classification=OutcomeClass.FAILURE),
+        ),
+        capability="integration_repair_fence",
+        side_effect=SideEffectClass.READ,
+        idempotency=IdempotencySpec(mode="natural"),
+        retry_safe=True,
+        effects=(ReadClause(subject=EffectSubject.BRANCH_OWNERSHIP),),
+        sensitive_result_fields=frozenset({"fence"}),
+        receipt_projection=("operation_id", "stage", "target_kind", "active"),
+    ),
+    presentation=CommandPresentation(
+        title="Repair fence",
+        summary=(
+            "Return the writer fence (target, owner_id, token) of the caller's own "
+            "live repair assignment for integration_resolve_conflict and "
+            "integration_push_conflict_resolution."
+        ),
+    ),
 )
 INTEGRATION_FLUSH = _operational_contract(
     "integration_flush",
@@ -1620,6 +1674,18 @@ async def _status_adapter(args: IntegrationStatusArgs, ctx: CommandContext | Non
     )
 
 
+async def _repair_fence_adapter(
+    args: IntegrationRepairFenceArgs, ctx: CommandContext | None
+):
+    return await _hierarchy_adapter(
+        "integration_repair_fence",
+        args,
+        ctx,
+        IntegrationRepairFenceValue,
+        {"found", "not_found", "stale"},
+    )
+
+
 async def _flush_adapter(args: IntegrationStatusArgs, ctx: CommandContext | None):
     return await _hierarchy_adapter(
         "integration_flush",
@@ -1703,6 +1769,7 @@ def register_integration_contracts(registry: ContractRegistry) -> None:
         )
     for contract, adapter in (
         (INTEGRATION_STATUS, _status_adapter),
+        (INTEGRATION_REPAIR_FENCE, _repair_fence_adapter),
         (INTEGRATION_FLUSH, _flush_adapter),
         (INTEGRATION_ENABLE, _enable_adapter),
         (INTEGRATION_WAIVE_HISTORY, _waive_history_adapter),

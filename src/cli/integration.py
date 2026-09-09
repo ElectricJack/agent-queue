@@ -39,6 +39,29 @@ def integration_status(ctx: click.Context, project_id: str) -> None:
     _execute(ctx, "integration_status", {"project_id": project_id})
 
 
+@integration.command("repair-fence")
+@click.option("--task-id", default=None, help="Repair task to inspect (operator only; a session token reads its own).")
+@click.option("--session-id", default=None, help="Attached repair session (operator only).")
+@click.pass_context
+@_handle_errors
+def integration_repair_fence(
+    ctx: click.Context, task_id: str | None, session_id: str | None
+) -> None:
+    """Show the fence a repair delegate passes to the conflict-resolution commands.
+
+    From a repair session no arguments are needed: the token names the task
+    and session.  The result's ``fence`` is exactly the ``--fence`` value for
+    ``aq system integration-resolve-conflict`` and
+    ``aq system integration-push-conflict-resolution``.
+    """
+    args: dict[str, Any] = {}
+    if task_id:
+        args["task_id"] = task_id
+    if session_id:
+        args["session_id"] = session_id
+    _execute(ctx, "integration_repair_fence", args)
+
+
 @integration.command("flush")
 @click.argument("project_id")
 @click.pass_context

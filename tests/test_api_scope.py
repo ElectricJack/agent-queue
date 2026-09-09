@@ -40,6 +40,7 @@ EXPECTED_AGENT_COMMANDS = {
     "subagent_event",
     "reparent_task",
     "integration_status",
+    "integration_repair_fence",
 }
 
 

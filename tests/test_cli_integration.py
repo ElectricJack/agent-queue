@@ -27,6 +27,13 @@ def _client(result):
     [
         (["status", "p"], "integration_status", {"project_id": "p"}),
         (["flush", "p"], "integration_flush", {"project_id": "p"}),
+        # A repair session names nothing: the token pins task and session.
+        (["repair-fence"], "integration_repair_fence", {}),
+        (
+            ["repair-fence", "--task-id", "repair-1", "--session-id", "s-1"],
+            "integration_repair_fence",
+            {"task_id": "repair-1", "session_id": "s-1"},
+        ),
         (
             [
                 "enable",

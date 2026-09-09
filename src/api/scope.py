@@ -56,6 +56,13 @@ AGENT_COMMAND_SET: frozenset[str] = frozenset(
         # filing path itself would have accepted.
         "reparent_task",
         "integration_status",
+        # A repair delegate must be able to *read* the fence it is told to
+        # pass to ``integration_resolve_conflict`` /
+        # ``integration_push_conflict_resolution``; the token is otherwise
+        # only in ``integration_branch_owners``, which a worker cannot reach.
+        # ``task_id`` / ``session_id`` are pinned, so a session reads only
+        # its own assignment.
+        "integration_repair_fence",
     }
 )
 

@@ -58,6 +58,7 @@ profile's harness would make its id stop describing what actually runs.
     "formula_list",
     "formula_show",
     "get_schema",
+    "integration_repair_fence",
     "message_inbox",
     "message_reply",
     "message_send",

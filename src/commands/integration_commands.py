@@ -307,6 +307,99 @@ class IntegrationCommandsMixin:
             return _failure("unauthorized", "integration status is outside the caller project")
         return await self._integration_control_service().status(project_id)
 
+    async def _cmd_integration_repair_fence(self, args: dict) -> dict:
+        """Read the writer fence of a live repair assignment.
+
+        The conflict-resolution commands demand ``--fence {target, owner_id,
+        token}`` and ``token`` lives only in ``integration_branch_owners``,
+        which a worker session cannot reach.  This is the read half: a
+        session token gets the fence of *its own* held repair task (scope
+        pins ``task_id`` / ``session_id``; a pool token with no task pin is
+        resolved through its session row), an operator names the task.
+        """
+        principal = current_principal() or TRUSTED_LOCAL
+        task_id = args.get("task_id")
+        session_id = args.get("session_id")
+        if principal.kind is PrincipalKind.SESSION:
+            if principal.session_id is None:
+                return _failure("not_found", "repair session identity is incomplete")
+            session_id = principal.session_id
+            held = principal.task_id
+            if held is None:
+                session = await self.db.get_session(session_id)
+                held = getattr(session, "task_id", None)
+            if held is None:
+                return _failure("not_found", "this session holds no repair task")
+            if task_id not in (None, held):
+                return _failure("unauthorized", "a repair session may only read its own fence")
+            task_id = held
+        elif principal.kind not in {PrincipalKind.LOCAL, PrincipalKind.SERVICE}:
+            return _failure("unauthorized", "repair fence lookup requires a session or operator")
+        if not task_id:
+            return _failure("not_found", "task_id is required")
+        scope = await self.db.get_repair_filing_scope(str(task_id), session_id=session_id)
+        if scope is None:
+            return _failure("not_found", f"task '{task_id}' has no repair assignment")
+        if principal.kind is PrincipalKind.SESSION and (
+            args.get("project_id") not in (None, scope["project_id"])
+            or principal.project_id not in (None, scope["project_id"])
+        ):
+            return _failure("unauthorized", "repair fence is outside the caller project")
+        branch = await self._repair_target_branch(scope)
+        value = {
+            "operation_id": scope["operation_id"],
+            "stage": scope["stage"],
+            "target_kind": scope["target_kind"],
+            "parent_task_id": scope["parent_task_id"],
+            "writer_kind": scope["writer_kind"],
+            "deadline_at": scope["deadline_at"],
+            "active": bool(scope["active"]),
+        }
+        if not scope["active"] or scope["fence_token"] is None or branch is None:
+            return {
+                "success": False,
+                "outcome": "stale",
+                "error": "repair stage is no longer active",
+                "fence": None,
+                **value,
+            }
+        fence = Fence(
+            target=BranchKey(repository_id=scope["repository_id"], branch=branch),
+            owner_id=str(task_id),
+            token=int(scope["fence_token"]),
+        )
+        return {
+            "success": True,
+            "outcome": "found",
+            "fence": fence.model_dump(mode="json"),
+            **value,
+        }
+
+    async def _repair_target_branch(self, scope: dict) -> str | None:
+        """The branch a repair assignment writes: the parent task's branch, or the batch's."""
+        if scope["target_kind"] == "parent":
+            parent = await self.db.get_task(str(scope["parent_task_id"]))
+            return getattr(parent, "branch_name", None) if parent is not None else None
+        from sqlalchemy import select
+
+        from src.database.tables import integration_batches, integration_repair_operations
+
+        async with self.db._engine.connect() as conn:
+            row = (
+                await conn.execute(
+                    select(integration_batches.c.integration_branch)
+                    .select_from(
+                        integration_repair_operations.join(
+                            integration_batches,
+                            integration_batches.c.id
+                            == integration_repair_operations.c.batch_id,
+                        )
+                    )
+                    .where(integration_repair_operations.c.id == scope["operation_id"])
+                )
+            ).scalar_one_or_none()
+        return row
+
     async def _cmd_integration_flush(self, args: dict) -> dict:
         project_id = str(args.get("project_id") or "")
         if not project_id:

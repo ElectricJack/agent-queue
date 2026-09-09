@@ -3757,3 +3757,329 @@ async def test_delegate_close_retains_everything_when_the_handoff_is_unproven(
     assert (await handler.db.get_session("close-session")).task_id == repair_task_id
     if lifecycle == "pool":
         assert closed["retain_claim"] is True
+
+
+async def test_repair_delegate_can_read_its_own_fence(command_handler_factory):
+    """``integration_repair_fence`` is the read half of conflict resolution.
+
+    ``integration_resolve_conflict`` / ``integration_push_conflict_resolution``
+    demand ``--fence {target, owner_id, token}`` and the token lives only in
+    ``integration_branch_owners``.  A live repair delegate reads exactly its
+    own fence; before attachment, from the wrong session, or after the lease
+    moves, it is told the stage is not active rather than handed a token.
+    """
+    from src.integration.repair import RepairService
+
+    handler = await command_handler_factory()
+    await _configure_db(handler.db)
+    await _seed_parent_operation(handler.db)
+    async with handler.db.immediate() as conn:
+        await conn.execute(
+            insert(integration_branch_owners).values(
+                id="owner",
+                repository_id="repo",
+                ref="aq/parent",
+                owner_id="operation",
+                owner_role="collector",
+                fence_token=1,
+                handoff_state="reserved",
+                created_at=1.0,
+                updated_at=1.0,
+            )
+        )
+    service = RepairService(
+        handler.db,
+        route_validator=lambda _intelligence_class, _profile_id: True,
+    )
+    await service.start("operation", STARTING_SHA, "failed-check", now=100.0)
+    await service.record_result("operation", "failed-check", now=101.0)
+    dispatched = await service.dispatch("operation", 0)
+    repair_task_id = dispatched["repair_task_id"]
+    async with handler.db.immediate() as conn:
+        await conn.execute(
+            update(tasks).where(tasks.c.id == repair_task_id).values(status="IN_PROGRESS")
+        )
+        await conn.execute(
+            insert(workspaces).values(
+                id="repair-workspace",
+                project_id="p",
+                workspace_path="/tmp/repair",
+                source_type="link",
+                locked_by_task_id=repair_task_id,
+                enabled=True,
+                created_at=2.0,
+            )
+        )
+    for session_id, token in (("repair-session", "token"), ("other-session", "other")):
+        await handler.db.create_session(
+            SessionRecord(
+                id=session_id,
+                task_id=repair_task_id,
+                project_id="p",
+                profile_id="repairer",
+                harness="fake",
+                provider="fake",
+                name=f"s-{session_id}",
+                lifecycle="task",
+                state="running",
+                work_dir="/tmp/repair",
+                epoch="epoch",
+                instance_token=token,
+                started_at=2.0,
+            )
+        )
+
+    def delegate(session_id: str = "repair-session", *, task_id: str | None = repair_task_id):
+        return ExecutionPrincipal(
+            kind=PrincipalKind.SESSION,
+            policy=CapabilityPolicy.from_namespaces(aq_commands=["integration_repair_fence"]),
+            session_id=session_id,
+            session_instance_token="token",
+            task_id=task_id,
+            project_id="p",
+        )
+
+    # Dispatched but not yet attached: no fence is handed out.
+    with principal_context(delegate()):
+        early = await handler.execute("integration_repair_fence", {})
+    assert early["success"] is False
+    assert early["outcome"] == "stale"
+    assert early["fence"] is None
+    assert early["operation_id"] == "operation"
+
+    async with handler.db.immediate() as conn:
+        await conn.execute(
+            update(integration_branch_owners)
+            .where(
+                integration_branch_owners.c.repository_id == "repo",
+                integration_branch_owners.c.ref == "aq/parent",
+            )
+            .values(
+                handoff_state="attached",
+                session_id="repair-session",
+                workspace_id="repair-workspace",
+            )
+        )
+    async with handler.db._engine.connect() as conn:
+        live_token = (
+            await conn.execute(
+                select(integration_branch_owners.c.fence_token).where(
+                    integration_branch_owners.c.id == "owner"
+                )
+            )
+        ).scalar_one()
+
+    with principal_context(delegate()):
+        found = await handler.execute("integration_repair_fence", {})
+    assert found["success"] is True
+    assert found["outcome"] == "found"
+    assert found["fence"] == {
+        "target": {"repository_id": "repo", "branch": "aq/parent"},
+        "owner_id": repair_task_id,
+        "token": live_token,
+    }
+    assert (found["operation_id"], found["stage"], found["target_kind"]) == (
+        "operation", 0, "parent",
+    )
+    assert found["parent_task_id"] == "parent"
+    assert found["writer_kind"] == "repair_delegate"
+    assert found["active"] is True
+
+    # A pool token carries no task pin; the held task comes from the session row.
+    with principal_context(delegate(task_id=None)):
+        pooled = await handler.execute("integration_repair_fence", {})
+    assert pooled["outcome"] == "found"
+    assert pooled["fence"]["token"] == live_token
+
+    # A session may not name another task.
+    with principal_context(delegate()):
+        foreign = await handler.execute("integration_repair_fence", {"task_id": "parent"})
+    assert foreign["outcome"] == "unauthorized"
+
+    # The attached session is the only one the fence answers to.
+    with principal_context(delegate("other-session")):
+        wrong = await handler.execute("integration_repair_fence", {})
+    assert wrong["outcome"] == "stale"
+    assert wrong["fence"] is None
+
+    # A local operator names the task (and the session) explicitly.
+    operator = await handler.execute(
+        "integration_repair_fence",
+        {"task_id": repair_task_id, "session_id": "repair-session"},
+    )
+    assert operator["outcome"] == "found"
+    assert operator["fence"]["token"] == live_token
+    unknown = await handler.execute("integration_repair_fence", {"task_id": "parent"})
+    assert unknown["outcome"] == "not_found"
+
+    # Once the lease moves on, the token is no longer the delegate's to use.
+    async with handler.db.immediate() as conn:
+        await conn.execute(
+            update(integration_branch_owners)
+            .where(integration_branch_owners.c.id == "owner")
+            .values(owner_id="operation", owner_role="collector")
+        )
+    with principal_context(delegate()):
+        lost = await handler.execute("integration_repair_fence", {})
+    assert lost["outcome"] == "stale"
+    assert lost["fence"] is None
+
+
+_SHIPPED_WORKER_PROFILES = (
+    "worker-deep-high-claude",
+    "worker-standard-medium-claude",
+    "worker-fast-medium-claude",
+)
+
+
+@pytest.mark.parametrize("profile_id", _SHIPPED_WORKER_PROFILES)
+async def test_shipped_worker_profile_reaches_the_fence_under_enforcement(
+    command_handler_factory, profile_id
+):
+    """A *deployed* repair delegate can read its fence, not just a hand-built one.
+
+    ``AGENT_COMMAND_SET`` only settles request scope.  ``execute`` authorises
+    the caller's *profile* capabilities first, from the session row, and the
+    shipped worker profiles author an explicit ``aq_commands`` list — so a
+    command that is in the scope set but not in that list is
+    ``capability_denied`` for the real session.  This test takes the exact
+    route a repair delegate takes: the shipped ``profile.md`` synced into the
+    database, a session on that profile, the server-injected ``_scope``, and
+    ``capability_enforcement = enforce``.  A control profile without the
+    command shows the gate is really closed on this route.
+    """
+    from pathlib import Path
+
+    from src.integration.repair import RepairService
+    from src.profiles.sync import sync_profile_text_to_db
+
+    handler = await command_handler_factory()
+    handler.config.security.capability_enforcement = "enforce"
+    await _configure_db(handler.db)
+    await _seed_parent_operation(handler.db)
+
+    source = (
+        Path(__file__).resolve().parents[1]
+        / "src" / "profiles" / "defaults" / profile_id / "profile.md"
+    )
+    synced = await sync_profile_text_to_db(source.read_text(), handler.db, source_path=str(source))
+    assert synced.success, synced
+    shipped = await handler.db.get_profile(profile_id)
+    assert shipped is not None and shipped.aq_commands is not None
+    assert "integration_repair_fence" in shipped.aq_commands
+
+    async with handler.db.immediate() as conn:
+        await conn.execute(
+            insert(integration_branch_owners).values(
+                id="owner",
+                repository_id="repo",
+                ref="aq/parent",
+                owner_id="operation",
+                owner_role="collector",
+                fence_token=1,
+                handoff_state="reserved",
+                created_at=1.0,
+                updated_at=1.0,
+            )
+        )
+    service = RepairService(
+        handler.db,
+        route_validator=lambda _intelligence_class, _profile_id: True,
+    )
+    await service.start("operation", STARTING_SHA, "failed-check", now=100.0)
+    await service.record_result("operation", "failed-check", now=101.0)
+    dispatched = await service.dispatch("operation", 0)
+    repair_task_id = dispatched["repair_task_id"]
+    async with handler.db.immediate() as conn:
+        await conn.execute(
+            update(tasks).where(tasks.c.id == repair_task_id).values(status="IN_PROGRESS")
+        )
+        await conn.execute(
+            insert(workspaces).values(
+                id="repair-workspace",
+                project_id="p",
+                workspace_path="/tmp/repair",
+                source_type="link",
+                locked_by_task_id=repair_task_id,
+                enabled=True,
+                created_at=2.0,
+            )
+        )
+        await conn.execute(
+            update(integration_branch_owners)
+            .where(integration_branch_owners.c.id == "owner")
+            .values(
+                handoff_state="attached",
+                session_id="repair-session",
+                workspace_id="repair-workspace",
+            )
+        )
+    # ``repairer`` (from ``_configure_db``) authors no capabilities, so the
+    # legacy adapter grants it ``AGENT_COMMAND_SET``; the control profile
+    # authors an explicit list that stops short of the fence command.
+    await handler.db.create_profile(
+        AgentProfile(
+            id="narrow-worker",
+            name="narrow-worker",
+            aq_commands=["prime", "task_show", "task_close"],
+        )
+    )
+    for session_id, session_profile in (
+        ("repair-session", profile_id),
+        ("narrow-session", "narrow-worker"),
+    ):
+        await handler.db.create_session(
+            SessionRecord(
+                id=session_id,
+                task_id=repair_task_id,
+                project_id="p",
+                profile_id=session_profile,
+                harness="claude",
+                provider="fake",
+                name=f"s-{session_id}",
+                lifecycle="task",
+                state="running",
+                work_dir="/tmp/repair",
+                epoch="epoch",
+                instance_token="token",
+                started_at=2.0,
+            )
+        )
+    handler._invalidate_principal_cache()
+
+    def scope(session_id: str) -> dict:
+        return {
+            "kind": "session",
+            "session_id": session_id,
+            "session_instance_token": "token",
+            "task_id": repair_task_id,
+            "project_id": "p",
+            "elevated": False,
+        }
+
+    async with handler.db._engine.connect() as conn:
+        live_token = (
+            await conn.execute(
+                select(integration_branch_owners.c.fence_token).where(
+                    integration_branch_owners.c.id == "owner"
+                )
+            )
+        ).scalar_one()
+
+    # No principal is pre-bound: ``execute`` derives it from the session row
+    # and the profile it names, exactly as /api/execute does for ``aq``.
+    found = await handler.execute("integration_repair_fence", {"_scope": scope("repair-session")})
+    assert found.get("error_code") != "capability_denied", found
+    assert found["success"] is True, found
+    assert found["outcome"] == "found"
+    assert found["fence"] == {
+        "target": {"repository_id": "repo", "branch": "aq/parent"},
+        "owner_id": repair_task_id,
+        "token": live_token,
+    }
+
+    denied = await handler.execute(
+        "integration_repair_fence", {"_scope": scope("narrow-session")}
+    )
+    assert denied["success"] is False
+    assert denied["error_code"] == "capability_denied"
