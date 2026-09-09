@@ -742,3 +742,41 @@ smoke passing (1 pytest integration case in377.74s, covering14 scenarios) after
 fixing collection envelopes and the usage_error expectation. Final publication
 and receipt are still pending. wise-nexus remains actively implementing/testing
 stopped-writer recovery; the goal is not marked complete.
+
+### 2026-09-09 11:04 UTC — recovery, scheduling, and feature CI
+
+- Operator merge `5df42ba7` preserves `wise-nexus` source and corrects public
+  live-writer stopping and background handoff-pending entry. All 163 focused
+  tests and eight isolated swarm scenarios passed. The root batch's old writer
+  released automatically; public transfer then returned the branch to its
+  collector at fence 3. The corrected task was reopened for fresh review.
+- `brisk-crest` remains READY with claim epoch 3 and an attached old owner.
+  Its exact tmux session is absent; production provider probes independently
+  returned `process_alive=False` and `confirm_stopped=True`. Its database
+  session still says draining/desired stopped. Recovery is not yet proved.
+- Diagnostic `f3413ae7` reports scheduler await chains without cancelling
+  cycles or exposing locals. Eight lifecycle tests passed. Live traces caught
+  repeated waits in workspace document scans, as well as one database access
+  in message delivery; no sustained database-lock contention was observed in
+  the sampled PostgreSQL activity.
+- Fix `58d8c386` moves workspace scans into one tracked background task,
+  serializes direct callers, and drains results before database shutdown.
+  All 132 focused watcher/orchestrator tests passed, including three completed
+  scheduler cycles while a scan remains pending. Loaded daemon PID 803843;
+  delivery/review tracked by `azure-nexus`. Sustained live throughput remains
+  unmeasured; passing this regression does not establish hundreds of tasks/day.
+- CLI parent receipts now include `.12`, `.5`, and `.7`, with latest parent
+  head `93b1fcbe`. Its next tested repair passed 1,046 area tests but expired
+  before push reservation. Public resume refuses the attached writer;
+  `sound-nexus` tracks guarded operator rearm without weakening write evidence.
+  `quick-falcon` is actively implementing root member-conflict CLI recovery.
+- Discord cutover `.9` completed with reported 414 focused tests, bringing
+  `noble-ridge` to 9/12 completed children; documentation work has started.
+  Aggregate delivery and final acceptance remain outstanding.
+- Matter `.1` completed at `4c3aadef`, then exact native CI run 34341776042
+  failed 1/100 tests: `viewer_graph_tests` expected 41 editor sources but found
+  42. Protocol/client tests passed. Reopened `.1` with the failure and notified
+  its reviewer `eager-pinnacle`; `.2` was correctly held behind review.
+- `sharp-glacier` was reopened because its added tests did not exercise the
+  automatic authority transition or the live closed/no-op audit-PR case.
+  The overall goal remains active and incomplete.
