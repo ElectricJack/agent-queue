@@ -48,14 +48,21 @@ async def _assert_integration_guards(conn):
 
 
 def _alembic_pg(dsn: str, *args: str) -> subprocess.CompletedProcess:
+    # Alembic's async env uses SQLAlchemy's async dialect.  Scratch DSNs are
+    # intentionally plain PostgreSQL URLs so asyncpg can administer them.
+    alembic_dsn = _async_dsn(dsn)
     return subprocess.run(
         [sys.executable, "-m", "alembic", *args],
         cwd=ROOT,
-        env=dict(os.environ, AGENT_QUEUE_DB_URL=dsn),
+        env=dict(os.environ, AGENT_QUEUE_DB_URL=alembic_dsn),
         capture_output=True,
         text=True,
         check=False,
     )
+
+
+def _async_dsn(dsn: str) -> str:
+    return dsn.replace("postgresql://", "postgresql+asyncpg://", 1)
 
 
 async def _pg_conn(dsn: str):
@@ -81,6 +88,93 @@ async def test_upgrade_head_applies_the_baseline_on_postgres():
     try:
         assert await conn.fetchval("SELECT version_num FROM alembic_version") == head_revision
         await _assert_integration_guards(conn)
+    finally:
+        await conn.close()
+
+
+async def test_resolution_push_fence_upgrade_marks_legacy_reservation_unknown():
+    """A pre-marker reservation is not proof that no external push started."""
+    if not POSTGRES_DSN:
+        pytest.skip("POSTGRES_TEST_DSN not set")
+
+    dsn = await create_scratch_database("resolutionfencelegacy")
+    before = _alembic_pg(dsn, "upgrade", "a00000000004")
+    assert before.returncode == 0, before.stderr
+    conn = await _pg_conn(dsn)
+    try:
+        from importlib import import_module
+
+        migration = import_module(
+            "migrations.versions.a00000000006_legacy_resolution_recovery_evidence"
+        )
+        # Reproduce the deployed constraint, not the current metadata that
+        # a fresh squashed baseline happens to install.
+        await conn.execute(
+            "ALTER TABLE integration_promotion_intents DROP CONSTRAINT "
+            "ck_integration_promotion_intents_resolution_binding"
+        )
+        await conn.execute(
+            "ALTER TABLE integration_promotion_intents ADD CONSTRAINT "
+            "ck_integration_promotion_intents_resolution_binding CHECK ("
+            + migration._PREVIOUS_BINDING + ")"
+        )
+        # This is deliberately a complete frozen reservation, not a malformed
+        # fixture: it represents receipt-71755ac2-3bca-5bfe-8221-11fd243860fc
+        # before a00000000005 had an opportunity to record a pre-push marker.
+        await conn.execute(
+            """
+            INSERT INTO integration_promotion_intents (
+                id, domain_key, receipt_id, source_head, source_base,
+                repository_id, target_branch, expected_target,
+                fence_owner_id, fence_token, state,
+                resolution_head_sha, resolution_tree_sha, resolution_commit_shas,
+                resolution_operation_id, resolution_stage_ordinal, resolution_task_id,
+                resolution_session_id, resolution_session_instance_token,
+                resolution_workspace_id, resolution_fence_owner_id,
+                resolution_fence_token, created_at, updated_at, intent_kind
+            ) VALUES (
+                'receipt-71755ac2-3bca-5bfe-8221-11fd243860fc', 'legacy-resolution-domain',
+                'receipt-71755ac2-3bca-5bfe-8221-11fd243860fc',
+                repeat('b', 40), repeat('a', 40), 'repo', 'aq/parent', repeat('c', 40),
+                'operation', 11, 'resolution_reserved',
+                repeat('e', 40), repeat('f', 40), json_build_array(repeat('e', 40)),
+                'operation', 1, 'repair-81d0aaee-0c3a-482c-b04c-d3afe6631cbe-1',
+                'session690a3a54-5016-49c5-b981-be3a9e25a523', 'legacy-instance',
+                'ws-upper-dock', 'repair-81d0aaee-0c3a-482c-b04c-d3afe6631cbe-1',
+                11, 10.0, 10.0, 'child'
+            )
+            """
+        )
+        assert await conn.fetchval(
+            "SELECT resolution_push_started_at FROM integration_promotion_intents "
+            "WHERE id = 'receipt-71755ac2-3bca-5bfe-8221-11fd243860fc'"
+        ) is None
+    finally:
+        await conn.close()
+
+    upgraded = _alembic_pg(dsn, "upgrade", "a00000000006")
+    assert upgraded.returncode == 0, upgraded.stderr
+    conn = await _pg_conn(dsn)
+    try:
+        row = await conn.fetchrow(
+            "SELECT state, resolution_push_started_at, resolution_recovery_evidence, "
+            "resolution_head_sha, "
+            "resolution_fence_token FROM integration_promotion_intents "
+            "WHERE id = 'receipt-71755ac2-3bca-5bfe-8221-11fd243860fc'"
+        )
+        constraint = await conn.fetchval(
+            "SELECT pg_get_constraintdef(oid) FROM pg_constraint "
+            "WHERE conname = 'ck_integration_promotion_intents_resolution_binding'"
+        )
+        assert "resolution_push_started_at IS NULL" in constraint
+        assert "resolution_recovery_evidence IS NULL" in constraint
+        assert dict(row) == {
+            "state": "resolution_reserved",
+            "resolution_push_started_at": 0.0,
+            "resolution_recovery_evidence": None,
+            "resolution_head_sha": "e" * 40,
+            "resolution_fence_token": 11,
+        }
     finally:
         await conn.close()
 
@@ -153,7 +247,7 @@ async def test_autogenerate_against_a_fresh_head_database_is_empty():
         ctx = MigrationContext.configure(sync_conn, opts={"compare_type": True})
         return compare_metadata(ctx, metadata)
 
-    engine = create_async_engine(dsn)
+    engine = create_async_engine(_async_dsn(dsn))
     try:
         async with engine.connect() as conn:
             diffs = await conn.run_sync(_diff)

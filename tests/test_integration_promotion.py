@@ -988,6 +988,47 @@ async def test_conflict_resolution_push_reconcile_writes_original_receipt_and_ev
     assert "integration.cleanup_pending" in events
 
 
+async def test_legacy_observed_old_target_can_make_one_new_fenced_push(
+    db, conflict_resolution_case
+):
+    """The audited legacy authorization still uses the ordinary exact receipt path."""
+    from src.commands.principal import principal_context
+    from src.integration.promotion import PromotionService
+
+    case = conflict_resolution_case
+    service = PromotionService(db, data_dir=case["data_dir"], git_manager=GitManager())
+    request = _resolution_request(case)
+    with principal_context(_resolution_principal()):
+        await service.reserve_resolution(request)
+    async with db.immediate() as conn:
+        await conn.execute(
+            update(integration_promotion_intents)
+            .where(integration_promotion_intents.c.id == case["intent_id"])
+            .values(resolution_push_started_at=0.0)
+        )
+        intent = await db.get_integration_promotion_intent(case["intent_id"])
+        assert await service.observe_legacy_resolution_target(intent) == case["target"]
+        authorized = await db.authorize_legacy_resolution_recovery_on(
+            conn,
+            case["intent_id"],
+            {
+                "kind": "legacy_resolution_remote_expected_target",
+                "observed_remote_sha": case["target"],
+                "expected_target": case["target"],
+                "resolution_head_sha": case["resolved_head"],
+                "operation_id": "resolution-op",
+                "observed_at": 10.0,
+            },
+        )
+    assert authorized["resolution_push_started_at"] is None
+    with principal_context(_resolution_principal()):
+        pushed, already_applied = await service.push_resolution(case["intent_id"], request.fence)
+    receipt = await service.reconcile(case["intent_id"])
+    assert already_applied is False
+    assert pushed.intent_id == receipt.intent_id == case["intent_id"]
+    assert receipt.receipt_id == case["receipt_id"]
+
+
 @pytest.mark.parametrize("invalid_proof", ["wrong_tree", "unlisted_commit"])
 async def test_resolution_push_rejects_changed_reserved_git_proof(
     db, conflict_resolution_case, invalid_proof

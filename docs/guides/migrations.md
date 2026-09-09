@@ -54,6 +54,37 @@ aq db current    # read-only: stamped revision(s) vs. this checkout's head
 aq db upgrade    # the one sanctioned migration path (refuses inside a slot)
 ```
 
+### Legacy conflict-resolution reservations
+
+Revision `a00000000005` treats a pre-marker `resolution_reserved` intent as
+an uncertain external write; the upgrade records a `0.0` unknown-start
+sentinel rather than treating its missing marker as proof that it was never
+pushed. For the known legacy receipt, first reconcile only the frozen remote
+identity:
+
+```bash
+aq system integration-reconcile-promotion \
+  --intent-id receipt-71755ac2-3bca-5bfe-8221-11fd243860fc
+```
+
+`applied` means the remote exactly matches the reserved head and the existing
+receipt path can complete. If it instead reports `not_applied` because the
+remote is still the receipt's immutable expected old target, revision
+`a00000000006` permits this narrowly bounded public recovery:
+
+```bash
+aq integration resume operation81d0aaee-0c3a-482c-b04c-d3afe6631cbe
+```
+
+The command requires the same live delegate session, claim epoch, workspace,
+branch owner and fence recorded by the receipt. It reads the exact remote tip
+under the retained-repository lock and records that old-tip observation before
+rearming the existing stage. The subsequent writer uses its ordinary
+expected-old → frozen-head push fence and receipt path; no writer, receipt or
+frozen resolution identity is replaced. A remote mismatch, unavailable remote,
+manual hold, changed ownership, duplicate owner, or any second unresolved
+intent returns `ambiguous` without changing the deadline or operation state.
+
 ### When production is already stamped with an orphan
 
 ```bash

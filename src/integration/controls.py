@@ -89,18 +89,24 @@ class IntegrationControlService:
         scheduler: IntegrationScheduler | None = None,
         external_preflight: ExternalPreflight | None = None,
         cleanup_service: Any | None = None,
+        legacy_resolution_observer: Callable[[dict[str, Any]], Awaitable[str | None]] | None = None,
         clock: Callable[[], float] = time.time,
     ) -> None:
         self.db = db
         self.scheduler = scheduler or IntegrationScheduler(db)
         self.external_preflight = external_preflight
         self.cleanup_service = cleanup_service
+        self.legacy_resolution_observer = legacy_resolution_observer
         self.clock = clock
 
     def _recovery(self):
         from src.integration.recovery_controls import IntegrationRecoveryControls
 
-        return IntegrationRecoveryControls(self.db, clock=self.clock)
+        return IntegrationRecoveryControls(
+            self.db,
+            clock=self.clock,
+            legacy_resolution_observer=self.legacy_resolution_observer,
+        )
 
     async def resume(self, operation_id: str) -> dict[str, Any]:
         return await self._recovery().resume(operation_id)
