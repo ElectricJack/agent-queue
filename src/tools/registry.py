@@ -135,6 +135,13 @@ CATEGORIES: dict[str, CategoryMeta] = {
             "the messages that carry all chat and handoff traffic"
         ),
     ),
+    "escalation": CategoryMeta(
+        name="escalation",
+        description=(
+            "Durable supervisor-owned human escalations — create, inspect, reply, "
+            "update, and apply verified reply evidence"
+        ),
+    ),
     "discord": CategoryMeta(
         name="discord",
         description=(

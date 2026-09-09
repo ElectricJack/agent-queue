@@ -1120,6 +1120,61 @@ escalation_messages = Table(
     ),
 )
 
+# One row reserves one supervisor application of verified human evidence.
+# The reservation is written before an action-specific service is invoked so
+# a replay cannot repeat a recovery after an ambiguous caller timeout.  The
+# reply and escalation foreign keys are the durable provenance boundary; no
+# caller-authored ``human`` flag is stored or consulted.
+escalation_actions = Table(
+    "escalation_actions",
+    metadata,
+    Column("id", Text, primary_key=True),
+    Column(
+        "escalation_id",
+        Text,
+        ForeignKey("escalations.id", ondelete="CASCADE"),
+        nullable=False,
+    ),
+    Column(
+        "reply_id",
+        Text,
+        ForeignKey("escalation_messages.id", ondelete="RESTRICT"),
+        nullable=False,
+    ),
+    Column("idempotency_key", Text, nullable=False),
+    Column("action_kind", Text, nullable=False),
+    Column("target_id", Text, nullable=False),
+    Column("parameters", JSON, nullable=False, server_default="{}"),
+    Column("executor", Text, nullable=False),
+    Column("started_revision", Integer, nullable=False),
+    Column("status", Text, nullable=False, server_default="processing"),
+    Column("outcome", Text, nullable=True),
+    Column("result", JSON, nullable=True),
+    Column("error", Text, nullable=True),
+    Column("created_at", Float, nullable=False),
+    Column("completed_at", Float, nullable=True),
+    UniqueConstraint(
+        "escalation_id",
+        "idempotency_key",
+        name="uq_escalation_actions_idempotency",
+    ),
+    CheckConstraint(
+        "action_kind IN ('question_answer','gate_resolve','task_recover')",
+        name="ck_escalation_actions_kind",
+    ),
+    CheckConstraint(
+        "status IN ('processing','succeeded','failed')",
+        name="ck_escalation_actions_status",
+    ),
+    CheckConstraint("started_revision >= 0", name="ck_escalation_actions_revision"),
+    CheckConstraint(
+        "(status = 'processing' AND completed_at IS NULL AND outcome IS NULL) OR "
+        "(status <> 'processing' AND completed_at IS NOT NULL AND outcome IS NOT NULL)",
+        name="ck_escalation_actions_completion",
+    ),
+    Index("idx_escalation_actions_history", "escalation_id", "created_at", "id"),
+)
+
 # External delivery is separate from conversation state.  A row represents one
 # idempotent outbound operation (root, follow-up, acknowledgement, resolution),
 # not whether the underlying escalation itself is resolved.

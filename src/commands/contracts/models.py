@@ -78,6 +78,9 @@ class EffectSubject(StrEnum):
     DELIVERY_EVIDENCE = "delivery_evidence"
     MESSAGE = "message"
     PROVIDER_USAGE = "provider_usage"
+    ESCALATION = "escalation"
+    ESCALATION_REPLY = "escalation_reply"
+    ESCALATION_ACTION = "escalation_action"
 
 
 class ClausePredicate(BaseModel):

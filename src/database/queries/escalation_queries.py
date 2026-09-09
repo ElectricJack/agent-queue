@@ -18,6 +18,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from src.database.tables import (
     digest_windows,
+    escalation_actions,
     escalation_deliveries,
     escalation_messages,
     escalations,
@@ -514,6 +515,19 @@ class EscalationQueriesMixin:
             )
             return dict(existing), False
 
+    async def get_escalation_message(self, reply_id: str) -> dict[str, Any] | None:
+        async with self._engine.connect() as conn:
+            row = (
+                (
+                    await conn.execute(
+                        select(escalation_messages).where(escalation_messages.c.id == reply_id)
+                    )
+                )
+                .mappings()
+                .one_or_none()
+            )
+        return _row_dict(row)
+
     async def list_escalation_messages(self, escalation_id: str) -> list[dict[str, Any]]:
         statement = (
             select(escalation_messages)
@@ -523,6 +537,291 @@ class EscalationQueriesMixin:
                 escalation_messages.c.received_sequence.nulls_first(),
                 escalation_messages.c.id,
             )
+        )
+        async with self._engine.connect() as conn:
+            rows = (await conn.execute(statement)).mappings().all()
+        return [dict(row) for row in rows]
+
+    async def begin_escalation_action(
+        self,
+        escalation_id: str,
+        *,
+        reply_id: str,
+        expected_revision: int,
+        idempotency_key: str,
+        action_kind: str,
+        target_id: str,
+        parameters: Mapping[str, Any],
+        executor: str,
+        now: float | None = None,
+        action_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Reserve one evidence-bound action and take the resolving CAS.
+
+        A matching idempotency replay returns the durable prior reservation,
+        even after the escalation revision advances.  A new reservation must
+        bind an immutable inbound reply that queued a supervisor notice; that
+        condition is the database-level proof that the text crossed a trusted
+        human boundary while the incident was open.
+        """
+        if action_kind not in {"question_answer", "gate_resolve", "task_recover"}:
+            raise ValueError("unsupported escalation action")
+        _require_nonempty(
+            {
+                "reply_id": reply_id,
+                "idempotency_key": idempotency_key,
+                "target_id": target_id,
+                "executor": executor,
+            },
+            ("reply_id", "idempotency_key", "target_id", "executor"),
+        )
+        when = float(now if now is not None else time.time())
+        async with self.immediate() as conn:
+            incident = (
+                (
+                    await conn.execute(
+                        select(escalations)
+                        .where(escalations.c.id == escalation_id)
+                        .with_for_update()
+                    )
+                )
+                .mappings()
+                .one_or_none()
+            )
+            if incident is None:
+                raise ValueError("escalation does not exist")
+
+            existing = (
+                (
+                    await conn.execute(
+                        select(escalation_actions).where(
+                            escalation_actions.c.escalation_id == escalation_id,
+                            escalation_actions.c.idempotency_key == idempotency_key,
+                        )
+                    )
+                )
+                .mappings()
+                .one_or_none()
+            )
+            if existing is not None:
+                _assert_identity(
+                    existing,
+                    {
+                        "reply_id": reply_id,
+                        "action_kind": action_kind,
+                        "target_id": target_id,
+                    },
+                    ("reply_id", "action_kind", "target_id"),
+                )
+                if dict(existing["parameters"]) != dict(parameters):
+                    raise EscalationConflict(
+                        "action idempotency key reused with different parameters"
+                    )
+                return {
+                    "action": dict(existing),
+                    "escalation": dict(incident),
+                    "created": False,
+                }
+
+            if incident["revision"] != expected_revision:
+                raise EscalationStateError("stale escalation revision")
+            if incident["state"] != "reply_received":
+                raise EscalationStateError(
+                    f"escalation is not awaiting reply application: {incident['state']}"
+                )
+            reply = (
+                (
+                    await conn.execute(
+                        select(escalation_messages).where(
+                            escalation_messages.c.id == reply_id
+                        )
+                    )
+                )
+                .mappings()
+                .one_or_none()
+            )
+            if (
+                reply is None
+                or reply["escalation_id"] != escalation_id
+                or reply["direction"] != "inbound"
+                or reply["supervisor_message_id"] is None
+            ):
+                raise EscalationStateError(
+                    "reply is not verified human evidence for this escalation"
+                )
+
+            next_revision = expected_revision + 1
+            changed = (
+                (
+                    await conn.execute(
+                        update(escalations)
+                        .where(
+                            escalations.c.id == escalation_id,
+                            escalations.c.revision == expected_revision,
+                            escalations.c.state == "reply_received",
+                        )
+                        .values(state="resolving", revision=next_revision, updated_at=when)
+                        .returning(escalations)
+                    )
+                )
+                .mappings()
+                .one_or_none()
+            )
+            if changed is None:  # pragma: no cover - row lock makes this defensive
+                raise EscalationStateError("stale escalation revision")
+            values = {
+                "id": action_id or f"escalation-action-{uuid.uuid4()}",
+                "escalation_id": escalation_id,
+                "reply_id": reply_id,
+                "idempotency_key": idempotency_key,
+                "action_kind": action_kind,
+                "target_id": target_id,
+                "parameters": dict(parameters),
+                "executor": executor,
+                "started_revision": next_revision,
+                "status": "processing",
+                "outcome": None,
+                "result": None,
+                "error": None,
+                "created_at": when,
+                "completed_at": None,
+            }
+            await conn.execute(pg_insert(escalation_actions).values(**values))
+            return {"action": values, "escalation": dict(changed), "created": True}
+
+    async def finish_escalation_action(
+        self,
+        action_id: str,
+        *,
+        succeeded: bool,
+        outcome: str,
+        result: Mapping[str, Any] | None = None,
+        error: str | None = None,
+        now: float | None = None,
+    ) -> dict[str, Any]:
+        """Record one action outcome and conditionally finish its incident.
+
+        A newer human reply advances the escalation away from the action's
+        ``started_revision``.  The action outcome is still recorded, but that
+        CAS intentionally leaves the newer conversation in ``reply_received``.
+        """
+        _require_nonempty({"outcome": outcome}, ("outcome",))
+        when = float(now if now is not None else time.time())
+        async with self.immediate() as conn:
+            action = (
+                (
+                    await conn.execute(
+                        select(escalation_actions)
+                        .where(escalation_actions.c.id == action_id)
+                        .with_for_update()
+                    )
+                )
+                .mappings()
+                .one_or_none()
+            )
+            if action is None:
+                raise ValueError("escalation action does not exist")
+            if action["status"] != "processing":
+                incident = (
+                    (
+                        await conn.execute(
+                            select(escalations).where(
+                                escalations.c.id == action["escalation_id"]
+                            )
+                        )
+                    )
+                    .mappings()
+                    .one()
+                )
+                return {
+                    "action": dict(action),
+                    "escalation": dict(incident),
+                    "completed": False,
+                    "resolved": incident["state"] == "resolved",
+                }
+
+            completed = (
+                (
+                    await conn.execute(
+                        update(escalation_actions)
+                        .where(
+                            escalation_actions.c.id == action_id,
+                            escalation_actions.c.status == "processing",
+                        )
+                        .values(
+                            status="succeeded" if succeeded else "failed",
+                            outcome=outcome,
+                            result=dict(result) if result is not None else None,
+                            error=error,
+                            completed_at=when,
+                        )
+                        .returning(escalation_actions)
+                    )
+                )
+                .mappings()
+                .one()
+            )
+            incident = (
+                (
+                    await conn.execute(
+                        select(escalations)
+                        .where(escalations.c.id == action["escalation_id"])
+                        .with_for_update()
+                    )
+                )
+                .mappings()
+                .one()
+            )
+            resolved = False
+            if (
+                incident["state"] == "resolving"
+                and incident["revision"] == action["started_revision"]
+            ):
+                values: dict[str, Any] = {
+                    "state": "resolved" if succeeded else "reply_received",
+                    "revision": int(incident["revision"]) + 1,
+                    "updated_at": when,
+                }
+                if succeeded:
+                    resolved = True
+                    values.update(
+                        terminal_at=when,
+                        terminal_outcome=outcome,
+                        terminal_evidence={
+                            "action_id": action_id,
+                            "reply_id": action["reply_id"],
+                            "action_kind": action["action_kind"],
+                            "target_id": action["target_id"],
+                        },
+                    )
+                incident = (
+                    (
+                        await conn.execute(
+                            update(escalations)
+                            .where(
+                                escalations.c.id == action["escalation_id"],
+                                escalations.c.state == "resolving",
+                                escalations.c.revision == action["started_revision"],
+                            )
+                            .values(**values)
+                            .returning(escalations)
+                        )
+                    )
+                    .mappings()
+                    .one()
+                )
+            return {
+                "action": dict(completed),
+                "escalation": dict(incident),
+                "completed": True,
+                "resolved": resolved,
+            }
+
+    async def list_escalation_actions(self, escalation_id: str) -> list[dict[str, Any]]:
+        statement = (
+            select(escalation_actions)
+            .where(escalation_actions.c.escalation_id == escalation_id)
+            .order_by(escalation_actions.c.created_at, escalation_actions.c.id)
         )
         async with self._engine.connect() as conn:
             rows = (await conn.execute(statement)).mappings().all()
