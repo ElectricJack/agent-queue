@@ -346,9 +346,7 @@ def build_cli_inventory(
             "ownership": _counter(row["owner_kind"] for row in records),
             "support": _counter(row["support"] for row in records),
             "evidence_level": _counter(row["evidence_level"] for row in records),
-            "acceptance_status": _acceptance_counter(
-                row["acceptance_status"] for row in records
-            ),
+            "acceptance_status": _acceptance_counter(row["acceptance_status"] for row in records),
         },
         "commands": records,
         "historical_commands": list(HISTORICAL_COMMANDS),
