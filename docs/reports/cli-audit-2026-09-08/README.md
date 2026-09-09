@@ -1,15 +1,20 @@
 # aq CLI audit — final acceptance, 2026-09-09
 
-The final audited implementation and report baseline is
-`5d8bc501986909256c7b1e45857f3eaf0043eb97`. It includes the pre-report repair
-integration candidate `d6d7bede968033780c845d903e454ce46b32178f`, the generated
-inventory acceptance metadata, and the `--aq-all-markers` wrapper correction
-found during final verification. Every confirmed defect in the 2026-09-08 audit
-is corrected or deliberately dispositioned, and the final focused suite passed
-574 tests. The disposable-daemon acceptance suite then passed all 14 stateful
+The final audited and accepted revision is the collected aggregate head
+`bd054e4129b2a66a859408f0fa2b76b62a5d670e`. The runtime baseline for the tables
+and command transcripts below is `5d8bc501986909256c7b1e45857f3eaf0043eb97`,
+which includes the pre-report repair integration candidate
+`d6d7bede968033780c845d903e454ce46b32178f`, the generated inventory acceptance
+metadata, and the `--aq-all-markers` wrapper correction found during final
+verification. Every confirmed defect in the 2026-09-08 audit is corrected or
+deliberately dispositioned, and the focused suite at that baseline passed 574
+tests. The disposable-daemon acceptance suite then passed all 14 stateful
 scenarios and removed its temporary database, repositories, vault, plugin
-fixture, and daemon home. Later documentation-only provenance corrections do
-not change that audited runtime baseline.
+fixture, and daemon home. Changes after that baseline are **not**
+documentation-only: two runtime repairs and one formatting change to
+`src/cli/` landed on top of it. Their content and the acceptance evidence
+re-collected at the aggregate head are recorded in
+[Re-verification of the collected aggregate](#re-verification-of-the-collected-aggregate).
 
 This is not a claim that all 317 current leaf commands were executed against a
 live backend. The maintained [machine-readable inventory](../../reference/cli-command-inventory.json)
@@ -20,9 +25,11 @@ separate historical ledger. Registration, help, or mock dispatch alone produces
 ## Environment and inventory
 
 - Audit date: 2026-09-09 (America/Los_Angeles).
-- Final audited/accepted revision: `5d8bc501986909256c7b1e45857f3eaf0043eb97`;
-  pre-report integration candidate: `d6d7bede968033780c845d903e454ce46b32178f`;
-  original audit revision: `86c87a99a21385a25a393b4d0c4b5d5552b0933e`.
+- Final audited/accepted revision: the collected aggregate head
+  `bd054e4129b2a66a859408f0fa2b76b62a5d670e`; runtime baseline for the tables
+  and transcripts below: `5d8bc501986909256c7b1e45857f3eaf0043eb97`; pre-report
+  integration candidate: `d6d7bede968033780c845d903e454ce46b32178f`; original
+  audit revision: `86c87a99a21385a25a393b4d0c4b5d5552b0933e`.
 - CLI version: 0.1.0. Linux 6.18.33.2-microsoft-standard-WSL2 x86_64;
   Python 3.12.3; pytest 9.0.3.
 - `aq test` used one of two global slots and the configured three-worker cap.
@@ -117,6 +124,43 @@ previously omitted the wrapper's marker expression but allowed `pyproject.toml`
 to apply the same deselection, so the integration test was still excluded. It
 now passes an empty command-line marker expression, which overrides configured
 addopts. The pre-fix reproduction exited 5 with one deselected and zero selected.
+
+## Re-verification of the collected aggregate
+
+Three commits landed between the `5d8bc501` runtime baseline and the collected
+aggregate head `bd054e41`. Two of them change shipped CLI code, so the earlier
+claim that everything after the baseline was a documentation-only provenance
+correction was wrong and has been withdrawn.
+
+| Commit | Change | Runtime files |
+| --- | --- | --- |
+| `0ec19571` | fix(cli): make `aq plugin logs` an explicit removal, not a quiet no-op | `src/cli/plugins.py` (+51/-9), plus 74 lines of contract tests in `tests/test_cli_plugins.py` and a `docs/specs/plugin-system.md` update |
+| `64066bb9` | fix(cli): advertise the runnable form of `aq playbook inspect-run` | `src/cli/plugins.py` (+1/-1), plus 34 lines of tests |
+| `bd054e41` | style(cli): format integrated inventory metadata | `src/cli/inventory.py` (+1/-3, formatting only) |
+
+The audit gates were therefore re-collected at `bd054e41` rather than inherited
+from `5d8bc501`:
+
+- `python scripts/generate-cli-command-inventory.py --check` — clean, 317 leaf
+  commands, matching the totals reported above.
+- `ruff check --select E4,E7,E9,F` over all 70 changed `.py` files — clean.
+- `aq test tests/test_cli*.py tests/test_command_surface.py tests/test_guidance_docs.py`
+  — 820 passed. The baseline run reported 811; the extra nine come from the
+  `aq plugin logs` removal contract and the `inspect-run` advertising fix.
+- `aq test` over fifteen other touched areas, including
+  `tests/test_api_client_contract.py` — 701 passed, 12 skipped.
+- `aq test --aq-all-markers -p no:xdist -s tests/test_e2e_cli_stateful.py`
+  — 1 passed; inner assertion 14/14 stateful scenarios passed.
+
+Scope of that evidence: these are the CLI-audit gates, re-run locally at the
+aggregate head. They are not a full-suite result. The hosted CI run on the
+snapshot of `bd054e41` was red — including
+`tests/test_e2e_cli_stateful.py::test_disposable_daemon_stateful_cli_smoke`,
+which is `integration`-marked and fails on hosted runners because
+`scripts/e2e-common.sh` defaults `E2E_PG_PORT` to this workstation's disposable
+service port. That failure is an environment-portability defect in this epic's
+own harness, tracked separately; it is not a CLI-behavior finding and does not
+change any per-command disposition above.
 
 ## Explicit limitations
 
