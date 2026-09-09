@@ -1,4 +1,4 @@
-"""Tests for the merge conflict detection hook and script."""
+"""Tests for scripts/check-merge-conflicts.sh, the merge-conflict detector."""
 
 from __future__ import annotations
 

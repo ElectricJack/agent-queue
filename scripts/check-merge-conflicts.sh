@@ -5,6 +5,11 @@
 #
 # Outputs JSON with conflict information for each branch that cannot be
 # cleanly merged into main. Exits 0 if no conflicts, 1 if conflicts found.
+#
+# Standalone detector: run it by hand, or schedule it from a playbook with a
+# timer trigger and a shell node. (The old scripts/register-merge-conflict-hook.py
+# registered it as a periodic `Hook`; hooks were replaced by playbooks and the
+# script was deleted.)
 
 set -euo pipefail
 
