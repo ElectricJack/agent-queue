@@ -79,6 +79,11 @@ def _client(result):
             "integration_retry_cleanup",
             {"batch_id": "batch-1"},
         ),
+        (
+            ["resolve-candidate-member", "frozen-resolution"],
+            "integration_resolve_candidate_member",
+            {"reservation_id": "frozen-resolution"},
+        ),
     ],
 )
 def test_integration_commands_use_generic_execute_and_json_envelope(argv, command, args):
@@ -195,12 +200,16 @@ def test_integration_cli_is_handcrafted_and_has_no_deferred_probe_command():
         "integration_resume",
         "integration_abort",
         "integration_retry_cleanup",
+        "integration_resolve_candidate_member",
     }
     assert expected <= HANDCRAFTED_COVERAGE
 
     result = CliRunner().invoke(cli, ["integration", "--help"])
     assert result.exit_code == 0, result.output
-    for command in ("status", "flush", "enable", "waive-history", "resume", "abort", "retry-cleanup"):
+    for command in (
+        "status", "flush", "enable", "waive-history", "resume", "abort", "retry-cleanup",
+        "resolve-candidate-member",
+    ):
         assert command in result.output
     assert "probe" not in result.output
 

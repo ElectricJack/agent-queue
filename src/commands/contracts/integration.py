@@ -60,6 +60,7 @@ DESIGN_INTEGRATION_COMMANDS = frozenset(
         "integration_resume",
         "integration_abort",
         "integration_retry_cleanup",
+        "integration_resolve_candidate_member",
     }
 )
 
@@ -99,6 +100,17 @@ class IntegrationAbortArgs(IntegrationOperationControlArgs):
 
 class IntegrationRetryCleanupArgs(CommandArgs):
     batch_id: str = Field(min_length=1)
+
+
+class IntegrationResolveCandidateMemberArgs(CommandArgs):
+    reservation_id: str = Field(min_length=1)
+
+
+class IntegrationResolveCandidateMemberValue(CommandValue):
+    batch_id: str | None = None
+    revision: int | None = None
+    member_ordinal: int | None = None
+    invariant: str | None = None
 
 
 class IntegrationOperationalValue(CommandValue):
@@ -542,6 +554,31 @@ INTEGRATION_RETRY_CLEANUP = _operational_contract(
     ("requeued", "ambiguous", "nothing_to_retry", "not_found"),
     successes=frozenset({"requeued", "nothing_to_retry"}),
     side_effect=SideEffectClass.UPDATE,
+)
+
+INTEGRATION_RESOLVE_CANDIDATE_MEMBER = CommandContract(
+    execution=ExecutionContract(
+        name="integration_resolve_candidate_member",
+        args_model=IntegrationResolveCandidateMemberArgs,
+        result_model=IntegrationResolveCandidateMemberValue,
+        outcomes=tuple(
+            OutcomeSpec(name=name, classification=(
+                OutcomeClass.SUCCESS if name in {"accepted", "already_accepted", "rejected"}
+                else OutcomeClass.FAILURE
+            ))
+            for name in ("accepted", "already_accepted", "rejected", "stale", "wait")
+        ),
+        capability="integration_resolve_candidate_member",
+        side_effect=SideEffectClass.COMPOSITE,
+        idempotency=IdempotencySpec(mode="keyed", key_field="reservation_id"),
+        retry_safe=True,
+        effects=(UpdateClause(subject=EffectSubject.INTEGRATION_OPERATION),),
+        receipt_projection=tuple(IntegrationResolveCandidateMemberValue.model_fields),
+    ),
+    presentation=CommandPresentation(
+        title="Resolve pushed candidate member",
+        summary="Accept one valid frozen repair or retain its failed invariant for a fresh recovery.",
+    ),
 )
 
 
@@ -1686,6 +1723,18 @@ async def _retry_cleanup_adapter(
     )
 
 
+async def _resolve_candidate_member_adapter(
+    args: IntegrationResolveCandidateMemberArgs, ctx: CommandContext | None
+):
+    return await _hierarchy_adapter(
+        "integration_resolve_candidate_member",
+        args,
+        ctx,
+        IntegrationResolveCandidateMemberValue,
+        {"accepted", "already_accepted", "rejected", "stale", "wait"},
+    )
+
+
 def register_integration_contracts(registry: ContractRegistry) -> None:
     """Register contracts whose real handlers have landed.
 
@@ -1709,6 +1758,7 @@ def register_integration_contracts(registry: ContractRegistry) -> None:
         (INTEGRATION_RESUME, _resume_adapter),
         (INTEGRATION_ABORT, _abort_adapter),
         (INTEGRATION_RETRY_CLEANUP, _retry_cleanup_adapter),
+        (INTEGRATION_RESOLVE_CANDIDATE_MEMBER, _resolve_candidate_member_adapter),
         (INTEGRATION_SCHEDULE_DUE, _schedule_due_adapter),
         (INTEGRATION_SEAL, _seal_adapter),
         (INTEGRATION_FILE_CHILDREN, _file_children_adapter),

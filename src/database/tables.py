@@ -2354,15 +2354,12 @@ integration_candidate_resolutions = Table(
     Column("resolved_tree_sha", Text, nullable=False),
     Column("repair_commit_shas", JSON, nullable=False),
     Column("push_evidence", JSON, nullable=True),
+    # A rejected push remains durable external evidence.  It is never
+    # overwritten by a replacement reservation for the same frozen member.
+    Column("rejection_evidence", JSON, nullable=True),
     Column("state", Text, nullable=False),
     Column("created_at", Float, nullable=False),
     Column("updated_at", Float, nullable=False),
-    UniqueConstraint(
-        "batch_id",
-        "revision",
-        "member_ordinal",
-        name="uq_integration_candidate_resolutions_member",
-    ),
     CheckConstraint("revision >= 0", name="ck_integration_candidate_resolutions_revision"),
     CheckConstraint(
         "member_ordinal >= 0", name="ck_integration_candidate_resolutions_member_ordinal"
@@ -2380,13 +2377,18 @@ integration_candidate_resolutions = Table(
         name="ck_integration_candidate_resolutions_target_kind",
     ),
     CheckConstraint(
-        "state IN ('reserved', 'pushed', 'accepted')",
+        "state IN ('reserved', 'pushed', 'accepted', 'rejected')",
         name="ck_integration_candidate_resolutions_state",
     ),
     CheckConstraint(
         "(state = 'reserved' AND push_evidence IS NULL) OR "
-        "(state IN ('pushed', 'accepted') AND push_evidence IS NOT NULL)",
+        "(state IN ('pushed', 'accepted', 'rejected') AND push_evidence IS NOT NULL)",
         name="ck_integration_candidate_resolutions_push",
+    ),
+    CheckConstraint(
+        "(state = 'rejected' AND rejection_evidence IS NOT NULL) OR "
+        "(state <> 'rejected' AND rejection_evidence IS NULL)",
+        name="ck_integration_candidate_resolutions_rejection",
     ),
     ForeignKeyConstraint(
         ["batch_id", "revision", "member_ordinal"],
@@ -2416,6 +2418,19 @@ integration_candidate_resolutions = Table(
         ["repair_workspace_id"],
         ["workspaces.id"],
         name="fk_integration_candidate_resolutions_workspace",
+    ),
+)
+
+# Rejected reservations are retained as audit evidence, but exactly one
+# actionable reservation may exist for a frozen member at a time.
+Index(
+    "uq_integration_candidate_resolutions_current_member",
+    integration_candidate_resolutions.c.batch_id,
+    integration_candidate_resolutions.c.revision,
+    integration_candidate_resolutions.c.member_ordinal,
+    unique=True,
+    postgresql_where=integration_candidate_resolutions.c.state.in_(
+        ("reserved", "pushed", "accepted")
     ),
 )
 

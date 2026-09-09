@@ -29,6 +29,7 @@ from src.database.tables import (
 from src.config import GitHubAppConfig
 from src.git.github_app import GitHubAppClient, GitHubRepositoryBinding, HttpResponse
 from src.integration.controls import IntegrationControlService, daemon_functional_preflight
+from src.integration.recovery_controls import IntegrationRecoveryControls
 from src.integration.models import (
     ArtifactSnapshot,
     HierarchicalIntegrationPolicy,
@@ -1656,6 +1657,25 @@ async def test_human_resume_reconciles_ambiguous_publication_and_abort_is_db_onl
     batch = await db.get_integration_batch("human-batch")
     assert batch["lifecycle"] == "aborted"
     assert batch["human_abort_reason"] == "retain for diagnosis"
+
+
+def test_pushed_candidate_resolution_refusal_names_the_required_invariant():
+    result = IntegrationRecoveryControls._ambiguous_result(
+        {"id": "operation", "state": "human_required"},
+        "p",
+        ["resolution:frozen-resolution"],
+    )
+
+    assert result["blockers"] == [
+        {
+            "code": "ambiguous_external_write",
+            "detail": (
+                "a pushed candidate repair is frozen; accept it only after its exact "
+                "repair lineage validates"
+            ),
+            "ref": "resolution:frozen-resolution",
+        }
+    ]
 
 
 async def test_cleanup_retry_requeues_exact_safe_work_and_preserves_prewrite(db):
