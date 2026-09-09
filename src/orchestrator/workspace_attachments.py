@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import time
 from collections.abc import Callable
+from contextlib import asynccontextmanager
 
 from sqlalchemy import select, update
 
@@ -313,6 +314,20 @@ async def orphaned_integration_pool_handoff_is_recoverable(db, owner: dict) -> d
         return await _orphaned_integration_pool_handoff_is_recoverable_on(conn, owner)
 
 
+@asynccontextmanager
+async def orphaned_integration_pool_handoff_exclusion(db, owner: dict):
+    """Hold an exact orphan's workspace exclusion through its Git handoff.
+
+    The recovery proof includes a destructive ``switch --detach``.  Taking a
+    snapshot in one transaction and detaching after it commits leaves a gap in
+    which a new pool claim can reuse the slot.  Keep the owner, retired
+    session, agent, and -- critically -- workspace row locked until the caller
+    has either failed its external proof or recorded the released owner.
+    """
+    async with db.immediate() as conn:
+        yield conn, await _orphaned_integration_pool_handoff_is_recoverable_on(conn, owner)
+
+
 async def _orphaned_integration_pool_handoff_is_recoverable_on(conn, owner: dict) -> dict | None:
     """Locked implementation of :func:`orphaned_integration_pool_handoff_is_recoverable`."""
     session_id = owner.get("session_id")
@@ -431,6 +446,8 @@ async def _orphaned_integration_pool_handoff_is_recoverable_on(conn, owner: dict
         "workspace_id": workspace_id,
         "session_instance_token": session_row["instance_token"],
         "session_started_at": session_row["started_at"],
+        "session_name": session_row["name"],
+        "session_provider": session_row["provider"],
     }
 
 
@@ -456,24 +473,31 @@ async def mark_orphaned_integration_pool_handoff_released(
             or recovery["session_started_at"] != session_started_at
         ):
             return False
-        result = await conn.execute(
-            update(integration_branch_owners)
-            .where(
-                integration_branch_owners.c.id == owner.get("id"),
-                integration_branch_owners.c.fence_token == owner.get("fence_token"),
-                integration_branch_owners.c.owner_id == owner.get("owner_id"),
-                integration_branch_owners.c.handoff_state == "handoff_pending",
-                integration_branch_owners.c.session_id == owner.get("session_id"),
-                integration_branch_owners.c.workspace_id == owner.get("workspace_id"),
-            )
-            .values(
-                handoff_state="released",
-                session_id=None,
-                workspace_id=None,
-                confirmed_workspace_id=owner.get("workspace_id"),
-                updated_at=time.time(),
-            )
+        return await _mark_orphaned_integration_pool_handoff_released_on(conn, owner, recovery)
+
+
+async def _mark_orphaned_integration_pool_handoff_released_on(
+    conn, owner: dict, recovery: dict
+) -> bool:
+    """Record release while :func:`orphaned_integration_pool_handoff_exclusion` is held."""
+    result = await conn.execute(
+        update(integration_branch_owners)
+        .where(
+            integration_branch_owners.c.id == owner.get("id"),
+            integration_branch_owners.c.fence_token == owner.get("fence_token"),
+            integration_branch_owners.c.owner_id == owner.get("owner_id"),
+            integration_branch_owners.c.handoff_state == "handoff_pending",
+            integration_branch_owners.c.session_id == owner.get("session_id"),
+            integration_branch_owners.c.workspace_id == owner.get("workspace_id"),
         )
+        .values(
+            handoff_state="released",
+            session_id=None,
+            workspace_id=None,
+            confirmed_workspace_id=recovery["workspace_id"],
+            updated_at=time.time(),
+        )
+    )
     return result.rowcount == 1
 
 

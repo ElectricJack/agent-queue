@@ -1149,8 +1149,8 @@ class WorkspaceMixin:
         from src.orchestrator.workspace_attachments import (
             integration_handoff_release_is_confirmed,
             mark_integration_handoff_released,
-            mark_orphaned_integration_pool_handoff_released,
-            orphaned_integration_pool_handoff_is_recoverable,
+            _mark_orphaned_integration_pool_handoff_released_on,
+            orphaned_integration_pool_handoff_exclusion,
         )
 
         if await integration_handoff_release_is_confirmed(self.db, owner):
@@ -1179,68 +1179,72 @@ class WorkspaceMixin:
             # only if the exact old session/worktree identity has not been
             # reused; see the helper for the full fence set.  This path only
             # probes the retired instance token and never stops a process.
-            recovery = await orphaned_integration_pool_handoff_is_recoverable(self.db, owner)
-            if recovery is None:
-                return False
-            retired_session = await self.db.get_session(recovery["session_id"])
-            if retired_session is None:
-                return False
-            try:
-                # Probe only the retired instance token.  Unlike ``stop``,
-                # confirmation is read-only and a reused session name cannot
-                # make this touch a successor process.
-                provider = self.session_providers.create(retired_session.provider, self.config)
-                retired_handle = SessionHandle(
-                    name=retired_session.name,
-                    provider=retired_session.provider,
-                    instance_token=recovery["session_instance_token"],
-                )
-                if not await provider.confirm_stopped(retired_handle):
-                    return False
-            except Exception:
-                logger.warning(
-                    "Could not confirm orphaned integration writer %s stopped",
-                    recovery["session_id"],
-                    exc_info=True,
-                )
-                return False
-            workspace = await self.db.get_workspace(recovery["workspace_id"])
-            if workspace is None:
-                return False
-            try:
-                from src.orchestrator.workspace_attachments import (
-                    detach_slot_for_integration_handoff,
-                    detach_workspace_for_integration_handoff,
-                )
-
-                if workspace.is_slot:
-                    detached = await detach_slot_for_integration_handoff(
-                        self.db,
-                        self.git,
-                        self._git_mutex,
-                        workspace,
-                        expected_branch=str(owner["ref"]),
-                    )
-                else:
-                    detached = await detach_workspace_for_integration_handoff(
-                        self.git,
-                        self._git_mutex,
-                        workspace,
-                        expected_branch=str(owner["ref"]),
-                    )
-            except Exception:
-                logger.warning(
-                    "Could not recover orphaned integration workspace %s",
-                    recovery["workspace_id"],
-                    exc_info=True,
-                )
-                return False
-            return detached and await mark_orphaned_integration_pool_handoff_released(
-                self.db,
-                owner,
-                session_instance_token=recovery["session_instance_token"],
-                session_started_at=recovery["session_started_at"],
+            # The workspace row remains locked for the whole external proof.
+            # A later pool claim therefore cannot acquire this checkout in
+            # between the retired-session snapshot and ``switch --detach``.
+            # That exclusion is the difference between safely detaching the
+            # historical owner and rewriting a successor's checkout.
+            orphan_workspace = workspace
+            orphan_base = (
+                await self.db.get_workspace(orphan_workspace.base_workspace_id)
+                if orphan_workspace is not None and orphan_workspace.is_slot
+                and orphan_workspace.base_workspace_id
+                else None
             )
+            async with orphaned_integration_pool_handoff_exclusion(self.db, owner) as (
+                conn,
+                recovery,
+            ):
+                if recovery is None:
+                    return False
+                if orphan_workspace is None or orphan_workspace.id != recovery["workspace_id"]:
+                    return False
+                try:
+                    # Probe only the retired instance token.  Unlike ``stop``,
+                    # confirmation is read-only and a reused session name cannot
+                    # make this touch a successor process.
+                    provider = self.session_providers.create(recovery["session_provider"], self.config)
+                    retired_handle = SessionHandle(
+                        name=recovery["session_name"],
+                        provider=recovery["session_provider"],
+                        instance_token=recovery["session_instance_token"],
+                    )
+                    if not await provider.confirm_stopped(retired_handle):
+                        return False
+                    from src.orchestrator.workspace_attachments import (
+                        detach_workspace_for_integration_handoff,
+                    )
+
+                    if orphan_workspace.is_slot:
+                        if (
+                            orphan_base is None
+                            or orphan_base.project_id != orphan_workspace.project_id
+                        ):
+                            return False
+                        detached = await detach_workspace_for_integration_handoff(
+                            self.git,
+                            self._git_mutex,
+                            orphan_workspace,
+                            mutex_path=orphan_base.workspace_path,
+                            expected_branch=str(owner["ref"]),
+                        )
+                    else:
+                        detached = await detach_workspace_for_integration_handoff(
+                            self.git,
+                            self._git_mutex,
+                            orphan_workspace,
+                            expected_branch=str(owner["ref"]),
+                        )
+                except Exception:
+                    logger.warning(
+                        "Could not recover orphaned integration workspace %s",
+                        recovery["workspace_id"],
+                        exc_info=True,
+                    )
+                    return False
+                return detached and await _mark_orphaned_integration_pool_handoff_released_on(
+                    conn, owner, recovery
+                )
         current_branch = await self.git.aget_current_branch(workspace.workspace_path, strict=True)
         if current_branch not in {owner.get("ref"), "HEAD"}:
             return False
