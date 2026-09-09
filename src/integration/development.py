@@ -413,7 +413,7 @@ class DevelopmentIntegration:
                             .where(
                                 tasks.c.project_id == project_id,
                                 tasks.c.status == "COMPLETED",
-                                tasks.c.repo_id == repo.id,
+                                (tasks.c.repo_id == repo.id) | tasks.c.repo_id.is_(None),
                                 tasks.c.branch_name.is_not(None),
                                 tasks.c.is_blocked == 0,
                             )
@@ -681,6 +681,25 @@ class DevelopmentIntegration:
             repo = await self.db.get_repo(project.integration_repository_id)
         else:
             repositories = await self.db.list_repos(project_id)
+            if not repositories and project.repo_url:
+                from src.database.tables import repos
+
+                identity = "development-" + hashlib.sha256(project_id.encode()).hexdigest()[:20]
+                async with self.db._engine.begin() as conn:
+                    await conn.execute(
+                        pg_insert(repos)
+                        .values(
+                            id=identity,
+                            project_id=project_id,
+                            url=project.repo_url,
+                            default_branch=project.repo_default_branch,
+                            source_type="clone",
+                            source_path="",
+                            checkout_base_path="",
+                        )
+                        .on_conflict_do_nothing()
+                    )
+                repositories = await self.db.list_repos(project_id)
             if len(repositories) != 1:
                 raise ValueError(
                     "designate a repository when the project has zero or multiple repositories"

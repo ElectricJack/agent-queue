@@ -886,11 +886,11 @@ class GitOpsMixin:
                 return (ctx.pr_url, True)
             try:
                 from src.integration.hierarchy import resolve_workspace_checkpoint
-                repo = await self.db.get_repo(ctx.task.repo_id or "")
+                repo = await self.db.get_repo(ctx.task.repo_id or project.integration_repository_id or "")
                 if repo is None:
                     raise ValueError("development task has no repository")
                 await resolve_workspace_checkpoint(self.db, self.git,
-                    {"id": ctx.task.id, "repo_id": ctx.task.repo_id,
+                    {"id": ctx.task.id, "repo_id": repo.id,
                      "branch_name": ctx.task.branch_name}, repo)
                 failure = await self._reserved_delivery_failure(ctx.workspace_path,
                     repo.default_branch, "refs/heads/" + ctx.task.branch_name.removeprefix("refs/heads/"),
