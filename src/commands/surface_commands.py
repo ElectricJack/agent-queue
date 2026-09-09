@@ -5,10 +5,11 @@ contract slice: ``get_schema`` (backs ``aq schema``) and the ``task_show`` /
 ``task_set`` pair (back ``aq task show|set|details``).  Phase S1 adds
 ``prime`` (backs ``aq prime``) and ``task_handoff`` (backs ``aq handoff``).
 ``task_close`` / ``task_heartbeat`` (session-runtime, ``src/commands/
-session_commands.py``), ``message_send`` / ``message_inbox`` (supervisor-
-agent, ``src/commands/message_commands.py``), and ``ask_human``
-(unscheduled in this spec's phase checklist beyond the §3 inventory table)
-are not implemented here yet.
+session_commands.py``) and ``message_send`` / ``message_inbox`` (supervisor-
+agent, ``src/commands/message_commands.py``) are implemented in their owning
+mixins. The previously advertised ``ask_human`` command was retired: native
+completed-turn questions are owned by ``AgentQuestionService`` and explicit
+blocker notifications use ``message_send``.
 
 Convention (see ``src/commands/handler.py``): every ``_cmd_*`` method takes a
 flat ``dict`` of arguments and returns a ``dict`` — domain data on success,

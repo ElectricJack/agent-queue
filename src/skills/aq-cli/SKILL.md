@@ -100,7 +100,7 @@ command shapes and gotchas. Use them instead of re-deriving:
 
 - **aq-tasks** — creating / closing / reopening / editing tasks, working
   with results, dependencies.
-- **aq-comms** — messages, inbox handling, ask_human.
+- **aq-comms** — messages, inbox handling, and blocker reporting.
 - **aq-workspaces-and-git** — workspace ops + git via CLI.
 - **aq-playbooks-and-gates** — playbook runs and human-in-the-loop
   gates.

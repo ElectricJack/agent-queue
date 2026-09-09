@@ -11106,51 +11106,6 @@
         }
       }
     },
-    "/api/task/ask-human": {
-      "post": {
-        "tags": [
-          "task"
-        ],
-        "summary": "Ask a human a question via a human gate, blocking on their response. Backs `aq task ask`. (Implementation pending.)",
-        "description": "Ask a human a question via a human gate, blocking on their response. Backs `aq task ask`. (Implementation pending.)",
-        "operationId": "ask_human",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/AskHumanRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {}
-              }
-            }
-          },
-          "422": {
-            "description": "Command error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "properties": {
-                    "error": {
-                      "type": "string"
-                    }
-                  },
-                  "type": "object"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
     "/api/task/create": {
       "post": {
         "tags": [
@@ -14796,32 +14751,6 @@
         ],
         "title": "ArtifactRefDTO",
         "description": "Roadmap \u00a74 ``ArtifactRef``, projected.  Identifies exactly one\nimmutable artifact; every graph, diff and overlay response carries one."
-      },
-      "AskHumanRequest": {
-        "properties": {
-          "question": {
-            "type": "string",
-            "title": "Question",
-            "description": "The question to ask"
-          },
-          "task_id": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Task Id",
-            "description": "Task ID this question is about (optional)"
-          }
-        },
-        "type": "object",
-        "required": [
-          "question"
-        ],
-        "title": "AskHumanRequest"
       },
       "AssignmentRouteDetail": {
         "properties": {

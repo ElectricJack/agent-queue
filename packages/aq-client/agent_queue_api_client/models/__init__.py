@@ -36,8 +36,6 @@ from .archive_task_request import ArchiveTaskRequest
 from .archive_task_response import ArchiveTaskResponse
 from .archive_task_response_422 import ArchiveTaskResponse422
 from .artifact_ref_dto import ArtifactRefDTO
-from .ask_human_request import AskHumanRequest
-from .ask_human_response_422 import AskHumanResponse422
 from .assignment_route_detail import AssignmentRouteDetail
 from .body_upload_attachment_api_tasks_task_id_attachments_post import BodyUploadAttachmentApiTasksTaskIdAttachmentsPost
 from .browse_entry import BrowseEntry
@@ -1153,8 +1151,6 @@ __all__ = (
     "ArchiveTaskResponse",
     "ArchiveTaskResponse422",
     "ArtifactRefDTO",
-    "AskHumanRequest",
-    "AskHumanResponse422",
     "AssignmentRouteDetail",
     "BodyUploadAttachmentApiTasksTaskIdAttachmentsPost",
     "BrowseEntry",

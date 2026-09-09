@@ -71,13 +71,18 @@ same data as Rich tables/panels.
 | `aq task set` | `<task_id> [--branch] [--pr-url] [--work-dir] [--note] [--label +l/-l] [--meta k=v]` | A/H | updated task summary |
 | `aq task close` | `<task_id> --outcome pass\|fail [--failure-class transient\|hard] [--work-outcome shipped\|no-op\|blocked\|abandoned] [--commit <sha>] [--notes <text>]` | A | `{task_id, status}` |
 | `aq task heartbeat` | `[<task_id>]` (defaults to token scope) | A | `{ok: true, lease_expires_at}` |
-| `aq task ask` | `"<question>" [--task <id>]` | A | `{question_id, gate_id}` — human gate via [[work-graph]] |
 | `aq message send` | `<recipient> <body> [--task <id>]` | A/H | `{message_id}` |
 | `aq message inbox` | `[--unread]` | A/H | list of messages |
 | `aq message reply` | `<message_id> <body>` | A/H | `{message_id}` |
 | `aq memory save` | `<content> [--scope]` | A | paused: `{paused: true}` per [[feature-pauses]] (§9.3) |
 | `aq memory search` | `<query> [--scope]` | A | paused: `{paused: true, results: []}` |
 | `aq session drain-ack` | — | A | `{acknowledged: true}` — session may now be reaped |
+
+> **Retired (2026-09-08):** the never-implemented `ask_human` / `aq task
+> ask-human` surface was removed. Live worker questions are recorded by the
+> claim-fenced `AgentQuestionService` from completed native transcript turns
+> and answered by exact `question_id` through `aq question`. For an explicit
+> one-way blocker notification, use `aq message send --to user:dashboard`.
 
 ### 3.2 Human surface
 
@@ -424,7 +429,7 @@ changes; it is the operator's surface.
 
 A second MCP mount at `/mcp-task` exposes only the default task allowlist:
 
-`task_show, task_set, task_close, task_heartbeat, ask_human, message_send, message_inbox,
+`task_show, task_set, task_close, task_heartbeat, message_send, message_inbox,
 memory_save, memory_search`
 
 Rationale: these are the calls an agent makes *mid-turn* where a native tool call beats

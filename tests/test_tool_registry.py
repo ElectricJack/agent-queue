@@ -386,6 +386,31 @@ def test_has_command_false_for_unbacked_tool():
     assert handler.has_command("list_tasks") is True
 
 
+def test_retired_ask_human_is_unknown_without_plugin_backend():
+    handler = _make_handler_without_plugin_commands()
+
+    assert handler.has_command("ask_human") is False
+    assert asyncio.run(handler.execute("ask_human", {"question": "Continue?"})) == {
+        "error": "Unknown command: ask_human"
+    }
+
+
+def test_plugin_may_explicitly_own_retired_ask_human_name():
+    """An installed extension remains executable, but core does not promise it."""
+    handler = _make_handler_without_plugin_commands()
+    backend = AsyncMock(
+        return_value={"question_id": "plugin-question-1", "destination": "fake-user"}
+    )
+    handler.orchestrator.plugin_registry.get_command.side_effect = (
+        lambda name: backend if name == "ask_human" else None
+    )
+
+    result = asyncio.run(handler.execute("ask_human", {"question": "Continue?"}))
+
+    assert result == {"question_id": "plugin-question-1", "destination": "fake-user"}
+    backend.assert_awaited_once_with({"question": "Continue?"})
+
+
 def test_cmd_load_tools_omits_tools_without_backing_implementation():
     """load_tools must not advertise tools execute() would reject."""
     handler = _make_handler_without_plugin_commands()

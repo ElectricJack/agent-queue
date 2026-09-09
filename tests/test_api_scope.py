@@ -25,7 +25,6 @@ EXPECTED_AGENT_COMMANDS = {
     "task_progress",
     "task_heartbeat",
     "task_handoff",
-    "ask_human",
     "message_send",
     "message_inbox",
     "message_reply",
@@ -56,6 +55,11 @@ class TestCheckCommandScope:
         assert msg is not None
         assert "out of scope" in msg
         assert "delete_project" in msg
+
+    def test_session_scope_blocks_retired_ask_human_command(self):
+        assert check_command_scope("ask_human", {"question": "Continue?"}, SESSION) == (
+            "out of scope: ask_human"
+        )
 
     def test_integration_controls_remain_local_even_for_elevated_session(self):
         elevated = RequestScope(

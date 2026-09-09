@@ -40,6 +40,18 @@ def runner():
     return CliRunner()
 
 
+def test_task_help_does_not_advertise_retired_ask_human(runner):
+    from src.cli.app import cli
+
+    help_result = runner.invoke(cli, ["task", "--help"])
+    assert help_result.exit_code == 0
+    assert "ask-human" not in help_result.output
+
+    call_result = runner.invoke(cli, ["task", "ask-human", "--question", "Continue?"])
+    assert call_result.exit_code == 2
+    assert "No such command 'ask-human'" in call_result.output
+
+
 # Mock response helpers
 
 
