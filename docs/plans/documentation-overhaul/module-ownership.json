@@ -1,5 +1,5 @@
 {
-  "source_commit": "ae7d41aa9ea6c9d4bffe3d658107d73b2e1950e5",
+  "source_commit": "a29318121470ef53604686a2ba50c02f9f75ee35",
   "generated_by": "docs/plans/documentation-overhaul/refresh_inventory.py",
   "note": "Assignment, not authored coverage.  Each entry's `purpose` is the rule-level description of the family the path belongs to; the per-module sentence is written by the owning shard's catalog page (`shards[<shard>].catalog`).  `component` is the prose page that explains the module.  There is no catch-all rule: a tracked path matching nothing is an error, not a default assignment.",
   "shards": {
@@ -3815,6 +3815,13 @@
       "purpose": "Existing page; the legacy ticket records its disposition.",
       "catalog": null
     },
+    "docs/concepts/agents-and-routing.md": {
+      "shard": "routing",
+      "component": "docs/concepts/agents-and-routing.md",
+      "category": "documentation",
+      "purpose": "Overhaul page owned by the `routing` ticket.",
+      "catalog": null
+    },
     "docs/concepts/integration.md": {
       "shard": "integration",
       "component": "docs/concepts/integration.md",
@@ -3827,6 +3834,13 @@
       "component": "docs/concepts/messaging.md",
       "category": "documentation",
       "purpose": "Overhaul page owned by the `communications` ticket.",
+      "catalog": null
+    },
+    "docs/concepts/providers.md": {
+      "shard": "providers",
+      "component": "docs/concepts/providers.md",
+      "category": "documentation",
+      "purpose": "Overhaul page owned by the `providers` ticket.",
       "catalog": null
     },
     "docs/concepts/sessions.md": {
@@ -4088,6 +4102,13 @@
       "purpose": "Existing page; the legacy ticket records its disposition.",
       "catalog": null
     },
+    "docs/guides/llm-providers.md": {
+      "shard": "legacy",
+      "component": "docs/history/README.md",
+      "category": "documentation",
+      "purpose": "Existing page; the legacy ticket records its disposition.",
+      "catalog": null
+    },
     "docs/guides/merge-gating.md": {
       "shard": "legacy",
       "component": "docs/history/README.md",
@@ -4326,6 +4347,48 @@
       "purpose": "Existing page; the legacy ticket records its disposition.",
       "catalog": null
     },
+    "docs/reference/api/README.md": {
+      "shard": "api",
+      "component": "docs/reference/api/README.md",
+      "category": "documentation",
+      "purpose": "Overhaul page owned by the `api` ticket.",
+      "catalog": null
+    },
+    "docs/reference/api/conventions.md": {
+      "shard": "api",
+      "component": "docs/reference/api",
+      "category": "documentation",
+      "purpose": "Overhaul page owned by the `api` ticket.",
+      "catalog": null
+    },
+    "docs/reference/api/events.md": {
+      "shard": "api",
+      "component": "docs/reference/api",
+      "category": "documentation",
+      "purpose": "Overhaul page owned by the `api` ticket.",
+      "catalog": null
+    },
+    "docs/reference/api/models.md": {
+      "shard": "api",
+      "component": "docs/reference/api",
+      "category": "documentation",
+      "purpose": "Overhaul page owned by the `api` ticket.",
+      "catalog": null
+    },
+    "docs/reference/api/python-client.md": {
+      "shard": "api",
+      "component": "docs/reference/api",
+      "category": "documentation",
+      "purpose": "Overhaul page owned by the `api` ticket.",
+      "catalog": null
+    },
+    "docs/reference/api/typescript-client.md": {
+      "shard": "api",
+      "component": "docs/reference/api",
+      "category": "documentation",
+      "purpose": "Overhaul page owned by the `api` ticket.",
+      "catalog": null
+    },
     "docs/reference/cli-command-inventory.json": {
       "shard": "legacy",
       "component": "docs/history/README.md",
@@ -4375,6 +4438,41 @@
       "purpose": "Overhaul page owned by the `cli` ticket.",
       "catalog": null
     },
+    "docs/reference/database/README.md": {
+      "shard": "database",
+      "component": "docs/reference/database/README.md",
+      "category": "documentation",
+      "purpose": "Overhaul page owned by the `database` ticket.",
+      "catalog": null
+    },
+    "docs/reference/database/data-lifecycle.md": {
+      "shard": "database",
+      "component": "docs/reference/database",
+      "category": "documentation",
+      "purpose": "Overhaul page owned by the `database` ticket.",
+      "catalog": null
+    },
+    "docs/reference/database/migrations.md": {
+      "shard": "database",
+      "component": "docs/reference/database",
+      "category": "documentation",
+      "purpose": "Overhaul page owned by the `database` ticket.",
+      "catalog": null
+    },
+    "docs/reference/database/queries.md": {
+      "shard": "database",
+      "component": "docs/reference/database",
+      "category": "documentation",
+      "purpose": "Overhaul page owned by the `database` ticket.",
+      "catalog": null
+    },
+    "docs/reference/database/tables.md": {
+      "shard": "database",
+      "component": "docs/reference/database",
+      "category": "documentation",
+      "purpose": "Overhaul page owned by the `database` ticket.",
+      "catalog": null
+    },
     "docs/reference/glossary.md": {
       "shard": "foundation",
       "component": "docs/reference/glossary.md",
@@ -4396,6 +4494,13 @@
       "purpose": "Overhaul page owned by the `foundation` ticket.",
       "catalog": null
     },
+    "docs/reference/modules/api.md": {
+      "shard": "api",
+      "component": "docs/reference/modules/api.md",
+      "category": "documentation",
+      "purpose": "Overhaul page owned by the `api` ticket.",
+      "catalog": null
+    },
     "docs/reference/modules/cli.md": {
       "shard": "cli",
       "component": "docs/reference/modules/cli.md",
@@ -4410,11 +4515,32 @@
       "purpose": "Overhaul page owned by the `communications` ticket.",
       "catalog": null
     },
+    "docs/reference/modules/database.md": {
+      "shard": "database",
+      "component": "docs/reference/modules/database.md",
+      "category": "documentation",
+      "purpose": "Overhaul page owned by the `database` ticket.",
+      "catalog": null
+    },
     "docs/reference/modules/integration.md": {
       "shard": "integration",
       "component": "docs/reference/modules/integration.md",
       "category": "documentation",
       "purpose": "Overhaul page owned by the `integration` ticket.",
+      "catalog": null
+    },
+    "docs/reference/modules/providers.md": {
+      "shard": "providers",
+      "component": "docs/reference/modules/providers.md",
+      "category": "documentation",
+      "purpose": "Overhaul page owned by the `providers` ticket.",
+      "catalog": null
+    },
+    "docs/reference/modules/routing.md": {
+      "shard": "routing",
+      "component": "docs/reference/modules/routing.md",
+      "category": "documentation",
+      "purpose": "Overhaul page owned by the `routing` ticket.",
       "catalog": null
     },
     "docs/reference/modules/sessions.md": {
@@ -4424,7 +4550,21 @@
       "purpose": "Overhaul page owned by the `sessions` ticket.",
       "catalog": null
     },
+    "docs/reference/profiles-and-classes.md": {
+      "shard": "legacy",
+      "component": "docs/history/README.md",
+      "category": "documentation",
+      "purpose": "Existing page; the legacy ticket records its disposition.",
+      "catalog": null
+    },
     "docs/reference/terminals-and-claims.md": {
+      "shard": "legacy",
+      "component": "docs/history/README.md",
+      "category": "documentation",
+      "purpose": "Existing page; the legacy ticket records its disposition.",
+      "catalog": null
+    },
+    "docs/reference/usage-accounting.md": {
       "shard": "legacy",
       "component": "docs/history/README.md",
       "category": "documentation",
@@ -24431,6 +24571,13 @@
       "catalog": null
     },
     "tests/test_override_injection.py": {
+      "shard": "contributing",
+      "component": "docs/contributing/testing.md",
+      "category": "test",
+      "purpose": "Test module or fixture.",
+      "catalog": null
+    },
+    "tests/test_packaging_entry_points.py": {
       "shard": "contributing",
       "component": "docs/contributing/testing.md",
       "category": "test",
