@@ -8,7 +8,10 @@ time.
 
 from __future__ import annotations
 
+import os
 import re
+import subprocess
+import sys
 import tomllib
 from pathlib import Path
 
@@ -119,3 +122,45 @@ def test_a_non_postgres_url_is_refused_rather_than_treated_as_a_file(url):
 
     errors = AppConfig(database=DatabaseConfig(url=url)).validate()
     assert any("PostgreSQL DSN is required" in e.message for e in errors)
+
+
+def test_the_alembic_environment_has_no_sqlite_left():
+    """``migrations/env.py`` is outside ``src/`` and had its own SQLite arms.
+
+    It kept a ``sqlite+aiosqlite://`` default URL, a ``dialect.name ==
+    'sqlite'`` batch-mode branch and a StaticPool swap for months after the
+    cutover, so it gets the same ratchet the package sources get.
+    """
+    env = ROOT / "migrations" / "env.py"
+    offenders = [
+        f"env.py:{n}: {line.strip()}"
+        for n, line in enumerate(env.read_text().splitlines(), 1)
+        if _SQLITE_USE.search(line) or _DIALECT_BRANCH.search(line) or "render_as_batch" in line
+    ]
+    assert not offenders, f"SQLite crept back into the alembic env: {offenders}"
+    assert "sqlite" not in (ROOT / "alembic.ini").read_text().lower()
+
+
+def _alembic_without_a_url(*args: str) -> subprocess.CompletedProcess:
+    env = {k: v for k, v in os.environ.items() if k != "AGENT_QUEUE_DB_URL"}
+    return subprocess.run(
+        [sys.executable, "-m", "alembic", *args],
+        cwd=ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
+@pytest.mark.parametrize("args", [("current",), ("upgrade", "head")])
+def test_alembic_with_no_url_configured_refuses_instead_of_making_a_database(args):
+    """The footgun this closes: a bare ``alembic upgrade head`` used to succeed.
+
+    With no URL set it resolved ``sqlite+aiosqlite:///~/.agent-queue/agent-queue.db``
+    and created or migrated that file, while the real PostgreSQL database sat
+    untouched.  It must now fail loudly and touch nothing.
+    """
+    result = _alembic_without_a_url(*args)
+    assert result.returncode != 0
+    assert "no database URL configured" in result.stderr + result.stdout
