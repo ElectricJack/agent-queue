@@ -461,6 +461,12 @@ class DevelopmentIntegration:
             parent_heads = {}
             blocked_parents = set()
             assembly_id = uuid4().hex[:12]
+            # Fetch above pins one remote snapshot. Do not make a network request
+            # for every historical task branch on every sweep.
+            fetched = await self.run_git(
+                store, "for-each-ref", "--format=%(refname) %(objectname)", "refs/remotes/origin/"
+            )
+            source_heads = dict(line.split(" ", 1) for line in fetched.splitlines())
             for task in ordered:
                 if task["parent_task_id"] in blocked_parents:
                     unavailable.add(task["id"])
@@ -468,8 +474,8 @@ class DevelopmentIntegration:
                 if dependencies.get(task["id"], set()) & unavailable:
                     unavailable.add(task["id"])
                     continue
-                source = await self.remote(
-                    store, "refs/heads/" + task["branch_name"].removeprefix("refs/heads/")
+                source = source_heads.get(
+                    "refs/remotes/origin/" + task["branch_name"].removeprefix("refs/heads/")
                 )
                 key = (task["id"], source)
                 if not source:
