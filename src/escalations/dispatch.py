@@ -228,15 +228,20 @@ class EscalationDeliveryService:
         last_error: str | None = None,
     ) -> None:
         binding = binding or TransportBinding()
+        # The row may already carry a binding this attempt persisted mid-flight
+        # (see :meth:`_bind`); finishing must never write it back to NULL.
+        def _keep(value: str | None, column: str) -> str | None:
+            return value or (str(row.get(column) or "") or None)
+
         finished = await self.db.finish_escalation_delivery(
             row["id"],
             lease_owner=self._lease_owner,
             status=status,
             now=self._clock(),
             next_attempt_at=next_attempt_at,
-            channel_id=binding.channel_id,
-            root_message_id=binding.root_message_id,
-            thread_id=binding.thread_id,
+            channel_id=_keep(binding.channel_id, "channel_id"),
+            root_message_id=_keep(binding.root_message_id, "root_message_id"),
+            thread_id=_keep(binding.thread_id, "thread_id"),
             external_receipt_id=receipt_id,
             last_error=last_error,
         )
@@ -298,6 +303,35 @@ class EscalationDeliveryService:
             report.enqueued += 1
             report.replacements = (*report.replacements, planned.dedup_key)
         return str(row["id"])
+
+    async def _bind(
+        self,
+        row: Mapping[str, Any],
+        *,
+        channel_id: str | None = None,
+        root_message_id: str | None = None,
+        thread_id: str | None = None,
+    ) -> None:
+        """Persist a confirmed external ID the moment the platform confirms it.
+
+        A root delivery is several external writes in a row, and §7's restart
+        invariant is that a crash between any two of them must not produce a
+        second post.  Writing the binding under the still-held lease is what
+        makes the next owner of this row see the half that already exists.
+        """
+        try:
+            await self.db.note_escalation_delivery_binding(
+                row["id"],
+                lease_owner=self._lease_owner,
+                now=self._clock(),
+                channel_id=channel_id,
+                root_message_id=root_message_id,
+                thread_id=thread_id,
+            )
+        except Exception:  # pragma: no cover - persistence is best-effort here
+            logger.warning(
+                "could not persist the escalation binding for %s", row["id"], exc_info=True
+            )
 
     async def _reconcile_marker(
         self, marker: str, *, channel_id: str, thread_id: str | None
@@ -401,7 +435,13 @@ class EscalationDeliveryService:
             if found is not None:
                 root_id = found.root_message_id
                 thread_id = thread_id or found.thread_id
-            elif self._was_ambiguous(row):
+                await self._bind(
+                    row,
+                    channel_id=found.channel_id or channel_id,
+                    root_message_id=root_id,
+                    thread_id=thread_id,
+                )
+            elif self._ownership_unproven(row):
                 # The previous send may have landed and the history does not
                 # say.  Posting again would be the duplicate §7 forbids.
                 await self._finish(
@@ -436,6 +476,11 @@ class EscalationDeliveryService:
                 root_message_id=root_id,
                 thread_id=thread_id,
                 generation=generation,
+            )
+            # Confirmed: record it before the next external write, so an
+            # interruption from here on repairs rather than reposts.
+            await self._bind(
+                row, channel_id=current.channel_id, root_message_id=root_id, thread_id=thread_id
             )
 
         # Binding the thread and posting its opener are two separate external
@@ -484,6 +529,12 @@ class EscalationDeliveryService:
                 root_message_id=root_id,
                 thread_id=thread_id,
                 generation=generation,
+            )
+            await self._bind(
+                row,
+                channel_id=current.channel_id,
+                root_message_id=root_id,
+                thread_id=thread_id,
             )
 
         opener_key = f"{dedup_key}:thread"
@@ -632,7 +683,7 @@ class EscalationDeliveryService:
             )
             if found is not None:
                 return found, None
-            if self._was_ambiguous(row):
+            if self._ownership_unproven(row):
                 await self._finish(
                     row,
                     report,
@@ -750,9 +801,18 @@ class EscalationDeliveryService:
         )
 
     @staticmethod
-    def _was_ambiguous(row: Mapping[str, Any]) -> bool:
-        """Did the previous attempt end without knowing whether it landed?"""
-        return str(row.get("last_error") or "").startswith(TransportAmbiguous.__name__)
+    def _ownership_unproven(row: Mapping[str, Any]) -> bool:
+        """Could a previous attempt have sent this without the row recording it?
+
+        Two ways: it ended in :class:`TransportAmbiguous`, or it never ended at
+        all -- the row was reclaimed out of ``sending`` because its owner died
+        or lost its lease mid-send.  Either way the marker search is the only
+        evidence there is, and when it comes back empty the honest answer is
+        ``unknown`` rather than a second post.
+        """
+        if str(row.get("last_error") or "").startswith(TransportAmbiguous.__name__):
+            return True
+        return bool(row.get("reclaimed"))
 
     @staticmethod
     def _describe(exc: BaseException) -> str:

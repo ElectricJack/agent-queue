@@ -487,6 +487,94 @@ async def test_unreconcilable_ambiguity_is_recorded_unknown_not_reposted(db):
     assert sink.messages == {}
 
 
+async def test_a_confirmed_root_interrupted_before_binding_is_reconciled_not_reposted(db):
+    """The post landed and the process died before anything was written down."""
+    await make_incident(db)
+    sink = SinkTransport()
+    clock = Clock()
+    service = make_service(db, sink, clock=clock)
+
+    async def crash_after_posting(*, channel_id: str, content: str):
+        sink.record(channel_id, content)  # Discord accepted it...
+        raise RuntimeError("process died before the binding was persisted")
+
+    original_post = sink.post_root
+    sink.post_root = crash_after_posting  # type: ignore[method-assign]
+    await service.tick()
+    row = (await db.list_escalation_deliveries("esc-1"))[0]
+    assert row["status"] == "sending" and not row["root_message_id"]  # still leased, unbound
+
+    # The lease expires and another pass reclaims the row.  It must reconcile
+    # against the marker, not assume the send never happened.
+    sink.post_root = original_post  # type: ignore[method-assign]
+    clock.advance(300.0)
+    await service.tick()
+
+    assert sink.calls.count("post_root") == 0  # the real one was never called again
+    assert len([m for m in sink.messages.values() if m.thread_id is None]) == 1
+    row = (await db.list_escalation_deliveries("esc-1"))[0]
+    assert row["status"] == "sent" and row["root_message_id"] and row["thread_id"]
+
+
+async def test_a_reclaimed_root_with_no_evidence_is_unknown_rather_than_reposted(db):
+    """Reclaimed mid-send and the history cannot prove ownership either way."""
+    await make_incident(db)
+    sink = SinkTransport()
+    clock = Clock()
+    service = make_service(db, sink, clock=clock)
+
+    async def crash_after_posting(*, channel_id: str, content: str):
+        sink.record(channel_id, content)
+        raise RuntimeError("process died before the binding was persisted")
+
+    original_post = sink.post_root
+    sink.post_root = crash_after_posting  # type: ignore[method-assign]
+    await service.tick()
+    # The operator deletes the post before anyone reclaims the row, so the
+    # marker search comes back empty.
+    for message_id in list(sink.messages):
+        sink.delete(message_id)
+
+    sink.post_root = original_post  # type: ignore[method-assign]
+    clock.advance(300.0)
+    await service.tick()
+
+    row = (await db.list_escalation_deliveries("esc-1"))[0]
+    assert row["status"] == "unknown"
+    assert "nothing was reposted" in row["last_error"]
+    assert sink.calls.count("post_root") == 0
+    assert sink.messages == {}
+
+
+async def test_the_root_binding_is_durable_before_the_thread_is_opened(db):
+    """A crash between the post and the thread leaves the binding behind."""
+    await make_incident(db)
+
+    class LosesTheThreadCall(SinkTransport):
+        boom: bool = True
+
+        async def ensure_thread(self, **kwargs):
+            if self.boom:
+                self.boom = False
+                raise RuntimeError("gateway task cancelled")
+            return await super().ensure_thread(**kwargs)
+
+    sink = LosesTheThreadCall()
+    clock = Clock()
+    service = make_service(db, sink, clock=clock)
+    await service.tick()
+
+    row = (await db.list_escalation_deliveries("esc-1"))[0]
+    assert row["status"] == "sending"  # never finished; still leased
+    assert row["root_message_id"] and row["channel_id"] == CHANNEL  # ...but bound
+
+    clock.advance(300.0)
+    await service.tick()
+    assert sink.calls.count("post_root") == 1  # the binding stopped a second root
+    row = (await db.list_escalation_deliveries("esc-1"))[0]
+    assert row["status"] == "sent" and row["thread_id"]
+
+
 async def test_missing_permission_is_an_actionable_fault_and_stops_after_the_budget(db):
     await make_incident(db)
     sink = SinkTransport()
