@@ -30,3 +30,18 @@ The remote SHA must match. Source ancestry is verified. For squashed or manually
 Cancel obsolete repair scheduling with `aq integration cancel-preserving OPERATION --reason TEXT`. Detached reservations are released; stopped attached writers require real provider termination proof. Their refs and workspaces remain retained. Delegate tasks are paused. In development projects, automatic preservation disables a stopped writer's checkout before unlocking it, so dirty files cannot be recycled into the next task. Use normal explicit workspace cleanup later.
 
 Development mode is the replacement execution path, not a destructive rewrite of old audit tables. Existing strict episodes, App attestation support and cleanup records remain compatible. A migration downgrade refuses to discard a used development journal.
+
+## Recovery after a stopped worker
+
+Development integration automatically reconciles stopped branch owners on its
+configured sweep interval. A pool session whose claim was already cleared is
+recoverable when its exact session incarnation has an ended task attempt, the
+provider confirms termination, and no successor session or workspace lock exists.
+AQ disables and retains the old checkout, releases its branch fence, and returns
+the matching stranded BUSY agent to IDLE. It does not resume manually paused tasks.
+
+For a READY task with no worker, inspect `aq task explain --task-id <id>` and
+`aq pool status`. Desired capacity alone does not prove a worker can launch:
+manual roster sizing can disable automatic agent creation, and a stale BUSY
+definition can leave no compatible idle agent. Preserve unpublished work before
+releasing ownership; do not repeatedly reset the slot or create review tasks.

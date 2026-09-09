@@ -243,12 +243,19 @@ async def test_development_status_does_not_report_strict_policy_missing(setup):
 
 
 @pytest.mark.parametrize("confirmed", [True, False])
-async def test_stopped_writer_preserves_dirty_checkout_before_unlock(setup, confirmed):
+@pytest.mark.parametrize("attachment", ["attached", "detached", "missing_attempt", "successor"])
+async def test_stopped_writer_preserves_dirty_checkout_before_unlock(setup, confirmed, attachment):
     from unittest.mock import AsyncMock
 
     from sqlalchemy import insert
 
-    from src.database.tables import integration_branch_owners, sessions, workspaces
+    from src.database.tables import (
+        agents,
+        integration_branch_owners,
+        sessions,
+        task_session_attempts,
+        workspaces,
+    )
 
     db, service, source, _remote, _repo = setup
     await feature(setup, "old")
@@ -262,7 +269,7 @@ async def test_stopped_writer_preserves_dirty_checkout_before_unlock(setup, conf
                 id="w",
                 project_id="p",
                 workspace_path=str(source),
-                locked_by_task_id="old",
+                locked_by_task_id="old" if attachment == "attached" else None,
                 enabled=True,
                 created_at=1,
             )
@@ -270,7 +277,7 @@ async def test_stopped_writer_preserves_dirty_checkout_before_unlock(setup, conf
         await conn.execute(
             insert(sessions).values(
                 id="s",
-                task_id="old",
+                task_id="old" if attachment == "attached" else None,
                 project_id="p",
                 profile_id="worker",
                 harness="codex",
@@ -301,9 +308,31 @@ async def test_stopped_writer_preserves_dirty_checkout_before_unlock(setup, conf
                 updated_at=1,
             )
         )
+    async with db.immediate() as conn:
+        await conn.execute(insert(agents).values(
+            id="a", name="worker", profile_id="worker", state="BUSY", current_task_id="old", created_at=1,
+        ))
+        await conn.execute(update(sessions).where(sessions.c.id == "s").values(agent_id="a"))
+        if attachment in {"detached", "successor"}:
+            await conn.execute(insert(task_session_attempts).values(
+                id="attempt", session_id="s", task_id="old", project_id="p", agent_id="a",
+                profile_id="worker", name="old", lifecycle="pool", harness="codex",
+                provider="fake", state="stopped", work_dir=str(source), started_at=1,
+                session_started_at=1, ended_at=2,
+            ))
+        if attachment == "successor":
+            await conn.execute(insert(sessions).values(
+                id="successor", project_id="p", profile_id="worker", harness="codex",
+                provider="fake", name="successor", lifecycle="pool", state="running",
+                desired_state="running", work_dir=str(source), epoch="e2",
+                instance_token="new-instance", started_at=3,
+            ))
     service.confirm_stopped = AsyncMock(return_value=confirmed)
+    recovered = confirmed and attachment in {"attached", "detached"}
     result = await service.preserve_stopped_owners("p")
-    assert result == (["w"] if confirmed else [])
+    assert result == (["w"] if recovered else [])
+    agent = await db.get_agent("a")
+    assert agent.state.value == ("IDLE" if recovered and attachment == "detached" else "BUSY")
     assert dirty.read_text() == "irreplaceable work\n"
     async with db._engine.connect() as conn:
         workspace = (
@@ -318,8 +347,8 @@ async def test_stopped_writer_preserves_dirty_checkout_before_unlock(setup, conf
             .mappings()
             .one()
         )
-    assert workspace["enabled"] is not confirmed
-    assert owner["handoff_state"] == ("released" if confirmed else "attached")
+    assert workspace["enabled"] is not recovered
+    assert owner["handoff_state"] == ("released" if recovered else "attached")
     assert (await db.get_task("old")).status == TaskStatus.PAUSED
 
 

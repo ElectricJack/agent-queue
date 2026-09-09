@@ -1041,8 +1041,8 @@ class DevelopmentIntegration:
 
     async def preserve_stopped_owners(self, project_id):
         """Retain the old checkout intact and make a fresh workspace claim possible."""
+        from src.database.tables import agents, task_session_attempts, workspaces
         from src.database.tables import integration_branch_owners as owners
-        from src.database.tables import workspaces
 
         if self.confirm_stopped is None:
             return []
@@ -1108,10 +1108,45 @@ class DevelopmentIntegration:
                     or session["desired_state"] != "stopped"
                     or workspace["project_id"] != project_id
                     or session["work_dir"] != workspace["workspace_path"]
-                    or session["task_id"] != owner["owner_id"]
-                    or workspace["locked_by_task_id"] != owner["owner_id"]
                     or not await self.confirm_stopped(dict(session))
                 ):
+                    continue
+                detached = session["task_id"] is None
+                if detached:
+                    # A stop may have cleared the claim before releasing its branch.
+                    # Prove the ended attempt and exclude successor users before
+                    # preserving that checkout or repairing its agent definition.
+                    ended = (await conn.execute(select(task_session_attempts.c.id).where(
+                        task_session_attempts.c.session_id == session["id"],
+                        task_session_attempts.c.task_id == owner["owner_id"],
+                        task_session_attempts.c.project_id == project_id,
+                        task_session_attempts.c.session_started_at == session["started_at"],
+                        task_session_attempts.c.ended_at.is_not(None),
+                    ).limit(1))).scalar_one_or_none()
+                    task = (await conn.execute(select(tasks).where(
+                        tasks.c.id == owner["owner_id"]
+                    ).with_for_update())).mappings().one_or_none()
+                    successor = (await conn.execute(select(sessions.c.id).where(
+                        sessions.c.id != session["id"],
+                        (sessions.c.work_dir == workspace["workspace_path"])
+                        | (sessions.c.agent_id == session["agent_id"]),
+                        (sessions.c.state != "stopped")
+                        | (sessions.c.desired_state != "stopped"),
+                    ).limit(1))).scalar_one_or_none()
+                    if (not ended or not task or task["assigned_agent_id"]
+                        or task["status"] not in {"READY", "PAUSED", "BLOCKED", "COMPLETED", "FAILED"}
+                        or session["lifecycle"] != "pool" or successor
+                        or workspace["locked_by_task_id"] or workspace["locked_by_agent_id"]):
+                        continue
+                    if session["agent_id"]:
+                        await conn.execute(update(agents).where(
+                            agents.c.id == session["agent_id"],
+                            agents.c.state == "BUSY",
+                            agents.c.current_task_id == owner["owner_id"],
+                            agents.c.deleted_at.is_(None),
+                        ).values(state="IDLE", current_task_id=None))
+                elif (session["task_id"] != owner["owner_id"]
+                      or workspace["locked_by_task_id"] != owner["owner_id"]):
                     continue
                 now = time.time()
                 # Disable before unlocking: allocation cannot recycle this dirty checkout.
