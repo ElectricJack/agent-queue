@@ -90,7 +90,7 @@ Look-up material: exhaustive, terse, and generated from source where it can be.
 | [Glossary](reference/glossary.md) | Every term the documentation uses as jargon. |
 | [Module catalog](reference/modules/README.md) | Every production module, its purpose and its owning page. |
 | [CLI reference](reference/cli/README.md) | Every `aq` command group, its flags and its exit semantics. |
-| `docs/reference/api/README.md` — **planned** | REST endpoints, WebSocket events and the two generated clients. |
+| [HTTP API](reference/api/README.md) | REST endpoints, WebSocket events and the two generated clients. |
 | `docs/reference/configuration.md` — **planned** | Every configuration key, its default and when it is read. |
 | [Database reference](reference/database/README.md) | Tables, query modules, migrations and data lifecycle. |
 | [CLI command inventory](reference/cli-command-inventory.md) | Generated list of the current command surface. |

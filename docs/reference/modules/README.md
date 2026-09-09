@@ -28,7 +28,7 @@ own modules; this page is only the index.
 | `integration.md` | `integration` | 29 | — | `concepts/integration.md` |
 | `playbooks.md` | `playbooks` | 42 | 5 | `concepts/playbooks.md` |
 | [`cli.md`](cli.md) | `cli` | 94 | — | `reference/cli/README.md`, `reference/cli/agent-tools.md`, `reference/cli/contracts.md`, `reference/cli/prime.md` |
-| `api.md` | `api` | 51 | 1442 | `reference/api/README.md`, `reference/api/models.md`, `reference/api/python-client.md`, `reference/api/typescript-client.md` |
+| [`api.md`](api.md) | `api` | 51 | 1442 | [`reference/api/README.md`](../api/README.md), [`conventions.md`](../api/conventions.md), [`events.md`](../api/events.md), [`models.md`](../api/models.md), [`python-client.md`](../api/python-client.md), [`typescript-client.md`](../api/typescript-client.md) |
 | `dashboard.md` | `dashboard` | 258 | — | `guides/dashboard.md` |
 | [`database.md`](database.md) | `database` | 61 | — | `reference/database/README.md`, `reference/database/tables.md`, `reference/database/queries.md`, `reference/database/migrations.md`, `reference/database/data-lifecycle.md` |
 | `vault.md` | `vault` | 19 | — | `concepts/configuration-and-vault.md`, `reference/configuration.md` |
