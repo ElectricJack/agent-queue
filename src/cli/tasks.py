@@ -329,7 +329,14 @@ def task_create(
             integration_mode=integration_mode,
         )
         if not params:
-            console.print("[dim]Task creation cancelled.[/]")
+            # Still one JSON document under --json: a consumer that parses
+            # stdout must not be handed an empty stream and left guessing
+            # whether a task was persisted.
+            emit(
+                ctx,
+                {"success": False, "cancelled": True, "created": None},
+                render=lambda _data: console.print("[dim]Task creation cancelled.[/]"),
+            )
             return
         # CLI flag overrides persist through the wizard if the caller
         # mixed interactive + flag usage.
@@ -361,12 +368,20 @@ def task_create(
             return await client.execute("create_task", params)
 
     result = _run(_create())
-    task_id = _getval(result, "created", "?")
-    console.print()
-    console.print(f"[bold green]Task created:[/] [bold bright_cyan]{task_id}[/]")
-    title = _getval(result, "title")
-    if title:
-        console.print(f"  [dim]{title}[/]")
+
+    def _render(data: Any) -> None:
+        from rich.markup import escape
+
+        console.print()
+        created = _getval(data, "created", "?")
+        console.print(f"[bold green]Task created:[/] [bold bright_cyan]{escape(str(created))}[/]")
+        # Titles are operator/agent text: escape before it reaches Rich, or a
+        # title containing square brackets is read as markup and swallowed.
+        created_title = _getval(data, "title")
+        if created_title:
+            console.print(f"  [dim]{escape(str(created_title))}[/]")
+
+    emit(ctx, result, entity="task_created", render=_render)
 
 
 @task.command("stop")

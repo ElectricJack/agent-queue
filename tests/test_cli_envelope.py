@@ -110,8 +110,18 @@ class TestBriefProjections:
             "gate",
             "message",
             "workspace",
+            "task_created",
             "integration",
         }
+
+    def test_task_created_brief_matches_design_table(self):
+        assert BRIEF_PROJECTIONS["task_created"] == (
+            "created",
+            "task_id",
+            "title",
+            "status",
+            "project_id",
+        )
 
     def test_task_brief_matches_design_table(self):
         assert BRIEF_PROJECTIONS["task"] == (

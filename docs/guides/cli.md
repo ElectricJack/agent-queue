@@ -95,6 +95,12 @@ aq task create                         # Interactive wizard
 aq task create -p proj -t "Title" -d "Description"  # CLI flags
 aq task create --type bugfix --priority 200 ...
 
+# Scripted creation: one JSON envelope on stdout, the new id under data.created
+aq --json task create -p proj -t "Title" -d "Description"
+#   {"schema_version": 1, "data": {"created": "keen-harbor.4", "success": true,
+#    "task_id": "keen-harbor.4", "status": "DEFINED", "title": "Title", ...}}
+new_id=$(aq --json task create -p proj -t "Title" -d "D" | jq -r .data.created)
+
 # Task actions
 aq task approve <task-id>              # Approve for execution
 aq task approve <task-id> -y           # Skip confirmation
