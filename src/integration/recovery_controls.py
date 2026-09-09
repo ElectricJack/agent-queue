@@ -41,7 +41,10 @@ class IntegrationRecoveryControls:
                 return {"outcome": "not_found", "operation_id": operation_id}
             project_id = await self._project_id_on(conn, operation)
             if operation["state"] != "human_required":
-                return self._state_result("invalid_state", operation, project_id)
+                return self._resume_state_result(operation, project_id)
+            owner = await self._locked_resume_owner_on(conn, operation)
+            if not self._is_resume_collector(owner, operation):
+                return self._resume_state_result(operation, project_id, owner=owner)
             blockers = await self._ambiguous_writes_on(
                 conn, operation, allow_reserved_delegate=True
             )
@@ -49,7 +52,7 @@ class IntegrationRecoveryControls:
                 return self._ambiguous_result(operation, project_id, blockers)
             stage = await self._locked_stage_on(conn, operation)
             if stage is None or stage["state"] not in {"failed", "expired", "cancelled"}:
-                return self._state_result("invalid_state", operation, project_id)
+                return self._resume_state_result(operation, project_id, owner=owner)
             policy = RepairPolicy.model_validate(stage["policy"])
             timeout = policy.primary_seconds if int(stage["ordinal"]) == 0 else policy.debug_seconds
             await conn.execute(
@@ -90,9 +93,7 @@ class IntegrationRecoveryControls:
                     )
                     .values(lifecycle="repairing", human_abort_reason=None, updated_at=now)
                 )
-            await self._event_on(
-                conn, operation, project_id, "integration.repair_exhausted", now
-            )
+            await self._event_on(conn, operation, project_id, "integration.repair_exhausted", now)
         return {
             "outcome": "resumed",
             "operation_id": operation_id,
@@ -155,29 +156,36 @@ class IntegrationRecoveryControls:
         now = self.clock()
         async with self.db.immediate() as conn:
             batch = (
-                await conn.execute(
-                    select(integration_batches)
-                    .where(integration_batches.c.id == batch_id)
-                    .with_for_update()
+                (
+                    await conn.execute(
+                        select(integration_batches)
+                        .where(integration_batches.c.id == batch_id)
+                        .with_for_update()
+                    )
                 )
-            ).mappings().one_or_none()
+                .mappings()
+                .one_or_none()
+            )
             if batch is None:
                 return {"outcome": "not_found", "batch_id": batch_id}
             rows = (
-                await conn.execute(
-                    select(integration_cleanup_items)
-                    .where(
-                        integration_cleanup_items.c.batch_id == batch_id,
-                        integration_cleanup_items.c.state.in_(("retryable", "failed")),
+                (
+                    await conn.execute(
+                        select(integration_cleanup_items)
+                        .where(
+                            integration_cleanup_items.c.batch_id == batch_id,
+                            integration_cleanup_items.c.state.in_(("retryable", "failed")),
+                        )
+                        .with_for_update()
                     )
-                    .with_for_update()
                 )
-            ).mappings().all()
+                .mappings()
+                .all()
+            )
             ambiguous = [
                 row["domain_key"]
                 for row in rows
-                if row["irreversible_prewrite_at"] is not None
-                or row["execution_nonce"] is not None
+                if row["irreversible_prewrite_at"] is not None or row["execution_nonce"] is not None
             ]
             if ambiguous:
                 return {
@@ -187,9 +195,7 @@ class IntegrationRecoveryControls:
                     "blockers": [
                         {
                             "code": "cleanup_irreversible",
-                            "detail": (
-                                "cleanup item has an unresolved irreversible write marker"
-                            ),
+                            "detail": ("cleanup item has an unresolved irreversible write marker"),
                             "ref": identity,
                         }
                         for identity in sorted(ambiguous)
@@ -223,26 +229,34 @@ class IntegrationRecoveryControls:
     @staticmethod
     async def _locked_operation_on(conn: Any, operation_id: str) -> dict[str, Any] | None:
         row = (
-            await conn.execute(
-                select(integration_repair_operations)
-                .where(integration_repair_operations.c.id == operation_id)
-                .with_for_update()
+            (
+                await conn.execute(
+                    select(integration_repair_operations)
+                    .where(integration_repair_operations.c.id == operation_id)
+                    .with_for_update()
+                )
             )
-        ).mappings().one_or_none()
+            .mappings()
+            .one_or_none()
+        )
         return dict(row) if row is not None else None
 
     @staticmethod
     async def _locked_stage_on(conn: Any, operation: dict[str, Any]) -> dict[str, Any] | None:
         row = (
-            await conn.execute(
-                select(integration_repair_stages)
-                .where(
-                    integration_repair_stages.c.operation_id == operation["id"],
-                    integration_repair_stages.c.ordinal == operation["active_stage"],
+            (
+                await conn.execute(
+                    select(integration_repair_stages)
+                    .where(
+                        integration_repair_stages.c.operation_id == operation["id"],
+                        integration_repair_stages.c.ordinal == operation["active_stage"],
+                    )
+                    .with_for_update()
                 )
-                .with_for_update()
             )
-        ).mappings().one_or_none()
+            .mappings()
+            .one_or_none()
+        )
         return dict(row) if row is not None else None
 
     @staticmethod
@@ -252,13 +266,85 @@ class IntegrationRecoveryControls:
                 integration_batches.c.id == operation["batch_id"]
             )
         else:
-            statement = select(tasks.c.project_id).where(
-                tasks.c.id == operation["parent_task_id"]
-            )
+            statement = select(tasks.c.project_id).where(tasks.c.id == operation["parent_task_id"])
         project_id = (await conn.execute(statement)).scalar_one_or_none()
         if project_id is None:
             raise ValueError("operation target has no owning project")
         return str(project_id)
+
+    @staticmethod
+    async def _locked_resume_owner_on(
+        conn: Any, operation: dict[str, Any]
+    ) -> dict[str, Any] | None:
+        """Lock the branch owner whose released handoff permits a resume.
+
+        A human resume does not take over an active writer.  The operator must
+        first hand the exact branch back to the owning repair operation as a
+        detached collector reservation; dispatch then hands that reservation
+        back to the established repair delegate.  Resolve the branch from the
+        frozen operation target rather than trusting an owner supplied by the
+        caller.
+        """
+        if operation["target_kind"] == "batch":
+            target = (
+                (
+                    await conn.execute(
+                        select(
+                            integration_batches.c.repository_id,
+                            integration_batches.c.integration_branch,
+                        ).where(integration_batches.c.id == operation["batch_id"])
+                    )
+                )
+                .mappings()
+                .one_or_none()
+            )
+            if target is None or not target["integration_branch"]:
+                return None
+            repository_id = target["repository_id"]
+            branch = target["integration_branch"]
+        else:
+            target = (
+                (
+                    await conn.execute(
+                        select(tasks.c.repo_id, tasks.c.branch_name).where(
+                            tasks.c.id == operation["parent_task_id"]
+                        )
+                    )
+                )
+                .mappings()
+                .one_or_none()
+            )
+            if target is None or not target["repo_id"] or not target["branch_name"]:
+                return None
+            repository_id = target["repo_id"]
+            branch = target["branch_name"]
+        row = (
+            (
+                await conn.execute(
+                    select(integration_branch_owners)
+                    .where(
+                        integration_branch_owners.c.repository_id == repository_id,
+                        integration_branch_owners.c.ref == branch,
+                    )
+                    .with_for_update()
+                )
+            )
+            .mappings()
+            .one_or_none()
+        )
+        return dict(row) if row is not None else None
+
+    @staticmethod
+    def _is_resume_collector(owner: dict[str, Any] | None, operation: dict[str, Any]) -> bool:
+        """Only a detached collector reservation for this operation is resumable."""
+        return bool(
+            owner is not None
+            and owner["owner_id"] == operation["id"]
+            and owner["owner_role"] == "collector"
+            and owner["handoff_state"] == "reserved"
+            and owner["session_id"] is None
+            and owner["workspace_id"] is None
+        )
 
     @staticmethod
     async def _ambiguous_writes_on(
@@ -280,17 +366,14 @@ class IntegrationRecoveryControls:
             | (
                 integration_branch_owners.c.owner_id.in_(
                     select(integration_candidate_ref_mutations.c.branch_owner_id).where(
-                        integration_candidate_ref_mutations.c.operation_id
-                        == operation_id
+                        integration_candidate_ref_mutations.c.operation_id == operation_id
                     )
                 )
             ),
             integration_branch_owners.c.handoff_state != "released",
         )
         if allow_reserved_delegate:
-            exact_delegate = select(
-                integration_repair_stages.c.repair_task_id
-            ).where(
+            exact_delegate = select(integration_repair_stages.c.repair_task_id).where(
                 integration_repair_stages.c.operation_id == operation_id,
                 integration_repair_stages.c.ordinal == operation["active_stage"],
                 integration_repair_stages.c.writer_kind == "repair_delegate",
@@ -318,13 +401,8 @@ class IntegrationRecoveryControls:
                 integration_attestation_publications.c.state == "reserved",
             ),
             "promotion": select(integration_promotion_intents.c.id).where(
-                (
-                    integration_promotion_intents.c.operation_key == operation_id
-                )
-                | (
-                    integration_promotion_intents.c.resolution_operation_id
-                    == operation_id
-                ),
+                (integration_promotion_intents.c.operation_key == operation_id)
+                | (integration_promotion_intents.c.resolution_operation_id == operation_id),
                 integration_promotion_intents.c.state.not_in(
                     ("committed", "conflict", "superseded")
                 ),
@@ -343,28 +421,32 @@ class IntegrationRecoveryControls:
                 # may remain pending without making that branch write uncertain.
                 pub = integration_candidate_publications.c
                 mutation = integration_candidate_ref_mutations.c
-                applied_ref = select(mutation.id).where(
-                    mutation.purpose == "candidate_final",
-                    mutation.state == "applied",
-                    mutation.operation_id == operation_id,
-                    mutation.operation_episode_id == operation["episode_id"],
-                    mutation.batch_id == pub.batch_id,
-                    mutation.revision == pub.revision,
-                    mutation.repository_id == pub.repository_id,
-                    mutation.target_branch == "refs/heads/" + pub.head_ref,
-                    mutation.branch == mutation.target_branch,
-                    mutation.target_branch == select(integration_batches.c.integration_branch)
-                        .where(integration_batches.c.id == operation["batch_id"]).scalar_subquery(),
-                    mutation.expected_old_sha == pub.expected_old_sha,
-                    mutation.desired_sha == pub.head_sha,
-                    mutation.remote_sha == pub.head_sha,
-                ).exists()
+                applied_ref = (
+                    select(mutation.id)
+                    .where(
+                        mutation.purpose == "candidate_final",
+                        mutation.state == "applied",
+                        mutation.operation_id == operation_id,
+                        mutation.operation_episode_id == operation["episode_id"],
+                        mutation.batch_id == pub.batch_id,
+                        mutation.revision == pub.revision,
+                        mutation.repository_id == pub.repository_id,
+                        mutation.target_branch == "refs/heads/" + pub.head_ref,
+                        mutation.branch == mutation.target_branch,
+                        mutation.target_branch
+                        == select(integration_batches.c.integration_branch)
+                        .where(integration_batches.c.id == operation["batch_id"])
+                        .scalar_subquery(),
+                        mutation.expected_old_sha == pub.expected_old_sha,
+                        mutation.desired_sha == pub.head_sha,
+                        mutation.remote_sha == pub.head_sha,
+                    )
+                    .exists()
+                )
                 statements["candidate_publication"] = statements["candidate_publication"].where(
                     ~and_(pub.state == "pr_reserved", applied_ref)
                 )
-            statements["cleanup_prewrite"] = select(
-                integration_cleanup_items.c.domain_key
-            ).where(
+            statements["cleanup_prewrite"] = select(integration_cleanup_items.c.domain_key).where(
                 integration_cleanup_items.c.batch_id == operation["batch_id"],
                 integration_cleanup_items.c.irreversible_prewrite_at.is_not(None),
                 integration_cleanup_items.c.state.in_(("pending", "retryable")),
@@ -395,15 +477,44 @@ class IntegrationRecoveryControls:
         )
 
     @staticmethod
-    def _state_result(
-        outcome: str, operation: dict[str, Any], project_id: str
-    ) -> dict[str, Any]:
+    def _state_result(outcome: str, operation: dict[str, Any], project_id: str) -> dict[str, Any]:
         return {
             "outcome": outcome,
             "operation_id": operation["id"],
             "project_id": project_id,
             "state": operation["state"],
         }
+
+    @classmethod
+    def _resume_state_result(
+        cls,
+        operation: dict[str, Any],
+        project_id: str,
+        *,
+        owner: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Explain the exact, non-live ownership a resume requires.
+
+        This is intentionally diagnostic only.  In particular, it neither
+        releases an attached writer nor accepts another operation's collector
+        reservation as interchangeable authority.
+        """
+        result = cls._state_result("invalid_state", operation, project_id)
+        result["stage"] = int(operation["active_stage"])
+        result["expected_owner"] = {
+            "owner_id": operation["id"],
+            "owner_role": "collector",
+            "handoff_state": "reserved",
+            "attached": False,
+        }
+        if owner is not None:
+            result["current_owner"] = {
+                "owner_id": owner["owner_id"],
+                "owner_role": owner["owner_role"],
+                "handoff_state": owner["handoff_state"],
+                "attached": bool(owner["session_id"] or owner["workspace_id"]),
+            }
+        return result
 
     @staticmethod
     def _ambiguous_result(

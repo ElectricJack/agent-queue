@@ -16,6 +16,7 @@ from src.commands.principal import ExecutionPrincipal, PrincipalKind, principal_
 from src.database.tables import (
     gates,
     integration_batches,
+    integration_branch_owners,
     integration_candidate_publications,
     integration_candidate_revisions,
     integration_cleanup_items,
@@ -64,9 +65,7 @@ def _artifact(
 
 def _loaded_definition(*, scope: str) -> PlaybookDefinition:
     scope_value = (
-        {"type": "system"}
-        if scope == "system"
-        else {"type": "project", "project_id": "p"}
+        {"type": "system"} if scope == "system" else {"type": "project", "project_id": "p"}
     )
     return PlaybookDefinition.model_validate(
         {
@@ -135,9 +134,7 @@ def _policy(
             ),
             primary_intelligence_class="standard",
             primary_profile_id="worker",
-            verifier_intelligence_class=(
-                "standard" if branchless_parent == "verifier" else None
-            ),
+            verifier_intelligence_class=("standard" if branchless_parent == "verifier" else None),
             verifier_profile_id="verifier" if branchless_parent == "verifier" else None,
         )
 
@@ -420,16 +417,14 @@ async def test_observe_flush_and_scheduler_boundary_never_create_schedule(db):
 
 
 @pytest.mark.parametrize("branchless_parent", ["skip", "declared"])
-async def test_non_verifier_branchless_policy_has_no_verifier_route_blocker(
-    db, branchless_parent
-):
+async def test_non_verifier_branchless_policy_has_no_verifier_route_blocker(db, branchless_parent):
     await db.update_project(
         "p", hierarchical_integration_policy=_policy(branchless_parent=branchless_parent)
     )
 
-    preflight = await IntegrationControlService(
-        db, external_preflight=_external_ready
-    ).preflight("p")
+    preflight = await IntegrationControlService(db, external_preflight=_external_ready).preflight(
+        "p"
+    )
 
     assert preflight["ready"] is True
     assert preflight["blockers"] == []
@@ -518,9 +513,7 @@ async def test_preflight_rejects_system_route_artifact_stored_at_project_scope(d
         reasons="[]",
     )
 
-    result = await IntegrationControlService(
-        db, external_preflight=_external_ready
-    ).preflight("p")
+    result = await IntegrationControlService(db, external_preflight=_external_ready).preflight("p")
 
     assert [item["code"] for item in result["blockers"]] == [
         "route_artifact_missing",
@@ -554,9 +547,7 @@ async def test_preflight_rejects_project_activation_for_system_route(db):
         ),
     )
 
-    result = await IntegrationControlService(
-        db, external_preflight=_external_ready
-    ).preflight("p")
+    result = await IntegrationControlService(db, external_preflight=_external_ready).preflight("p")
 
     assert [item["code"] for item in result["blockers"]] == [
         "route_not_ready",
@@ -588,9 +579,7 @@ async def test_configure_rejects_project_route_for_another_project(db):
     with pytest.raises(ValueError, match="system-scoped or scoped to the configured project"):
         await IntegrationControlService(db).configure(
             "p",
-            updates={
-                "hierarchical_integration_policy": _policy(scope_identifier="other-project")
-            },
+            updates={"hierarchical_integration_policy": _policy(scope_identifier="other-project")},
             expected_generation=0,
             reason="reject cross-project route",
             operator_id="local:operator",
@@ -721,7 +710,11 @@ async def test_blocked_preflight_returns_structured_digest_and_never_mutates(db)
     )
     assert result["outcome"] == "blocked"
     assert result["blockers"] == [
-        {"code": "provider_not_wired", "detail": "functional integration dependency is unavailable", "ref": "repo"}
+        {
+            "code": "provider_not_wired",
+            "detail": "functional integration dependency is unavailable",
+            "ref": "repo",
+        }
     ]
     assert result["blocker_digest"].startswith("sha256:")
     assert (await db.get_project("p")).hierarchical_integration_generation == 0
@@ -742,9 +735,7 @@ async def test_history_waiver_exact_digest_is_single_use_and_reuse_rolls_back(db
         )
     service = IntegrationControlService(db, external_preflight=_external_ready, clock=lambda: 45.0)
     observed = await service.preflight("p")
-    assert [blocker["code"] for blocker in observed["blockers"]] == [
-        "legacy_pr_merge_gate"
-    ]
+    assert [blocker["code"] for blocker in observed["blockers"]] == ["legacy_pr_merge_gate"]
     waiver = await service.waive_history(
         "p",
         reason="accept recorded pre-cutover history",
@@ -850,11 +841,7 @@ async def test_daemon_functional_preflight_reads_artifact_trust_and_workflow_var
                     "encoding": "base64",
                     "content": base64.b64encode(json.dumps(trust).encode()).decode(),
                 }
-            value = (
-                "101"
-                if path.endswith("AQ_INTEGRATION_ATTESTATION_APP_ID")
-                else "checks-v1"
-            )
+            value = "101" if path.endswith("AQ_INTEGRATION_ATTESTATION_APP_ID") else "checks-v1"
             return {"name": path.rsplit("/", 1)[-1], "value": value}
 
     loaded = _loaded_definition(scope="project")
@@ -906,17 +893,28 @@ async def test_daemon_functional_preflight_reads_artifact_trust_and_workflow_var
     assert "hosted_workflow_variables_mismatch" in blockers
 
 
-@pytest.mark.parametrize("remote, expected", [
-    ({"id": 303, "full_name": "acme/widgets", "permissions": {"push": True}}, ()),
-    ({"id": 303, "full_name": "acme/widgets", "permissions": {"push": False}},
-     ("repository_write_permission_missing",)),
-    ({"id": 304, "full_name": "acme/widgets", "permissions": {"push": True}},
-     ("repository_mismatch",)),
-    ({"id": 303, "full_name": "acme/other", "permissions": {"push": True}},
-     ("repository_mismatch",)),
-    (None, ("github_auth_unavailable",)),
-])
-async def test_gh_preflight_uses_existing_auth_without_app_manifest_or_variables(db, remote, expected):
+@pytest.mark.parametrize(
+    "remote, expected",
+    [
+        ({"id": 303, "full_name": "acme/widgets", "permissions": {"push": True}}, ()),
+        (
+            {"id": 303, "full_name": "acme/widgets", "permissions": {"push": False}},
+            ("repository_write_permission_missing",),
+        ),
+        (
+            {"id": 304, "full_name": "acme/widgets", "permissions": {"push": True}},
+            ("repository_mismatch",),
+        ),
+        (
+            {"id": 303, "full_name": "acme/other", "permissions": {"push": True}},
+            ("repository_mismatch",),
+        ),
+        (None, ("github_auth_unavailable",)),
+    ],
+)
+async def test_gh_preflight_uses_existing_auth_without_app_manifest_or_variables(
+    db, remote, expected
+):
     class Client:
         auth_mode = "gh"
         repository = GitHubRepositoryBinding(303, "acme/widgets")
@@ -932,27 +930,29 @@ async def test_gh_preflight_uses_existing_auth_without_app_manifest_or_variables
         id="hierarchical-delivery",
         scope=SimpleNamespace(type="project", project_id="p"),
         schema_version=2,
-        source_hash="sha256:" + "3" * 64, version=1,
+        source_hash="sha256:" + "3" * 64,
+        version=1,
         contract_fingerprint=lambda: "sha256:" + "2" * 64,
     )
     orchestrator = SimpleNamespace(
-        db=db, integration_app_client_factory=lambda _binding: Client(),
+        db=db,
+        integration_app_client_factory=lambda _binding: Client(),
         integration_repository_binding_resolver=lambda _repository: Client.repository,
         playbook_manager=SimpleNamespace(_store=SimpleNamespace(load=lambda _sha: loaded)),
-        integration_attestation_service=object(), root_promotion_service=object(),
-        integration_cleanup_service=object(), git=object(),
+        integration_attestation_service=object(),
+        root_promotion_service=object(),
+        integration_cleanup_service=object(),
+        git=object(),
         intelligence_classes={"standard": object(), "deep": object()},
     )
-    db.list_profiles = AsyncMock(return_value=[
-        SimpleNamespace(id=value) for value in ("worker", "debugger", "verifier")
-    ])
+    db.list_profiles = AsyncMock(
+        return_value=[SimpleNamespace(id=value) for value in ("worker", "debugger", "verifier")]
+    )
     blockers = await daemon_functional_preflight(orchestrator, "p", "repo")
     assert blockers == expected
 
 
-async def test_daemon_functional_preflight_mints_token_with_variables_read(
-    db, monkeypatch
-):
+async def test_daemon_functional_preflight_mints_token_with_variables_read(db, monkeypatch):
     trust = {
         "schema": "aq.integration-trust.v1",
         "canonical_repository_id": "repo",
@@ -981,9 +981,7 @@ async def test_daemon_functional_preflight_mints_token_with_variables_read(
                 }
                 return HttpResponse(201, {}, json.dumps(body).encode())
             if url.endswith("/repositories/303"):
-                return HttpResponse(
-                    200, {}, b'{"id":303,"full_name":"acme/widgets"}'
-                )
+                return HttpResponse(200, {}, b'{"id":303,"full_name":"acme/widgets"}')
             if "/contents/" in url:
                 body = {
                     "encoding": "base64",
@@ -994,14 +992,8 @@ async def test_daemon_functional_preflight_mints_token_with_variables_read(
                 if (self.token_permissions or {}).get("variables") != "read":
                     return HttpResponse(403, {}, b'{"message":"forbidden"}')
                 name = url.rsplit("/", 1)[-1]
-                value = (
-                    "101"
-                    if name == "AQ_INTEGRATION_ATTESTATION_APP_ID"
-                    else "checks-v1"
-                )
-                return HttpResponse(
-                    200, {}, json.dumps({"name": name, "value": value}).encode()
-                )
+                value = "101" if name == "AQ_INTEGRATION_ATTESTATION_APP_ID" else "checks-v1"
+                return HttpResponse(200, {}, json.dumps({"name": name, "value": value}).encode())
             raise AssertionError(f"unexpected GitHub request: {method} {url}")
 
     transport = PermissionAwareTransport()
@@ -1026,9 +1018,7 @@ async def test_daemon_functional_preflight_mints_token_with_variables_read(
         db=db,
         integration_app_client_factory=lambda _binding: client,
         integration_repository_binding_resolver=lambda _repository: binding,
-        playbook_manager=SimpleNamespace(
-            _store=SimpleNamespace(load=lambda _sha: loaded)
-        ),
+        playbook_manager=SimpleNamespace(_store=SimpleNamespace(load=lambda _sha: loaded)),
         integration_attestation_service=object(),
         root_promotion_service=object(),
         integration_cleanup_service=object(),
@@ -1036,10 +1026,7 @@ async def test_daemon_functional_preflight_mints_token_with_variables_read(
         intelligence_classes={"standard": object(), "deep": object()},
     )
     db.list_profiles = AsyncMock(
-        return_value=[
-            SimpleNamespace(id=value)
-            for value in ("worker", "debugger", "verifier")
-        ]
+        return_value=[SimpleNamespace(id=value) for value in ("worker", "debugger", "verifier")]
     )
 
     assert await daemon_functional_preflight(orchestrator, "p", "repo") == ()
@@ -1120,9 +1107,7 @@ async def test_public_control_authority_keeps_enable_local_and_status_project_sc
     assert denied["outcome"] == "unauthorized"
     assert controls.enable.await_count == 1
     with principal_context(elevated):
-        denied_resume = await handler.execute(
-            "integration_resume", {"operation_id": "op"}
-        )
+        denied_resume = await handler.execute("integration_resume", {"operation_id": "op"})
     assert denied_resume["outcome"] == "unauthorized"
     controls.resume.assert_not_awaited()
 
@@ -1563,6 +1548,19 @@ async def test_human_resume_reconciles_ambiguous_publication_and_abort_is_db_onl
             )
         )
         await conn.execute(
+            insert(integration_branch_owners).values(
+                id="human-resume-collector",
+                repository_id="repo",
+                ref="refs/heads/aq/integration/human",
+                owner_id="human-operation",
+                owner_role="collector",
+                fence_token=1,
+                handoff_state="reserved",
+                created_at=50.0,
+                updated_at=50.0,
+            )
+        )
+        await conn.execute(
             insert(integration_repair_stages).values(
                 operation_id="human-operation",
                 ordinal=1,
@@ -1705,12 +1703,16 @@ async def test_cleanup_retry_requeues_exact_safe_work_and_preserves_prewrite(db)
     assert retried["count"] == 1
     async with db._engine.connect() as conn:
         safe = (
-            await conn.execute(
-                select(integration_cleanup_items).where(
-                    integration_cleanup_items.c.domain_key == "cleanup:safe"
+            (
+                await conn.execute(
+                    select(integration_cleanup_items).where(
+                        integration_cleanup_items.c.domain_key == "cleanup:safe"
+                    )
                 )
             )
-        ).mappings().one()
+            .mappings()
+            .one()
+        )
     assert safe["attempts"] == 0
     assert safe["next_attempt_at"] == 80.0
 

@@ -137,6 +137,8 @@ class IntegrationOperationalValue(CommandValue):
     next_due_at: float | None = None
     state: str | None = None
     stage: int | None = None
+    expected_owner: dict[str, Any] | None = None
+    current_owner: dict[str, Any] | None = None
     deadline_at: float | None = None
     reason: str | None = None
     count: int | None = None
@@ -418,16 +420,19 @@ class IntegrationRecordRepairArgs(CommandArgs):
 
 
 class IntegrationRecordRepairValue(CommandValue):
-    action: Literal[
-        "repair",
-        "infrastructure_retry",
-        "inconclusive",
-        "completion_ready",
-        "dispatch_debug",
-        "block_for_human",
-        "duplicate",
-        "stale",
-    ] | None = None
+    action: (
+        Literal[
+            "repair",
+            "infrastructure_retry",
+            "inconclusive",
+            "completion_ready",
+            "dispatch_debug",
+            "block_for_human",
+            "duplicate",
+            "stale",
+        ]
+        | None
+    ) = None
     attempts: int | None = None
     stage: Literal[0, 1] | None = None
 
@@ -440,14 +445,17 @@ class IntegrationRepairTimeoutArgs(CommandArgs):
 class IntegrationRepairTimeoutValue(CommandValue):
     operation_id: str | None = None
     stage: Literal[0, 1] | None = None
-    action: Literal[
-        "ignore",
-        "dispatch_debug",
-        "block_for_human",
-        "none",
-        "wait",
-        "awaiting_promotion",
-    ] | None = None
+    action: (
+        Literal[
+            "ignore",
+            "dispatch_debug",
+            "block_for_human",
+            "none",
+            "wait",
+            "awaiting_promotion",
+        ]
+        | None
+    ) = None
 
 
 def _operational_contract(
@@ -472,9 +480,7 @@ def _operational_contract(
                 OutcomeSpec(
                     name=outcome,
                     classification=(
-                        OutcomeClass.SUCCESS
-                        if outcome in successes
-                        else OutcomeClass.FAILURE
+                        OutcomeClass.SUCCESS if outcome in successes else OutcomeClass.FAILURE
                     ),
                 )
                 for outcome in outcomes
@@ -484,7 +490,9 @@ def _operational_contract(
             idempotency=IdempotencySpec(mode="natural"),
             retry_safe=True,
             effects=effects,
-            sensitive_args=frozenset({"reason"}) if "reason" in args_model.model_fields else frozenset(),
+            sensitive_args=frozenset({"reason"})
+            if "reason" in args_model.model_fields
+            else frozenset(),
             receipt_projection=tuple(IntegrationOperationalValue.model_fields),
         ),
         presentation=CommandPresentation(
@@ -617,9 +625,7 @@ def _repair_contract(
                 OutcomeSpec(
                     name=outcome,
                     classification=(
-                        OutcomeClass.SUCCESS
-                        if outcome in successes
-                        else OutcomeClass.FAILURE
+                        OutcomeClass.SUCCESS if outcome in successes else OutcomeClass.FAILURE
                     ),
                 )
                 for outcome in outcomes
@@ -633,9 +639,7 @@ def _repair_contract(
             sensitive_result_fields=sensitive_results,
             receipt_projection=tuple(result_model.model_fields),
         ),
-        presentation=CommandPresentation(
-            title=name.replace("_", " ").title(), summary=""
-        ),
+        presentation=CommandPresentation(title=name.replace("_", " ").title(), summary=""),
     )
 
 
@@ -645,9 +649,7 @@ INTEGRATION_REPAIR_START = _repair_contract(
     IntegrationRepairStartValue,
     ("started", "already_started", "stale", "invariant_error"),
     effects=(
-        CreateOrReuseClause(
-            subject=EffectSubject.INTEGRATION_OPERATION, key_arg="operation_id"
-        ),
+        CreateOrReuseClause(subject=EffectSubject.INTEGRATION_OPERATION, key_arg="operation_id"),
         UpdateClause(subject=EffectSubject.INTEGRATION_OPERATION),
     ),
     sensitive_args=frozenset({"starting_sha"}),
@@ -670,9 +672,7 @@ INTEGRATION_REPAIR_DISPATCH = _repair_contract(
     effects=(
         UpdateClause(subject=EffectSubject.INTEGRATION_OPERATION),
         UpdateClause(subject=EffectSubject.BRANCH_OWNERSHIP),
-        CreateOrReuseClause(
-            subject=EffectSubject.TASK_EXECUTION, key_arg="operation_id"
-        ),
+        CreateOrReuseClause(subject=EffectSubject.TASK_EXECUTION, key_arg="operation_id"),
     ),
     sensitive_results=frozenset({"fence"}),
 )
@@ -733,9 +733,7 @@ INTEGRATION_SEAL = CommandContract(
             OutcomeSpec(
                 name=name,
                 classification=(
-                    OutcomeClass.SUCCESS
-                    if name in {"sealed", "empty"}
-                    else OutcomeClass.FAILURE
+                    OutcomeClass.SUCCESS if name in {"sealed", "empty"} else OutcomeClass.FAILURE
                 ),
             )
             for name in ("sealed", "empty", "busy")
@@ -861,9 +859,7 @@ INTEGRATION_RESOLVE_CONFLICT = CommandContract(
         idempotency=IdempotencySpec(mode="keyed", key_field="intent_id"),
         retry_safe=True,
         effects=(UpdateClause(subject=EffectSubject.INTEGRATION_OPERATION),),
-        sensitive_args=frozenset(
-            {"resolved_head_sha", "resolved_tree_sha", "repair_commit_shas"}
-        ),
+        sensitive_args=frozenset({"resolved_head_sha", "resolved_tree_sha", "repair_commit_shas"}),
         sensitive_result_fields=frozenset({"prepared_sha"}),
         receipt_projection=("intent_id", "receipt_id"),
     ),
@@ -1006,9 +1002,7 @@ def _root_subject_contract(
                 OutcomeSpec(
                     name=outcome,
                     classification=(
-                        OutcomeClass.SUCCESS
-                        if outcome in successes
-                        else OutcomeClass.FAILURE
+                        OutcomeClass.SUCCESS if outcome in successes else OutcomeClass.FAILURE
                     ),
                 )
                 for outcome in outcomes
@@ -1029,8 +1023,16 @@ INTEGRATION_BUILD_CANDIDATE = _root_subject_contract(
     IntegrationBuildCandidateArgs,
     IntegrationBuildCandidateValue,
     (
-        "empty", "built", "already_built", "conflict", "source_moved", "base_moved",
-        "stale_revision", "wait", "human_required", "configuration_blocked",
+        "empty",
+        "built",
+        "already_built",
+        "conflict",
+        "source_moved",
+        "base_moved",
+        "stale_revision",
+        "wait",
+        "human_required",
+        "configuration_blocked",
     ),
     frozenset({"empty", "built", "already_built"}),
     "Build exact root candidate",
@@ -1041,7 +1043,11 @@ INTEGRATION_CI_EVIDENCE = _root_subject_contract(
     IntegrationCIEvidenceArgs,
     IntegrationCIEvidenceValue,
     (
-        "green", "red", "pending", "full_suite_required", "stale_subject",
+        "green",
+        "red",
+        "pending",
+        "full_suite_required",
+        "stale_subject",
         "configuration_blocked",
     ),
     frozenset({"green"}),
@@ -1143,11 +1149,9 @@ def _parent_contract(name, args_model, result_model, outcomes, *, side_effect):
             effects=(
                 ReadClause(subject=EffectSubject.DELIVERY_EVIDENCE)
                 if side_effect is SideEffectClass.READ
-                else UpdateClause(subject=EffectSubject.TASK)
-            ,),
-            sensitive_args=frozenset(
-                {"head_sha", "evidence_ids"} & set(args_model.model_fields)
+                else UpdateClause(subject=EffectSubject.TASK),
             ),
+            sensitive_args=frozenset({"head_sha", "evidence_ids"} & set(args_model.model_fields)),
             sensitive_result_fields=frozenset(
                 {"head_sha", "checkpoint_sha"} & set(result_model.model_fields)
             ),
@@ -1188,7 +1192,9 @@ INTEGRATION_MUTATE_HIERARCHY = CommandContract(
         outcomes=tuple(
             OutcomeSpec(
                 name=name,
-                classification=(OutcomeClass.SUCCESS if name == "updated" else OutcomeClass.FAILURE),
+                classification=(
+                    OutcomeClass.SUCCESS if name == "updated" else OutcomeClass.FAILURE
+                ),
             )
             for name in ("updated", "sealed", "delivery_target_fixed", "reopen_required", "invalid")
         ),
@@ -1401,8 +1407,16 @@ async def _build_candidate_adapter(
         ctx,
         IntegrationBuildCandidateValue,
         {
-            "empty", "built", "already_built", "conflict", "source_moved", "base_moved",
-            "stale_revision", "wait", "human_required", "configuration_blocked",
+            "empty",
+            "built",
+            "already_built",
+            "conflict",
+            "source_moved",
+            "base_moved",
+            "stale_revision",
+            "wait",
+            "human_required",
+            "configuration_blocked",
         },
     )
 
@@ -1416,7 +1430,11 @@ async def _ci_evidence_adapter(
         ctx,
         IntegrationCIEvidenceValue,
         {
-            "green", "red", "pending", "full_suite_required", "stale_subject",
+            "green",
+            "red",
+            "pending",
+            "full_suite_required",
+            "stale_subject",
             "configuration_blocked",
         },
     )
@@ -1524,9 +1542,7 @@ async def _parent_verify_adapter(args: IntegrationParentVerifyArgs, ctx: Command
     )
 
 
-async def _complete_parent_adapter(
-    args: IntegrationCompleteParentArgs, ctx: CommandContext | None
-):
+async def _complete_parent_adapter(args: IntegrationCompleteParentArgs, ctx: CommandContext | None):
     return await _hierarchy_adapter(
         "integration_complete_parent",
         args,
@@ -1536,9 +1552,7 @@ async def _complete_parent_adapter(
     )
 
 
-async def _repair_start_adapter(
-    args: IntegrationRepairStartArgs, ctx: CommandContext | None
-):
+async def _repair_start_adapter(args: IntegrationRepairStartArgs, ctx: CommandContext | None):
     return await _hierarchy_adapter(
         "integration_repair_start",
         args,
@@ -1548,9 +1562,7 @@ async def _repair_start_adapter(
     )
 
 
-async def _repair_dispatch_adapter(
-    args: IntegrationRepairDispatchArgs, ctx: CommandContext | None
-):
+async def _repair_dispatch_adapter(args: IntegrationRepairDispatchArgs, ctx: CommandContext | None):
     return await _hierarchy_adapter(
         "integration_repair_dispatch",
         args,
@@ -1568,9 +1580,7 @@ async def _repair_dispatch_adapter(
     )
 
 
-async def _record_repair_adapter(
-    args: IntegrationRecordRepairArgs, ctx: CommandContext | None
-):
+async def _record_repair_adapter(args: IntegrationRecordRepairArgs, ctx: CommandContext | None):
     return await _hierarchy_adapter(
         "integration_record_repair",
         args,
@@ -1580,9 +1590,7 @@ async def _record_repair_adapter(
     )
 
 
-async def _repair_timeout_adapter(
-    args: IntegrationRepairTimeoutArgs, ctx: CommandContext | None
-):
+async def _repair_timeout_adapter(args: IntegrationRepairTimeoutArgs, ctx: CommandContext | None):
     return await _hierarchy_adapter(
         "integration_repair_timeout",
         args,
@@ -1592,9 +1600,7 @@ async def _repair_timeout_adapter(
     )
 
 
-async def _schedule_due_adapter(
-    args: IntegrationScheduleDueArgs, ctx: CommandContext | None
-):
+async def _schedule_due_adapter(args: IntegrationScheduleDueArgs, ctx: CommandContext | None):
     return await _hierarchy_adapter(
         "integration_schedule_due",
         args,
@@ -1640,9 +1646,7 @@ async def _enable_adapter(args: IntegrationEnableArgs, ctx: CommandContext | Non
     )
 
 
-async def _waive_history_adapter(
-    args: IntegrationWaiveHistoryArgs, ctx: CommandContext | None
-):
+async def _waive_history_adapter(args: IntegrationWaiveHistoryArgs, ctx: CommandContext | None):
     return await _hierarchy_adapter(
         "integration_waive_history",
         args,
@@ -1652,9 +1656,7 @@ async def _waive_history_adapter(
     )
 
 
-async def _resume_adapter(
-    args: IntegrationOperationControlArgs, ctx: CommandContext | None
-):
+async def _resume_adapter(args: IntegrationOperationControlArgs, ctx: CommandContext | None):
     return await _hierarchy_adapter(
         "integration_resume",
         args,
@@ -1674,9 +1676,7 @@ async def _abort_adapter(args: IntegrationAbortArgs, ctx: CommandContext | None)
     )
 
 
-async def _retry_cleanup_adapter(
-    args: IntegrationRetryCleanupArgs, ctx: CommandContext | None
-):
+async def _retry_cleanup_adapter(args: IntegrationRetryCleanupArgs, ctx: CommandContext | None):
     return await _hierarchy_adapter(
         "integration_retry_cleanup",
         args,

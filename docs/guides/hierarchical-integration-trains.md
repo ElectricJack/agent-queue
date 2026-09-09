@@ -285,6 +285,26 @@ aq integration abort integration-operation-id --reason 'operator chose forensic 
 aq integration retry-cleanup integration-batch-id
 ```
 
+### Resuming an expired repair stage
+
+An expired aggregate repair is still repair work. Do not use a verifier-only
+continuation unless fresh, trusted evidence proves the exact aggregate green;
+in particular, a red aggregate must return to its existing repair stage.
+
+Before `resume`, the branch must be a detached `collector` reservation owned by
+the exact operation ID: it must have no attached session or workspace. If the
+branch is currently a released verifier or repair delegate, use the authorized
+ownership-transfer surface to hand it to that operation as `collector`, then
+run `aq integration resume OPERATION_ID`. The resumed stage keeps its consumed
+attempt count and re-arms only its deadline. Dispatch subsequently transfers
+the collector reservation back to the operation's existing repair delegate.
+
+An `invalid_state` result includes `expected_owner` and, when a branch owner is
+present, `current_owner`. Treat those as a fenced handoff diagnostic: do not
+detach a live owner manually, and do not substitute a collector from another
+operation. Resolve a live attachment through its normal server-side handoff,
+then retry from a fresh status result.
+
 For rollback, request disabled with the current generation:
 
 ```bash
