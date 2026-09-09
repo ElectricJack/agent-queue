@@ -116,6 +116,21 @@ def test_profile_for_class_prefers_pin_then_pool_on_default_provider_then_id() -
     assert profile_for_class(rows, "nope") is None
 
 
+def test_profile_for_class_skips_disabled_pools_but_preserves_a_compatible_pin() -> None:
+    profiles = _profiles()
+    disabled = next(profile for profile in profiles if profile.id == "deep-low-claude")
+    disabled.enabled = False
+    rows = build_route_options("p", profiles, [], _registry(), CLASSES)
+
+    # An automatic choice moves to the enabled provider without changing the
+    # requested intelligence class.  An operator's compatible pin is still
+    # authoritative so it can receive a disabled-pool diagnostic.
+    assert profile_for_class(rows, "deep-low", prefer_provider="anthropic") == "deep-low-codex"
+    assert profile_for_class(
+        rows, "deep-low", pinned_profile_id="deep-low-claude", prefer_provider="anthropic",
+    ) == "deep-low-claude"
+
+
 # -- task_route_options + task_route through a real handler ------------------
 
 
@@ -181,6 +196,47 @@ async def test_route_options_explicit_names_the_serving_profile(handler, orch):
     res = await handler._cmd_task_route_options({"task_id": "t"})
     assert res["outcome"] == "explicit"
     assert res["explicit_profile_id"] == "deep-low-claude"
+
+
+async def test_route_options_excludes_disabled_pools_for_auto_routes_but_keeps_pins(handler, orch):
+    await orch.db.update_profile("deep-low-claude", enabled=False)
+    await _create(orch.db, "automatic", intelligence_class="deep-low")
+    automatic = await handler._cmd_task_route_options({"task_id": "automatic"})
+    assert automatic["outcome"] == "explicit"
+    assert automatic["explicit_profile_id"] == "deep-low-codex"
+    assert {row["profile_id"] for row in automatic["options"]} == {
+        "standard-medium-claude", "deep-low-codex", "worker-generic",
+    }
+    assert [row["profile_id"] for row in automatic["disabled_options"]] == ["deep-low-claude"]
+
+    await _create(
+        orch.db, "pinned", intelligence_class="deep-low", profile_id="deep-low-claude",
+    )
+    pinned = await handler._cmd_task_route_options({"task_id": "pinned"})
+    assert pinned["outcome"] == "already_routed"
+    assert pinned["explicit_profile_id"] == "deep-low-claude"
+
+    await _create(orch.db, "profile-pin", profile_id="deep-low-claude")
+    profile_pin = await handler._cmd_task_route_options({"task_id": "profile-pin"})
+    assert profile_pin["outcome"] == "no_options"
+    assert profile_pin["options"] == []
+    assert [row["profile_id"] for row in profile_pin["disabled_options"]] == ["deep-low-claude"]
+
+
+async def test_route_options_reports_no_automatic_route_when_all_compatible_profiles_are_disabled(
+    handler, orch,
+):
+    await orch.db.update_profile("deep-low-claude", enabled=False)
+    await orch.db.update_profile("deep-low-codex", enabled=False)
+    await orch.db.update_profile("worker-generic", enabled=False)
+    await _create(orch.db, "all-disabled", intelligence_class="deep-low")
+
+    result = await handler._cmd_task_route_options({"task_id": "all-disabled"})
+    assert result["outcome"] == "no_options"
+    assert not [row for row in result["options"] if row["intelligence_class"] == "deep-low"]
+    assert {row["profile_id"] for row in result["disabled_options"]} == {
+        "deep-low-claude", "deep-low-codex", "worker-generic",
+    }
 
 
 async def test_route_options_already_routed_and_no_options(handler, orch):
