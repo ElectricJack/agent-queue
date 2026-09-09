@@ -168,7 +168,7 @@ the integration services compose several of them inside one boundary.
 | Module | Owns |
 |---|---|
 | [`transaction_queries.py`](../../../src/database/queries/transaction_queries.py) | `immediate()` — the write transaction every caller-owned method is composed inside. On PostgreSQL it is `engine.begin()`. |
-| [`__init__.py`](../../../src/database/queries/__init__.py) | Package marker for the mixins. Its docstring still describes the removed SQLite adapter; the mixins themselves are backend-neutral SQLAlchemy Core. |
+| [`__init__.py`](../../../src/database/queries/__init__.py) | Package marker for the mixins. Its docstring states the contract they share: backend-neutral SQLAlchemy Core over `self._engine`, or an `AsyncConnection` for the caller-owned shape. |
 
 ## Adding a query
 
