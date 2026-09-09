@@ -176,8 +176,8 @@ component page and one category:
 | `production` | 791 | A named row in the owning shard's catalog. |
 | `generated` | 1447 | Resource-family coverage plus a regeneration command. |
 | `prompt` | 49 | Explained where its behaviour is explained, as shipped content. |
-| `supporting` | 81 | Purpose, inputs, side effects and invocation, in a contributing page. |
-| `documentation` | 426 | A disposition recorded by the `legacy` ticket. |
+| `supporting` | 80 | Purpose, inputs, side effects and invocation, in a contributing page. |
+| `documentation` | 445 | A disposition recorded by the `legacy` ticket. |
 | `test` | 908 | Covered as a layout and a set of markers, not file by file. |
 
 Counts are from the manifest at its recorded `source_commit`; regenerate rather
