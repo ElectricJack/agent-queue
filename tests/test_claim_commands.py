@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import time
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -149,6 +150,30 @@ def scoped(handler, sid):
         "elevated": False,
     }
     return handler
+
+
+class _CheckpointGit:
+    """Just enough Git for ``resolve_workspace_checkpoint``: clean, pushed."""
+
+    def __init__(self, branch: str, head: str):
+        self.branch = branch
+        self.head = head
+
+    async def aget_current_branch(self, checkout, strict=False):
+        return self.branch
+
+    async def _arun(self, args, cwd=None, **kw):
+        if args[:1] == ["status"]:
+            return ""
+        if args[:1] == ["rev-parse"]:
+            return self.head
+        raise AssertionError(f"unexpected git call: {args}")
+
+    async def als_remote_ref(self, checkout, branch):
+        from src.git.manager import RemoteRefState
+
+        assert branch == self.branch
+        return SimpleNamespace(state=RemoteRefState.PRESENT, oid=self.head, error=None)
 
 
 def emitted(handler):
@@ -682,6 +707,99 @@ class TestClaim:
         again = await scoped(handler, sid)._cmd_task_claim({"next": True})
         assert again["result"] == "no_ready_work"
         assert "pool.prepare_failed" in handler.orchestrator.bus.seen_event_types
+
+
+    async def test_pool_claim_persists_the_branch_the_slot_reset_returned(
+        self, handler, db, tmp_path
+    ):
+        """A pool-claimed task carries the branch its slot reset created.
+
+        The pool prepare path used to discard ``reset_slot_for_task``'s
+        return value, so ``tasks.branch_name`` stayed NULL where the
+        push-assignment path writes it.  In a ``development`` project that
+        surfaced only at close, as ``resolve_workspace_checkpoint``'s
+        "task has no exact owned integration workspace" refusal.
+        """
+        await db.update_project(PROJECT_ID, hierarchical_integration_mode="development")
+        await mktask(db, "t1", profile_id="worker")
+        sid, _wd = await pool_session(db, tmp_path)
+
+        res = await scoped(handler, sid)._cmd_task_claim({"next": True})
+
+        assert res["result"] == "claimed"
+        assert (await db.get_task("t1")).branch_name == "aq/t"
+
+    async def test_hierarchy_claim_leaves_its_canonical_branch_alone(
+        self, handler, db, tmp_path
+    ):
+        """A hierarchy claim's branch write agrees with the fence target.
+
+        Hierarchy mode pins ``branch_name`` at filing — the origin guard
+        refuses a claim whose task branch differs — so the reset's return
+        value must land on exactly that branch and never rewrite it.
+        """
+        await self._hierarchy_task(db, tmp_path)
+        reset = handler.orchestrator._worktree_slots.return_value.reset_slot_for_task
+        reset.return_value = "aq/child"
+        sid, _wd = await pool_session(db, tmp_path)
+
+        res = await scoped(handler, sid)._cmd_task_claim({"next": True})
+
+        assert res["result"] == "claimed"
+        assert (await db.get_task("child")).branch_name == "aq/child"
+
+    async def test_failed_prepare_writes_no_branch(self, handler, db, tmp_path):
+        """A prepare that dies after the reset leaves no half-written branch."""
+        await mktask(db, "t1", profile_id="worker")
+        sid, _wd = await pool_session(db, tmp_path)
+        handler.orchestrator._worktree_slots.return_value.reset_slot_for_task = AsyncMock(
+            side_effect=RuntimeError("git exploded")
+        )
+
+        res = await scoped(handler, sid)._cmd_task_claim({"next": True})
+
+        assert res["result"] == "prepare_failed"
+        assert (await db.get_task("t1")).branch_name is None
+
+    async def test_development_close_clears_the_owned_workspace_guard(
+        self, handler, db, tmp_path
+    ):
+        """The claim leaves exactly what a development-mode close demands.
+
+        ``_run_completion_pipeline`` hands ``resolve_workspace_checkpoint``
+        the task's ``branch_name``; the whole refusal in this bug was its
+        ``not task["branch_name"]`` clause.  Drive that helper with the
+        state the claim actually left behind.
+        """
+        from src.integration.hierarchy import resolve_workspace_checkpoint
+
+        await db.create_repo(
+            RepoConfig(
+                id="repo",
+                project_id=PROJECT_ID,
+                source_type=RepoSourceType.LINK,
+                source_path=str(tmp_path),
+            )
+        )
+        await db.update_project(
+            PROJECT_ID,
+            hierarchical_integration_mode="development",
+            integration_repository_id="repo",
+        )
+        await mktask(db, "t1", profile_id="worker", repo_id="repo")
+        sid, _wd = await pool_session(db, tmp_path)
+        assert (await scoped(handler, sid)._cmd_task_claim({"next": True}))["result"] == "claimed"
+        task = await db.get_task("t1")
+
+        head = "b" * 40
+        checkpoint = await resolve_workspace_checkpoint(
+            db,
+            _CheckpointGit(task.branch_name, head),
+            {"id": task.id, "repo_id": "repo", "branch_name": task.branch_name},
+            await db.get_repo("repo"),
+        )
+
+        assert checkpoint == head
 
     @pytest.mark.parametrize("proof", ["ended", "missing", "successor"])
     async def test_retire_stopped_slot_claim_after_binding_cleared(self, handler, db, tmp_path, proof):
