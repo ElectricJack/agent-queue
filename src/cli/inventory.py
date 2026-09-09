@@ -53,10 +53,119 @@ BEHAVIORAL_EVIDENCE: frozenset[str] = frozenset(
         "aq message reply",
         "aq plugin logs",
         "aq reply",
+        "aq schema",
+        "aq status",
         "aq task details",
+        "aq task create",
         "aq task list",
         "aq test",
     }
+)
+
+# Commands exercised through the public CLI against the disposable daemon in
+# ``tests/test_e2e_cli_stateful.py``. Keep this deliberately explicit: a
+# registration or mocked transport assertion is not acceptance evidence for a
+# stateful operation.
+STATEFUL_E2E_EVIDENCE: dict[str, str] = {
+    "aq doctor": "S6",
+    "aq file edit": "S10",
+    "aq file read": "S10",
+    "aq file write": "S10",
+    "aq formula cook": "S4",
+    "aq formula list": "S4",
+    "aq formula show": "S4",
+    "aq git commit": "S10",
+    "aq git create-branch": "S10",
+    "aq git log": "S10",
+    "aq git push": "S10",
+    "aq graph layout-rebuild": "S14",
+    "aq graph tidy": "S14",
+    "aq mcp create-server": "S12",
+    "aq mcp delete-server": "S12",
+    "aq mcp get-server": "S12",
+    "aq mcp list-servers": "S12",
+    "aq mcp probe-server": "S12",
+    "aq message inbox": "S11",
+    "aq message reply": "S11",
+    "aq message send": "S11",
+    "aq message status": "S11",
+    "aq note append": "S10",
+    "aq note delete": "S10",
+    "aq note read": "S10",
+    "aq note write": "S10",
+    "aq pool status": "S1/S6",
+    "aq project add-workspace": "setup/S10",
+    "aq project create": "setup",
+    "aq project list": "S8/S9",
+    "aq project list-workspaces": "S8/S10",
+    "aq project onboard": "S8",
+    "aq project remove-workspace": "S10",
+    "aq session kill": "S2",
+    "aq session list": "S1/S4",
+    "aq session show": "S2",
+    "aq session token": "S1",
+    "aq system update-config": "S6",
+    "aq task children": "S4",
+    "aq task close": "S2/S4",
+    "aq task create": "S3/S9",
+    "aq task delete": "S3/S9",
+    "aq task deps": "S3",
+    "aq task list": "S3/S9",
+    "aq task progress": "S4",
+    "aq task route": "S3",
+    "aq task set": "S9",
+    "aq task show": "S2/S9",
+    "aq vault migrate": "S14",
+}
+
+# Commands present in the original 2026-09-08 audit but intentionally absent
+# from the current Click tree. They stay visible in the acceptance artifact so
+# removal cannot be mistaken for an inventory omission.
+HISTORICAL_COMMANDS: tuple[dict[str, str], ...] = (
+    {
+        "path": "aq task ask-human",
+        "acceptance_status": "unsupported",
+        "disposition": (
+            "Removed: questions are correlated from harness transcripts; use `aq message send` "
+            "to report a blocker or `aq question ...` for an existing question identity."
+        ),
+    },
+    {
+        "path": "aq task tree",
+        "acceptance_status": "obsolete",
+        "disposition": "Use `aq task get-tree --task-id ID`.",
+    },
+    {
+        "path": "aq task result",
+        "acceptance_status": "obsolete",
+        "disposition": "Use `aq task get-result --task-id ID`.",
+    },
+    {
+        "path": "aq task dep add",
+        "acceptance_status": "obsolete",
+        "disposition": "Use `aq task add-dependency`.",
+    },
+    {
+        "path": "aq task dep remove",
+        "acceptance_status": "obsolete",
+        "disposition": "Use `aq task remove-dependency`.",
+    },
+    {
+        "path": "aq task input-response",
+        "acceptance_status": "obsolete",
+        "disposition": (
+            "Use `aq system provide-input` for legacy WAITING_INPUT tasks; question replies "
+            "use their identity-bearing `aq question` commands."
+        ),
+    },
+)
+
+ACCEPTANCE_STATUSES: tuple[str, ...] = (
+    "working",
+    "broken",
+    "obsolete",
+    "unsupported",
+    "untested",
 )
 
 
@@ -129,6 +238,11 @@ def _counter(values) -> dict[str, int]:
     return dict(sorted(Counter(values).items()))
 
 
+def _acceptance_counter(values) -> dict[str, int]:
+    counts = Counter(values)
+    return {status: counts[status] for status in ACCEPTANCE_STATUSES}
+
+
 def build_cli_inventory(
     cli_group: click.Group,
     *,
@@ -183,6 +297,21 @@ def build_cli_inventory(
             if registration == "generated"
             else "registration"
         )
+        if deprecation:
+            acceptance_status = "obsolete"
+        elif unsupported:
+            acceptance_status = "unsupported"
+        elif path in BEHAVIORAL_EVIDENCE or path in STATEFUL_E2E_EVIDENCE:
+            acceptance_status = "working"
+        else:
+            acceptance_status = "untested"
+        acceptance_evidence: list[str] = []
+        if path in BEHAVIORAL_EVIDENCE:
+            acceptance_evidence.append("focused-behavioral-tests")
+        if scenario := STATEFUL_E2E_EVIDENCE.get(path):
+            acceptance_evidence.append(f"disposable-daemon:{scenario}")
+        if deprecation:
+            acceptance_evidence.append("deprecation-contract-test")
         records.append(
             {
                 "path": path,
@@ -197,6 +326,8 @@ def build_cli_inventory(
                 "unsupported_reason": unsupported,
                 "evidence_level": evidence_level,
                 "evidence": evidence,
+                "acceptance_status": acceptance_status,
+                "acceptance_evidence": acceptance_evidence,
                 "parameters": _parameter_contract(command),
             }
         )
@@ -215,8 +346,12 @@ def build_cli_inventory(
             "ownership": _counter(row["owner_kind"] for row in records),
             "support": _counter(row["support"] for row in records),
             "evidence_level": _counter(row["evidence_level"] for row in records),
+            "acceptance_status": _acceptance_counter(
+                row["acceptance_status"] for row in records
+            ),
         },
         "commands": records,
+        "historical_commands": list(HISTORICAL_COMMANDS),
     }
 
 

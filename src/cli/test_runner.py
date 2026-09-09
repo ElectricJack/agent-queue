@@ -259,8 +259,15 @@ def _compose_pytest_argv(
         # ``-p no:xdist`` unloads the option with the plugin.
         if not _has_flag(args, "--dist"):
             argv.extend(["--dist", "loadfile"])
-    if apply_markers and markers and not _has_flag(args, "-m"):
-        argv.extend(["-m", markers])
+    if not _has_flag(args, "-m"):
+        if apply_markers and markers:
+            argv.extend(["-m", markers])
+        elif not apply_markers:
+            # pyproject.toml carries the same default deselection so bare
+            # pytest remains safe. An empty command-line expression is the
+            # only way ``--aq-all-markers`` can override that configured
+            # value; omitting ``-m`` merely lets the config take effect.
+            argv.extend(["-m", ""])
     argv.extend(args)
     return argv
 
@@ -343,7 +350,7 @@ def _render_status(snapshot: dict) -> None:
 @click.option(
     "--aq-all-markers",
     is_flag=True,
-    help="Do not add the default marker deselects (perf/migration/slow/tmux/integration).",
+    help="Override the default marker deselects (perf/migration/slow/tmux/integration).",
 )
 @click.option("--aq-dry-run", is_flag=True, help="Print the pytest command and exit.")
 @click.argument("pytest_args", nargs=-1, type=click.UNPROCESSED)
