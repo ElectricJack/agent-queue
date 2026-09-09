@@ -9,7 +9,12 @@ found in one audit:
   ``aq gate list``) — the code moved and the doc did not;
 * a positional id passed to an auto-generated command, which takes ``--task-id``
   and nothing else (``aq task children <id>``);
-* a group-level flag written after the subcommand (``aq task list --json``).
+* an option the resolved command does not take (``aq task list --nope``).
+
+The global output flags are *not* one of these shapes any more: since design
+§4.0 ``--json`` / ``--brief`` / ``--api-url`` parse at every position, so
+``aq task list --json`` is as correct as ``aq --json task list`` and the scan
+below accepts both.
 
 This module resolves each documented invocation against the live Click tree and
 fails on any of the three.  It is the ``TestStaticGuidanceStaysOnTheAgentSurface``
@@ -123,6 +128,13 @@ def _problems(source: str, lineno: int, command: str) -> list[str]:
             found.append(f"{source}:{lineno}: `{name}` has no subcommand {following!r} — {command}")
         return found
 
+    from src.cli.global_options import is_passthrough
+
+    if is_passthrough(node):
+        # ``aq test`` / ``aq stream start`` forward everything they do not
+        # recognise to a child program, so no option is wrong there.
+        return found
+
     flags, valued = {"--help"}, set()
     for param in node.params:
         if isinstance(param, click.Option):
@@ -184,8 +196,10 @@ def test_every_documented_aq_invocation_matches_the_click_signature(path: Path):
         "static guidance does not match the real CLI:\n  "
         + "\n  ".join(found)
         + "\n\nRun `aq <group> <cmd> --help` and correct the doc. Auto-generated "
-        "commands take `--task-id`, not a positional id; `--json` / `--brief` are "
-        "options on the top-level `aq` group and go before the subcommand."
+        "commands take `--task-id`, not a positional id. `--json` / `--brief` / "
+        "`--api-url` are global and valid at any position (design §4.0), except "
+        "after a passthrough command such as `aq test`, where they belong to the "
+        "child program."
     )
 
 
@@ -197,9 +211,21 @@ def test_the_guard_catches_each_shape_it_exists_to_catch():
     positional_id = _problems("x.md", 1, "aq task children <id>")
     assert positional_id and "takes 0 positional arg(s), doc passes 1" in positional_id[0]
 
-    misplaced_global = _problems("x.md", 1, "aq task list --json --brief")
-    assert [p for p in misplaced_global if "has no option --json" in p]
-    assert [p for p in misplaced_global if "has no option --brief" in p]
+    unknown_option = _problems("x.md", 1, "aq task list --nope --also-nope")
+    assert [p for p in unknown_option if "has no option --nope" in p]
+    assert [p for p in unknown_option if "has no option --also-nope" in p]
+
+
+def test_the_guard_accepts_a_global_flag_in_every_position():
+    """Design §4.0: position does not change what a global flag means."""
+    for command in (
+        "aq task list --json --brief",
+        "aq --json task list",
+        "aq task --json list",
+        "aq task show <task_id> --brief",
+        "aq task list --api-url http://127.0.0.1:8081",
+    ):
+        assert _problems("x.md", 1, command) == [], command
 
 
 def test_the_guard_accepts_the_corrected_forms():

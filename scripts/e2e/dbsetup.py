@@ -7,7 +7,7 @@ publishes.
 
 Usage::
 
-    python3 scripts/e2e/dbsetup.py <admin-dsn> <db-name> [--reset]
+    python3 scripts/e2e/dbsetup.py <admin-dsn> <db-name> [--reset|--drop]
 
 The admin DSN must point at a database other than *db-name* (``postgres``
 is the natural choice) because a database cannot be dropped while anything
@@ -46,6 +46,8 @@ def refuse(db_name: str) -> str | None:
         return "not a plain identifier (^[a-z0-9_]+$)"
     if db_name in PROTECTED:
         return "protected database"
+    if "e2e" not in db_name:
+        return "e2e database names must contain the ownership marker 'e2e'"
     if WORKER_DB_RE.search(db_name):
         return "looks like a pytest-xdist worker database (tests/pg_dsn.py)"
     # Whatever POSTGRES_TEST_DSN currently names, and its worker databases.
@@ -57,7 +59,7 @@ def refuse(db_name: str) -> str | None:
     return None
 
 
-async def main(admin_dsn: str, db_name: str, reset: bool) -> int:
+async def main(admin_dsn: str, db_name: str, *, reset: bool, drop: bool) -> int:
     import asyncpg
 
     reason = refuse(db_name)
@@ -68,7 +70,7 @@ async def main(admin_dsn: str, db_name: str, reset: bool) -> int:
     conn = await asyncpg.connect(admin_dsn)
     try:
         exists = await conn.fetchval("SELECT 1 FROM pg_database WHERE datname = $1", db_name)
-        if exists and reset:
+        if exists and (reset or drop):
             # Terminate stragglers first: a leftover daemon connection would
             # make DROP DATABASE fail with "is being accessed by other users".
             await conn.execute(
@@ -79,6 +81,11 @@ async def main(admin_dsn: str, db_name: str, reset: bool) -> int:
             await conn.execute(f'DROP DATABASE "{db_name}"')
             exists = None
             print(f"dropped database {db_name}")
+        if drop:
+            if exists is None:
+                return 0
+            print(f"database {db_name} did not exist")
+            return 0
         if not exists:
             await conn.execute(f'CREATE DATABASE "{db_name}"')
             print(f"created database {db_name}")
@@ -90,8 +97,10 @@ async def main(admin_dsn: str, db_name: str, reset: bool) -> int:
 
 
 if __name__ == "__main__":
-    args = [a for a in sys.argv[1:] if a != "--reset"]
-    if len(args) != 2:
+    reset = "--reset" in sys.argv[1:]
+    drop = "--drop" in sys.argv[1:]
+    args = [a for a in sys.argv[1:] if a not in {"--reset", "--drop"}]
+    if len(args) != 2 or (reset and drop):
         print(__doc__, file=sys.stderr)
         sys.exit(2)
-    sys.exit(asyncio.run(main(args[0], args[1], "--reset" in sys.argv[1:])))
+    sys.exit(asyncio.run(main(args[0], args[1], reset=reset, drop=drop)))

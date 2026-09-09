@@ -40,6 +40,18 @@ def runner():
     return CliRunner()
 
 
+def test_task_help_does_not_advertise_retired_ask_human(runner):
+    from src.cli.app import cli
+
+    help_result = runner.invoke(cli, ["task", "--help"])
+    assert help_result.exit_code == 0
+    assert "ask-human" not in help_result.output
+
+    call_result = runner.invoke(cli, ["task", "ask-human", "--question", "Continue?"])
+    assert call_result.exit_code == 2
+    assert "No such command 'ask-human'" in call_result.output
+
+
 # Mock response helpers
 
 
@@ -766,6 +778,143 @@ class TestCLICommands:
         assert captured_args["profile_id"] == "claude-opus"
         assert captured_args["project_id"] == "proj"
         assert captured_args["title"] == "Pick a model"
+
+    def test_task_create_partial_flags_seed_wizard_and_preserve_overrides(self, runner):
+        """Partial input prompts only for missing fields without losing flags."""
+        from src.cli.app import cli
+
+        captured_args = {}
+
+        async def mock_execute(command, args=None):
+            if command == "create_task":
+                captured_args.update(args or {})
+                return {"created": "task-45", "title": args.get("title", "")}
+            return {}
+
+        mock = self._mock_client({})
+        mock.execute = AsyncMock(side_effect=mock_execute)
+        wizard_result = {
+            "project_id": "flag-project",
+            "title": "Flag title",
+            "description": "Wizard description",
+            "priority": 50,
+            "task_type": "bugfix",
+            "integration_mode": "direct",
+        }
+
+        with (
+            patch("src.cli.tasks._get_client", return_value=mock),
+            patch("src.cli.tasks.click.get_text_stream") as stdin,
+            patch("src.cli.menus.task_creation_wizard", return_value=wizard_result) as wizard,
+        ):
+            stdin.return_value.isatty.return_value = True
+            result = runner.invoke(
+                cli,
+                [
+                    "task", "create", "--project", "flag-project", "--title", "Flag title",
+                    "--priority", "50", "--type", "bugfix", "--integration-mode", "direct",
+                ],
+            )
+
+        assert result.exit_code == 0, result.output
+        assert captured_args == wizard_result
+        wizard.assert_called_once_with(
+            [],
+            project="flag-project",
+            title="Flag title",
+            description=None,
+            priority=50,
+            task_type="bugfix",
+            integration_mode="direct",
+        )
+
+    def test_task_create_full_flags_uses_default_priority_and_preserves_routing(self, runner):
+        """A fully flagged command needs no wizard and keeps routing options."""
+        from src.cli.app import cli
+
+        captured_args = {}
+
+        async def mock_execute(command, args=None):
+            if command == "create_task":
+                captured_args.update(args or {})
+                return {"created": "task-46", "title": args.get("title", "")}
+            return {}
+
+        mock = self._mock_client({})
+        mock.execute = AsyncMock(side_effect=mock_execute)
+        with patch("src.cli.tasks._get_client", return_value=mock):
+            result = runner.invoke(
+                cli,
+                [
+                    "task", "create", "--project", "proj", "--title", "T", "--description", "D",
+                    "--type", "bugfix", "--integration-mode", "direct",
+                ],
+            )
+
+        assert result.exit_code == 0, result.output
+        assert captured_args["priority"] == 100
+        assert captured_args["task_type"] == "bugfix"
+        assert captured_args["integration_mode"] == "direct"
+
+    @pytest.mark.parametrize("priority", ["0", "-1", "301", "not-a-number"])
+    def test_task_create_rejects_invalid_flag_priority_without_writing(self, runner, priority):
+        """Click validates the documented priority range before any daemon call."""
+        from src.cli.app import cli
+
+        mock = self._mock_client({})
+        with patch("src.cli.tasks._get_client", return_value=mock):
+            result = runner.invoke(
+                cli,
+                [
+                    "task", "create", "--project", "proj", "--title", "T", "--description", "D",
+                    "--priority", priority,
+                ],
+            )
+
+        assert result.exit_code != 0
+        assert "Invalid value" in result.output
+        mock.execute.assert_not_awaited()
+
+    def test_task_create_noninteractive_missing_required_values_does_not_write(self, runner):
+        """Piped invocations fail fast instead of entering prompt-toolkit."""
+        from src.cli.app import cli
+
+        mock = self._mock_client({})
+        with patch("src.cli.tasks._get_client", return_value=mock):
+            result = runner.invoke(cli, ["task", "create", "--project", "proj"])
+
+        assert result.exit_code != 0
+        assert "missing required option(s): --title, --description" in result.output
+        mock.execute.assert_not_awaited()
+
+    def test_task_create_json_missing_required_values_never_enters_wizard(self, runner):
+        """Machine-readable output must not hang awaiting a human response."""
+        from src.cli.app import cli
+
+        mock = self._mock_client({})
+        with patch("src.cli.tasks._get_client", return_value=mock):
+            result = runner.invoke(cli, ["--json", "task", "create", "--project", "proj"])
+
+        assert result.exit_code != 0
+        assert "missing required option(s): --title, --description" in result.output
+        mock.execute.assert_not_awaited()
+
+    def test_task_create_cancelled_wizard_does_not_write(self, runner):
+        """Cancelling an interactive partial command is a clean no-op."""
+        from src.cli.app import cli
+
+        mock = self._mock_client({})
+        with (
+            patch("src.cli.tasks._get_client", return_value=mock),
+            patch("src.cli.tasks.click.get_text_stream") as stdin,
+            patch("src.cli.menus.task_creation_wizard", return_value=None),
+        ):
+            stdin.return_value.isatty.return_value = True
+            result = runner.invoke(cli, ["task", "create", "--project", "proj", "--title", "T"])
+
+        assert result.exit_code == 0, result.output
+        assert "Task creation cancelled." in result.output
+        mock.execute.assert_not_awaited()
 
     def test_task_create_with_agent_type_flag(self, runner):
         """--agent-type is passed through as agent_type in create_task args."""

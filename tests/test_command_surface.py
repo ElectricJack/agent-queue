@@ -44,7 +44,7 @@ KNOWN_AUTO_REGISTERED: frozenset[str] = frozenset(
         "migrate_profiles",
         "vault_rebuild_index",
         # aq-surface Phase S1 (src/commands/surface_commands.py) — CLI/hook-only
-        # commands, not part of the nine-command task-scope MCP allowlist
+        # commands, not part of the task-scope MCP allowlist
         # (design §8.2), so intentionally left to auto-discovery rather than
         # given a rich schema — mirrors tests/test_mcp_server.py's
         # known_auto_discovered treatment of the same two names.
@@ -103,20 +103,11 @@ KNOWN_EMPTY_SCHEMA_COMMANDS: frozenset[str] = frozenset(
     }
 )
 
-#: Typed definitions in ``_ALL_TOOL_DEFINITIONS`` whose backing ``_cmd_*``
-#: method lands with a still-unmerged Wave 2 lane (see
-#: docs/analysis/execution-plan.md §3, §4).  Unlike :data:`KNOWN_AUTO_REGISTERED`
-#: these commands are *not* left to auto-discovery — they get rich schemas now
-#: — but the orphan check would otherwise fire on this branch because the
-#: implementing lane hasn't landed yet.  Remove an entry once its backing
-#: method exists on ``CommandHandler``.
+#: Typed definitions in ``_ALL_TOOL_DEFINITIONS`` whose implementation is
+#: supplied at runtime rather than by a ``CommandHandler._cmd_*`` method.
+#: Remove an entry if the runtime extension stops owning that command.
 PENDING_UNLANDED_COMMANDS: frozenset[str] = frozenset(
     {
-        # Lane 2D (supervisor-agent) landed message_send/message_reply/
-        # message_inbox/message_list (src/commands/message_commands.py) and
-        # create_task_graph (src/commands/task_commands.py); ask_human is
-        # still pending (gate_commands.py).
-        "ask_human",
         # Provided at runtime by the external aq-memory plugin, not a
         # CommandHandler._cmd_* method (see CLAUDE.md "Memory" entry).
         "memory_save",
@@ -145,6 +136,11 @@ def _effective_typed_definitions() -> list[dict]:
 
 
 class TestCommandSurface:
+    def test_retired_ask_human_is_not_advertised_as_a_core_command(self):
+        """Native transcript questions replaced the never-implemented command."""
+        assert "ask_human" not in _command_names()
+        assert "ask_human" not in _defined_tool_names()
+
     def test_every_command_is_placed_deliberately(self):
         commands = _command_names()
         placed = _defined_tool_names() | get_effective_exclusions() | KNOWN_AUTO_REGISTERED
@@ -188,7 +184,7 @@ class TestCommandSurface:
         )
 
     def test_pending_unlanded_list_does_not_rot(self):
-        """Every name in the pending ledger must still be a real orphan."""
+        """Every runtime-owned name must still be a real core orphan."""
         commands = _command_names()
         stale = sorted(n for n in PENDING_UNLANDED_COMMANDS if n in commands)
         assert not stale, (

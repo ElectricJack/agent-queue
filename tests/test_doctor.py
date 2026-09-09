@@ -84,6 +84,7 @@ class TestRegistry:
         from src.doctor.provider_checks import provider_checks
         from src.doctor.resource_checks import resource_checks
         from src.doctor.session_checks import session_checks
+        from src.doctor.skill_checks import skill_checks
         from src.doctor.task_checks import task_checks
         from src.doctor.workspace_checks import workspace_checks
 
@@ -95,6 +96,7 @@ class TestRegistry:
             | {c.id for c in task_checks()}
             | {c.id for c in formula_checks()}
             | {c.id for c in intelligence_class_checks()}
+            | {c.id for c in skill_checks()}
             | {c.id for c in resource_checks()}
             | {c.id for c in session_checks()}
             | {c.id for c in integration_checks()}

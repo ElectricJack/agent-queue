@@ -17,12 +17,13 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from smoke import (  # noqa: E402
+from smoke import (
     OTHER_PROJECT,
     PROJECT,
     CliError,
     Failure,
     aq,
+    collection_rows,
     ensure_project,
     workspace_paths,
 )
@@ -33,8 +34,9 @@ def main() -> int:
         for project_id in (PROJECT, OTHER_PROJECT):
             ensure_project(project_id, workspace_paths(project_id))
             count = len(
-                aq("project", "list-workspaces", "--project-id", project_id).get(
-                    "workspaces", []
+                collection_rows(
+                    aq("project", "list-workspaces", "--project-id", project_id),
+                    "workspaces",
                 )
             )
             print(f"registered project {project_id!r} with {count} workspace(s)")

@@ -71,13 +71,18 @@ same data as Rich tables/panels.
 | `aq task set` | `<task_id> [--branch] [--pr-url] [--work-dir] [--note] [--label +l/-l] [--meta k=v]` | A/H | updated task summary |
 | `aq task close` | `<task_id> --outcome pass\|fail [--failure-class transient\|hard] [--work-outcome shipped\|no-op\|blocked\|abandoned] [--commit <sha>] [--notes <text>]` | A | `{task_id, status}` |
 | `aq task heartbeat` | `[<task_id>]` (defaults to token scope) | A | `{ok: true, lease_expires_at}` |
-| `aq task ask` | `"<question>" [--task <id>]` | A | `{question_id, gate_id}` — human gate via [[work-graph]] |
 | `aq message send` | `<recipient> <body> [--task <id>]` | A/H | `{message_id}` |
 | `aq message inbox` | `[--unread]` | A/H | list of messages |
 | `aq message reply` | `<message_id> <body>` | A/H | `{message_id}` |
 | `aq memory save` | `<content> [--scope]` | A | paused: `{paused: true}` per [[feature-pauses]] (§9.3) |
 | `aq memory search` | `<query> [--scope]` | A | paused: `{paused: true, results: []}` |
 | `aq session drain-ack` | — | A | `{acknowledged: true}` — session may now be reaped |
+
+> **Retired (2026-09-08):** the never-implemented `ask_human` / `aq task
+> ask-human` surface was removed. Live worker questions are recorded by the
+> claim-fenced `AgentQuestionService` from completed native transcript turns
+> and answered by exact `question_id` through `aq question`. For an explicit
+> one-way blocker notification, use `aq message send --to user:dashboard`.
 
 ### 3.2 Human surface
 
@@ -113,6 +118,35 @@ from `register_auto_commands` all continue to work (§9).
 
 ## 4. Output Contract
 
+### 4.0 Global option grammar
+
+`--json`, `--brief` and `--api-url` are **global**: they may appear at any position and
+mean the same thing everywhere — before the group, between a group and its subcommand, or
+trailing after the leaf command and its arguments. All of these are equivalent:
+
+```bash
+aq --json task list
+aq task --json list
+aq task list --json
+aq task show task-1 --brief --json
+```
+
+Repeating a flag is allowed and idempotent; a flag given anywhere turns the mode on for the
+whole invocation. Implemented by `src/cli/global_options.py`, which copies the options onto
+every command and group in the tree after registration; each copy writes into the root
+context's `obj`, which is what `emit()` reads.
+
+Two exclusions, both about not stealing a flag from someone else:
+
+- **Passthrough commands** — anything whose `context_settings` set `ignore_unknown_options`
+  (`aq test`, `aq stream start`) forward their trailing argv to a child program, so
+  `aq test tests/x.py --json` hands `--json` to pytest. Use the prefix form
+  (`aq --json test …`) there.
+- **Commands that declare their own option of the same name** — `aq doctor --json`,
+  `aq logs --json`, `aq system config get --json` keep their local meaning.
+
+Everything after a `--` separator is Click's end-of-options boundary and is never consumed.
+
 ### 4.1 Versioned JSON envelope
 
 Every command run with `--json` emits exactly one JSON object on stdout:
@@ -131,16 +165,42 @@ Every command run with `--json` emits exactly one JSON object on stdout:
 - `pagination` is present **only when `data` is a list**: `returned` = items in this
   response, `total` = matching rows server-side, `truncated` = `returned < total`.
 - Errors: `{"schema_version": 1, "error": {"code": "...", "message": "..."}, "data": null}`
-  on stdout, non-zero exit. Error codes: `command_error`, `not_found`, `out_of_scope`,
-  `daemon_unreachable`, `paused`.
+  on stdout, non-zero exit. Error codes: `usage_error`, `command_error`, `not_found`,
+  `out_of_scope`, `daemon_unreachable`, `paused`. Human diagnostics and compatibility
+  warnings go to stderr; stdout remains exactly one JSON document.
+- Empty collections are `data: []` with zeroed pagination. Scalar, object, and collection
+  payloads retain their JSON type. Generated-client models are projected with `to_dict()` /
+  `model_dump()`; missing `Unset` fields are omitted rather than rendered as repr strings.
+  JSON is UTF-8/Unicode text (`ensure_ascii=false`).
 
 The envelope is applied by the CLI presentation layer on top of the unchanged
 `CommandHandler` `{"success": bool, ...}` dicts and the `/api/execute`
 `{"ok": bool, "result"|"error"}` wire format — neither changes.
 
 Exit codes: `0` success (and all `paused` no-ops, so agent loops don't spuriously fail),
-`1` command error, `2` usage error (Click), `3` daemon unreachable, `4` auth/scope denied.
+`1` command error, `2` usage error (including Click parsing), `3` daemon unreachable,
+`4` auth/scope denied.
 `aq inbox --inject` always exits `0` regardless (§6.2).
+
+The two structured-output exceptions are protocols rather than ordinary command results:
+`aq logs --json` (and `aq --json logs`) emits JSON Lines until the bounded read or follow
+stream ends, and `aq prime --hook-json` emits the harness-owned hook envelope. Interactive
+commands (`aq chat` without `--once`, `aq task select`, and `aq system config edit`) reject
+JSON mode with a `usage_error` envelope instead of prompting. Process passthrough commands
+such as `aq test` retain the child process's stdout/stderr and exit status.
+
+Core-owned `aq plugin` wrappers are ordinary command results even though they use direct
+database and filesystem operations: list/detail/config/prompt reads and every mutation route
+through the same envelope. A missing plugin uses `not_found`; direct database, loader, git,
+and filesystem failures use `command_error`/exit 1. Confirmation-requiring mutations demand
+`--yes` in JSON mode and otherwise return `usage_error`/exit 2 without prompting. Plugin names,
+URLs, paths, prompt names, and diff lines are treated as literal Rich text in human mode.
+
+Local operator workflows (`aq start|stop|restart`, `aq db *`, and `aq vault *`) are currently
+human-only because they own multi-step process/migration progress and interactive safeguards;
+with global `--json` they fail before any side effect with one `usage_error` envelope. CLI
+groups supplied by third-party `aq.plugins` entry points are an extension boundary rather than
+core-owned wrappers, so their structured-output behavior remains defined by that plugin.
 
 ### 4.2 `--brief` lite projections
 
@@ -153,11 +213,46 @@ Exit codes: `0` success (and all `paused` no-ops, so agent loops don't spuriousl
 | gate | `id, gate_type, status, task_id` |
 | message | `id, from, subject, created_at, read` |
 | workspace | `id, kind_id, path, locked_by` |
+| task_created | `created, task_id, title, status, project_id` |
+| agent | `id, name, state, profile_id, current_task_id` |
+| project | `id, name, status, workspace, max_concurrent_agents` |
+| pool | `profile_id, enabled, min_active, max_active, desired, running_idle, running_busy, starting, draining, ready` |
 
 `--brief` composes with `--json` (trimmed `data` items, envelope unchanged) and with table
 output (fewer columns). Projections are defined centrally, not per command.
+The workspace projection deliberately aliases the internal `workspace_path` and
+`locked_by_agent_id`/`locked_by_task_id` names to the stable public `path` and `locked_by`
+fields.
 
-### 4.3 `aq schema`
+`task_created` is the receipt `aq task create` returns for a **single** task, not a task
+row — hence its own projection. `aq task create --graph|--from-spec` returns the graph
+report (`parent_id`, `nodes[]`, `warnings[]`) and takes no brief projection.
+
+### 4.2.1 Creation receipts
+
+`aq task create` is a write whose only durable output is the new id, so it routes through
+`emit()` like every read: `--json` prints exactly one envelope whose `data` is the
+`create_task` payload, and the id to read is **`data.created`** (`data.task_id` is an alias
+that ships alongside it). A caller must never scrape the human line — a client that fails to
+parse stdout after the task is already persisted retries into a duplicate task.
+
+```bash
+new_id=$(aq --json task create -p proj -t "Title" -d "Body" | jq -r .data.created)
+```
+
+Cancelling the interactive wizard is also one document (`{"cancelled": true,
+"created": null}`) at exit `0`: nothing was persisted, and the consumer can see that
+without guessing at an empty stream.
+
+### 4.3 Raw-JSON compatibility window
+
+`AQ_JSON_LEGACY=1` restores the pre-envelope payload for one release and writes one
+deprecation warning to stderr. For generated list commands this is the original backend
+wrapper (for example `{"projects": [...]}`), even though the versioned contract exposes the
+logical list at `data` and adds pagination. The variable never changes human output and is
+ignored by the streaming exceptions above.
+
+### 4.4 `aq schema`
 
 Prints the system's enums so agents never guess magic strings and MCP schemas don't have to
 carry them: task statuses, task types, dependency types (`blocks`, `parent-child`,
@@ -165,8 +260,10 @@ carry them: task statuses, task types, dependency types (`blocks`, `parent-child
 `supersedes`), gate types (`human`, `timer`, `pr-merged`, `ci-run`, `event`, `task`),
 lifecycle values (`task`, `named`), outcome enums (`outcome`, `failure_class`,
 `work_outcome`), and session states. Backed by a `get_schema` command (so REST and MCP get
-it too); the enum values themselves are owned by [[work-graph]] and [[session-runtime]] —
-`aq schema` is a projection with its own `schema_version`.
+it too); the CLI and command handler render the same pure code-owned catalog, so `aq schema`
+needs neither the daemon nor a database. The enum values themselves are owned by
+[[work-graph]] and [[session-runtime]] — `aq schema` is a projection with its own
+`schema_version`.
 
 ---
 
@@ -332,7 +429,7 @@ changes; it is the operator's surface.
 
 A second MCP mount at `/mcp-task` exposes only the default task allowlist:
 
-`task_show, task_set, task_close, task_heartbeat, ask_human, message_send, message_inbox,
+`task_show, task_set, task_close, task_heartbeat, message_send, message_inbox,
 memory_save, memory_search`
 
 Rationale: these are the calls an agent makes *mid-turn* where a native tool call beats

@@ -139,11 +139,7 @@ async def _seed_worker_scale(any_db):
         AgentProfile(id="worker", name="w", lifecycle="pool", needs_workspace=False)
     )
     await any_db.create_project(Project(id=PROJECT_ID, name="p"))
-    await seed_scale(
-        any_db, profile_id="worker", intelligence_class="standard-medium"
-    )
-
-
+    await seed_scale(any_db, profile_id="worker", intelligence_class="standard-medium")
 
 
 class TestClaimStatementBudgets:
@@ -293,8 +289,8 @@ class TestClaimStatementBudgets:
             )
         budget = 9
         print(f"\nrelease_claim: {c['n']} statements (budget {budget})")
-        assert c["n"] <= budget, (
-            f"{c['n']} statements > budget {budget}:\n" + "\n".join(c["statements"])
+        assert c["n"] <= budget, f"{c['n']} statements > budget {budget}:\n" + "\n".join(
+            c["statements"]
         )
 
     async def test_count_ready_by_profile_statement_budget(self, any_db):

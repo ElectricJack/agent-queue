@@ -27,6 +27,51 @@ def _getval(obj: Any, key: str, default: Any = None) -> Any:
     return val
 
 
+def _parse_requires_kinds(values: tuple[str, ...]) -> list[Any]:
+    """Parse repeated ``--requires-kind`` values into ``requires_kinds`` entries.
+
+    The backend (``create_task``, workspaces-v2 spec §5.1) accepts either a
+    bare kind id string or a ``{"kind": ..., "alias": ...}`` object, so the
+    CLI mirrors both shapes with one option:
+
+    * ``--requires-kind game-repo``          -> ``"game-repo"``
+    * ``--requires-kind game-repo=primary``  -> ``{"kind": ..., "alias": ...}``
+
+    The bare form is forwarded as a plain string rather than being expanded
+    into ``{"kind": ..., "alias": None}`` so that what the daemon receives is
+    exactly what an MCP or API caller would send. Whether a *kind* exists is
+    the daemon's call — this only rejects locally malformed values.
+    """
+    entries: list[Any] = []
+    for raw in values:
+        value = raw.strip()
+        if not value:
+            raise click.UsageError(
+                "--requires-kind needs a kind id, e.g. --requires-kind game-repo"
+            )
+        if "=" not in value:
+            entries.append(value)
+            continue
+        parts = value.split("=")
+        if len(parts) != 2:
+            raise click.UsageError(
+                f"--requires-kind {raw!r} has more than one '='; "
+                "the form is KIND[=ALIAS]"
+            )
+        kind, alias = parts[0].strip(), parts[1].strip()
+        if not kind:
+            raise click.UsageError(
+                f"--requires-kind {raw!r} is missing the kind id before '='"
+            )
+        if not alias:
+            raise click.UsageError(
+                f"--requires-kind {raw!r} is missing the alias after '='; "
+                "drop the '=' to require the kind without an alias"
+            )
+        entries.append({"kind": kind, "alias": alias})
+    return entries
+
+
 @cli.group()
 def task() -> None:
     """Task management commands."""
@@ -151,7 +196,7 @@ def _create_task_graph(
 @click.option("-p", "--project", default=None, help="Project ID (skips wizard step)")
 @click.option("-t", "--title", default=None, help="Task title (skips wizard step)")
 @click.option("-d", "--description", default=None, help="Task description")
-@click.option("--priority", default=None, type=int, help="Priority (1-300)")
+@click.option("--priority", default=None, type=click.IntRange(1, 300), help="Priority (1-300)")
 @click.option("--type", "task_type", default=None, help="Task type")
 @click.option(
     "--integration-mode",
@@ -165,7 +210,11 @@ def _create_task_graph(
     "--profile",
     "profile_id",
     default=None,
-    help="Agent profile id (e.g. claude-opus, claude-sonnet, claude-code)",
+    help=(
+        "Agent profile id; omit to use the project default. "
+        "Run `aq agent list-profiles` for the ids this install has "
+        "(shipped worker ladder: worker-<tier>-<level>-<provider>)."
+    ),
 )
 @click.option(
     "--intelligence-class",
@@ -227,6 +276,18 @@ def _create_task_graph(
         "repo-relative path; a test target is a path or test command line."
     ),
 )
+@click.option(
+    "--requires-kind",
+    "requires_kinds",
+    multiple=True,
+    metavar="KIND[=ALIAS]",
+    help=(
+        "Workspace kind this task needs; repeatable. 'game-repo' requires the kind, "
+        "'game-repo=primary' requires it under an alias so the same kind can be "
+        "required twice. Omit to keep the default single 'project-repo' requirement. "
+        "Not supported with --graph/--from-spec."
+    ),
+)
 @click.pass_context
 @_handle_errors
 def task_create(
@@ -247,6 +308,7 @@ def task_create(
     root: bool,
     reason: str | None,
     deliverables: tuple[str, ...],
+    requires_kinds: tuple[str, ...],
 ) -> None:
     """Create a new task (interactive wizard or via flags).
 
@@ -257,6 +319,15 @@ def task_create(
     ``--graph FILE`` / ``--from-spec PATH`` create a whole dependency graph
     in one transaction instead of a single task; add ``--dry-run`` to see the
     validation report and the ids that would be assigned.
+
+    ``--requires-kind`` declares the workspace kinds the task needs
+    (workspaces-v2 spec §5). It is repeatable and takes either a bare kind id
+    (``--requires-kind game-repo``) or ``KIND=ALIAS``
+    (``--requires-kind game-repo=primary``) when the same kind is needed more
+    than once. Omitting it leaves the task with its default implicit
+    ``project-repo`` requirement. Graph documents carry no per-node
+    requirements, so combining it with ``--graph``/``--from-spec`` is rejected
+    rather than silently dropped.
     """
     api_url = ctx.obj.get("api_url") if ctx.obj else None
 
@@ -264,6 +335,15 @@ def task_create(
         raise click.UsageError("--root and --parent are mutually exclusive")
     if root and (graph_file or from_spec):
         raise click.UsageError("--root only applies to single-task creation")
+    # Parse before the graph branch so a malformed value is reported even on a
+    # path that would go on to reject the option outright.
+    parsed_requires_kinds = _parse_requires_kinds(requires_kinds)
+    if parsed_requires_kinds and (graph_file or from_spec):
+        raise click.UsageError(
+            "--requires-kind is not supported with --graph/--from-spec; graph "
+            "nodes carry no workspace requirements. Create the task on its own "
+            "with --requires-kind, or attach it to the graph afterwards."
+        )
     if graph_file or from_spec:
         _create_task_graph(
             ctx,
@@ -279,12 +359,15 @@ def task_create(
     if dry_run:
         raise click.UsageError("--dry-run only applies with --graph or --from-spec")
 
-    if project and title and description:
+    required_values = {"project": project, "title": title, "description": description}
+    missing_required = [name for name, value in required_values.items() if value is None]
+
+    if not missing_required:
         params = {
             "project_id": project,
             "title": title,
             "description": description,
-            "priority": priority or 100,
+            "priority": 100 if priority is None else priority,
             "task_type": task_type,
         }
         if integration_mode:
@@ -296,16 +379,44 @@ def task_create(
     else:
         from .menus import task_creation_wizard
 
-        async def _get_projects():
-            async with _get_client(api_url) as client:
-                result = await client.execute("list_projects")
-                projects = _getval(result, "projects", [])
-                return [_getval(p, "id") for p in projects]
+        # A prompt-toolkit wizard cannot safely read piped input, and JSON is
+        # a machine-facing output contract.  Fail before contacting the daemon
+        # so an incomplete command never lists projects or creates a task.
+        if (ctx.obj or {}).get("json") or not click.get_text_stream("stdin").isatty():
+            missing = ", ".join(f"--{name}" for name in missing_required)
+            raise click.UsageError(
+                f"missing required option(s): {missing}; provide --project, --title, and "
+                "--description when stdin is not interactive"
+            )
 
-        project_ids = _run(_get_projects())
-        params = task_creation_wizard(project_ids)
+        if project is None:
+            async def _get_projects():
+                async with _get_client(api_url) as client:
+                    result = await client.execute("list_projects")
+                    projects = _getval(result, "projects", [])
+                    return [_getval(p, "id") for p in projects]
+
+            project_ids = _run(_get_projects())
+        else:
+            project_ids = []
+        params = task_creation_wizard(
+            project_ids,
+            project=project,
+            title=title,
+            description=description,
+            priority=priority,
+            task_type=task_type,
+            integration_mode=integration_mode,
+        )
         if not params:
-            console.print("[dim]Task creation cancelled.[/]")
+            # Still one JSON document under --json: a consumer that parses
+            # stdout must not be handed an empty stream and left guessing
+            # whether a task was persisted.
+            emit(
+                ctx,
+                {"success": False, "cancelled": True, "created": None},
+                render=lambda _data: console.print("[dim]Task creation cancelled.[/]"),
+            )
             return
         # CLI flag overrides persist through the wizard if the caller
         # mixed interactive + flag usage.
@@ -323,6 +434,8 @@ def task_create(
         params["root"] = True
     if reason and "reason" not in params:
         params["reason"] = reason
+    if parsed_requires_kinds:
+        params["requires_kinds"] = parsed_requires_kinds
     if deliverables:
         try:
             parsed = [json.loads(value) for value in deliverables]
@@ -337,12 +450,20 @@ def task_create(
             return await client.execute("create_task", params)
 
     result = _run(_create())
-    task_id = _getval(result, "created", "?")
-    console.print()
-    console.print(f"[bold green]Task created:[/] [bold bright_cyan]{task_id}[/]")
-    title = _getval(result, "title")
-    if title:
-        console.print(f"  [dim]{title}[/]")
+
+    def _render(data: Any) -> None:
+        from rich.markup import escape
+
+        console.print()
+        created = _getval(data, "created", "?")
+        console.print(f"[bold green]Task created:[/] [bold bright_cyan]{escape(str(created))}[/]")
+        # Titles are operator/agent text: escape before it reaches Rich, or a
+        # title containing square brackets is read as markup and swallowed.
+        created_title = _getval(data, "title")
+        if created_title:
+            console.print(f"  [dim]{escape(str(created_title))}[/]")
+
+    emit(ctx, result, entity="task_created", render=_render)
 
 
 @task.command("stop")
@@ -366,7 +487,13 @@ def task_stop(ctx: click.Context, task_id: str, yes: bool) -> None:
             return await client.execute("stop_task", {"task_id": task_id})
 
     result = _run(_stop())
-    console.print(f"[bold yellow]Task stopped:[/] {_getval(result, 'stopped', task_id)}")
+    emit(
+        ctx,
+        result,
+        render=lambda data: console.print(
+            f"[bold yellow]Task stopped:[/] {_getval(data, 'stopped', task_id)}"
+        ),
+    )
 
 
 @task.command("restart")
@@ -390,7 +517,13 @@ def task_restart(ctx: click.Context, task_id: str, yes: bool) -> None:
             return await client.execute("restart_task", {"task_id": task_id})
 
     result = _run(_restart())
-    console.print(f"[bold green]Task restarted:[/] {_getval(result, 'restarted', task_id)}")
+    emit(
+        ctx,
+        result,
+        render=lambda data: console.print(
+            f"[bold green]Task restarted:[/] {_getval(data, 'restarted', task_id)}"
+        ),
+    )
 
 
 @task.command("search")
@@ -421,17 +554,17 @@ def task_search(ctx: click.Context, query: str, project: str | None) -> None:
         for t in raw_tasks
         if q in (_getval(t, "title", "")).lower() or q in (_getval(t, "description", "")).lower()
     ]
-    tasks = [task_proxy(t) for t in matched]
-
     title = f"Search results for '{query}'"
     if project:
         title += f" in {project}"
 
-    table = format_task_table(tasks, title=title)
-    console.print(table)
+    def _render(data: list[dict]) -> None:
+        tasks = [task_proxy(t) for t in data]
+        console.print(format_task_table(tasks, title=title))
+        if not tasks:
+            console.print("[dim]No tasks matched your search.[/]")
 
-    if not tasks:
-        console.print("[dim]No tasks matched your search.[/]")
+    emit(ctx, matched, entity="task", total=len(matched), render=_render)
 
 
 @task.command("select")
@@ -445,6 +578,8 @@ def task_select(ctx: click.Context, project: str | None) -> None:
     from .menus import fuzzy_select_task
 
     api_url = ctx.obj.get("api_url") if ctx.obj else None
+    if (ctx.obj or {}).get("json"):
+        raise click.UsageError("task select is interactive and does not support JSON mode")
 
     async def _select():
         async with _get_client(api_url) as client:
@@ -533,7 +668,14 @@ def task_list(
         if not proxied:
             console.print("[dim]No tasks found.[/]")
 
-    emit(ctx, raw_tasks, entity="task", total=total, render=_render)
+    emit(
+        ctx,
+        raw_tasks,
+        entity="task",
+        total=total,
+        legacy_data=result,
+        render=_render,
+    )
 
 
 @task.command("show")
@@ -652,8 +794,7 @@ def task_set(
     meta: dict[str, str] = {}
     for kv in meta_kv:
         if "=" not in kv:
-            console.print(f"[bold red]Error:[/] --meta expects KEY=VALUE, got '{kv}'")
-            raise SystemExit(2)
+            raise click.UsageError(f"--meta expects KEY=VALUE, got {kv!r}")
         key, _, value = kv.partition("=")
         meta[key] = value
 

@@ -315,15 +315,22 @@ def message_inbox(
             return await client.execute("message_inbox", params)
 
     result = _run(_inbox())
+    items = result.get("messages", [])
 
-    def _render(data: dict) -> None:
-        items = data.get("messages", [])
-        if not items:
+    def _render(render_items: list[dict]) -> None:
+        if not render_items:
             console.print(f"[dim]No pending messages for {kind}:{ident}.[/]")
             return
-        _render_message_table(items, f"Inbox — {kind}:{ident}")
+        _render_message_table(render_items, f"Inbox — {kind}:{ident}")
 
-    emit(ctx, result, render=_render)
+    emit(
+        ctx,
+        items,
+        entity="message",
+        total=result.get("count"),
+        legacy_data=result,
+        render=_render,
+    )
 
 
 @message.command("status")
@@ -480,15 +487,22 @@ def message_list(
             return await client.execute("message_list", params)
 
     result = _run(_list())
+    items = result.get("messages", [])
 
-    def _render(data: dict) -> None:
-        items = data.get("messages", [])
-        if not items:
+    def _render(render_items: list[dict]) -> None:
+        if not render_items:
             console.print("[dim]No messages.[/]")
             return
-        _render_message_table(items, "Messages")
+        _render_message_table(render_items, "Messages")
 
-    emit(ctx, result, render=_render)
+    emit(
+        ctx,
+        items,
+        entity="message",
+        total=result.get("count"),
+        legacy_data=result,
+        render=_render,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -765,6 +779,9 @@ def chat(
     session = supervisor_session_name(project)
     api_url = ctx.obj.get("api_url") if ctx.obj else None
 
+    if once is None and (ctx.obj or {}).get("json"):
+        raise click.UsageError("chat is interactive without --once and does not support JSON mode")
+
     if once is not None:
 
         async def _once():
@@ -785,6 +802,16 @@ def chat(
                     f"([dim]message {data.get('message_id')} still queued[/])"
                 )
 
+        if result.get("state") != "replied":
+            if (ctx.obj or {}).get("json"):
+                from .envelope import emit_error
+
+                emit_error(
+                    "command_error",
+                    f"no reply within {timeout:.0f}s",
+                    result,
+                )
+                raise SystemExit(1)
         emit(ctx, result, render=_render)
         if result.get("state") != "replied":
             raise SystemExit(1)

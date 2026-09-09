@@ -212,6 +212,15 @@ for n in 1 2 3 4 5; do
     fi
 done
 
+# S10 registers and removes this clone through the CLI.  It is deliberately
+# not part of register.py's permanent workspace set, so both lifecycle edges
+# are observable and a failed duplicate add cannot hide among pool slots.
+if [ ! -d "$E2E_STATEFUL_WORKSPACE/.git" ]; then
+    git clone -q "$E2E_REPO" "$E2E_STATEFUL_WORKSPACE"
+    git -C "$E2E_STATEFUL_WORKSPACE" config user.email e2e@example.com
+    git -C "$E2E_STATEFUL_WORKSPACE" config user.name "AQ E2E"
+fi
+
 if [ ! -d "$E2E_OTHER_REPO" ]; then
     echo "==> seeding bare git repo at $E2E_OTHER_REPO"
     seed_repo "$E2E_OTHER_REPO"
@@ -236,6 +245,41 @@ if [ ! -d "$onboarding_link/.git" ]; then
     git -C "$onboarding_link" -c user.email=e2e@example.com -c user.name="AQ E2E" \
         commit -q -m "seed linked onboarding repository"
 fi
+
+# S13's plugin is importable only when its directory is explicitly prepended
+# to PYTHONPATH.  importlib.metadata sees the tiny dist-info entry point, which
+# exercises the same dynamic CLI registration path as an installed plugin
+# without pip, a network checkout, or interpreter-wide mutation.
+mkdir -p "$AQ_E2E_PLUGIN_FIXTURE/aq_e2e_fixture-1.0.dist-info"
+cat > "$AQ_E2E_PLUGIN_FIXTURE/e2e_fixture_plugin.py" <<'PY'
+import click
+
+
+class E2EFixturePlugin:
+    def __init__(self):
+        self.config = {}
+
+    def cli_group(self):
+        @click.group("e2e-fixture")
+        def group():
+            """Disposable e2e plugin commands."""
+
+        @group.command("ping")
+        @click.option("--value", default="ok")
+        def ping(value):
+            click.echo(f"e2e-plugin:{value}")
+
+        return group
+PY
+cat > "$AQ_E2E_PLUGIN_FIXTURE/aq_e2e_fixture-1.0.dist-info/METADATA" <<'META'
+Metadata-Version: 2.1
+Name: aq-e2e-fixture
+Version: 1.0
+META
+cat > "$AQ_E2E_PLUGIN_FIXTURE/aq_e2e_fixture-1.0.dist-info/entry_points.txt" <<'ENTRYPOINTS'
+[aq.plugins]
+e2e-fixture = e2e_fixture_plugin:E2EFixturePlugin
+ENTRYPOINTS
 
 # ---------------------------------------------------------------------------
 # 3. Vault fixtures
@@ -365,12 +409,11 @@ cp "$REPO_ROOT/tests/fixtures/formulas/review-and-fix.md" "$E2E_VAULT/formulas/r
 # ---------------------------------------------------------------------------
 #
 # One switch decides the tier.  `AQ_E2E_SESSION_PROVIDER=tmux` means real
-# `claude` processes, and a live agent needs three subsystems Tier 1
-# deliberately runs without: the message queue and named sessions (the
-# supervisor chat the dashboard talks to), and playbooks (the default
-# pipeline's worker-filed triage is what routes a filed task).  Under
-# `fake` they stay off — each one either needs an LLM or adds chatter the
-# deterministic runner would have to wait out.
+# `claude` processes, and a live agent needs playbooks plus named supervisor
+# sessions.  Under `fake` those stay off because both need an LLM.  The
+# durable message queue remains enabled in both tiers; with
+# `messaging_platform: none` it is a local database sink for S11, not an
+# external messaging provider.
 
 if [ "$AQ_E2E_SESSION_PROVIDER" = "fake" ]; then
     TIER=1
@@ -465,17 +508,16 @@ work_graph:
 state_machine:
   enforce: false
 
-# Tier 2 only.  playbooks: the default pipeline's worker-filed triage is
-# what routes a task an agent files.  messages + supervisor_agent: the
-# per-project supervisor sessions the dashboard's chat addresses
-# (\`supervisor-<project>\`, or \`supervisor-global\`).  Under Tier 1 all three
-# are off — each needs an LLM, and the scripted runner drives every one of
-# their jobs itself.
+# Tier 2 only: playbooks provide worker-filed triage and supervisor_agent
+# launches the named chat sessions.  The durable message queue itself is on
+# in both tiers so S11 can use a synthetic user recipient as a database-only
+# sink.  messaging_platform:none means no Discord/webhook/external send is
+# possible, and fake sessions mean there is no model process to wake.
 playbooks:
   enabled: $LIVE_SUBSYSTEMS
 
 messages:
-  enabled: $LIVE_SUBSYSTEMS
+  enabled: true
 
 supervisor_agent:
   enabled: $LIVE_SUBSYSTEMS

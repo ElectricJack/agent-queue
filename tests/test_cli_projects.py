@@ -89,7 +89,7 @@ def test_project_details_and_set_forward_correct_args_and_render_client_errors(r
     client = _client({})
     with patch("src.cli.projects._get_client", return_value=client):
         result = runner.invoke(cli, ["project", "set", "p1", "bogus-key", "x"])
-    assert result.exit_code == 1
+    assert result.exit_code == 2
     assert "Unknown key" in result.output
     client.execute.assert_not_awaited()
 

@@ -20,11 +20,17 @@ into their respective CLI groups (e.g., ``aq git``, ``aq memory``, etc.).
 from __future__ import annotations
 
 import asyncio
+import functools
+import logging
+import sys
 
 import click
 from rich.console import Console
 
+from .global_options import AQGroup as GlobalOptionsAQGroup
 from .styles import AQ_THEME
+
+logger = logging.getLogger(__name__)
 
 # Create themed console
 console = Console(theme=AQ_THEME)
@@ -76,12 +82,15 @@ def _render_command_findings(details: dict) -> None:
         for finding in details.get(key) or []:
             if not isinstance(finding, dict):
                 continue
-            colour = "red" if severity == "error" else "yellow"
             where = f" ({finding['node']})" if finding.get("node") else ""
-            console.print(
-                f"  [{colour}]{severity}[/] {finding.get('rule')}{where}: "
-                f"{finding.get('detail')}"
+            from rich.text import Text
+
+            line = Text("  ")
+            line.append(severity, style="red" if severity == "error" else "yellow")
+            line.append(
+                f" {finding.get('rule')}{where}: {finding.get('detail')}"
             )
+            console.print(line)
 
 
 def _handle_errors(func):
@@ -109,7 +118,11 @@ def _handle_errors(func):
             if as_json:
                 emit_error(exc.code, exc.detail_message, exc.details or None)
             else:
-                console.print(f"[bold red]Error:[/] {exc}")
+                from rich.text import Text
+
+                line = Text("Error: ", style="bold red")
+                line.append(str(exc))
+                console.print(line)
                 _render_command_findings(exc.details or {})
             raise SystemExit(exc.exit_code)
 
@@ -146,6 +159,59 @@ def _handle_errors(func):
             _fail_command(exc)
 
     return wrapper
+
+
+class AQGroup(GlobalOptionsAQGroup):
+    """Root group with position-independent options and JSON usage errors."""
+
+    @staticmethod
+    def _wants_json(args) -> bool:
+        values = list(sys.argv[1:] if args is None else args)
+        try:
+            end = values.index("--")
+        except ValueError:
+            end = len(values)
+        return "--json" in values[:end]
+
+    def main(
+        self,
+        args=None,
+        prog_name=None,
+        complete_var=None,
+        standalone_mode=True,
+        windows_expand_args=True,
+        **extra,
+    ):
+        # In non-standalone mode Click deliberately exposes exceptions to its
+        # caller; preserve that API for embedding/tests.
+        if not standalone_mode or not self._wants_json(args):
+            return super().main(
+                args=args,
+                prog_name=prog_name,
+                complete_var=complete_var,
+                standalone_mode=standalone_mode,
+                windows_expand_args=windows_expand_args,
+                **extra,
+            )
+
+        from .envelope import emit_error
+
+        try:
+            rv = super().main(
+                args=args,
+                prog_name=prog_name,
+                complete_var=complete_var,
+                standalone_mode=False,
+                windows_expand_args=windows_expand_args,
+                **extra,
+            )
+        except click.UsageError as exc:
+            emit_error("usage_error", exc.format_message())
+            raise SystemExit(2) from exc
+        except click.ClickException as exc:
+            emit_error("command_error", exc.format_message())
+            raise SystemExit(exc.exit_code) from exc
+        raise SystemExit(rv if isinstance(rv, int) else 0)
 
 
 # ---------------------------------------------------------------------------
@@ -189,7 +255,7 @@ def _print_full_help(ctx: click.Context) -> None:
 # ---------------------------------------------------------------------------
 
 
-@click.group(invoke_without_command=True)
+@click.group(cls=AQGroup, invoke_without_command=True)
 @click.option(
     "--api-url",
     envvar="AGENT_QUEUE_API_URL",
@@ -207,7 +273,7 @@ def _print_full_help(ctx: click.Context) -> None:
     "output_json",
     is_flag=True,
     default=False,
-    help="Output raw JSON instead of formatted tables.",
+    help="Output one versioned JSON document instead of human formatting.",
 )
 @click.option(
     "--brief",
@@ -265,42 +331,35 @@ def status(ctx: click.Context) -> None:
 
     result = _run(_run_status())
 
-    # --json: emit raw result and return
-    if ctx.obj.get("json"):
-        json_data = result.to_dict() if hasattr(result, "to_dict") else result
-        console.print_json(data=json_data)
-        return
+    def _render(data):
+        # Adapt get_status response for format_status_overview.  The command
+        # may return a typed object or a plain dictionary.
+        def _get(obj, key, default=None):
+            if isinstance(obj, dict):
+                return obj.get(key, default)
+            val = getattr(obj, key, default)
+            if type(val).__name__ == "Unset":
+                return default
+            return val
 
-    # Adapt get_status response for format_status_overview.
-    # The formatter expects (projects: list, task_counts: dict).
-    # get_status returns {"tasks": {"by_status": {...}}, "projects": int, ...}
-    # get_status may return a typed object or a dict depending on the dispatch path.
-    def _get(obj, key, default=None):
-        if isinstance(obj, dict):
-            return obj.get(key, default)
-        val = getattr(obj, key, default)
-        if type(val).__name__ == "Unset":
-            return default
-        return val
+        tasks_section = _get(data, "tasks", {})
+        if isinstance(tasks_section, dict):
+            task_counts = tasks_section.get("by_status", {})
+        else:
+            task_counts = _get(tasks_section, "by_status", {})
+        task_counts = {k.upper(): v for k, v in task_counts.items()}
+        num_projects = _get(data, "projects", 0)
+        proj_list = [
+            project_proxy(
+                {"id": f"project-{i}", "name": f"project-{i}", "status": "ACTIVE"}
+            )
+            for i in range(num_projects)
+        ]
+        console.print(format_status_overview(proj_list, task_counts))
 
-    tasks_section = _get(result, "tasks", {})
-    if isinstance(tasks_section, dict):
-        task_counts = tasks_section.get("by_status", {})
-    else:
-        task_counts = _get(tasks_section, "by_status", {})
-    # Formatter expects uppercase status keys
-    task_counts = {k.upper(): v for k, v in task_counts.items()}
+    from .envelope import emit
 
-    # format_status_overview needs project list — but get_status only returns
-    # a count.  Build minimal proxies from the project count.
-    num_projects = _get(result, "projects", 0)
-    proj_list = [
-        project_proxy({"id": f"project-{i}", "name": f"project-{i}", "status": "ACTIVE"})
-        for i in range(num_projects)
-    ]
-
-    panel = format_status_overview(proj_list, task_counts)
-    console.print(panel)
+    emit(ctx, result, render=_render)
 
 
 # ---------------------------------------------------------------------------
@@ -346,53 +405,180 @@ from . import system_config as _system_config_cli  # noqa: E402, F401
 # ---------------------------------------------------------------------------
 
 
+_PLUGIN_CONFIG_TIMEOUT_SECONDS = 3.0
+
+
 def _load_plugin_config_from_db(plugin_id: str) -> dict | None:
-    """Try to load a plugin's config from the database (best-effort)."""
-    import json
+    """Read one plugin's saved config without initializing the database.
+
+    This function is called only from the plugin group's Click callback, so
+    imports and eager help options never touch the database.  The narrow
+    reader exposes no mutation methods, and the outer timeout bounds both
+    connecting and querying an unavailable PostgreSQL server.
+    """
+    from .client import PluginConfigReader
+
+    async def _fetch():
+        async with PluginConfigReader() as reader:
+            return await reader.get_config(plugin_id)
 
     try:
-        from .client import PluginClient
+        return _run(asyncio.wait_for(_fetch(), timeout=_PLUGIN_CONFIG_TIMEOUT_SECONDS))
+    except TimeoutError as exc:
+        raise RuntimeError(
+            f"database lookup timed out after {_PLUGIN_CONFIG_TIMEOUT_SECONDS:g}s"
+        ) from exc
 
-        client = PluginClient()
 
-        async def _fetch():
-            await client.connect()
-            try:
-                p = await client.get_plugin(plugin_id)
-                if p:
-                    return json.loads(p.get("config", "{}") or "{}")
-            finally:
-                await client.close()
-            return None
+def _configure_plugin_on_invoke(
+    plugin_id: str,
+    instance: object,
+    *,
+    config_loader=None,
+) -> None:
+    """Merge persisted config immediately before a plugin command runs.
 
-        return _run(_fetch())
-    except Exception:
+    Plugin CLI extensions historically fell back to their declared defaults
+    when the daemon database was unavailable.  Preserve that useful offline
+    behaviour, but make the fallback visible and actionable instead of
+    swallowing every exception during module import.
+    """
+    config_loader = config_loader or _load_plugin_config_from_db
+    try:
+        db_config = config_loader(plugin_id)
+    except Exception as exc:
+        click.echo(
+            f"Warning: could not load saved config for plugin '{plugin_id}': {exc}. "
+            "Using plugin defaults; check database.url or run this command from an "
+            "operator shell.",
+            err=True,
+        )
+        return
+
+    if db_config is None:
+        return
+    current = getattr(instance, "config", {})
+    if not isinstance(current, dict):
+        current = {}
+    instance.config = {**current, **db_config}
+
+
+def _defer_plugin_config(
+    plugin_id: str,
+    instance: object,
+    group: click.Group,
+    *,
+    config_loader=None,
+) -> None:
+    """Attach lazy configuration to *group* without affecting help paths."""
+    original_callback = group.callback
+
+    def configured_callback(*args, **kwargs):
+        _configure_plugin_on_invoke(plugin_id, instance, config_loader=config_loader)
+        if original_callback is not None:
+            return original_callback(*args, **kwargs)
         return None
 
+    if original_callback is not None:
+        configured_callback = functools.wraps(original_callback)(configured_callback)
+    group.callback = configured_callback
 
-def _load_plugin_cli_groups() -> None:
-    """Dynamically register CLI groups from installed aq.plugins entry points."""
+
+def _broken_plugin_group(plugin_id: str, exc: Exception) -> click.Group:
+    """Return a discoverable command that reports an entry-point failure."""
+    detail = f"{type(exc).__name__}: {exc}"
+
+    @click.group(
+        plugin_id,
+        invoke_without_command=True,
+        help=f"Unavailable plugin command ({detail}).",
+    )
+    @click.pass_context
+    def broken(ctx: click.Context) -> None:
+        if ctx.invoked_subcommand is None:
+            raise click.ClickException(
+                f"plugin '{plugin_id}' could not be loaded: {detail}. "
+                "Reinstall the plugin or inspect `aq plugin info`."
+            )
+
+    return broken
+
+
+def _tag_plugin_cli_tree(command: click.Command, plugin_name: str) -> None:
+    """Mark an external plugin's Click tree for inventory provenance."""
+    command._aq_registration = "plugin-extension"  # type: ignore[attr-defined]
+    command._aq_owner_kind = "external-plugin"  # type: ignore[attr-defined]
+    command._aq_owner = plugin_name  # type: ignore[attr-defined]
+    if isinstance(command, click.Group):
+        for child in command.commands.values():
+            _tag_plugin_cli_tree(child, plugin_name)
+
+
+def _load_plugin_cli_groups(
+    cli_group: click.Group | None = None,
+    *,
+    entry_point_provider=None,
+    config_loader=None,
+) -> list[str]:
+    """Register installed plugin CLI groups without allowing core shadowing.
+
+    The injectable providers keep plugin-present and plugin-absent startup
+    behavior testable without installing packages or contacting a database.
+    Returns the names that were successfully mounted.
+    """
+    cli_group = cli_group or cli
+    config_loader = config_loader or _load_plugin_config_from_db
+    mounted: list[str] = []
     try:
-        from importlib.metadata import entry_points
+        if entry_point_provider is None:
+            from importlib.metadata import entry_points
 
-        for ep in entry_points(group="aq.plugins"):
+            entry_point_provider = entry_points
+
+        for ep in entry_point_provider(group="aq.plugins"):
+            if ep.name in cli_group.commands:
+                logger.warning(
+                    "Plugin CLI entry point '%s' conflicts with an existing command; skipped",
+                    ep.name,
+                )
+                continue
             try:
                 cls = ep.load()
                 instance = cls()
-                # Load saved config from DB so CLI commands use the right defaults
-                db_config = _load_plugin_config_from_db(ep.name)
-                if db_config:
-                    instance.config = {**instance.config, **db_config}
                 group = instance.cli_group()
                 if group is not None:
-                    cli.add_command(group, ep.name)
-            except Exception:
-                pass
-    except Exception:
-        pass
+                    _defer_plugin_config(
+                        ep.name,
+                        instance,
+                        group,
+                        config_loader=config_loader,
+                    )
+                    _tag_plugin_cli_tree(group, ep.name)
+                    cli_group.add_command(group, ep.name)
+                    mounted.append(ep.name)
+            except Exception as exc:
+                logger.warning("Plugin CLI entry point '%s' failed: %s", ep.name, exc)
+                group = _broken_plugin_group(ep.name, exc)
+                _tag_plugin_cli_tree(group, ep.name)
+                cli_group.add_command(group, ep.name)
+    except Exception as exc:
+        logger.warning("Plugin CLI entry-point discovery failed: %s", exc)
+    return mounted
 
 
 _load_plugin_cli_groups()
+
+
+# ---------------------------------------------------------------------------
+# Global options at every position
+# ---------------------------------------------------------------------------
+# Must run last: it walks the finished command tree, so anything registered
+# after this point would not get the global options.  See
+# ``global_options.py`` for the grammar and the two exclusions.
+
+from .global_options import install_global_options  # noqa: E402
+
+install_global_options(cli)
 
 
 # ---------------------------------------------------------------------------

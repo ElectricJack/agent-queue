@@ -7,6 +7,10 @@ tags: [cli, interface]
 A modern, interactive terminal interface for AgentQueue that mirrors Discord
 slash commands with rich formatting, interactive menus, and fuzzy search.
 
+For evidence-backed support status per command, see the maintained
+[CLI command inventory](../reference/cli-command-inventory.md) and the
+[2026-09-09 final acceptance report](../reports/cli-audit-2026-09-08/README.md).
+
 ## Installation
 
 Install the CLI extra dependencies:
@@ -41,18 +45,25 @@ aq task search "login bug"
 
 ## Configuration
 
-The CLI connects directly to the AgentQueue SQLite database. It finds the
-database using this resolution order:
+The CLI delegates normal commands to the running daemon over HTTP. It resolves
+the API URL from `AQ_API_URL`, then the legacy `AGENT_QUEUE_API_URL`, then the
+`mcp_server` address in `~/.agent-queue/config.yaml`, and finally
+`http://127.0.0.1:8081`. `AQ_API_TOKEN`, when present, is sent as a bearer token
+and preserves the task/project scope of worker sessions.
 
-1. `--db` command-line flag
-2. `AGENT_QUEUE_DB` environment variable
-3. `database.path` from `~/.agent-queue/config.yaml`
-4. Default: `~/.agent-queue/agentqueue.db`
+Help and discovery are offline: `aq --help`, `aq --help-all`, `aq --version`,
+`aq schema`, and `aq test --aq-help` neither connect to the daemon nor open or
+migrate its database. Installed plugin command metadata remains visible in
+help. A plugin's saved configuration is read lazily only when that plugin's
+command group actually runs; the read is bounded and read-only. If the
+database is unavailable, the command reports why and continues with the
+plugin's declared defaults.
 
-### Environment Variable
+### Environment Variables
 
 ```bash
-export AGENT_QUEUE_DB=/path/to/agentqueue.db
+export AQ_API_URL=http://127.0.0.1:8081
+export AQ_API_TOKEN=...  # injected automatically in managed sessions
 ```
 
 ### Shell Alias
@@ -94,6 +105,16 @@ aq task details <task-id>              # Full task info with deps
 aq task create                         # Interactive wizard
 aq task create -p proj -t "Title" -d "Description"  # CLI flags
 aq task create --type bugfix --priority 200 ...
+
+# Scripted creation: one JSON envelope on stdout, the new id under data.created
+aq --json task create -p proj -t "Title" -d "Description"
+#   {"schema_version": 1, "data": {"created": "keen-harbor.4", "success": true,
+#    "task_id": "keen-harbor.4", "status": "DEFINED", "title": "Title", ...}}
+new_id=$(aq --json task create -p proj -t "Title" -d "D" | jq -r .data.created)
+
+# Workspace requirements (workspaces-v2 §5) — repeatable, KIND[=ALIAS]
+aq task create -p proj -t "Port the level loader" -d "..." \
+    --requires-kind game-repo --requires-kind engine-repo=engine
 
 # Task actions
 aq task approve <task-id>              # Approve for execution
@@ -186,9 +207,17 @@ aq test tests/ -k claim                # any pytest arguments; passed through un
 aq test --aq-status                    # slot occupancy: who is holding, who is waiting
 aq test --aq-no-wait tests/            # fail immediately instead of queueing
 aq test --aq-dry-run tests/            # print the pytest command that would run
-aq test --aq-all-markers tests/perf    # skip the default marker deselects
+aq test --aq-all-markers tests/perf    # override the default marker deselects
 aq test --aq-help                      # help (-h/--help belong to pytest)
 ```
+
+The suite requires `POSTGRES_TEST_DSN`. For the repository's disposable local
+server, run `docker compose up -d postgres` and export
+`POSTGRES_TEST_DSN=postgresql+asyncpg://agent_queue:agent_queue_dev@localhost:5533/postgres`.
+The wrapper fails before taking a slot when the variable is missing. Test runs
+derive unique, owner-tracked databases from that maintenance DSN and remove
+only their own databases during normal teardown; they never reuse, repair, or
+stamp an unexpected existing database.
 
 `aq test` acquires one of `resources.test_slots` `flock` slots before
 running, so concurrent agents cannot each spawn a full-width test run. It
@@ -214,9 +243,39 @@ Running `aq task create` without flags launches a 6-step wizard:
 3. **Description** — Task description
 4. **Priority** — Numeric priority (1-300, default 100)
 5. **Type** — Task type (feature/bugfix/refactor/test/docs/chore/research/plan)
-6. **Approval** — Whether human approval is required
+6. **Integration policy** — Inherit the project/system policy, require a pull
+   request, or merge directly on completion
 
-Press `Ctrl+C` at any step to cancel.
+Flags supplied alongside an incomplete command pre-fill their corresponding
+steps; only missing required values are prompted. In a non-interactive shell
+(including piped stdin), provide all of `--project`, `--title`, and
+`--description`; the command otherwise exits with usage guidance without
+contacting the daemon. `--json` is always non-interactive and follows the same
+rule. Press `Ctrl+C` at a wizard step to cancel cleanly without creating a task.
+
+### Declaring workspace requirements
+
+`--requires-kind` tells the daemon which workspace *kinds* a task needs, so the
+orchestrator can acquire one workspace per kind before the agent starts. It is
+repeatable and takes two forms:
+
+| Form | Sent as | Use it when |
+| --- | --- | --- |
+| `--requires-kind game-repo` | `"game-repo"` | The task needs one workspace of that kind. |
+| `--requires-kind game-repo=primary` | `{"kind": "game-repo", "alias": "primary"}` | The same kind is needed more than once, or the agent refers to it by alias. |
+
+Notes:
+
+- **Omitting it changes nothing.** A task with no `--requires-kind` keeps the
+  implicit single `project-repo` requirement.
+- **Auto-attached kinds need no flag.** `vault` is attached to every task.
+- **Unknown kinds are the daemon's call.** The CLI only rejects locally
+  malformed values (a missing kind before `=`, a missing alias after it, more
+  than one `=`); whether `game-repo` resolves is answered by the daemon against
+  `vault/[projects/<pid>/]workspace-kinds/`, and its error is what you see.
+- **Not available on `--graph` / `--from-spec`.** Graph documents carry no
+  per-node workspace requirements, so combining the flags is rejected rather
+  than silently dropped. Create such a task on its own.
 
 ### Fuzzy Task Selection
 
@@ -248,7 +307,7 @@ Use `-y` / `--yes` flag to skip.
 
 ## Architecture
 
-The CLI follows the same adapter pattern as the Discord and Telegram bots:
+The CLI uses the daemon as its authenticated command boundary:
 
 ```
 ┌────────────┐
@@ -256,15 +315,15 @@ The CLI follows the same adapter pattern as the Discord and Telegram bots:
 └─────┬──────┘
       │
 ┌─────┴──────┐
-│  CLIClient │──── Data access (reads from shared SQLite DB)
+│  CLIClient │──── Authenticated HTTP transport
 └─────┬──────┘
       │
 ┌─────┴──────┐
-│  Database  │──── Shared persistence (WAL mode for concurrent access)
+│   Daemon   │──── CommandHandler and PostgreSQL persistence
 └────────────┘
 ```
 
-The CLI reads directly from the same SQLite database the daemon uses.
-WAL journal mode ensures reads don't block the running daemon.
-Write operations (create, approve, stop, restart) use the same models
-and state machine validation as the rest of AgentQueue.
+Plugin installation and other filesystem-heavy plugin management commands are
+the narrow direct-database exception. Worker sessions retain their database
+sentinel and migration-scope guards, so those operator operations must be run
+outside a worktree slot.

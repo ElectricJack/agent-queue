@@ -25,7 +25,13 @@ from __future__ import annotations
 
 import json
 import os
+from collections.abc import Mapping
+from dataclasses import asdict, is_dataclass
+from datetime import date, datetime
+from enum import Enum
+from pathlib import Path
 from typing import Any, Callable
+from uuid import UUID
 
 import click
 
@@ -49,6 +55,24 @@ BRIEF_PROJECTIONS: dict[str, tuple[str, ...]] = {
     "gate": ("id", "gate_type", "status", "task_id"),
     "message": ("id", "from", "subject", "created_at", "read"),
     "workspace": ("id", "kind_id", "path", "locked_by"),
+    # `aq task create` (single task). The payload is a creation receipt, not a
+    # task row, so it has its own projection: `created` is the id a caller
+    # should read (`task_id` is its alias, kept because both ship today).
+    "task_created": ("created", "task_id", "title", "status", "project_id"),
+    "agent": ("id", "name", "state", "profile_id", "current_task_id"),
+    "project": ("id", "name", "status", "workspace", "max_concurrent_agents"),
+    "pool": (
+        "profile_id",
+        "enabled",
+        "min_active",
+        "max_active",
+        "desired",
+        "running_idle",
+        "running_busy",
+        "starting",
+        "draining",
+        "ready",
+    ),
     "integration": (
         "outcome",
         "project_id",
@@ -67,16 +91,78 @@ BRIEF_PROJECTIONS: dict[str, tuple[str, ...]] = {
     ),
 }
 
+# Public names in the output contract occasionally differ from the internal
+# CommandHandler row.  Keep those translations beside the projections so
+# every command (handwritten and generated) produces the same brief shape.
+_BRIEF_ALIASES: dict[str, dict[str, tuple[str, ...]]] = {
+    "workspace": {
+        "path": ("path", "workspace_path"),
+        "locked_by": ("locked_by", "locked_by_agent_id", "locked_by_task_id"),
+    },
+}
+
 
 def _json_legacy_active() -> bool:
     return os.environ.get(AQ_JSON_LEGACY_ENV) == "1"
 
 
-def _project_item(item: Any, fields: tuple[str, ...]) -> Any:
+def _is_unset(value: Any) -> bool:
+    """Recognise generated-client ``Unset`` values without importing it."""
+    return type(value).__name__ == "Unset"
+
+
+def to_jsonable(value: Any) -> Any:
+    """Convert CLI payloads to lossless JSON-compatible Python values.
+
+    Generic ``default=str`` silently turned generated models (and nested
+    ``Unset`` sentinels) into repr strings.  The CLI can receive either plain
+    CommandHandler dictionaries or generated-client/Pydantic models, so the
+    conversion deliberately uses their public projection methods and then
+    recurses.  Missing ``Unset`` mapping fields are omitted; a scalar Unset is
+    represented as JSON null.
+    """
+    if _is_unset(value):
+        return None
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    if isinstance(value, Enum):
+        return to_jsonable(value.value)
+    if isinstance(value, (datetime, date)):
+        return value.isoformat()
+    if isinstance(value, (Path, UUID)):
+        return str(value)
+    if isinstance(value, Mapping):
+        return {str(key): to_jsonable(item) for key, item in value.items() if not _is_unset(item)}
+    if isinstance(value, (list, tuple, set, frozenset)):
+        return [to_jsonable(item) for item in value if not _is_unset(item)]
+    if hasattr(value, "to_dict"):
+        return to_jsonable(value.to_dict())
+    if hasattr(value, "model_dump"):
+        return to_jsonable(value.model_dump(mode="json", exclude_unset=True))
+    if is_dataclass(value) and not isinstance(value, type):
+        return to_jsonable(asdict(value))
+    raise TypeError(f"{type(value).__name__} is not JSON serializable")
+
+
+def _project_item(item: Any, fields: tuple[str, ...], entity: str) -> Any:
     """Trim a single entity (dict or attribute-bearing object) to *fields*."""
-    if isinstance(item, dict):
-        return {k: item.get(k) for k in fields}
-    return {k: getattr(item, k, None) for k in fields}
+    aliases = _BRIEF_ALIASES.get(entity, {})
+    projected: dict[str, Any] = {}
+    for field in fields:
+        candidates = aliases.get(field, (field,))
+        value = None
+        for candidate in candidates:
+            if isinstance(item, Mapping):
+                if candidate in item and not _is_unset(item[candidate]):
+                    value = item[candidate]
+                    break
+            else:
+                candidate_value = getattr(item, candidate, None)
+                if not _is_unset(candidate_value) and candidate_value is not None:
+                    value = candidate_value
+                    break
+        projected[field] = value
+    return projected
 
 
 def apply_brief(data: Any, entity: str | None) -> Any:
@@ -91,9 +177,9 @@ def apply_brief(data: Any, entity: str | None) -> Any:
     if not fields:
         return data
     if isinstance(data, list):
-        return [_project_item(item, fields) for item in data]
-    if isinstance(data, dict):
-        return _project_item(data, fields)
+        return [_project_item(item, fields, entity) for item in data]
+    if isinstance(data, Mapping) or hasattr(data, "to_dict") or hasattr(data, "model_dump"):
+        return _project_item(data, fields, entity)
     return data
 
 
@@ -120,8 +206,8 @@ def envelope(data: Any, *, total: int | None = None) -> dict:
 def error_envelope(code: str, message: str, details: Any = None) -> dict:
     """Build the versioned error envelope (design §4.1).
 
-    Known codes: ``command_error``, ``not_found``, ``out_of_scope``,
-    ``daemon_unreachable``, ``paused``.
+    Known codes: ``usage_error``, ``command_error``, ``not_found``,
+    ``out_of_scope``, ``daemon_unreachable``, ``paused``.
 
     *details* is the command's structured error payload when it has one
     (``create_task_graph`` returns ``errors``/``warnings`` finding lists).
@@ -147,7 +233,21 @@ def emit_error(code: str, message: str, details: Any = None) -> None:
     width, splitting the message mid-sentence. Agent-facing commands
     (``aq reply``, ``aq inbox``) depend on this staying machine-readable.
     """
-    click.echo(json.dumps(error_envelope(code, message, details), default=str))
+    click.echo(json.dumps(to_jsonable(error_envelope(code, message, details)), ensure_ascii=False))
+
+
+def reject_json_mode(ctx: click.Context, command: str, reason: str) -> None:
+    """Reject a human-only command without leaking its output into JSON stdout.
+
+    Local operator workflows can own interactive prompts, subprocess progress,
+    or multi-step diagnostics that are not a single command result.  They must
+    make that boundary explicit before doing work when the global ``--json``
+    flag is present.
+    """
+    if not bool((ctx.obj or {}).get("json")):
+        return
+    emit_error("usage_error", f"{command} does not support --json: {reason}")
+    raise SystemExit(2)
 
 
 def emit(
@@ -156,6 +256,7 @@ def emit(
     *,
     entity: str | None = None,
     total: int | None = None,
+    legacy_data: Any | None = None,
     render: Callable[[Any], None] | None = None,
 ) -> None:
     """Single output funnel for `aq` commands (design §5.2).
@@ -164,26 +265,26 @@ def emit(
       under ``AQ_JSON_LEGACY=1``, the raw payload) as one JSON object on
       stdout. ``--brief`` (``ctx.obj["brief"]``) trims *data* via
       :func:`apply_brief` first when an *entity* is given.
-    - default (human) mode: delegates to *render*, which always receives
-      the untrimmed *data* — human-mode formatters keep full control over
-      their columns/panels. If no *render* is supplied, falls back to an
-      indented JSON dump (adequate for commands that don't have a Rich
-      formatter yet).
+    - default (human) mode: delegates to *render*. With ``--brief`` the
+      callback receives the same projected payload as JSON mode; otherwise it
+      receives *data* unchanged. If no *render* is supplied, falls back to an
+      indented JSON dump (adequate for commands without a Rich formatter).
     """
     obj = ctx.obj or {}
     as_json = bool(obj.get("json"))
+    payload = apply_brief(data, entity) if obj.get("brief") else data
 
     if as_json:
-        payload = apply_brief(data, entity) if obj.get("brief") else data
         if _json_legacy_active():
             click.echo(_LEGACY_WARNING, err=True)
-            click.echo(json.dumps(payload, default=str))
+            raw = payload if legacy_data is None else legacy_data
+            click.echo(json.dumps(to_jsonable(raw), ensure_ascii=False))
         else:
-            click.echo(json.dumps(envelope(payload, total=total), default=str))
+            click.echo(json.dumps(to_jsonable(envelope(payload, total=total)), ensure_ascii=False))
         return
 
     if render is not None:
-        render(data)
+        render(payload)
         return
 
-    click.echo(json.dumps(data, default=str, indent=2))
+    click.echo(json.dumps(to_jsonable(payload), ensure_ascii=False, indent=2))

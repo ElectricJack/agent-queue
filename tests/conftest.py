@@ -52,22 +52,52 @@ def _refuse_production_database() -> None:
 _refuse_production_database()
 
 
-# ── PostgreSQL backend shim (AQ_TEST_BACKEND=postgres) ─────────────────────
-# Off by default.  When on, every SQLite Database(...) in the suite is routed
-# to a template-cloned Postgres database leased per test.  See
-# tests/pg_backend_shim.py and docs/superpowers/specs/
-# 2026-09-07-sqlite-removal-implementation.md §T0.
+# ── PostgreSQL test substrate ──────────────────────────────────────────────
+# PostgreSQL is the suite's only backend. Every test leases a run-owned,
+# template-cloned database. See tests/db_fixtures.py and the SQLite-removal
+# implementation spec §T0.
 _PG_POOL = None
 _PG_POOL_DSNS: list[str] = []
 
-#: Resolved at import time on purpose: ``ensure_worker_postgres_dsn`` calls
-#: ``asyncio.run`` internally, so it cannot run inside the async fixture below.
-_PG_BASE_DSN: str | None = _resolve_base_dsn()
+_PG_BASE_DSN: str | None = None
+
+
+def pytest_configure(config) -> None:
+    """Validate the required DSN once, before collection or worker startup."""
+    from src.cli.test_runner import postgres_test_dsn_error
+
+    error = postgres_test_dsn_error()
+    if error:
+        raise pytest.UsageError(error)
+
+    # Collection validates configuration but must not create test resources.
+    if getattr(config.option, "collectonly", False):
+        return
+
+    # Under xdist the controller coordinates only; each worker derives its own
+    # database after PYTEST_XDIST_WORKER is present. Avoid creating a controller
+    # database that no test can use and no fixture would clean up.
+    is_xdist_worker = hasattr(config, "workerinput")
+    num_processes = getattr(config.option, "numprocesses", 0)
+    if num_processes and not is_xdist_worker:
+        return
+
+    global _PG_BASE_DSN
+    _PG_BASE_DSN = _resolve_base_dsn()
+
+
+def pytest_sessionfinish(session, exitstatus) -> None:
+    """Clean resources created during collection even when no test ran."""
+    import asyncio
+
+    from tests.pg_dsn import dispose_owned_databases
+
+    asyncio.run(dispose_owned_databases())
 
 
 @pytest.fixture(scope="session", autouse=True)
 async def _dispose_pg_pool():
-    """Remove this run's uniquely named databases after all tests finish."""
+    """Remove this worker's template-cloned lease databases."""
     yield
     if _PG_POOL is not None:
         await _PG_POOL.dispose()
@@ -88,7 +118,7 @@ async def _pg_backend():
 
     if _PG_POOL is None:
         if not _PG_BASE_DSN:
-            pytest.fail("POSTGRES_TEST_DSN is not set; the suite needs a PostgreSQL server")
+            pytest.fail("PostgreSQL test preflight did not provision this worker's database")
         pool = LeasePool(_PG_BASE_DSN, os.environ.get("PYTEST_XDIST_WORKER", "master"))
         try:
             pool_dsns = [await pool.acquire() for _ in range(POOL_SIZE)]

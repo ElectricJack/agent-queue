@@ -22,7 +22,6 @@ _UNSTRUCTURED_EXEMPT: set[str] = {
     # Leaving them exempt keeps the guard useful for new additions (any new
     # categorized command without a model still fails) without demanding a
     # cleanup pass that isn't part of this lane.
-    "ask_human",
     "create_task_graph",
     "db_preflight_hierarchy",
     "doctor",

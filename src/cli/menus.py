@@ -178,11 +178,18 @@ def prompt_choice(
         )
         return result.strip() if result else default
     except (KeyboardInterrupt, EOFError):
-        return default
+        return None
 
 
 def task_creation_wizard(
     project_ids: list[str],
+    *,
+    project: str | None = None,
+    title: str | None = None,
+    description: str | None = None,
+    priority: int | None = None,
+    task_type: str | None = None,
+    integration_mode: str | None = None,
 ) -> dict[str, Any] | None:
     """Interactive multi-step task creation wizard.
 
@@ -196,55 +203,77 @@ def task_creation_wizard(
     console.print()
 
     # Step 1: Project
-    console.print("[bold cyan]Step 1/6:[/] Select project")
-    project_id = prompt_input(
-        "Project ID",
-        completer_words=project_ids,
-        required=True,
-    )
+    if project is None:
+        console.print("[bold cyan]Step 1/6:[/] Select project")
+        project_id = prompt_input(
+            "Project ID",
+            completer_words=project_ids,
+            required=True,
+        )
+    else:
+        project_id = project
     if not project_id:
         return None
 
     # Step 2: Title
     console.print()
-    console.print("[bold cyan]Step 2/6:[/] Task title")
-    title = prompt_input("Title", required=True)
+    if title is None:
+        console.print("[bold cyan]Step 2/6:[/] Task title")
+        title = prompt_input("Title", required=True)
     if not title:
         return None
 
     # Step 3: Description
     console.print()
-    console.print("[bold cyan]Step 3/6:[/] Task description")
-    console.print("[dim]  (Enter a single line, or use Ctrl+D for multiline)[/]")
-    description = prompt_input("Description", required=True)
+    if description is None:
+        console.print("[bold cyan]Step 3/6:[/] Task description")
+        console.print("[dim]  (Enter a single line, or use Ctrl+D for multiline)[/]")
+        description = prompt_input("Description", required=True)
     if not description:
         return None
 
     # Step 4: Priority
     console.print()
-    console.print("[bold cyan]Step 4/6:[/] Priority (1-300, default 100)")
-    pri_str = prompt_input("Priority", default="100", required=False)
-    try:
-        priority = int(pri_str) if pri_str else 100
-    except ValueError:
-        priority = 100
+    if priority is None:
+        console.print("[bold cyan]Step 4/6:[/] Priority (1-300, default 100)")
+        while True:
+            pri_str = prompt_input("Priority", default="100", required=False)
+            if pri_str is None:
+                # ``prompt_input`` represents an empty optional field as
+                # None; for priority that intentionally selects its default.
+                priority = 100
+                break
+            try:
+                priority = int(pri_str) if pri_str else 100
+            except ValueError:
+                console.print("[red]Priority must be a whole number from 1 to 300.[/]")
+                continue
+            if 1 <= priority <= 300:
+                break
+            console.print("[red]Priority must be between 1 and 300.[/]")
 
     # Step 5: Task type
     console.print()
-    console.print("[bold cyan]Step 5/6:[/] Task type")
-    task_types = ["feature", "bugfix", "refactor", "test", "docs", "chore", "research", "plan"]
-    type_display = ", ".join(f"{TASK_TYPE_ICONS.get(t, '')} {t}" for t in task_types)
-    console.print(f"  [dim]{type_display}[/]")
-    task_type = prompt_choice("Type", task_types, default="feature")
+    if task_type is None:
+        console.print("[bold cyan]Step 5/6:[/] Task type")
+        task_types = ["feature", "bugfix", "refactor", "test", "docs", "chore", "research", "plan"]
+        type_display = ", ".join(f"{TASK_TYPE_ICONS.get(t, '')} {t}" for t in task_types)
+        console.print(f"  [dim]{type_display}[/]")
+        task_type = prompt_choice("Type", task_types, default="feature")
+    if task_type is None:
+        return None
 
     # Step 6: Integration policy
     console.print()
-    console.print("[bold cyan]Step 6/6:[/] Integration policy?")
-    console.print("  [dim]inherit = project/system policy decides; pull_request = "
-                  "push branch + open PR; direct = merge to default on completion[/]")
-    integration_mode = prompt_choice(
-        "Integration mode", ["inherit", "pull_request", "direct"], default="inherit"
-    )
+    if integration_mode is None:
+        console.print("[bold cyan]Step 6/6:[/] Integration policy?")
+        console.print("  [dim]inherit = project/system policy decides; pull_request = "
+                      "push branch + open PR; direct = merge to default on completion[/]")
+        integration_mode = prompt_choice(
+            "Integration mode", ["inherit", "pull_request", "direct"], default="inherit"
+        )
+    if integration_mode is None:
+        return None
 
     console.print()
     console.print("[bold green]✅ Task configuration complete![/]")

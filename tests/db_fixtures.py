@@ -149,10 +149,22 @@ async def clone_database(base_dsn: str, name: str) -> str:
     """
     template = await ensure_template(base_dsn)
     prefix, _ = _split(base_dsn)
+    import asyncpg
+
     conn = await _connect_admin(base_dsn)
     try:
-        await conn.execute(f'DROP DATABASE IF EXISTS "{name}" WITH (FORCE)')
-        await conn.execute(f'CREATE DATABASE "{name}" TEMPLATE "{template}"')
+        if await _database_exists(conn, name):
+            raise RuntimeError(
+                f"refusing to replace existing PostgreSQL test database {name!r}; "
+                "it is not owned by this lease pool"
+            )
+        try:
+            await conn.execute(f'CREATE DATABASE "{name}" TEMPLATE "{template}"')
+        except asyncpg.exceptions.DuplicateDatabaseError as exc:
+            raise RuntimeError(
+                f"refusing to replace concurrently created PostgreSQL test database {name!r}; "
+                "retry with a fresh test-run token"
+            ) from exc
     finally:
         await conn.close()
     return f"{prefix}/{name}"

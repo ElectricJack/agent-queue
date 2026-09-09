@@ -1668,6 +1668,15 @@ def ensure_default_aq_skills(data_dir: str) -> dict:
     locations) survives daemon restarts. To pick the shipped version
     back up in one place, delete that copy and restart.
 
+    The cost of that rule is silent drift the other way: once a shipped
+    skill is *corrected* in-tree, every install that already has the old
+    file keeps handing agents stale guidance. ``aq doctor --check
+    skills.installed_drift`` (:mod:`src.doctor.skill_checks`) reports it,
+    and ``--fix`` backs each drifted copy up as ``SKILL.md.bak`` beside
+    itself before re-copying the shipped version. An agent inside a task
+    worktree cannot do this — the installed copies live outside the
+    workspace — so a skill fix ships here and the operator runs the check.
+
     Args:
         data_dir: Ignored — skills ship into per-user harness dirs so
             cross-session discovery works.

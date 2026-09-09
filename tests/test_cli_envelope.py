@@ -21,6 +21,7 @@ from src.cli.envelope import (
     emit,
     envelope,
     error_envelope,
+    to_jsonable,
 )
 
 
@@ -110,8 +111,21 @@ class TestBriefProjections:
             "gate",
             "message",
             "workspace",
+            "task_created",
+            "agent",
+            "project",
+            "pool",
             "integration",
         }
+
+    def test_task_created_brief_matches_design_table(self):
+        assert BRIEF_PROJECTIONS["task_created"] == (
+            "created",
+            "task_id",
+            "title",
+            "status",
+            "project_id",
+        )
 
     def test_task_brief_matches_design_table(self):
         assert BRIEF_PROJECTIONS["task"] == (
@@ -189,6 +203,23 @@ class TestBriefProjections:
         assert trimmed["title"] is None
         assert trimmed["id"] == "t1"
 
+    def test_workspace_brief_uses_stable_public_aliases(self):
+        trimmed = apply_brief(
+            {
+                "id": "w1",
+                "kind_id": "project-repo",
+                "workspace_path": "/tmp/repo",
+                "locked_by_agent_id": "agent-1",
+            },
+            "workspace",
+        )
+        assert trimmed == {
+            "id": "w1",
+            "kind_id": "project-repo",
+            "path": "/tmp/repo",
+            "locked_by": "agent-1",
+        }
+
 
 # ---------------------------------------------------------------------------
 # emit() — the CLI output funnel (unit-level, using a bare Namespace ctx)
@@ -228,7 +259,7 @@ class TestEmit:
         out = json.loads(capsys.readouterr().out)
         assert "description" not in out["data"]
 
-    def test_human_mode_calls_render_with_untrimmed_data(self, capsys):
+    def test_human_brief_calls_render_with_projected_data(self, capsys):
         seen = {}
 
         def _render(data):
@@ -244,8 +275,25 @@ class TestEmit:
             "description": "keep me",
         }
         emit(_FakeCtx({"json": False, "brief": True}), full, entity="task", render=_render)
-        assert seen["data"] == full  # render always gets the untrimmed payload
+        assert seen["data"] == {
+            "id": "t1",
+            "title": "T",
+            "status": "READY",
+            "priority": 1,
+            "project_id": "p",
+            "assigned_agent": None,
+        }
         assert capsys.readouterr().out == ""
+
+    def test_typed_models_unset_and_unicode_are_normalized(self):
+        class Unset:
+            pass
+
+        class Typed:
+            def to_dict(self):
+                return {"title": "雪", "missing": Unset(), "rows": [{"value": 1}]}
+
+        assert to_jsonable(Typed()) == {"title": "雪", "rows": [{"value": 1}]}
 
     def test_human_mode_without_render_falls_back_to_json_dump(self, capsys):
         emit(_FakeCtx({"json": False}), {"id": "t1"})
@@ -309,6 +357,116 @@ class TestGlobalBriefFlag:
             assert result2.output.strip() == "False"
         finally:
             cli.commands.pop("_probe_brief", None)
+
+
+class TestCrossFamilySuccessContract:
+    """Generated, handwritten, and operational families share one funnel."""
+
+    def test_generated_project_list_is_logical_list_with_pagination(self, runner):
+        from src.cli.app import cli
+
+        raw = {
+            "projects": [
+                {
+                    "id": "p1",
+                    "name": "Snow 雪",
+                    "status": "ACTIVE",
+                    "workspace": "/tmp/p1",
+                    "max_concurrent_agents": 2,
+                }
+            ]
+        }
+        mock = _mock_client({"list_projects": raw})
+        with patch("src.cli.app._get_client", return_value=mock):
+            result = runner.invoke(cli, ["--json", "--brief", "project", "list"])
+
+        assert result.exit_code == 0, result.output
+        payload = json.loads(result.stdout)
+        assert payload["data"] == raw["projects"]
+        assert payload["pagination"] == {"returned": 1, "total": 1, "truncated": False}
+
+    def test_generated_pool_status_is_enveloped_and_brief(self, runner):
+        from src.cli.app import cli
+
+        row = {
+            "profile_id": "worker",
+            "enabled": True,
+            "min_active": 1,
+            "max_active": 3,
+            "desired": 2,
+            "running_idle": 1,
+            "running_busy": 1,
+            "starting": 0,
+            "draining": 0,
+            "ready": 4,
+            "instances": [{"session_id": "s1"}],
+        }
+        mock = _mock_client({"pool_status": {"success": True, "pools": [row]}})
+        with patch("src.cli.app._get_client", return_value=mock):
+            result = runner.invoke(cli, ["--json", "--brief", "pool", "status"])
+
+        payload = json.loads(result.stdout)
+        assert result.exit_code == 0, result.output
+        assert payload["data"][0]["profile_id"] == "worker"
+        assert "instances" not in payload["data"][0]
+        assert payload["pagination"]["returned"] == 1
+
+    def test_handwritten_status_uses_the_same_envelope(self, runner):
+        from src.cli.app import cli
+
+        mock = _mock_client(
+            {"get_status": {"projects": 1, "tasks": {"by_status": {}}, "label": "雪"}}
+        )
+        with patch("src.cli.app._get_client", return_value=mock):
+            result = runner.invoke(cli, ["--json", "status"])
+
+        assert result.exit_code == 0, result.output
+        assert json.loads(result.stdout)["data"]["label"] == "雪"
+        assert "\\u96ea" not in result.stdout
+
+    def test_legacy_generated_list_restores_the_backend_wrapper(self, runner, monkeypatch):
+        from src.cli.app import cli
+
+        monkeypatch.setenv("AQ_JSON_LEGACY", "1")
+        raw = {"projects": [{"id": "p1", "name": "P", "status": "ACTIVE"}]}
+        mock = _mock_client({"list_projects": raw})
+        with patch("src.cli.app._get_client", return_value=mock):
+            result = runner.invoke(cli, ["--json", "project", "list"])
+
+        assert result.exit_code == 0, result.output
+        assert json.loads(result.stdout) == raw
+        assert "AQ_JSON_LEGACY" in result.stderr
+
+    def test_click_usage_error_is_one_json_document_and_exit_2(self, runner):
+        from src.cli.app import cli
+
+        result = runner.invoke(cli, ["--json", "task", "show"])
+        assert result.exit_code == 2
+        assert json.loads(result.stdout)["error"]["code"] == "usage_error"
+        assert result.stderr == ""
+
+    @pytest.mark.parametrize(
+        "args, command",
+        [
+            (["vault", "migrate"], "aq vault"),
+            (["db", "current"], "aq db"),
+            (["start"], "aq start"),
+            (["stop"], "aq stop"),
+            (["restart"], "aq restart"),
+        ],
+    )
+    def test_local_operator_workflows_reject_json_before_side_effects(self, runner, args, command):
+        """Human-only local operations still honor the one-document rule."""
+        from src.cli.app import cli
+
+        result = runner.invoke(cli, ["--json", *args])
+
+        assert result.exit_code == 2
+        assert result.stderr == ""
+        assert result.stdout.count("\n") == 1
+        payload = json.loads(result.stdout)
+        assert payload["error"]["code"] == "usage_error"
+        assert payload["error"]["message"].startswith(f"{command} does not support --json")
 
 
 # ---------------------------------------------------------------------------
@@ -426,21 +584,25 @@ class TestTaskShowSetListDetailsCLI:
                     "status": "IN_PROGRESS",
                     "priority": 100,
                     "description": "d",
-                    "depends_on": [{
-                        "id": "origin",
-                        "title": "Origin",
-                        "status": "COMPLETED",
-                        "dep_type": "blocks",
-                        "reason": "The new task consumes the origin's schema",
-                    }],
+                    "depends_on": [
+                        {
+                            "id": "origin",
+                            "title": "Origin",
+                            "status": "COMPLETED",
+                            "dep_type": "blocks",
+                            "reason": "The new task consumes the origin's schema",
+                        }
+                    ],
                     "blocks": [],
-                    "provenance": [{
-                        "id": "discovery",
-                        "title": "Discovery",
-                        "status": "IN_PROGRESS",
-                        "dep_type": "discovered-from",
-                        "reason": "A failing integration test revealed the follow-up",
-                    }],
+                    "provenance": [
+                        {
+                            "id": "discovery",
+                            "title": "Discovery",
+                            "status": "IN_PROGRESS",
+                            "dep_type": "discovered-from",
+                            "reason": "A failing integration test revealed the follow-up",
+                        }
+                    ],
                     "context": [],
                     "labels": ["urgent"],
                 }
@@ -465,21 +627,25 @@ class TestTaskShowSetListDetailsCLI:
                     "status": "IN_PROGRESS",
                     "priority": 100,
                     "description": "d",
-                    "depends_on": [{
-                        "id": "origin",
-                        "title": "Origin",
-                        "status": "COMPLETED",
-                        "dep_type": "blocks",
-                        "reason": "The new task consumes the origin's schema",
-                    }],
+                    "depends_on": [
+                        {
+                            "id": "origin",
+                            "title": "Origin",
+                            "status": "COMPLETED",
+                            "dep_type": "blocks",
+                            "reason": "The new task consumes the origin's schema",
+                        }
+                    ],
                     "blocks": [],
-                    "provenance": [{
-                        "id": "discovery",
-                        "title": "Discovery",
-                        "status": "IN_PROGRESS",
-                        "dep_type": "discovered-from",
-                        "reason": "A failing integration test revealed the follow-up",
-                    }],
+                    "provenance": [
+                        {
+                            "id": "discovery",
+                            "title": "Discovery",
+                            "status": "IN_PROGRESS",
+                            "dep_type": "discovered-from",
+                            "reason": "A failing integration test revealed the follow-up",
+                        }
+                    ],
                     "context": [],
                     "labels": ["urgent"],
                 }
@@ -638,15 +804,11 @@ class TestSchemaCLI:
     def test_schema_json_envelope(self, runner):
         from src.cli.app import cli
 
-        mock = _mock_client(
-            {
-                "get_schema": {
-                    "schema_version": 1,
-                    "enums": {"task_status": ["DEFINED", "READY"]},
-                }
-            }
-        )
-        with patch("src.cli.agent_surface._get_client", return_value=mock):
+        schema = {
+            "schema_version": 1,
+            "enums": {"task_status": ["DEFINED", "READY"]},
+        }
+        with patch("src.surface_schema.get_surface_schema", return_value=schema):
             result = runner.invoke(cli, ["--json", "schema"])
         assert result.exit_code == 0, result.output
         payload = json.loads(result.output)
@@ -656,15 +818,11 @@ class TestSchemaCLI:
     def test_schema_human_mode_renders_table(self, runner):
         from src.cli.app import cli
 
-        mock = _mock_client(
-            {
-                "get_schema": {
-                    "schema_version": 1,
-                    "enums": {"task_status": ["DEFINED", "READY"]},
-                }
-            }
-        )
-        with patch("src.cli.agent_surface._get_client", return_value=mock):
+        schema = {
+            "schema_version": 1,
+            "enums": {"task_status": ["DEFINED", "READY"]},
+        }
+        with patch("src.surface_schema.get_surface_schema", return_value=schema):
             result = runner.invoke(cli, ["schema"])
         assert result.exit_code == 0, result.output
         assert "task_status" in result.output
@@ -792,6 +950,31 @@ class TestJsonErrorEnvelope:
         assert "cycle" in result.output
         assert "unknown_profile" in result.output
 
+    def test_human_error_treats_untrusted_rich_markup_as_text(self, runner):
+        from src.cli.app import cli
+        from src.cli.exceptions import CommandError
+
+        exc = CommandError(
+            "list_tasks",
+            "[bold red]not formatting[/]",
+            details={
+                "errors": [
+                    {
+                        "rule": "[link=https://evil.invalid]rule[/link]",
+                        "detail": "[red]literal detail[/red]",
+                    }
+                ]
+            },
+        )
+        mock = _mock_client({"list_tasks": exc})
+        with patch("src.cli.tasks._get_client", return_value=mock):
+            result = runner.invoke(cli, ["task", "list"])
+
+        assert result.exit_code == 1
+        assert "[bold red]not formatting[/]" in result.output
+        assert "[link=https://evil.invalid]rule[/link]" in result.output
+        assert "[red]literal detail[/red]" in result.output
+
     def test_daemon_unreachable_exits_3_and_never_prompts(self, runner):
         """Under --json the daemon-down path used to print
         `Start the daemon? [Y/n]` and then `Aborted!` — so `aq reply` /
@@ -898,6 +1081,25 @@ class TestErrorDetailsPlumbing:
                 await client._execute_generic("create_task_graph", {})
             assert exc.value.details["errors"][0]["rule"] == "cycle"
             assert exc.value.exit_code == 1
+        finally:
+            await client._http.aclose()
+
+    async def test_client_classifies_read_timeout_as_ambiguous_response(self):
+        import httpx
+
+        from src.cli.client import CLIClient
+        from src.cli.exceptions import CommandResponseError
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            raise httpx.ReadTimeout("timed out", request=request)
+
+        client = CLIClient(base_url="http://x")
+        client._http = httpx.AsyncClient(
+            base_url="http://x", transport=httpx.MockTransport(handler)
+        )
+        try:
+            with pytest.raises(CommandResponseError):
+                await client._execute_generic("list_tasks", {})
         finally:
             await client._http.aclose()
 

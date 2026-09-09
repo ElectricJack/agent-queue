@@ -40,7 +40,7 @@ src/api/
 src/commands/
   surface_commands.py               # NEW mixin — _cmd_prime, _cmd_get_schema, _cmd_task_show,
                                     #   _cmd_task_set, _cmd_task_close, _cmd_task_heartbeat,
-                                    #   _cmd_ask_human, _cmd_task_handoff
+                                    #   _cmd_task_handoff
   handler.py                        # MOD — mix in SurfaceCommandsMixin
 
 src/cli/
@@ -137,7 +137,6 @@ allowlist exactly):
 | `task_set` | `task_id`, `branch?`, `pr_url?`, `work_dir?`, `note?`, `labels_add?`, `labels_remove?`, `meta?` | work-state contract writes; **no status transitions** (state machine owned by [[../design/work-graph]]) |
 | `task_close` | `task_id`, `outcome`, `failure_class?`, `work_outcome?`, `commit?`, `notes?` | validates enums via `get_schema` source, delegates transition to work-graph's `transition_task`; emits `task.closed` |
 | `task_heartbeat` | `task_id?` | refreshes `agents.last_heartbeat` / lease; returns `lease_expires_at` |
-| `ask_human` | `question`, `task_id?` | creates a human gate ([[../design/work-graph]]) + message; returns ids |
 | `task_handoff` | `subject?`, `detail?`, `auto: bool` | writes `task_context(type=handoff)`; non-auto also emits `session.restart_requested` on the EventBus |
 
 `message_send|message_inbox|message_reply` are implemented by [[../design/supervisor-agent]];
@@ -145,8 +144,14 @@ allowlist exactly):
 `session_*` by [[../design/session-runtime]]. This spec only requires their names to match
 the inventory. All new commands are auto-exposed via MCP pass 3
 (`src/mcp_registration.py:142` `_discover_all_commands`) — add explicit rich schemas to
-`src/tools/definitions.py` for the nine allowlist commands so task-scope schemas stay tight
+`src/tools/definitions.py` for the task allowlist commands so task-scope schemas stay tight
 and intentional.
+
+The planned `ask_human` command was never implemented and was retired on
+2026-09-08. It must not be reintroduced as a gate-plus-message operation:
+`AgentQuestionService` owns durable live-agent questions and their exact
+session/task/claim/turn identity. Agents send explicit blocker notifications
+through `message_send` to `user:dashboard`.
 
 ---
 
@@ -258,6 +263,8 @@ SCHEMA_VERSION = 1
 def envelope(data: Any, *, total: int | None = None) -> dict
     # list data → pagination {returned, total or len(data), truncated}
 def error_envelope(code: str, message: str) -> dict
+def to_jsonable(value: Any) -> JSONValue
+    # recursive typed-model/Pydantic/dataclass/Enum/date conversion; omit Unset fields
 def emit(ctx: click.Context, data: Any, *, entity: str | None = None, total: int | None = None)
     # honors ctx.obj["json"], ctx.obj["brief"], AQ_JSON_LEGACY=1
 
@@ -265,7 +272,27 @@ BRIEF_PROJECTIONS: dict[str, tuple[str, ...]] = {"task": (...), "session": (...)
 ```
 
 Add a global `--brief` flag next to `--json` in the `cli` group (src/cli/app.py:145–167).
-All new commands and (incrementally) existing ones route output through `emit()`.
+All daemon-backed handwritten commands and every command produced by
+`register_auto_commands()` route output through `emit()`. Formatter registry metadata is
+also the generated command's output metadata: `extract` identifies logical list data,
+`entity` selects the central brief projection, and `total`/`count` supplies pagination.
+This includes core-owned wrappers for internal plugin commands. `app.AQGroup` catches Click
+usage failures before invocation and emits the same error envelope with exit 2 in JSON mode.
+`legacy_data=` lets generated list commands restore their exact pre-envelope backend wrapper
+under `AQ_JSON_LEGACY=1`.
+
+`src/cli/plugins.py` passes a context to every core-owned plugin command and uses `emit()` for
+read and mutation successes. Its direct database/loader/filesystem exception paths use
+`emit_error()` with `command_error` or `not_found`; JSON mutations never display Click
+confirmation prompts and require `--yes`. Human renderers build `Text` nodes for all
+plugin-controlled values so Rich markup cannot consume or restyle their contents.
+
+`reject_json_mode()` is the explicit boundary for local operator workflows whose output is
+multi-step process or migration progress (`start|stop|restart`, `db *`, `vault *`). It runs
+before work or prompting and returns one `usage_error` envelope. The only pass-through surfaces
+owned by core are documented protocol/process exceptions (`logs --json`, `prime --hook-json`,
+and `test`); CLI groups loaded from third-party `aq.plugins` entry points own their own output
+contract.
 
 ### 5.3 New command modules
 
@@ -294,7 +321,7 @@ claiming `session`, `gate`, `workspace`, `schema`, or `chat`. Behavior notes:
 
 ```python
 DEFAULT_TASK_ALLOWLIST = frozenset({
-    "task_show", "task_set", "task_close", "task_heartbeat", "ask_human",
+    "task_show", "task_set", "task_close", "task_heartbeat",
     "message_send", "message_inbox", "memory_save", "memory_search",
 })
 
@@ -384,7 +411,7 @@ dicts). No new log stream, no new retention rules.
       delivery pending supervisor-agent's `messages` table — stub prints nothing, exit 0)
 - [ ] Hook file templates (`templates/hooks/claude.json`); handshake with session-runtime's
       prompt-file writer and `AQ_STARTUP_PROMPT_DELIVERED`
-- [ ] Rich tool definitions for the nine allowlist commands in `src/tools/definitions.py`
+- [ ] Rich tool definitions for the task allowlist commands in `src/tools/definitions.py`
 
 **Phase S2 — auth**
 - [ ] `api_session_tokens` migration (SQLite + PostgreSQL); autogenerate + review
@@ -415,13 +442,13 @@ dicts). No new log stream, no new retention rules.
   `int`; error envelope shape; round-trips through `json.dumps`/`json.loads` with no custom
   encoder required.
 - **`emit()`:** `--json` prints the envelope; `--brief` trims via `apply_brief()` before
-  wrapping, only in JSON mode (human-mode `render` callbacks always receive the untrimmed
-  payload — see the note below); `AQ_JSON_LEGACY=1` prints the raw (pre-envelope) payload to
+  wrapping and passes the same projection to human renderers; `AQ_JSON_LEGACY=1` prints the raw (pre-envelope) payload to
   stdout plus a deprecation warning on **stderr** (verified with separate stdout/stderr
-  capture, not just combined output) and still composes with `--brief`; no-`render` fallback
-  dumps indented JSON; a `ctx.obj is None` context defaults to human mode without raising.
-- **`BRIEF_PROJECTIONS` completeness vs. models:** the five entities from design §4.2
-  (`task`, `session`, `gate`, `message`, `workspace`) are all present; `task`'s tuple matches
+  capture, not just combined output); exact legacy wrappers bypass `--brief`; no-`render`
+  fallback dumps indented JSON; a `ctx.obj is None` context defaults to human mode without
+  raising.
+- **`BRIEF_PROJECTIONS` completeness vs. models:** the entities from design §4.2
+  (`task`, `session`, `gate`, `message`, `workspace`, `agent`, `project`, `pool`) are present; `task`'s tuple matches
   the design table field-for-field; every field in `BRIEF_PROJECTIONS["task"]` is asserted to
   be an actual key produced by `TaskCommandsMixin._task_to_dict()` (the real `list_tasks` /
   `aq task list --brief` row shape) and to appear as an assigned key in `_cmd_get_task`'s
@@ -476,9 +503,9 @@ correct patch target.
 
 **Not covered in S0** (deferred to the phase that lands the backing subsystem): `aq inbox
 --inject`, `aq prime --hook-json`, `task details`'s renderer showing gate/work-state data
-(no query layer yet), exit-code `3`/`4` and `paused` mapping (no daemon-unreachable /
-out-of-scope / paused-memory path exercised by these commands yet), MCP `/mcp-task`
-integration.
+(no query layer yet), `paused` mapping, and MCP `/mcp-task` integration. Exit codes 1–4,
+generated and handwritten successes, Unicode/model normalization, and raw compatibility are
+covered by the cross-family CLI contract tests.
 
 ### 10.1 Later phases
 

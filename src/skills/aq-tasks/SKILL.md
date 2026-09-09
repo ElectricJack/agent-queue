@@ -1,6 +1,6 @@
 ---
 name: aq-tasks
-description: Task lifecycle in the aq daemon — get / list / show / close / reopen / edit tasks, work with dependencies, results, and archives. Use whenever you need to inspect the queue, understand your assigned task, close work with a summary, or manage a task graph. Also covers the reads that answer "why isn't X running".
+description: Task lifecycle in the aq daemon — get / list / show / close / reopen / edit tasks, work with dependencies, results, and archives. Use whenever you need to inspect the queue, understand your assigned task, close work with a summary, or manage a task graph. Also covers `aq task explain` and the reads that answer "why isn't X running".
 allowed-tools:
   - Bash
 ---
@@ -32,20 +32,26 @@ so do not build a workflow on them:
 ```bash
 aq task list                        # active tasks, current project scope
 aq task list --status IN_PROGRESS   # filter by status
-aq --json --brief task list         # scriptable projection.  --json and
-                                    # --brief are group-level flags: they go
-                                    # before the subcommand, not after it.
+aq task list --json --brief         # scriptable projection.  --json and
+                                    # --brief are global: before the group,
+                                    # after the command, either works.
 aq task get --task-id <task_id>     # single-row summary
 aq task deps --task-id <task_id>    # dependency graph for one task
 aq task get-tree --task-id <task_id>    # subtask tree, expanded
 aq task get-result --task-id <task_id>  # result payload from a completed task
+aq task explain --task-id <task_id>     # ordered reasons the task isn't running
 ```
 
-`aq task explain` — the daemon's "why isn't this running?" answer — has no
-usable CLI form right now: the generated command exposes no `--task-id`, so
-it cannot name a task (tracked by `bright-forge-33`). Read the blockers off
-`aq task show <id>` and `aq task deps --task-id <id>` instead, and quote what
-they say rather than theorizing.
+`aq task explain --task-id <id>` is the daemon's "why isn't this running?"
+answer: an ordered list of reasons (unmet dependencies, gates, capacity, pool
+bounds). It is an operator read like the rest of this block. From a worker
+token, read the blockers off `aq task show <id>` and
+`aq task deps --task-id <id>` instead, and quote what they say rather than
+theorizing.
+
+Aliases are kept deliberately and are safe to use: `aq task details` is
+`aq task show`, `aq inbox` is `aq message inbox`, `aq reply` is
+`aq message reply`.
 
 A worker or reviewer session reaches exactly one task — its own — plus,
 for a reviewer, the single task named by its review's `discovered-from`
@@ -101,7 +107,14 @@ Rules the daemon enforces:
   summary is required — the daemon rejects empty summaries with
   `summary is required`.
 - Every terminal close also captures the git commit HEAD of the
-  workspace automatically. Don't try to pass a `--commit-sha` flag.
+  workspace automatically. The flag to override it is `--commit <sha>`;
+  there is no `--commit-sha`.
+- The evidence flags are what the reviewer reads: `--changes`,
+  `--verification`, `--test "<command>"` and `--command "<command>"`
+  (both repeatable). If the task listed **Deliverables** and one is
+  intentionally not shipped, declare it with
+  `--deliverable-unmet 'id: reason'` (repeatable) — a pass with an
+  undeclared gap is refused and keeps the task claimed.
 
 ## The pool worker loop (swarm-work-model §10)
 
@@ -158,12 +171,23 @@ When you pick it up, `aq task show <id>` shows the feedback in the
 description.
 
 `WAITING_INPUT` waits on a *human*, not on you — there is no worker-side
-command for it. The two answering surfaces are both operator ones:
+command for it. Two different operator surfaces answer, and they are not
+interchangeable:
 
 ```bash
+# Legacy task-status reply: takes the TASK id, appends the answer to the task
+# description and flips WAITING_INPUT -> READY so the task re-executes.
 aq system provide-input --task-id <id> --input "<the answer>"
+
+# Identity-based question queue: takes a QUESTION id and delivers the answer
+# to the original live session, without restarting or reassigning the worker.
+aq question list [--project <pid>]
 aq question answer <question_id> --body "<the answer>"
+aq question escalate <question_id> --reason "<why a human must decide>"
 ```
+
+Use the question id when `aq question list` shows one; `provide-input` is for
+a task parked in `WAITING_INPUT` with no question row behind it.
 
 ## Creating tasks
 
@@ -172,6 +196,12 @@ file emergent work it discovers. A worker-filed task starts DEFINED with a
 `discovered-from` edge back to the filing task; a root filing also opens a
 routing gate, so triage — not the filer — dedupes and routes it. `--from-spec`,
 `--graph` and `create_task_graph` stay elevated/supervisor-only.
+
+Profile ids below are examples from the shipped worker ladder
+(`worker-<tier>-<level>-<provider>`). Confirm what this install actually has
+with `aq agent list-profiles` (and `aq system list-intelligence-classes` for
+`--intelligence-class`) rather than trusting a literal id from any document —
+omitting `--profile` lets the project default apply, which is usually right.
 
 ```bash
 # Ad-hoc task creation.  --reason is required on a worker-filed task and is

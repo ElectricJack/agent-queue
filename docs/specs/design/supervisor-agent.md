@@ -416,11 +416,14 @@ Validation is deterministic — the daemon never "interprets" a graph:
 
 ### 8.4 Human gates
 
-`ask_human` from any agent — supervisor or task session — creates a human gate blocking
-the asking task (gates are owned by the work-graph spec). The supervisor's role is the
-inverse: it **resolves** gates, and only on explicit human instruction (§4 Rules). A
-typical planning flow ends with the graph's parent gated on human approval, replacing
-the old `AWAITING_PLAN_APPROVAL` status (since deleted from `TaskStatus`).
+The planned `ask_human` gate-plus-message command was never implemented and
+was retired on 2026-09-08. Live task-session questions instead flow through
+`AgentQuestionService`, which preserves the exact session instance, task claim,
+and transcript-turn identity. The supervisor answers or escalates those
+questions through `aq question`; an agent that only needs to report a blocker
+uses `aq message send --to user:dashboard`. Human gates remain available for
+playbook/task-graph policy and are resolved only on explicit human instruction
+(§4 Rules).
 
 ---
 

@@ -14,6 +14,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 # e2e-common.sh is intentionally excluded: it is sourced, never executed.
 EXECUTABLE_SCRIPTS = [
     "scripts/e2e-daemon.sh",
+    "scripts/e2e-clean.sh",
     "scripts/e2e-dashboard.sh",
     "scripts/e2e-env.sh",
     "scripts/e2e-smoke.sh",

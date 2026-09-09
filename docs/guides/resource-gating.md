@@ -120,6 +120,36 @@ aq test --aq-dry-run tests/              # print the pytest command
 aq test --aq-help                        # this help (-h belongs to pytest)
 ```
 
+PostgreSQL is required for the suite. Configure a disposable server before
+running tests (the base database is used only as a maintenance connection):
+
+```bash
+docker compose up -d postgres
+export POSTGRES_TEST_DSN=postgresql+asyncpg://agent_queue:agent_queue_dev@localhost:5533/postgres
+aq test tests/test_config.py
+```
+
+If `POSTGRES_TEST_DSN` is absent, `aq test` exits before taking a global test
+slot or launching pytest, with the setup commands above. Bare pytest has the
+same session-level preflight, so a missing DSN is one configuration error, not
+one fixture error per collected test. This is an environment failure: no test
+assertions ran.
+
+Each `aq test` invocation passes a fresh ownership token to pytest. Every
+xdist worker and every schema-mutating scratch test therefore creates a unique
+`aq_test_*` database. A normal session teardown drops only databases that the
+current process successfully created. An interrupted run can leave an orphan,
+but the next run chooses new names and never reuses or stamps it. If an
+explicit/reused `AQ_TEST_RUN_ID` collides, the harness inspects
+`alembic_version` read-only, reports stale or unknown revisions, and refuses to
+drop, migrate, or stamp the foreign database. Remove an orphan manually only
+after confirming that no other run owns it.
+
+Never point `POSTGRES_TEST_DSN` at the daemon database from
+`~/.agent-queue/config.yaml`. The production-URL refusal, worker
+`AQ_DB_SCOPE`, and `AQ_DATABASE_URL` / `AGENT_QUEUE_DB` sentinels remain in
+force; tests create their own databases on the disposable server.
+
 Everything that is not an `--aq-*` option goes to pytest untouched. The
 wrapper adds `-n <cap> --dist loadfile` and the default marker deselects **only when you
 did not pass your own** — `aq test -m perf tests/perf` and `aq test -p

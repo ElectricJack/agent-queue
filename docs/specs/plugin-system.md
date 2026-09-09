@@ -460,12 +460,24 @@ aq plugin remove <name>                     # Uninstall plugin
 aq plugin enable <name>                     # Enable disabled plugin
 aq plugin disable <name>                    # Disable plugin (keep installed)
 aq plugin config <name> [key=value ...]     # View or set plugin config
-aq plugin logs <name> [--limit N]           # View plugin hook run history
+aq plugin logs <name>                       # Removed (exits 1) — hook history is gone
 aq plugin prompts <name>                    # List plugin prompts
 aq plugin edit-prompt <name> <prompt-name>  # Edit an instance prompt
 aq plugin diff-prompts <name>               # Diff instance vs source defaults
 aq plugin reset-prompts <name>              # Reset prompts to source defaults
 ```
+
+`aq plugin logs` is a deprecation stub, not a query. The hook engine whose
+execution history it read has been removed, so the command always fails
+(exit 1; one `command_error` envelope under `--json`) rather than returning
+an empty-but-successful history that would read as "this plugin never ran".
+Its `--limit` option is still accepted and ignored so a legacy invocation
+reaches the guidance instead of a Click usage error. Replacements:
+
+- Playbook automation history: `aq playbook list-runs`, then
+  `aq playbook inspect-run --run-id <run-id>`.
+- A plugin's own diagnostic output (daemon logging, *not* hook history):
+  `aq logs --grep <plugin-name>`.
 
 ### Discord Commands
 
@@ -641,6 +653,9 @@ Without a CLAUDE.md, the agent has to reverse-engineer all of this from code, wh
 - `@cron` decorator for scheduled plain async Python functions
 - `PluginContext.invoke_llm()` for LLM access from cron jobs and handlers
 - `Plugin.cli_group()` for extending the `aq` CLI with Click groups
+- Plugin CLI entry points are discoverable during offline help, while saved
+  configuration is merged lazily on command invocation through a bounded,
+  read-only query that never initializes or migrates the database
 - `Plugin.discord_commands()` for extending Discord with `app_commands.Group`
 - Reserved plugin name validation to prevent CLI/Discord collisions
 - Class attributes (`plugin_permissions`, `config_schema`, `default_config`) replace

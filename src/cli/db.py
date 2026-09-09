@@ -19,6 +19,7 @@ import os
 import click
 
 from .app import cli, console
+from .envelope import reject_json_mode
 
 _CONFIG_PATH = os.path.expanduser("~/.agent-queue/config.yaml")
 
@@ -55,8 +56,14 @@ def _display_url(url: str) -> str:
 
 
 @cli.group("db")
-def db_group() -> None:
+@click.pass_context
+def db_group(ctx: click.Context) -> None:
     """Database schema — inspect and upgrade the daemon's database."""
+    reject_json_mode(
+        ctx,
+        "aq db",
+        "database administration is a local operator workflow with interactive safeguards",
+    )
 
 
 @db_group.command("current")

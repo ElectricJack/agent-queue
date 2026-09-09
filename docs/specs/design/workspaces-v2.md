@@ -434,7 +434,7 @@ New / updated commands (in `CommandHandler`, exposed via all three surfaces):
 - **`list_workspace_kinds(project_id=None)`** — list system + project-scoped kinds. New.
 - **`onboard_project(...)`** — the dashboard and CLI path for creating a project with its primary `project-repo` workspace. It validates a root-relative repository destination and orchestrates project, workspace, vault, and Git operations as specified in the project-onboarding design; it does not accept arbitrary filesystem paths.
 - **`add_workspace(project_id, kind_id=None, workspace_path, source_type, ...)`** — gains `kind_id`. It remains the lower-level workspace operation. When `kind_id` is None, defaults to `project-repo` *only if* that kind resolves for the project; otherwise raises a clear error. The system `project-repo` kind is treated as undeletable (recreated on daemon start) so the default reliably resolves.
-- **`create_task(...)`** — gains `requires_kinds` parameter (see §5.1).
+- **`create_task(...)`** — gains `requires_kinds` parameter (see §5.1). The handwritten CLI reaches it with a repeatable `aq task create --requires-kind KIND[=ALIAS]`: a bare value is forwarded as the string sugar, `KIND=ALIAS` as `{kind, alias}`. Omitting it writes no requirement rows (§5.1). Graph documents carry no per-node requirements, so `--requires-kind` is rejected with `--graph`/`--from-spec` rather than dropped.
 
 Editing kind definitions is done by editing the markdown files in the vault — no dedicated edit command, same as profiles and MCP servers.
 

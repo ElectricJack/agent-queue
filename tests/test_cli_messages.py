@@ -218,11 +218,8 @@ class TestInboxAndList:
         )
         payload = json.loads(result.output)
         assert payload["schema_version"] == SCHEMA_VERSION
-        assert payload["data"]["count"] == 1
-        assert payload["data"]["messages"][0]["id"] == "msg-1"
-        # The payload is a result object, not a bare list, so the envelope
-        # carries no pagination block (envelope.py adds it only for lists).
-        assert "pagination" not in payload
+        assert payload["data"][0]["id"] == "msg-1"
+        assert payload["pagination"] == {"returned": 1, "total": 1, "truncated": False}
 
     def test_inbox_defaults_to_session_identity_before_task(self, runner, monkeypatch):
         monkeypatch.setenv("AQ_SESSION_ID", "session-current")
@@ -264,11 +261,18 @@ class TestInboxAndList:
             }
         )
         result = _invoke(runner, ["--json", "--brief", "message", "list"], client)
-        # message_list returns an object, not a list, so --brief passes it
-        # through: the projection applies to entities, and this envelope is
-        # a result object. Assert we still emit a valid envelope.
         payload = json.loads(result.output)
         assert payload["schema_version"] == SCHEMA_VERSION
+        assert payload["data"] == [
+            {
+                "id": "msg-1",
+                "from": "user:u",
+                "subject": None,
+                "created_at": None,
+                "read": None,
+            }
+        ]
+        assert payload["pagination"]["returned"] == 1
 
 
 # ---------------------------------------------------------------------------

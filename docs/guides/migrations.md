@@ -37,6 +37,14 @@ Every other database — every leased test database, every per-xdist-worker
 Postgres database, every e2e scratch DSN — is not production and migrates
 exactly as it always did.
 
+The pytest substrate treats `POSTGRES_TEST_DSN` as a maintenance connection,
+not as a reusable test database. `aq test` assigns each run an ownership token;
+workers and migration tests create unique `aq_test_*` databases and a graceful
+session teardown drops only names created by that process. An unexpected name
+collision is inspected read-only for stale/unknown Alembic revisions and then
+refused. The harness never stamps, migrates, drops, or otherwise repairs a
+database it did not create.
+
 ### Why the env var beats the process scope
 
 `AQ_DB_SCOPE` in the environment outranks `set_process_scope(DAEMON)`. Worker
