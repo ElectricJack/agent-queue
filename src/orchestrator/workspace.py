@@ -868,7 +868,7 @@ class WorkspaceMixin:
         self._register_slot_bases(slots, base.workspace_path)
 
         in_cap = [s for s in slots if (s.slot_index or 0) < cap]
-        free = [s for s in in_cap if s.locked_by_agent_id is None]
+        free = [s for s in in_cap if s.enabled and s.locked_by_agent_id is None]
         warming = len(in_cap) < cap
         if free or len(in_cap) >= cap:
             # Something is acquirable, or we are already at cap: no growth.
