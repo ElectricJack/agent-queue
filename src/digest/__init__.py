@@ -23,16 +23,28 @@ from src.digest.facts import (
     WorkFact,
 )
 from src.digest.render import render_digest
+from src.digest.schedule import (
+    DigestSchedule,
+    config_generation,
+    destination_id,
+    schedule_for,
+    validate_settings,
+)
 
 __all__ = [
     "CATEGORIES",
     "ActiveTask",
     "DigestInputs",
     "DigestResult",
+    "DigestSchedule",
     "DigestWindow",
     "Eligibility",
     "WorkFact",
     "build_digest",
+    "config_generation",
+    "destination_id",
     "evaluate_eligibility",
     "render_digest",
+    "schedule_for",
+    "validate_settings",
 ]

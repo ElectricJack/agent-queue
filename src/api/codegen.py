@@ -255,6 +255,8 @@ def _make_route_handler(cmd_name: str, input_model: type[BaseModel]):
                 "escalation_reply",
                 "escalation_update",
                 "escalation_apply_reply",
+                "digest_preview",
+                "digest_status",
             }:
                 return JSONResponse(result, status_code=422)
             return JSONResponse(
@@ -360,7 +362,7 @@ def build_category_routers() -> list[APIRouter]:
                         }} if cmd_name == "edit_intelligence_class" else {}),
                         422: {
                             "description": "Command error",
-                            **({"model": EscalationErrorResponse} if cmd_name.startswith("escalation_") else {"content": {
+                            **({"model": EscalationErrorResponse} if cmd_name.startswith(("escalation_", "digest_")) else {"content": {
                                 "application/json": {
                                     "schema": {
                                         "type": "object",

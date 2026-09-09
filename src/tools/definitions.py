@@ -92,6 +92,9 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "escalation_reply": "escalation",
     "escalation_update": "escalation",
     "escalation_apply_reply": "escalation",
+    # digest — hourly activity digest preview and schedule health
+    "digest_preview": "digest",
+    "digest_status": "digest",
     # vault — reference stub management
     "scan_stub_staleness": "system",
     # memory — provided by the external aq-memory plugin (install via `aq plugin install`)
@@ -5880,6 +5883,36 @@ _ALL_TOOL_DEFINITIONS.extend([
                 "escalation_id", "reply_id", "expected_revision", "idempotency_key",
                 "action_kind", "target_id",
             ],
+            "additionalProperties": False,
+        },
+    },
+])
+
+_ALL_TOOL_DEFINITIONS.extend([
+    {
+        "name": "digest_preview",
+        "description": (
+            "Dry-run the current hourly digest window: the message that would be sent, or "
+            "the reason it would stay silent. Sends nothing and advances no delivery cursor."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "dashboard_url": {"type": "string"},
+                "now": {"type": "number", "description": "Evaluate as of this epoch time."},
+            },
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "digest_status",
+        "description": (
+            "Configured digest destination and schedule generation, next evaluation, recent "
+            "windows and pending/unknown/failed delivery health."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {"now": {"type": "number"}},
             "additionalProperties": False,
         },
     },

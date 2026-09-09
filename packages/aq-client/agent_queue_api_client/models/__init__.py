@@ -137,6 +137,15 @@ from .delete_task_request import DeleteTaskRequest
 from .delete_task_response import DeleteTaskResponse
 from .delete_task_response_422 import DeleteTaskResponse422
 from .deleted_branch import DeletedBranch
+from .digest_escalation_settings import DigestEscalationSettings
+from .digest_preview_request import DigestPreviewRequest
+from .digest_preview_response import DigestPreviewResponse
+from .digest_schedule_settings import DigestScheduleSettings
+from .digest_status_request import DigestStatusRequest
+from .digest_status_response import DigestStatusResponse
+from .digest_status_response_delivery_health import DigestStatusResponseDeliveryHealth
+from .digest_window_bounds import DigestWindowBounds
+from .digest_window_record import DigestWindowRecord
 from .discord_cleanup_threads_request import DiscordCleanupThreadsRequest
 from .discord_cleanup_threads_response import DiscordCleanupThreadsResponse
 from .discord_cleanup_threads_response_422 import DiscordCleanupThreadsResponse422
@@ -1277,6 +1286,15 @@ __all__ = (
     "DeleteTaskRequest",
     "DeleteTaskResponse",
     "DeleteTaskResponse422",
+    "DigestEscalationSettings",
+    "DigestPreviewRequest",
+    "DigestPreviewResponse",
+    "DigestScheduleSettings",
+    "DigestStatusRequest",
+    "DigestStatusResponse",
+    "DigestStatusResponseDeliveryHealth",
+    "DigestWindowBounds",
+    "DigestWindowRecord",
     "DiscordCleanupThreadsRequest",
     "DiscordCleanupThreadsResponse",
     "DiscordCleanupThreadsResponse422",

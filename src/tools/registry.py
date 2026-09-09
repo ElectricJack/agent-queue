@@ -142,6 +142,13 @@ CATEGORIES: dict[str, CategoryMeta] = {
             "update, and apply verified reply evidence"
         ),
     ),
+    "digest": CategoryMeta(
+        name="digest",
+        description=(
+            "Hourly activity digest — dry preview of the current window and the "
+            "configured schedule's destination, generation and delivery health"
+        ),
+    ),
     "discord": CategoryMeta(
         name="discord",
         description=(

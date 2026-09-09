@@ -81,6 +81,7 @@ from src.commands.worktree_commands import WorktreeCommandsMixin
 from src.commands.git_commands import GitCommandsMixin
 from src.commands.ci_commands import CiCommandsMixin
 from src.commands.provider_commands import ProviderCommandsMixin
+from src.commands.digest_commands import DigestCommandsMixin
 from src.commands.escalation_commands import EscalationCommandsMixin
 
 # -- dv2 phase 6 mixins ---------------------------------------------------
@@ -358,6 +359,7 @@ class CommandHandler(
     GitCommandsMixin,
     CiCommandsMixin,
     ProviderCommandsMixin,
+    DigestCommandsMixin,
     EscalationCommandsMixin,
     # -- dv2 phase 6 mixins -----------------------------------------------
     TaskProposalCommandsMixin,

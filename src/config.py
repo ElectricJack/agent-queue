@@ -96,6 +96,27 @@ def resolve_project_root(config: "AppConfig", root_id: str) -> ProjectRoot | Non
     return next((root for root in config.project_roots if root.id == root_id), None)
 
 
+#: Selectable digest categories.  Mirrors :data:`src.digest.facts.CATEGORIES`;
+#: duplicated here so importing the config never drags in the digest package.
+DIGEST_CATEGORIES: tuple[str, ...] = ("work", "vcs", "budget", "system")
+
+#: Implementation defaults for the §9 bounds.  Changing one requires the
+#: aligned schema, help text and tests the spec calls for.
+MIN_DIGEST_INTERVAL_MINUTES = 15
+MAX_DIGEST_INTERVAL_MINUTES = 1440
+MIN_DIGEST_CATCHUP_HOURS = 1
+MAX_DIGEST_CATCHUP_HOURS = 168
+MIN_ESCALATION_REMINDER_MINUTES = 5
+MAX_ESCALATION_REMINDER_MINUTES = 1440
+
+_SNOWFLAKE = re.compile(r"^\d{17,20}$")
+
+
+def is_discord_snowflake(value: object) -> bool:
+    """True for a plausible Discord ID: 17-20 digits, no decoration."""
+    return isinstance(value, str) and bool(_SNOWFLAKE.match(value.strip()))
+
+
 @dataclass
 class PerProjectChannelsConfig:
     """Configuration for automatic per-project Discord channel management."""
@@ -104,6 +125,139 @@ class PerProjectChannelsConfig:
     naming_convention: str = "{project_id}"
     category_name: str = ""  # Discord category to group project channels (optional)
     private: bool = True  # Make auto-created channels private (only bot + permitted users)
+
+
+@dataclass
+class DiscordDigestConfig:
+    """Hourly activity digest settings (discord-simplification §8, §9).
+
+    The digest is one installation-wide message on the configured channel.
+    ``project_ids`` empty means every project the configured destination can
+    see; a non-empty list is the destination's visibility, applied before any
+    activity is read so one project's detail can never leak into another's.
+    """
+
+    enabled: bool = True
+    interval_minutes: int = field(
+        default=60, metadata={"json_schema": {"minimum": 15, "maximum": 1440}}
+    )
+    project_ids: list[str] = field(default_factory=list)
+    categories: list[str] = field(
+        default_factory=lambda: list(DIGEST_CATEGORIES),
+        metadata={"json_schema": {"items": {"enum": list(DIGEST_CATEGORIES)}}},
+    )
+    catchup_hours: int = field(
+        default=24, metadata={"json_schema": {"minimum": 1, "maximum": 168}}
+    )
+
+    def validate(self) -> list[ConfigError]:
+        errors: list[ConfigError] = []
+        if not MIN_DIGEST_INTERVAL_MINUTES <= self.interval_minutes <= MAX_DIGEST_INTERVAL_MINUTES:
+            errors.append(
+                ConfigError(
+                    "discord.digest",
+                    "interval_minutes",
+                    f"interval_minutes must be between {MIN_DIGEST_INTERVAL_MINUTES} and "
+                    f"{MAX_DIGEST_INTERVAL_MINUTES}; got {self.interval_minutes}",
+                )
+            )
+        if not MIN_DIGEST_CATCHUP_HOURS <= self.catchup_hours <= MAX_DIGEST_CATCHUP_HOURS:
+            errors.append(
+                ConfigError(
+                    "discord.digest",
+                    "catchup_hours",
+                    f"catchup_hours must be between {MIN_DIGEST_CATCHUP_HOURS} and "
+                    f"{MAX_DIGEST_CATCHUP_HOURS}; got {self.catchup_hours}",
+                )
+            )
+        unknown = [c for c in self.categories if c not in DIGEST_CATEGORIES]
+        if unknown:
+            errors.append(
+                ConfigError(
+                    "discord.digest",
+                    "categories",
+                    f"unknown digest categories {unknown}; choose from {list(DIGEST_CATEGORIES)}",
+                )
+            )
+        if not self.categories:
+            errors.append(
+                ConfigError(
+                    "discord.digest",
+                    "categories",
+                    "at least one category must be selected, or the digest can never send",
+                )
+            )
+        for project_id in self.project_ids:
+            if not isinstance(project_id, str) or not project_id.strip():
+                errors.append(
+                    ConfigError(
+                        "discord.digest",
+                        "project_ids",
+                        "project_ids entries must be non-empty project ids",
+                    )
+                )
+                break
+        return errors
+
+
+@dataclass
+class DiscordEscalationConfig:
+    """Immediate escalation-thread settings (discord-simplification §7, §9).
+
+    Disabling this turns off the *external* post only: the core escalation
+    record, the supervisor loop and the dashboard inbox are unaffected, which
+    is what the settings warning says out loud.
+    """
+
+    enabled: bool = True
+    mention_user_ids: list[str] = field(default_factory=list)
+    mention_role_ids: list[str] = field(default_factory=list)
+    reminder_minutes: int = field(
+        default=0, metadata={"json_schema": {"minimum": 0, "maximum": 1440}}
+    )
+    supervisor_delivery_timeout_minutes: int = field(
+        default=15, metadata={"json_schema": {"minimum": 1, "maximum": 1440}}
+    )
+
+    def validate(self) -> list[ConfigError]:
+        errors: list[ConfigError] = []
+        for name, values in (
+            ("mention_user_ids", self.mention_user_ids),
+            ("mention_role_ids", self.mention_role_ids),
+        ):
+            for value in values:
+                if not is_discord_snowflake(value):
+                    errors.append(
+                        ConfigError(
+                            "discord.escalation",
+                            name,
+                            f"{name} entries must be Discord IDs (17-20 digits); got {value!r}",
+                        )
+                    )
+        if self.reminder_minutes and not (
+            MIN_ESCALATION_REMINDER_MINUTES
+            <= self.reminder_minutes
+            <= MAX_ESCALATION_REMINDER_MINUTES
+        ):
+            errors.append(
+                ConfigError(
+                    "discord.escalation",
+                    "reminder_minutes",
+                    f"reminder_minutes must be 0 (disabled) or between "
+                    f"{MIN_ESCALATION_REMINDER_MINUTES} and {MAX_ESCALATION_REMINDER_MINUTES}; "
+                    f"got {self.reminder_minutes}",
+                )
+            )
+        if not 1 <= self.supervisor_delivery_timeout_minutes <= 1440:
+            errors.append(
+                ConfigError(
+                    "discord.escalation",
+                    "supervisor_delivery_timeout_minutes",
+                    "supervisor_delivery_timeout_minutes must be between 1 and 1440; "
+                    f"got {self.supervisor_delivery_timeout_minutes}",
+                )
+            )
+        return errors
 
 
 @dataclass
@@ -119,6 +273,12 @@ class DiscordConfig:
         }
     )
     authorized_users: list[str] = field(default_factory=list)
+    #: The one configured destination.  A Discord channel ID, not a name: the
+    #: single-channel model binds durable delivery to an ID that survives a
+    #: rename (§1, §9).  Empty means "not configured yet".
+    channel_id: str = ""
+    digest: DiscordDigestConfig = field(default_factory=DiscordDigestConfig)
+    escalation: DiscordEscalationConfig = field(default_factory=DiscordEscalationConfig)
     per_project_channels: PerProjectChannelsConfig = field(default_factory=PerProjectChannelsConfig)
     # Invalid request rate guard thresholds (Discord bans IPs at 10,000
     # invalid responses per 10 minutes).
@@ -136,7 +296,36 @@ class DiscordConfig:
             errors.append(
                 ConfigError("discord", "guild_id", "guild_id is required for Discord connection")
             )
+        if self.channel_id and not is_discord_snowflake(self.channel_id):
+            errors.append(
+                ConfigError(
+                    "discord",
+                    "channel_id",
+                    "channel_id must be a Discord channel ID (17-20 digits), not a channel name; "
+                    f"got {self.channel_id!r}",
+                )
+            )
+        errors.extend(self.digest.validate())
+        errors.extend(self.escalation.validate())
         return errors
+
+    def warnings(self) -> list[str]:
+        """Non-fatal settings notes the dashboard shows next to the panel."""
+        notes: list[str] = []
+        if not self.channel_id and (self.digest.enabled or self.escalation.enabled):
+            notes.append(
+                "No channel_id is configured: nothing can be delivered until one is set "
+                "(or discord.digest / discord.escalation are disabled)."
+            )
+        if not self.escalation.enabled:
+            notes.append(
+                "External escalation posting is disabled: incidents are still created, the "
+                "owning supervisor is still notified and the dashboard escalation inbox still "
+                "works, but nothing is posted to Discord."
+            )
+        if not self.digest.enabled:
+            notes.append("Hourly digests are disabled; no routine activity message is sent.")
+        return notes
 
 
 @dataclass
@@ -3180,11 +3369,32 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
                 "channel": merged_name,
                 "agent_questions": raw_channels.get("agent_questions", "agent-questions"),
             }
+        dg = d.get("digest", {}) or {}
+        digest_cfg = DiscordDigestConfig(
+            enabled=bool(dg.get("enabled", True)),
+            interval_minutes=int(dg.get("interval_minutes", 60)),
+            project_ids=list(dg.get("project_ids", []) or []),
+            categories=list(dg.get("categories", DIGEST_CATEGORIES) or []),
+            catchup_hours=int(dg.get("catchup_hours", 24)),
+        )
+        esc = d.get("escalation", {}) or {}
+        escalation_cfg = DiscordEscalationConfig(
+            enabled=bool(esc.get("enabled", True)),
+            mention_user_ids=[str(v) for v in (esc.get("mention_user_ids", []) or [])],
+            mention_role_ids=[str(v) for v in (esc.get("mention_role_ids", []) or [])],
+            reminder_minutes=int(esc.get("reminder_minutes", 0)),
+            supervisor_delivery_timeout_minutes=int(
+                esc.get("supervisor_delivery_timeout_minutes", 15)
+            ),
+        )
         config.discord = DiscordConfig(
             bot_token=d.get("bot_token", ""),
             guild_id=d.get("guild_id", ""),
             channels=raw_channels,
             authorized_users=d.get("authorized_users", []),
+            channel_id=str(d.get("channel_id", "") or ""),
+            digest=digest_cfg,
+            escalation=escalation_cfg,
             per_project_channels=ppc,
             rate_guard_warn=int(d.get("rate_guard_warn", 1000)),
             rate_guard_critical=int(d.get("rate_guard_critical", 5000)),
