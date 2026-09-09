@@ -19,6 +19,7 @@ from src.database import Database
 from src.intelligence_classes import IntelligenceClass
 from src.models import Agent, AgentProfile, AgentState, Project, Task, TaskStatus
 from src.orchestrator import Orchestrator
+from src.orchestrator.provider_distribution import ProviderDistributionMixin
 from src.orchestrator.route_needed import ROUTE_NEEDED_INTERVAL_SECONDS
 from src.sessions.harness_parser import Harness
 from tests.db_fixtures import lease_dsn
@@ -266,6 +267,19 @@ async def test_task_route_writes_class_profile_and_reason(handler, orch):
     assert explained["assignment_route"]["source"] == "explicit"
     # the pool that runs the class now sees the demand
     assert await orch.db.count_ready_by_profile("p") == {"deep-low-claude": 1}
+
+
+async def test_provider_distribution_skips_disabled_pool_but_preserves_explicit_pin(orch):
+    await orch.db.update_profile("deep-low-claude", enabled=False)
+    await _create(orch.db, "automatic", intelligence_class="deep-low")
+    await _create(
+        orch.db, "pinned", intelligence_class="deep-low", profile_id="deep-low-claude",
+    )
+
+    assert await ProviderDistributionMixin._distribute_triaged_tasks_locked(orch) == 1
+    assert (await orch.db.get_task("automatic")).profile_id == "deep-low-codex"
+    # No automatic-route marker means this operator pin must not be changed.
+    assert (await orch.db.get_task("pinned")).profile_id == "deep-low-claude"
 
 
 # -- the cascade's only routing job: emit task.route_needed ------------------
