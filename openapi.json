@@ -13887,7 +13887,7 @@
       "AgentMetrics": {
         "properties": {
           "total": {
-            "type": "integer",
+            "type": "number",
             "title": "Total",
             "default": 0
           },
@@ -13926,7 +13926,7 @@
         },
         "type": "object",
         "title": "AgentMetrics",
-        "description": "Live sessions, split the three ways the tab graphs them."
+        "description": "Live sessions, split the three ways the tab graphs them.\n\n``total`` is a float like every other counter here even though a single\n1s sample always carries a whole number: the 1m and 1h tiers average\neach numeric leaf (:func:`src.metrics.sampler.aggregate_samples`), so a\nrolled-up row's ``total`` is fractional and an ``int`` here would turn\nevery coarse-tier read into a 500."
       },
       "AgentQuestionDetail": {
         "properties": {
@@ -29353,7 +29353,7 @@
           "agents": {
             "$ref": "#/components/schemas/AgentMetrics",
             "default": {
-              "total": 0,
+              "total": 0.0,
               "by_state": {},
               "by_harness": {},
               "by_profile": {},

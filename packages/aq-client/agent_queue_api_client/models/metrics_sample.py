@@ -34,6 +34,12 @@ class MetricsSample:
         Attributes:
             ts (float):
             agents (AgentMetrics | Unset): Live sessions, split the three ways the tab graphs them.
+
+                ``total`` is a float like every other counter here even though a single
+                1s sample always carries a whole number: the 1m and 1h tiers average
+                each numeric leaf (:func:`src.metrics.sampler.aggregate_samples`), so a
+                rolled-up row's ``total`` is fractional and an ``int`` here would turn
+                every coarse-tier read into a 500.
             tasks (TaskMetrics | Unset):
             subagents (SubagentMetrics | Unset): Fleet sub-agent totals plus the per-session drill-down.
 

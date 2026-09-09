@@ -16,9 +16,16 @@ from pydantic import BaseModel
 
 
 class AgentMetrics(BaseModel):
-    """Live sessions, split the three ways the tab graphs them."""
+    """Live sessions, split the three ways the tab graphs them.
 
-    total: int = 0
+    ``total`` is a float like every other counter here even though a single
+    1s sample always carries a whole number: the 1m and 1h tiers average
+    each numeric leaf (:func:`src.metrics.sampler.aggregate_samples`), so a
+    rolled-up row's ``total`` is fractional and an ``int`` here would turn
+    every coarse-tier read into a 500.
+    """
+
+    total: float = 0
     by_state: dict[str, float] = {}
     by_harness: dict[str, float] = {}
     by_profile: dict[str, float] = {}
