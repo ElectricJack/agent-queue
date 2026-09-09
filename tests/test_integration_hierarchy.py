@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import subprocess
+import time
 
 import pytest
 from sqlalchemy import insert, select, update
@@ -16,6 +17,7 @@ from src.database.tables import (
     playbook_artifacts,
     task_branch_origins,
     task_integration_checkpoints,
+    task_session_attempts,
     tasks,
 )
 from src.git.manager import GitManager
@@ -26,6 +28,7 @@ from src.integration.hierarchy import (
 )
 from src.integration.models import (
     ArtifactSnapshot,
+    BranchKey,
     HierarchicalIntegrationPolicy,
     IntegrationBoundaryPolicy,
     PlaybookRoute,
@@ -679,3 +682,113 @@ async def test_checkpoint_verifies_actual_clean_and_pushed_workspace_head(db, tm
     assert await verify_workspace_checkpoint(
         db, git, task.__dict__, repo, next_head
     ) == next_head
+
+
+
+@pytest.mark.parametrize("condition", ["untouched", "released", "changed_head", "manual_pause"])
+async def test_never_run_container_starts_collection_only_at_untouched_origin(db, hierarchy, condition):
+    await _create(db, "epic")
+    await hierarchy.file_children("epic", [{"title": "child"}], 0)
+    async with db.immediate() as conn:
+        await conn.execute(update(task_branch_origins).where(
+            task_branch_origins.c.task_id == "epic"
+        ).values(materialized=True, materialized_at=2.0))
+        if condition == "released":
+            await conn.execute(update(tasks).where(tasks.c.id == "epic").values(claim_epoch=1))
+        elif condition == "manual_pause":
+            await conn.execute(update(tasks).where(tasks.c.id == "epic").values(status="PAUSED"))
+    if condition == "changed_head":
+        hierarchy.default_head_resolver = lambda _repo, _branch: "b" * 40
+    result = await hierarchy.bootstrap_container_collection("epic")
+    checkpoint = await db.get_integration_checkpoint("epic")
+    if condition in {"changed_head", "manual_pause"}:
+        assert result["outcome"] == "waiting"
+        assert checkpoint["episode_id"] is None
+        return
+    assert result["outcome"] == "checkpointed"
+    assert checkpoint["episode_id"]
+    assert (await db.get_task("epic")).status is TaskStatus.PAUSED
+    owner = await hierarchy.ownership.get_owner(BranchKey(repository_id="repo", branch="aq/epic"))
+    assert owner["owner_role"] == "collector"
+    assert owner["owner_id"] == result["operation_id"]
+    assert (await hierarchy.bootstrap_container_collection("epic"))["outcome"] == "waiting"
+    assert (await db.get_integration_checkpoint("epic"))["episode_id"] == checkpoint["episode_id"]
+
+
+@pytest.mark.parametrize("current", [False, True])
+async def test_container_collection_ignores_old_attempt_but_refuses_current_one(db, hierarchy, current):
+    await _create(db, "epic")
+    await hierarchy.file_children("epic", [{"title": "child"}], 0)
+    task = await db.get_task("epic")
+    async with db.immediate() as conn:
+        await conn.execute(update(task_branch_origins).where(
+            task_branch_origins.c.task_id == "epic"
+        ).values(materialized=True, materialized_at=2.0))
+        await conn.execute(insert(task_session_attempts).values(
+            id="old" if not current else "current",
+            session_id="old-session",
+            task_id="epic",
+            project_id="p",
+            profile_id="worker",
+            name="old session",
+            lifecycle="task",
+            harness="test",
+            provider="test",
+            state="stopped",
+            work_dir="/tmp/old",
+            started_at=task.created_at if current else task.created_at - 1,
+            session_started_at=task.created_at if current else task.created_at - 1,
+            ended_at=task.created_at if current else task.created_at - 1,
+        ))
+    result = await hierarchy.bootstrap_container_collection("epic")
+    assert result["outcome"] == ("waiting" if current else "checkpointed")
+    if current:
+        assert result["reason"] == "current_incarnation_attempt"
+
+
+async def test_sibling_prerequisite_needs_current_delivery_receipt_before_claim(db, hierarchy):
+    await _create(db, "parent")
+    filed = await hierarchy.file_children("parent", [{"title": "first"}, {"title": "second"}], 0)
+    first, second = [row["task_id"] for row in filed["children"]]
+    await db.add_dependency(second, first, "blocks")
+    async with db.immediate() as conn:
+        await conn.execute(update(task_branch_origins).where(
+            task_branch_origins.c.task_id.in_((first, second))
+        ).values(materialized=True, materialized_at=1.0))
+        await conn.execute(update(tasks).where(tasks.c.id == first).values(
+            status="COMPLETED", updated_at=time.time()
+        ))
+        await conn.execute(update(tasks).where(tasks.c.id == second).values(
+            status="READY", is_blocked=False
+        ))
+    assert not await db.is_hierarchy_task_runnable(second)
+    assert await db.count_ready_by_profile("p") == {}
+
+    source = await db.get_integration_checkpoint(first)
+    async with db.immediate() as conn:
+        await conn.execute(insert(task_delivery_receipts).values(
+            id="receipt",
+            domain_key="receipt:parent.1",
+            source_task_id=first,
+            target_task_id="parent",
+            repository_id="repo",
+            target_branch="aq/parent",
+            reviewed_head_sha=source["checkpoint_sha"],
+            before_sha=BASE,
+            squash_sha=NEXT,
+            after_sha=NEXT,
+            disposition="code",
+            created_at=time.time() + 1,
+        ))
+    assert await db.is_hierarchy_task_runnable(second)
+    assert await db.count_ready_by_profile("p") == {None: 1}
+
+    # A reopened prerequisite invalidates the former receipt even when its
+    # task id and checkpoint happen to be unchanged.
+    await db.update_task(first, status=TaskStatus.READY)
+    await db.update_task(first, status=TaskStatus.COMPLETED)
+    async with db.immediate() as conn:
+        await conn.execute(update(tasks).where(tasks.c.id == first).values(
+            updated_at=time.time() + 2
+        ))
+    assert not await db.is_hierarchy_task_runnable(second)
