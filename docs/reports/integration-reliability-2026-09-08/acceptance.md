@@ -1114,3 +1114,23 @@ Fleet-harbor a1209069 was reopened despite136 functional+2 migration tests:
 its rejected-delegate exemption could exempt a newer owner of the same task
 using an older stopped reservation. Also missing fresh remote evidence for
 rejection. Source was reviewed but neither merged nor deployed.
+
+### Historical-user proof deployed; active successor respected
+
+Operator a409458f confirms each later same-workdir provider instance and passes
+its exact token/start identity to locked final revalidation. The unlocked
+verifier path preserves later rows and rejects live, unconfirmed, and unseen
+sessions. All64 handoff tests passed30.80s; private swarmaec968ff4c passed8/8
+and cleaned daemon1578780. Source published and loaded PID1624114.
+
+Current public handoff remains busy for a legitimate active successor:
+steady-current / sessionbfe18890 is running in slot0 and holds its workspace
+locks. Exact tmux s-steady-current has a live pane (PID1626861, pane_dead0).
+This reviewer is reviewing fair-willow. Wait for normal release; do not stop or
+clear the active successor for the stale verifier.
+
+Fair-willow25d31d88 was reopened: its proposed doctor repair snapshots eligibility
+then CASes only owner identity/state, not session/workspace/task eligibility;
+it can erase a newly attached successor and lacks provider/Git proof. Its
+reported1323 tests do not prove those missing safety predicates. No source from
+that task was merged or deployed.
