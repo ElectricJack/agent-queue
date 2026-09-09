@@ -928,6 +928,19 @@ class RepairService:
         """
         transition = None
         async with self.db.immediate() as conn:
+            # All competing CI/promotion paths acquire the project hierarchy
+            # lock before their batch row.  Discover the project without
+            # locking, then re-read the batch under that canonical order.
+            project_id = (
+                await conn.execute(
+                    select(integration_batches.c.project_id).where(
+                        integration_batches.c.id == batch_id
+                    )
+                )
+            ).scalar_one_or_none()
+            if project_id is None:
+                return False
+            await self.db.lock_hierarchy_project(conn, project_id)
             batch = (
                 await conn.execute(
                     select(integration_batches)
@@ -935,9 +948,8 @@ class RepairService:
                     .with_for_update()
                 )
             ).mappings().one_or_none()
-            if batch is None:
+            if batch is None or batch["project_id"] != project_id:
                 return False
-            await self.db.lock_hierarchy_project(conn, batch["project_id"])
             operation = (
                 await conn.execute(
                     select(integration_repair_operations)
