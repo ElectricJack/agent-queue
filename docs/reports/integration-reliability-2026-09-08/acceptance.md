@@ -1150,3 +1150,23 @@ collector ownership; it rejects the exact now-reserved verifier. Filed
 bright-vault through AQ with bounded exact verifier/episode/head resume
 requirements and regression cases. Parent remains BLOCKED; verification and
 final delivery are not yet achieved.
+
+### Red aggregate confirmed; CLI repair resumed through existing public controls
+
+GitHub run34349629710 independently confirms exact aggregatebd054e41 failed
+required default, migration-and-slow, and postgres-integration suites;
+cli-conformance passed. This is repair work, not a green verifier-only replay.
+The old verifier summary identifies DSN-required environment leakage, the
+stateful CLI test assuming local PostgreSQL port5533 versus CI5432, and stale
+migration-head/claim-budget assertions; the delegate must verify exact logs.
+
+Public recovery succeeded without a code change: released verifier fence28 ->
+collector operation81d0aaee fence29; integration resume returned escalated stage1
+deadline1788965436.7216296; collector -> existing repair delegate fence30.
+Task description now leads with the confirmed aggregate CI repair target and
+preserved ancestry/exact-head validation requirements. AQ explain reports
+waiting for deep-high capacity (project2 busy, fleet2 busy+1 idle, maximum3).
+
+bright-vault was corrected to actionable resume diagnostics and documentation
+of this existing guarded sequence. Do not relax owner checks to re-verify a red
+aggregate. CLI repair is resumed; repaired CI and parent delivery remain open.
