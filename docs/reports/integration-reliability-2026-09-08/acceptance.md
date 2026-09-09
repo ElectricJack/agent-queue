@@ -955,3 +955,17 @@ refused unresolved resolution/writer evidence. Its resolution
 `d3b49b4e-3651-50cf-94ee-c6650ac6687f` is pushed, and independent remote inspection
 confirms `50edaa1990c840a63efe3f7f3b9ca9c38e72fc10` at the reserved repair ref.
 Acceptance is still pending; the matching external write is not proof of delivery.
+
+
+### Prerequisite rollout result
+
+The isolated swarm completed 8/8 successfully and cleaned up its private daemon.
+Restart completed with production daemon PID 1240921, loading abef631e (plus
+report-only 041dd06d). Startup reports degraded health; doctor is being collected.
+Both Matter containers now have awaiting_children episodes. nimble-dune.1
+received a parent delivery receipt with after_sha
+`dc8a61acdd78bfebd62de4499162ece70a6d20c8`, independently confirmed at remote
+`refs/heads/aq/nimble-dune`. Public resume moved nimble-dune.2 to READY;
+actual claim and prepared prerequisite contents remain to verify.
+Priority-one `fleet-harbor` tracks recovery of the root batch pushed-resolution
+acceptance failure, including diagnostic reasons and already-contained sources.
