@@ -481,10 +481,6 @@ RULES: list[tuple[str, str, str, str, str]] = [
      PRODUCTION, "Schema definition, engine and migration guard."),
     ("src/models.py", "database", "docs/reference/database/README.md", PRODUCTION,
      "Domain dataclasses shared across the system."),
-    ("src/schema.sql", "database", "docs/reference/database/README.md",
-     SUPPORTING,
-     ("Empty, unreferenced leftover of the pre-Alembic schema; flagged for "
-      "removal in the known-inaccuracies ledger.")),
 
     ("src/config.py", "vault", "docs/reference/configuration.md", PRODUCTION,
      "Configuration schema and loader."),

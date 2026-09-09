@@ -88,7 +88,6 @@ format or its coverage guarantee.
 | Two publication formats | `mkdocs.yml` configures a Material site at `electricjack.github.io/agent-queue/`, while this overhaul publishes GitHub-rendered Markdown with relative links. Whether the MkDocs build is still produced needs a recorded decision either way. | `legacy` |
 | Stale count in `CLAUDE.md` | `CLAUDE.md:144` says "4 internal plugins (files, git, notes, vibecop)". Discovery is dynamic and five internal plugins are found: `files`, `git`, `notes`, `vibecop` and the `inbox` package. | `contributing` |
 | CLI inventory page has no forward link | `docs/reference/cli-command-inventory.md` is accurate but predates the CLI reference. It explains the JSON artifact and its acceptance statuses and stops there, so a reader who lands on it never reaches [`docs/reference/cli/`](../../reference/cli/README.md), which is the prose for the same surface. The new pages link *to* the artifact; the link back is missing and the page is `legacy`-owned. | `legacy` |
-| Empty tracked file | `src/schema.sql` is zero bytes and referenced by nothing in `src/`. It is a leftover of the pre-Alembic schema. Assigned to the `database` shard as `supporting` so coverage stays honest; it should be deleted by a code change, not by a documentation ticket. | `database` |
 
 ## 8. Shipped skill describes reviewer creation as the default pipeline
 

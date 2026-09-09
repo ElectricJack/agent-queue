@@ -1,5 +1,5 @@
 {
-  "source_commit": "610f38996e88b27e3404113047e43242c484e32e",
+  "source_commit": "ae7d41aa9ea6c9d4bffe3d658107d73b2e1950e5",
   "generated_by": "docs/plans/documentation-overhaul/refresh_inventory.py",
   "note": "Assignment, not authored coverage.  Each entry's `purpose` is the rule-level description of the family the path belongs to; the per-module sentence is written by the owning shard's catalog page (`shards[<shard>].catalog`).  `component` is the prose page that explains the module.  There is no catch-all rule: a tracked path matching nothing is an error, not a default assignment.",
   "shards": {
@@ -3815,6 +3815,27 @@
       "purpose": "Existing page; the legacy ticket records its disposition.",
       "catalog": null
     },
+    "docs/concepts/integration.md": {
+      "shard": "integration",
+      "component": "docs/concepts/integration.md",
+      "category": "documentation",
+      "purpose": "Overhaul page owned by the `integration` ticket.",
+      "catalog": null
+    },
+    "docs/concepts/messaging.md": {
+      "shard": "communications",
+      "component": "docs/concepts/messaging.md",
+      "category": "documentation",
+      "purpose": "Overhaul page owned by the `communications` ticket.",
+      "catalog": null
+    },
+    "docs/concepts/sessions.md": {
+      "shard": "sessions",
+      "component": "docs/concepts/sessions.md",
+      "category": "documentation",
+      "purpose": "Overhaul page owned by the `sessions` ticket.",
+      "catalog": null
+    },
     "docs/contributing/documentation-style.md": {
       "shard": "foundation",
       "component": "docs/contributing/documentation-style.md",
@@ -4053,6 +4074,20 @@
       "purpose": "Existing page; the legacy ticket records its disposition.",
       "catalog": null
     },
+    "docs/guides/integration-migration.md": {
+      "shard": "legacy",
+      "component": "docs/history/README.md",
+      "category": "documentation",
+      "purpose": "Existing page; the legacy ticket records its disposition.",
+      "catalog": null
+    },
+    "docs/guides/integration-troubleshooting.md": {
+      "shard": "legacy",
+      "component": "docs/history/README.md",
+      "category": "documentation",
+      "purpose": "Existing page; the legacy ticket records its disposition.",
+      "catalog": null
+    },
     "docs/guides/merge-gating.md": {
       "shard": "legacy",
       "component": "docs/history/README.md",
@@ -4103,6 +4138,13 @@
       "catalog": null
     },
     "docs/guides/runtime-development.md": {
+      "shard": "legacy",
+      "component": "docs/history/README.md",
+      "category": "documentation",
+      "purpose": "Existing page; the legacy ticket records its disposition.",
+      "catalog": null
+    },
+    "docs/guides/session-troubleshooting.md": {
       "shard": "legacy",
       "component": "docs/history/README.md",
       "category": "documentation",
@@ -4340,6 +4382,13 @@
       "purpose": "Shared vocabulary.",
       "catalog": null
     },
+    "docs/reference/harnesses.md": {
+      "shard": "legacy",
+      "component": "docs/history/README.md",
+      "category": "documentation",
+      "purpose": "Existing page; the legacy ticket records its disposition.",
+      "catalog": null
+    },
     "docs/reference/modules/README.md": {
       "shard": "foundation",
       "component": "docs/reference/modules/README.md",
@@ -4352,6 +4401,34 @@
       "component": "docs/reference/modules/cli.md",
       "category": "documentation",
       "purpose": "Overhaul page owned by the `cli` ticket.",
+      "catalog": null
+    },
+    "docs/reference/modules/communications.md": {
+      "shard": "communications",
+      "component": "docs/reference/modules/communications.md",
+      "category": "documentation",
+      "purpose": "Overhaul page owned by the `communications` ticket.",
+      "catalog": null
+    },
+    "docs/reference/modules/integration.md": {
+      "shard": "integration",
+      "component": "docs/reference/modules/integration.md",
+      "category": "documentation",
+      "purpose": "Overhaul page owned by the `integration` ticket.",
+      "catalog": null
+    },
+    "docs/reference/modules/sessions.md": {
+      "shard": "sessions",
+      "component": "docs/reference/modules/sessions.md",
+      "category": "documentation",
+      "purpose": "Overhaul page owned by the `sessions` ticket.",
+      "catalog": null
+    },
+    "docs/reference/terminals-and-claims.md": {
+      "shard": "legacy",
+      "component": "docs/history/README.md",
+      "category": "documentation",
+      "purpose": "Existing page; the legacy ticket records its disposition.",
       "catalog": null
     },
     "docs/reports/cli-audit-2026-09-08/README.md": {
@@ -20159,13 +20236,6 @@
       "category": "production",
       "purpose": "Pure pool sizing and placement.",
       "catalog": "docs/reference/modules/scheduler.md"
-    },
-    "src/schema.sql": {
-      "shard": "database",
-      "component": "docs/reference/database/README.md",
-      "category": "supporting",
-      "purpose": "Empty, unreferenced leftover of the pre-Alembic schema; flagged for removal in the known-inaccuracies ledger.",
-      "catalog": null
     },
     "src/services/__init__.py": {
       "shard": "architecture",
