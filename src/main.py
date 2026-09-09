@@ -356,6 +356,9 @@ async def _health_checks(orch: Orchestrator, adapter: MessagingAdapter) -> dict:
         "running_tasks": len(orch._running_tasks),
     }
 
+    required_playbooks = getattr(orch, "required_playbook_status", {"ok": True})
+    checks["required_playbooks"] = required_playbooks
+
     # Agent status
     try:
         agents = await orch.db.list_agents()

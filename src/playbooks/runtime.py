@@ -18,6 +18,10 @@ from src.integration.outbox import (
 )
 from src.playbooks.artifact_store import ArtifactStore
 from src.playbooks.routing import install_routing_activation_snapshot
+from src.playbooks.required import (
+    REQUIRED_SYSTEM_PLAYBOOK_IDS,
+    retain_required_route_needed_event,
+)
 from src.playbooks.services import (
     INTEGRATION_LIFECYCLE_PLAYBOOK_IDS,
     IntegrationRouteTarget,
@@ -85,7 +89,16 @@ class _FrozenOperationRoute:
 class V2PlaybookRuntime:
     """Dispatch ready immutable activations and expose their timer triggers."""
 
-    def __init__(self, *, config: Any, db: Any, handler: Any, llm: Any, bus: Any) -> None:
+    def __init__(
+        self,
+        *,
+        config: Any,
+        db: Any,
+        handler: Any,
+        llm: Any,
+        bus: Any,
+        required_playbook_status: dict[str, Any] | None = None,
+    ) -> None:
         self._config = config
         self._db = db
         self._bus = bus
@@ -105,6 +118,8 @@ class V2PlaybookRuntime:
         self._integration_reconciler_task: asyncio.Task[Any] | None = None
         self._integration_wakeup = asyncio.Event()
         self._integration_shutting_down = False
+        self._required_playbook_status = required_playbook_status or {}
+        self._required_inactive_ids: set[str] = set(REQUIRED_SYSTEM_PLAYBOOK_IDS)
 
     async def refresh(self) -> None:
         rows = await self._db.list_playbook_activations(enabled_only=False)
@@ -150,6 +165,24 @@ class V2PlaybookRuntime:
                 )
             )
         self._triggers = tuple(sorted(triggers))
+        self._required_inactive_ids = {
+            playbook_id
+            for playbook_id in REQUIRED_SYSTEM_PLAYBOOK_IDS
+            if not any(
+                row.get("playbook_id") == playbook_id
+                and row.get("scope") == "system"
+                and (row.get("scope_identifier") or "") == ""
+                and row.get("enabled") is True
+                and getattr(row.get("health"), "value", row.get("health")) == "ready"
+                and row.get("active_artifact_sha256")
+                for row in rows
+            )
+        }
+        self._required_inactive_ids.update(
+            playbook_id
+            for playbook_id, state in self._required_playbook_status.get("required", {}).items()
+            if not state.get("ok")
+        )
         self._integration_destinations = tuple(integration_destinations)
         self._integration_activation_addresses = tuple(activation_addresses)
         self._ensure_integration_reconciler()
@@ -175,13 +208,20 @@ class V2PlaybookRuntime:
 
     async def _dispatch(self, event: dict[str, Any]) -> None:
         try:
+            if (
+                event.get("_event_type") == "task.route_needed"
+                and "default-assignment-routing" in self._required_inactive_ids
+            ):
+                await retain_required_route_needed_event(
+                    self._db,
+                    event,
+                    ttl_days=getattr(self._config.playbooks, "v2_pending_event_retention_days", 7),
+                )
             await self._engine.dispatch_event(
                 event, ExecutionPrincipal.service("playbook-dispatch")
             )
         except Exception:
-            logger.exception(
-                "V2 playbook dispatch failed for event=%s", event.get("_event_type")
-            )
+            logger.exception("V2 playbook dispatch failed for event=%s", event.get("_event_type"))
 
     async def accept_integration_event(
         self, event_type: str, payload: dict[str, Any], event_id: str
@@ -203,9 +243,7 @@ class V2PlaybookRuntime:
             route = _FrozenOperationRoute.from_target(target) if target is not None else None
             suppression = None
             project_id = hydrated.get("project_id")
-            get_suppression = getattr(
-                self._db, "get_integration_legacy_suppression", None
-            )
+            get_suppression = getattr(self._db, "get_integration_legacy_suppression", None)
             if isinstance(project_id, str) and callable(get_suppression):
                 suppression = await get_suppression(project_id)
             destinations = self._select_integration_destinations(
@@ -240,9 +278,7 @@ class V2PlaybookRuntime:
                 return False
 
         assert state.manifest is not None
-        page = state.manifest[
-            state.cursor : state.cursor + _INTEGRATION_REPLAY_PAGE_SIZE
-        ]
+        page = state.manifest[state.cursor : state.cursor + _INTEGRATION_REPLAY_PAGE_SIZE]
 
         accepted_at = time.time()
         for destination in page:
@@ -291,20 +327,14 @@ class V2PlaybookRuntime:
         project_id = hydrated.get("project_id")
         agent_type = hydrated.get("agent_type")
         selected: list[_IntegrationDestination] = []
-        if (
-            not isinstance(project_id, str)
-            or not project_id.strip()
-        ):
+        if not isinstance(project_id, str) or not project_id.strip():
             return []
         lifecycle_ids = INTEGRATION_LIFECYCLE_PLAYBOOK_IDS | (
             {route.playbook_id} if route is not None and route.playbook_id else set()
         )
         owner_admitted = route is None
         for destination in self._integration_destinations:
-            if (
-                destination.scope == "project"
-                and destination.scope_identifier != project_id
-            ):
+            if destination.scope == "project" and destination.scope_identifier != project_id:
                 continue
             if destination.scope == "agent_type" and (
                 project_id is None or destination.scope_identifier != agent_type
@@ -353,10 +383,7 @@ class V2PlaybookRuntime:
             for destination in self._integration_activation_addresses:
                 if not route.matches(destination):
                     continue
-                if (
-                    destination.scope == "project"
-                    and destination.scope_identifier != project_id
-                ):
+                if destination.scope == "project" and destination.scope_identifier != project_id:
                     continue
                 if destination.scope == "agent_type" and (
                     project_id is None or destination.scope_identifier != agent_type
@@ -418,17 +445,13 @@ class V2PlaybookRuntime:
             )
             self._integration_tasks[pending_event_id] = task
             task.add_done_callback(
-                lambda done, event_id=pending_event_id: self._integration_done(
-                    event_id, done
-                )
+                lambda done, event_id=pending_event_id: self._integration_done(event_id, done)
             )
             capacity -= 1
             scheduled += 1
         return scheduled
 
-    def _integration_done(
-        self, pending_event_id: str, task: asyncio.Task[Any]
-    ) -> None:
+    def _integration_done(self, pending_event_id: str, task: asyncio.Task[Any]) -> None:
         if self._integration_tasks.get(pending_event_id) is task:
             self._integration_tasks.pop(pending_event_id, None)
         self._ensure_integration_reconciler()
@@ -453,21 +476,16 @@ class V2PlaybookRuntime:
                     raise
                 except Exception:
                     failures += 1
-                    logger.exception(
-                        "Could not list protected integration events; retrying"
-                    )
+                    logger.exception("Could not list protected integration events; retrying")
                     delay = min(
                         _INTEGRATION_RECONCILE_MAX_BACKOFF_SECONDS,
-                        _INTEGRATION_RECONCILE_INTERVAL_SECONDS
-                        * (2 ** min(failures - 1, 10)),
+                        _INTEGRATION_RECONCILE_INTERVAL_SECONDS * (2 ** min(failures - 1, 10)),
                     )
                     await self._wait_for_integration_wakeup(delay)
                     continue
                 failures = 0
                 self._schedule_integration_pending(pending)
-            await self._wait_for_integration_wakeup(
-                _INTEGRATION_RECONCILE_INTERVAL_SECONDS
-            )
+            await self._wait_for_integration_wakeup(_INTEGRATION_RECONCILE_INTERVAL_SECONDS)
 
     async def _wait_for_integration_wakeup(self, timeout: float) -> None:
         self._integration_wakeup.clear()
@@ -538,9 +556,7 @@ class V2PlaybookRuntime:
             self._unsubscribe = None
         if self._integration_reconciler_task is not None:
             self._integration_reconciler_task.cancel()
-            await asyncio.gather(
-                self._integration_reconciler_task, return_exceptions=True
-            )
+            await asyncio.gather(self._integration_reconciler_task, return_exceptions=True)
             self._integration_reconciler_task = None
         integration_tasks = tuple(self._integration_tasks.values())
         for task in integration_tasks:
