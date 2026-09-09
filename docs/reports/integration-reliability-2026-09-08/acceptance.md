@@ -168,3 +168,24 @@ The required Tier-1 swarm kit is running in an isolated environment:
 its daemon and smoke process were confirmed live. Output is in
 `/tmp/aq-goal-e2e-smoke.log`; no pass/fail claim yet. This is functional protocol
 acceptance, not the still-required hundreds-of-tasks/day capacity measurement.
+
+## Loaded parent continuation and recovery follow-up
+
+Worker nimble-forge completed. Implementation 37fcaa4a was applied as
+02cec0bc; current-checkout repair/promotion tests passed 122 tests. AQ
+restarted successfully with the fix loaded (PID 4191061).
+
+The initial swarm run passed 7/8 scenarios. S5 left a foreign-project task
+that consumed one of two global pool slots, starving S7. Commit 96948f1e
+removes that fixture before freeing capacity. The independent S5/S6/S7
+rerun passed 3/3 and stopped its daemon normally. Logs:
+/tmp/aq-goal-e2e-rerun.log and /tmp/aq-parent-continuation-loaded-tests.log.
+This is functional acceptance, not throughput proof.
+
+Public integration resume returned resumed for keen-harbor operation
+81d0aaee-0c3a-482c-b04c-d3afe6631cbe. Human hold cleared, but task explain
+still reports parent BLOCKED by integration_repair_exhausted. Recovery
+controls restore batch lifecycle without equivalent parent-task restoration.
+Collection has not been verified resumed. Parent routing now selects the
+enabled Codex pool. Eager-falcon remains live implementing root moved-main
+conflict recovery and fresh-CI validation. Full delivery remains incomplete.
