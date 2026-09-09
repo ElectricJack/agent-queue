@@ -28,6 +28,7 @@ from src.database.tables import (
     task_integration_checkpoints,
     task_branch_origins,
     task_delivery_receipts,
+    task_metadata,
     tasks,
     workspaces,
 )
@@ -1228,6 +1229,14 @@ async def test_resumed_event_redispatches_established_repair_delegate(db):
     await repair.record_result("operation", "failed-check-2", now=102.0)
     established = await repair.dispatch("operation", 1)
     human = await repair.record_result("operation", "debug-failed", now=103.0)
+    async with db.immediate() as conn:
+        # A clean delegate close releases its repair fence before CI reports
+        # the failure that reaches the human boundary.
+        await conn.execute(
+            update(tasks)
+            .where(tasks.c.id == established["repair_task_id"])
+            .values(status=TaskStatus.COMPLETED.value)
+        )
 
     resumed = await IntegrationControlService(db, clock=lambda: 200.0).resume(
         "operation"
@@ -1247,9 +1256,36 @@ async def test_resumed_event_redispatches_established_repair_delegate(db):
     assert established["outcome"] == "dispatched"
     assert human["outcome"] == "human_required"
     assert resumed["outcome"] == "resumed"
+    assert (await db.get_task("parent")).status is TaskStatus.PAUSED
+    assert await db.get_task_meta("parent", "blocked_terminal") is None
     assert resumed_event["project_id"] == "p"
     assert writer == established | {"outcome": "already_dispatched"}
     assert (await db.get_task(established["repair_task_id"])).status is TaskStatus.READY
+
+    # A process restart retry observes the durable resume deadline rather
+    # than re-arming it or publishing another dispatch event.
+    replay = await IntegrationControlService(db, clock=lambda: 999.0).resume("operation")
+    assert replay == resumed
+    async with db._engine.connect() as conn:
+        stage_after_replay = (
+            await conn.execute(
+                select(integration_repair_stages).where(
+                    integration_repair_stages.c.operation_id == "operation",
+                    integration_repair_stages.c.ordinal == 1,
+                )
+            )
+        ).mappings().one()
+        resume_events = (
+            await conn.execute(
+                select(integration_outbox).where(
+                    integration_outbox.c.event_type == "integration.repair_exhausted",
+                    integration_outbox.c.available_at == 200.0,
+                )
+            )
+        ).mappings().all()
+    assert stage_after_replay["attempts"] == 1
+    assert stage_after_replay["deadline_at"] == 260.0
+    assert len(resume_events) == 1
 
     await db.create_workspace(
         Workspace(
@@ -1318,6 +1354,57 @@ async def test_resumed_event_redispatches_established_repair_delegate(db):
             "ref": "writer",
         }
     ]
+
+
+@pytest.mark.parametrize("corruption", ["wrong_episode", "unrelated_block", "manual_pause"])
+async def test_parent_resume_rejects_non_current_or_operator_held_collection(db, corruption):
+    """Only this operation's exhausted parent episode may be restored."""
+    from src.integration.repair import RepairService
+
+    await _seed_parent_operation(db)
+    await _add_parent_evidence(db, "failed-check-2", run_id="run-2", conclusion="failure")
+    await _add_parent_evidence(db, "debug-failed", run_id="run-debug", conclusion="failure")
+    repair = RepairService(db)
+    await repair.start("operation", STARTING_SHA, "failed-check", now=100.0)
+    await repair.record_result("operation", "failed-check", now=101.0)
+    await repair.record_result("operation", "failed-check-2", now=102.0)
+    assert (await repair.record_result("operation", "debug-failed", now=103.0))["outcome"] == (
+        "human_required"
+    )
+
+    if corruption == "wrong_episode":
+        async with db.immediate() as conn:
+            await conn.execute(
+                insert(integration_parent_episodes).values(
+                    id="other-episode",
+                    parent_task_id="parent",
+                    repository_id="repo",
+                    generation=3,
+                    pre_collection_checkpoint_sha=STARTING_SHA,
+                    created_at=2.0,
+                )
+            )
+            await conn.execute(
+                update(integration_repair_operations)
+                .where(integration_repair_operations.c.id == "operation")
+                .values(episode_id="other-episode")
+            )
+    elif corruption == "unrelated_block":
+        async with db.immediate() as conn:
+            await conn.execute(
+                update(task_metadata)
+                .where(
+                    task_metadata.c.task_id == "parent",
+                    task_metadata.c.key == "blocked_terminal",
+                )
+                .values(value="merge_conflict")
+            )
+    else:
+        await db.pause_task("parent")
+
+    rejected = await IntegrationControlService(db, clock=lambda: 200.0).resume("operation")
+    assert rejected["outcome"] == ("stale" if corruption == "wrong_episode" else "invalid_state")
+    assert (await db.get_integration_operation("operation"))["state"] == "human_required"
 
 
 async def test_repair_dispatch_command_derives_current_stage_with_real_service(
