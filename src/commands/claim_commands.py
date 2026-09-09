@@ -64,6 +64,11 @@ def _task_block(task) -> dict:
         "assigned_agent": task.assigned_agent_id,
         "retry_count": task.retry_count,
         "max_retries": task.max_retries,
+        # The branch the claim's slot reset checked out and recorded on the
+        # row.  ``task_show`` has always carried it and delivery refuses
+        # without it, so a claim response that omitted it hid exactly the
+        # field a worker needs when a close complains about its branch.
+        "branch_name": task.branch_name,
         "integration_mode": task.integration_mode,
         "is_blocked": task.is_blocked,
         "is_plan_subtask": task.is_plan_subtask,
@@ -682,6 +687,7 @@ class ClaimCommandsMixin:
         epoch = task.claim_epoch
         hierarchy_attached = False
         fresh = None
+        prepared_branch: str | None = None
         try:
             if slot is None:
                 slot = await self.db.get_workspace_for_agent(row.agent_id)
@@ -694,12 +700,14 @@ class ClaimCommandsMixin:
             }
 
             async def prepare_and_activate(*, conn=None, base_branch=None, target_branch=None):
+                nonlocal prepared_branch
                 reset_kwargs = {"base_branch": base_branch} if base_branch else {}
                 if target_branch is not None:
                     reset_kwargs["target_branch"] = target_branch
-                await self.orchestrator._worktree_slots().reset_slot_for_task(
+                branch = await self.orchestrator._worktree_slots().reset_slot_for_task(
                     slot, task, **reset_kwargs
                 )
+                prepared_branch = branch if isinstance(branch, str) and branch else None
                 # Writing the claim file joins the same guard as the slot
                 # reset: any failure after ``record_holder`` committed — a slot
                 # reset error or an OSError on this write — must release the
@@ -713,8 +721,20 @@ class ClaimCommandsMixin:
                         "claimed_at": time.time(),
                     },
                 )
+                # The reset is what created and checked out the branch, so
+                # its return value is the only authority on what this task's
+                # branch actually is.  It is recorded in the activation
+                # transaction: either the claim goes active with the branch
+                # named on the task row, or neither happens.  Discarding it
+                # here is what left development-mode pool tasks with a NULL
+                # ``branch_name`` and an unclosable completion pipeline.
                 return await self.db.activate_claim(
-                    session.id, task.id, epoch=epoch, now=time.time(), conn=conn
+                    session.id,
+                    task.id,
+                    epoch=epoch,
+                    now=time.time(),
+                    conn=conn,
+                    branch_name=prepared_branch,
                 )
 
             if hierarchy_enabled:
@@ -836,6 +856,11 @@ class ClaimCommandsMixin:
             remove_claim_file(row.work_dir)
             self._resolve_claim_waiters(session.id, epoch, "prepare_failed")
             return self._simple(ClaimResult.PREPARE_FAILED, "released before activation", row, cap)
+        if prepared_branch:
+            # Keep the in-memory task consistent with the row the activation
+            # just wrote, so ``task.claimed`` / ``task.started`` and the
+            # claim response name the branch the slot is actually on.
+            task.branch_name = prepared_branch
         # A successful preparation clears its pause checkpoint and failure
         # ladder together, so a later, unrelated prepare starts at minimum.
         await self.db.clear_claim_preparation_metadata(task.id)

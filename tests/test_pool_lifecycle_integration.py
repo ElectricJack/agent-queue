@@ -124,6 +124,10 @@ async def orch(db, config):
     # than the constructor's uninitialized production adapter.
     o.session_reconciler.db = db
     o.git = MagicMock()
+    # A pool claim now records the branch its slot reset checked out, so the
+    # close path reaches ``git.arev_parse`` to capture the final branch tip.
+    # There is no real checkout under ``tmp_path``: answer with no SHA.
+    o.git.arev_parse = AsyncMock(return_value=None)
     # Pool launch installs the managed git excludes before it hands a
     # checkout to a session (src/orchestrator/pools.py), which reaches for
     # the real GitManager; these fixtures have no checkout.  Same stub as

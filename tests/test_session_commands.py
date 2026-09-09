@@ -1331,6 +1331,49 @@ class TestEndToEndOnFakeProvider:
         again = await asyncio.wait_for(real_handler.execute("task_close", args), timeout=2)
         assert again["success"] is True and again["status"] == "COMPLETED"
 
+    async def test_escalated_verification_refusal_does_not_blame_the_workspace(
+        self, db, real_orch, real_handler, provider, tmp_path, monkeypatch
+    ):
+        """A precondition the workspace cannot satisfy reads as an escalation.
+
+        Telling a worker to "fix this from this workspace" when the missing
+        thing is daemon-side delivery state sends it into a retry loop or
+        into closing ``--outcome fail`` over passing work (task fleet-willow).
+        """
+        import asyncio
+
+        await self._launch_via_execute_task(db, real_orch, monkeypatch, tmp_path)
+        session = await db.get_session_for_task("t1")
+
+        async def _stop_escalated(ctx):
+            ctx.verification_retry_in_session = True
+            ctx.verification_escalated = True
+            ctx.verification_issues = ["dirty: task t1 holds no integration workspace"]
+            ctx.verification_feedback = ctx.verification_issues[0]
+            return None, False
+
+        monkeypatch.setattr(real_orch, "_run_completion_pipeline", _stop_escalated)
+        close = await asyncio.wait_for(
+            real_handler.execute(
+                "task_close",
+                {
+                    "task_id": "t1",
+                    "session_id": session.id,
+                    "outcome": "pass",
+                    "work_outcome": "shipped",
+                    "summary": "Work done.",
+                },
+            ),
+            timeout=2,
+        )
+
+        assert close["success"] is False and close["escalated"] is True
+        assert "you can still fix from this workspace" not in close["error"]
+        assert "daemon state this workspace cannot change" in close["error"]
+        assert "user:dashboard" in close["error"]
+        # Still a refusal, not a close: the task keeps its claim.
+        assert (await db.get_task("t1")).status is TaskStatus.IN_PROGRESS
+
     async def test_verification_reopen_returns_ready_and_releases_resources(
         self, db, real_orch, real_handler, provider, tmp_path, monkeypatch
     ):

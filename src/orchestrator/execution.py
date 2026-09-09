@@ -1447,6 +1447,7 @@ class ExecutionMixin:
                 "pipeline_ok": False,
                 "retry_count": None,
                 "verification_retry": True,
+                "escalated": ctx.verification_escalated,
                 "issues": list(ctx.verification_issues),
                 "feedback": ctx.verification_feedback,
             }

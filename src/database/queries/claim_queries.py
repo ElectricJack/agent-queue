@@ -471,7 +471,7 @@ class ClaimQueryMixin:
         return slot
 
     async def activate_claim(
-        self, session_id, task_id, *, epoch: int, now: float, conn=None
+        self, session_id, task_id, *, epoch: int, now: float, conn=None, branch_name=None
     ) -> SessionRecord | None:
         """Flip ``preparing`` -> ``active``; the updated row, or ``None``.
 
@@ -479,6 +479,15 @@ class ClaimQueryMixin:
         the caller a re-read to build the response's session block.  Falsy
         on failure, so the old ``if not await activate_claim(...)`` callers
         read unchanged.
+
+        ``branch_name`` is the branch the slot reset actually checked out.
+        Recording it here — inside the same transaction, under the same task
+        row lock that gates activation — is what makes "the worktree is on
+        the task branch" and "the task row names that branch" a single fact.
+        The push path has always written it (``_prepare_slot_workspace``);
+        the pool-claim path used to discard it, which left ``branch_name``
+        NULL on every development-mode pool task and made its close refuse
+        forever in ``resolve_workspace_checkpoint``.
         """
 
         async def _run(c):
@@ -499,7 +508,7 @@ class ClaimQueryMixin:
             # can observe a pre-pause PostgreSQL statement snapshot.
             claim = (
                 await c.execute(
-                    select(tasks.c.id)
+                    select(tasks.c.id, tasks.c.branch_name)
                     .where(
                         tasks.c.id == task_id,
                         tasks.c.status == TaskStatus.IN_PROGRESS.value,
@@ -507,9 +516,19 @@ class ClaimQueryMixin:
                     )
                     .with_for_update()
                 )
-            ).scalar_one_or_none()
+            ).fetchone()
             if claim is None:
                 return None
+            if branch_name and claim[1] != branch_name:
+                # Only write when it actually differs: a hierarchy claim's
+                # branch is already recorded by the origin chain, and a
+                # no-op UPDATE on that row would touch a task whose
+                # materialized origin is deliberately frozen.
+                await c.execute(
+                    update(tasks)
+                    .where(tasks.c.id == task_id)
+                    .values(branch_name=branch_name, updated_at=now)
+                )
             stmt = (
                 update(sessions)
                 .where(

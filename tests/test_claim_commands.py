@@ -662,6 +662,52 @@ class TestClaim:
         res = await scoped(handler, sid)._cmd_task_claim({"next": True, "wait": 100})
         assert res["result"] == "no_ready_work"
 
+    async def test_claim_records_the_branch_the_slot_reset_checked_out(
+        self, handler, db, tmp_path
+    ):
+        """A pool claim persists ``branch_name`` alongside its activation.
+
+        Discarding the reset's return value left development-mode tasks with
+        a NULL ``branch_name``, and ``resolve_workspace_checkpoint`` then
+        refused their close forever (task fleet-willow).
+        """
+        await mktask(db, "t1", profile_id="worker")
+        sid, _wd = await pool_session(db, tmp_path)
+        reset = handler.orchestrator._worktree_slots.return_value.reset_slot_for_task
+        reset.return_value = "aq/t1"
+
+        result = await scoped(handler, sid)._cmd_task_claim({"next": True})
+
+        assert result["result"] == "claimed"
+        assert (await db.get_task("t1")).branch_name == "aq/t1"
+        assert result["task"]["branch_name"] == "aq/t1"
+
+    async def test_failed_activation_records_no_branch(self, handler, db, tmp_path):
+        """Branch and activation are one fact: neither lands without the other."""
+        await mktask(db, "t1", profile_id="worker")
+        sid, _wd = await pool_session(db, tmp_path)
+        handler.orchestrator._worktree_slots.return_value.reset_slot_for_task = AsyncMock(
+            side_effect=RuntimeError("git exploded")
+        )
+
+        assert (await scoped(handler, sid)._cmd_task_claim({"next": True}))[
+            "result"
+        ] == "prepare_failed"
+        assert (await db.get_task("t1")).branch_name is None
+
+    async def test_hierarchy_claim_keeps_its_origin_chain_branch(self, handler, db, tmp_path):
+        """The origin chain already named the branch; the claim must agree."""
+        await self._hierarchy_task(db, tmp_path)
+        sid, _wd = await pool_session(db, tmp_path)
+        handler.orchestrator._worktree_slots.return_value.reset_slot_for_task = AsyncMock(
+            return_value="aq/child"
+        )
+
+        result = await scoped(handler, sid)._cmd_task_claim({"next": True})
+
+        assert result["result"] == "claimed"
+        assert (await db.get_task("child")).branch_name == "aq/child"
+
     async def test_prepare_failed_releases_and_reports(self, handler, db, tmp_path):
         await mktask(db, "t1", profile_id="worker")
         sid, wd = await pool_session(db, tmp_path)
