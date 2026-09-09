@@ -105,8 +105,13 @@ def render_root(
     dedup_key: str,
     replacement: bool = False,
 ) -> str:
-    """The channel post: project, task, blocker, decision, mention, link, ID."""
-    mention = mentions.render()
+    """The channel post: project, task, blocker, decision, mention, link, ID.
+
+    ``replacement=True`` re-posts a root whose original message was deleted.
+    That is the same incident, not a new one, so the configured mention is
+    deliberately dropped — only the initial escalation is allowed to ping.
+    """
+    mention = "" if replacement else mentions.render()
     header = f"{facts.severity_label} · **Human decision needed** · `{facts.project_id}`"
     if replacement:
         header += " *(reposted — original message was deleted)*"

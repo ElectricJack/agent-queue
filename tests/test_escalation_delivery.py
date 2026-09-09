@@ -140,6 +140,39 @@ def test_root_post_carries_the_identifying_fields_and_only_configured_mentions()
     assert "esc-1" in text and "aq-esc:esc-1:root:0" in text
 
 
+def test_replacement_root_repeats_the_incident_without_repeating_the_ping():
+    facts = EscalationFacts(
+        id="esc-1",
+        project_id="agent-queue",
+        state="needs_human",
+        revision=0,
+        severity="high",
+        summary="Migration blocked",
+        investigation="Checked the replica",
+        decision_requested="Roll forward or hold?",
+        task_id="t-1",
+        task_title="Deploy the migration",
+        task_status="BLOCKED",
+    )
+    mentions = MentionPolicy(user_ids=(MENTION_USER,), role_ids=(MENTION_ROLE,))
+    text = render_root(
+        facts,
+        mentions=mentions,
+        base_url=BASE_URL,
+        dedup_key=root_dedup_key("esc-1", 1),
+        replacement=True,
+    )
+
+    # Same incident, re-posted because the original message was deleted: the
+    # configured mention belongs to the initial escalation alone.
+    assert "<@" not in text
+    assert "reposted" in text
+    assert "Migration blocked" in text
+    assert "Roll forward or hold?" in text
+    assert f"{BASE_URL}/settings/messaging#escalation-reply-esc-1" in text
+    assert "aq-esc:esc-1:root:1" in text
+
+
 def test_authored_text_can_never_become_a_mention_or_a_log_dump():
     hostile = "@everyone <@999999999999999999> ping <@&888888888888888888>"
     assert "@everyone" not in sanitise(hostile)
