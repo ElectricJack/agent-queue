@@ -399,14 +399,15 @@ def test_file_key_provider_rejects_group_readable_and_symlink_paths(tmp_path):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("mismatch", [None, "head", "base", "batch", "repository"])
-async def test_audit_pr_reuses_exact_batch_pr_for_new_revision(mismatch):
+@pytest.mark.parametrize("mismatch", [None, "head", "base", "batch", "repository", "closed_base"])
+@pytest.mark.parametrize("pr_state", ["open", "closed"])
+async def test_audit_pr_reuses_exact_batch_pr_for_new_revision(mismatch, pr_state, monkeypatch):
     private, _public = _private_key()
     old_key, key, head = "a" * 64, "b" * 64, "c" * 40
     payload = {
         "html_url": "https://github.com/acme/widgets/pull/7",
         "number": 7,
-        "state": "open",
+        "state": pr_state,
         "body": f"<!-- aq-integration-audit:{old_key} -->\nRoot integration batch `batch`.",
         "head": {
             "sha": head,
@@ -449,7 +450,11 @@ async def test_audit_pr_reuses_exact_batch_pr_for_new_revision(mismatch):
         repository_numeric_id=303,
         repository_full_name="acme/widgets",
     )
-    if mismatch:
+    from unittest.mock import AsyncMock
+    monkeypatch.setattr(client, "exact_head_ref", AsyncMock(
+        return_value="d" * 40 if mismatch == "closed_base" else head
+    ))
+    if mismatch and (mismatch != "closed_base" or pr_state == "closed"):
         with pytest.raises(GitHubAppError):
             await client.create_audit_pr(**kwargs)
         assert len(transport.requests) == 1

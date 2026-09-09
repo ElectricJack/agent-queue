@@ -370,7 +370,7 @@ class GitHubAppClient:
             raise ValueError("candidate audit ref identity was malformed")
         marker = self._audit_marker(idempotency_key)
         pulls = await self.paged_list(
-            f"/repositories/{self.repository.repository_id}/pulls?state=open&per_page=100"
+            f"/repositories/{self.repository.repository_id}/pulls?state=all&per_page=100"
             + "&head=" + quote(f"{self.repository.full_name.split('/', 1)[0]}:{branch}", safe="")
         )
         matches = [
@@ -378,6 +378,9 @@ class GitHubAppClient:
             for pull in pulls
             if isinstance(pull.get("head"), dict) and pull["head"].get("ref") == branch
         ]
+        open_matches = [pull for pull in matches if pull.get("state") == "open"]
+        if open_matches:
+            matches = open_matches
         if matches:
             if len(matches) != 1:
                 raise GitHubAppError("conflict_or_invalid", "audit PR branch was not unique")
@@ -389,6 +392,10 @@ class GitHubAppClient:
             result = self._audit_pull_request(existing, old_markers[0])
             if result.head_sha != head_sha or result.base_branch != base_branch:
                 raise GitHubAppError("conflict_or_invalid", "existing audit PR target moved")
+            if result.state == "closed":
+                if await self.exact_head_ref(base_branch) != head_sha:
+                    raise GitHubAppError("conflict_or_invalid", "closed audit PR is not exact base")
+            expected_state = result.state
             if marker not in body:
                 existing = await self.request_json(
                     "PATCH",
@@ -400,7 +407,7 @@ class GitHubAppClient:
                 result.head_sha != head_sha
                 or result.head_branch != branch
                 or result.base_branch != base_branch
-                or existing.get("state") != "open"
+                or existing.get("state") != expected_state
             ):
                 raise GitHubAppError(
                     "conflict_or_invalid", "audit PR changed during revision update"
