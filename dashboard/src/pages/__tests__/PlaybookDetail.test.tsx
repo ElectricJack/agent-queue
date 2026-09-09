@@ -39,18 +39,34 @@ vi.mock("@xyflow/react", () => ({
 const state = vi.hoisted(() => ({
   semanticGraph: {} as Record<string, unknown>,
   activationHealth: {} as Record<string, unknown>,
+  sourceMarkdown: "# review-flow source",
+  sourceData: null as { markdown: string; source_hash: string; path: string } | null,
+  updateSource: vi.fn(),
 }));
+
+function sourceData() {
+  if (!state.sourceData || state.sourceData.markdown !== state.sourceMarkdown) {
+    state.sourceData = {
+      markdown: state.sourceMarkdown,
+      source_hash: "abc123def456",
+      path: "/vault/playbooks/review-flow.md",
+    };
+  }
+  return state.sourceData;
+}
 vi.mock("../../api/hooks", () => ({
   usePlaybooks: () => ({
     data: [{ id: "review-flow", scope: "system", version: 3, node_count: 5, triggers: ["task.created"], running_count: 0 }],
   }),
+  // Mirror react-query: the same query data object identity across renders,
+  // so the editor's reset-on-new-source effect does not fire on every render.
   usePlaybookSource: () => ({
-    data: { markdown: "# review-flow source", source_hash: "abc123def456", path: "/vault/playbooks/review-flow.md" },
+    data: sourceData(),
     isLoading: false,
     refetch: vi.fn(),
   }),
   usePlaybookRuns: () => ({ data: [], isLoading: false }),
-  useUpdatePlaybookSource: () => ({ mutateAsync: vi.fn(), isPending: false }),
+  useUpdatePlaybookSource: () => ({ mutateAsync: state.updateSource, isPending: false }),
   usePlaybookV2Graph: () => ({ ...state.semanticGraph, refetch: vi.fn() }),
   useSavePlaybookGraphLayout: () => ({ mutate: vi.fn() }),
   usePlaybookActivationHealth: () => state.activationHealth,
@@ -78,6 +94,14 @@ beforeEach(() => {
     data: { activations: [semanticGraph.activation] },
     isPending: false,
   };
+  state.sourceMarkdown = "# review-flow source";
+  state.sourceData = null;
+  state.updateSource = vi.fn().mockResolvedValue({
+    compiled: true,
+    version: 4,
+    node_count: 5,
+    source_hash: "def456abc123",
+  });
 });
 afterEach(cleanup);
 
@@ -120,9 +144,123 @@ describe("PlaybookDetail tabs", () => {
     expect(screen.getByRole("button", { name: "Retry" })).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "Source" }));
-    expect(screen.getByDisplayValue("# review-flow source")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "review-flow source" })).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "Runs" }));
     expect(screen.getByText("No runs recorded for this playbook.")).toBeInTheDocument();
+  });
+});
+
+describe("PlaybookDetail source view/edit cycle", () => {
+  const MD = [
+    "# Heading",
+    "",
+    "- first item",
+    "- second item",
+    "",
+    "[docs](https://example.com/docs)",
+    "",
+    "```yaml",
+    "when: task.created",
+    "```",
+    "",
+  ].join("\n");
+
+  it("renders the source as markdown by default, with no textarea", () => {
+    state.sourceMarkdown = MD;
+    render(page());
+
+    expect(screen.getByRole("heading", { name: "Heading" })).toBeInTheDocument();
+    expect(screen.getAllByRole("listitem").map((li) => li.textContent)).toEqual([
+      "first item",
+      "second item",
+    ]);
+    expect(screen.getByRole("link", { name: "docs" })).toHaveAttribute(
+      "href",
+      "https://example.com/docs",
+    );
+    expect(screen.getByText("when: task.created").closest("pre")).not.toBeNull();
+
+    expect(screen.queryByRole("textbox", { name: "Playbook markdown source" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Save & Compile" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Edit" })).toBeInTheDocument();
+  });
+
+  it("opens the raw markdown only after Edit is clicked", async () => {
+    const user = userEvent.setup();
+    state.sourceMarkdown = MD;
+    render(page());
+
+    await user.click(screen.getByRole("button", { name: "Edit" }));
+
+    const box = screen.getByRole("textbox", { name: "Playbook markdown source" });
+    expect(box).toHaveValue(MD);
+    expect(screen.queryByRole("heading", { name: "Heading" })).not.toBeInTheDocument();
+  });
+
+  it("saves the edit and returns to the rendered updated content", async () => {
+    const user = userEvent.setup();
+    state.sourceMarkdown = "# Before";
+    render(page());
+
+    await user.click(screen.getByRole("button", { name: "Edit" }));
+    const box = screen.getByRole("textbox", { name: "Playbook markdown source" });
+    await user.clear(box);
+    await user.type(box, "# After");
+    await user.click(screen.getByRole("button", { name: "Save & Compile" }));
+
+    expect(state.updateSource).toHaveBeenCalledWith({
+      playbook_id: "review-flow",
+      markdown: "# After",
+      expected_source_hash: "abc123def456",
+    });
+    expect(screen.getByRole("heading", { name: "After" })).toBeInTheDocument();
+    expect(screen.queryByRole("textbox", { name: "Playbook markdown source" })).not.toBeInTheDocument();
+  });
+
+  it("cancels back to the saved content without persisting the edit", async () => {
+    const user = userEvent.setup();
+    state.sourceMarkdown = "# Before";
+    render(page());
+
+    await user.click(screen.getByRole("button", { name: "Edit" }));
+    const box = screen.getByRole("textbox", { name: "Playbook markdown source" });
+    await user.clear(box);
+    await user.type(box, "# Scratch");
+    await user.click(screen.getByRole("button", { name: "Cancel" }));
+
+    expect(state.updateSource).not.toHaveBeenCalled();
+    expect(screen.getByRole("heading", { name: "Before" })).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Edit" }));
+    expect(screen.getByRole("textbox", { name: "Playbook markdown source" })).toHaveValue("# Before");
+  });
+
+  it("keeps the source text intact through a view/edit round trip", async () => {
+    const user = userEvent.setup();
+    state.sourceMarkdown = MD;
+    render(page());
+
+    await user.click(screen.getByRole("button", { name: "Edit" }));
+    expect(screen.getByRole("textbox", { name: "Playbook markdown source" })).toHaveValue(MD);
+    await user.click(screen.getByRole("button", { name: "Cancel" }));
+    await user.click(screen.getByRole("button", { name: "Edit" }));
+    expect(screen.getByRole("textbox", { name: "Playbook markdown source" })).toHaveValue(MD);
+  });
+
+  it("stays in the editor and surfaces the conflict when the vault moved", async () => {
+    const user = userEvent.setup();
+    state.sourceMarkdown = "# Before";
+    state.updateSource = vi.fn().mockResolvedValue({ compiled: false, error: "conflict" });
+    render(page());
+
+    await user.click(screen.getByRole("button", { name: "Edit" }));
+    const box = screen.getByRole("textbox", { name: "Playbook markdown source" });
+    await user.clear(box);
+    await user.type(box, "# Before edit");
+    await user.click(screen.getByRole("button", { name: "Save & Compile" }));
+
+    expect(screen.getByRole("textbox", { name: "Playbook markdown source" })).toBeInTheDocument();
+    expect(screen.getByText(/Vault changed underneath this editor/)).toBeInTheDocument();
   });
 });
