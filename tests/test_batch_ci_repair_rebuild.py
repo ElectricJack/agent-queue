@@ -28,10 +28,20 @@ from src.database.tables import (
     integration_candidate_member_results,
     integration_candidate_revisions,
     integration_repair_stages,
+    sessions,
     tasks,
     workspaces,
 )
-from src.models import SessionRecord, Task, TaskStatus
+from src.models import (
+    Agent,
+    AgentState,
+    Project,
+    RepoConfig,
+    RepoSourceType,
+    SessionRecord,
+    Task,
+    TaskStatus,
+)
 
 
 @pytest.mark.parametrize("conflict", [False, True])
@@ -213,6 +223,164 @@ async def test_conflicting_main_rebuild_uses_current_stage_and_requires_fresh_ci
         ).scalar_one()
     assert "candidate_rebuild_conflict" not in before_record
     _git(origin, "update-ref", adopted.branch, repaired_head)
+
+    async def assert_delegate_not_reused(expected_status):
+        refused = await service.rebuild("batch", adopted.revision, new_main)
+        assert refused.outcome == "wait"
+        async with db._engine.connect() as conn:
+            untouched = (
+                await conn.execute(select(tasks).where(tasks.c.id == old_delegate_id))
+            ).mappings().one()
+            untouched_stage = (
+                await conn.execute(select(integration_repair_stages))
+            ).mappings().one()
+            untouched_owner = (
+                await conn.execute(select(integration_branch_owners))
+            ).mappings().one()
+        assert untouched["status"] == expected_status
+        assert untouched["description"] == "prior repair"
+        assert untouched_stage["attempts"] == 1
+        assert untouched_stage["deadline_at"] == 130.0
+        assert untouched_stage["dossier"]["budget"]["attempts"] == 1
+        assert "candidate_rebuild_conflict" not in untouched_stage["dossier"]
+        assert untouched_owner["owner_id"] == "repair-batch-batch"
+        assert untouched_owner["owner_role"] == "collector"
+
+    await db.create_project(Project(id="other-p", name="other project"))
+    await db.create_repo(
+        RepoConfig(
+            id="other-repo",
+            project_id="other-p",
+            source_type=RepoSourceType.CLONE,
+            url=str(origin),
+        )
+    )
+
+    # A stage pointer cannot authorize rewriting a completed task bound to
+    # another project, repository, branch, or repair operation.
+    for field, bad_value in (
+        ("project_id", "other-p"),
+        ("repo_id", "other-repo"),
+        ("branch_name", "refs/heads/aq/unrelated"),
+        ("created_by_kind", "user"),
+        ("created_by_id", "other-operation"),
+    ):
+        async with db.immediate() as conn:
+            original = (
+                await conn.execute(
+                    select(tasks.c[field]).where(tasks.c.id == old_delegate_id)
+                )
+            ).scalar_one()
+            await conn.execute(
+                update(tasks)
+                .where(tasks.c.id == old_delegate_id)
+                .values({field: bad_value})
+            )
+        await assert_delegate_not_reused(TaskStatus.COMPLETED.value)
+        async with db.immediate() as conn:
+            await conn.execute(
+                update(tasks)
+                .where(tasks.c.id == old_delegate_id)
+                .values({field: original})
+            )
+
+    await db.create_agent(
+        Agent(
+            id="live-repair-agent",
+            name="Live repair agent",
+            profile_id="repairer",
+            state=AgentState.BUSY,
+            current_task_id=old_delegate_id,
+        )
+    )
+    await db.create_session(
+        SessionRecord(
+            id="preexisting-delegate-session",
+            task_id=old_delegate_id,
+            project_id="p",
+            profile_id="repairer",
+            harness="fake",
+            provider="fake",
+            name="preexisting-delegate",
+            lifecycle="pool",
+            state="stopped",
+            work_dir=str(work),
+            epoch="test",
+            instance_token="preexisting-delegate-instance",
+            started_at=109.0,
+        )
+    )
+    async with db.immediate() as conn:
+        await conn.execute(
+            insert(workspaces).values(
+                id="preexisting-delegate-workspace",
+                project_id="p",
+                workspace_path=str(tmp_path / "preexisting-delegate-workspace"),
+                source_type="link",
+                locked_by_task_id=None,
+                enabled=True,
+                created_at=109.0,
+            )
+        )
+
+    # READY and PAUSED are dispatchable only when no assignment, running
+    # session, active pool claim, or locked checkout can still write for them.
+    for status in (TaskStatus.READY.value, TaskStatus.PAUSED.value):
+        async with db.immediate() as conn:
+            await conn.execute(
+                update(tasks)
+                .where(tasks.c.id == old_delegate_id)
+                .values(status=status, assigned_agent_id="live-repair-agent")
+            )
+        await assert_delegate_not_reused(status)
+
+        async with db.immediate() as conn:
+            await conn.execute(
+                update(tasks)
+                .where(tasks.c.id == old_delegate_id)
+                .values(assigned_agent_id=None)
+            )
+            await conn.execute(
+                update(sessions)
+                .where(sessions.c.id == "preexisting-delegate-session")
+                .values(state="running", claim_phase=None)
+            )
+        await assert_delegate_not_reused(status)
+
+        async with db.immediate() as conn:
+            await conn.execute(
+                update(sessions)
+                .where(sessions.c.id == "preexisting-delegate-session")
+                .values(state="stopped", claim_phase="active")
+            )
+        await assert_delegate_not_reused(status)
+
+        async with db.immediate() as conn:
+            await conn.execute(
+                update(sessions)
+                .where(sessions.c.id == "preexisting-delegate-session")
+                .values(claim_phase=None)
+            )
+            await conn.execute(
+                update(workspaces)
+                .where(workspaces.c.id == "preexisting-delegate-workspace")
+                .values(locked_by_task_id=old_delegate_id)
+            )
+        await assert_delegate_not_reused(status)
+
+        async with db.immediate() as conn:
+            await conn.execute(
+                update(workspaces)
+                .where(workspaces.c.id == "preexisting-delegate-workspace")
+                .values(locked_by_task_id=None)
+            )
+
+    async with db.immediate() as conn:
+        await conn.execute(
+            update(tasks)
+            .where(tasks.c.id == old_delegate_id)
+            .values(status=TaskStatus.COMPLETED.value)
+        )
 
     # The conflict write is restartable independently of dispatch. A lost
     # response after the transaction leaves the exact subject durable and the
