@@ -77,6 +77,7 @@ class AuditPullRequest(BaseModel):
     repository_numeric_id: int
     repository_full_name: str
     idempotency_key: str
+    state: Literal["open", "closed"] = "open"
 
 
 class CandidateRepairLineage(BaseModel):
@@ -222,7 +223,7 @@ class CandidateService:
             revision = await self._ensure_revision(state, revision_number, batch["base_sha"])
         except CandidateStaleAuthority:
             return CandidateBuildResult(outcome="wait", batch_id=batch_id, revision=revision_number)
-        was_built = revision["state"] == "built"
+        was_built = revision["state"] in {"built", "green"}
         operation_id = state["operation"]["id"]
         if revision.get("repair_parent_revision") is None:
             started = await self.repair.start(
@@ -264,8 +265,6 @@ class CandidateService:
             if new_base is None:
                 return self._result("base_moved", state, revision, operation_id)
             return await self.rebuild(batch_id, revision_number, new_base)
-        if revision["state"] == "green":
-            return self._result("already_built", state, revision, operation_id)
         outcome = "already_built" if was_built or batch["pr_url"] else "built"
         pushed = await self._publish(state, revision, store)
         if pushed.get("publication_wait"):
@@ -1584,15 +1583,21 @@ class CandidateService:
                     )
                 )
                 row = {"state": "reserved", "expected_old_sha": expected_old}
-        published = await self._mutate_ref(
+        published = await self._adopted_final_publication_is_current(
             state,
-            revision=int(revision["revision"]),
-            purpose="candidate_final",
-            target_branch=batch["integration_branch"],
+            revision,
             expected_old_sha=row["expected_old_sha"],
-            desired_sha=revision["head_sha"],
-            store=store,
         )
+        if not published:
+            published = await self._mutate_ref(
+                state,
+                revision=int(revision["revision"]),
+                purpose="candidate_final",
+                target_branch=batch["integration_branch"],
+                expected_old_sha=row["expected_old_sha"],
+                desired_sha=revision["head_sha"],
+                store=store,
+            )
         if not published:
             return {**revision, "publication_wait": True}
         await self._crash("after_candidate_push")
@@ -1658,6 +1663,13 @@ class CandidateService:
             or pr.idempotency_key != publication_key
         ):
             raise ValueError("audit PR identity does not match candidate")
+        if pr.state == "closed":
+            # GitHub closes an audit PR with no diff.  That is an audit record,
+            # not a request to fabricate work or reopen an empty PR: it is safe
+            # only when the exact candidate is already the current base head.
+            base_head = await self.app_client.exact_head_ref(repository.default_branch)
+            if base_head != revision["head_sha"]:
+                return {**revision, "publication_wait": True}
         async with self.db.immediate() as conn:
             await self.db.lock_hierarchy_project(conn, batch["project_id"])
             await self._validate_authority_on(conn, state, revision=int(revision["revision"]))
@@ -1697,6 +1709,62 @@ class CandidateService:
             )
         await self._crash("after_audit_pr_write")
         return {**revision, "pr_url": pr.url}
+
+    async def _adopted_final_publication_is_current(
+        self, state, revision, *, expected_old_sha: str
+    ) -> bool:
+        """Adopt one already-observed final ref write across a collector fence.
+
+        A repair-stage transition changes the collector fence but cannot rewrite
+        an external mutation that was completed under the previous fence.  The
+        original applied mutation remains the immutable proof only if every
+        candidate identity field still agrees and the authenticated remote still
+        names its exact desired SHA.
+        """
+        mutation_id = self._mutation_id(
+            purpose="candidate_final",
+            batch_id=state["batch"]["id"],
+            revision=int(revision["revision"]),
+            ordinal=None,
+            resolution_id=None,
+        )
+        async with self.db.immediate() as conn:
+            await self.db.lock_hierarchy_project(conn, state["project"]["id"])
+            await self._validate_authority_on(conn, state, revision=int(revision["revision"]))
+            mutation = (
+                await conn.execute(
+                    select(integration_candidate_ref_mutations)
+                    .where(integration_candidate_ref_mutations.c.id == mutation_id)
+                    .with_for_update()
+                )
+            ).mappings().one_or_none()
+            if mutation is None or (
+                mutation["state"] != "applied"
+                or mutation["batch_id"] != state["batch"]["id"]
+                or int(mutation["revision"]) != int(revision["revision"])
+                or mutation["purpose"] != "candidate_final"
+                or mutation["repository_id"] != state["batch"]["repository_id"]
+                or mutation["target_branch"] != state["batch"]["integration_branch"]
+                or mutation["expected_old_sha"] != expected_old_sha
+                or mutation["desired_sha"] != revision["head_sha"]
+                or mutation["remote_sha"] != revision["head_sha"]
+                or mutation["member_ordinal"] is not None
+                or mutation["resolution_id"] is not None
+                or mutation["operation_id"] != state["operation"]["id"]
+                or mutation["operation_episode_id"] != state["operation"]["episode_id"]
+            ):
+                return False
+        remote = await self.app_client.exact_head_ref(
+            state["batch"]["integration_branch"].removeprefix("refs/heads/")
+        )
+        if remote != revision["head_sha"]:
+            return False
+        return await self._authority_is_current(
+            state,
+            revision=int(revision["revision"]),
+            expected_role="collector",
+            expected_handoff="reserved",
+        )
 
     async def _pending(self, state, revision, member):
         async with self.db.immediate() as conn:

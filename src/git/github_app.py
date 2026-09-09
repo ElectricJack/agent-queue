@@ -450,6 +450,7 @@ class GitHubAppClient:
             or not head["ref"]
             or not isinstance(base.get("ref"), str)
             or not base["ref"]
+            or payload.get("state") not in {"open", "closed"}
             or self._audit_marker(idempotency_key) not in str(payload.get("body") or "")
         ):
             raise GitHubAppError("conflict_or_invalid", "GitHub audit PR identity was malformed")
@@ -462,6 +463,7 @@ class GitHubAppClient:
             repository_numeric_id=self.repository.repository_id,
             repository_full_name=self.repository.full_name,
             idempotency_key=idempotency_key,
+            state=payload["state"],
         )
 
     async def installation_token(self, *, force_refresh: bool = False) -> str:

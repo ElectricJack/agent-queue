@@ -278,6 +278,41 @@ async def test_audit_pr_transport_reconciles_by_marker_and_creates_exact_bound_p
 
 
 @pytest.mark.asyncio
+async def test_audit_pr_lookup_retains_closed_noop_state():
+    private, _public = _private_key()
+    head = "a" * 40
+    key = "b" * 64
+    payload = {
+        "html_url": "https://github.com/acme/widgets/pull/7",
+        "number": 7,
+        "state": "closed",
+        "body": f"<!-- aq-integration-audit:{key} -->",
+        "head": {
+            "sha": head,
+            "ref": "aq/integration/batch",
+            "repo": {"id": 303, "full_name": "acme/widgets"},
+        },
+        "base": {"ref": "main"},
+    }
+    transport = ScriptedTransport([HttpResponse(200, {}, json.dumps([payload]).encode())])
+    client = GitHubAppClient(
+        GitHubAppConfig("Iv1.client", 101, 202, "/daemon/key.pem"),
+        GitHubRepositoryBinding(303, "acme/widgets"),
+        key_provider=StaticKeyProvider(private),
+        transport=transport,
+        clock=lambda: 1_800_000_000.0,
+    )
+    client._token = "installation-secret"
+    client._token_expires_at = 1_800_001_000.0
+
+    found = await client.lookup_audit_pr(idempotency_key=key)
+
+    assert found is not None
+    assert found.state == "closed"
+    assert found.head_sha == head
+
+
+@pytest.mark.asyncio
 async def test_authenticated_request_retries_one_401_with_a_fresh_token():
     private, _ = _private_key()
     expires = "2030-01-01T00:00:00Z"
