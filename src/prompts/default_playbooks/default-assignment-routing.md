@@ -58,16 +58,22 @@ one of three paths.
 
 ## Choosing a class
 
-Choose the least expensive intelligence class that can reliably complete the
-task. Use the title, description, task type and priority, and the supplied
-options. The options are binding: choose `intelligence_class`, `provider` and
-`profile_id` together from one options row, and never name a class, provider
-or profile that is absent from the rows.
+Default to `standard-high` for ordinary feature implementation, debugging,
+refactoring, tests, and coordinated changes across modules. Most development
+tasks belong in this class. Use a fast class only for clearly trivial, localized
+work whose requirements are already settled.
 
-Prefer a fast, low-reasoning class for routine, localized, well-specified work.
-Use a standard class when the task needs several coordinated edits, debugging,
-or judgment across modules. Reserve deep classes for ambiguous architecture,
-high-risk changes, hard investigations, and work whose failure would be costly.
+Use `deep-high` only for exceptionally difficult work: a genuinely unresolved
+architectural problem, a hard investigation with concrete evidence that standard
+reasoning was insufficient, or unusually complex correctness reasoning. The
+reason must name that specific difficulty and explain why `standard-high` is
+insufficient. C++, multiple files, native builds, integration tests, high priority,
+and a failing CI run alone are not reasons to select `deep-high`.
+
+Choose a class and compatible profile only from the supplied options. Preserve
+explicit operator assignments. If `standard-high` is absent, select the closest
+suitable available standard class and explain the fallback; do not promote to
+deep just because workers are temporarily occupied.
 
 Copy `provider` from the chosen row. Temporary worker occupancy is not a reason
 to change the required intelligence class; when two rows offer the same class,
