@@ -2412,6 +2412,8 @@ class Orchestrator(
         # A layout publish is one transaction; let an in-flight step land
         # rather than cancelling it mid-write.  Marks are durable either way.
         await self.wait_for_layout_step(timeout=30)
+        if self.workspace_spec_watcher:
+            await self.workspace_spec_watcher.stop()
         if self.integration_service:
             await self.integration_service.stop()
         if self.vault_watcher:
@@ -2592,10 +2594,7 @@ class Orchestrator(
             # and writes reference stubs to vault/projects/{id}/references/.
             # Rate-limited internally to once per spec_watcher_poll_interval.
             if self.workspace_spec_watcher:
-                try:
-                    await self.workspace_spec_watcher.check()
-                except Exception as e:
-                    logger.warning("WorkspaceSpecWatcher check failed: %s", e)
+                self.workspace_spec_watcher.schedule_check()
 
             # 7e. Periodic orphan workflow check (Roadmap 7.5.6).
             # Detects workflows whose coordination playbook died and emits
