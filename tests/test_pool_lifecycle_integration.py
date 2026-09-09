@@ -472,7 +472,7 @@ class TestReconcilerInterplay:
         assert "pool_disabled" in res["reason_codes"]
         assert "awaiting_pool_session" not in res["reason_codes"]
         detail = next(r["detail"] for r in res["reasons"] if r["code"] == "pool_disabled")
-        assert "aq pool set-enabled worker true" in detail
+        assert "aq pool set-enabled --profile-id worker --enabled" in detail
 
     async def test_explain_names_a_disabled_route_for_an_integration_repair_delegate(
         self, orch, db, handler,

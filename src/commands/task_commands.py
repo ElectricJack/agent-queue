@@ -4190,7 +4190,7 @@ class TaskCommandsMixin:
                 code="pool_disabled",
                 detail=(
                     f"routed to disabled pool profile '{profile_id}' — re-enable it with "
-                    f"`aq pool set-enabled {profile_id} true` or route the task to an "
+                    f"`aq pool set-enabled --profile-id {profile_id} --enabled` or route the task to an "
                     "enabled compatible profile"
                 ),
                 ref=profile_id,
