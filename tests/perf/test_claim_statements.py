@@ -139,11 +139,7 @@ async def _seed_worker_scale(any_db):
         AgentProfile(id="worker", name="w", lifecycle="pool", needs_workspace=False)
     )
     await any_db.create_project(Project(id=PROJECT_ID, name="p"))
-    await seed_scale(
-        any_db, profile_id="worker", intelligence_class="standard-medium"
-    )
-
-
+    await seed_scale(any_db, profile_id="worker", intelligence_class="standard-medium")
 
 
 class TestClaimStatementBudgets:
@@ -293,8 +289,8 @@ class TestClaimStatementBudgets:
             )
         budget = 9
         print(f"\nrelease_claim: {c['n']} statements (budget {budget})")
-        assert c["n"] <= budget, (
-            f"{c['n']} statements > budget {budget}:\n" + "\n".join(c["statements"])
+        assert c["n"] <= budget, f"{c['n']} statements > budget {budget}:\n" + "\n".join(
+            c["statements"]
         )
 
     async def test_count_ready_by_profile_statement_budget(self, any_db):
@@ -305,12 +301,14 @@ class TestClaimStatementBudgets:
         assert c["n"] == 1
 
     async def test_reconcile_pools_no_starts_statement_budget(self, any_db, tmp_path):
-        """3 projects x 3 pool profiles, no starts -- budget <= 3 + 3*3.
+        """3 projects x 3 pool profiles, no starts -- budget <= 2 + 3*3 + 3.
 
         One ``list_profiles()`` for the whole tick, one ``list_projects()``,
-        then one ``count_ready_by_profile`` + one ``list_sessions`` per
-        active project with a pool profile (``_measure_pools``'s
-        docstring) -- no starts means no further writes.
+        then one ``count_ready_by_profile`` + one ``count_available_workspaces``
+        + one ``list_sessions`` per active project with a pool profile
+        (``_measure_pools``'s docstring), plus one first-tick
+        ``pool.bounds_rescoped`` audit write per profile. No starts means no
+        further writes.
         """
         from src.config import AppConfig, DiscordConfig
         from src.orchestrator import Orchestrator
@@ -347,7 +345,7 @@ class TestClaimStatementBudgets:
         async with count_statements(any_db) as c:
             await orch._reconcile_pools()
         assert await any_db.list_sessions(lifecycle="pool") == []
-        budget = 3 + 3 * 3
+        budget = 2 + 3 * 3 + 3
         print(f"\n_reconcile_pools no-starts: {c['n']} statements (budget {budget})")
         assert c["n"] <= budget, f"{c['n']} statements > budget {budget}"
 

@@ -52,6 +52,7 @@ def test_concurrent_runs_derive_distinct_worker_databases(monkeypatch):
 def test_unset_dsn_is_cached_as_none(monkeypatch):
     monkeypatch.setattr(pg_dsn, "_CACHED_DSN", pg_dsn._UNSET)
     monkeypatch.delenv("POSTGRES_TEST_DSN", raising=False)
+    monkeypatch.delenv("AQ_REQUIRE_POSTGRES_TESTS", raising=False)
     assert pg_dsn.ensure_worker_postgres_dsn() is None
     assert pg_dsn.ensure_worker_postgres_dsn() is None
 

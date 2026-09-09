@@ -12,6 +12,7 @@ import socket
 import subprocess
 import uuid
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import pytest
 
@@ -34,6 +35,17 @@ def test_disposable_daemon_stateful_cli_smoke(tmp_path):
         "AQ_E2E_SESSION_PROVIDER": "fake",
         "AQ_E2E_CONVERGE_TIMEOUT": "90",
     }
+    postgres_test_dsn = env.get("POSTGRES_TEST_DSN")
+    if postgres_test_dsn:
+        parsed = urlsplit(postgres_test_dsn)
+        env.update(
+            {
+                "E2E_PG_HOST": parsed.hostname or "localhost",
+                "E2E_PG_PORT": str(parsed.port or 5432),
+                "E2E_PG_USER": parsed.username or "agent_queue",
+                "E2E_PG_PASSWORD": parsed.password or "agent_queue_dev",
+            }
+        )
     setup = REPO_ROOT / "scripts" / "e2e-env.sh"
     smoke = REPO_ROOT / "scripts" / "e2e-smoke.sh"
     cleanup = REPO_ROOT / "scripts" / "e2e-clean.sh"
@@ -60,6 +72,4 @@ def test_disposable_daemon_stateful_cli_smoke(tmp_path):
             assert status in result.stdout
     finally:
         if Path(env["AQ_E2E_HOME"]).exists():
-            subprocess.run(
-                [str(cleanup)], cwd=REPO_ROOT, env=env, check=False, timeout=90
-            )
+            subprocess.run([str(cleanup)], cwd=REPO_ROOT, env=env, check=False, timeout=90)
