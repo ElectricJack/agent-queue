@@ -1951,3 +1951,57 @@ async def test_unlocked_verifier_recovery_cannot_release_a_reused_workspace(
     )
     assert (await db.get_workspace("slot")).locked_by_task_id == "successor"
     assert (await db.get_session("session")).task_id == "task"
+
+
+@pytest.mark.parametrize("case", ["stopped", "live", "unconfirmed", "new_after_probe"])
+async def test_unlocked_verifier_proves_later_workspace_users_before_release(
+    orchestrator_factory, tmp_path, monkeypatch, case
+):
+    orchestrator = await _stopped_stale_pool_orchestrator(
+        orchestrator_factory, tmp_path, handoff_state="handoff_pending"
+    )
+    db = orchestrator.db
+    await db.release_workspace("slot")
+    async with db.immediate() as conn:
+        await conn.execute(update(integration_branch_owners).where(
+            integration_branch_owners.c.id == "owner"
+        ).values(owner_role="verifier"))
+    await db.create_agent(Agent(id="later-agent", name="Later", profile_id="worker"))
+    old = await db.get_session("session")
+
+    async def later_session(identifier, state="stopped"):
+        await db.create_session(SessionRecord(
+            id=identifier, agent_id="later-agent", project_id="p", profile_id="worker",
+            harness="codex", provider="fake", name=identifier, lifecycle="pool",
+            work_dir=old.work_dir, epoch="later", instance_token=identifier,
+            started_at=old.started_at + 10, state=state, desired_state=state,
+        ))
+
+    await later_session("later", "running" if case == "live" else "stopped")
+    confirmed = []
+
+    async def confirm(handle):
+        confirmed.append(handle.instance_token)
+        return not (case == "unconfirmed" and handle.instance_token == "later")
+
+    monkeypatch.setattr(orchestrator.session_providers, "create", lambda *_: SimpleNamespace(
+        confirm_stopped=confirm
+    ))
+    events = []
+    current_branch, original_run = _clean_git(events, already_detached=True)
+
+    async def run(args, *, cwd):
+        if args == ["fetch", "origin"] and case == "new_after_probe":
+            await later_session("unseen")
+        return await original_run(args, cwd=cwd)
+
+    orchestrator.git.aget_current_branch = AsyncMock(side_effect=current_branch)
+    orchestrator.git._arun_unlocked = AsyncMock(side_effect=run)
+    result = await orchestrator.aconfirm_integration_owner_handoff(_owner(owner_role="verifier"))
+    assert result is (case == "stopped")
+    assert (await db.get_session("session")).task_id == (None if result else "task")
+    assert (await db.get_session("later")).instance_token == "later"
+    assert (await db.get_workspace("slot")).locked_by_task_id is None
+    assert "detach" not in events
+    if case == "stopped":
+        assert set(confirmed) == {"later", "instance"}

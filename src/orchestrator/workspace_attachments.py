@@ -421,6 +421,7 @@ async def mark_stopped_integration_pool_handoff_released(
     *,
     workspace,
     session_instance_token: str,
+    confirmed_later_sessions: dict[str, tuple[str, float]] | None = None,
 ) -> bool:
     """Release an exact, stopped pool claim without replaying its task transition.
 
@@ -465,20 +466,20 @@ async def mark_stopped_integration_pool_handoff_released(
             else None
         )
         agent_row = agent_row.mappings().one_or_none() if agent_row is not None else None
-        newer_session = None
+        newer_sessions = []
         if session_row is not None and agent_id:
-            newer_session = (
+            newer_sessions = (
                 await conn.execute(
-                    select(sessions.c.id)
+                    select(sessions)
                     .where(
                         or_(sessions.c.agent_id == agent_id,
                             sessions.c.work_dir == session_row["work_dir"]),
                         sessions.c.id != session_row["id"],
                         sessions.c.started_at >= session_row["started_at"],
                     )
-                    .limit(1)
+                    .with_for_update()
                 )
-            ).scalar_one_or_none()
+            ).mappings().all()
 
         unlocked_verifier = (
             owner_row is not None and owner_row["owner_role"] == "verifier"
@@ -494,7 +495,16 @@ async def mark_stopped_integration_pool_handoff_released(
             or workspace_row is None
             or task_row is None
             or agent_row is None
-            or newer_session is not None
+            or (bool(newer_sessions) and not (
+                unlocked_verifier
+                and all(
+                    row["state"] == "stopped" and row["desired_state"] == "stopped"
+                    and (confirmed_later_sessions or {}).get(row["id"]) == (
+                        row["instance_token"], row["started_at"]
+                    )
+                    for row in newer_sessions
+                )
+            ))
             or owner_row["fence_token"] != owner.get("fence_token")
             or owner_row["owner_id"] != owner.get("owner_id")
             or owner_row["owner_role"] != owner.get("owner_role")

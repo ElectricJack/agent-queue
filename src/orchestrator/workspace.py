@@ -1378,7 +1378,23 @@ class WorkspaceMixin:
             or os.path.realpath(session.work_dir) != os.path.realpath(workspace.workspace_path)
         ):
             return False
+        confirmed_later_sessions = {}
         try:
+            if unlocked_verifier:
+                for later in await self.db.list_sessions():
+                    if (later.id == session.id or later.started_at < session.started_at
+                            or later.work_dir != session.work_dir):
+                        continue
+                    if later.state != "stopped" or later.desired_state != "stopped":
+                        return False
+                    later_provider = self.session_providers.create(later.provider, self.config)
+                    if not await later_provider.confirm_stopped(SessionHandle(
+                        name=later.name, provider=later.provider, instance_token=later.instance_token
+                    )):
+                        return False
+                    confirmed_later_sessions[later.id] = (
+                        later.instance_token, later.started_at
+                    )
             provider = self.session_providers.create(session.provider, self.config)
             handle = SessionHandle(
                 name=session.name,
@@ -1425,6 +1441,7 @@ class WorkspaceMixin:
             owner,
             workspace=workspace,
             session_instance_token=session.instance_token,
+            confirmed_later_sessions=confirmed_later_sessions,
         )
 
     async def aconfirm_integration_pool_owner_handoff(self, owner: dict) -> bool:
