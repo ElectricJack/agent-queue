@@ -1,11 +1,15 @@
 # aq CLI audit — final acceptance, 2026-09-09
 
-The repair set is accepted at integration candidate
-`d6d7bede968033780c845d903e454ce46b32178f`. Every confirmed defect in the
-2026-09-08 audit is corrected or deliberately dispositioned, and the final
-focused suite passed 574 tests. The disposable-daemon acceptance suite then
-passed all 14 stateful scenarios and removed its temporary database, repositories,
-vault, plugin fixture, and daemon home.
+The final audited implementation and report baseline is
+`5d8bc501986909256c7b1e45857f3eaf0043eb97`. It includes the pre-report repair
+integration candidate `d6d7bede968033780c845d903e454ce46b32178f`, the generated
+inventory acceptance metadata, and the `--aq-all-markers` wrapper correction
+found during final verification. Every confirmed defect in the 2026-09-08 audit
+is corrected or deliberately dispositioned, and the final focused suite passed
+574 tests. The disposable-daemon acceptance suite then passed all 14 stateful
+scenarios and removed its temporary database, repositories, vault, plugin
+fixture, and daemon home. Later documentation-only provenance corrections do
+not change that audited runtime baseline.
 
 This is not a claim that all 317 current leaf commands were executed against a
 live backend. The maintained [machine-readable inventory](../../reference/cli-command-inventory.json)
@@ -16,7 +20,8 @@ separate historical ledger. Registration, help, or mock dispatch alone produces
 ## Environment and inventory
 
 - Audit date: 2026-09-09 (America/Los_Angeles).
-- Integration candidate: `d6d7bede968033780c845d903e454ce46b32178f`;
+- Final audited/accepted revision: `5d8bc501986909256c7b1e45857f3eaf0043eb97`;
+  pre-report integration candidate: `d6d7bede968033780c845d903e454ce46b32178f`;
   original audit revision: `86c87a99a21385a25a393b4d0c4b5d5552b0933e`.
 - CLI version: 0.1.0. Linux 6.18.33.2-microsoft-standard-WSL2 x86_64;
   Python 3.12.3; pytest 9.0.3.
