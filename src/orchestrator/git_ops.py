@@ -95,7 +95,10 @@ class GitOpsMixin:
             not workspace
             or operation.get("verifier_task_id") != task.id
             or not isinstance(parent_id, str)
-            or operation.get("state") not in {"active", "escalated"}
+            # A crash after ``complete_parent`` commits but before this
+            # verifier task closes leaves the same verifier to replay its
+            # final close against a completed operation.
+            or operation.get("state") not in {"active", "escalated", "completed"}
         ):
             return self._aggregate_verifier_retry(
                 ctx, "Aggregate verifier ownership is no longer current."
@@ -169,7 +172,7 @@ class GitOpsMixin:
         completion = await ParentCompletion(self.db).complete_parent(
             parent_id, int(checkpoint["generation"]), head
         )
-        if completion["outcome"] != "completed":
+        if completion["outcome"] not in {"completed", "already_completed"}:
             return self._aggregate_verifier_retry(
                 ctx,
                 "Parent integration completion was refused: "
