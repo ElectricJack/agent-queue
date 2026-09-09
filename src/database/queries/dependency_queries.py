@@ -603,6 +603,7 @@ class DependencyQueryMixin:
         result. Terminates on cycles because visited ids are tracked.
         """
         from sqlalchemy import and_, select
+
         from src.database.tables import task_dependencies
 
         found: set[str] = set()

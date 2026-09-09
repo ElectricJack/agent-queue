@@ -20,14 +20,13 @@ from unittest.mock import MagicMock
 import pytest
 
 from src.commands.handler import CommandHandler
-from src.config import DatabaseConfig, AppConfig, DiscordConfig
+from src.config import AppConfig, DatabaseConfig, DiscordConfig
 from src.database import Database
 from src.explain import build_capacity_reasons
 from src.intelligence_classes import IntelligenceClass
 from src.models import Agent, AgentProfile, AgentState, DepType, Project, Task, TaskStatus
 from src.orchestrator import Orchestrator
 from tests.db_fixtures import lease_dsn
-
 
 PROJECT_ID = "proj-explain"
 

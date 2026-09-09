@@ -34,7 +34,7 @@ from src.database.tables import (
     task_metadata,
     tasks,
 )
-from src.models import BLOCKING_DEP_TYPES, DepType, HOLD_LABEL_PREFIX, Task, TaskStatus
+from src.models import BLOCKING_DEP_TYPES, HOLD_LABEL_PREFIX, DepType, Task, TaskStatus
 
 logger = logging.getLogger(__name__)
 
