@@ -91,3 +91,22 @@ operation-count improvement, not proof of hundreds-of-tasks/day throughput.
 Matter Engine configuration inspection additionally found no registered `repos`
 row for `matter-engine-cpp`. Repository registration must precede designation and
 policy enablement. The project remains paused; its two feature epics are queued.
+
+## Matter Engine rollout prerequisites (2026-09-09)
+
+Registered repository `matter-engine-cpp` through `aq project set ...
+integration-repository` and configured `integration-review-mode pull_request`.
+Both guarded configuration commands succeeded; generation is now 2. Status
+confirms repository designation and review policy blockers are gone. Integration
+remains disabled with `policy_invalid`, and scheduling remains paused.
+
+The clean local engine checkout is at
+`f912eaf75a805dc898af0a17051baf0378105123`, 228 commits ahead of the GitHub main
+head `84408b3c01b41d834c86d8b1330d920e43c968f9` (confirmed through GitHub API).
+The native MSVC build and procedural CLI assumptions come from that local
+baseline; feature-task origins must not silently use the older remote baseline.
+No tracked GitHub workflow and no registered repository Actions runner exist.
+The canonical wrapper requires VS 2022 Community, MSVC 14.44.35207, Windows SDK
+10.0.26100.0, native Python 3.13, and Vulkan SDK 1.4.357.0. A runner-location
+preference is pending with the user. Required native CI and baseline delivery
+must be established before the two queued epics can run under the new policy.
