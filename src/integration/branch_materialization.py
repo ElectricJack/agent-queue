@@ -64,6 +64,15 @@ class BranchMaterializationService:
         #: service lazily, from the command handler's repository closures.
         self.hierarchy_service_factory = hierarchy_service_factory
         self.clock = clock
+        #: Two loops drive this drain: ``Orchestrator.run_one_cycle`` (so a
+        #: freshly filed child is materialized before the same cycle schedules)
+        #: and ``IntegrationService.tick`` (so the reconciliation survives a
+        #: cycle that never reaches step 3a).  Both are idempotent, but there
+        #: is no value in two passes over the same page of reservations, and a
+        #: pushing pass can outlive a tick interval.  Skip rather than queue:
+        #: whichever loop arrives second has nothing to add, and the next tick
+        #: retries anyway.  Mirrors ``IntegrationService._tick_lock``.
+        self._drain_lock = asyncio.Lock()
 
     async def pending_origins(self, *, limit: int = DEFAULT_LIMIT) -> list[dict]:
         """Live reservations with no branch, oldest first, in enabled projects."""
@@ -106,8 +115,18 @@ class BranchMaterializationService:
         One reservation's failure (a repository that will not resolve, a lost
         branch ownership) must not stop the rest: the tasks behind them are
         unrelated, and the next tick retries this one anyway.
+
+        Re-entrant calls return ``[]`` immediately rather than waiting: this is
+        a reconciliation pass, so a concurrent driver is already doing the work
+        the caller wanted done.
         """
         _ = now
+        if self._drain_lock.locked():
+            return []
+        async with self._drain_lock:
+            return await self._drain(limit=limit)
+
+    async def _drain(self, *, limit: int) -> list[dict]:
         pending = await self.pending_origins(limit=limit)
         service = self.hierarchy_service_factory()
         if service is None:
