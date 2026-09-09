@@ -588,6 +588,12 @@ class DatabaseBackend(Protocol):
     async def record_integration_resolution_push_on(
         self, conn, intent_id: str, evidence: dict
     ) -> dict: ...
+    async def mark_integration_resolution_push_started_on(
+        self, conn, intent_id: str, *, started_at: float
+    ) -> dict: ...
+    async def authorize_legacy_resolution_recovery_on(
+        self, conn, intent_id: str, evidence: dict
+    ) -> dict: ...
     async def mark_integration_promotion_prepared(
         self, intent_id: str, *, prepared_sha: str, recovery_ref: str
     ) -> dict: ...
@@ -676,6 +682,15 @@ class DatabaseBackend(Protocol):
         drain_after_release: bool = False,
         release_workspace_lock: bool = False,
         conn=None,
+    ) -> "TransitionResult": ...
+    async def release_historical_pool_claim(
+        self,
+        conn,
+        session_id: str,
+        *,
+        task_id: str,
+        claim_epoch: int,
+        now: float,
     ) -> "TransitionResult": ...
     async def terminate_pool_session(
         self,

@@ -90,6 +90,7 @@ HANDCRAFTED_COVERAGE = {
     "integration_status",
     "integration_flush",
     "integration_enable",
+    "integration_reconcile_unmaterialized",
     "integration_waive_history",
     "integration_resume",
     "integration_abort",

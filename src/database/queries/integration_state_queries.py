@@ -150,6 +150,7 @@ class IntegrationStateQueriesMixin:
                     integration_repair_stages.c.ordinal.label("stage_ordinal"),
                     integration_repair_stages.c.state.label("stage_state"),
                     integration_repair_stages.c.writer_kind.label("writer_kind"),
+                    integration_repair_stages.c.trigger_id.label("stage_trigger_id"),
                     integration_repair_stages.c.current_subject.label("current_subject"),
                     integration_repair_stages.c.deadline_at.label("stage_deadline_at"),
                 )
@@ -273,6 +274,7 @@ class IntegrationStateQueriesMixin:
                 "parent_task_id": parent_task_id,
                 "stage": int(row["stage_ordinal"]),
                 "writer_kind": row["writer_kind"],
+                "trigger_id": row["stage_trigger_id"],
                 "current_subject": row["current_subject"],
                 "deadline_at": row["stage_deadline_at"],
                 "session_id": owner["session_id"] if owner is not None else None,

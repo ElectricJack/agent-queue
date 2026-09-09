@@ -31,6 +31,7 @@ from src.database.tables import (
     integration_repair_stages,
     project_integration_leases,
     projects,
+    tasks,
 )
 from src.git.manager import GitManager, is_valid_git_oid
 from src.integration.models import BranchKey, Fence
@@ -125,7 +126,9 @@ class CandidateResolutionInput(BaseModel):
 
 
 class AuditForgeProvider(Protocol):
-    async def lookup_audit_pr(self, *, idempotency_key: str) -> AuditPullRequest | None: ...
+    async def lookup_audit_pr(
+        self, *, idempotency_key: str, branch: str
+    ) -> AuditPullRequest | None: ...
 
     async def create_audit_pr(
         self,
@@ -353,8 +356,13 @@ class CandidateService:
         if current is None or not current.get("head_sha"):
             raise ValueError("current candidate revision is not recoverable")
         preserved_head = await self._preserve_ci_repair(state, current, store, new_base_sha)
-        if preserved_head is False:
-            return self._result("human_required", state, current, state["operation"]["id"])
+        if isinstance(preserved_head, dict):
+            return await self._continue_rebuild_conflict(
+                state,
+                current,
+                new_base_sha=new_base_sha,
+                diagnostics=preserved_head["diagnostics"],
+            )
         await self._pin(store, self._recovery_ref(batch_id, expected_revision), current["head_sha"])
         await self._crash("after_superseded_pin")
         if await self.app_client.exact_head_ref(repository.default_branch) != authoritative_base:
@@ -526,7 +534,7 @@ class CandidateService:
         tree = await self.git.arun_git_result(
             ["merge-tree", "--write-tree", new_base_sha, revision["head_sha"]], cwd=str(store))
         if tree.returncode == 1:
-            return False
+            return {"diagnostics": tree.stdout or tree.stderr or "merge conflict"}
         if tree.returncode != 0:
             raise RuntimeError(tree.stderr or "CI repair preservation merge failed")
         authored_at = f"@{int(state['batch']['created_at'])} +0000"
@@ -546,6 +554,67 @@ class CandidateService:
         await self._pin(store, self._recovery_ref(state["batch"]["id"],
                         int(revision["revision"]) + 1), head)
         return head
+
+    async def _continue_rebuild_conflict(
+        self,
+        state,
+        revision,
+        *,
+        new_base_sha: str,
+        diagnostics: str,
+    ) -> CandidateBuildResult:
+        """Persist and dispatch an exact main/candidate conflict without new budget."""
+        batch = state["batch"]
+        operation_id = state["operation"]["id"]
+        branch = batch["integration_branch"].removeprefix("refs/heads/")
+        remote_candidate = await self.app_client.exact_head_ref(branch)
+        if remote_candidate != revision["head_sha"]:
+            return self._result("wait", state, revision, operation_id)
+        now = self.clock()
+        async with self.db.immediate() as conn:
+            await self.db.lock_hierarchy_project(conn, batch["project_id"])
+            await self._validate_authority_on(
+                conn, state, revision=int(revision["revision"])
+            )
+            recorded = await self.repair.record_batch_rebuild_conflict_on(
+                conn,
+                operation_id,
+                revision_number=int(revision["revision"]),
+                candidate_sha=revision["head_sha"],
+                new_base_sha=new_base_sha,
+                diagnostics=diagnostics,
+                fence=state["fence"],
+                now=now,
+            )
+        transition = recorded.pop("transition", None)
+        if transition is not None:
+            await self.db.log_blocked_flips(transition.flipped)
+            await self.db._notify_settled(transition.settled)
+            await self.db._notify_ready(transition.ready)
+        if recorded["outcome"] in {"stale", "busy", "conflict_already_frozen"}:
+            return self._result("wait", state, revision, operation_id)
+        await self._crash("after_rebuild_conflict_record")
+        # Do not transfer a branch whose remote moved after the frozen conflict
+        # was recorded. A replay can proceed once its exact candidate tip is
+        # restored or the mutation is otherwise reconciled.
+        if await self.app_client.exact_head_ref(branch) != revision["head_sha"]:
+            return self._result("wait", state, revision, operation_id)
+        stage = int(recorded["stage"])
+        if recorded["deadline_due"]:
+            expired = await self.repair.expire(operation_id, stage, now=now)
+            if expired["action"] == "block_for_human":
+                return self._result("human_required", state, revision, operation_id)
+            if expired["action"] != "dispatch_debug":
+                return self._result("wait", state, revision, operation_id)
+            stage = int(expired["stage"])
+        await self.repair.dispatch(operation_id, stage)
+        # The pinned playbook dispatches from this durable ``conflict`` result
+        # with the orchestrator's configured route validator.  This local
+        # best-effort dispatch mirrors member conflicts and closes the
+        # record/dispatch crash window when dependencies are already present.
+        # Its transient/configuration outcome must not relabel a routine source
+        # conflict as human work.
+        return self._result("conflict", state, revision, operation_id)
 
     async def reserve_repair(self, request: CandidateResolutionInput) -> str:
         """Freeze an exact candidate repair from the current instance-bound writer."""
@@ -1281,7 +1350,7 @@ class CandidateService:
                     await conn.execute(
                         select(integration_repair_operations).where(
                             integration_repair_operations.c.batch_id == batch_id
-                        )
+                        ).with_for_update()
                     )
                 )
                 .mappings()
@@ -1295,6 +1364,7 @@ class CandidateService:
                     repository_id=batch["repository_id"], branch=batch["integration_branch"]
                 )
                 try:
+                    await self._return_completed_repair_on(conn, batch, operation, target)
                     fence = await self.ownership.acquire(
                         target, operation["id"], "collector", conn=conn
                     )
@@ -1315,6 +1385,53 @@ class CandidateService:
                 "lease": dict(lease) if lease else None,
                 "fence": fence,
             }
+
+    async def _return_completed_repair_on(self, conn, batch, operation, target):
+        """Recover a closed delegate's detached branch after exact repair adoption."""
+        if (operation["state"] not in {"active", "escalated"}
+                or int(batch["current_revision"]) == 0):
+            return
+        stage = (await conn.execute(select(integration_repair_stages).where(
+            integration_repair_stages.c.operation_id == operation["id"],
+            integration_repair_stages.c.ordinal == operation["active_stage"],
+        ).with_for_update())).mappings().one_or_none()
+        revision = (await conn.execute(select(integration_candidate_revisions).where(
+            integration_candidate_revisions.c.batch_id == batch["id"],
+            integration_candidate_revisions.c.revision == batch["current_revision"],
+        ).with_for_update())).mappings().one_or_none()
+        if (stage is None or revision is None
+                or revision["repair_parent_revision"] is None
+                or revision["state"] != "built"
+                or stage["state"] != "active"
+                or stage["writer_kind"] != "repair_delegate"
+                or stage["current_subject"] != {
+                    "kind": "batch", "revision": int(revision["revision"]),
+                    "candidate_sha": revision["head_sha"],
+                }):
+            return
+        task = (await conn.execute(select(tasks).where(
+            tasks.c.id == stage["repair_task_id"],
+        ).with_for_update())).mappings().one_or_none()
+        if (task is None or task["status"] != "COMPLETED"
+                or task["project_id"] != batch["project_id"]
+                or task["repo_id"] != batch["repository_id"]
+                or task["branch_name"] != batch["integration_branch"]
+                or task["created_by_kind"] != "integration_repair"
+                or task["created_by_id"] != operation["id"]):
+            return
+        owner = (await conn.execute(select(integration_branch_owners).where(
+            integration_branch_owners.c.repository_id == target.repository_id,
+            integration_branch_owners.c.ref == target.branch,
+        ).with_for_update())).mappings().one_or_none()
+        if (owner is None or owner["owner_id"] != task["id"]
+                or owner["owner_role"] != "repair"
+                or owner["handoff_state"] not in {"reserved", "released"}
+                or owner["session_id"] is not None or owner["workspace_id"] is not None):
+            return
+        await self.ownership.transfer_detached_on(
+            conn, Fence(target=target, owner_id=owner["owner_id"], token=owner["fence_token"]),
+            operation["id"], "collector",
+        )
 
     async def _ensure_revision(self, state, revision: int, base_sha: str) -> dict[str, Any]:
         now = self.clock()
@@ -1406,6 +1523,22 @@ class CandidateService:
                     state, revision, member, current, "reserved_path", operation_id
                 )
             parent_repair = await self._accepted_parent_repair(revision, ordinal, store)
+            if parent_repair is None and await self.git.ais_ancestor(
+                str(store), member["reviewed_head_sha"], current
+            ):
+                # The reviewed head already landed in the running candidate (typically
+                # via main before the batch base was cut). The natural merge is empty,
+                # but merging against the member's historical source base would replay
+                # its whole diff over newer content and manufacture conflicts on files
+                # the member never touched. Record it applied as a no-op: the reviewed
+                # head stays reachable from the candidate, so identity and ancestry hold.
+                await self._pin(
+                    store, self._recovery_ref(batch_id, int(revision["revision"])), current
+                )
+                await self._crash("after_member_mutation")
+                revision = await self._applied(state, revision, member, current)
+                await self._crash("after_member_progress")
+                continue
             if parent_repair is None:
                 merge_args = [
                     "merge-tree",
@@ -1631,7 +1764,9 @@ class CandidateService:
                 )
                 .values(state="pr_reserved", updated_at=self.clock())
             )
-        pr = await self.forge_provider.lookup_audit_pr(idempotency_key=publication_key)
+        pr = await self.forge_provider.lookup_audit_pr(
+            idempotency_key=publication_key, branch=branch
+        )
         if pr is None:
             pr = await self.forge_provider.create_audit_pr(
                 repository_id=batch["repository_id"],
@@ -2837,6 +2972,13 @@ class CandidateService:
         return store
 
     async def _fetch_oid(self, store: Path, oid: str, destination_ref: str) -> None:
+        # This daemon-owned store retains immutable exact inputs across retries.
+        # Remote head/authority checks happen separately; an object download is
+        # not freshness evidence. Pin cached commits just as a fresh import does.
+        if (is_valid_git_oid(oid) and destination_ref.startswith("refs/aq/")
+                and await self._commit_exists(store, oid)):
+            await self._pin(store, destination_ref, oid)
+            return
         token = await self.app_client.installation_token()
         await self.git.afetch_exact_oid_with_app_auth(
             str(store),

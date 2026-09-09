@@ -89,18 +89,24 @@ class IntegrationControlService:
         scheduler: IntegrationScheduler | None = None,
         external_preflight: ExternalPreflight | None = None,
         cleanup_service: Any | None = None,
+        legacy_resolution_observer: Callable[[dict[str, Any]], Awaitable[str | None]] | None = None,
         clock: Callable[[], float] = time.time,
     ) -> None:
         self.db = db
         self.scheduler = scheduler or IntegrationScheduler(db)
         self.external_preflight = external_preflight
         self.cleanup_service = cleanup_service
+        self.legacy_resolution_observer = legacy_resolution_observer
         self.clock = clock
 
     def _recovery(self):
         from src.integration.recovery_controls import IntegrationRecoveryControls
 
-        return IntegrationRecoveryControls(self.db, clock=self.clock)
+        return IntegrationRecoveryControls(
+            self.db,
+            clock=self.clock,
+            legacy_resolution_observer=self.legacy_resolution_observer,
+        )
 
     async def resume(self, operation_id: str) -> dict[str, Any]:
         return await self._recovery().resume(operation_id)
@@ -861,6 +867,114 @@ class IntegrationControlService:
             "project_id": project_id,
             "generation": next_generation,
             "fields": configured_fields,
+        }
+
+    async def reconcile_unmaterialized_tasks(
+        self,
+        project_id: str,
+        *,
+        expected_generation: int,
+        reason: str,
+        operator_id: str,
+        hierarchy: Any,
+    ) -> dict[str, Any]:
+        """Atomically bind pre-rollout, unclaimed work to the enabled route."""
+        if expected_generation < 0 or not reason.strip() or not operator_id.strip():
+            raise ValueError("expected generation, reason, and operator are required")
+
+        now = self.clock()
+        async with self.db.immediate() as conn:
+            await self.db.lock_hierarchy_project(conn, project_id)
+            project = (
+                await conn.execute(
+                    select(projects).where(projects.c.id == project_id).with_for_update()
+                )
+            ).mappings().one_or_none()
+            if project is None:
+                return {"outcome": "not_found", "project_id": project_id}
+            generation = int(project["hierarchical_integration_generation"])
+            if generation != expected_generation:
+                return {"outcome": "stale", "project_id": project_id, "generation": generation}
+            if project["hierarchical_integration_mode"] not in {"hierarchy", "train"}:
+                return {
+                    "outcome": "blocked",
+                    "project_id": project_id,
+                    "generation": generation,
+                    "error": "unmaterialized task recovery requires hierarchy or train mode",
+                }
+            repository_id = project["integration_repository_id"]
+            repository = (
+                await conn.execute(
+                    select(repos.c.id).where(
+                        repos.c.id == repository_id, repos.c.project_id == project_id
+                    )
+                )
+            ).scalar_one_or_none()
+            if repository is None:
+                return {
+                    "outcome": "blocked",
+                    "project_id": project_id,
+                    "generation": generation,
+                    "error": "designated repository does not belong to the project",
+                }
+            has_targets = (
+                await conn.execute(
+                    select(tasks.c.id)
+                    .where(tasks.c.project_id == project_id, tasks.c.repo_id.is_(None))
+                    .limit(1)
+                )
+            ).scalar_one_or_none()
+            if has_targets is None:
+                return {
+                    "outcome": "nothing_to_reconcile",
+                    "project_id": project_id,
+                    "generation": generation,
+                }
+
+            # Advance the same project-wide fence used by the rollout controls
+            # before creating any immutable identity.  A stale caller cannot
+            # bind work against a route configuration it did not observe.
+            if not await self.db.cas_project_integration_control_on(
+                conn,
+                project_id=project_id,
+                expected_generation=generation,
+                effective_mode=project["hierarchical_integration_mode"],
+                desired_mode=project["hierarchical_integration_desired_mode"],
+                draining=bool(project["hierarchical_integration_draining"]),
+            ):
+                return {"outcome": "stale", "project_id": project_id, "generation": generation}
+            next_generation = generation + 1
+            task_ids = await hierarchy.reconcile_unmaterialized_tasks_on(
+                conn,
+                project_id=project_id,
+                repository_id=repository_id,
+                origin_generation=next_generation,
+            )
+            old_policy = await self._legacy_policy_on(conn, project_id)
+            await self.db.append_integration_rollout_transition_on(
+                conn,
+                transition_id=f"integration-transition-{uuid4().hex}",
+                project_id=project_id,
+                generation=next_generation,
+                old_effective_mode=project["hierarchical_integration_mode"],
+                new_effective_mode=project["hierarchical_integration_mode"],
+                old_desired_mode=project["hierarchical_integration_desired_mode"],
+                new_desired_mode=project["hierarchical_integration_desired_mode"],
+                draining=bool(project["hierarchical_integration_draining"]),
+                operator_id=operator_id,
+                reason=reason,
+                blocker_digest=(await self._functional_preflight_on(conn, project_id))["blocker_digest"],
+                old_legacy_policy=old_policy,
+                new_legacy_policy=old_policy,
+                waiver_id=None,
+                now=now,
+            )
+        return {
+            "outcome": "reconciled",
+            "project_id": project_id,
+            "generation": next_generation,
+            "repository_id": repository_id,
+            "task_ids": task_ids,
         }
 
     async def flush(self, project_id: str) -> dict[str, Any]:

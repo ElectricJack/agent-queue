@@ -285,6 +285,38 @@ async def test_scheduler_cycle_failure_is_logged_and_next_cycle_runs(monkeypatch
 
 
 @pytest.mark.asyncio
+async def test_long_cycle_report_preserves_waiting_work_and_omits_locals(caplog):
+    from src.main import _report_long_scheduler_cycle
+
+    release = asyncio.Event()
+    entered = asyncio.Event()
+
+    async def waiting_phase():
+        private_value = "must-not-appear-in-diagnostics"
+        entered.set()
+        await release.wait()
+        return private_value
+
+    cycle = asyncio.create_task(waiting_phase())
+    await entered.wait()
+    reporter = asyncio.create_task(_report_long_scheduler_cycle(cycle, interval=0.001))
+    try:
+        async with asyncio.timeout(2):
+            while "await chain" not in caplog.text:
+                await asyncio.sleep(0.001)
+        assert "waiting_phase" in caplog.text
+        assert "must-not-appear-in-diagnostics" not in caplog.text
+        assert not cycle.done()
+        release.set()
+        assert await cycle == "must-not-appear-in-diagnostics"
+        await reporter
+    finally:
+        cycle.cancel()
+        reporter.cancel()
+        await asyncio.gather(cycle, reporter, return_exceptions=True)
+
+
+@pytest.mark.asyncio
 async def test_pending_readiness_cleanup_is_bounded(monkeypatch, caplog):
     from unittest.mock import MagicMock
     from src.main import _cancel_readiness_tasks

@@ -448,6 +448,31 @@ class TestReconcilerInterplay:
         detail = next(r["detail"] for r in res["reasons"] if r["code"] == "awaiting_pool_session")
         assert "worker" in detail
 
+    async def test_explain_uses_fleet_occupancy_for_global_pool_cap(self, orch, db, handler):
+        from src.models import SessionRecord
+
+        await ready(db, "waiting")
+        await db.create_project(Project(id="other-project", name="Other"))
+        for project_id, task_id in ((PROJECT_ID, "busy-local"), ("other-project", "busy-other")):
+            await db.create_task(Task(
+                id=task_id, project_id=project_id, title=task_id, description="busy worker",
+                profile_id="worker", status=TaskStatus.IN_PROGRESS,
+            ))
+            await db.create_session(SessionRecord(
+                id=task_id, project_id=project_id, profile_id="worker",
+                harness="claude", provider="fake", name=task_id, lifecycle="pool",
+                work_dir="/tmp/unused-pool-explain", epoch="test", instance_token=task_id,
+                started_at=time.time(), task_id=task_id, state="running",
+            ))
+
+        result = await handler._cmd_explain_task({"task_id": "waiting"})
+        detail = next(r["detail"] for r in result["reasons"]
+                      if r["code"] == "awaiting_pool_session")
+        assert "project: 1 busy, 0 idle, 0 starting" in detail
+        assert "fleet: 2 busy, 0 idle, 0 starting" in detail
+        assert "max_active=2" in detail
+        assert "at max_active with no idle worker" in detail
+
     async def test_explain_names_the_quarantine_as_the_blocker(self, orch, db, handler):
         await ready(db, "t1")
         orch._quarantine_pool(PROJECT_ID, "worker", "unknown harness 'nope'")
@@ -461,6 +486,46 @@ class TestReconcilerInterplay:
         res = await handler._cmd_explain_task({"task_id": "t1"})
         detail = next(r["detail"] for r in res["reasons"] if r["code"] == "awaiting_pool_session")
         assert "swarm.enabled is false" in detail
+
+    async def test_explain_names_a_disabled_profile_instead_of_a_capacity_wait(
+        self, orch, db, handler,
+    ):
+        await db.update_profile("worker", enabled=False)
+        await ready(db, "t1")
+
+        res = await handler._cmd_explain_task({"task_id": "t1"})
+        assert "pool_disabled" in res["reason_codes"]
+        assert "awaiting_pool_session" not in res["reason_codes"]
+        detail = next(r["detail"] for r in res["reasons"] if r["code"] == "pool_disabled")
+        assert "aq pool set-enabled --profile-id worker --enabled" in detail
+
+    async def test_explain_names_a_disabled_route_for_an_integration_repair_delegate(
+        self, orch, db, handler,
+    ):
+        """Repair delegates retain their frozen route and use the same diagnosis."""
+        await db.update_profile("worker", enabled=False)
+        await ready(
+            db,
+            "repair-operation-0",
+            created_by_kind="integration_repair",
+            created_by_id="operation",
+        )
+
+        res = await handler._cmd_explain_task({"task_id": "repair-operation-0"})
+        assert "pool_disabled" in res["reason_codes"]
+        detail = next(r["detail"] for r in res["reasons"] if r["code"] == "pool_disabled")
+        assert "disabled pool profile 'worker'" in detail
+
+    async def test_explain_keeps_an_enabled_zero_cap_pool_as_a_capacity_wait(
+        self, orch, db, handler,
+    ):
+        await db.update_profile("worker", enabled=True, max_active=0)
+        await ready(db, "t1")
+
+        res = await handler._cmd_explain_task({"task_id": "t1"})
+        assert "pool_disabled" not in res["reason_codes"]
+        detail = next(r["detail"] for r in res["reasons"] if r["code"] == "awaiting_pool_session")
+        assert "max_active=0" in detail and "at max_active" in detail
 
     async def test_pool_task_keeps_the_capacity_reasons_that_still_bite(self, orch, db, handler):
         """Only the *push-supply* codes are filtered, not every capacity code.

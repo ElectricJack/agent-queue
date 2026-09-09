@@ -339,6 +339,7 @@ class Orchestrator(
         # reason is optional -- a key quarantined without one still reports
         # its window.  ``PoolsMixin._quarantine_pool`` writes both.
         self._pool_surplus_since: dict = {}
+        self._pool_rebalance_since: dict = {}
         self._pool_quarantine: dict = {}
         self._pool_quarantine_reason: dict = {}
         # EventBus subscription that resolves ``event`` gates live.  Set by
@@ -487,6 +488,7 @@ class Orchestrator(
         self.integration_app_client_factory = None
         self.integration_repository_binding_resolver = None
         self.branch_discard_service = None
+        self.branch_materialization_service = None
         self.integration_release_service = None
         self.integration_cleanup_service = None
         self.integration_control_service = None
@@ -1113,6 +1115,16 @@ class Orchestrator(
         except Exception as exc:  # best-effort by contract
             logger.warning("Could not salvage paused workspace for %s: %s", task_id, exc)
 
+    async def _drain_branch_materializations(self, now: float) -> None:
+        """Materialize reserved task refs through the fenced hierarchy service."""
+        if self.branch_materialization_service is not None:
+            await self.branch_materialization_service.drain_due(now=now)
+
+    def _branch_materialization_hierarchy(self):
+        if self._command_handler is None:
+            return None
+        return self._command_handler._hierarchy_integration_service()
+
     async def _drain_branch_discards(self, now: float) -> None:
         """Advance branch discards an operator asked for when deleting a task.
 
@@ -1537,8 +1549,10 @@ class Orchestrator(
         # without adding another timer or orchestration authority.
         from src.integration.outbox import IntegrationOutbox
         from src.integration.branch_discard import BranchDiscardService
+        from src.integration.branch_materialization import BranchMaterializationService
         from src.integration.cleanup import IntegrationCleanupService
         from src.integration.main_promotion import RootPromotionService
+        from src.integration.promotion import PromotionService
         from src.integration.release import IntegrationReleaseService
         from src.integration.repair import RepairService
         from src.integration.scheduler import IntegrationScheduler
@@ -1635,9 +1649,17 @@ class Orchestrator(
             app_client_factory=self.integration_app_client_factory,
             attestation_resolver=self.integration_attestation_resolver,
         )
+        self.promotion_service = PromotionService(
+            self.db,
+            data_dir=self.config.data_dir,
+            git_manager=self.git,
+        )
         # Removes the branches an operator explicitly asked to discard when
         # deleting a task.  Its work is recorded on the retired origin row, so
         # it survives a restart and needs no other authority.
+        self.branch_materialization_service = BranchMaterializationService(
+            self.db, hierarchy_service_factory=self._branch_materialization_hierarchy
+        )
         self.branch_discard_service = BranchDiscardService(
             self.db,
             data_dir=self.config.data_dir,
@@ -1652,6 +1674,7 @@ class Orchestrator(
             external_preflight=lambda project_id, repository_id: daemon_functional_preflight(
                 self, project_id, repository_id
             ),
+            legacy_resolution_observer=self.promotion_service.observe_legacy_resolution_target,
         )
 
         async def reconcile_root_intent(row: dict[str, Any], _now: float):
@@ -1659,22 +1682,38 @@ class Orchestrator(
                 return {"outcome": "declined"}
             return await self.root_promotion_service.reconcile(row["id"])
 
+        from src.integration.candidate_ci import CandidateCIService
+        from src.integration.collection import CollectionService
         from src.integration.parent_ci import ParentCIService
 
         parent_ci = ParentCIService(
             self.integration_attestation_service, self.integration_repository_binding_resolver
+        )
+        collection = CollectionService(
+            self.db, hierarchy_service_factory=self._branch_materialization_hierarchy
+        )
+        async def candidate_service_for_row(row):
+            if self._command_handler is None:
+                return None
+            return await self._command_handler._integration_candidate_service(row)
+
+        candidate_ci = CandidateCIService(
+            self.db, candidate_service_factory=candidate_service_for_row,
+            attestation=self.integration_attestation_service,
         )
         self.integration_service = IntegrationService(
             self.db,
             self.integration_scheduler,
             RepairService(self.db),
             self.integration_outbox,
-            candidate_ci_handler=self.integration_attestation_service.handle_candidate_ci,
+            candidate_ci_handler=candidate_ci.handle,
             parent_ci_handler=parent_ci.tick,
+            collection_handler=collection.tick,
             unresolved_intent_handler=reconcile_root_intent,
             cleanup_handler=self.integration_cleanup_service.handle_item,
             drain_handler=self.integration_control_service.reconcile_drains,
             branch_discard_handler=self._drain_branch_discards,
+            branch_materialization_handler=self._drain_branch_materializations,
         )
         self.integration_service.start()
 
@@ -2046,6 +2085,7 @@ class Orchestrator(
                 protected_agents.add(row.agent_id)
 
         # Reset BUSY agents to IDLE
+        await self.db.normalize_agent_state_casing()
         agents = await self.db.list_agents()
         for a in agents:
             if a.id in protected_agents:
@@ -2372,6 +2412,8 @@ class Orchestrator(
         # A layout publish is one transaction; let an in-flight step land
         # rather than cancelling it mid-write.  Marks are durable either way.
         await self.wait_for_layout_step(timeout=30)
+        if self.workspace_spec_watcher:
+            await self.workspace_spec_watcher.stop()
         if self.integration_service:
             await self.integration_service.stop()
         if self.vault_watcher:
@@ -2552,10 +2594,7 @@ class Orchestrator(
             # and writes reference stubs to vault/projects/{id}/references/.
             # Rate-limited internally to once per spec_watcher_poll_interval.
             if self.workspace_spec_watcher:
-                try:
-                    await self.workspace_spec_watcher.check()
-                except Exception as e:
-                    logger.warning("WorkspaceSpecWatcher check failed: %s", e)
+                self.workspace_spec_watcher.schedule_check()
 
             # 7e. Periodic orphan workflow check (Roadmap 7.5.6).
             # Detects workflows whose coordination playbook died and emits

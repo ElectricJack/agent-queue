@@ -4179,13 +4179,28 @@ class TaskCommandsMixin:
         if profile_id not in pool_ids:
             return None
 
+        # A disabled profile is not merely a pool at capacity: the pool
+        # reconciler has intentionally set its bounds to (0, 0), so waiting
+        # for capacity can never make this task runnable.  Keep the explicit
+        # route intact and tell the operator how to resolve it instead.
+        profiles = {p.id: p for p in await self.db.list_profiles()}
+        pool_profile = profiles.get(profile_id)
+        if pool_profile is not None and not getattr(pool_profile, "enabled", True):
+            return Reason(
+                code="pool_disabled",
+                detail=(
+                    f"routed to disabled pool profile '{profile_id}' — re-enable it with "
+                    f"`aq pool set-enabled --profile-id {profile_id} --enabled` or route the task to an "
+                    "enabled compatible profile"
+                ),
+                ref=profile_id,
+            )
+
         # A pool worker only claims its own fixed class.  A task whose class
         # the pool does not run waits until the routing playbook pins it to
         # a profile that does — say so instead of pointing at the idle pool.
         explicit = (task.intelligence_class or "").strip()
         if explicit:
-            profiles = {p.id: p for p in await self.db.list_profiles()}
-            pool_profile = profiles.get(profile_id)
             fixed = (getattr(pool_profile, "default_class", "") or "").strip()
             if fixed and fixed != explicit:
                 return Reason(
@@ -4223,12 +4238,11 @@ class TaskCommandsMixin:
                 detail += f": {quarantine_reason}"
             return Reason(code="awaiting_pool_session", detail=detail, ref=profile_id)
 
-        measurement = await orchestrator._measure_pools({task.project_id})
+        measurement = await orchestrator._measure_pools()
         from src.scheduler import PoolKey
 
-        # Pools are sized fleet-wide now, but the question here is local:
-        # "what is standing between *this* task and a worker?" — so read the
-        # project's own slice of the pool, not the fleet aggregate.
+        # The cap is fleet-wide. Keep the project slice for context, but
+        # compare the cap with every project's occupancy of this profile.
         pool = measurement.supply.get(PoolKey(profile_id))
         sup = pool.by_project.get(task.project_id) if pool is not None else None
         if sup is None:
@@ -4238,14 +4252,15 @@ class TaskCommandsMixin:
                 ref=profile_id,
             )
         _lo, hi = measurement.bounds.get(PoolKey(profile_id), (0, None))
-        live = sup.running_idle + sup.running_busy + sup.starting
+        live = pool.running_idle + pool.running_busy + pool.starting
         detail = (
             f"awaiting a '{profile_id}' pool session to claim it "
-            f"({sup.running_busy} busy, {sup.running_idle} idle, {sup.starting} starting"
+            f"(project: {sup.running_busy} busy, {sup.running_idle} idle, {sup.starting} starting; "
+            f"fleet: {pool.running_busy} busy, {pool.running_idle} idle, {pool.starting} starting"
             + (f", max_active={hi}" if hi is not None else "")
             + ")"
         )
-        if hi is not None and live >= hi and sup.running_idle == 0:
+        if hi is not None and live >= hi and pool.running_idle == 0:
             detail += " — the pool is at max_active with no idle worker"
         return Reason(code="awaiting_pool_session", detail=detail, ref=profile_id)
 
