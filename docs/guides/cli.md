@@ -214,9 +214,15 @@ Running `aq task create` without flags launches a 6-step wizard:
 3. **Description** — Task description
 4. **Priority** — Numeric priority (1-300, default 100)
 5. **Type** — Task type (feature/bugfix/refactor/test/docs/chore/research/plan)
-6. **Approval** — Whether human approval is required
+6. **Integration policy** — Inherit the project/system policy, require a pull
+   request, or merge directly on completion
 
-Press `Ctrl+C` at any step to cancel.
+Flags supplied alongside an incomplete command pre-fill their corresponding
+steps; only missing required values are prompted. In a non-interactive shell
+(including piped stdin), provide all of `--project`, `--title`, and
+`--description`; the command otherwise exits with usage guidance without
+contacting the daemon. `--json` is always non-interactive and follows the same
+rule. Press `Ctrl+C` at a wizard step to cancel cleanly without creating a task.
 
 ### Fuzzy Task Selection
 
