@@ -198,7 +198,7 @@ python3 docs/plans/documentation-overhaul/refresh_inventory.py --check
 ```
 
 ```text
-ok — 3715 tracked paths assigned (791 production modules)
+ok — 3738 tracked paths assigned (791 production modules)
 ```
 
 If it reports a path with no owner, add a rule to `RULES` in
