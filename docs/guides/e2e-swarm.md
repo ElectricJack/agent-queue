@@ -120,7 +120,7 @@ class and model constraints.
 | `scripts/e2e-common.sh` | shared paths, ports and DSNs; every value overridable from the environment |
 | `scripts/e2e-env.sh` | builds the world: dirs, bare git repos + workspace clones, an onboarding root, an opt-in plugin entry point, vault fixtures, `bin/aq`, config, and database |
 | `scripts/e2e-daemon.sh` | `start` / `stop` / `status` / `logs` for the isolated daemon |
-| `scripts/e2e-clean.sh` | stops the disposable daemon, validates path ownership, drops only its database, and removes only its data directory |
+| `scripts/e2e-clean.sh` | validates path ownership and the isolated tmux socket before any side effect, then stops the disposable daemon, drops only its database, and removes only its data directory |
 | `scripts/e2e-smoke.sh` | the Tier 1 runner (thin wrapper) |
 | `scripts/e2e/smoke.py` | the 14 scenarios and capability report |
 | `scripts/e2e/aq.py` | runs *this worktree's* `aq` — see below |
@@ -446,8 +446,10 @@ talks to.
 scripts/e2e-clean.sh
 ```
 
-The cleanup command refuses broad/protected paths and any directory without
-the `.aq-e2e` ownership marker, then drops only `E2E_DB_NAME`. The daemon's
+The cleanup command refuses broad/protected paths, any directory without
+the `.aq-e2e` ownership marker, and the operator/default tmux sockets (`aq`
+and `default`) before it stops a daemon or invokes any destructive command.
+It then drops only `E2E_DB_NAME`. The daemon's
 Tier-2 sessions use the `aq-e2e` tmux socket; cleanup of the marked e2e home
 and daemon cannot target the operator's default data directory or database.
 

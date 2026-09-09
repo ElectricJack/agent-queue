@@ -30,6 +30,7 @@ from src.profiles.parser import parse_profile
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SMOKE = REPO_ROOT / "scripts" / "e2e" / "smoke.py"
 E2E_ENV = REPO_ROOT / "scripts" / "e2e-env.sh"
+CLEANUP = REPO_ROOT / "scripts" / "e2e-clean.sh"
 DBSETUP = REPO_ROOT / "scripts" / "e2e" / "dbsetup.py"
 
 
@@ -271,3 +272,94 @@ def test_e2e_dbsetup_refuses_non_e2e_database_names_before_connecting(name):
 
     assert result.returncode == 2
     assert "refusing to manage" in result.stderr
+
+
+def _cleanup_env(tmp_path: Path, home: Path, *, socket: str = "aq-e2e-test"):
+    """Return an environment whose destructive commands only append to a trace."""
+    bin_dir = tmp_path / "command-stubs"
+    bin_dir.mkdir(exist_ok=True)
+    trace = tmp_path / "cleanup-actions"
+    stub = """#!/bin/sh
+printf '%s %s\\n' "$(basename "$0")" "$*" >> "$AQ_E2E_ACTION_LOG"
+exit 0
+"""
+    for command in ("tmux", "python3", "rm"):
+        path = bin_dir / command
+        path.write_text(stub)
+        path.chmod(0o755)
+    env = {
+        **os.environ,
+        "AQ_E2E_HOME": str(home),
+        "AQ_E2E_SESSION_PROVIDER": "tmux",
+        "AQ_E2E_TMUX_SOCKET": socket,
+        "AQ_E2E_ACTION_LOG": str(trace),
+        "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
+    }
+    return env, trace
+
+
+def _start_src_main_decoy(home: Path):
+    """Give cleanup a matching pid that is safe to signal if the guard regresses."""
+    process = subprocess.Popen(["bash", "-c", "exec -a src.main sleep 60"])
+    (home / "daemon.pid").write_text(str(process.pid))
+    return process
+
+
+def _assert_cleanup_refused_without_actions(env, trace: Path, decoy=None):
+    try:
+        result = subprocess.run(
+            [str(CLEANUP)],
+            cwd=REPO_ROOT,
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        assert result.returncode == 2
+        assert not trace.exists(), trace.read_text() if trace.exists() else ""
+        if decoy is not None:
+            assert decoy.poll() is None, "cleanup signalled the decoy src.main process"
+    finally:
+        if decoy is not None and decoy.poll() is None:
+            decoy.terminate()
+            decoy.wait(timeout=5)
+
+
+def test_cleanup_rejects_an_unresolvable_home_before_any_action(tmp_path):
+    home = tmp_path / "missing"
+    env, trace = _cleanup_env(tmp_path, home)
+
+    _assert_cleanup_refused_without_actions(env, trace)
+
+
+def test_cleanup_rejects_an_unmarked_home_before_any_action(tmp_path):
+    home = tmp_path / "unmarked"
+    home.mkdir()
+    decoy = _start_src_main_decoy(home)
+    env, trace = _cleanup_env(tmp_path, home)
+
+    _assert_cleanup_refused_without_actions(env, trace, decoy)
+
+
+def test_cleanup_rejects_a_protected_home_before_any_action(tmp_path):
+    home = tmp_path / "protected-home"
+    home.mkdir()
+    (home / ".aq-e2e").touch()
+    decoy = _start_src_main_decoy(home)
+    env, trace = _cleanup_env(tmp_path, home)
+    env["HOME"] = str(home)
+
+    _assert_cleanup_refused_without_actions(env, trace, decoy)
+
+
+@pytest.mark.parametrize("socket", ["aq", "default"])
+def test_cleanup_rejects_operator_and_default_tmux_sockets_before_any_action(
+    tmp_path, socket
+):
+    home = tmp_path / f"owned-{socket}"
+    home.mkdir()
+    (home / ".aq-e2e").touch()
+    decoy = _start_src_main_decoy(home)
+    env, trace = _cleanup_env(tmp_path, home, socket=socket)
+
+    _assert_cleanup_refused_without_actions(env, trace, decoy)
