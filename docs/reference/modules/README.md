@@ -22,7 +22,7 @@ own modules; this page is only the index.
 | `architecture.md` | `architecture` | 6 | — | `concepts/architecture.md` |
 | `tasks.md` | `tasks` | 23 | — | `concepts/tasks.md` |
 | `scheduler.md` | `scheduler` | 25 | — | `concepts/scheduling.md`, `guides/resource-gating.md` |
-| `routing.md` | `routing` | 23 | — | `concepts/agents-and-routing.md` |
+| [`routing.md`](routing.md) | `routing` | 23 | — | `concepts/agents-and-routing.md`, `reference/profiles-and-classes.md` |
 | `sessions.md` | `sessions` | 30 | — | `concepts/sessions.md` |
 | `workspaces.md` | `workspaces` | 22 | — | `concepts/projects-and-workspaces.md` |
 | `integration.md` | `integration` | 29 | — | `concepts/integration.md` |

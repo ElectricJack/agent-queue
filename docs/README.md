@@ -55,7 +55,7 @@ explains the vocabulary, then the mechanism, then the failure modes.
 | `docs/concepts/architecture.md` — **planned** | Daemon startup, the orchestrator cycle, service boundaries, who owns which state. |
 | `docs/concepts/tasks.md` — **planned** | Task states, hierarchies, dependencies, formulas, deliverables, the graph view. |
 | `docs/concepts/scheduling.md` — **planned** | How a ready task becomes a running worker: pools, claims, capacity, resource limits. |
-| `docs/concepts/agents-and-routing.md` — **planned** | Agent profiles, intelligence classes, harnesses, and how a task is routed to one. |
+| [Agents and routing](concepts/agents-and-routing.md) | Agent profiles, intelligence classes, harnesses, and how a task is routed to one. |
 | `docs/concepts/sessions.md` — **planned** | Sessions, attempts, claims and epoch fencing; what survives a restart. |
 | `docs/concepts/projects-and-workspaces.md` — **planned** | Projects, repositories, workspace kinds, worktree slots, task branches. |
 | `docs/concepts/integration.md` — **planned** | Finishing work versus delivering it; validation, publication and recovery. |
@@ -94,6 +94,7 @@ Look-up material: exhaustive, terse, and generated from source where it can be.
 | `docs/reference/configuration.md` — **planned** | Every configuration key, its default and when it is read. |
 | `docs/reference/database/README.md` — **planned** | Tables, query modules and data lifecycle. |
 | [CLI command inventory](reference/cli-command-inventory.md) | Generated list of the current command surface. |
+| [Profile and class reference](reference/profiles-and-classes.md) | Every agent-profile and intelligence-class field, and the override precedence. |
 
 ## Contributing
 
