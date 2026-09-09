@@ -25,6 +25,7 @@ from pydantic import BaseModel, Field, create_model
 from src.api.auth import LOCAL_SCOPE, RequestScope
 from src.api.dependencies import get_command_handler
 from src.api.models import get_all_response_models
+from src.api.models.escalation import EscalationErrorResponse
 from src.api.models.system import EditIntelligenceClassConflictResponse
 from src.api.scope import check_request_scope
 from src.commands.principal import SERVER_OWNED_ARG_KEYS
@@ -248,6 +249,12 @@ def _make_route_handler(cmd_name: str, input_model: type[BaseModel]):
                 "search_github_repositories",
                 "onboard_project",
                 "get_project_onboarding",
+                "escalation_create",
+                "escalation_list",
+                "escalation_get",
+                "escalation_reply",
+                "escalation_update",
+                "escalation_apply_reply",
             }:
                 return JSONResponse(result, status_code=422)
             return JSONResponse(
@@ -353,14 +360,14 @@ def build_category_routers() -> list[APIRouter]:
                         }} if cmd_name == "edit_intelligence_class" else {}),
                         422: {
                             "description": "Command error",
-                            "content": {
+                            **({"model": EscalationErrorResponse} if cmd_name.startswith("escalation_") else {"content": {
                                 "application/json": {
                                     "schema": {
                                         "type": "object",
                                         "properties": {"error": {"type": "string"}},
                                     }
                                 }
-                            },
+                            }}),
                         },
                     },
                 )

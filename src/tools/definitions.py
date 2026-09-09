@@ -85,6 +85,13 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "message_inbox": "message",
     "message_list": "message",
     "message_status": "message",
+    # escalation — durable supervisor-owned human decision loop
+    "escalation_create": "escalation",
+    "escalation_list": "escalation",
+    "escalation_get": "escalation",
+    "escalation_reply": "escalation",
+    "escalation_update": "escalation",
+    "escalation_apply_reply": "escalation",
     # vault — reference stub management
     "scan_stub_staleness": "system",
     # memory — provided by the external aq-memory plugin (install via `aq plugin install`)
@@ -5753,4 +5760,127 @@ _ALL_TOOL_DEFINITIONS.extend([
     {"name": "question_escalate", "description": "Escalate a worker question to the human when a factual answer is not sufficient.",
      "input_schema": {"type": "object", "properties": {"question_id": {"type": "string"},
          "reason": {"type": "string", "minLength": 1, "maxLength": 4000}}, "required": ["question_id", "reason"]}},
+])
+
+_ALL_TOOL_DEFINITIONS.extend([
+    {
+        "name": "escalation_create",
+        "description": (
+            "Create or reuse a project-scoped human escalation by durable source incident. "
+            "The logical supervisor owner is derived by the server."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "project_id": {"type": "string"},
+                "task_id": {"type": "string"},
+                "source_kind": {"type": "string"},
+                "source_identity": {"type": "string"},
+                "incident_key": {"type": "string"},
+                "summary": {"type": "string", "minLength": 1, "maxLength": 4000},
+                "investigation": {"type": "string", "minLength": 1, "maxLength": 8000},
+                "decision_requested": {"type": "string", "minLength": 1, "maxLength": 4000},
+                "choices": {"type": "array", "items": {"type": "string"}, "maxItems": 20},
+                "severity": {"type": "string", "enum": ["critical", "high", "medium", "low"]},
+            },
+            "required": [
+                "project_id", "source_kind", "source_identity", "incident_key", "summary",
+                "investigation", "decision_requested", "severity",
+            ],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "escalation_list",
+        "description": "List visible escalations with current external-delivery status.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "project_id": {"type": "string"},
+                "task_id": {"type": "string"},
+                "states": {"type": "array", "items": {"type": "string"}},
+                "limit": {"type": "integer", "minimum": 1, "maximum": 500, "default": 100},
+            },
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "escalation_get",
+        "description": "Get one visible escalation with immutable messages, deliveries, and actions.",
+        "input_schema": {
+            "type": "object",
+            "properties": {"escalation_id": {"type": "string"}},
+            "required": ["escalation_id"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "escalation_reply",
+        "description": (
+            "Append an authenticated human reply and atomically enqueue its owning supervisor. "
+            "Actor, transport, project, and thread authority are server-derived."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "escalation_id": {"type": "string"},
+                "text": {"type": "string", "minLength": 1, "maxLength": 16000},
+                "external_message_id": {
+                    "type": "string",
+                    "description": "Stable dashboard or adapter message identity for replay collapse.",
+                },
+                "received_sequence": {"type": "integer"},
+            },
+            "required": ["escalation_id", "text", "external_message_id"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "escalation_update",
+        "description": "CAS-update an owned escalation, including explicit terminal resolution.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "escalation_id": {"type": "string"},
+                "expected_revision": {"type": "integer", "minimum": 0},
+                "state": {"type": "string"},
+                "summary": {"type": "string", "maxLength": 4000},
+                "investigation": {"type": "string", "maxLength": 8000},
+                "decision_requested": {"type": "string", "maxLength": 4000},
+                "choices": {"type": "array", "items": {"type": "string"}},
+                "severity": {"type": "string", "enum": ["critical", "high", "medium", "low"]},
+                "terminal_outcome": {"type": "string", "maxLength": 4000},
+                "terminal_evidence": {"type": "object"},
+            },
+            "required": ["escalation_id", "expected_revision"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "escalation_apply_reply",
+        "description": (
+            "Apply one bound verified human reply through the owning supervisor's exact "
+            "question, human-gate, or task-recovery service."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "escalation_id": {"type": "string"},
+                "reply_id": {"type": "string"},
+                "expected_revision": {"type": "integer", "minimum": 0},
+                "idempotency_key": {"type": "string", "minLength": 1, "maxLength": 512},
+                "action_kind": {
+                    "type": "string",
+                    "enum": ["question_answer", "gate_resolve", "task_recover"],
+                },
+                "target_id": {"type": "string"},
+                "decision": {"type": "string", "enum": ["retry", "hold"]},
+            },
+            "required": [
+                "escalation_id", "reply_id", "expected_revision", "idempotency_key",
+                "action_kind", "target_id",
+            ],
+            "additionalProperties": False,
+        },
+    },
 ])

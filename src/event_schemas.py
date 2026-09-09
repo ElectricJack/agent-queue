@@ -642,6 +642,84 @@ _CHAT_SCHEMAS: dict[str, EventSchema] = {
     },
 }
 
+
+# Durable human-escalation state hints.  The ``.v1`` suffix and required
+# integer ``version`` travel together intentionally: consumers reconcile the
+# authoritative command/query state and never treat replay as permission to
+# repeat an external send or recovery action.
+_ESCALATION_SCHEMAS: dict[str, EventSchema] = {
+    "escalation.created.v1": {
+        "required": [
+            "version", "escalation_id", "project_id", "source_kind",
+            "source_identity", "incident_key", "state", "revision",
+        ],
+        "optional": ["task_id"],
+        "types": {
+            "version": int,
+            "escalation_id": str,
+            "project_id": str,
+            "task_id": (str, type(None)),
+            "source_kind": str,
+            "source_identity": str,
+            "incident_key": str,
+            "state": str,
+            "revision": int,
+        },
+    },
+    "escalation.reply_received.v1": {
+        "required": [
+            "version", "escalation_id", "project_id", "reply_id", "state",
+            "revision", "terminal", "supervisor_enqueued",
+        ],
+        "optional": ["task_id"],
+        "types": {
+            "version": int,
+            "escalation_id": str,
+            "project_id": str,
+            "task_id": (str, type(None)),
+            "reply_id": str,
+            "state": str,
+            "revision": int,
+            "terminal": bool,
+            "supervisor_enqueued": bool,
+        },
+    },
+    "escalation.updated.v1": {
+        "required": ["version", "escalation_id", "project_id", "state", "revision"],
+        "optional": [
+            "task_id", "terminal_outcome", "action_id", "action_outcome",
+        ],
+        "types": {
+            "version": int,
+            "escalation_id": str,
+            "project_id": str,
+            "task_id": (str, type(None)),
+            "state": str,
+            "revision": int,
+            "terminal_outcome": (str, type(None)),
+            "action_id": str,
+            "action_outcome": str,
+        },
+    },
+    "escalation.delivery_status.v1": {
+        "required": [
+            "version", "escalation_id", "project_id", "delivery_id", "status",
+            "attempt_count", "generation",
+        ],
+        "optional": ["task_id"],
+        "types": {
+            "version": int,
+            "escalation_id": str,
+            "project_id": str,
+            "task_id": (str, type(None)),
+            "delivery_id": str,
+            "status": str,
+            "attempt_count": int,
+            "generation": int,
+        },
+    },
+}
+
 # ---------------------------------------------------------------------------
 # Git events  (emitted by GitManager — Phase 0.2.5 / playbooks)
 #
@@ -1402,6 +1480,7 @@ EVENT_SCHEMAS: dict[str, EventSchema] = {
     **_CONFIG_SCHEMAS,
     **_NOTIFY_SCHEMAS,
     **_CHAT_SCHEMAS,
+    **_ESCALATION_SCHEMAS,
     **_GIT_SCHEMAS,
     **_WORKTREE_SCHEMAS,
     **_MERGE_SCHEMAS,

@@ -2842,6 +2842,258 @@
         }
       }
     },
+    "/api/escalation/apply-reply": {
+      "post": {
+        "tags": [
+          "escalation"
+        ],
+        "summary": "Apply one bound verified human reply through the owning supervisor's exact question, human-gate, or task-recovery service.",
+        "description": "Apply one bound verified human reply through the owning supervisor's exact question, human-gate, or task-recovery service.",
+        "operationId": "escalation_apply_reply",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EscalationApplyReplyRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EscalationApplyReplyResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EscalationErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/escalation/create": {
+      "post": {
+        "tags": [
+          "escalation"
+        ],
+        "summary": "Create or reuse a project-scoped human escalation by durable source incident. The logical supervisor owner is derived by the server.",
+        "description": "Create or reuse a project-scoped human escalation by durable source incident. The logical supervisor owner is derived by the server.",
+        "operationId": "escalation_create",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EscalationCreateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EscalationCreateResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EscalationErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/escalation/get": {
+      "post": {
+        "tags": [
+          "escalation"
+        ],
+        "summary": "Get one visible escalation with immutable messages, deliveries, and actions.",
+        "description": "Get one visible escalation with immutable messages, deliveries, and actions.",
+        "operationId": "escalation_get",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EscalationGetRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EscalationGetResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EscalationErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/escalation/list": {
+      "post": {
+        "tags": [
+          "escalation"
+        ],
+        "summary": "List visible escalations with current external-delivery status.",
+        "description": "List visible escalations with current external-delivery status.",
+        "operationId": "escalation_list",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EscalationListRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EscalationListResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EscalationErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/escalation/reply": {
+      "post": {
+        "tags": [
+          "escalation"
+        ],
+        "summary": "Append an authenticated human reply and atomically enqueue its owning supervisor. Actor, transport, project, and thread authority are server-derived.",
+        "description": "Append an authenticated human reply and atomically enqueue its owning supervisor. Actor, transport, project, and thread authority are server-derived.",
+        "operationId": "escalation_reply",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EscalationReplyRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EscalationReplyResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EscalationErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/escalation/update": {
+      "post": {
+        "tags": [
+          "escalation"
+        ],
+        "summary": "CAS-update an owned escalation, including explicit terminal resolution.",
+        "description": "CAS-update an owned escalation, including explicit terminal resolution.",
+        "operationId": "escalation_update",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EscalationUpdateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EscalationUpdateResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EscalationErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/files/count-project-memory": {
       "post": {
         "tags": [
@@ -19685,6 +19937,986 @@
           "resolved"
         ],
         "title": "EnvVarReference"
+      },
+      "EscalationAction": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "escalation_id": {
+            "type": "string",
+            "title": "Escalation Id"
+          },
+          "reply_id": {
+            "type": "string",
+            "title": "Reply Id"
+          },
+          "idempotency_key": {
+            "type": "string",
+            "title": "Idempotency Key"
+          },
+          "action_kind": {
+            "type": "string",
+            "title": "Action Kind"
+          },
+          "target_id": {
+            "type": "string",
+            "title": "Target Id"
+          },
+          "parameters": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Parameters"
+          },
+          "executor": {
+            "type": "string",
+            "title": "Executor"
+          },
+          "started_revision": {
+            "type": "integer",
+            "title": "Started Revision"
+          },
+          "status": {
+            "type": "string",
+            "title": "Status"
+          },
+          "outcome": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Outcome"
+          },
+          "result": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Result"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          },
+          "created_at": {
+            "type": "number",
+            "title": "Created At"
+          },
+          "completed_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Completed At"
+          }
+        },
+        "additionalProperties": true,
+        "type": "object",
+        "required": [
+          "id",
+          "escalation_id",
+          "reply_id",
+          "idempotency_key",
+          "action_kind",
+          "target_id",
+          "parameters",
+          "executor",
+          "started_revision",
+          "status",
+          "created_at"
+        ],
+        "title": "EscalationAction"
+      },
+      "EscalationApplyReplyRequest": {
+        "properties": {
+          "escalation_id": {
+            "type": "string",
+            "title": "Escalation Id",
+            "description": ""
+          },
+          "reply_id": {
+            "type": "string",
+            "title": "Reply Id",
+            "description": ""
+          },
+          "expected_revision": {
+            "type": "integer",
+            "title": "Expected Revision",
+            "description": ""
+          },
+          "idempotency_key": {
+            "type": "string",
+            "title": "Idempotency Key",
+            "description": ""
+          },
+          "action_kind": {
+            "type": "string",
+            "title": "Action Kind",
+            "description": ""
+          },
+          "target_id": {
+            "type": "string",
+            "title": "Target Id",
+            "description": ""
+          },
+          "decision": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Decision",
+            "description": ""
+          }
+        },
+        "type": "object",
+        "required": [
+          "escalation_id",
+          "reply_id",
+          "expected_revision",
+          "idempotency_key",
+          "action_kind",
+          "target_id"
+        ],
+        "title": "EscalationApplyReplyRequest"
+      },
+      "EscalationApplyReplyResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "applied": {
+            "type": "boolean",
+            "title": "Applied"
+          },
+          "replayed": {
+            "type": "boolean",
+            "title": "Replayed"
+          },
+          "action": {
+            "$ref": "#/components/schemas/EscalationAction"
+          },
+          "escalation": {
+            "$ref": "#/components/schemas/EscalationRecord"
+          },
+          "action_result": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Action Result"
+          }
+        },
+        "type": "object",
+        "required": [
+          "applied",
+          "replayed",
+          "action",
+          "escalation"
+        ],
+        "title": "EscalationApplyReplyResponse"
+      },
+      "EscalationCreateRequest": {
+        "properties": {
+          "project_id": {
+            "type": "string",
+            "title": "Project Id",
+            "description": ""
+          },
+          "task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Task Id",
+            "description": ""
+          },
+          "source_kind": {
+            "type": "string",
+            "title": "Source Kind",
+            "description": ""
+          },
+          "source_identity": {
+            "type": "string",
+            "title": "Source Identity",
+            "description": ""
+          },
+          "incident_key": {
+            "type": "string",
+            "title": "Incident Key",
+            "description": ""
+          },
+          "summary": {
+            "type": "string",
+            "title": "Summary",
+            "description": ""
+          },
+          "investigation": {
+            "type": "string",
+            "title": "Investigation",
+            "description": ""
+          },
+          "decision_requested": {
+            "type": "string",
+            "title": "Decision Requested",
+            "description": ""
+          },
+          "choices": {
+            "anyOf": [
+              {
+                "items": {},
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Choices",
+            "description": ""
+          },
+          "severity": {
+            "type": "string",
+            "title": "Severity",
+            "description": ""
+          }
+        },
+        "type": "object",
+        "required": [
+          "project_id",
+          "source_kind",
+          "source_identity",
+          "incident_key",
+          "summary",
+          "investigation",
+          "decision_requested",
+          "severity"
+        ],
+        "title": "EscalationCreateRequest"
+      },
+      "EscalationCreateResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "created": {
+            "type": "boolean",
+            "title": "Created"
+          },
+          "escalation": {
+            "$ref": "#/components/schemas/EscalationRecord"
+          }
+        },
+        "type": "object",
+        "required": [
+          "created",
+          "escalation"
+        ],
+        "title": "EscalationCreateResponse"
+      },
+      "EscalationDelivery": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "escalation_id": {
+            "type": "string",
+            "title": "Escalation Id"
+          },
+          "status": {
+            "type": "string",
+            "title": "Status"
+          },
+          "kind": {
+            "type": "string",
+            "title": "Kind"
+          },
+          "attempt_count": {
+            "type": "integer",
+            "title": "Attempt Count"
+          },
+          "generation": {
+            "type": "integer",
+            "title": "Generation"
+          }
+        },
+        "additionalProperties": true,
+        "type": "object",
+        "required": [
+          "id",
+          "escalation_id",
+          "status",
+          "kind",
+          "attempt_count",
+          "generation"
+        ],
+        "title": "EscalationDelivery"
+      },
+      "EscalationErrorResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": false
+          },
+          "error_code": {
+            "type": "string",
+            "title": "Error Code"
+          },
+          "error": {
+            "type": "string",
+            "title": "Error"
+          }
+        },
+        "additionalProperties": true,
+        "type": "object",
+        "required": [
+          "error_code",
+          "error"
+        ],
+        "title": "EscalationErrorResponse",
+        "description": "Stable error envelope shared by all escalation endpoints."
+      },
+      "EscalationGetRequest": {
+        "properties": {
+          "escalation_id": {
+            "type": "string",
+            "title": "Escalation Id",
+            "description": ""
+          }
+        },
+        "type": "object",
+        "required": [
+          "escalation_id"
+        ],
+        "title": "EscalationGetRequest"
+      },
+      "EscalationGetResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "escalation": {
+            "$ref": "#/components/schemas/EscalationRecord"
+          },
+          "messages": {
+            "items": {
+              "$ref": "#/components/schemas/EscalationMessage"
+            },
+            "type": "array",
+            "title": "Messages"
+          },
+          "deliveries": {
+            "items": {
+              "$ref": "#/components/schemas/EscalationDelivery"
+            },
+            "type": "array",
+            "title": "Deliveries"
+          },
+          "actions": {
+            "items": {
+              "$ref": "#/components/schemas/EscalationAction"
+            },
+            "type": "array",
+            "title": "Actions"
+          }
+        },
+        "type": "object",
+        "required": [
+          "escalation",
+          "messages",
+          "deliveries",
+          "actions"
+        ],
+        "title": "EscalationGetResponse"
+      },
+      "EscalationListRequest": {
+        "properties": {
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Id",
+            "description": ""
+          },
+          "task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Task Id",
+            "description": ""
+          },
+          "states": {
+            "anyOf": [
+              {
+                "items": {},
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "States",
+            "description": ""
+          },
+          "limit": {
+            "type": "integer",
+            "title": "Limit",
+            "description": "",
+            "default": 100
+          }
+        },
+        "type": "object",
+        "title": "EscalationListRequest"
+      },
+      "EscalationListResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "escalations": {
+            "items": {
+              "$ref": "#/components/schemas/EscalationRecord"
+            },
+            "type": "array",
+            "title": "Escalations"
+          },
+          "count": {
+            "type": "integer",
+            "title": "Count"
+          }
+        },
+        "type": "object",
+        "required": [
+          "escalations",
+          "count"
+        ],
+        "title": "EscalationListResponse"
+      },
+      "EscalationMessage": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "escalation_id": {
+            "type": "string",
+            "title": "Escalation Id"
+          },
+          "direction": {
+            "type": "string",
+            "title": "Direction"
+          },
+          "transport": {
+            "type": "string",
+            "title": "Transport"
+          },
+          "verified_actor": {
+            "type": "string",
+            "title": "Verified Actor"
+          },
+          "text": {
+            "type": "string",
+            "title": "Text"
+          },
+          "external_message_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "External Message Id"
+          },
+          "received_sequence": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Received Sequence"
+          },
+          "received_at": {
+            "type": "number",
+            "title": "Received At"
+          },
+          "supervisor_message_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Supervisor Message Id"
+          },
+          "created_at": {
+            "type": "number",
+            "title": "Created At"
+          }
+        },
+        "additionalProperties": true,
+        "type": "object",
+        "required": [
+          "id",
+          "escalation_id",
+          "direction",
+          "transport",
+          "verified_actor",
+          "text",
+          "received_at",
+          "created_at"
+        ],
+        "title": "EscalationMessage"
+      },
+      "EscalationRecord": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "project_id": {
+            "type": "string",
+            "title": "Project Id"
+          },
+          "task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Task Id"
+          },
+          "source_kind": {
+            "type": "string",
+            "title": "Source Kind"
+          },
+          "source_identity": {
+            "type": "string",
+            "title": "Source Identity"
+          },
+          "incident_key": {
+            "type": "string",
+            "title": "Incident Key"
+          },
+          "supervisor_owner": {
+            "type": "string",
+            "title": "Supervisor Owner"
+          },
+          "task_title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Task Title"
+          },
+          "task_status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Task Status"
+          },
+          "summary": {
+            "type": "string",
+            "title": "Summary"
+          },
+          "investigation": {
+            "type": "string",
+            "title": "Investigation"
+          },
+          "decision_requested": {
+            "type": "string",
+            "title": "Decision Requested"
+          },
+          "choices": {
+            "anyOf": [
+              {
+                "items": {},
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Choices"
+          },
+          "severity": {
+            "type": "string",
+            "title": "Severity"
+          },
+          "state": {
+            "type": "string",
+            "title": "State"
+          },
+          "revision": {
+            "type": "integer",
+            "title": "Revision"
+          },
+          "terminal_outcome": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Terminal Outcome"
+          },
+          "terminal_evidence": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Terminal Evidence"
+          },
+          "created_at": {
+            "type": "number",
+            "title": "Created At"
+          },
+          "updated_at": {
+            "type": "number",
+            "title": "Updated At"
+          },
+          "terminal_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Terminal At"
+          },
+          "delivery_statuses": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Delivery Statuses"
+          },
+          "pending_delivery": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pending Delivery"
+          }
+        },
+        "additionalProperties": true,
+        "type": "object",
+        "required": [
+          "id",
+          "project_id",
+          "source_kind",
+          "source_identity",
+          "incident_key",
+          "supervisor_owner",
+          "summary",
+          "investigation",
+          "decision_requested",
+          "severity",
+          "state",
+          "revision",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "EscalationRecord"
+      },
+      "EscalationReplyRequest": {
+        "properties": {
+          "escalation_id": {
+            "type": "string",
+            "title": "Escalation Id",
+            "description": ""
+          },
+          "text": {
+            "type": "string",
+            "title": "Text",
+            "description": ""
+          },
+          "external_message_id": {
+            "type": "string",
+            "title": "External Message Id",
+            "description": "Stable dashboard or adapter message identity for replay collapse."
+          },
+          "received_sequence": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Received Sequence",
+            "description": ""
+          }
+        },
+        "type": "object",
+        "required": [
+          "escalation_id",
+          "text",
+          "external_message_id"
+        ],
+        "title": "EscalationReplyRequest"
+      },
+      "EscalationReplyResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "reply": {
+            "$ref": "#/components/schemas/EscalationMessage"
+          },
+          "escalation": {
+            "$ref": "#/components/schemas/EscalationRecord"
+          },
+          "created": {
+            "type": "boolean",
+            "title": "Created"
+          },
+          "supervisor_enqueued": {
+            "type": "boolean",
+            "title": "Supervisor Enqueued"
+          },
+          "terminal": {
+            "type": "boolean",
+            "title": "Terminal"
+          }
+        },
+        "type": "object",
+        "required": [
+          "reply",
+          "escalation",
+          "created",
+          "supervisor_enqueued",
+          "terminal"
+        ],
+        "title": "EscalationReplyResponse"
+      },
+      "EscalationUpdateRequest": {
+        "properties": {
+          "escalation_id": {
+            "type": "string",
+            "title": "Escalation Id",
+            "description": ""
+          },
+          "expected_revision": {
+            "type": "integer",
+            "title": "Expected Revision",
+            "description": ""
+          },
+          "state": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "State",
+            "description": ""
+          },
+          "summary": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Summary",
+            "description": ""
+          },
+          "investigation": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Investigation",
+            "description": ""
+          },
+          "decision_requested": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Decision Requested",
+            "description": ""
+          },
+          "choices": {
+            "anyOf": [
+              {
+                "items": {},
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Choices",
+            "description": ""
+          },
+          "severity": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Severity",
+            "description": ""
+          },
+          "terminal_outcome": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Terminal Outcome",
+            "description": ""
+          },
+          "terminal_evidence": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Terminal Evidence",
+            "description": ""
+          }
+        },
+        "type": "object",
+        "required": [
+          "escalation_id",
+          "expected_revision"
+        ],
+        "title": "EscalationUpdateRequest"
+      },
+      "EscalationUpdateResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "escalation": {
+            "$ref": "#/components/schemas/EscalationRecord"
+          }
+        },
+        "type": "object",
+        "required": [
+          "escalation"
+        ],
+        "title": "EscalationUpdateResponse"
       },
       "EventGroupDTO": {
         "properties": {

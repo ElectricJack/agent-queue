@@ -396,3 +396,119 @@ async def test_invalid_terminal_and_delivery_transitions_fail_before_mutation(db
         await db.finish_escalation_delivery(
             delivery["id"], lease_owner="sender", status="sent", now=2.0
         )
+
+
+async def test_action_reservation_binds_verified_reply_and_replay_is_at_most_once(db):
+    row, _ = await make_incident(db)
+    accepted = await db.accept_escalation_reply(
+        row["id"],
+        transport="dashboard",
+        external_message_id="human-1",
+        verified_actor="human:operator",
+        text="Retry it",
+        received_at=11.0,
+        reply_id="reply-1",
+    )
+    reserved = await db.begin_escalation_action(
+        row["id"],
+        reply_id="reply-1",
+        expected_revision=accepted["escalation"]["revision"],
+        idempotency_key="apply-1",
+        action_kind="task_recover",
+        target_id="t",
+        parameters={"decision": "retry"},
+        executor="session:supervisor",
+        now=12.0,
+        action_id="action-1",
+    )
+    replay = await db.begin_escalation_action(
+        row["id"],
+        reply_id="reply-1",
+        expected_revision=0,  # stale is accepted only for the exact keyed replay
+        idempotency_key="apply-1",
+        action_kind="task_recover",
+        target_id="t",
+        parameters={"decision": "retry"},
+        executor="session:replacement-supervisor",
+        now=13.0,
+    )
+    assert reserved["created"] is True
+    assert reserved["escalation"]["state"] == "resolving"
+    assert replay["created"] is False and replay["action"]["id"] == "action-1"
+
+    finished = await db.finish_escalation_action(
+        "action-1",
+        succeeded=True,
+        outcome="task_recovery_applied",
+        result={"status": "READY"},
+        now=14.0,
+    )
+    duplicate_finish = await db.finish_escalation_action(
+        "action-1", succeeded=True, outcome="ignored", now=15.0
+    )
+    assert finished["action"]["status"] == "succeeded"
+    assert finished["escalation"]["state"] == "resolved"
+    assert finished["escalation"]["terminal_evidence"]["reply_id"] == "reply-1"
+    assert duplicate_finish["completed"] is False
+    assert duplicate_finish["action"]["outcome"] == "task_recovery_applied"
+    assert len(await db.list_escalation_actions(row["id"])) == 1
+
+    with pytest.raises(EscalationConflict, match="different parameters"):
+        await db.begin_escalation_action(
+            row["id"], reply_id="reply-1", expected_revision=3,
+            idempotency_key="apply-1", action_kind="task_recover", target_id="t",
+            parameters={"decision": "hold"}, executor="session:supervisor"
+        )
+
+
+async def test_action_refuses_unverified_or_cross_incident_reply_without_mutation(db):
+    first, _ = await make_incident(db)
+    second, _ = await make_incident(
+        db,
+        ident="attempt-2",
+        escalation_id="esc-2",
+        incident_key="task:t:attempt:attempt-2",
+    )
+    await db.accept_escalation_reply(
+        first["id"], transport="dashboard", external_message_id="human-first",
+        verified_actor="human:operator", text="First", reply_id="reply-first"
+    )
+    accepted = await db.accept_escalation_reply(
+        second["id"], transport="dashboard", external_message_id="human-other",
+        verified_actor="human:operator", text="Proceed", reply_id="reply-other"
+    )
+    with pytest.raises(EscalationStateError, match="verified human evidence"):
+        await db.begin_escalation_action(
+            first["id"], reply_id="reply-other", expected_revision=1,
+            idempotency_key="apply-cross", action_kind="gate_resolve", target_id="gate-1",
+            parameters={}, executor="session:supervisor"
+        )
+    unchanged = await db.get_escalation(first["id"])
+    assert unchanged["state"] == "reply_received" and unchanged["revision"] == 1
+    assert await db.list_escalation_actions(first["id"]) == []
+    assert accepted["escalation"]["revision"] == 1
+
+
+async def test_newer_reply_wins_race_with_action_completion(db):
+    row, _ = await make_incident(db)
+    first = await db.accept_escalation_reply(
+        row["id"], transport="dashboard", external_message_id="first",
+        verified_actor="human:operator", text="First answer", reply_id="reply-first"
+    )
+    reserved = await db.begin_escalation_action(
+        row["id"], reply_id="reply-first", expected_revision=first["escalation"]["revision"],
+        idempotency_key="apply-first", action_kind="gate_resolve", target_id="gate-1",
+        parameters={}, executor="session:supervisor", action_id="action-first"
+    )
+    newer = await db.accept_escalation_reply(
+        row["id"], transport="dashboard", external_message_id="second",
+        verified_actor="human:operator", text="Correction", reply_id="reply-second"
+    )
+    finished = await db.finish_escalation_action(
+        "action-first", succeeded=True, outcome="gate_resolved", result={}, now=20.0
+    )
+    assert reserved["escalation"]["state"] == "resolving"
+    assert newer["escalation"]["state"] == "reply_received"
+    assert finished["resolved"] is False
+    assert finished["escalation"]["state"] == "reply_received"
+    assert finished["escalation"]["revision"] == newer["escalation"]["revision"]

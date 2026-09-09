@@ -1176,5 +1176,7 @@ def register_builtin_contracts(registry: ContractRegistry) -> None:
                 )
             )
     from src.commands.contracts.integration import register_integration_contracts
+    from src.commands.contracts.escalation import register_escalation_contracts
 
     register_integration_contracts(registry)
+    register_escalation_contracts(registry)

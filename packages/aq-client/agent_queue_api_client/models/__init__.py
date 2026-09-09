@@ -192,6 +192,28 @@ from .ensure_task_request import EnsureTaskRequest
 from .ensure_task_response import EnsureTaskResponse
 from .ensure_task_response_422 import EnsureTaskResponse422
 from .env_var_reference import EnvVarReference
+from .escalation_action import EscalationAction
+from .escalation_action_parameters import EscalationActionParameters
+from .escalation_action_result_type_0 import EscalationActionResultType0
+from .escalation_apply_reply_request import EscalationApplyReplyRequest
+from .escalation_apply_reply_response import EscalationApplyReplyResponse
+from .escalation_apply_reply_response_action_result_type_0 import EscalationApplyReplyResponseActionResultType0
+from .escalation_create_request import EscalationCreateRequest
+from .escalation_create_response import EscalationCreateResponse
+from .escalation_delivery import EscalationDelivery
+from .escalation_error_response import EscalationErrorResponse
+from .escalation_get_request import EscalationGetRequest
+from .escalation_get_response import EscalationGetResponse
+from .escalation_list_request import EscalationListRequest
+from .escalation_list_response import EscalationListResponse
+from .escalation_message import EscalationMessage
+from .escalation_record import EscalationRecord
+from .escalation_record_terminal_evidence_type_0 import EscalationRecordTerminalEvidenceType0
+from .escalation_reply_request import EscalationReplyRequest
+from .escalation_reply_response import EscalationReplyResponse
+from .escalation_update_request import EscalationUpdateRequest
+from .escalation_update_request_terminal_evidence_type_0 import EscalationUpdateRequestTerminalEvidenceType0
+from .escalation_update_response import EscalationUpdateResponse
 from .event_group_dto import EventGroupDTO
 from .event_trigger import EventTrigger
 from .execute_request import ExecuteRequest
@@ -1308,6 +1330,28 @@ __all__ = (
     "EnsureTaskResponse",
     "EnsureTaskResponse422",
     "EnvVarReference",
+    "EscalationAction",
+    "EscalationActionParameters",
+    "EscalationActionResultType0",
+    "EscalationApplyReplyRequest",
+    "EscalationApplyReplyResponse",
+    "EscalationApplyReplyResponseActionResultType0",
+    "EscalationCreateRequest",
+    "EscalationCreateResponse",
+    "EscalationDelivery",
+    "EscalationErrorResponse",
+    "EscalationGetRequest",
+    "EscalationGetResponse",
+    "EscalationListRequest",
+    "EscalationListResponse",
+    "EscalationMessage",
+    "EscalationRecord",
+    "EscalationRecordTerminalEvidenceType0",
+    "EscalationReplyRequest",
+    "EscalationReplyResponse",
+    "EscalationUpdateRequest",
+    "EscalationUpdateRequestTerminalEvidenceType0",
+    "EscalationUpdateResponse",
     "EventGroupDTO",
     "EventTrigger",
     "ExecuteRequest",
