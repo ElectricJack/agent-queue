@@ -189,3 +189,26 @@ controls restore batch lifecycle without equivalent parent-task restoration.
 Collection has not been verified resumed. Parent routing now selects the
 enabled Codex pool. Eager-falcon remains live implementing root moved-main
 conflict recovery and fresh-CI validation. Full delivery remains incomplete.
+
+## Root conflict repair and native baseline validation
+
+Root repair implementation e8fac053 was applied locally as ed8e8acc. Review
+follow-up 4bbbd7a2 validates the delegate project, repository, branch, creator,
+assignment, sessions and workspace before reuse. Nine focused real Git/DB
+tests passed; combined candidate/parent repair validation is running in
+/tmp/aq-combined-root-parent-tests.log. This code is not yet loaded.
+
+Parent-resume repair brisk-apex is now assigned to agent-b75999c4bb18 in
+session b0b1fe0f-3a12-482c-95d8-685bcf9e89fd, slot-4. It was routed to the
+available standard-high-codex pool with matching standard-high class; no pool
+bounds changed and no original-epic worker was interrupted.
+
+Matter Engine isolated branch aq/ci-bootstrap-20260909 contains CI preparation
+a0cb6cb0 and clean-build fix 3697dc4a. The fresh native MSVC build initially
+failed because embedded_shaders.h had no CMake generation rule. The fix
+generates shader text in the build tree with explicit input dependencies and
+consumer ordering. The native build now passes, including the editor and
+test executables. The 98-test CTest run is active; shader_source_tests and
+vulkan_smoke_tests passed. Log: /tmp/aq-matter-native-ci.log, handle23927.
+Package validation, remote Actions execution, runner registration, baseline
+delivery, feature execution and throughput acceptance remain pending.
