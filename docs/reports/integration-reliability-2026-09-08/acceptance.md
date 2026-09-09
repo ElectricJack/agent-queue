@@ -930,3 +930,28 @@ acceptance and remaining parent receipts are still outstanding.
 Task `agile-current` tracks ordinary AQ review/delivery of the operator's
 post-CAS successor-instance protection from7aabdd39, in addition to the
 original bright-grove implementation.
+
+
+## September 9: prerequisite-delivery review and verifier close defect
+
+Integrated noble-torrent with operator corrections in `abef631e`, published as
+`aq/operator-prerequisite-delivery-20260909`. Current-incarnation session
+attempts refuse container bootstrap even with absent or changed project IDs;
+pre-incarnation attempts do not. Receipt gating is scoped to hierarchy/train.
+Crash after checkpoint reservation before ownership transfer is covered.
+Validation: 60 hierarchy tests passed (35.75s); 160 claims, isolated workspace,
+integration-service and hierarchy-query tests passed (37.51s); focused Ruff passed.
+The isolated swarm run `/tmp/aq-prerequisite-swarm.log` remains live at this
+observation; no passing swarm result or production rollout is claimed.
+
+The keen-harbor aggregate verifier was rejected by ordinary PR-to-main checks.
+Priority-one AQ bug `keen-bridge` requires exact aggregate verification and
+close dispatch regression coverage without bypassing guarded parent completion.
+
+Discord repair operation `640ced19-c324-4f6f-b50d-8f0181d181b7` expired and was
+resumed through the public command with deadline 1788960673.5155663. Root batch
+`integration-batch-2c484c0890ebecbbf98b0b12fd5469ff` resume instead correctly
+refused unresolved resolution/writer evidence. Its resolution
+`d3b49b4e-3651-50cf-94ee-c6650ac6687f` is pushed, and independent remote inspection
+confirms `50edaa1990c840a63efe3f7f3b9ca9c38e72fc10` at the reserved repair ref.
+Acceptance is still pending; the matching external write is not proof of delivery.
