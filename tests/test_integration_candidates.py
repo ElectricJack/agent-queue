@@ -2742,3 +2742,92 @@ async def test_rebuild_rejects_non_authoritative_base_without_superseding(db, tm
         revision = (await conn.execute(select(integration_candidate_revisions))).mappings().one()
     assert batch["current_revision"] == 0
     assert revision["state"] == "built"
+
+
+def _make_already_contained_origin(tmp_path: Path):
+    """Origin where member 0 already landed on main before the batch base was cut."""
+    origin = tmp_path / "contained-origin.git"
+    work = tmp_path / "contained-work"
+    _git(tmp_path, "init", "--bare", "--initial-branch=main", str(origin))
+    _git(tmp_path, "clone", str(origin), str(work))
+    _git(work, "config", "user.name", "Candidate Test")
+    _git(work, "config", "user.email", "candidate@example.test")
+    (work / "shared.txt").write_text("base\n")
+    _git(work, "add", "shared.txt")
+    _git(work, "commit", "-m", "base")
+    root = _git(work, "rev-parse", "HEAD")
+    _git(work, "push", "origin", "main")
+
+    _git(work, "switch", "-C", "root-0", root)
+    (work / "shared.txt").write_text("member zero\n")
+    _git(work, "add", "shared.txt")
+    _git(work, "commit", "-m", "member 0")
+    landed = _git(work, "rev-parse", "HEAD")
+    landed_tree = _git(work, "rev-parse", "HEAD^{tree}")
+    _git(work, "push", "origin", "HEAD:refs/heads/root-0")
+
+    _git(work, "switch", "main")
+    _git(work, "merge", "--no-ff", "-m", "land member 0", landed)
+    # main keeps moving on a file member 0 also touched.
+    (work / "shared.txt").write_text("main moved on past member zero\n")
+    _git(work, "add", "shared.txt")
+    _git(work, "commit", "-m", "main advances")
+    base = _git(work, "rev-parse", "HEAD")
+    _git(work, "push", "origin", "main")
+
+    _git(work, "switch", "-C", "root-1", base)
+    (work / "member-1.txt").write_text("member one\n")
+    _git(work, "add", "member-1.txt")
+    _git(work, "commit", "-m", "member 1")
+    head = _git(work, "rev-parse", "HEAD")
+    tree = _git(work, "rev-parse", f"{head}^{{tree}}")
+    _git(work, "push", "origin", "HEAD:refs/heads/root-1")
+    return origin, base, landed, ((root, landed, landed_tree), (base, head, tree))
+
+
+async def test_member_already_contained_in_base_applies_as_noop(db, tmp_path):
+    from src.git.github_app import GitHubRepositoryBinding
+    from src.integration.candidates import CandidateService
+
+    origin, base, landed, members = _make_already_contained_origin(tmp_path)
+    await db.update_repo("repo", url=str(origin))
+    await _seed_batch(db, members=members, base_sha=base)
+
+    app = _AppClient(origin)
+    app.repository = GitHubRepositoryBinding(repository_id=9, full_name="example/repo")
+    result = await CandidateService(
+        db,
+        data_dir=tmp_path / "data",
+        git_manager=_LocalPushGit(origin),
+        forge_provider=_AuditForge(),
+        app_client=app,
+        clock=lambda: 100.0,
+    ).build("batch")
+
+    assert result.outcome == "built"
+    store = next((tmp_path / "data" / "integration-repositories").iterdir())
+    # The already-landed member contributed nothing and did not resurrect its own
+    # historical content over the newer main state.
+    assert _git(store, "show", f"{result.head_sha}:shared.txt") == "main moved on past member zero"
+    assert _git(store, "show", f"{result.head_sha}:member-1.txt") == "member one"
+    assert (
+        subprocess.run(
+            ["git", "merge-base", "--is-ancestor", landed, result.head_sha], cwd=store
+        ).returncode
+        == 0
+    )
+    async with db._engine.connect() as conn:
+        rows = (
+            (
+                await conn.execute(
+                    select(integration_candidate_member_results).order_by(
+                        integration_candidate_member_results.c.member_ordinal
+                    )
+                )
+            )
+            .mappings()
+            .all()
+        )
+    assert [row["result"] for row in rows] == ["applied", "applied"]
+    assert rows[0]["generated_squash_sha"] == base
+    assert rows[1]["generated_squash_sha"] == result.head_sha
