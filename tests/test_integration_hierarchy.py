@@ -1156,3 +1156,33 @@ async def test_container_bootstrap_recovers_after_reservation_before_transfer(
     assert result["outcome"] == "checkpointed"
     recovered = await db.get_integration_checkpoint("epic")
     assert recovered["episode_id"] == reserved["episode_id"]
+
+
+async def test_file_root_persists_canonical_branch_before_container_collection(db, hierarchy):
+    async with db.immediate() as conn:
+        filed = await hierarchy.file_root_on(
+            conn,
+            Task(
+                id="unallocated",
+                project_id="p",
+                title="root",
+                description="root",
+                status=TaskStatus.IN_PROGRESS,
+            ),
+        )
+    root_id = filed["task_id"]
+    root = await db.get_task(root_id)
+    assert root.branch_name == f"aq/{root_id}"
+
+    # A root with a child is an untouched released container.  The bootstrap
+    # must see the stored branch identity, rather than reject it as missing.
+    await hierarchy.file_children(root_id, [{"title": "child"}], 0)
+    async with db.immediate() as conn:
+        await conn.execute(
+            update(task_branch_origins)
+            .where(task_branch_origins.c.task_id == root_id)
+            .values(materialized=True, materialized_at=2.0)
+        )
+    result = await hierarchy.bootstrap_container_collection(root_id)
+    assert result["outcome"] == "checkpointed"
+
