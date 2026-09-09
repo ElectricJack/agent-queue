@@ -88,7 +88,11 @@ def marker_for(window_id: str) -> str:
 
 
 async def reported_so_far(
-    db: Any, destination: str, *, limit: int = REPORTED_HISTORY
+    db: Any,
+    destination: str,
+    *,
+    generation: int,
+    limit: int = REPORTED_HISTORY,
 ) -> tuple[frozenset[str], frozenset[str]]:
     """Fact keys and highlight wordings earlier *sent* windows already used.
 
@@ -98,7 +102,10 @@ async def reported_so_far(
     keys: set[str] = set()
     highlights: set[str] = set()
     for window in await db.list_digest_windows(
-        destination=destination, statuses=["sent"], limit=limit
+        destination=destination,
+        config_generation=generation,
+        statuses=["sent"],
+        limit=limit,
     ):
         payload = window.get("payload") or {}
         if isinstance(payload, dict):
@@ -278,7 +285,11 @@ class DigestScheduleService:
 
     async def _evaluate_window(self, schedule: DigestSchedule, window: DigestWindow, *, now: float):
         """Gather the durable evidence for one window and build its message."""
-        reported_keys, reported_highlights = await reported_so_far(self.db, schedule.destination)
+        reported_keys, reported_highlights = await reported_so_far(
+            self.db,
+            schedule.destination,
+            generation=schedule.generation,
+        )
         open_escalations = len(
             await self.db.list_escalations(states=["needs_human", "reply_received"], limit=500)
         )
