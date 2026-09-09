@@ -138,7 +138,18 @@ async def resolve_repair_commit_proof(
             or any(not is_valid_git_oid(value) for value in commits)
         ):
             raise HierarchyError("dirty", "repair commit lineage is incomplete or invalid")
-    return {"base_sha": base_sha, "head_sha": head_sha, "commits": commits}
+    parents_output = await git._arun(
+        ["show", "-s", "--format=%P", head_sha], cwd=checkout
+    )
+    head_parents = [value.strip().lower() for value in parents_output.split() if value.strip()]
+    if any(not is_valid_git_oid(value) for value in head_parents):
+        raise HierarchyError("dirty", "repair HEAD parent lineage is invalid")
+    return {
+        "base_sha": base_sha,
+        "head_sha": head_sha,
+        "commits": commits,
+        "head_parents": head_parents,
+    }
 
 
 async def resolve_workspace_repair_proof(

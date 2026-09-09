@@ -353,8 +353,13 @@ class CandidateService:
         if current is None or not current.get("head_sha"):
             raise ValueError("current candidate revision is not recoverable")
         preserved_head = await self._preserve_ci_repair(state, current, store, new_base_sha)
-        if preserved_head is False:
-            return self._result("human_required", state, current, state["operation"]["id"])
+        if isinstance(preserved_head, dict):
+            return await self._continue_rebuild_conflict(
+                state,
+                current,
+                new_base_sha=new_base_sha,
+                diagnostics=preserved_head["diagnostics"],
+            )
         await self._pin(store, self._recovery_ref(batch_id, expected_revision), current["head_sha"])
         await self._crash("after_superseded_pin")
         if await self.app_client.exact_head_ref(repository.default_branch) != authoritative_base:
@@ -526,7 +531,7 @@ class CandidateService:
         tree = await self.git.arun_git_result(
             ["merge-tree", "--write-tree", new_base_sha, revision["head_sha"]], cwd=str(store))
         if tree.returncode == 1:
-            return False
+            return {"diagnostics": tree.stdout or tree.stderr or "merge conflict"}
         if tree.returncode != 0:
             raise RuntimeError(tree.stderr or "CI repair preservation merge failed")
         authored_at = f"@{int(state['batch']['created_at'])} +0000"
@@ -546,6 +551,67 @@ class CandidateService:
         await self._pin(store, self._recovery_ref(state["batch"]["id"],
                         int(revision["revision"]) + 1), head)
         return head
+
+    async def _continue_rebuild_conflict(
+        self,
+        state,
+        revision,
+        *,
+        new_base_sha: str,
+        diagnostics: str,
+    ) -> CandidateBuildResult:
+        """Persist and dispatch an exact main/candidate conflict without new budget."""
+        batch = state["batch"]
+        operation_id = state["operation"]["id"]
+        branch = batch["integration_branch"].removeprefix("refs/heads/")
+        remote_candidate = await self.app_client.exact_head_ref(branch)
+        if remote_candidate != revision["head_sha"]:
+            return self._result("wait", state, revision, operation_id)
+        now = self.clock()
+        async with self.db.immediate() as conn:
+            await self.db.lock_hierarchy_project(conn, batch["project_id"])
+            await self._validate_authority_on(
+                conn, state, revision=int(revision["revision"])
+            )
+            recorded = await self.repair.record_batch_rebuild_conflict_on(
+                conn,
+                operation_id,
+                revision_number=int(revision["revision"]),
+                candidate_sha=revision["head_sha"],
+                new_base_sha=new_base_sha,
+                diagnostics=diagnostics,
+                fence=state["fence"],
+                now=now,
+            )
+        transition = recorded.pop("transition", None)
+        if transition is not None:
+            await self.db.log_blocked_flips(transition.flipped)
+            await self.db._notify_settled(transition.settled)
+            await self.db._notify_ready(transition.ready)
+        if recorded["outcome"] in {"stale", "busy", "conflict_already_frozen"}:
+            return self._result("wait", state, revision, operation_id)
+        await self._crash("after_rebuild_conflict_record")
+        # Do not transfer a branch whose remote moved after the frozen conflict
+        # was recorded. A replay can proceed once its exact candidate tip is
+        # restored or the mutation is otherwise reconciled.
+        if await self.app_client.exact_head_ref(branch) != revision["head_sha"]:
+            return self._result("wait", state, revision, operation_id)
+        stage = int(recorded["stage"])
+        if recorded["deadline_due"]:
+            expired = await self.repair.expire(operation_id, stage, now=now)
+            if expired["action"] == "block_for_human":
+                return self._result("human_required", state, revision, operation_id)
+            if expired["action"] != "dispatch_debug":
+                return self._result("wait", state, revision, operation_id)
+            stage = int(expired["stage"])
+        await self.repair.dispatch(operation_id, stage)
+        # The pinned playbook dispatches from this durable ``conflict`` result
+        # with the orchestrator's configured route validator.  This local
+        # best-effort dispatch mirrors member conflicts and closes the
+        # record/dispatch crash window when dependencies are already present.
+        # Its transient/configuration outcome must not relabel a routine source
+        # conflict as human work.
+        return self._result("conflict", state, revision, operation_id)
 
     async def reserve_repair(self, request: CandidateResolutionInput) -> str:
         """Freeze an exact candidate repair from the current instance-bound writer."""

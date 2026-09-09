@@ -2,16 +2,18 @@
 """A pushed batch CI fix becomes a new exact candidate, never rewrites evidence."""
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import insert, select, update
 
 from tests.test_integration_repair import db, _seed_root_operation, STARTING_SHA  # noqa: F401
 from src.database.tables import (
     integration_batches,
+    integration_branch_owners,
     integration_candidate_revisions,
     integration_candidate_member_results,
     integration_repair_stages,
 )
 from tests.test_integration_candidates import db as candidate_db  # noqa: F401
+from src.integration.models import BranchKey, Fence
 from src.integration.repair import RepairService
 
 
@@ -84,6 +86,103 @@ async def test_batch_ci_fix_rejects_missing_or_stale_lineage(db, proof):
     async with db._engine.connect() as conn:
         row = (await conn.execute(select(integration_batches))).mappings().one()
     assert row["current_revision"] == 0
+
+
+@pytest.mark.asyncio
+async def test_batch_rebuild_repair_rejects_non_merge_or_wrong_parent(db):
+    operation_id = await _seed_root_operation(db)
+    service = RepairService(db)
+    await service.start(operation_id, STARTING_SHA, "batch", now=100)
+    new_base = "b" * 40
+    resolved = "c" * 40
+    async with db.immediate() as conn:
+        stage = (
+            await conn.execute(select(integration_repair_stages).with_for_update())
+        ).mappings().one()
+        dossier = dict(stage["dossier"])
+        dossier["candidate_rebuild_conflict"] = {
+            "kind": "candidate_rebuild",
+            "id": "frozen-conflict",
+            "operation_id": operation_id,
+            "operation_stage": 0,
+            "batch_id": "batch",
+            "revision": 0,
+            "candidate_sha": STARTING_SHA,
+            "new_base_sha": new_base,
+        }
+        await conn.execute(update(integration_repair_stages).values(dossier=dossier))
+    for parents in ([STARTING_SHA], [STARTING_SHA, "d" * 40]):
+        with pytest.raises(ValueError, match="exact ancestry-preserving merge"):
+            async with db.immediate() as conn:
+                await service.adopt_batch_repair_on(
+                    conn,
+                    operation_id,
+                    head_sha=resolved,
+                    commit_proof={
+                        "base_sha": STARTING_SHA,
+                        "head_sha": resolved,
+                        "commits": [resolved],
+                        "head_parents": parents,
+                    },
+                    now=110,
+                )
+    async with db._engine.connect() as conn:
+        batch = (await conn.execute(select(integration_batches))).mappings().one()
+    assert batch["current_revision"] == 0
+
+
+@pytest.mark.asyncio
+async def test_overdue_batch_rebuild_conflict_escalates_without_resetting_budget(db):
+    operation_id = await _seed_root_operation(db)
+    service = RepairService(db)
+    started = await service.start(operation_id, STARTING_SHA, "batch", now=100)
+    target = BranchKey(repository_id="repo", branch="aq/integration/batch")
+    async with db.immediate() as conn:
+        await conn.execute(
+            insert(integration_branch_owners).values(
+                id="root-rebuild-owner",
+                repository_id="repo",
+                ref=target.branch,
+                owner_id=operation_id,
+                owner_role="collector",
+                fence_token=1,
+                handoff_state="reserved",
+                created_at=100,
+                updated_at=100,
+            )
+        )
+        recorded = await service.record_batch_rebuild_conflict_on(
+            conn,
+            operation_id,
+            revision_number=0,
+            candidate_sha=STARTING_SHA,
+            new_base_sha="b" * 40,
+            diagnostics="overlap",
+            fence=Fence(target=target, owner_id=operation_id, token=1),
+            now=131,
+        )
+    assert recorded["deadline_due"] is True
+    expired = await service.expire(operation_id, 0, now=131)
+    assert expired["outcome"] == "expired"
+    assert expired["action"] == "dispatch_debug"
+    async with db._engine.connect() as conn:
+        stages = (
+            (
+                await conn.execute(
+                    select(integration_repair_stages).order_by(
+                        integration_repair_stages.c.ordinal
+                    )
+                )
+            )
+            .mappings()
+            .all()
+        )
+    assert stages[0]["started_at"] == started["started_at"]
+    assert stages[0]["deadline_at"] == started["deadline_at"]
+    assert stages[0]["attempts"] == 0
+    assert stages[0]["state"] == "expired"
+    assert stages[1]["state"] == "active"
+    assert stages[1]["dossier"]["candidate_rebuild_conflict"]["new_base_sha"] == "b" * 40
 
 
 @pytest.mark.asyncio
