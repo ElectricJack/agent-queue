@@ -3232,6 +3232,20 @@ class GitManager:
         except asyncio.TimeoutError as exc:
             raise GitError("authenticated Git cleanup exceeded its safety margin") from exc
 
+        # ``process.wait()`` only reaps the group leader. A descendant can
+        # remain briefly visible (usually as an orphaned zombie) after the
+        # group-wide SIGKILL, so do not return privileged-operation success
+        # until the kernel reports that the whole isolated group is gone.
+        while True:
+            try:
+                os.killpg(process.pid, 0)
+            except ProcessLookupError:
+                return
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                raise GitError("authenticated Git cleanup exceeded its safety margin")
+            await asyncio.sleep(min(0.01, remaining))
+
     @staticmethod
     async def _settle_app_credential_broker(task: asyncio.Task[bool]) -> bool:
         """Collect a completed broker or cancel it without waiting for channel EOF."""
