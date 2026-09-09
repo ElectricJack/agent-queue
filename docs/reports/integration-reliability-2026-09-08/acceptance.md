@@ -366,3 +366,30 @@ matter_engine_core depended on shader text generation without the SPIR-V header
 generator. The worker is correcting both generation dependencies and rerunning
 native validation. Prior green CI remains evidence only for that one run.
 Feature entry tasks remain explicitly paused pending corrected baseline delivery.
+
+
+## CLI response-loss handling and review follow-through
+
+Operator fix6310cb23 is published at aq/operator-cli-response-20260909. Generic
+command transport now reports command_error with outcome=unknown and
+automatic_retry=false for interrupted writes/reads and malformed replies,
+without replaying a possibly committed command. Failed health clients close
+cleanly; unhealthy HTTP responses have actionable errors. The implementation
+is active in the operator CLI and does not require a daemon restart.
+Client/generated-client/envelope checks passed66 tests; the final response-loss
+file passed12 tests, including real CLI JSON/human rendering and one-request
+assertions. Logs: /tmp/aq-cli-response-failure-tests.log and
+/tmp/aq-cli-response-failure-final.log. Existing client lint debt remains.
+
+Created keen-harbor.16 to integrate and review that individual commit on the
+actual epic branch. Added a blocks edge from the final audit keen-harbor.13 to
+.16, so the report cannot finish before this observed restart failure is
+covered. This does not claim all special streaming transports are repaired.
+
+Sharp-beacon9a82e953 fixes duplicate-owner ambiguity but still lacked the
+explicit legacy-marker upgrade requirement at close. Reopened through the
+public reopen-with-feedback command; its implementation/migration remain
+unloaded until the legacy uncertainty and live recovery sequence are covered.
+Sound-apex51f01a84 remains committed and tested, awaiting the next combined
+rollout. Neither local progress nor task completion is counted as reviewed
+main delivery.
