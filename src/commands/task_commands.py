@@ -2082,7 +2082,8 @@ class TaskCommandsMixin:
             intelligence_class=args.get("intelligence_class"),
             created_by_kind="session" if creator_session_id else None,
             created_by_id=creator_session_id,
-            repo_id=project.integration_repository_id if hierarchy_enabled else None,
+            repo_id=project.integration_repository_id if (hierarchy_enabled or
+                project.hierarchical_integration_mode == "development") else None,
         )
         from src.playbooks.routing import requires_routing_gate
         manager = getattr(self.orchestrator, "playbook_manager", None)
