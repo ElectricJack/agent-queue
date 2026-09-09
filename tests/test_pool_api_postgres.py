@@ -138,6 +138,7 @@ async def test_pool_management_routes_round_trip_on_postgres(pool_api):
             {
                 "project_id": "pool-project",
                 "profile_id": "worker",
+                "enabled": True,
                 "min_active": 0,
                 "max_active": None,
                 "desired": 0,

@@ -510,9 +510,14 @@ def test_review_lists_every_required_capability(playbook_id: str) -> None:
 
 
 def test_capabilities_granted_unused_by_src() -> None:
-    """A repository write must never become a privilege grant (§4.1)."""
+    """A repository write must never become a privilege grant (§4.1).
+
+    Scoped to Python sources: the reviewed bundles shipped under
+    ``src/prompts/reviewed_playbooks/`` carry ``capabilities_granted`` in their
+    own manifest frontmatter, which is reviewed data, not code that reads it.
+    """
     result = subprocess.run(
-        ["grep", "-rn", "capabilities_granted", "src/"],
+        ["grep", "-rn", "--include=*.py", "capabilities_granted", "src/"],
         cwd=REPO_ROOT,
         capture_output=True,
         text=True,
