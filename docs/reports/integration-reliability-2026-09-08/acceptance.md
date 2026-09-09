@@ -9,7 +9,7 @@ not a claim that the system has passed acceptance.
 - [ ] Ready work starts on compatible enabled workers without repeated manual intervention.
 - [ ] Failed preparation, stopped sessions, stale claim files, branch handoffs,
       daemon restarts, and repair escalation recover without losing work or bypassing fences.
-- [ ] The keen-harbor CLI epic completes all 15 children, collection, aggregate
+- [ ] The keen-harbor CLI epic completes all 16 children, collection, aggregate
       verification, review, and delivery.
 - [ ] The noble-ridge Discord epic completes all 12 children and its dependency
       graph, collection, aggregate verification, review, and delivery.
@@ -39,17 +39,20 @@ automatic recovery acceptance.
 
 ## Current gaps to close
 
-- Stopped-slot claim retirement and interrupted preparation recovery are verified
-  live. The pool-principal resolution fix (`91902d7c`, 59 promotion tests passed)
-  allowed the stage-1 repair to finish through its authenticated worker session.
-- Candidate adoption creates a new revision, but the background continuation needs
-  to recover its publication before attempting CI attestation.
-- As of the latest task inventory, keen-harbor has seven completed children and
-  one running child; noble-ridge.1 is running. These counts are snapshots, not
-  delivery receipts.
-- Matter Engine now has two real feature epics (`nimble-dune` and `smart-dune`)
-  covering agent-facing selection and procedural command automation; see `matter-engine-plan.md`.
-  Its scheduling is paused pending new-pipeline configuration, not implementation completion.
+Latest operator snapshot, 2026-09-09: these are task states, not proof of delivery.
+
+- CLI epic `keen-harbor`: 16/16 children completed; parent BLOCKED with
+  `integration_repair_exhausted`. Verifier ownership handoff is still pending,
+  and operation `81d0aaee-0c3a-482c-b04c-d3afe6631cbe` requires guarded recovery.
+- Discord epic `noble-ridge`: 11/12 children completed, final acceptance READY.
+  The malformed immutable resolution reservation still requires audited recovery.
+- Matter Engine: `nimble-dune` has 1/6 children completed and its second child
+  READY; `smart-dune` has 0/6 complete and depends on the first epic.
+  Both are real AQ task graphs in `matter-engine-cpp`. The next Matter claim
+  is blocked by stale branch ownership after workspace reuse.
+- Root candidate repair still needs recovery of its pushed rejected resolution.
+- Automatic recovery, aggregate delivery, upstream delivery of all operator fixes,
+  and hundreds-of-tasks/day throughput remain unproven.
 
 Each acceptance item requires current persisted state, Git/PR/CI evidence, and
 appropriate focused or scale-test results before it can be checked off.
@@ -1042,3 +1045,33 @@ handoff_pending. Sessionda613545 still running with verifier task and matching
 workspace locks. Actual slot0 checkout is detached at e1390040, rather than the
 published aggregatebd054e41. This mismatch is recorded on fresh-rapids; no force
 unlock, checkout reset, or fabricated completion was performed.
+
+
+### Handoff review and complete promotion validation
+
+The operator rejected fresh-rapids d8721d0e: its passing close explicitly said
+no DB-backed assertions ran. Its snapshot transaction also ends before Git
+detach, allowing successor reuse before the final CAS. Reopened through
+`aq task reopen-with-feedback` with private test-helper instructions and actual
+live-case requirements. The pending operator merge was saved to
+`/tmp/aq-fresh-rapids-operator-merge-review.patch` and aborted; none of this
+unverified source was deployed.
+
+Current read-only ownership evidence: CLI session da613545 is now stopped/stopped
+but retains the verifier task and workspace locks, owner fence27 handoff_pending.
+The stopped-pool recovery helper currently excludes verifier roles. Matter
+session36cb470b is stopped/stopped with task NULL, while its workspace has a
+DIFFERENT current agent lock; owner fence1 remains handoff_pending. Neither case
+justifies force-unlocking or detaching a successor.
+
+The full focused promotion file now passes on operator HEAD4698ec6e:
+`.venv/bin/python /tmp/aq_goal_test.py tests/test_integration_promotion.py`
+— 64 passed, 9 warnings, 57.76s. Log:
+`/tmp/aq-resolution-prevalidation-complete-tests.log`. This closes the earlier
+split-run validation gap for6e8d4748; it does not prove recovery of already
+malformed production reservations.
+
+AQ explain reports fresh-rapids and bright-journey waiting for standard-high
+capacity (2 busy, 0 idle, maximum2). fleet-harbor and noble-torrent are the
+currently assigned repairs. The latter was told to reconcile existing operator
+runtime wiring rather than register a duplicate materialization tick.
