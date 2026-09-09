@@ -153,9 +153,30 @@ Exit codes: `0` success (and all `paused` no-ops, so agent loops don't spuriousl
 | gate | `id, gate_type, status, task_id` |
 | message | `id, from, subject, created_at, read` |
 | workspace | `id, kind_id, path, locked_by` |
+| task_created | `created, task_id, title, status, project_id` |
 
 `--brief` composes with `--json` (trimmed `data` items, envelope unchanged) and with table
 output (fewer columns). Projections are defined centrally, not per command.
+
+`task_created` is the receipt `aq task create` returns for a **single** task, not a task
+row — hence its own projection. `aq task create --graph|--from-spec` returns the graph
+report (`parent_id`, `nodes[]`, `warnings[]`) and takes no brief projection.
+
+### 4.2.1 Creation receipts
+
+`aq task create` is a write whose only durable output is the new id, so it routes through
+`emit()` like every read: `--json` prints exactly one envelope whose `data` is the
+`create_task` payload, and the id to read is **`data.created`** (`data.task_id` is an alias
+that ships alongside it). A caller must never scrape the human line — a client that fails to
+parse stdout after the task is already persisted retries into a duplicate task.
+
+```bash
+new_id=$(aq --json task create -p proj -t "Title" -d "Body" | jq -r .data.created)
+```
+
+Cancelling the interactive wizard is also one document (`{"cancelled": true,
+"created": null}`) at exit `0`: nothing was persisted, and the consumer can see that
+without guessing at an empty stream.
 
 ### 4.3 `aq schema`
 

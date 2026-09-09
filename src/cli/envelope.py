@@ -49,6 +49,10 @@ BRIEF_PROJECTIONS: dict[str, tuple[str, ...]] = {
     "gate": ("id", "gate_type", "status", "task_id"),
     "message": ("id", "from", "subject", "created_at", "read"),
     "workspace": ("id", "kind_id", "path", "locked_by"),
+    # `aq task create` (single task). The payload is a creation receipt, not a
+    # task row, so it has its own projection: `created` is the id a caller
+    # should read (`task_id` is its alias, kept because both ship today).
+    "task_created": ("created", "task_id", "title", "status", "project_id"),
     "integration": (
         "outcome",
         "project_id",

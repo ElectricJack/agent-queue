@@ -258,9 +258,10 @@ These are not bugs the kit hides; they are places where the CLI cannot yet
 express what the runner needs, and it falls back to `POST /api/execute` —
 just as public a surface.
 
-- `aq task create` has no `--json` envelope (it prints human text and never
-  routes through `emit`), so the runner calls `create_task` over REST to get
-  the new task id back.
+- The runner calls `create_task` over REST rather than shelling out to
+  `aq task create`. It no longer has to: single-task creation routes through
+  `emit`, so `aq --json task create ... | jq -r .data.created` returns the new
+  id (design §4.2.1). Switching the runner over is bookkeeping, not a gap.
 - `gate_list` / `explain_task` / `list_agents` carry codegen-only input
   schemas, so their auto-generated Click commands take no options.
 - `agents.state` has no public reader at all — see S2 above.
