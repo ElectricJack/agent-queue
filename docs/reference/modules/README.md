@@ -30,7 +30,7 @@ own modules; this page is only the index.
 | [`cli.md`](cli.md) | `cli` | 94 | — | `reference/cli/README.md`, `reference/cli/agent-tools.md`, `reference/cli/contracts.md`, `reference/cli/prime.md` |
 | `api.md` | `api` | 51 | 1442 | `reference/api/README.md`, `reference/api/models.md`, `reference/api/python-client.md`, `reference/api/typescript-client.md` |
 | `dashboard.md` | `dashboard` | 258 | — | `guides/dashboard.md` |
-| `database.md` | `database` | 61 | — | `reference/database/README.md`, `reference/database/queries.md` |
+| [`database.md`](database.md) | `database` | 61 | — | `reference/database/README.md`, `reference/database/tables.md`, `reference/database/queries.md`, `reference/database/migrations.md`, `reference/database/data-lifecycle.md` |
 | `vault.md` | `vault` | 19 | — | `concepts/configuration-and-vault.md`, `reference/configuration.md` |
 | `providers.md` | `providers` | 22 | — | `concepts/providers.md` |
 | `plugins.md` | `plugins` | 24 | — | `guides/plugins-and-mcp.md` |

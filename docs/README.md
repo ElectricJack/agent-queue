@@ -92,7 +92,7 @@ Look-up material: exhaustive, terse, and generated from source where it can be.
 | [CLI reference](reference/cli/README.md) | Every `aq` command group, its flags and its exit semantics. |
 | `docs/reference/api/README.md` — **planned** | REST endpoints, WebSocket events and the two generated clients. |
 | `docs/reference/configuration.md` — **planned** | Every configuration key, its default and when it is read. |
-| `docs/reference/database/README.md` — **planned** | Tables, query modules and data lifecycle. |
+| [Database reference](reference/database/README.md) | Tables, query modules, migrations and data lifecycle. |
 | [CLI command inventory](reference/cli-command-inventory.md) | Generated list of the current command surface. |
 | [Profile and class reference](reference/profiles-and-classes.md) | Every agent-profile and intelligence-class field, and the override precedence. |
 
