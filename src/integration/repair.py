@@ -914,6 +914,141 @@ class RepairService:
             now=observed_at, after=after, limit=limit
         )
 
+    async def resume_root_collection(
+        self, operation_id: str, batch_id: str, revision: int, candidate_sha: str
+    ) -> bool:
+        """Return an unclaimed debug reservation to its root collector.
+
+        This is intentionally only a continuation after exact green CI has
+        been persisted.  A stage-one delegate that is merely reserved has no
+        writer to hand off from, but leaving it as branch owner prevents the
+        collector from publishing/promoting that proved candidate.  Attached
+        (or even assigned) delegates are left alone: their writer authority is
+        never taken as a side effect of CI observation.
+        """
+        transition = None
+        async with self.db.immediate() as conn:
+            batch = (
+                await conn.execute(
+                    select(integration_batches)
+                    .where(integration_batches.c.id == batch_id)
+                    .with_for_update()
+                )
+            ).mappings().one_or_none()
+            if batch is None:
+                return False
+            await self.db.lock_hierarchy_project(conn, batch["project_id"])
+            operation = (
+                await conn.execute(
+                    select(integration_repair_operations)
+                    .where(
+                        integration_repair_operations.c.id == operation_id,
+                        integration_repair_operations.c.batch_id == batch_id,
+                        integration_repair_operations.c.episode_id == batch_id,
+                        integration_repair_operations.c.target_kind == "batch",
+                        integration_repair_operations.c.state == "escalated",
+                        integration_repair_operations.c.active_stage == 1,
+                    )
+                    .with_for_update()
+                )
+            ).mappings().one_or_none()
+            candidate = (
+                await conn.execute(
+                    select(integration_candidate_revisions)
+                    .where(
+                        integration_candidate_revisions.c.batch_id == batch_id,
+                        integration_candidate_revisions.c.revision == revision,
+                    )
+                    .with_for_update()
+                )
+            ).mappings().one_or_none()
+            stage = None
+            if operation is not None:
+                stage = (
+                    await conn.execute(
+                        select(integration_repair_stages)
+                        .where(
+                            integration_repair_stages.c.operation_id == operation_id,
+                            integration_repair_stages.c.ordinal == 1,
+                        )
+                        .with_for_update()
+                    )
+                ).mappings().one_or_none()
+            if (
+                operation is None
+                or candidate is None
+                or stage is None
+                or int(batch["current_revision"]) != revision
+                or batch["lifecycle"] != "testing"
+                or candidate["head_sha"] != candidate_sha
+                or candidate["state"] != "green"
+                or candidate["ci_evidence_id"] is None
+                or batch["tested_candidate_sha"] != candidate_sha
+                or batch["ci_evidence_id"] != candidate["ci_evidence_id"]
+                or stage["state"] != "awaiting_completion"
+                or stage["current_subject"] != self._batch_subject(candidate)
+                or stage["success_subject"] != stage["current_subject"]
+                or stage["success_evidence_id"] != candidate["ci_evidence_id"]
+                or not stage["repair_task_id"]
+                or stage["writer_kind"] != "repair_delegate"
+            ):
+                return False
+            target = BranchKey(
+                repository_id=batch["repository_id"], branch=batch["integration_branch"]
+            )
+            owner = await self._ownership._locked_row(conn, target)
+            live_mutation = (
+                await conn.execute(
+                    select(integration_candidate_ref_mutations.c.id).where(
+                        integration_candidate_ref_mutations.c.repository_id == target.repository_id,
+                        integration_candidate_ref_mutations.c.branch == target.branch,
+                        integration_candidate_ref_mutations.c.state == "reserved",
+                    )
+                )
+            ).scalar_one_or_none()
+            task = (
+                await conn.execute(
+                    select(tasks)
+                    .where(tasks.c.id == stage["repair_task_id"])
+                    .with_for_update()
+                )
+            ).mappings().one_or_none()
+            if (
+                owner is None
+                or live_mutation is not None
+                or owner["owner_id"] != stage["repair_task_id"]
+                or owner["owner_role"] != "repair"
+                or owner["handoff_state"] != "reserved"
+                or owner["session_id"] is not None
+                or owner["workspace_id"] is not None
+                or task is None
+                or task["project_id"] != batch["project_id"]
+                or task["status"] not in {TaskStatus.PAUSED.value, TaskStatus.READY.value}
+                or task["assigned_agent_id"] is not None
+            ):
+                return False
+            if task["status"] == TaskStatus.READY.value:
+                transition = await self.db._apply_transition(
+                    conn,
+                    task["id"],
+                    TaskStatus.PAUSED,
+                    context="integration_candidate_ci_collector_resume",
+                    _manual_pause_control=True,
+                    assigned_agent_id=None,
+                )
+            await self._ownership._claim_released(
+                conn,
+                owner,
+                target,
+                operation_id,
+                "collector",
+            )
+        if transition is not None:
+            await self.db.log_blocked_flips(transition.flipped)
+            await self.db._notify_settled(transition.settled)
+            await self.db._notify_ready(transition.ready)
+        return True
+
     async def adopt_batch_repair_on(
         self,
         conn,

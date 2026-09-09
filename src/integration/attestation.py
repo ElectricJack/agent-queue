@@ -41,6 +41,7 @@ from src.integration.ci import (
     select_trusted_attestation,
 )
 from src.integration.main_promotion import RootAttestationProof, RootAttestationSubject
+from src.integration.repair import RepairService
 from src.integration.outbox import enqueue_integration_event
 
 
@@ -246,6 +247,12 @@ class IntegrationAttestationService:
                             tuple(observed.get("evidence_ids") or ()),
                         )
                     return observed
+                await RepairService(self.db, clock=self.clock).resume_root_collection(
+                    candidate.operation_id,
+                    candidate.batch_id,
+                    candidate.revision,
+                    candidate.candidate_sha,
+                )
             root_subject = RootAttestationSubject(
                 repository_numeric_id=pending["repository_numeric_id"],
                 repository_full_name=pending["repository_full_name"],

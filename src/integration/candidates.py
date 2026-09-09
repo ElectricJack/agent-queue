@@ -2028,6 +2028,29 @@ class CandidateService:
                     "expires_at": now + _MUTATION_CLAIM_SECONDS,
                 }
         if any(row[key] != value for key, value in identity.items()):
+            # A completed candidate ref write is immutable evidence, not a
+            # lease held by the fence that originally performed it.  A timeout
+            # can advance the repair stage before a live CI result is observed;
+            # once the collector resumes under its newer fence, retain an
+            # already remote-proved publication instead of trying to recreate
+            # its reservation with the new stage/fence identity.
+            adopted_fields = {
+                "operation_stage",
+                "branch_owner_id",
+                "branch_owner_role",
+                "branch_fence_token",
+            }
+            immutable_matches = all(
+                row[key] == value
+                for key, value in identity.items()
+                if key not in adopted_fields
+            )
+            if (
+                immutable_matches
+                and row["state"] == "applied"
+                and row["remote_sha"] == row["desired_sha"] == identity["desired_sha"]
+            ):
+                return dict(row), inserted
             raise CandidateStaleAuthority("candidate mutation identity changed")
         return dict(row), inserted
 
