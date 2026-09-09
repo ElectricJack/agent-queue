@@ -66,6 +66,7 @@ class DatabaseBackend(Protocol):
         *,
         author_kind: str,
         author_id: str,
+        kind: str = "note",
         fence: dict | None = None,
     ) -> dict: ...
 

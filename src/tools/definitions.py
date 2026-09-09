@@ -4506,6 +4506,7 @@ _ALL_TOOL_DEFINITIONS = [
             "properties": {
                 "task_id": {"type": "string", "description": "Task id to comment on."},
                 "body": {"type": "string", "minLength": 1, "maxLength": 16000, "description": "Comment text (not blank; at most 16000 characters)."},
+                "kind": {"type": "string", "enum": ["note", "progress"], "default": "note", "description": "'progress' records that work actually advanced (a milestone, a green test run, a pushed PR) and is the only comment kind the hourly digest reports; 'note' is ordinary history — a question, a plan, chatter."},
                 "claim_epoch": {"type": "integer", "description": "Current claim epoch; required for pool workers."},
             },
             "required": ["task_id", "body"],

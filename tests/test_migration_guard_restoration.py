@@ -7,6 +7,7 @@ from sqlalchemy import text
 from migrations.integration_guards import TRIGGERS, install_integration_guards
 from migrations.versions.a00000000001_squashed_baseline import LEGACY_HEAD
 from src.database.engine import create_postgres_engine, run_schema_setup
+from src.database.schema_key import alembic_head_revisions
 from src.database.tables import metadata
 from tests.pg_dsn import create_scratch_database, ensure_worker_postgres_dsn
 
@@ -56,7 +57,9 @@ async def test_existing_database_receives_guard_repair(initial_revision):
 
             await run_schema_setup(engine)
 
-            assert await raw.fetchval("SELECT version_num FROM alembic_version") == "a00000000002"
+            assert await raw.fetchval("SELECT version_num FROM alembic_version") == (
+                alembic_head_revisions()[0]
+            )
             installed = {
                 (row["tgname"], row["relname"])
                 for row in await raw.fetch(

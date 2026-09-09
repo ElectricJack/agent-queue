@@ -39907,6 +39907,15 @@
             "type": "string",
             "title": "Author Id"
           },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "note",
+              "progress"
+            ],
+            "title": "Kind",
+            "default": "note"
+          },
           "created_at": {
             "type": "number",
             "title": "Created At"
@@ -39998,6 +40007,12 @@
             "type": "string",
             "title": "Body",
             "description": "Comment text (not blank; at most 16000 characters)."
+          },
+          "kind": {
+            "type": "string",
+            "title": "Kind",
+            "description": "'progress' records that work actually advanced (a milestone, a green test run, a pushed PR) and is the only comment kind the hourly digest reports; 'note' is ordinary history \u2014 a question, a plan, chatter.",
+            "default": "note"
           },
           "claim_epoch": {
             "anyOf": [

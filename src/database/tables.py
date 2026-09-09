@@ -375,10 +375,17 @@ task_comments = Table(
     Column("body", Text, nullable=False),
     Column("author_kind", Text, nullable=False),
     Column("author_id", Text, nullable=False),
+    # What the comment *is*, not merely who wrote it. ``note`` is ordinary
+    # history — a question, a plan, chatter; ``progress`` is the author
+    # asserting that recorded work advanced. Only the latter is meaningful
+    # progress for the hourly digest (discord-simplification §8), so an
+    # unlabelled comment can never make a digest window eligible.
+    Column("kind", Text, nullable=False, server_default="note"),
     Column("created_at", Float, nullable=False),
     CheckConstraint(
         "author_kind IN ('user','agent','supervisor')", name="ck_task_comment_author_kind"
     ),
+    CheckConstraint("kind IN ('note','progress')", name="ck_task_comment_kind"),
     CheckConstraint("length(body) BETWEEN 1 AND 16000", name="ck_task_comment_body_length"),
     Index("idx_task_comments_task_created", "task_id", "created_at", "id"),
     Index("idx_task_comments_project_created", "task_id", "project_id", "created_at", "id"),

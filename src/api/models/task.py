@@ -175,6 +175,7 @@ class TaskComment(BaseModel):
     body: str
     author_kind: Literal["user", "agent", "supervisor"]
     author_id: str
+    kind: Literal["note", "progress"] = "note"
     created_at: float
 
 
