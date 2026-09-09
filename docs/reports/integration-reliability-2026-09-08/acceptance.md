@@ -1094,3 +1094,23 @@ additional unlocked-but-stale attachment state, recorded on fresh-rapids. The
 locked-case correction is deployed; successful live verifier recovery is NOT
 claimed. Recovery must preserve successor exclusion and avoid any checkout
 mutation in an unlocked workspace.
+
+### Unlocked verifier rollout and historical reuse evidence
+
+886b8d92 adds detached-only recovery for unlocked retired verifier attachments,
+with atomic workspace and newer same-workdir session revalidation. All60 handoff
+tests passed28.94s; isolated swarm3246e5f381 passed8/8 and cleaned daemon1519314.
+Source published on the stopped-verifier operator branch and loaded PID1548297.
+
+Live transfer remains busy for a now-confirmed reason: two newer sessions used
+slot0 after verifierda613545: d5d05053 (nimble-flare) and37ef780c (solid-delta),
+both agent-a4980eeb0ef0 and currently stopped. The workspace is unlocked, clean,
+and detached at current remote maine1390040. Refusal protects historical reuse;
+next recovery must confirm each exact later provider instance and atomically
+reject unseen/new/live successors, while preserving all successor records.
+Recorded on fresh-rapids. No live recovery success claimed.
+
+Fleet-harbor a1209069 was reopened despite136 functional+2 migration tests:
+its rejected-delegate exemption could exempt a newer owner of the same task
+using an older stopped reservation. Also missing fresh remote evidence for
+rejection. Source was reviewed but neither merged nor deployed.
