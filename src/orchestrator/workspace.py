@@ -15,6 +15,7 @@ from src.integration.ownership import (
     StaleFence,
 )
 from src.models import (
+    AgentState,
     KIND_MODE_WORKTREE,
     RepoSourceType,
     Task,
@@ -1162,6 +1163,16 @@ class WorkspaceMixin:
         if not session_id or not workspace_id:
             return False
         session = await self.db.get_session(session_id)
+        # A pool worker normally proves its own close by detaching the
+        # checkout while its claim is still live. Public transfer can also
+        # encounter the teardown race: the process is already stopped, but
+        # its expired claim and RETIRED worker still pin the owner row. Route
+        # both pool forms through their dedicated fenced proof rather than
+        # treating either as a push-model writer.
+        if session is not None and session.lifecycle == "pool":
+            if session.state == "stopped" and session.desired_state == "stopped":
+                return await self.aconfirm_stopped_integration_pool_owner_handoff(owner)
+            return await self.aconfirm_integration_pool_owner_handoff(owner)
         workspace = await self.db.get_workspace(workspace_id)
         repository = await self.db.get_repo(str(owner.get("repository_id") or ""))
         task = await self.db.get_task(session.task_id) if session and session.task_id else None
@@ -1248,6 +1259,123 @@ class WorkspaceMixin:
             return False
         released = await self.db.get_workspace(workspace.id)
         return released is not None and released.locked_by_task_id is None
+
+    async def aconfirm_stopped_integration_pool_owner_handoff(self, owner: dict) -> bool:
+        """Recover one stale stopped pool writer without changing its requeued task.
+
+        This is intentionally narrower than the live pool close confirmer:
+        it accepts only the exact expired attachment left by a confirmed pool
+        teardown, and refuses any agent/session/workspace reuse. The task's
+        current READY claim epoch is evidence of a successor attempt, not a
+        value to restore or overwrite.
+        """
+        session_id = owner.get("session_id")
+        workspace_id = owner.get("workspace_id")
+        from src.orchestrator.workspace_attachments import (
+            integration_handoff_release_is_confirmed,
+            mark_stopped_integration_pool_handoff_released,
+        )
+
+        if await integration_handoff_release_is_confirmed(self.db, owner):
+            return True
+        if not session_id or not workspace_id:
+            return False
+        session = await self.db.get_session(session_id)
+        workspace = await self.db.get_workspace(workspace_id)
+        repository = await self.db.get_repo(str(owner.get("repository_id") or ""))
+        task = await self.db.get_task(owner.get("owner_id"))
+        current_owner = await BranchOwnership(self.db).get_owner(
+            BranchKey(
+                repository_id=str(owner.get("repository_id") or ""),
+                branch=str(owner.get("ref") or ""),
+            )
+        )
+        agent = await self.db.get_agent(session.agent_id) if session and session.agent_id else None
+        newer_session = (
+            any(
+                candidate.id != session.id and candidate.started_at >= session.started_at
+                for candidate in await self.db.list_sessions(agent_id=session.agent_id)
+            )
+            if session and session.agent_id
+            else True
+        )
+        if (
+            session is None
+            or workspace is None
+            or repository is None
+            or task is None
+            or agent is None
+            or current_owner is None
+            or newer_session
+            or current_owner["fence_token"] != owner.get("fence_token")
+            or current_owner["owner_id"] != owner.get("owner_id")
+            or current_owner["owner_role"] != owner.get("owner_role")
+            or current_owner["handoff_state"] != "handoff_pending"
+            or current_owner["session_id"] != session_id
+            or current_owner["workspace_id"] != workspace_id
+            or session.lifecycle != "pool"
+            or session.state != "stopped"
+            or session.desired_state != "stopped"
+            or owner.get("owner_role") not in {"worker", "repair"}
+            or session.task_id != owner.get("owner_id")
+            or workspace.locked_by_task_id != owner.get("owner_id")
+            or workspace.locked_by_agent_id != session.agent_id
+            or workspace.project_id != repository.project_id
+            or session.project_id != repository.project_id
+            or task.project_id != repository.project_id
+            or task.repo_id != repository.id
+            or task.branch_name != owner.get("ref")
+            or task.status != TaskStatus.READY
+            or task.assigned_agent_id is not None
+            or agent.state != AgentState.RETIRED
+            or agent.current_task_id != owner.get("owner_id")
+            or os.path.realpath(session.work_dir) != os.path.realpath(workspace.workspace_path)
+        ):
+            return False
+        try:
+            provider = self.session_providers.create(session.provider, self.config)
+            handle = SessionHandle(
+                name=session.name,
+                provider=session.provider,
+                instance_token=session.instance_token,
+            )
+            if not await provider.confirm_stopped(handle):
+                return False
+            from src.orchestrator.workspace_attachments import (
+                detach_slot_for_integration_handoff,
+                detach_workspace_for_integration_handoff,
+            )
+
+            if workspace.is_slot:
+                detached = await detach_slot_for_integration_handoff(
+                    self.db,
+                    self.git,
+                    self._git_mutex,
+                    workspace,
+                    expected_branch=str(owner["ref"]),
+                )
+            else:
+                detached = await detach_workspace_for_integration_handoff(
+                    self.git,
+                    self._git_mutex,
+                    workspace,
+                    expected_branch=str(owner["ref"]),
+                )
+            if not detached:
+                return False
+        except Exception:
+            logger.warning(
+                "Could not prove stopped pool integration writer %s detached",
+                session_id,
+                exc_info=True,
+            )
+            return False
+        return await mark_stopped_integration_pool_handoff_released(
+            self.db,
+            owner,
+            workspace=workspace,
+            session_instance_token=session.instance_token,
+        )
 
     async def aconfirm_integration_pool_owner_handoff(self, owner: dict) -> bool:
         """Detach a **pool** writer's checkout and release its exact attachment.
