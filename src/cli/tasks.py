@@ -165,7 +165,11 @@ def _create_task_graph(
     "--profile",
     "profile_id",
     default=None,
-    help="Agent profile id (e.g. claude-opus, claude-sonnet, claude-code)",
+    help=(
+        "Agent profile id; omit to use the project default. "
+        "Run `aq agent list-profiles` for the ids this install has "
+        "(shipped worker ladder: worker-<tier>-<level>-<provider>)."
+    ),
 )
 @click.option(
     "--intelligence-class",
