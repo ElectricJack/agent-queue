@@ -530,7 +530,7 @@ class WorkspaceMixin:
         return workspace
 
     async def _hierarchy_origin_and_fence(
-        self, task: Task, project
+        self, task: Task, project, *, preparing_session_id=None, preparing_workspace_id=None
     ) -> tuple[dict, Fence, str]:
         """Resolve exact origin/target and the server-derived current role."""
         repository_id = getattr(project, "integration_repository_id", None)
@@ -578,7 +578,14 @@ class WorkspaceMixin:
                 owner is None
                 or owner["owner_id"] != task.id
                 or owner["owner_role"] != "repair"
-                or owner["handoff_state"] != "reserved"
+                or not (
+                    owner["handoff_state"] == "reserved"
+                    or (owner["handoff_state"] == "attached"
+                        and preparing_session_id is not None
+                        and preparing_workspace_id is not None
+                        and owner["session_id"] == preparing_session_id
+                        and owner["workspace_id"] == preparing_workspace_id)
+                )
             ):
                 raise BranchBusy("repair branch is not reserved by this delegate")
             return (
@@ -625,7 +632,14 @@ class WorkspaceMixin:
             owner is None
             or owner["owner_id"] != task.id
             or role != expected_role
-            or owner["handoff_state"] != "reserved"
+            or not (
+                owner["handoff_state"] == "reserved"
+                or (owner["handoff_state"] == "attached"
+                    and preparing_session_id is not None
+                    and preparing_workspace_id is not None
+                    and owner["session_id"] == preparing_session_id
+                    and owner["workspace_id"] == preparing_workspace_id)
+            )
         ):
             raise BranchBusy("canonical branch is not reserved by this task")
         if role == "verifier":
