@@ -482,6 +482,8 @@ nowhere else.
 
 Quarantining failures:
 
+- advertised capacity cannot be acquired (including a missing `project-repo`
+  kind or worktree provisioning that produced no usable slot);
 - the configured session provider cannot be constructed;
 - the profile's `harness` is unknown to the registry;
 - the workspace resolved to the **base checkout** (a pool session may not run
@@ -492,11 +494,12 @@ Quarantining failures:
 - the session started but its `sessions` row could not be written;
 - any other exception out of acquisition, token mint, spec build or launch.
 
-**Starvation is not quarantine.** "no `project-repo` workspace kind" and "no
-free workspace" return without setting a backoff, because the next tick may
-genuinely find a workspace freed. A pool that is flat at zero with no
-`quarantined_reason` is starved, not broken — look at workspaces, not at the
-harness:
+Zero measured workspace capacity prevents placement without a backoff. If
+capacity was advertised but acquisition fails, the key backs off for 60 seconds
+so another project can use the next launch opportunity. Disabled worktree slots
+occupy their indices but provide no capacity; they never count as free slots or
+prevent growth into an unused index below the project cap. Preserved slots stay
+disabled until explicitly recovered. Inspect the inventory with:
 
 ```bash
 aq project list-workspaces --project-id agent-queue   # who holds what

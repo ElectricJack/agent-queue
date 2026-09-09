@@ -280,6 +280,14 @@ class TestWorktreeCapacityCount:
         # cap 2 with one slot busy -> 1 slot of capacity, + the vault row.
         assert await db.count_available_workspaces("p1", worktree_slot_cap=2) == 2
 
+    @pytest.mark.parametrize("cap, expected", [(1, 1), (2, 2), (3, 3)])
+    async def test_disabled_slot_consumes_its_index(self, db, cap, expected):
+        await _worktree_project(db)
+        slots = await db.list_slots_for_base("ws-base")
+        await db.update_workspace(slots[0].id, enabled=False)
+        # Disabled slots cannot be acquired or recreated; the vault adds one.
+        assert await db.count_available_workspaces("p1", worktree_slot_cap=cap) == expected
+
     async def test_capacity_never_goes_negative(self, db):
         """Slots above a shrunk cap (not yet reaped) cannot subtract."""
         await _worktree_project(db)

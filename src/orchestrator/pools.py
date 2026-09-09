@@ -67,7 +67,7 @@ _LIVE_STATES = ("starting", "running", "draining")
 #: (seconds).  A bad harness or a raised exception from acquisition/mint is
 #: not going to self-heal between now and the next 5s tick, so retrying
 #: immediately just creates and deletes an agent row every cycle.  A starved
-#: workspace pool does *not* quarantine — see ``_launch_pool_session``.
+#: workspace acquisition failure also backs off so other projects can launch.
 LAUNCH_BACKOFF = 60.0
 
 
@@ -606,9 +606,10 @@ class PoolsMixin:
         the workspace, delete the agent, revoke the token if one was
         minted).  Returns the new session id, or ``None`` on any failure.
 
-        A starved pool (no workspace kind, no free workspace) is expected,
-        not exceptional, and does not quarantine the key — the next tick's
-        demand may simply find a workspace freed.  Every other failure
+        A failed workspace acquisition backs off the project/profile key.
+        Advertised lazy capacity can fail to materialize; retrying the same
+        project every tick would starve other projects of the start budget.
+        Every other failure
         (bad harness, launch crash, a raised exception from acquisition or
         the token mint) quarantines ``(project_id, profile_id)`` for
         :data:`LAUNCH_BACKOFF` seconds so a persistently broken pool does
@@ -710,7 +711,7 @@ class PoolsMixin:
         try:
             kind = await self.db.resolve_workspace_kind(project.id, "project-repo")
             if kind is None:
-                await _rollback("starved: no project-repo workspace kind", quarantine=False)
+                await _rollback("starved: no project-repo workspace kind", quarantine=True)
                 return None
 
             worktrees_enabled = self._worktrees_enabled()
@@ -733,7 +734,7 @@ class PoolsMixin:
                 worktree_slot_cap=(self._project_slot_cap(project) if worktrees_enabled else None),
             )
             if workspace is None:
-                await _rollback("starved: no free workspace", quarantine=False)
+                await _rollback("starved: no free workspace", quarantine=True)
                 return None
 
             work_dir = workspace.workspace_path

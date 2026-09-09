@@ -330,6 +330,34 @@ class TestReconcilePools:
         until = orch._pool_quarantine.get((PROJECT_ID, "worker"))
         assert until is not None and until > time.time()
 
+    async def test_failed_acquisition_yields_next_tick_to_other_project(self, orch, db, tmp_path):
+        orch.config.swarm.max_starts_per_tick = 1
+        await db.create_project(Project(id="other", name="other"))
+        await db.create_workspace(Workspace(
+            id="other-ws", project_id="other", workspace_path=str(tmp_path / "other"),
+            source_type=RepoSourceType.LINK, kind_id="project-repo",
+        ))
+        for i in range(3):
+            await ready(db, f"backlog-{i}")
+        await db.create_task(Task(
+            id="other-task", project_id="other", title="other", description="",
+            status=TaskStatus.READY, profile_id="worker",
+        ))
+        acquire = db.acquire_one_unlocked
+
+        async def fail_busy_project(**kwargs):
+            if kwargs["project_id"] == PROJECT_ID:
+                return None
+            return await acquire(**kwargs)
+
+        db.acquire_one_unlocked = fail_busy_project
+        await orch._reconcile_pools()
+        assert await db.list_sessions(lifecycle="pool") == []
+        await orch._reconcile_pools()
+        sessions = await db.list_sessions(lifecycle="pool")
+        assert len(sessions) == 1
+        assert sessions[0].project_id == "other"
+
     async def test_worktree_mode_grows_a_slot_and_starts(self, orch, db, tmp_path):
         orch.config.worktrees.enabled = True
         orch._worktree_slot_manager = _FakeSlotManager(db)
