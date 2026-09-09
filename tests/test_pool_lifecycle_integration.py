@@ -124,6 +124,11 @@ async def orch(db, config):
     # than the constructor's uninitialized production adapter.
     o.session_reconciler.db = db
     o.git = MagicMock()
+    # A pool claim now records ``tasks.branch_name`` from the slot reset (see
+    # ``_prepare_and_activate_locked``), so ``task_close`` reaches the
+    # branch-tip capture in ``session_commands`` — which awaits the git
+    # adapter.  A bare ``MagicMock`` attribute is not awaitable.
+    o.git.arev_parse = AsyncMock(return_value="c" * 40)
     # Pool launch installs the managed git excludes before it hands a
     # checkout to a session (src/orchestrator/pools.py), which reaches for
     # the real GitManager; these fixtures have no checkout.  Same stub as

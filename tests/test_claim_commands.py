@@ -662,6 +662,58 @@ class TestClaim:
         res = await scoped(handler, sid)._cmd_task_claim({"next": True, "wait": 100})
         assert res["result"] == "no_ready_work"
 
+    async def test_development_pool_claim_records_the_delivery_branch(
+        self, handler, db, tmp_path
+    ):
+        """A development-mode claim records the branch the slot reset produced.
+
+        Nothing else writes ``tasks.branch_name`` on this path, and both the
+        development close pipeline and development batch collection require it,
+        so a task claimed without it could never close pass or be delivered.
+        """
+        await db.create_repo(
+            RepoConfig(
+                id="repo",
+                project_id=PROJECT_ID,
+                source_type=RepoSourceType.LINK,
+                source_path=str(tmp_path),
+            )
+        )
+        await db.update_project(
+            PROJECT_ID,
+            hierarchical_integration_mode="development",
+            integration_repository_id="repo",
+        )
+        await mktask(db, "t1", profile_id="worker", repo_id="repo")
+        assert (await db.get_task("t1")).branch_name is None
+        sid, _wd = await pool_session(db, tmp_path)
+        reset = handler.orchestrator._worktree_slots.return_value.reset_slot_for_task
+        reset.return_value = "aq/t1"
+
+        result = await scoped(handler, sid)._cmd_task_claim({"next": True})
+
+        assert result["result"] == "claimed"
+        assert (await db.get_task("t1")).branch_name == "aq/t1"
+
+    async def test_claim_never_overwrites_an_already_recorded_branch(
+        self, handler, db, tmp_path
+    ):
+        """A recorded name belongs to whoever reserved it, not to the reset.
+
+        Hierarchy and train reserve ``branch_name`` under a branch-ownership
+        fence; the claim path must not replace it with what it observed in a
+        checkout.
+        """
+        await self._hierarchy_task(db, tmp_path)
+        sid, _wd = await pool_session(db, tmp_path)
+        reset = handler.orchestrator._worktree_slots.return_value.reset_slot_for_task
+        reset.return_value = "aq/some-other-branch"
+
+        result = await scoped(handler, sid)._cmd_task_claim({"next": True})
+
+        assert result["result"] == "claimed"
+        assert (await db.get_task("child")).branch_name == "aq/child"
+
     async def test_prepare_failed_releases_and_reports(self, handler, db, tmp_path):
         await mktask(db, "t1", profile_id="worker")
         sid, wd = await pool_session(db, tmp_path)

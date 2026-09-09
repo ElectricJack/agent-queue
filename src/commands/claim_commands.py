@@ -682,6 +682,7 @@ class ClaimCommandsMixin:
         epoch = task.claim_epoch
         hierarchy_attached = False
         fresh = None
+        reset_branch: str | None = None
         try:
             if slot is None:
                 slot = await self.db.get_workspace_for_agent(row.agent_id)
@@ -694,10 +695,11 @@ class ClaimCommandsMixin:
             }
 
             async def prepare_and_activate(*, conn=None, base_branch=None, target_branch=None):
+                nonlocal reset_branch
                 reset_kwargs = {"base_branch": base_branch} if base_branch else {}
                 if target_branch is not None:
                     reset_kwargs["target_branch"] = target_branch
-                await self.orchestrator._worktree_slots().reset_slot_for_task(
+                reset_branch = await self.orchestrator._worktree_slots().reset_slot_for_task(
                     slot, task, **reset_kwargs
                 )
                 # Writing the claim file joins the same guard as the slot
@@ -756,6 +758,23 @@ class ClaimCommandsMixin:
                     )
             else:
                 fresh = await prepare_and_activate()
+                # The slot reset is the moment the task acquires a delivery
+                # branch, so record the branch it actually landed on the way
+                # the push path does (``WorkspaceMixin._prepare_worktree_slot``).
+                # Nothing else wrote it here: hierarchy and train reserve the
+                # name under a fence in
+                # ``HierarchyIntegration._ensure_origin_chain``, but a
+                # ``development`` project takes this branch and was left with
+                # ``tasks.branch_name`` NULL — which refuses every close in
+                # ``_run_completion_pipeline``'s development branch ("task has
+                # no recorded delivery branch") *and* hides the completed task
+                # from development batch collection, with no worker-side
+                # remedy.  Fill only, and only here: a recorded name belongs to
+                # whichever authority reserved it, and the fenced paths above
+                # hold an open transaction this write must not join.
+                if reset_branch and not task.branch_name:
+                    await self.db.update_task(task.id, branch_name=reset_branch)
+                    task.branch_name = reset_branch
         except Exception as exc:
             logger.warning("claim %s/%s: prepare failed: %s", session.id, task.id, exc)
             remove_claim_file(row.work_dir)
