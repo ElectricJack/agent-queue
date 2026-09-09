@@ -675,3 +675,28 @@ This is live evidence that the contained-reviewed-head guard avoids replay and
 keeps the candidate unchanged when all members are already present. Old tested
 SHA and CI evidence were cleared, as required; new-revision CI/promotion remains
 pending. The batch is not counted as a second feature delivery.
+
+
+### 2026-09-09 — exact published follow-through rejected after assertions ran
+
+Tested grand-vault PR553 exact f65fd8da in a temporary detached worktree with
+/tmp/aq_goal_test.py against a unique disposable database. Five focused modules
+(routing, pool lifecycle, integration repair, promotion, sealing) produced
+41failed/139passed in46.09s. Evidence /tmp/aq-grand-vault-exact-tests.log.
+The worker and reviewer had run collection/lint but no runtime DB assertions.
+Failures include absent recover_stopped_integration_pool_claim (f8072ecb), absent
+RepairService.continue_current_parent_conflict_on (05beb8b1), missing trigger_id,
+and incorrect stale/invariant_error outcomes. Both missing methods exist in
+reviewed prerequisite swift-journey475143b0. Reopened grand-vault with concrete
+feedback, explicit authorization to merge that exact prerequisite without
+rewriting its reviewed f65fd8da ancestry, and a blocks dependency on swift-journey.
+Fresh focused and explicit-marker migration tests and fresh review are required.
+Commented on prior reviewer sound-dune that its approval is insufficient for the
+corrected head. Detached review checkout was clean and removed after testing;
+its private test database was cleaned by the helper.
+
+wise-nexus is actively assigned to session37b718e5-177b-4cbd-b675-15fce1ac2ccd.
+Matter rebuilt revision1 has live CI34339238909 on7a39e65a; still in progress at
+last observation. CLI parent collector is running its14-scenario acceptance after
+fixing a real cross-child CLI list-envelope compatibility failure. No new main
+or epic delivery is claimed from these intermediate observations.
