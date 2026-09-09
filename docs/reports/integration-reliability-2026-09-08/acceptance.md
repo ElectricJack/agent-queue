@@ -470,3 +470,16 @@ df2c4389 from origin/aq/operator-pr-lock-20260909. Public integration flush
 returned coalesced for integration-sweep:agent-queue:52 instead of hanging.
 New deep-high and standard-high pool sessions started automatically afterward;
 root repair claim and final candidate delivery are still being monitored.
+
+Root repair is now IN_PROGRESS, claimed by agent-87428fad3069 in new session
+70bc7f86-7d9d-43aa-9dd7-f77ecebea0ed. Worker confirms preservede1390040 and
+exact-head CI34325625354 and is closing its stage. Keen-harbor.12 completed
+b98a5287/PR549 with worker-reported14/14 real-daemon scenarios in332.74s;
+keen-harbor.16 also completed. These are task close evidence, not final delivery.
+
+Sharp-beacon published01acdcba with additive merges preserving its reviewed
+heads and a legacy expected-target recovery path. Further operator review found
+its helper mutates the legacy intent BEFORE checking competing-owner ambiguity;
+a refused resume could therefore commit cleared uncertainty/evidence. Reopened
+through public feedback requiring full-row atomic refusal and composition with
+current parent/delegate recovery. Its two new migrations remain unapplied.
