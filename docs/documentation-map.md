@@ -177,24 +177,41 @@ component page and one category:
 | `generated` | 1447 | Resource-family coverage plus a regeneration command. |
 | `prompt` | 49 | Explained where its behaviour is explained, as shipped content. |
 | `supporting` | 80 | Purpose, inputs, side effects and invocation, in a contributing page. |
-| `documentation` | 445 | A disposition recorded by the `legacy` ticket. |
-| `test` | 908 | Covered as a layout and a set of markers, not file by file. |
+| `documentation` | 469 | A disposition recorded by the `legacy` ticket. |
+| `test` | 910 | Covered as a layout and a set of markers, not file by file. |
 
 Counts are from the manifest at its recorded `source_commit`; regenerate rather
 than trusting the numbers above if the tree has moved.
 
-Regenerate and check the manifest with:
+### Who runs which half
+
+The script has two halves, and they have different owners:
 
 ```bash
-python3 docs/plans/documentation-overhaul/refresh_inventory.py          # rewrite
-python3 docs/plans/documentation-overhaul/refresh_inventory.py --check  # verify
+python3 docs/plans/documentation-overhaul/refresh_inventory.py --check
 ```
 
-`--check` fails when a tracked path matches no ownership rule, or when the
-committed JSON no longer matches the tree. That failure is the answer to "did
+**Coverage.** Every author runs this before pushing. It fails only when a
+tracked path matches no ownership rule. That failure is the answer to "did
 somebody add a module nobody documents": add a rule to `RULES` in that script
-naming the owning shard, then regenerate. There is deliberately no catch-all
-rule — an unmatched path is an error, not a default assignment.
+naming the owning shard. There is deliberately no catch-all rule — an unmatched
+path is an error, not a default assignment.
+
+```bash
+python3 docs/plans/documentation-overhaul/refresh_inventory.py                    # rewrite
+python3 docs/plans/documentation-overhaul/refresh_inventory.py --check-artefacts  # gate
+```
+
+**Freshness.** The two JSON artefacts are foundation-owned — *nobody else edits
+those files while the overhaul is in flight* — so a ticket never regenerates
+them. Twenty in-flight tickets each rewriting a 3,700-entry JSON on their own
+branch would every one of them conflict at delivery. Instead the foundation /
+acceptance shard regenerates on a cadence, and `--check-artefacts` is the gate
+that says the cadence has slipped.
+
+`--check` still *tells* you when the artefacts are behind: it prints the paths
+that drifted and the shard each was assigned to, and exits 0. Seeing your new
+page in that list is confirmation it classified, not something to fix.
 
 The `reference` ticket may absorb this script into the wider documentation
 check it owns; until it does, this is the check.

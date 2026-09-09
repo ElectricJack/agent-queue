@@ -149,8 +149,15 @@ a reader can copy the command without the output.
 python3 docs/plans/documentation-overhaul/refresh_inventory.py --check
 ```
 
-That verifies every tracked path still has a documentation owner and that the
-coverage manifest matches the tree. If you added a module, it will tell you.
+That verifies every tracked path still has a documentation owner. If you added
+a module with no owning rule, it will tell you.
+
+It may also print a `note:` that the committed coverage manifest is behind the
+tree, listing your new page and the shard it was assigned to. That is
+information, not a failure — it exits 0. The two JSON artefacts are
+foundation-owned and regenerated on a cadence by the
+[acceptance gate](../documentation-map.md#who-runs-which-half)
+(`--check-artefacts`); do not regenerate them on your branch.
 
 Then re-read your own page against this list:
 

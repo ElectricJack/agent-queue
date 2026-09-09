@@ -47,7 +47,7 @@ python3 docs/plans/documentation-overhaul/refresh_inventory.py --check
 ```
 
 ```text
-ok — 3738 tracked paths assigned (791 production modules)
+ok — 3746 tracked paths assigned (791 production modules)
 ```
 
 ## Inside `src/`
