@@ -10,7 +10,6 @@ from __future__ import annotations
 
 from sqlalchemy import and_, delete, or_, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
-from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 from src.database.tables import task_dependencies, tasks
 from src.models import BLOCKING_DEP_TYPES, DepType, Task, TaskStatus
@@ -95,7 +94,7 @@ class DependencyQueryMixin:
             await self._notify_ready(result.ready)
             return None
 
-        _insert = pg_insert if self._engine.dialect.name == "postgresql" else sqlite_insert
+        _insert = pg_insert
         if conn is not None:
             await conn.execute(
                 _insert(task_dependencies)

@@ -27,11 +27,12 @@ import re
 
 import pytest
 from sqlalchemy import insert, select
-from sqlalchemy.dialects import postgresql, sqlite
+from sqlalchemy.dialects import postgresql
 from sqlalchemy.schema import CreateTable
 
 from src.database import Database
 from src.database.tables import metadata, playbook_activations, playbook_artifacts
+from tests.db_fixtures import lease_dsn
 from tests.pg_dsn import ensure_worker_postgres_dsn
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
@@ -82,20 +83,19 @@ def test_no_string_server_default_carries_its_own_quotes():
 
     assert not offenders, (
         "String server defaults that quote themselves — SQLAlchemy quotes them again, "
-        'so the emitted DDL is DEFAULT \'\'\'x\'\'\'. Drop the inner quotes ("x") or '
-        'use sa.text("\'x\'"):\n  ' + "\n  ".join(offenders)
+        "so the emitted DDL is DEFAULT '''x'''. Drop the inner quotes (\"x\") or "
+        "use sa.text(\"'x'\"):\n  " + "\n  ".join(offenders)
     )
 
 
-@pytest.mark.parametrize("dialect_factory", [sqlite.dialect, postgresql.dialect], ids=["sqlite", "postgresql"])
-def test_emitted_ddl_has_no_doubly_quoted_default(dialect_factory):
+def test_emitted_ddl_has_no_doubly_quoted_default():
     """Compile scan: no ``CREATE TABLE`` names a default that is itself a quoted literal.
 
     Catches the mistake however it is spelled — a raw string, ``sa.text``, or
     a ``DefaultClause`` — because it looks at what the database will actually
     be told.
     """
-    dialect = dialect_factory()
+    dialect = postgresql.dialect()
     offenders: list[str] = []
     for table in metadata.sorted_tables:
         ddl = str(CreateTable(table).compile(dialect=dialect))
@@ -110,19 +110,10 @@ def test_emitted_ddl_has_no_doubly_quoted_default(dialect_factory):
     )
 
 
-@pytest.fixture(params=["sqlite", "postgres"])
+@pytest.fixture
 async def db(request, tmp_path):
-    if request.param == "postgres":
-        if not POSTGRES_TEST_DSN:
-            pytest.skip("POSTGRES_TEST_DSN not set")
-        from src.database.adapters.postgresql import PostgreSQLDatabaseAdapter
-
-        database = PostgreSQLDatabaseAdapter(POSTGRES_TEST_DSN)
-        await database.initialize()
-        await database.reset_for_tests()
-    else:
-        database = Database(str(tmp_path / "string-defaults.db"))
-        await database.initialize()
+    database = Database(lease_dsn("string-defaults.db"))
+    await database.initialize()
     yield database
     await database.close()
 

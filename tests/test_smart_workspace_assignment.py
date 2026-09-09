@@ -27,6 +27,7 @@ from src.models import (
     TaskStatus,
     Workspace,
 )
+from tests.db_fixtures import lease_dsn
 
 
 # ---------------------------------------------------------------------------
@@ -118,7 +119,7 @@ class TestAcquireWorkspacePreferred:
 
     @pytest.fixture
     async def db(self, tmp_path):
-        db = Database(str(tmp_path / "test.db"))
+        db = Database(lease_dsn("test.db"))
         await db.initialize()
         # Create a project
         project = Project(
@@ -246,7 +247,7 @@ class TestTaskPreferredWorkspace:
 
     @pytest.fixture
     async def db(self, tmp_path):
-        db = Database(str(tmp_path / "test.db"))
+        db = Database(lease_dsn("test.db"))
         await db.initialize()
         project = Project(
             id="test-proj",
@@ -310,7 +311,7 @@ class TestFindMergeConflictWorkspacesCommand:
     @pytest.fixture
     async def handler_and_db(self, tmp_path):
         """Create a minimal CommandHandler with real DB and real GitManager."""
-        db = Database(str(tmp_path / "test.db"))
+        db = Database(lease_dsn("test.db"))
         await db.initialize()
 
         project = Project(
@@ -456,7 +457,7 @@ class TestCreateTaskWithPreferredWorkspace:
 
     @pytest.fixture
     async def handler_and_db(self, tmp_path):
-        db = Database(str(tmp_path / "test.db"))
+        db = Database(lease_dsn("test.db"))
         await db.initialize()
 
         project = Project(

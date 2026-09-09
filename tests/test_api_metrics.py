@@ -15,13 +15,14 @@ from src.api.metrics import MAX_POINTS, build_metrics_router, choose_step
 from src.api.websocket import _FORWARDED_PREFIXES, _metrics_event_allowed
 from src.database import Database
 from src.metrics.sampler import METRIC_TICK_EVENT
+from tests.db_fixtures import lease_dsn
 
 BASE = 1_700_000_000.0
 
 
 @pytest.fixture
 async def db(tmp_path):
-    database = Database(str(tmp_path / "m.db"))
+    database = Database(lease_dsn("m.db"))
     await database.initialize()
     yield database
     await database.close()

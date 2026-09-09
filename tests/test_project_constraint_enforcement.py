@@ -19,7 +19,7 @@ Tests exercise three layers:
 import pytest
 from unittest.mock import AsyncMock
 
-from src.config import AppConfig
+from src.config import DatabaseConfig, AppConfig
 from src.models import (
     Agent,
     AgentState,
@@ -31,6 +31,7 @@ from src.models import (
 from src.orchestrator import Orchestrator
 from src.commands.handler import CommandHandler
 from src.scheduler import AssignAction, Scheduler, SchedulerState
+from tests.db_fixtures import lease_dsn
 
 
 # ── Helpers ─────────────────────────────────────────────────────────────
@@ -84,7 +85,7 @@ def _make_state(
 async def orch(tmp_path):
     """Minimal orchestrator backed by a real SQLite database."""
     config = AppConfig(
-        database_path=str(tmp_path / "test.db"),
+        database=DatabaseConfig(url=lease_dsn("test.db")),
         workspace_dir=str(tmp_path / "workspaces"),
         data_dir=str(tmp_path / "data"),
     )
@@ -106,7 +107,7 @@ async def db(orch):
 async def handler(orch, tmp_path):
     """CommandHandler wired to the real orchestrator + DB."""
     config = AppConfig(
-        database_path=str(tmp_path / "test.db"),
+        database=DatabaseConfig(url=lease_dsn("test.db")),
         workspace_dir=str(tmp_path / "workspaces"),
         data_dir=str(tmp_path / "data"),
     )

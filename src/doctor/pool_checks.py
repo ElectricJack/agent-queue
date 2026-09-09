@@ -51,6 +51,7 @@ worker RETIRED?" long after the doctor run has scrolled away.
 
 from __future__ import annotations
 
+import json
 import time
 from pathlib import Path
 
@@ -58,13 +59,11 @@ from src.claim_file import read_claim_file
 from src.doctor.models import CheckResult, DoctorCheck, DoctorContext, Severity
 from src.doctor.runner import apply_fix
 from src.git.manager import GitManager
-from src.models import AgentState, TaskStatus
+from src.models import AgentState, ProjectStatus, TaskStatus
 from src.orchestrator.worktree_manager import BRANCH_PREFIX
+from src.pool_claims import is_live_pool_claim_task_status
 
 OWNER = "swarm-work-model"
-
-_LIVE_TASK_STATUSES = (TaskStatus.IN_PROGRESS, TaskStatus.ASSIGNED)
-
 
 # ---------------------------------------------------------------------------
 # pools.stale_worktree_checkouts
@@ -148,6 +147,19 @@ async def _fix_stale_worktree_checkouts(ctx: DoctorContext) -> CheckResult:
     return await _check_stale_worktree_checkouts(ctx)
 
 
+async def _pool_profiles(db) -> list:
+    """Every global ``lifecycle: pool`` profile, as profile objects.
+
+    ``":" not in p.id`` mirrors ``PoolsMixin._pool_profiles``: a pool is
+    identified by a bare agent-type id, and any scoped leftover is not one.
+    """
+    return [
+        p
+        for p in await db.list_profiles()
+        if ":" not in p.id and getattr(p, "lifecycle", "task") == "pool"
+    ]
+
+
 async def _pool_profile_ids(db) -> set[str]:
     """Agent-type ids of every ``lifecycle: pool`` profile.
 
@@ -181,7 +193,7 @@ async def _find_stuck_pool_sessions(ctx: DoctorContext):
         if not s.task_id:
             continue
         task = await ctx.db.get_task(s.task_id)
-        if task is None or task.status not in _LIVE_TASK_STATUSES:
+        if task is None or not is_live_pool_claim_task_status(task.status):
             bad.append((s, task))
     return bad
 
@@ -716,6 +728,354 @@ async def _fix_stranded_feature_branches(ctx: DoctorContext) -> CheckResult:
     return result
 
 
+# ---------------------------------------------------------------------------
+# pools.global_bounds_migration (report-only — no fix, by design)
+# ---------------------------------------------------------------------------
+
+#: How many ``pool.bounds_rescoped`` rows to scan for the *first* one per
+#: profile.  One row per pool profile per daemon start: a few hundred covers
+#: months of restarts, and the check only ever needs the oldest of them.
+_MAX_RESCOPE_EVENTS = 500
+
+
+async def _first_rescope_records(ctx: DoctorContext) -> dict[str, dict]:
+    """The **oldest** ``pool.bounds_rescoped`` payload per profile.
+
+    ``after_id=0`` asks :meth:`get_recent_events` for ascending, gapless
+    replay from the start of the log, so the first payload seen for a profile
+    is the one written at the upgrade — not the one written at the most
+    recent restart.  That distinction is the whole self-resolution mechanism
+    (see :func:`_check_global_bounds_migration`): the newest record would be
+    re-stamped with whatever ``max_active`` is current every time the daemon
+    came back, and the check would nag forever.
+
+    A payload that is not JSON, or is JSON of the wrong shape, is skipped
+    rather than raising: doctor reporting nothing is better than doctor
+    failing on an audit row somebody wrote by hand.
+    """
+    rows = await ctx.db.get_recent_events(
+        limit=_MAX_RESCOPE_EVENTS, event_type="pool.bounds_rescoped", after_id=0
+    )
+    first: dict[str, dict] = {}
+    for row in rows:
+        try:
+            payload = json.loads(row.get("payload") or "")
+        except (TypeError, ValueError):
+            continue
+        profile_id = payload.get("profile_id") if isinstance(payload, dict) else None
+        if not isinstance(profile_id, str) or profile_id in first:
+            continue
+        payload["timestamp"] = row.get("timestamp")
+        first[profile_id] = payload
+    return first
+
+
+async def _check_global_bounds_migration(ctx: DoctorContext) -> CheckResult:
+    """Report-only: what a pool's ceiling was before bounds became fleet-wide.
+
+    Global worker pools re-scoped ``min_active``/``max_active`` from "these
+    bounds, once per active project" to "these bounds, for the fleet".  With
+    five active projects a profile whose ``max_active`` is 4 could really run
+    twenty workers, and now runs four.  That reduction is intended and is
+    deliberately **not** auto-multiplied away on upgrade — multiplying would
+    preserve the very bug the re-scoping removes — but left unannounced it
+    reads as a throughput regression, so this check states the arithmetic and
+    names the ``max_active`` that would buy the old capacity back.
+
+    **No ``fix``.**  Choosing a fleet size is an operator decision and the
+    design says so in as many words.  A ``--fix`` here would quietly restore
+    a twenty-worker fleet on a box that may not have twenty workers' worth of
+    RAM, on the strength of a number that was never deliberate in the first
+    place.
+
+    **How it self-resolves.**  The signal for "an operator has acted" is
+    durable and needs no new state: ``_announce_bounds_rescoped`` writes one
+    ``pool.bounds_rescoped`` audit row per profile per daemon lifetime
+    carrying the ``max_active`` in force at that moment, and this check reads
+    the *oldest* such row — the one from the upgrade itself.  If the profile's
+    ``max_active`` today differs from the one recorded there, the operator has
+    re-scaled the pool since (``aq pool scale`` writes the profile) and has
+    therefore made the call, whichever way; the notice is resolved for good.
+    Re-affirming the *same* ceiling is not treated as acting on it: the fleet
+    is still smaller than it was, which is precisely what the notice says.
+    Deliberately keeping the smaller fleet is one ``aq pool scale --profile-id
+    <id> --max <n>`` away from silence, and expressing that intent once is a
+    fair price for not silently swallowing a 5x capacity change.
+
+    A profile with no such row has never been observed by a daemon running
+    this code (``swarm.enabled`` off, or no reconcile tick yet) and is not
+    reported — there is nothing to say about a fleet that has not started.
+    """
+    if ctx.db is None:
+        return _no_db_result("pools.global_bounds_migration")
+    profiles = {p.id: p for p in await _pool_profiles(ctx.db)}
+    if not profiles:
+        return CheckResult(
+            id="pools.global_bounds_migration",
+            severity=Severity.OK,
+            detail="no pool profiles configured",
+        )
+    records = await _first_rescope_records(ctx)
+    outstanding: list[dict] = []
+    for profile_id, profile in sorted(profiles.items()):
+        record = records.get(profile_id)
+        if record is None:
+            continue
+        recorded_max = record.get("effective_max_active")
+        previous_max = record.get("previous_effective_max_active")
+        if not isinstance(recorded_max, int) or not isinstance(previous_max, int):
+            # An unbounded pool (``max_active: null``) had no ceiling to lose.
+            continue
+        if previous_max <= recorded_max:
+            # One eligible project, or none: per-project and fleet-wide
+            # bounds meant the same thing here and nothing shrank.
+            continue
+        if profile.max_active != recorded_max:
+            continue  # re-scaled since the upgrade — the operator has decided
+        outstanding.append(
+            {
+                "profile_id": profile_id,
+                "eligible_projects": record.get("eligible_projects"),
+                "previous_effective_max_active": previous_max,
+                "effective_max_active": recorded_max,
+                "suggested_max_active": previous_max,
+                "command": f"aq pool scale --profile-id {profile_id} --max {previous_max}",
+                "rescoped_at": record.get("timestamp"),
+            }
+        )
+    if not outstanding:
+        return CheckResult(
+            id="pools.global_bounds_migration",
+            severity=Severity.OK,
+            detail="pool bounds are fleet-wide and no ceiling change is unacknowledged",
+            data={"count": 0},
+        )
+    lead = outstanding[0]
+    return CheckResult(
+        id="pools.global_bounds_migration",
+        severity=Severity.INFO,
+        detail=(
+            f"{len(outstanding)} pool profile(s) lost effective ceiling when bounds became "
+            f"fleet-wide, e.g. {lead['profile_id']}: "
+            f"{lead['previous_effective_max_active']} -> {lead['effective_max_active']} worker(s) "
+            f"across {lead['eligible_projects']} active project(s). Run "
+            f"`{lead['command']}` to keep the old capacity, or scale to whatever size you "
+            "actually want — either resolves this notice."
+        ),
+        data={"count": len(outstanding), "profiles": outstanding[:50]},
+    )
+
+
+# ---------------------------------------------------------------------------
+# pools.floor_exceeds_max (report-only — no fix)
+# ---------------------------------------------------------------------------
+
+
+async def _check_floor_exceeds_max(ctx: DoctorContext) -> CheckResult:
+    """Report-only: a pool floor that its own ceiling cannot fund.
+
+    The effective floor is ``max(min_active, sum of min_per_project over
+    eligible projects)`` — a per-project warm floor the global ``min_active``
+    cannot pay for raises the floor rather than being silently ignored.  When
+    that number exceeds ``max_active`` the configuration contradicts itself:
+    the operator has asked for a resident worker in six projects out of a pool
+    that may hold four.
+
+    Nothing breaks.  Sizing clamps ``desired`` to ``max_active`` exactly as it
+    always did, so this is a warning and not an error — but two of those six
+    projects will never get their warm worker, and nothing anywhere else says
+    so.  That silence is what the check exists to end.
+
+    Eligibility here is *configured* eligibility: ACTIVE projects, the same
+    set ``_measure_pools`` iterates.  At runtime the reservation sum also
+    drops projects that are quarantined or out of workspace capacity, so the
+    live floor can be lower than the one reported here — which makes this the
+    upper bound, and the contradiction it names the one written in the
+    configuration rather than one that depends on the weather.
+
+    No ``fix``: raising ``max_active`` and lowering ``min_per_project`` are
+    both defensible repairs and they mean opposite things about how the
+    operator wants the box used.
+    """
+    if ctx.db is None:
+        return _no_db_result("pools.floor_exceeds_max")
+    profiles = await _pool_profiles(ctx.db)
+    if not profiles:
+        return CheckResult(
+            id="pools.floor_exceeds_max", severity=Severity.OK, detail="no pool profiles configured"
+        )
+    project_ids = sorted(
+        p.id for p in await ctx.db.list_projects() if p.status == ProjectStatus.ACTIVE
+    )
+    bad: list[dict] = []
+    for profile in sorted(profiles, key=lambda p: p.id):
+        if profile.max_active is None:
+            continue  # unbounded: any floor is fundable
+        per_project = getattr(profile, "min_per_project", 0) or 0
+        contributors = project_ids if per_project else []
+        reserved = per_project * len(contributors)
+        floor = max(profile.min_active or 0, reserved)
+        if floor <= profile.max_active:
+            continue
+        bad.append(
+            {
+                "profile_id": profile.id,
+                "effective_min_active": floor,
+                "max_active": profile.max_active,
+                "min_active": profile.min_active or 0,
+                "min_per_project": per_project,
+                "projects": contributors[:50],
+            }
+        )
+    if not bad:
+        return CheckResult(
+            id="pools.floor_exceeds_max",
+            severity=Severity.OK,
+            detail="every pool floor fits inside its ceiling",
+            data={"count": 0},
+        )
+    parts = []
+    for entry in bad[:5]:
+        contributors = ", ".join(entry["projects"]) or "none"
+        parts.append(
+            f"{entry['profile_id']}: floor {entry['effective_min_active']} > max_active "
+            f"{entry['max_active']} (min_active {entry['min_active']}, min_per_project "
+            f"{entry['min_per_project']} x {len(entry['projects'])} active project(s): "
+            f"{contributors})"
+        )
+    return CheckResult(
+        id="pools.floor_exceeds_max",
+        severity=Severity.WARN,
+        detail=(
+            f"{len(bad)} pool profile(s) have a floor their ceiling cannot fund — sizing "
+            "clamps to max_active and the surplus warm workers never appear: " + "; ".join(parts)
+        ),
+        data={"count": len(bad), "profiles": bad[:50]},
+    )
+
+
+# ---------------------------------------------------------------------------
+# pools.placement_starved (report-only — no fix)
+# ---------------------------------------------------------------------------
+
+#: How long a starvation must hold before it is a finding rather than a tick
+#: of weather.  A launch, a workspace release or a 60s quarantine window all
+#: clear well inside five minutes; a condition that outlives them is an
+#: operator problem.
+_STARVED_AFTER = 300.0
+
+
+def _starvation_state(ctx: DoctorContext):
+    """``(state, observing_since)`` from the running orchestrator, or ``(None, None)``.
+
+    Starvation is a scheduling condition, not a fact stored anywhere: sizing
+    authorises a start and placement finds no project that can take it, both
+    inside one 5-second tick.  Only the orchestrator sees it, so doctor —
+    which is a point-in-time read — borrows its observation the same way
+    ``sessions.*`` and ``intelligence_classes.*`` borrow theirs, through
+    ``ctx.handler.orchestrator``.
+    """
+    orchestrator = getattr(ctx.handler, "orchestrator", None)
+    state = getattr(orchestrator, "_pool_starvation_state", None)
+    if state is None:
+        return None, None
+    return state, getattr(orchestrator, "_pool_starvation_observing_since", None)
+
+
+async def _check_placement_starved(ctx: DoctorContext) -> CheckResult:
+    """Report-only: a pool that wants to grow and has nowhere to put a worker.
+
+    Under fleet-wide sizing this is the failure that replaces "the pool for
+    project X is stuck": the sizer authorises N starts for a profile, and
+    every candidate project is quarantined, out of workspace capacity, or at
+    its own ``max_concurrent_agents``.  Nothing errors — the starts are simply
+    dropped, tick after tick — so without this check the only symptom is a
+    queue that does not drain.
+
+    ``reasons`` names the blocking predicate per project, straight from
+    ``PlacementStarvation``: ``quarantined`` (a failed launch's backoff
+    window), ``no_workspace`` (no free slot in that checkout), ``at_cap``
+    (the project is already running its allowance of pool sessions).  Each has
+    a different repair, which is why the check reports them rather than a
+    count.
+
+    **Where "since when" comes from.**  ``_report_pool_starvation`` records a
+    first-seen timestamp per profile, in memory, alongside ``_pool_quarantine``
+    — a live condition observed by whoever is currently scheduling, not
+    durable state.  Two consequences the check is explicit about rather than
+    papering over: with no reachable orchestrator (doctor run outside the
+    daemon, or before the first reconcile tick) it reports INFO and says it
+    cannot see, never OK; and when this daemon has itself been watching for
+    less than the threshold it says so, because a starvation that began before
+    the restart is indistinguishable from one that began with it.
+
+    No ``fix``: every repair is outside doctor's reach — free a workspace,
+    raise a project cap, fix the harness whose failures are quarantining the
+    project, or accept the smaller fleet.
+    """
+    if ctx.db is None:
+        return _no_db_result("pools.placement_starved")
+    state, observing_since = _starvation_state(ctx)
+    if state is None:
+        return CheckResult(
+            id="pools.placement_starved",
+            severity=Severity.INFO,
+            detail=(
+                "placement starvation is observed by the running orchestrator and is not "
+                "visible from here (no daemon reachable, or no pool reconcile tick has run)"
+            ),
+        )
+    now = time.time()
+    watched = now - observing_since if observing_since else 0.0
+    starved, young = [], []
+    for profile_id, entry in sorted(state.items()):
+        held = now - entry.get("since", now)
+        row = {
+            "profile_id": profile_id,
+            "wanted": entry.get("wanted", 0),
+            "held_seconds": round(held, 1),
+            "reasons": dict(sorted((entry.get("reasons") or {}).items())),
+        }
+        (starved if held >= _STARVED_AFTER else young).append(row)
+    if not starved:
+        detail = "no pool has been placement-starved for 5 minutes"
+        if young:
+            detail += f" ({len(young)} starved for less than that)"
+        return CheckResult(
+            id="pools.placement_starved",
+            severity=Severity.OK,
+            detail=detail,
+            data={"count": 0, "recent": young[:50]},
+        )
+    parts = []
+    for row in starved[:5]:
+        why = ", ".join(f"{pid}: {reason}" for pid, reason in row["reasons"].items())
+        parts.append(
+            f"{row['profile_id']}: {row['wanted']} start(s) unplaced for "
+            f"{row['held_seconds']:.0f}s ({why or 'no active project runs this profile'})"
+        )
+    detail = (
+        f"{len(starved)} pool profile(s) have had authorised starts and no eligible project "
+        "for over 5 minutes: " + "; ".join(parts)
+    )
+    if watched and watched < _STARVED_AFTER * 2:
+        detail += (
+            f" — this daemon has only been observing placement for {watched:.0f}s, so the "
+            "condition may be older than the durations shown"
+        )
+    return CheckResult(
+        id="pools.placement_starved",
+        severity=Severity.WARN,
+        detail=detail,
+        data={
+            "count": len(starved),
+            "profiles": starved[:50],
+            "recent": young[:50],
+            "observing_seconds": round(watched, 1),
+        },
+    )
+
+
 def pool_checks() -> list[DoctorCheck]:
     return [
         DoctorCheck(
@@ -754,6 +1114,19 @@ def pool_checks() -> list[DoctorCheck]:
         # Report-only: no ``fix`` — a claim/holder mismatch needs a human to
         # decide which side (agent, session, or task) is authoritative.
         DoctorCheck(id="claims.holder_consistency", run=_check_holder_consistency, owner=OWNER),
+        # Report-only by design (global-worker-pools §4): picking a fleet size
+        # is an operator decision, so this one states the arithmetic and stops.
+        DoctorCheck(
+            id="pools.global_bounds_migration",
+            run=_check_global_bounds_migration,
+            owner=OWNER,
+        ),
+        # Report-only: raising ``max_active`` and lowering ``min_per_project``
+        # are both valid repairs and mean opposite things.
+        DoctorCheck(id="pools.floor_exceeds_max", run=_check_floor_exceeds_max, owner=OWNER),
+        # Report-only: every repair (free a workspace, raise a project cap,
+        # fix the harness behind a quarantine) is outside doctor's reach.
+        DoctorCheck(id="pools.placement_starved", run=_check_placement_starved, owner=OWNER),
     ]
 
 
@@ -764,14 +1137,18 @@ CHECKS = pool_checks()
 _BY_ID = {c.id: c for c in CHECKS}
 
 
-async def run_check(db, check_id: str, *, config=None, repair: bool = False) -> CheckResult:
+async def run_check(
+    db, check_id: str, *, config=None, repair: bool = False, handler=None
+) -> CheckResult:
     """Run one pool/claim check directly against *db* (no registry needed).
 
     ``repair=True`` runs the check's ``fix`` (if any) then re-runs the check,
-    mirroring :func:`src.doctor.runner.apply_fix`.
+    mirroring :func:`src.doctor.runner.apply_fix`.  *handler* is threaded
+    through for the checks that borrow live orchestrator state
+    (``pools.placement_starved``); everything else ignores it.
     """
     check = _BY_ID[check_id]
-    ctx = DoctorContext(config=config, db=db)
+    ctx = DoctorContext(config=config, db=db, handler=handler)
     if repair and check.fix is not None:
         return await apply_fix(check, ctx)
     return await check.run(ctx)

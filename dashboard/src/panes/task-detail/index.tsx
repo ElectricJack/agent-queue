@@ -21,6 +21,8 @@ import {
   type TaskRef,
   type GateSummary,
 } from "../../api/hooks";
+import { branchesAwaitingChoice, type BranchChoice, type DiscardBranch } from "../../api/branchDiscard";
+import BranchDiscardPrompt from "../../components/BranchDiscardPrompt";
 import StatusBadge from "../../components/StatusBadge";
 import TaskActions from "../../components/TaskActions";
 import TaskComments from "../../components/TaskComments";
@@ -83,6 +85,9 @@ export default function TaskDetailPane({
   const { open, close } = useShellPaneStore();
 
   const [modal, setModal] = useState<LocalModal>(null);
+  // Branches a refused delete is asking about; see api/branchDiscard.
+  const [branchPrompt, setBranchPrompt] = useState<DiscardBranch[] | null>(null);
+  const [branchChoice, setBranchChoice] = useState<BranchChoice>("keep");
   const [moreOpen, setMoreOpen] = useState(false);
   const [feedback, setFeedback] = useState("");
   const [dragActive, setDragActive] = useState(false);
@@ -448,14 +453,21 @@ export default function TaskDetailPane({
           <p className="text-sm text-gray-300">
             Delete <strong>{task?.title}</strong> and any descendant tasks? This cannot be undone.
           </p>
-          {deleteTask.isError && (
+          {branchPrompt && (
+            <BranchDiscardPrompt
+              branches={branchPrompt}
+              choice={branchChoice}
+              onChoose={setBranchChoice}
+            />
+          )}
+          {deleteTask.isError && !branchPrompt && (
             <p role="alert" className="text-sm text-red-300">
               Could not delete task. {deleteTask.error.message}
             </p>
           )}
           <div className="flex justify-end gap-2">
             <button
-              onClick={() => setModal(null)}
+              onClick={() => { setBranchPrompt(null); setModal(null); }}
               className="rounded-md border border-gray-600 bg-gray-800 px-3 py-1.5 text-sm text-gray-300 hover:bg-gray-700"
             >
               Cancel
@@ -463,14 +475,28 @@ export default function TaskDetailPane({
             <button
               onClick={() =>
                 deleteTask.mutate(
-                  { task_id: args.taskId, cascade: true },
-                  { onSuccess: () => setModal(null) },
+                  {
+                    task_id: args.taskId,
+                    cascade: true,
+                    ...(branchPrompt ? { branches: branchChoice } : {}),
+                  },
+                  {
+                    onSuccess: () => { setBranchPrompt(null); setModal(null); },
+                    onError: (error) => {
+                      const awaiting = branchesAwaitingChoice(error);
+                      if (awaiting) setBranchPrompt(awaiting);
+                    },
+                  },
                 )
               }
               disabled={deleteTask.isPending}
               className="rounded-md bg-red-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-red-500 disabled:opacity-50"
             >
-              {deleteTask.isPending ? "Deleting..." : "Delete task and descendants"}
+              {deleteTask.isPending
+                ? "Deleting..."
+                : branchPrompt && branchChoice === "delete"
+                  ? "Delete task and branches"
+                  : "Delete task and descendants"}
             </button>
           </div>
         </div>

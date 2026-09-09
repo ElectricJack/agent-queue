@@ -15,6 +15,7 @@ from src.database.tables import (
     integration_attestation_publications,
     integration_branch_owners,
     integration_candidate_revisions,
+    integration_candidate_member_results,
     integration_candidate_ref_mutations,
     integration_check_evidence,
     integration_operation_artifact_pins,
@@ -37,6 +38,28 @@ from src.integration.ownership import BranchBusy, BranchOwnership, StaleFence
 from src.integration.outbox import enqueue_integration_event
 from src.models import Task, TaskStatus
 from src.playbooks.artifact_ref import ArtifactRef
+
+
+def repair_subject_sha(subject: dict[str, Any] | None) -> str:
+    """The exact commit a repair stage's current subject is anchored on.
+
+    The two target kinds carry different canonical subjects: a parent
+    episode's is ``{"kind": "parent", "generation", "head_sha"}`` while a
+    root batch's is ``{"kind": "batch", "revision", "candidate_sha"}``.
+    Every consumer wants the OID, not the shape, so resolve it in one place
+    -- reaching for ``subject["head_sha"]`` raises ``KeyError`` on every
+    root repair and turns a passing close into a blocked task.
+    """
+    raw = subject or {}
+    return str(raw.get("head_sha") or raw.get("candidate_sha") or "")
+
+
+# Ownership states in which the stage-0 writer can still be recognised as this
+# operation's primary.  ``attached`` is a live writer whose dirty checkout the
+# debug escalation retains (design spec §9.2); the released pair is a delegate
+# that closed successfully and self-transferred back to its own reserved fence.
+_ATTACHED_PRIMARY_STATES = frozenset({"attached"})
+_RELEASED_PRIMARY_STATES = frozenset({"reserved", "released"})
 
 
 class _RepairInvariant(ValueError):
@@ -540,7 +563,12 @@ class RepairService:
                         writer_kind="repair_delegate",
                     )
             else:
-                if not self._predecessor_matches(owner, operation):
+                released_primary = stage == 1 and await self._is_primary_writer(
+                    owner, operation_id, states=_RELEASED_PRIMARY_STATES
+                )
+                if not released_primary and not self._predecessor_matches(
+                    owner, operation
+                ):
                     return self._dispatch_value(
                         "human_required",
                         operation_id,
@@ -681,6 +709,14 @@ class RepairService:
         completed_at = self.clock() if now is None else now
         transition = None
         async with self.db.immediate() as conn:
+            project_id = (await conn.execute(
+                select(tasks.c.project_id).where(tasks.c.id == repair_task_id)
+            )).scalar_one_or_none()
+            if project_id is None:
+                return {"outcome": "stale"}
+            # CI takes project -> batch/revision -> operation. Serialize here
+            # before get_repair_filing_scope locks operation/stage and owner.
+            await self.db.lock_hierarchy_project(conn, project_id)
             scope = await self.db.get_repair_filing_scope(
                 repair_task_id, session_id=session_id, conn=conn
             )
@@ -719,6 +755,11 @@ class RepairService:
                     commit_proof=commit_proof,
                     now=completed_at,
                 )
+            else:
+                await self.adopt_batch_repair_on(
+                    conn, operation_id, head_sha=head_sha,
+                    commit_proof=commit_proof, now=completed_at,
+                )
             transition = await self.db._apply_transition(
                 conn,
                 repair_task_id,
@@ -727,11 +768,13 @@ class RepairService:
                 assigned_agent_id=None,
             )
             project_id = str(scope["project_id"])
-            event_id = f"repair-delegate-closed-{operation_id}-{stage}-{repair_task_id}"
+            event_id = (f"repair-delegate-closed-{operation_id}-{stage}-{repair_task_id}"
+                        f"-{fence_token}-{session_id}")
             await enqueue_integration_event(
                 conn,
                 event_id=event_id,
-                dedup_key=f"repair-delegate-closed:{operation_id}:{stage}:{repair_task_id}",
+                dedup_key=(f"repair-delegate-closed:{operation_id}:{stage}:{repair_task_id}"
+                           f":{fence_token}:{session_id}"),
                 project_id=project_id,
                 event_type="integration.repair_delegate_closed",
                 payload={
@@ -870,6 +913,132 @@ class RepairService:
         return await self.db.due_integration_repair_stage_page(
             now=observed_at, after=after, limit=limit
         )
+
+    async def adopt_batch_repair_on(
+        self,
+        conn,
+        operation_id: str,
+        *,
+        head_sha: str,
+        commit_proof: dict[str, Any] | None,
+        now: float,
+    ) -> None:
+        """Bind a proved CI repair while the caller holds the exact writer fence.
+
+        The old candidate and its CI/publication identity stay immutable. A new
+        revision copies reviewed member results and requires its own evidence.
+        This is internal to the guarded delegate close, not an operator override.
+        """
+        if not is_valid_git_oid(head_sha) or commit_proof is None:
+            raise ValueError("batch repair requires exact verified commit lineage")
+        operation = (
+            (
+                await conn.execute(
+                    select(integration_repair_operations)
+                    .where(integration_repair_operations.c.id == operation_id)
+                    .with_for_update()
+                )
+            )
+            .mappings()
+            .one()
+        )
+        if operation["target_kind"] != "batch" or operation["state"] not in {"active", "escalated"}:
+            raise ValueError("batch repair operation is not active")
+        batch, revision = await self._current_batch_subject_rows_on(conn, operation)
+        stage = (
+            (
+                await conn.execute(
+                    select(integration_repair_stages)
+                    .where(
+                        integration_repair_stages.c.operation_id == operation_id,
+                        integration_repair_stages.c.ordinal == operation["active_stage"],
+                    )
+                    .with_for_update()
+                )
+            )
+            .mappings()
+            .one()
+        )
+        if stage["state"] != "active" or now >= float(stage["deadline_at"]):
+            raise ValueError("batch repair stage is no longer active")
+        if stage["current_subject"] != self._batch_subject(revision):
+            raise ValueError("batch repair subject changed during close")
+        dossier = self._dossier_with_repair_commits(
+            stage["dossier"], revision["head_sha"], head_sha, commit_proof
+        )
+        if head_sha == revision["head_sha"]:
+            return
+        if revision["state"] not in {"built", "testing", "red"}:
+            raise ValueError("batch CI repair requires a fully constructed candidate")
+        members = (
+            (
+                await conn.execute(
+                    select(integration_candidate_member_results).where(
+                        integration_candidate_member_results.c.batch_id == batch["id"],
+                        integration_candidate_member_results.c.revision == revision["revision"],
+                    )
+                )
+            )
+            .mappings()
+            .all()
+        )
+        if any(member["result"] not in {"applied", "skipped"} for member in members):
+            raise ValueError("batch CI repair cannot replace an unresolved member")
+        next_revision = int(revision["revision"]) + 1
+        await conn.execute(
+            update(integration_candidate_revisions)
+            .where(
+                integration_candidate_revisions.c.batch_id == batch["id"],
+                integration_candidate_revisions.c.revision == revision["revision"],
+            )
+            .values(state="superseded", updated_at=now)
+        )
+        await conn.execute(
+            insert(integration_candidate_revisions).values(
+                batch_id=batch["id"],
+                revision=next_revision,
+                construction_base_sha=revision["construction_base_sha"],
+                next_member_ordinal=revision["next_member_ordinal"],
+                repair_parent_revision=revision["revision"],
+                head_sha=head_sha,
+                state="built",
+                created_at=now,
+                updated_at=now,
+            )
+        )
+        for member in members:
+            await conn.execute(
+                insert(integration_candidate_member_results).values(
+                    **{
+                        **dict(member),
+                        "revision": next_revision,
+                        "created_at": now,
+                        "updated_at": now,
+                    }
+                )
+            )
+        await conn.execute(
+            update(integration_batches)
+            .where(
+                integration_batches.c.id == batch["id"],
+            )
+            .values(
+                current_revision=next_revision,
+                tested_candidate_sha=None,
+                ci_evidence_id=None,
+                lifecycle="testing",
+                updated_at=now,
+            )
+        )
+        await conn.execute(
+            update(integration_repair_stages)
+            .where(
+                integration_repair_stages.c.operation_id == operation_id,
+                integration_repair_stages.c.ordinal == stage["ordinal"],
+            )
+            .values(dossier=dossier)
+        )
+        await self.bind_current_batch_subject_on(conn, operation_id, now=now)
 
     async def bind_current_batch_subject_on(
         self, conn, operation_id: str, *, now: float | None = None
@@ -1205,7 +1374,26 @@ class RepairService:
             ),
         )
 
-    async def _is_primary_writer(self, owner, operation_id: str) -> bool:
+    async def _is_primary_writer(
+        self,
+        owner,
+        operation_id: str,
+        *,
+        states: frozenset[str] = _ATTACHED_PRIMARY_STATES,
+    ) -> bool:
+        """Whether *owner* is this operation's stage-0 writer in one of *states*.
+
+        ``attached`` (the default) is the retained-handoff case of design spec
+        §9.2: the primary is still live and its dirty checkout is rebound to
+        the debugger.  ``_RELEASED_PRIMARY_STATES`` is the other half — a
+        delegate that closed successfully self-transfers back to a ``reserved``
+        fence in its own ``repair`` role
+        (``arelease_integration_writer_for_retry``), which is already proven
+        stopped and detached and is therefore a valid predecessor for the next
+        stage.  Without it the escalation after a *successful* primary stage
+        fell through to :meth:`_predecessor_matches`, which knows only
+        ``collector`` and ``verifier``, and answered ``human_required``.
+        """
         async with self.db._engine.connect() as conn:
             primary = (
                 await conn.execute(
@@ -1221,7 +1409,7 @@ class RepairService:
             and self._writer_role_matches(
                 primary["writer_kind"], owner["owner_role"]
             )
-            and owner["handoff_state"] == "attached"
+            and owner["handoff_state"] in states
         )
 
     @staticmethod
@@ -1838,10 +2026,7 @@ class RepairService:
             raise ValueError("repair operation project identity is missing")
         return str(project_id)
 
-    @staticmethod
-    def _subject_sha(subject: dict[str, Any] | None) -> str:
-        raw = subject or {}
-        return str(raw.get("head_sha") or raw.get("candidate_sha") or "")
+    _subject_sha = staticmethod(repair_subject_sha)
 
     async def _start_context_on(
         self,

@@ -35,7 +35,7 @@ def test_editor_write_full_config_round_trips_through_load_config_with_env_overl
         "# deployment config — do not resolve secrets here\n"
         "env: dev\n"
         f"workspace_dir: {tmp_path / 'workspaces'}\n"
-        f"database_path: {tmp_path / 'aq.db'}\n"
+        "database:\n  url: postgresql+asyncpg://localhost/aq_test\n"
         f"data_dir: {tmp_path / 'data'}\n"
         "discord:\n"
         f'  bot_token: "${{{_TOKEN_VAR}}}"\n'
@@ -86,7 +86,7 @@ async def test_update_config_validation_failure_is_atomic_for_full_document(tmp_
         yaml.dump(
             {
                 "workspace_dir": str(tmp_path / "workspaces"),
-                "database_path": str(tmp_path / "test.db"),
+                "database": {"url": "postgresql+asyncpg://localhost/aq_test"},
                 "discord": {"bot_token": "test-token", "guild_id": "123"},
                 "scheduling": {"rolling_window_hours": 24},
             }

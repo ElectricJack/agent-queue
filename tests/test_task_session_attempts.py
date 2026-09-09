@@ -7,15 +7,16 @@ import pytest
 from fastapi import FastAPI
 from sqlalchemy import update
 
-from src.database.adapters.sqlite import SQLiteDatabaseAdapter
+from src.database import Database
 from src.database.tables import agents, tasks
 from src.models import Agent, Project, SessionRecord, Task, TaskStatus
 from tests.perf.test_hierarchy_statements import count_statements
+from tests.db_fixtures import lease_dsn
 
 
 @pytest.fixture
 async def db(tmp_path):
-    database = SQLiteDatabaseAdapter(str(tmp_path / "history.db"))
+    database = Database(lease_dsn("history.db"))
     await database.initialize()
     await database.create_project(Project(id="p", name="Project"))
     await database.create_agent(Agent(id="a", name="Original worker", profile_id="worker"))
@@ -200,10 +201,10 @@ async def test_attempt_api_scope_and_archived_task(db, monkeypatch):
 
 async def test_get_show_and_explain_expose_operational_block(db, tmp_path):
     from src.commands.handler import CommandHandler
-    from src.config import AppConfig
+    from src.config import AppConfig, DatabaseConfig
     from src.orchestrator import Orchestrator
 
-    config = AppConfig(data_dir=str(tmp_path / "data"), workspace_dir=str(tmp_path / "workspace"))
+    config = AppConfig(database=DatabaseConfig(url=lease_dsn("history.db")), data_dir=str(tmp_path / "data"), workspace_dir=str(tmp_path / "workspace"))
     orch = Orchestrator(config)
     orch.db = db
     handler = CommandHandler(orch, config)

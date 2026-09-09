@@ -19,11 +19,13 @@ from src.integration.scheduler import IntegrationScheduler
 from src.models import Project
 from src.commands.principal import ExecutionPrincipal, PrincipalKind, principal_context
 from src.profiles.capabilities import CapabilityPolicy
+from tests.db_fixtures import lease_dsn
+from tests.pg_dsn import create_scratch_database
 
 
 @pytest.fixture
 async def db(tmp_path):
-    database = Database(str(tmp_path / "integration-schedule.db"))
+    database = Database(lease_dsn("integration-schedule.db"))
     await database.initialize()
     await database.create_project(Project(id="p", name="integration project"))
     async with database.immediate() as conn:
@@ -308,8 +310,8 @@ async def test_concurrent_duplicate_delivery_allocates_one_request(db):
 
 
 async def test_not_due_and_restart_duplicate_delivery_are_durable(tmp_path):
-    path = tmp_path / "restart-schedule.db"
-    first_db = Database(str(path))
+    path = await create_scratch_database("mig")
+    first_db = Database(path)
     await first_db.initialize()
     await first_db.create_project(Project(id="p", name="integration project"))
     async with first_db.immediate() as conn:
@@ -334,7 +336,7 @@ async def test_not_due_and_restart_duplicate_delivery_are_durable(tmp_path):
     )
     await first_db.close()
 
-    restarted_db = Database(str(path))
+    restarted_db = Database(path)
     await restarted_db.initialize()
     try:
         restarted = IntegrationScheduler(restarted_db)

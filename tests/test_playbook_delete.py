@@ -9,11 +9,12 @@ from src.database import Database
 from src.database.tables import playbook_pending_events
 from src.commands.principal import ExecutionPrincipal, principal_context
 from tests.test_api_playbook_v2_commands import _backend_fixture
+from tests.db_fixtures import lease_dsn
 
 
 @pytest.fixture
 async def handler(tmp_path):
-    db = Database(str(tmp_path / "delete.db"))
+    db = Database(lease_dsn("delete.db"))
     await db.initialize()
     _, ref, _ = _backend_fixture()
     await db.upsert_playbook_artifact(ref, scope="system", scope_identifier="",

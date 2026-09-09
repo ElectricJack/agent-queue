@@ -71,7 +71,7 @@ These fields appear at the root of the YAML document and map directly to scalar 
 | YAML key | Type | Default | Description |
 |---|---|---|---|
 | `workspace_dir` | `str` | `~/agent-queue-workspaces` (home-expanded at class instantiation time) | Filesystem path to the directory where agent workspaces are stored. |
-| `database_path` | `str` | `~/.agent-queue/agent-queue.db` (home-expanded at class instantiation time) | Filesystem path to the SQLite database file. Legacy field — prefer using the `database` section for new setups. |
+| `database_path` | `str` | `""` | Deprecated alias for `database.url`. Removed next release — set `database.url` instead. |
 | `global_token_budget_daily` | `int` or `None` | `None` | Daily token budget across all agents. `None` means no global cap is enforced. |
 
 ### 4.1.1 `project_roots`
@@ -97,25 +97,21 @@ workspaces.
 
 ### 4.1.2 `database` Section
 
-Maps to `DatabaseConfig`. The YAML key is `database`. This section configures the database backend. The backend (SQLite or PostgreSQL) is inferred automatically from the URL scheme.
+Maps to `DatabaseConfig`. The YAML key is `database`. **PostgreSQL is the only supported backend** (SQLite was removed 2026-09-07).
 
 | YAML key | Type | Default | Description |
 |---|---|---|---|
-| `url` | `str` | `""` | Database connection URL. A `postgresql://` or `postgres://` prefix selects PostgreSQL (asyncpg). Anything else is treated as a SQLite file path. |
+| `url` | `str` | `""` | PostgreSQL DSN (`postgresql://` or `postgres://`, driven by asyncpg). Anything else is a validation error — it used to be read as a SQLite file path, so a typo brought the daemon up on an empty database while the real one sat untouched. |
 | `pool_min_size` | `int` | `2` | Minimum connection pool size (PostgreSQL only). |
 | `pool_max_size` | `int` | `10` | Maximum connection pool size (PostgreSQL only). |
 
-**Backward compatibility:** If no `database` section is present, the top-level `database_path` field is used as the `url` value (SQLite). New installations using the setup wizard will write the appropriate section automatically.
+**Upgrading from a SQLite install:** `aq db import-sqlite <path>` copies an old database into PostgreSQL one way, and `aq doctor --check db.backend_is_postgres` names a config still pointing at a file.
 
-**Deprecation:** PostgreSQL is the production backend. SQLite remains supported for the test suite and single-user experiments, but it is deprecated for real deployments: since the swarm work model, every SQLite transaction opens its own connection (`NullPool`, required so a concurrent writer cannot commit a claim transaction mid-flight), which makes claim/release latency roughly an order of magnitude worse than on PostgreSQL (~900 ms vs ~45 ms p99 at 5,000 tasks). Performance budgets are asserted against PostgreSQL.
+**Why only PostgreSQL:** the deciding factor was concurrency, not preference. Under the swarm work model every SQLite transaction opened its own connection (`NullPool`, required so a concurrent writer cannot commit a claim transaction mid-flight), putting claim/release latency roughly an order of magnitude behind PostgreSQL (~900 ms vs ~45 ms p99 at 5,000 tasks). SQLite also silently ignored the `FOR UPDATE` locking the integration paths depend on.
 
 **Examples:**
 
 ```yaml
-# SQLite (default):
-database_path: ~/.agent-queue/agent-queue.db
-
-# PostgreSQL:
 database:
   url: postgresql://agent_queue:mypassword@localhost:5432/agent_queue
   pool_min_size: 2
@@ -447,17 +443,24 @@ fresh each tick/request, there is no restart-required subset.
 |---|---|---|---|
 | `enabled` | `bool` | `False` | Master switch. `false` disables `_reconcile_pools`, refuses new `lifecycle: pool` launches, and makes `task_claim` return `not_admissible` with `reason: "swarm_disabled"` — the command surface stays present (so clients and schemas are stable before pools turn on) but hands out no work. |
 | `claim_wait_max` | `int` | `60` | Upper clamp on `task_claim`'s `--wait` seconds — both the frontier long-poll and the admission long-poll. |
-| `max_starts_per_tick` | `int` | `2` | Pool session launches `_reconcile_pools` may start in one cascade tick, across all `(project, profile)` keys. |
+| `global_max_active` | `int \| None` | `None` | Box-wide ceiling on live pool sessions across every profile. `None` resolves to `resources.max_concurrent_agents` (default 8), so the bound always exists; an explicit integer overrides it. A knob of its own rather than a direct read of `resources.max_concurrent_agents`, because that value also derives each session's xdist worker share — fleet size and test parallelism must move independently. |
+| `max_starts_per_tick` | `int` | `2` | Pool session launches `_reconcile_pools` may start in one cascade tick, across all pools (one pool = one profile, fleet-wide). |
 | `max_drains_per_tick` | `int` | `5` | Idle pool sessions `_reconcile_pools` may mark `desired_state='stopped'` in one bulk update per tick. |
-| `scale_down_grace` | `int` | `120` | Seconds a `(project, profile)` key's surplus (idle above its sized floor) must persist, tracked in memory, before a drain is issued. |
+| `scale_down_grace` | `int` | `120` | Seconds a pool's surplus (idle above its sized floor) must persist, tracked in memory, before a drain is issued. |
 | `prepare_timeout` | `int` | `120` | Seconds a claim may stay `claim_phase='preparing'` (the git-reset window) before the reconciler releases it as `prepare_failed`. |
 | `max_filings_per_task` | `int` | `20` | Worker-filed tasks (`create_task` from a session holding a task) permitted per held task, across all its claims; reserved atomically, see design §12. |
 
-Validation (`SwarmConfig.validate`): every integer key must be `>= 0`.
+Validation (`SwarmConfig.validate`): every integer key must be `>= 0`, except
+`global_max_active`, which must be `>= 1` when set (omit it to inherit
+`resources.max_concurrent_agents`; `enabled: false` is how you stop pools
+entirely).
 
-No global pool cap exists — sizing binds on each project's `max_concurrent_agents`
-and each profile's own `min_active`/`max_active` (profile markdown, pool-only
-keys — parse error on `lifecycle: task`/`named`).
+Sizing is fleet-wide, one pool per profile: it binds on the profile's own
+`min_active` / `max_active` / `min_per_project` (profile markdown, pool-only
+keys — parse error on `lifecycle: task`/`named`) and on `global_max_active`.
+Each project's `max_concurrent_agents` is applied afterwards, by the placement
+step that chooses which project an authorised worker launches into. See
+`docs/superpowers/specs/2026-09-08-global-worker-pools-design.md`.
 
 **Caveat — `enabled: false` strands pool profiles (ruling P2-17).** The push
 path's gates are keyed on `lifecycle` alone, deliberately: a `lifecycle: pool`

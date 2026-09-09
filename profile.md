@@ -16,7 +16,7 @@ Agent Queue is a self-improving orchestration platform for AI coding agents. It 
 
 ## Architecture
 
-Single Python asyncio process. Event-driven state machine. SQLAlchemy Core with Alembic migrations (SQLite default, PostgreSQL supported). Discord bot + MCP server for control planes. All components communicate through an async EventBus.
+Single Python asyncio process. Event-driven state machine. SQLAlchemy Core with Alembic migrations (PostgreSQL only). Discord bot + MCP server for control planes. All components communicate through an async EventBus.
 
 ```
 asyncio event loop
@@ -154,11 +154,11 @@ Part II claims/pools/worker-filed work). Off by default (`swarm.enabled: false`)
 | `src/database/hierarchy_migration.py` | Snapshot → canonicalise → validate → apply migration for the parent-edge/column drift |
 | `src/database/queries/claim_queries.py` | The one-transaction claim (session-slot CAS → work query → holder rows), `release_claim`, `terminate_pool_session` |
 | `src/commands/claim_commands.py` | `_cmd_task_claim` (`task_claim`) — admission checks, long-poll, attempt-outcome resolution |
-| `src/orchestrator/pools.py` | `_reconcile_pools` cascade step — demand/supply aggregation, pool session launch/terminate |
-| `src/scheduler.py` | (also) pure `size_pools(...) -> list[PoolAction]` — pool sizing, table-tested, no I/O |
+| `src/orchestrator/pools.py` | `_measure_pools` (`PoolMeasurement`) and the `_reconcile_pools` cascade step — fleet-wide demand/supply aggregation, placement, pool session launch/terminate |
+| `src/scheduler.py` | (also) pure `size_pools(...) -> list[PoolAction]` (fleet-wide, one pool per profile) and `place_pool_actions(...)` (which project each start/drain applies to) — table-tested, no I/O |
 | `src/sessions/reconciler.py` | (also) pool carve-outs on the session reconciler steps — `_step_prepare_timeout`, pool branches of `_step_orphans`/`_step_exits` |
-| `src/doctor/pool_checks.py` | `pools.stuck`, `pools.orphan_agents`, `pools.preparing_stuck`, `pools.stranded_feature_branches`, `claims.holder_consistency` (report-only) |
-| `src/profiles/parser.py` | (also) `lifecycle: pool` + `min_active`/`max_active`/`max_claims_per_session` parsing |
+| `src/doctor/pool_checks.py` | `pools.stuck`, `pools.orphan_agents`, `pools.preparing_stuck`, `pools.stranded_feature_branches`, `pools.global_bounds_migration`, `pools.floor_exceeds_max`, `pools.placement_starved`, `claims.holder_consistency` (report-only) |
+| `src/profiles/parser.py` | (also) `lifecycle: pool` + `min_active`/`max_active`/`min_per_project`/`max_claims_per_session` parsing |
 
 ### Formulas (Swarm Work Model, Part III)
 
@@ -221,7 +221,7 @@ Not all knowledge is needed at all times. L0/L1 are cheap (always loaded, ~250 t
 ### Why files as source of truth?
 Playbooks, profiles, facts, and knowledge are all markdown files in `~/.agent-queue/vault/`. This makes them browsable in Obsidian, editable by hand, diffable with git, and transparent. The database and Milvus are derived indexes, not canonical stores.
 
-### Why SQLite (with PostgreSQL supported)?
+### Why PostgreSQL only?
 Lightweight, zero-ops. Single process means no need for distributed locking. WAL mode gives concurrent reads. Survives restarts. Runs on a Raspberry Pi. SQLAlchemy Core provides dialect portability — PostgreSQL supported via asyncpg for production deployments.
 
 ### Why Discord as control plane?
@@ -304,7 +304,7 @@ Key sections: `discord`, `scheduling`, `auto_task`, `pause_retry`, `hook_engine`
 - Git operations wrapped in `GitManager` with `GitError` exceptions
 - **Linter:** ruff (line-length 100, target py312)
 - **Tests:** pytest with pytest-asyncio (`asyncio_mode = "auto"`)
-- **Dependencies:** sqlalchemy[asyncio], aiosqlite, alembic, discord.py, claude-agent-sdk, pyyaml (memsearch ships with the external `aq-memory` plugin)
+- **Dependencies:** sqlalchemy[asyncio], asyncpg, alembic, discord.py, claude-agent-sdk, pyyaml (memsearch ships with the external `aq-memory` plugin)
 
 ## Infrastructure
 

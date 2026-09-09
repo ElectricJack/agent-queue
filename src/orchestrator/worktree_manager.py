@@ -528,6 +528,7 @@ class WorktreeSlotManager:
         *,
         base_branch: str | None = None,
         resume_branch: str | None = None,
+        target_branch: str | None = None,
         kind: WorkspaceKind | None = None,
     ) -> str:
         """Bring a slot to a pristine per-task state.  Returns the branch.
@@ -545,11 +546,19 @@ class WorktreeSlotManager:
         if resume_branch is not None:
             _validate_ref(resume_branch, field="resume branch")
 
+        if target_branch is not None:
+            target_branch = target_branch.removeprefix("refs/heads/")
+            _validate_ref(target_branch, field="target branch")
+            if resume_branch is not None:
+                raise GitError("exact target and resume branch are mutually exclusive")
+
         slot_dir = Path(slot_ws.workspace_path)
         await self.ensure_git_exclude(slot_dir)
         from src.orchestrator.task_checkpoint import prepare_checkpoint, restore_checkpoint
         checkpoint = await prepare_checkpoint(self.db, self.git, task.id, str(slot_dir))
         if checkpoint:
+            if target_branch is not None and checkpoint["branch"] != target_branch:
+                raise GitError("saved checkpoint is not on the exact owned branch")
             # No hard-reset/clean on the saved task branch. Previous users'
             # dirty work is salvaged before switching back to the checkpoint.
             prev = self.read_sentinel(slot_dir)
@@ -603,10 +612,21 @@ class WorktreeSlotManager:
                 ["clean", "-fd", "-e", WORKTREE_SENTINEL_NAME], cwd=str(slot_dir)
             )
 
-            branch = resume_branch or task_branch_name(task.id)
-            await self._switch_to_branch(
-                slot_dir, branch, start_ref, resume=bool(resume_branch)
-            )
+            branch = target_branch or resume_branch or task_branch_name(task.id)
+            if target_branch is not None:
+                await self._detach_stale_branch_holders(slot_dir, branch)
+                await self.git._arun_unlocked(
+                    ["switch", "-C", branch, start_ref], cwd=str(slot_dir)
+                )
+                actual = (await self.git._arun_unlocked(
+                    ["rev-parse", "HEAD"], cwd=str(slot_dir)
+                )).strip()
+                if actual != base_branch:
+                    raise GitError("owned branch did not resolve to its proved commit")
+            else:
+                await self._switch_to_branch(
+                    slot_dir, branch, start_ref, resume=bool(resume_branch)
+                )
 
         if kind is not None:
             desired = worktree_setup_hash(kind.worktree_setup)

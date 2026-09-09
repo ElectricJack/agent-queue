@@ -5,9 +5,9 @@ import { MemoryRouter, Route, Routes } from "react-router-dom";
 import LeftRail from "../../../shell/LeftRail";
 import AgentWorkspace from "../AgentWorkspace";
 import type { FlockAgent } from "../../../api/agents";
-import type { PoolStatusRow, SessionSummary } from "../../../api/hooks";
+import type { PoolProjectStatus, PoolStatusRow, SessionSummary } from "../../../api/hooks";
 import { boundsOf, scaleRequest, validateBounds } from "../PoolScaleFields";
-import { poolEntries, poolProfileIds, isPoolAgent, formatIdle, splitBusyPoolEntries, useDebouncedBusyPoolEntries } from "../pools";
+import { poolEntries, poolPlacement, poolProfileIds, isPoolAgent, formatIdle, splitBusyPoolEntries, useDebouncedBusyPoolEntries } from "../pools";
 import { parseAgentSelection, poolSelectionKey, selectionAddress } from "../useAgentSelection";
 import { TerminalMock, FitAddonMock, TerminalSocketMock } from "../../../testUtils/terminal";
 
@@ -22,13 +22,27 @@ const api = vi.hoisted(() => ({
 }));
 vi.mock("../../../api/client", () => api);
 
-/** Mirrors one `pool_status` row (src/api/models/task.py PoolStatusRow). */
+/** Mirrors one nested project breakdown (src/api/models/task.py PoolProjectStatus). */
+function project(over: Partial<PoolProjectStatus> = {}): PoolProjectStatus {
+  return {
+    project_id: "agent-queue", ready: 5, running_idle: 1, running_busy: 2,
+    starting: 0, draining: 0, max_concurrent_agents: 4, workspace_capacity: 2,
+    quarantined_until: null, quarantined_reason: null, ...over,
+  };
+}
+
+/**
+ * Mirrors one `pool_status` row (src/api/models/task.py PoolStatusRow).
+ *
+ * A row is one *profile*, fleet-wide: the supply numbers are aggregates and
+ * the projects they are spread across are nested inside it.
+ */
 function pool(over: Partial<PoolStatusRow> = {}): PoolStatusRow {
   return {
-    project_id: "agent-queue", profile_id: "worker-standard",
+    profile_id: "worker-standard",
     min_active: 1, max_active: 4, desired: 3,
     running_idle: 1, running_busy: 2, starting: 0, draining: 0, ready: 5,
-    quarantined_until: null, ...over,
+    projects: [project()], ...over,
   };
 }
 
@@ -107,20 +121,43 @@ describe("pool derivation", () => {
   it("joins pool_status rows to their live sessions, oldest instance first", () => {
     const entries = poolEntries([pool()], [instance("bbb", { started_at: 200 }), instance("aaa", { started_at: 100 })]);
     expect(entries).toHaveLength(1);
-    expect(entries[0]!.key).toBe("pool:agent-queue:worker-standard");
+    expect(entries[0]!.key).toBe("pool:worker-standard");
     expect(entries[0]!.instances.map((row) => row.id)).toEqual([
       "p-worker-standard--agent-queue--aaa",
       "p-worker-standard--agent-queue--bbb",
     ]);
   });
 
-  it("ignores sessions belonging to another project or profile", () => {
+  it("keeps a pool's workers from every project and ignores other profiles", () => {
+    // A pool is one profile fleet-wide, so a worker placed in another project
+    // is still this pool's worker — filtering it out would hide most of the
+    // fleet from the instance picker.
     const entries = poolEntries([pool()], [
       instance("aaa"),
-      instance("other", { project_id: "elsewhere" }),
+      instance("other", { project_id: "elsewhere", started_at: 150 }),
       instance("push", { profile_id: "implementer" }),
     ]);
-    expect(entries[0]!.instances.map((row) => row.id)).toEqual(["p-worker-standard--agent-queue--aaa"]);
+    expect(entries[0]!.instances.map((row) => row.id)).toEqual([
+      "p-worker-standard--agent-queue--aaa",
+      "p-worker-standard--agent-queue--other",
+    ]);
+  });
+
+  it("carries the per-project breakdown, ordered by project id", () => {
+    const entries = poolEntries([pool({
+      projects: [project({ project_id: "zeta" }), project({ project_id: "alpha" })],
+    })], []);
+    expect(entries[0]!.projects.map((row) => row.project_id)).toEqual(["alpha", "zeta"]);
+  });
+
+  it("orders placement by live workers and drops projects holding none", () => {
+    // Warmth concentrates in the busiest project, so the one line the rail has
+    // room for shows the busiest first, not the alphabetically first.
+    expect(poolPlacement([
+      project({ project_id: "quiet", running_idle: 0, running_busy: 0, starting: 0 }),
+      project({ project_id: "small", running_idle: 1, running_busy: 0 }),
+      project({ project_id: "busy", running_idle: 1, running_busy: 3 }),
+    ]).map((row) => row.project_id)).toEqual(["busy", "small"]);
   });
 
   it("treats a worker on a pool profile as a pool instance, not a push agent", () => {
@@ -210,13 +247,24 @@ describe("useDebouncedBusyPoolEntries under a live flock", () => {
 
 describe("pool selection keys", () => {
   it("round-trips a pool key with and without a pinned instance", () => {
-    const bare = poolSelectionKey("agent-queue", "worker-standard");
+    const bare = poolSelectionKey("worker-standard");
+    expect(bare).toBe("pool:worker-standard");
     expect(parseAgentSelection(bare)).toEqual({
-      key: bare, kind: "pool", projectId: "agent-queue", profileId: "worker-standard", instanceId: null,
+      key: bare, kind: "pool", profileId: "worker-standard", instanceId: null,
     });
-    const pinned = poolSelectionKey("agent-queue", "worker-standard", "p-x--y--1");
+    const pinned = poolSelectionKey("worker-standard", "p-x--y--1");
     expect(parseAgentSelection(pinned)).toMatchObject({ kind: "pool", instanceId: "p-x--y--1" });
     expect(selectionAddress(pinned)).toBe(bare);
+  });
+
+  it("resolves a pre-global-pools key to no profile rather than a bogus one", () => {
+    // ``pool:<project>:<profile>`` is a shareable, bookmarkable key that
+    // outlived its format. A pool profile id never contains ":", so the second
+    // colon identifies it; it must not resolve to a pool profile called
+    // "agent-queue:worker-standard", which can never exist.
+    expect(parseAgentSelection("pool:agent-queue:worker-standard")).toEqual({
+      key: "pool:agent-queue:worker-standard", kind: "pool", profileId: "", instanceId: null,
+    });
   });
 
   it("reads a plain id as a fixed agent", () => {
@@ -313,11 +361,27 @@ describe("pools in the agent flock", () => {
     expect(screen.queryByRole("region", { name: "Worker pools" })).not.toBeInTheDocument();
   });
 
-  it("shows the quarantine backoff when a launch has failed", async () => {
-    api.poolStatus.mockResolvedValue({ data: { success: true, pools: [pool({ quarantined_until: Date.now() / 1000 + 30 })] } });
+  it("names the project a launch failure quarantined, not the whole pool", async () => {
+    // A quarantine belongs to one project's workspace; the pool may be
+    // perfectly healthy everywhere else.
+    api.poolStatus.mockResolvedValue({ data: { success: true, pools: [pool({ projects: [
+      project({ project_id: "agent-queue", quarantined_until: Date.now() / 1000 + 30, quarantined_reason: "claude: command not found" }),
+      project({ project_id: "other-repo" }),
+    ] })] } });
     renderAgents("/");
     const row = await screen.findByRole("button", { name: "Open worker-standard pool" }, SLOW);
-    expect(await within(row).findByText(/Quarantined for/, undefined, SLOW)).toBeInTheDocument();
+    expect(await within(row).findByText(/Quarantined in agent-queue for/, undefined, SLOW)).toBeInTheDocument();
+    expect(within(row).queryByText(/Quarantined in other-repo/)).not.toBeInTheDocument();
+  });
+
+  it("shows which projects a pool's workers are in", async () => {
+    api.poolStatus.mockResolvedValue({ data: { success: true, pools: [pool({ projects: [
+      project({ project_id: "agent-queue", running_idle: 1, running_busy: 2 }),
+      project({ project_id: "other-repo", running_idle: 1, running_busy: 0 }),
+    ] })] } });
+    renderAgents("/");
+    const row = await screen.findByRole("button", { name: "Open worker-standard pool" }, SLOW);
+    expect(await within(row).findByText("agent-queue 3 · other-repo 1", undefined, SLOW)).toBeInTheDocument();
   });
 });
 
@@ -331,7 +395,7 @@ describe("pool instance selection", () => {
     expect(TerminalSocketMock.instances[0]!.url).toContain("p-worker-standard--agent-queue--aaa");
 
     const picker = within(window).getByLabelText("Instance");
-    expect(within(picker).getByRole("option", { name: /p-worker-standard--agent-queue--bbb · quick-torrent-39 · 42s idle/ })).toBeInTheDocument();
+    expect(within(picker).getByRole("option", { name: /p-worker-standard--agent-queue--bbb · agent-queue · quick-torrent-39 · 42s idle/ })).toBeInTheDocument();
     fireEvent.change(picker, { target: { value: "p-worker-standard--agent-queue--bbb" } });
 
     await waitFor(() => expect(TerminalSocketMock.instances).toHaveLength(2), SLOW);
@@ -340,9 +404,18 @@ describe("pool instance selection", () => {
   });
 
   it("falls back to a live instance when the pinned one is gone", async () => {
-    renderAgents("/agents?agent=" + encodeURIComponent(poolSelectionKey("agent-queue", "worker-standard", "p-worker-standard--agent-queue--zzz")));
+    renderAgents("/agents?agent=" + encodeURIComponent(poolSelectionKey("worker-standard", "p-worker-standard--agent-queue--zzz")));
     await waitFor(() => expect(TerminalSocketMock.instances).toHaveLength(1), SLOW);
     expect(TerminalSocketMock.instances[0]!.url).toContain("p-worker-standard--agent-queue--aaa");
+  });
+
+  it("drops a pre-global-pools key from the URL instead of opening a dead view", async () => {
+    // Selection is shareable and bookmarkable, so an old-format key outlives
+    // the format that wrote it. It must degrade to "nothing selected" — the
+    // directory — rather than a tile the operator has to close by hand.
+    renderAgents("/agents?agent=pool%3Aagent-queue%3Aworker-standard");
+    expect(await screen.findByRole("region", { name: "Worker pools" }, SLOW)).toBeInTheDocument();
+    expect(screen.queryByRole("region", { name: /agent window/ })).not.toBeInTheDocument();
   });
 
   it("explains an empty pool instead of opening a terminal", async () => {
@@ -374,6 +447,30 @@ describe("pool settings", () => {
       profile_id: "worker-standard", min: 2, max: 6,
     });
     expect(await within(window).findByText("Pool bounds saved.")).toBeInTheDocument();
+  });
+
+  it("breaks the pool's supply down by project and shows a quarantine reason in full", async () => {
+    // The reason is captured harness startup output: truncating it to a line
+    // is what made the field useless, so the detail view renders all of it.
+    const reason = "Traceback (most recent call last):\n  File /opt/harness/claude, line 1\n  OSError: [Errno 2] No such file or directory: claude";
+    api.poolStatus.mockResolvedValue({ data: { success: true, pools: [pool({ projects: [
+      project({ project_id: "agent-queue", running_idle: 1, running_busy: 2 }),
+      project({ project_id: "other-repo", running_idle: 0, running_busy: 0, starting: 1,
+        quarantined_until: Date.now() / 1000 + 45, quarantined_reason: reason }),
+    ] })] } });
+    renderAgents("/");
+    fireEvent.click(await screen.findByRole("button", { name: "Open worker-standard pool" }, SLOW));
+    const window = await screen.findByRole("region", { name: "worker-standard pool agent window" }, SLOW);
+    fireEvent.click(within(window).getByRole("tab", { name: "Settings" }));
+
+    const table = within(await within(window).findByRole("region", { name: "Workers by project" }, SLOW)).getByRole("table");
+    const busiest = within(table).getByRole("row", { name: /^agent-queue/ });
+    expect(within(busiest).getAllByRole("cell").map((cell) => cell.textContent))
+      .toEqual(["5", "1", "2", "0", "0", "3/4", "2"]);
+    expect(within(table).getByRole("rowheader", { name: "other-repo" })).toBeInTheDocument();
+    expect(within(window).getByText(/quarantined for \d+s/)).toBeInTheDocument();
+    // Not a first line and an ellipsis: the whole captured output is present.
+    expect(within(window).getByText(/No such file or directory/).textContent).toBe(reason);
   });
 
   it("blocks a save that pool_scale would reject", async () => {
@@ -417,16 +514,21 @@ describe("pool settings", () => {
     expect(await within(window).findByText(/no pool profile/)).toBeInTheDocument();
   });
 
-  it("offers each project's bounds on a pool worker's own settings tab", async () => {
-    api.poolStatus.mockResolvedValue({ data: { success: true, pools: [pool(), pool({ project_id: "other-repo", min_active: 0, max_active: null })] } });
+  it("offers one set of fleet-wide bounds and the project breakdown on a pool worker's settings tab", async () => {
+    api.poolStatus.mockResolvedValue({ data: { success: true, pools: [pool({ projects: [
+      project({ project_id: "agent-queue" }),
+      project({ project_id: "other-repo", running_idle: 0, running_busy: 1 }),
+    ] })] } });
     // A pool worker is only reachable by URL once the flock hides its row.
     renderAgents("/agents?agent=pooled");
     const window = await screen.findByRole("region", { name: "worker-standard-9f2a agent window" }, SLOW);
     fireEvent.click(within(window).getByRole("tab", { name: "Settings" }));
     const section = await within(window).findByRole("region", { name: "Worker pool settings" }, SLOW);
-    expect(within(section).getByText("agent-queue")).toBeInTheDocument();
-    expect(within(section).getByText("other-repo")).toBeInTheDocument();
-    expect(within(section).getAllByLabelText("Maximum active workers")[1]).toHaveValue(null);
+    // Bounds are fleet-wide, so there is exactly one pair of fields now.
+    expect(within(section).getAllByLabelText("Maximum active workers")).toHaveLength(1);
+    const table = within(section).getByRole("table");
+    expect(within(table).getByRole("rowheader", { name: "agent-queue" })).toBeInTheDocument();
+    expect(within(table).getByRole("rowheader", { name: "other-repo" })).toBeInTheDocument();
   });
 });
 
@@ -525,7 +627,7 @@ describe("creating an agent or a pool", () => {
     expect(screen.queryByRole("form")).not.toBeInTheDocument();
     // Scope and lifecycle are what tell the two apart, so both are on the fork.
     expect(fork.getByText(/One durable worker · global/)).toBeInTheDocument();
-    expect(fork.getByText(/Elastic capacity · per project/)).toBeInTheDocument();
+    expect(fork.getByText(/Elastic capacity · fleet-wide/)).toBeInTheDocument();
   });
 
   it("keeps a pool profile unselectable on the create-agent form and says why", async () => {
@@ -552,22 +654,23 @@ describe("creating an agent or a pool", () => {
     expect(await screen.findByRole("form", { name: "Create agent pool" }, SLOW)).toBeInTheDocument();
   });
 
-  it("offers only pool-eligible profiles and active projects on the pool form", async () => {
+  it("offers only pool-eligible profiles, and no project at all, on the pool form", async () => {
+    // A pool is identified by its profile alone; which project a worker lands
+    // in is the placer's call at launch, so there is nothing to choose here.
     api.poolStatus.mockResolvedValue({ data: { success: true, pools: [] } });
     const form = await openCreate("Create agent pool");
     expect(await form.findByRole("option", { name: "Worker standard" }, SLOW)).toBeInTheDocument();
     expect(form.queryByRole("option", { name: "Implementer" })).not.toBeInTheDocument();
-    expect(form.getByRole("option", { name: "Agent Queue" })).toBeInTheDocument();
-    expect(form.queryByRole("option", { name: "Retired" })).not.toBeInTheDocument();
+    expect(form.queryByLabelText("Project")).not.toBeInTheDocument();
+    expect(form.queryByRole("option", { name: "Agent Queue" })).not.toBeInTheDocument();
   });
 
   it("configures the pool through pool_scale and opens its view", async () => {
     const form = await openCreate("Create agent pool");
     await form.findByRole("option", { name: "Worker standard" }, SLOW);
-    fireEvent.change(form.getByLabelText("Project"), { target: { value: "agent-queue" } });
     fireEvent.change(form.getByLabelText("Pool profile"), { target: { value: "worker-standard" } });
     // An existing pool is a reconfiguration, not a second pool — say so.
-    expect(await form.findByText(/already runs a pool in agent-queue/)).toBeInTheDocument();
+    expect(await form.findByText(/already runs a pool/)).toBeInTheDocument();
     fireEvent.change(form.getByLabelText("Minimum active workers"), { target: { value: "2" } });
     fireEvent.change(form.getByLabelText("Maximum active workers"), { target: { value: "6" } });
     fireEvent.click(form.getByRole("button", { name: "Create agent pool" }));
@@ -585,7 +688,6 @@ describe("creating an agent or a pool", () => {
     api.poolStatus.mockResolvedValue({ data: { success: true, pools: [] } });
     const form = await openCreate("Create agent pool");
     await form.findByRole("option", { name: "Worker standard" }, SLOW);
-    fireEvent.change(form.getByLabelText("Project"), { target: { value: "agent-queue" } });
     fireEvent.change(form.getByLabelText("Pool profile"), { target: { value: "worker-standard" } });
     fireEvent.click(form.getByRole("button", { name: "Create agent pool" }));
 
@@ -598,7 +700,6 @@ describe("creating an agent or a pool", () => {
   it("blocks bounds pool_scale would reject before submitting them", async () => {
     const form = await openCreate("Create agent pool");
     await form.findByRole("option", { name: "Worker standard" }, SLOW);
-    fireEvent.change(form.getByLabelText("Project"), { target: { value: "agent-queue" } });
     fireEvent.change(form.getByLabelText("Pool profile"), { target: { value: "worker-standard" } });
     fireEvent.change(form.getByLabelText("Minimum active workers"), { target: { value: "9" } });
 
@@ -611,7 +712,6 @@ describe("creating an agent or a pool", () => {
     api.poolScale.mockResolvedValue({ data: { success: false, error: "no pool profile 'worker-standard'" } });
     const form = await openCreate("Create agent pool");
     await form.findByRole("option", { name: "Worker standard" }, SLOW);
-    fireEvent.change(form.getByLabelText("Project"), { target: { value: "agent-queue" } });
     fireEvent.change(form.getByLabelText("Pool profile"), { target: { value: "worker-standard" } });
     fireEvent.click(form.getByRole("button", { name: "Create agent pool" }));
 

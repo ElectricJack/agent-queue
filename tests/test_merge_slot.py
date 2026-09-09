@@ -16,7 +16,7 @@ from pathlib import Path
 
 import pytest
 
-from src.config import AppConfig
+from src.config import DatabaseConfig, AppConfig
 from src.database import Database
 from src.models import (
     Agent,
@@ -44,6 +44,7 @@ from src.orchestrator.merge_slot import (
     renew_merge_slot,
 )
 from src.runtimes.base import Runtime
+from tests.db_fixtures import lease_dsn
 
 
 class RecordingBus:
@@ -56,7 +57,7 @@ class RecordingBus:
 
 @pytest.fixture
 async def db(tmp_path: Path):
-    d = Database(str(tmp_path / "aq.db"))
+    d = Database(lease_dsn("aq.db"))
     await d.initialize()
     await d.create_project(Project(id="p1", name="alpha"))
     await d.create_project(Project(id="p2", name="beta"))
@@ -95,7 +96,7 @@ async def test_concurrent_acquire_never_double_grants_under_load(tmp_path):
     ``test_concurrent_acquire_serialized_across_interleaving_mutators`` which
     covers the case where a mutator does await between DB round-trips.
     """
-    d = Database(str(tmp_path / "aq.db"))
+    d = Database(lease_dsn("aq.db"))
     await d.initialize()
     await d.create_project(Project(id="p1", name="alpha"))
     try:
@@ -137,7 +138,7 @@ async def test_mutator_serialization_prevents_mid_transaction_interleaving(
     racer's ``acquire_merge_slot_row`` blocks on the lock until A returns,
     so A's ``other_took`` wait times out — proving mutual exclusion.
     """
-    d = Database(str(tmp_path / "aq.db"))
+    d = Database(lease_dsn("aq.db"))
     await d.initialize()
     await d.create_project(Project(id="p1", name="alpha"))
     try:
@@ -309,13 +310,13 @@ async def test_break_expired_emits_lease_broken_event(db):
 
 
 async def test_slot_state_survives_database_reopen(tmp_path):
-    d = Database(str(tmp_path / "aq.db"))
+    d = Database(lease_dsn("aq.db"))
     await d.initialize()
     await d.create_project(Project(id="p1", name="alpha"))
     assert await acquire_merge_slot(d, "p1", "task-A", ttl=60) is True
     await d.close()
 
-    d2 = Database(str(tmp_path / "aq.db"))
+    d2 = Database(lease_dsn("aq.db"))
     await d2.initialize()
     try:
         # A different task cannot acquire — original row persisted.
@@ -374,7 +375,7 @@ def base_repo_for_integrate(tmp_path):
 async def _make_worktree_orch(tmp_path, *, mode=KIND_MODE_WORKTREE, cap=2):
     config = AppConfig(
         data_dir=str(tmp_path / "data"),
-        database_path=str(tmp_path / "aq.db"),
+        database=DatabaseConfig(url=lease_dsn("aq.db")),
         workspace_dir=str(tmp_path / "workspaces"),
     )
     config.worktrees.enabled = True
@@ -830,7 +831,7 @@ class TestAcquireMergeSlotBusyErrorHandling:
     """Finding #3: SQLITE_BUSY / locked surfaces as False, not exception."""
 
     async def test_operational_error_locked_returns_false(self, tmp_path, monkeypatch):
-        d = Database(str(tmp_path / "aq.db"))
+        d = Database(lease_dsn("aq.db"))
         await d.initialize()
         try:
             await d.create_project(Project(id="p1", name="p", repo_url=""))

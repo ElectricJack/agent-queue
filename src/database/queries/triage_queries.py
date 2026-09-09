@@ -140,8 +140,7 @@ async def ensure_triage_task(
     async with db.immediate() as conn:
         # Serialize find-or-create on both backends, even before a task exists.
         project_query = select(projects.c.id).where(projects.c.id == project_id)
-        if conn.dialect.name == "postgresql":
-            project_query = project_query.with_for_update()
+        project_query = project_query.with_for_update()
         if (await conn.execute(project_query)).scalar() is None:
             return {"success": False, "error": f"Project '{project_id}' not found"}
 
@@ -150,8 +149,7 @@ async def ensure_triage_task(
             .where(tasks.c.project_id == project_id, _triage_rows())
             .order_by(tasks.c.created_at.asc(), tasks.c.id.asc())
         )
-        if conn.dialect.name == "postgresql":
-            query = query.with_for_update()
+        query = query.with_for_update()
         rows = (await conn.execute(query)).mappings().all()
         canonical = rows[0] if rows else None
         task_id = canonical["id"] if canonical else None

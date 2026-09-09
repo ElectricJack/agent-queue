@@ -13,6 +13,7 @@ from src.database.tables import integration_branch_owners
 from src.integration.models import BranchKey, Fence
 from src.integration.ownership import BranchBusy, BranchOwnership, StaleFence
 from src.models import Project, RepoSourceType, Task, Workspace
+from tests.db_fixtures import lease_dsn
 
 
 pytestmark = pytest.mark.asyncio
@@ -20,7 +21,7 @@ pytestmark = pytest.mark.asyncio
 
 @pytest.fixture
 async def db(tmp_path):
-    database = Database(str(tmp_path / "ownership.db"))
+    database = Database(lease_dsn("ownership.db"))
     await database.initialize()
     await database.create_project(Project(id="p", name="p"))
     yield database

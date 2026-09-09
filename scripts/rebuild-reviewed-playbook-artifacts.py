@@ -62,6 +62,7 @@ SHIPPED = {
     "hierarchical-delivery": "src/prompts/default_playbooks/hierarchical-delivery.md",
     "root-integration-train": "src/prompts/default_playbooks/root-integration-train.md",
     "blocked-task-escalation": "src/prompts/default_playbooks/blocked-task-escalation.md",
+    "provider-usage-probe": "src/prompts/default_playbooks/provider-usage-probe.md",
 }
 SOURCES = SHIPPED
 
@@ -214,6 +215,8 @@ def semantic_body(playbook_id: str, source: PlaybookSource) -> dict[str, Any]:
         return _root_integration_train_body(source)
     if playbook_id == "blocked-task-escalation":
         return _blocked_task_escalation_body(source)
+    if playbook_id == "provider-usage-probe":
+        return _provider_usage_probe_body(source)
     return {}
 
 
@@ -717,6 +720,53 @@ def _blocked_task_escalation_body(source: PlaybookSource) -> dict[str, Any]:
                     "rejected": failed,
                     "runtime_error": failed,
                 },
+            },
+            done: _terminal(rule, "completed", index.step_ref(rule, None)),
+            failed: _terminal(rule, "failed", index.step_ref(rule, None)),
+        },
+    }
+
+
+def _provider_usage_probe_body(source: PlaybookSource) -> dict[str, Any]:
+    """The reviewer-authored deterministic graph for ``provider-usage-probe``.
+
+    One command step and two terminals: every ``timer.10m`` tick calls
+    ``provider_usage_probe`` for ``claude``.  The five outcomes the prose
+    names as successful all reach the completed terminal; a rejection or a
+    runtime error reaches the failed one.  See
+    ``docs/superpowers/specs/2026-09-07-provider-usage-implementation.md`` T4.
+    """
+    index = ProseIndex(source, source.vault_path)
+    rule = "probe-claude-usage"
+    probe = f"{rule}--probe"
+    done = f"{rule}--done"
+    failed = f"{rule}--failed"
+
+    transitions = {name: done for name in (
+        "probed", "unparsed", "not_applicable", "unavailable", "disabled")}
+    transitions["rejected"] = failed
+    transitions["runtime_error"] = failed
+
+    return {
+        "rules": [
+            {
+                "id": rule,
+                "name": rule,
+                "trigger": {"event_type": "timer.10m"},
+                "entry_step": probe,
+                "source": index.rule_ref(rule),
+            }
+        ],
+        "steps": {
+            probe: {
+                "type": "command",
+                "rule": rule,
+                "title": "probe",
+                "source": index.step_ref(rule, 1),
+                "command": "provider_usage_probe",
+                "inputs": {"provider": {"type": "literal", "value": "claude"}},
+                "save_result_as": "usage",
+                "transitions": transitions,
             },
             done: _terminal(rule, "completed", index.step_ref(rule, None)),
             failed: _terminal(rule, "failed", index.step_ref(rule, None)),

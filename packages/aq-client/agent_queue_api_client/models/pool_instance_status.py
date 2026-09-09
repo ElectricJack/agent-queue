@@ -20,6 +20,7 @@ class PoolInstanceStatus:
         name (str):
         state (str):
         started_at (float):
+        project_id (None | str | Unset):
         task_id (None | str | Unset):
         task_title (None | str | Unset):
         idle_seconds (float | None | Unset):
@@ -30,6 +31,7 @@ class PoolInstanceStatus:
     name: str
     state: str
     started_at: float
+    project_id: None | str | Unset = UNSET
     task_id: None | str | Unset = UNSET
     task_title: None | str | Unset = UNSET
     idle_seconds: float | None | Unset = UNSET
@@ -44,6 +46,12 @@ class PoolInstanceStatus:
         state = self.state
 
         started_at = self.started_at
+
+        project_id: None | str | Unset
+        if isinstance(self.project_id, Unset):
+            project_id = UNSET
+        else:
+            project_id = self.project_id
 
         task_id: None | str | Unset
         if isinstance(self.task_id, Unset):
@@ -79,6 +87,8 @@ class PoolInstanceStatus:
                 "started_at": started_at,
             }
         )
+        if project_id is not UNSET:
+            field_dict["project_id"] = project_id
         if task_id is not UNSET:
             field_dict["task_id"] = task_id
         if task_title is not UNSET:
@@ -100,6 +110,15 @@ class PoolInstanceStatus:
         state = d.pop("state")
 
         started_at = d.pop("started_at")
+
+        def _parse_project_id(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        project_id = _parse_project_id(d.pop("project_id", UNSET))
 
         def _parse_task_id(data: object) -> None | str | Unset:
             if data is None:
@@ -142,6 +161,7 @@ class PoolInstanceStatus:
             name=name,
             state=state,
             started_at=started_at,
+            project_id=project_id,
             task_id=task_id,
             task_title=task_title,
             idle_seconds=idle_seconds,

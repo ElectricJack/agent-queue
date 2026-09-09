@@ -17,6 +17,7 @@ import {
   editWorkspace,
   getConfig,
   getConfigSchema,
+  getProviderUsageApiProvidersUsageGet,
   getMcpServer,
   getProfile,
   getProject,
@@ -129,6 +130,8 @@ import type {
   ProbeMcpServerResponse,
   ProfileDetail,
   ProfileSummary,
+  ProviderUsageResponse,
+  ProviderUsageSnapshot,
   ProjectSummary,
   ShowEffectiveProfileResponse,
   TaskDetail,
@@ -155,6 +158,7 @@ import type {
   TaskAttachmentsResponse,
   PoolStatusResponse,
   PoolStatusRow,
+  PoolProjectStatus,
   PoolScaleRequest,
   PoolScaleResponse,
   PoolSetEnabledRequest,
@@ -284,15 +288,19 @@ export function useAllAgents(projectIds: string[]) {
 
 // --- Worker pools (swarm work model §11) ---
 
-export type { PoolStatusRow };
+export type { PoolStatusRow, PoolProjectStatus };
 
 /**
- * One row per (active project, pool profile) with its bounds and live supply.
+ * One row per pool profile with its bounds, its fleet-wide supply and the
+ * per-project breakdown of where that supply currently sits.
  *
- * ``pool_status`` emits a row for every pool profile a project resolves —
- * including one at zero supply — so the response doubles as the authoritative
- * list of which profiles run as pools. Polled on the flock's cadence because
- * supply turns over as fast as agent state does.
+ * Sizing is global (global worker pools §1): a profile is one pool, not one
+ * pool per project, so ``min_active``/``max_active`` bound the whole fleet and
+ * the projects a worker landed in are reported inside ``projects``. A row is
+ * emitted for every pool profile — including one at zero supply — so the
+ * response doubles as the authoritative list of which profiles run as pools.
+ * Polled on the flock's cadence because supply turns over as fast as agent
+ * state does.
  */
 export function usePoolStatus(projectId?: string) {
   return useQuery({
@@ -1474,3 +1482,32 @@ export function useReloadSystemConfig() {
     },
   });
 }
+
+// --- Provider usage -------------------------------------------------------
+//
+// Each provider's own quota, as it reports it: the newest reading per
+// ``(provider, window, scope)`` series.  ``stale`` and ``age_seconds`` are
+// computed server-side and used verbatim here — the horizon differs per
+// provider (a Codex number only advances while a Codex session is live) and
+// re-deriving it in the client is how two surfaces end up disagreeing about
+// the same card.
+//
+// Polled rather than pushed: these numbers move on a ten-minute probe and a
+// transcript tick, so a socket frame for them would carry nothing new 99% of
+// the time.
+
+export function useProviderUsage(options?: { refetchInterval?: number }) {
+  return useQuery({
+    queryKey: ["providers", "usage"],
+    queryFn: async ({ signal }) =>
+      (
+        await getProviderUsageApiProvidersUsageGet({ signal, throwOnError: true })
+      ).data as ProviderUsageResponse,
+    // An install that has never probed returns an empty list, which is a
+    // valid answer and not worth three backoff retries.
+    retry: 1,
+    refetchInterval: options?.refetchInterval ?? 60_000,
+  });
+}
+
+export type { ProviderUsageResponse, ProviderUsageSnapshot };

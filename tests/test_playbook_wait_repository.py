@@ -7,10 +7,7 @@ boundary's own connection, so there is no interval in which a run is
 suspended and its wait is missing — nor one in which a wait outlives the
 boundary that failed to write it.
 
-Every concurrency case is parametrised over both backends.  On SQLite
-``immediate()``'s per-adapter ``asyncio.Lock`` serialises callers, so a green
-SQLite run proves the *result* is correct but not that the compare-and-set is
-what enforced it; only PostgreSQL proves the fence.
+Concurrency cases run against PostgreSQL to exercise the database fence.
 """
 
 from __future__ import annotations
@@ -48,6 +45,7 @@ from src.playbooks.waits import (
     WaitSpec,
     matches,
 )
+from tests.db_fixtures import lease_dsn
 from tests.pg_dsn import ensure_worker_postgres_dsn
 
 POSTGRES_TEST_DSN = ensure_worker_postgres_dsn()
@@ -73,7 +71,7 @@ class Event:
     scope_identifier: str = ""
 
 
-@pytest.fixture(params=["sqlite", "postgres"])
+@pytest.fixture
 async def db_factory(request, tmp_path):
     """Open adapters against one durable target, for the restart case.
 
@@ -84,27 +82,13 @@ async def db_factory(request, tmp_path):
     """
     opened: list[Any] = []
 
-    if request.param == "postgres":
-        if not POSTGRES_TEST_DSN:
-            pytest.skip("POSTGRES_TEST_DSN not set")
-        from src.database.adapters.postgresql import PostgreSQLDatabaseAdapter
+    path = lease_dsn("wait_repository")
 
-        async def factory():
-            database = PostgreSQLDatabaseAdapter(POSTGRES_TEST_DSN)
-            await database.initialize()
-            if not opened:
-                await database.reset_for_tests()
-            opened.append(database)
-            return database
-
-    else:
-        path = str(tmp_path / "test.db")
-
-        async def factory():
-            database = Database(path)
-            await database.initialize()
-            opened.append(database)
-            return database
+    async def factory():
+        database = Database(path)
+        await database.initialize()
+        opened.append(database)
+        return database
 
     yield factory
     for database in opened:
@@ -383,9 +367,7 @@ async def test_stale_snapshot_version_is_rejected_before_registration(db):
     assert caught.value.actual == 999
     assert await db.list_active("run-1") == []
     assert (
-        await db.claim_for_event(
-            Event("pr.merged", "evt-stale", {"pr": {"number": 41}}), now=NOW
-        )
+        await db.claim_for_event(Event("pr.merged", "evt-stale", {"pr": {"number": 41}}), now=NOW)
         == []
     )
 
@@ -450,15 +432,11 @@ async def test_claim_is_exactly_once_under_concurrency(db):
     await db.register(make_wait(), 1)
     event = Event("pr.merged", "evt-9", {"pr": {"number": 41}})
 
-    results = await asyncio.gather(
-        *(db.claim_for_event(event, now=NOW + HOUR) for _ in range(20))
-    )
+    results = await asyncio.gather(*(db.claim_for_event(event, now=NOW + HOUR) for _ in range(20)))
     assert sum(len(batch) for batch in results) == 1
 
 
-async def test_event_arriving_during_registration_is_claimed_exactly_once(
-    db, monkeypatch
-):
+async def test_event_arriving_during_registration_is_claimed_exactly_once(db, monkeypatch):
     """An event committed before its wait insert must survive registration."""
     if db._engine.dialect.name != "postgresql":
         pytest.skip("the cross-transaction visibility race requires PostgreSQL")
@@ -490,14 +468,10 @@ async def test_event_arriving_during_registration_is_claimed_exactly_once(
     committed = await boundary
     monkeypatch.undo()
 
-    [row] = await db.list_pending_events(
-        playbook_id="task-review", include_resolved=True
-    )
+    [row] = await db.list_pending_events(playbook_id="task-review", include_resolved=True)
     assert row["event_id"] == "evt-during"
     assert row["event"] == {"pr": {"number": 41}}
-    assert [claim.claimed_event_id for claim in committed.pending_wait_claims] == [
-        "evt-during"
-    ]
+    assert [claim.claimed_event_id for claim in committed.pending_wait_claims] == ["evt-during"]
     assert committed.pending_wait_claims[0].event_fields == {"pr": {"number": 41}}
     assert (await db.load_run("run-1")).pending_wait_claims == committed.pending_wait_claims
     assert await db.list_active("run-1") == []
@@ -524,9 +498,7 @@ async def test_duplicate_event_uses_its_original_payload_and_arrival_time(db):
     changed_replay = Event("pr.merged", "evt-duplicate", {"pr": {"number": 41}})
     assert await db.claim_for_event(changed_replay, now=NOW + 2) == []
     assert [wait.wait_id for wait in await db.list_active("run-1")] == ["wait-1"]
-    rows = await db.list_pending_events(
-        playbook_id="task-review", include_resolved=True
-    )
+    rows = await db.list_pending_events(playbook_id="task-review", include_resolved=True)
     assert [(row["event_type"], row["event"]) for row in rows] == [
         ("pr.closed", {"pr": {"number": 7}})
     ]
@@ -549,9 +521,7 @@ async def test_event_delivery_is_isolated_by_artifact_scope(db):
     system_event = replace(event, scope="system", scope_identifier="")
     claims = await db.claim_for_event(system_event, now=NOW + HOUR + 1)
     assert [claim.wait_id for claim in claims] == ["wait-1"]
-    rows = await db.list_pending_events(
-        playbook_id="task-review", include_resolved=True
-    )
+    rows = await db.list_pending_events(playbook_id="task-review", include_resolved=True)
     assert {(row["scope"], row["scope_identifier"]) for row in rows} == {
         ("project", "project-1"),
         ("system", ""),
@@ -689,9 +659,7 @@ async def test_one_boundary_clears_a_wait_and_opens_the_next(db):
     second = await db.commit_boundary(
         replace(first, lifecycle=RunLifecycle.RUNNING),
         make_receipt(first, attempt=2),
-        WaitChangeSet(
-            clear_wait_ids=("wait-1",), register=(make_wait(wait_id="wait-2"),)
-        ),
+        WaitChangeSet(clear_wait_ids=("wait-1",), register=(make_wait(wait_id="wait-2"),)),
     )
     assert [w.wait_id for w in await db.list_active("run-1")] == ["wait-2"]
     assert second.version == first.version + 1
@@ -905,10 +873,7 @@ async def test_an_empty_dedup_key_never_deduplicates(db):
 
 
 async def test_pending_events_replay_in_arrival_order(db):
-    ids = [
-        await retain(db, dedup_key=f"k{i}", event_id=f"evt-{i}", now=NOW + i)
-        for i in range(5)
-    ]
+    ids = [await retain(db, dedup_key=f"k{i}", event_id=f"evt-{i}", now=NOW + i) for i in range(5)]
     rows = await db.list_pending_events(playbook_id="task-review")
     assert [row["pending_event_id"] for row in rows] == ids
 
@@ -1111,9 +1076,7 @@ async def test_the_quota_is_per_playbook(db):
 
 async def test_purge_pending_events_marks_expired_then_collects_after_retention(db):
     resolved = await retain(db, dedup_key="k1", event_id="e1")
-    await db.resolve_pending_event(
-        resolved, resolution="discarded", resolved_by="op", now=NOW + 1
-    )
+    await db.resolve_pending_event(resolved, resolution="discarded", resolved_by="op", now=NOW + 1)
     expired = await retain(db, dedup_key="k2", event_id="e2", ttl_seconds=1)
     live = await retain(db, dedup_key="k3", event_id="e3", ttl_seconds=7 * DAY)
 
@@ -1127,9 +1090,7 @@ async def test_purge_pending_events_marks_expired_then_collects_after_retention(
     assert expired_row["resolved_by"] == "retention_sweep"
     assert expired_row["resolved_at"] == NOW + HOUR
 
-    second = await db.purge_pending_events(
-        NOW + HOUR + DAY + 1, resolved_before=NOW + HOUR + 1
-    )
+    second = await db.purge_pending_events(NOW + HOUR + DAY + 1, resolved_before=NOW + HOUR + 1)
     assert second.expired == 0
     assert second.purged == 2
     remaining = await db.list_pending_events(playbook_id="task-review", include_resolved=True)

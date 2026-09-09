@@ -6,10 +6,11 @@ from typing import Any
 
 from sqlalchemy import select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
-from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from src.database.tables import project_integration_schedules
+
+INTEGRATION_LEASE_SECONDS = 300
 
 
 class IntegrationScheduleQueriesMixin:
@@ -23,7 +24,7 @@ class IntegrationScheduleQueriesMixin:
         now: float,
         default_interval_seconds: int,
     ) -> dict[str, Any]:
-        insert_fn = pg_insert if conn.dialect.name == "postgresql" else sqlite_insert
+        insert_fn = pg_insert
         await conn.execute(
             insert_fn(project_integration_schedules)
             .values(

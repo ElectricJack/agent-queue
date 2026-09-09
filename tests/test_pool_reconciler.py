@@ -11,10 +11,13 @@ import uuid
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from dataclasses import replace
+from sqlalchemy import insert
 
 from src.commands.claim_commands import CLAIM_FILE, write_claim_file
-from src.config import AppConfig, DiscordConfig
+from src.config import DatabaseConfig, AppConfig, DiscordConfig
 from src.database import Database
+from src.database.tables import integration_branch_owners
 from src.intelligence_classes import IntelligenceClass
 from src.models import (
     AgentProfile,
@@ -27,6 +30,7 @@ from src.models import (
 )
 from src.orchestrator import Orchestrator
 from src.sessions.harness_parser import Harness
+from tests.db_fixtures import lease_dsn
 
 PROJECT_ID = "proj"
 
@@ -61,8 +65,11 @@ class _FakeSlotManager:
 
 @pytest.fixture
 async def db(tmp_path):
-    database = Database(str(tmp_path / "test.db"))
+    database = Database(lease_dsn("test.db"))
     await database.initialize()
+    # These fixtures model independent clones; slot provisioning has its own tests.
+    kind = await database.resolve_workspace_kind("__system__", "project-repo")
+    await database.upsert_workspace_kind(replace(kind, mode="exclusive-clone"))
     await database.create_project(Project(id=PROJECT_ID, name="p"))
     await database.create_profile(
         AgentProfile(
@@ -88,7 +95,7 @@ async def orch(db, tmp_path):
     cfg = AppConfig(
         discord=DiscordConfig(bot_token="t", guild_id="1"),
         workspace_dir=str(tmp_path / "ws"),
-        database_path=str(tmp_path / "test.db"),
+        database=DatabaseConfig(url=lease_dsn("test.db")),
         data_dir=str(tmp_path / "data"),
     )
     cfg.sessions.enabled = True
@@ -369,6 +376,37 @@ class TestReconcilePools:
         assert updated.state == "stopped"
         assert not os.path.exists(claim_path)
 
+    async def test_terminate_pool_session_retains_attached_integration_owner(self, orch, db):
+        await ready(db, "t1")
+        await orch._reconcile_pools()
+        session = (await db.list_sessions(lifecycle="pool"))[0]
+        claim_path = os.path.join(session.work_dir, CLAIM_FILE)
+        await db.update_session(session.id, task_id="t1", claim_phase="active")
+        await db.update_task("t1", status=TaskStatus.IN_PROGRESS, assigned_agent_id=session.agent_id)
+        await db.update_agent(session.agent_id, current_task_id="t1")
+        workspace = await db.get_workspace_for_agent(session.agent_id)
+        await db.update_workspace(workspace.id, locked_by_task_id="t1")
+        write_claim_file(session.work_dir, {"task_id": "t1", "claim_epoch": 0})
+        async with db.immediate() as conn:
+            await conn.execute(
+                insert(integration_branch_owners).values(
+                    id="owner-1", repository_id="repo-1", ref="aq/t1", owner_id="t1",
+                    owner_role="worker", fence_token=1, handoff_state="attached",
+                    session_id=session.id, workspace_id=workspace.id,
+                    created_at=time.time(), updated_at=time.time(),
+                )
+            )
+
+        await orch._terminate_pool_session(session, reason="integration_owner")
+
+        updated = await db.get_session(session.id)
+        agent = await db.get_agent(session.agent_id)
+        assert updated.state != "stopped"
+        assert updated.task_id == "t1"
+        assert agent.state is not AgentState.IDLE
+        assert (await db.get_workspace(workspace.id)).locked_by_agent_id == session.agent_id
+        assert os.path.exists(claim_path)
+
     async def test_startup_warns_when_pool_profiles_but_swarm_disabled(self, orch, caplog):
         """I5 / ruling P2-17: say out loud that the flag strands pool work."""
         orch.config.swarm.enabled = False
@@ -525,3 +563,220 @@ async def test_concurrent_pool_teardown_stops_and_releases_only_once(orch, db, m
     )
     assert stop.await_count == 1
     assert (await db.get_agent(row.agent_id)).state == AgentState.IDLE
+
+
+# ---------------------------------------------------------------------------
+# Global keying: one pool per profile, placement decides the project.
+# ---------------------------------------------------------------------------
+
+
+async def second_project(db, *, path="/tmp/second-ws"):
+    """A second ACTIVE project with one free ``project-repo`` workspace."""
+    await db.create_project(Project(id="second", name="Second"))
+    await db.create_workspace(
+        Workspace(
+            id="second-ws",
+            project_id="second",
+            workspace_path=path,
+            source_type=RepoSourceType.LINK,
+            kind_id="project-repo",
+        )
+    )
+
+
+async def test_measure_pools_aggregates_projects_under_one_profile_key(orch, db, tmp_path):
+    """Two projects, one profile, one pool — with the per-project breakdown and
+    a placement candidate each kept alongside the aggregate."""
+    from src.scheduler import PoolKey
+
+    await second_project(db, path=str(tmp_path / "second-ws"))
+    await ready(db, "t1")
+    await ready(db, "t2")
+    await db.update_task("t2", project_id="second")
+
+    measurement = await orch._measure_pools()
+
+    key = PoolKey("worker")
+    assert set(measurement.supply) == {key}
+    assert set(measurement.bounds) == {key}
+    assert measurement.bounds[key] == (0, 2)  # the profile's own bounds, once
+    assert measurement.demand[key] == 2  # summed across both projects
+    assert set(measurement.supply[key].by_project) == {PROJECT_ID, "second"}
+    assert {c.project_id for c in measurement.candidates[key]} == {PROJECT_ID, "second"}
+    assert set(measurement.projects) == {PROJECT_ID, "second"}
+
+
+async def test_measure_pools_records_placement_inputs_per_project(orch, db, tmp_path):
+    from src.scheduler import PoolKey
+
+    await second_project(db, path=str(tmp_path / "second-ws"))
+    orch._pool_quarantine[("second", "worker")] = time.time() + 60
+    await ready(db, "t1")
+
+    measurement = await orch._measure_pools()
+    by_project = {c.project_id: c for c in measurement.candidates[PoolKey("worker")]}
+
+    assert by_project["second"].quarantined is True
+    assert by_project[PROJECT_ID].quarantined is False
+    assert by_project[PROJECT_ID].workspace_capacity == 2  # the fixture's two links
+    assert by_project[PROJECT_ID].ready == 1
+    assert by_project["second"].ready == 0
+    # ``max_concurrent_agents`` is a placement input now, not a pool bound.
+    project = await db.get_project(PROJECT_ID)
+    assert by_project[PROJECT_ID].project_cap == project.max_concurrent_agents
+
+
+async def test_quarantined_project_does_not_burn_the_fleets_start_budget(orch, db, tmp_path):
+    """Quarantine is an eligibility predicate, checked before a start is spent.
+
+    It used to be checked *after* the sizer had already picked a key, so a
+    single broken project could consume the tick's whole start budget and
+    leave a healthy one with nothing.
+    """
+    await second_project(db, path=str(tmp_path / "second-ws"))
+    orch._pool_quarantine[(PROJECT_ID, "worker")] = time.time() + 60
+    await ready(db, "t1")
+
+    await orch._reconcile_pools()
+
+    sessions = await db.list_sessions(lifecycle="pool")
+    assert [s.project_id for s in sessions] == ["second"]
+
+
+async def test_every_project_quarantined_starves_rather_than_starting(orch, db, tmp_path):
+    await second_project(db, path=str(tmp_path / "second-ws"))
+    now = time.time()
+    orch._pool_quarantine[(PROJECT_ID, "worker")] = now + 60
+    orch._pool_quarantine[("second", "worker")] = now + 60
+    await ready(db, "t1")
+
+    await orch._reconcile_pools()
+
+    assert await db.list_sessions(lifecycle="pool") == []
+    assert await db.get_recent_events(event_type="pool.scaled") == []
+
+
+async def test_pool_scaled_payload_carries_the_placement_reason(orch, db):
+    await ready(db, "t1")
+    await orch._reconcile_pools()
+
+    scaled = [
+        call.args[1] for call in orch.bus.emit.await_args_list if call.args[0] == "pool.scaled"
+    ]
+    assert len(scaled) == 1
+    assert scaled[0]["project_id"] == PROJECT_ID
+    assert scaled[0]["profile_id"] == "worker"
+    assert scaled[0]["kind"] == "start"
+    assert scaled[0]["placement_reason"] == "deficit"
+
+
+async def test_drain_event_reports_the_project_the_worker_actually_left(orch, db):
+    await ready(db, "t1")
+    await orch._reconcile_pools()
+    await db.delete_task("t1")
+    orch.config.swarm.scale_down_grace = 0
+    orch.bus.emit.reset_mock()
+    await orch._reconcile_pools()
+
+    drains = [
+        call.args[1]
+        for call in orch.bus.emit.await_args_list
+        if call.args[0] == "pool.scaled" and call.args[1]["kind"] == "drain"
+    ]
+    assert [(d["project_id"], d["count"]) for d in drains] == [(PROJECT_ID, 1)]
+    # A drain has no placement reason: nothing was placed.
+    assert "placement_reason" not in drains[0]
+
+
+async def test_global_cap_bounds_the_whole_fleet(orch, db, tmp_path):
+    """``global_cap`` was hardcoded ``None`` at the call site, so the fleet had no
+    box-wide bound at all.  It now resolves to ``resources.max_concurrent_agents``
+    unless ``swarm.global_max_active`` overrides it."""
+    await second_project(db, path=str(tmp_path / "second-ws"))
+    orch.config.resources.max_concurrent_agents = 1
+    await ready(db, "t1")
+    await ready(db, "t2")
+
+    await orch._reconcile_pools()
+
+    assert len(await db.list_sessions(lifecycle="pool")) == 1
+
+
+async def test_swarm_global_max_active_overrides_the_resource_cap(orch, db):
+    orch.config.resources.max_concurrent_agents = 8
+    orch.config.swarm.global_max_active = 1
+    await ready(db, "t1")
+    await ready(db, "t2")
+
+    await orch._reconcile_pools()
+
+    assert len(await db.list_sessions(lifecycle="pool")) == 1
+
+
+async def test_starvation_is_reported_once_per_condition_not_once_per_tick(orch, db, caplog):
+    """The pool step runs every five seconds, and a fleet with nowhere to put a
+    worker stays that way until an operator acts.  One warning per condition,
+    not one per tick — the same restraint the quarantine window buys."""
+    for ws in await db.list_workspaces(PROJECT_ID):
+        await db.delete_workspace(ws.id)
+    await ready(db, "t1")
+
+    with caplog.at_level(logging.WARNING, logger="src.orchestrator.pools"):
+        await orch._reconcile_pools()
+        first = [r.getMessage() for r in caplog.records if r.name == "src.orchestrator.pools"]
+        caplog.clear()
+        await orch._reconcile_pools()
+        second = [r.getMessage() for r in caplog.records if r.name == "src.orchestrator.pools"]
+
+    assert len(first) == 1
+    assert "no eligible project" in first[0] and "no workspace capacity" in first[0]
+    assert second == []
+
+
+async def test_all_quarantined_starvation_does_not_re_warn_over_the_quarantine(orch, db, caplog):
+    """``_quarantine_pool`` already said this, once, with the startup output
+    attached; a second warning per tick is the wall of noise it exists to stop."""
+    orch._pool_quarantine[(PROJECT_ID, "worker")] = time.time() + 60
+    await ready(db, "t1")
+
+    with caplog.at_level(logging.WARNING, logger="src.orchestrator.pools"):
+        await orch._reconcile_pools()
+
+    assert [r for r in caplog.records if r.name == "src.orchestrator.pools"] == []
+    assert await db.list_sessions(lifecycle="pool") == []
+
+
+async def test_min_per_project_parks_a_warm_worker_in_every_eligible_project(
+    orch, db, tmp_path
+):
+    """The knob that buys back what global sizing costs: a stated per-project
+    reservation raises the fleet floor *and* is placed where it was promised,
+    with no ready work anywhere."""
+    await second_project(db, path=str(tmp_path / "second-ws"))
+    await db.update_profile("worker", min_active=0, max_active=4, min_per_project=1)
+
+    await orch._reconcile_pools()
+
+    sessions = await db.list_sessions(lifecycle="pool")
+    assert sorted(s.project_id for s in sessions) == ["proj", "second"]
+    reasons = {
+        call.args[1]["project_id"]: call.args[1].get("placement_reason")
+        for call in orch.bus.emit.await_args_list
+        if call.args[0] == "pool.scaled"
+    }
+    assert reasons == {"proj": "warm_floor", "second": "warm_floor"}
+
+
+async def test_a_quarantined_project_holds_no_warm_reservation_open(orch, db, tmp_path):
+    """``min_per_project`` raises the effective floor only for projects that could
+    actually host the worker — otherwise a broken project would park a slot of
+    the fleet's floor against a project that cannot use it."""
+    from src.scheduler import PoolKey
+
+    await second_project(db, path=str(tmp_path / "second-ws"))
+    await db.update_profile("worker", min_active=0, max_active=4, min_per_project=1)
+    orch._pool_quarantine[("second", "worker")] = time.time() + 60
+
+    measurement = await orch._measure_pools()
+
+    assert measurement.bounds[PoolKey("worker")] == (1, 4)

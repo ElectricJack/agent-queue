@@ -9,17 +9,18 @@ from unittest.mock import MagicMock
 import pytest
 
 from src.commands.handler import CommandHandler
-from src.config import AppConfig, DiscordConfig
+from src.config import DatabaseConfig, AppConfig, DiscordConfig
 from src.database import Database
 from src.models import AgentProfile, Project, RepoSourceType, Task, TaskStatus, Workspace
 from src.orchestrator import Orchestrator
+from tests.db_fixtures import lease_dsn
 
 PID = "p"
 
 
 @pytest.fixture
 async def db(tmp_path):
-    d = Database(str(tmp_path / "tr.db"))
+    d = Database(lease_dsn("tr.db"))
     await d.initialize()
     await d.create_project(Project(id=PID, name="P"))
     await d.upsert_profile(
@@ -48,7 +49,7 @@ def config(tmp_path):
     return AppConfig(
         discord=DiscordConfig(bot_token="t", guild_id="1"),
         workspace_dir=str(tmp_path / "w"),
-        database_path=str(tmp_path / "tr.db"),
+        database=DatabaseConfig(url=lease_dsn("tr.db")),
         data_dir=data_dir,
     )
 

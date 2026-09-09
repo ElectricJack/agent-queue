@@ -14,6 +14,7 @@ from src.task_graph.layout.constants import (
 )
 from src.task_graph.layout.driver import LayoutDriver
 from src.task_graph.layout.model import LayoutRow
+from tests.db_fixtures import lease_dsn
 
 
 def row(
@@ -261,7 +262,7 @@ async def test_compaction_of_a_real_layout_is_the_identity_when_nothing_is_colla
     jump instead of returning it to where it was."""
     from src.database import Database
 
-    db = Database(str(tmp_path / "compact.db"))
+    db = Database(lease_dsn("compact.db"))
     await db.initialize()
     try:
         await _seed_real_project(db)
@@ -289,7 +290,7 @@ async def test_compaction_of_a_real_layout_is_the_identity_when_nothing_is_colla
 async def test_collapsing_the_epic_of_a_real_layout_reclaims_the_space(tmp_path):
     from src.database import Database
 
-    db = Database(str(tmp_path / "compact2.db"))
+    db = Database(lease_dsn("compact2.db"))
     await db.initialize()
     try:
         await _seed_real_project(db)

@@ -46,6 +46,11 @@ vi.mock("../../../api/client", async () => {
       api.calls.push(options);
       return { data: api.response };
     },
+    // The page renders the provider cards too; stub their fetch so this test
+    // does not reach the network for a surface it is not about.
+    getProviderUsageApiProvidersUsageGet: async () => ({
+      data: { now: 1000, snapshots: [], series: {} },
+    }),
   };
 });
 

@@ -32,6 +32,8 @@ from src.orchestrator.base_workspace import (
     base_workspaces,
     list_base_workspaces,
 )
+from tests.db_fixtures import lease_dsn
+from src.config import DatabaseConfig
 
 
 def _now() -> float:
@@ -40,7 +42,7 @@ def _now() -> float:
 
 @pytest.fixture
 async def db(tmp_path):
-    database = Database(str(tmp_path / "base.db"))
+    database = Database(lease_dsn("base.db"))
     await database.initialize()
     await database.create_project(Project(id="p1", name="p1"))
     yield database
@@ -159,7 +161,7 @@ class TestDoctorCheck:
                 name=f"n-{sid}",
                 lifecycle="task",
                 work_dir=work_dir,
-                epoch=1,
+                epoch="1",
                 instance_token="tok" + sid,
                 started_at=_now(),
                 state=state,
@@ -256,7 +258,7 @@ class TestLaunchPathRefuses:
         config = AppConfig(
             discord=DiscordConfig(bot_token="t", guild_id="1"),
             workspace_dir=str(tmp_path / "w"),
-            database_path=str(tmp_path / "base.db"),
+            database=DatabaseConfig(url=lease_dsn("base.db")),
             data_dir=str(tmp_path / "d"),
         )
         orch = Orchestrator(config)

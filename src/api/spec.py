@@ -62,7 +62,7 @@ def build_openapi_spec() -> dict[str, Any]:
     """
     from src.api import dependencies as deps
     from src.api.app import create_app
-    from src.config import AppConfig, DiscordConfig
+    from src.config import AppConfig, DatabaseConfig, DiscordConfig
     from src.database import Database
     from src.event_bus import EventBus
     from src.orchestrator import Orchestrator
@@ -73,11 +73,11 @@ def build_openapi_spec() -> dict[str, Any]:
         config = AppConfig(
             discord=DiscordConfig(bot_token="spec", guild_id="1"),
             workspace_dir=str(root / "workspaces"),
-            database_path=str(root / "spec.db"),
+            database=DatabaseConfig(url="postgresql://spec:spec@localhost/spec"),
             data_dir=str(root / "data"),
         )
         orchestrator = Orchestrator(config)
-        orchestrator.db = Database(str(root / "spec.db"))
+        orchestrator.db = Database(config.database.url)
         orchestrator.git = MagicMock()
         orchestrator.bus = EventBus()
         try:

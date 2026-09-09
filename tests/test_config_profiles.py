@@ -7,7 +7,6 @@ import yaml
 from src.config import _deep_merge, load_config
 from src.main import _parse_args
 
-
 # ---------------------------------------------------------------------------
 # _deep_merge tests
 # ---------------------------------------------------------------------------
@@ -66,7 +65,7 @@ class TestProfileLoading:
         # Config validator now requires database.url. Inject a sqlite default
         # unless the test explicitly supplies one.
         data = {**data}
-        data.setdefault("database", {"url": "sqlite:///:memory:"})
+        data.setdefault("database", {"url": "postgresql+asyncpg://localhost/aq_test"})
         path = config_dir / filename
         path.write_text(yaml.dump(data))
         return str(path)

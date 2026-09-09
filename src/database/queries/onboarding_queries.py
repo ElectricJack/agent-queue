@@ -14,7 +14,6 @@ from typing import Any
 
 from sqlalchemy import and_, delete, insert, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
-from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 from src.database.tables import project_onboarding_requests, projects, workspaces
 from src.models import Project, Workspace
@@ -57,15 +56,8 @@ class OnboardingQueryMixin:
             "finished_at": None,
         }
         async with self.immediate() as conn:
-            dialect = conn.dialect.name
-            if dialect == "sqlite":
-                statement = sqlite_insert(project_onboarding_requests).values(**values)
-                result = await conn.execute(statement.on_conflict_do_nothing())
-            elif dialect == "postgresql":
-                statement = pg_insert(project_onboarding_requests).values(**values)
-                result = await conn.execute(statement.on_conflict_do_nothing())
-            else:  # pragma: no cover - adapters are SQLite/PostgreSQL today.
-                result = await conn.execute(project_onboarding_requests.insert().values(**values))
+            statement = pg_insert(project_onboarding_requests).values(**values)
+            result = await conn.execute(statement.on_conflict_do_nothing())
             row = (
                 await conn.execute(
                     select(project_onboarding_requests.c.input_fingerprint).where(

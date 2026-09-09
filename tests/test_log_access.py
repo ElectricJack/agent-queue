@@ -16,6 +16,7 @@ import pytest
 
 from src.database import Database
 from src.models import Project
+from tests.db_fixtures import lease_dsn
 
 
 # ── Fixtures ─────────────────────────────────────────────────────────────
@@ -24,7 +25,7 @@ from src.models import Project
 @pytest.fixture
 async def db(tmp_path):
     """Provide an initialized Database with a few test events."""
-    database = Database(str(tmp_path / "test.db"))
+    database = Database(lease_dsn("test.db"))
     await database.initialize()
 
     # Create a project for FK constraints

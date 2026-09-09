@@ -30,7 +30,7 @@ def _write_config(tmp_path, roots) -> str:
             {
                 "messaging_platform": "none",
                 "workspace_dir": str(workspaces),
-                "database_path": str(tmp_path / "aq.db"),
+                "database": {"url": "postgresql+asyncpg://test:test@localhost/test"},
                 "project_roots": roots,
             }
         ),

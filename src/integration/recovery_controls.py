@@ -338,6 +338,30 @@ class IntegrationRecoveryControls:
                 integration_candidate_publications.c.batch_id == operation["batch_id"],
                 integration_candidate_publications.c.state != "pr_published",
             )
+            if allow_reserved_delegate:
+                # pr_reserved follows a confirmed ref write. Audit-PR metadata
+                # may remain pending without making that branch write uncertain.
+                pub = integration_candidate_publications.c
+                mutation = integration_candidate_ref_mutations.c
+                applied_ref = select(mutation.id).where(
+                    mutation.purpose == "candidate_final",
+                    mutation.state == "applied",
+                    mutation.operation_id == operation_id,
+                    mutation.operation_episode_id == operation["episode_id"],
+                    mutation.batch_id == pub.batch_id,
+                    mutation.revision == pub.revision,
+                    mutation.repository_id == pub.repository_id,
+                    mutation.target_branch == "refs/heads/" + pub.head_ref,
+                    mutation.branch == mutation.target_branch,
+                    mutation.target_branch == select(integration_batches.c.integration_branch)
+                        .where(integration_batches.c.id == operation["batch_id"]).scalar_subquery(),
+                    mutation.expected_old_sha == pub.expected_old_sha,
+                    mutation.desired_sha == pub.head_sha,
+                    mutation.remote_sha == pub.head_sha,
+                ).exists()
+                statements["candidate_publication"] = statements["candidate_publication"].where(
+                    ~and_(pub.state == "pr_reserved", applied_ref)
+                )
             statements["cleanup_prewrite"] = select(
                 integration_cleanup_items.c.domain_key
             ).where(

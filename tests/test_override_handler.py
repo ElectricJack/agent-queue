@@ -15,6 +15,7 @@ from src.override_handler import (
     register_override_handlers,
 )
 from src.vault_watcher import VaultChange, VaultWatcher
+from tests.pg_dsn import create_scratch_database
 
 
 # ---------------------------------------------------------------------------
@@ -562,7 +563,7 @@ class TestOverrideIndexer:
 
         from memsearch.scoping import MemoryScope
 
-        path = tmp_path / "coding.md"
+        path = await create_scratch_database("mig")
         path.write_text(_OVERRIDE_MD)
         store = _FakeStore()
         router = _FakeRouter(store)
@@ -585,7 +586,7 @@ class TestOverrideIndexer:
         """Re-indexing removes the previous version's chunks and re-embeds only new ones."""
         pytest.importorskip("memsearch")
 
-        path = tmp_path / "coding.md"
+        path = await create_scratch_database("mig")
         path.write_text(_OVERRIDE_MD)
         store = _FakeStore()
         embedder = _FakeEmbedder()
@@ -613,7 +614,7 @@ class TestOverrideIndexer:
         """Deleting from a project with no collection must not create one."""
         pytest.importorskip("memsearch")
 
-        path = tmp_path / "coding.md"
+        path = await create_scratch_database("mig")
         router = _FakeRouter(store=None, has=False)
         indexer = _make_indexer(router, _FakeEmbedder())
 

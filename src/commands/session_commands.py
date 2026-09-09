@@ -1064,7 +1064,22 @@ class SessionCommandsMixin:
             task_id, outcome, session_id=session.id if session is not None else None,
         )
 
-        if is_pool:
+        if is_pool and result.get("retain_claim"):
+            # ``complete_session_task`` could not prove this session let go of
+            # its integration branch (amber-delta).  Releasing the claim now
+            # would erase ``sessions.task_id`` and the workspace's task-hold,
+            # which are the only evidence a later handoff proof can read, and
+            # would free the slot to a second writer on nothing but a database
+            # unlock.  The task is terminal and ``needs_attention`` is set, so
+            # the stall is visible; the session keeps holding it until an
+            # operator (or a reconciler pass) resolves the handoff.
+            logger.error(
+                "Pool session %s retains its claim on %s: integration handoff "
+                "could not be proven",
+                session.id if session is not None else "?",
+                task_id,
+            )
+        elif is_pool:
             # Pool sessions acquire a slot before they know which task they
             # will claim, so they cannot use dispatch-time branch affinity.
             # Return a clean, pushed branch to detached HEAD before dropping
@@ -1114,10 +1129,11 @@ class SessionCommandsMixin:
     async def _cmd_task_heartbeat(self, args: dict) -> dict:
         """Refresh this task's agent lease.  Backs ``aq task heartbeat``.
 
-        Two cheap writes: ``agents.last_heartbeat`` (what the rest of the
-        daemon already reads) and ``sessions.last_activity`` (what the
-        stall ladder measures).  Returns the new lease expiry so an agent
-        about to run something long can see how much runway it has.
+        Two cheap writes: ``sessions.last_activity`` (the liveness signal
+        every surface reads -- see :mod:`src.agents.liveness`) and the
+        task-scoped ``agents.last_heartbeat`` lease fence.  Returns the new
+        lease expiry so an agent about to run something long can see how
+        much runway it has.
         """
         task_id = args.get("task_id")
         session = None

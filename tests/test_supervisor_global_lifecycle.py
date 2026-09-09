@@ -21,6 +21,7 @@ from src.sessions.fake import FakeProvider
 from src.sessions.harness_parser import Harness
 from src.sessions.harness_registry import HarnessRegistry
 from src.sessions.spec import SessionSpecBuilder, named_session_name
+from tests.db_fixtures import lease_dsn
 
 
 TEST_EPOCH = "epoch-globaltest"
@@ -30,7 +31,7 @@ TEST_EPOCH = "epoch-globaltest"
 async def db(tmp_path):
     from src.database import Database
 
-    database = Database(str(tmp_path / "test.db"))
+    database = Database(lease_dsn("test.db"))
     await database.initialize()
     yield database
     await database.close()

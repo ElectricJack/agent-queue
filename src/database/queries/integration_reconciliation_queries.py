@@ -4,8 +4,9 @@ from __future__ import annotations
 
 from typing import Any
 
-from sqlalchemy import and_, or_, select
+from sqlalchemy import and_, exists, or_, select
 
+from src.database.queries.integration_schedule_queries import INTEGRATION_LEASE_SECONDS
 from src.database.tables import (
     integration_batches,
     integration_candidate_revisions,
@@ -13,6 +14,7 @@ from src.database.tables import (
     integration_promotion_intents,
     integration_repair_operations,
     integration_repair_stages,
+    project_integration_leases,
     project_integration_schedules,
     projects,
 )
@@ -32,14 +34,35 @@ class IntegrationReconciliationQueriesMixin:
         _require_limit(limit)
         due_at = project_integration_schedules.c.next_due_at
         project_id = project_integration_schedules.c.project_id
+        lease_needs_renewal = exists(
+            select(project_integration_leases.c.project_id)
+            .join(
+                integration_batches,
+                integration_batches.c.id == project_integration_leases.c.batch_id,
+            )
+            .where(
+                project_integration_leases.c.project_id == project_id,
+                integration_batches.c.project_id == project_id,
+                project_integration_leases.c.owner_id == "sealer-" + integration_batches.c.id,
+                integration_batches.c.request_id
+                == project_integration_schedules.c.outstanding_request_id,
+                integration_batches.c.lifecycle.in_(
+                    ("sealed", "building", "testing", "repairing", "human_blocked", "promoting")
+                ),
+                project_integration_leases.c.expires_at <= now + INTEGRATION_LEASE_SECONDS / 2,
+            )
+        )
         statement = (
             select(project_integration_schedules)
             .join(projects, projects.c.id == project_id)
             .where(
-                project_integration_schedules.c.enabled.is_(True),
-                due_at <= now,
+                or_(
+                    and_(project_integration_schedules.c.enabled.is_(True), due_at <= now,
+                         projects.c.hierarchical_integration_mode == "train",
+                         projects.c.hierarchical_integration_draining.is_(False)),
+                    lease_needs_renewal,
+                ),
                 projects.c.status == "ACTIVE",
-                projects.c.hierarchical_integration_mode == "train",
             )
             .order_by(due_at, project_id)
             .limit(limit)

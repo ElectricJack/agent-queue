@@ -21,6 +21,7 @@ from src.playbooks.routing import (
     requires_routing_gate,
     uses_default_triage,
 )
+from tests.db_fixtures import lease_dsn
 
 
 FIXTURE = Path("tests/fixtures/playbooks/v2/default-pipeline/artifact.json")
@@ -214,7 +215,7 @@ def _project_manager() -> SimpleNamespace:
 
 async def test_requires_routing_gate_opens_no_second_connection(tmp_path):
     manager, store = _manager(_routing_artifact())
-    db = Database(str(tmp_path / "open-write.db"))
+    db = Database(lease_dsn("open-write.db"))
     await db.initialize()
     checkouts = 0
 

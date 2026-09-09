@@ -1,31 +1,16 @@
-"""Dual-dialect migration coverage for normalized integration cleanup."""
-
-from __future__ import annotations
+"""Current cleanup schema accepts valid work and rejects incomplete PR identity."""
 
 import pytest
-from alembic import command
-from alembic.config import Config
-from sqlalchemy import create_engine, inspect, text
+from sqlalchemy import inspect, text
 from sqlalchemy.exc import IntegrityError
 
 from src.database import Database
-from tests.pg_dsn import create_scratch_database, ensure_worker_postgres_dsn
+from tests.db_fixtures import lease_dsn
+
+pytestmark = pytest.mark.migration
 
 
-pytestmark = [pytest.mark.perf, pytest.mark.migration]
-
-PRIOR = "f0a1b2c3d4e5"
-REVISION = "18cd4540cd0d"
-POSTGRES_DSN = ensure_worker_postgres_dsn()
-
-
-def _migrate(connection, revision: str, *, downgrade: bool = False) -> None:
-    config = Config("alembic.ini")
-    config.attributes["connection"] = connection
-    (command.downgrade if downgrade else command.upgrade)(config, revision)
-
-
-def _exercise_round_trip(connection) -> None:
+def _assert_cleanup_contract(connection) -> None:
     assert "integration_cleanup_items" in inspect(connection).get_table_names()
     connection.execute(
         text(
@@ -62,21 +47,6 @@ def _exercise_round_trip(connection) -> None:
         ),
         {"sha": "a" * 40},
     )
-    with pytest.raises(RuntimeError, match="cleanup-batch:remote_ref"):
-        _migrate(connection, PRIOR, downgrade=True)
-    connection.execute(text("DELETE FROM integration_cleanup_items"))
-    with pytest.raises(RuntimeError, match="cleanup-batch"):
-        _migrate(connection, PRIOR, downgrade=True)
-    connection.execute(
-        text(
-            "UPDATE integration_batches SET cleanup_state = 'complete' "
-            "WHERE id = 'cleanup-batch'"
-        )
-    )
-    _migrate(connection, PRIOR, downgrade=True)
-    assert "integration_cleanup_items" not in inspect(connection).get_table_names()
-    _migrate(connection, REVISION)
-    assert "integration_cleanup_items" in inspect(connection).get_table_names()
     with pytest.raises(IntegrityError), connection.begin_nested():
         connection.execute(
             text(
@@ -92,41 +62,11 @@ def _exercise_round_trip(connection) -> None:
         )
 
 
-async def test_sqlite_cleanup_migration_guarded_round_trip(tmp_path):
-    path = tmp_path / "cleanup.db"
-    database = Database(str(path))
+async def test_baseline_cleanup_contract():
+    database = Database(lease_dsn("cleanup"))
     await database.initialize()
-    await database.close()
-    engine = create_engine(f"sqlite:///{path}")
     try:
-        with engine.begin() as connection:
-            _exercise_round_trip(connection)
+        async with database._engine.begin() as conn:
+            await conn.run_sync(_assert_cleanup_contract)
     finally:
-        engine.dispose()
-
-
-@pytest.mark.skipif(not POSTGRES_DSN, reason="POSTGRES_TEST_DSN not set")
-async def test_postgres_cleanup_migration_guarded_round_trip():
-    import asyncpg
-
-    from src.database.adapters.postgresql import PostgreSQLDatabaseAdapter
-    from src.database.engine import create_postgres_engine
-
-    dsn = await create_scratch_database("task10c_cleanup")
-    database = PostgreSQLDatabaseAdapter(dsn, 0, 1)
-    await database.initialize()
-    await database.close()
-    engine = create_postgres_engine(dsn, 0, 1)
-    try:
-        async with engine.begin() as connection:
-            await connection.run_sync(_exercise_round_trip)
-    finally:
-        await engine.dispose()
-        prefix, _, name = dsn.rpartition("/")
-        admin = await asyncpg.connect(
-            prefix.replace("postgresql+asyncpg://", "postgresql://") + "/postgres"
-        )
-        try:
-            await admin.execute(f'DROP DATABASE IF EXISTS "{name}"')
-        finally:
-            await admin.close()
+        await database.close()

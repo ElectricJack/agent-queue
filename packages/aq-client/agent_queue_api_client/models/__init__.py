@@ -136,6 +136,7 @@ from .delete_project_response_channel_ids_type_0 import DeleteProjectResponseCha
 from .delete_task_request import DeleteTaskRequest
 from .delete_task_response import DeleteTaskResponse
 from .delete_task_response_422 import DeleteTaskResponse422
+from .deleted_branch import DeletedBranch
 from .discord_cleanup_threads_request import DiscordCleanupThreadsRequest
 from .discord_cleanup_threads_response import DiscordCleanupThreadsResponse
 from .discord_cleanup_threads_response_422 import DiscordCleanupThreadsResponse422
@@ -712,6 +713,7 @@ from .plugin_update_response import PluginUpdateResponse
 from .plugin_update_response_422 import PluginUpdateResponse422
 from .pool_instance_status import PoolInstanceStatus
 from .pool_project_cap import PoolProjectCap
+from .pool_project_status import PoolProjectStatus
 from .pool_scale_request import PoolScaleRequest
 from .pool_scale_response import PoolScaleResponse
 from .pool_scale_response_422 import PoolScaleResponse422
@@ -767,6 +769,9 @@ from .provenance_ref import ProvenanceRef
 from .provide_input_request import ProvideInputRequest
 from .provide_input_response import ProvideInputResponse
 from .provide_input_response_422 import ProvideInputResponse422
+from .provider_usage_response import ProviderUsageResponse
+from .provider_usage_response_series import ProviderUsageResponseSeries
+from .provider_usage_snapshot import ProviderUsageSnapshot
 from .push_branch_request import PushBranchRequest
 from .push_branch_response import PushBranchResponse
 from .push_branch_response_422 import PushBranchResponse422
@@ -1232,6 +1237,7 @@ __all__ = (
     "DeleteAgentRequest",
     "DeleteAgentResponse",
     "DeleteAgentResponse422",
+    "DeletedBranch",
     "DeleteMcpServerRequest",
     "DeleteMcpServerResponse",
     "DeleteMcpServerResponse422",
@@ -1816,6 +1822,7 @@ __all__ = (
     "PluginUpdateResponse422",
     "PoolInstanceStatus",
     "PoolProjectCap",
+    "PoolProjectStatus",
     "PoolScaleRequest",
     "PoolScaleResponse",
     "PoolScaleResponse422",
@@ -1869,6 +1876,9 @@ __all__ = (
     "ProvideInputRequest",
     "ProvideInputResponse",
     "ProvideInputResponse422",
+    "ProviderUsageResponse",
+    "ProviderUsageResponseSeries",
+    "ProviderUsageSnapshot",
     "PushBranchRequest",
     "PushBranchResponse",
     "PushBranchResponse422",

@@ -22,11 +22,12 @@ import sys
 import pytest
 
 import src.doctor  # noqa: F401 -- side effect: populates sys.modules
-from src.config import AppConfig, DiscordConfig
+from src.config import DatabaseConfig, AppConfig, DiscordConfig
 from src.database import Database
 from src.doctor.models import Severity
 from src.models import Project, RepoSourceType, Workspace
 from tests.pg_dsn import ensure_worker_postgres_dsn
+from tests.db_fixtures import lease_dsn
 
 pool_checks = sys.modules["src.doctor.pool_checks"]
 
@@ -80,28 +81,17 @@ def config(tmp_path):
     return AppConfig(
         discord=DiscordConfig(bot_token="t", guild_id="1"),
         workspace_dir=str(tmp_path / "w"),
-        database_path=str(tmp_path / "d.db"),
+        database=DatabaseConfig(url=lease_dsn("d.db")),
         data_dir=str(tmp_path / "data"),
     )
 
 
-@pytest.fixture(params=["sqlite", "postgres"])
+@pytest.fixture
 async def any_db(request, tmp_path, repo):
     """SQLite always; PostgreSQL when ``POSTGRES_TEST_DSN`` is set (CI)."""
-    if request.param == "postgres":
-        if not POSTGRES_DSN:
-            pytest.skip("POSTGRES_TEST_DSN not set")
-        from src.database.adapters.postgresql import PostgreSQLDatabaseAdapter
-
-        database = PostgreSQLDatabaseAdapter(POSTGRES_DSN)
-        await database.initialize()
-        await database.reset_for_tests()
-    else:
-        database = Database(str(tmp_path / "doctor.db"))
-        await database.initialize()
-    await database.create_project(
-        Project(id=PROJECT_ID, name="P", repo_default_branch="main")
-    )
+    database = Database(lease_dsn("doctor.db"))
+    await database.initialize()
+    await database.create_project(Project(id=PROJECT_ID, name="P", repo_default_branch="main"))
     await database.create_workspace(
         Workspace(
             id="ws-1",
@@ -136,9 +126,7 @@ async def _run(db, config, repair: bool = False):
     )
 
 
-async def test_branch_with_merged_prs_and_no_pr_to_main_is_stranded(
-    any_db, config, monkeypatch
-):
+async def test_branch_with_merged_prs_and_no_pr_to_main_is_stranded(any_db, config, monkeypatch):
     _fake_gh(
         monkeypatch,
         merged_into={
@@ -173,9 +161,7 @@ async def test_an_open_pr_to_main_clears_the_branch(any_db, config, monkeypatch)
     assert result.data["count"] == 0
 
 
-async def test_stale_branch_without_merged_prs_is_reported_not_warned(
-    any_db, config, monkeypatch
-):
+async def test_stale_branch_without_merged_prs_is_reported_not_warned(any_db, config, monkeypatch):
     """``feature/playbook-v2-pkg4`` — ahead of main, never merged, no PR."""
     _fake_gh(monkeypatch, merged_into={})
 
@@ -195,9 +181,7 @@ async def test_task_branches_are_not_reported_as_stale(any_db, config, monkeypat
     assert all(f["branch"] != "aq/task-9" for f in result.data["stale"])
 
 
-async def test_a_task_branch_with_merged_prs_is_still_stranded(
-    any_db, config, monkeypatch
-):
+async def test_a_task_branch_with_merged_prs_is_still_stranded(any_db, config, monkeypatch):
     """Exclusion is only for the *stale* bucket: a stacked base is a base."""
     _fake_gh(
         monkeypatch,

@@ -40,6 +40,7 @@ from src.models import (
     TaskStatus,
     Workspace,
 )
+from tests.db_fixtures import lease_dsn
 
 
 def _git(args: list[str], cwd: Path | None = None) -> str:
@@ -69,7 +70,7 @@ async def review_case(tmp_path):
     _git(["push", "origin", "aq/leaf"], work)
     _git(["push", "origin", f"{base}:refs/heads/aq/parent"], work)
 
-    db = Database(str(tmp_path / "review.db"))
+    db = Database(lease_dsn("review.db"))
     await db.initialize()
     await db.create_project(Project(id="p", name="P"))
     await db.create_repo(

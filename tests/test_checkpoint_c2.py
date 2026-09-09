@@ -34,7 +34,7 @@ if os.name != "posix":  # pragma: no cover
     pytest.skip("tmux provider is POSIX-only", allow_module_level=True)
 
 from src.commands.handler import CommandHandler
-from src.config import AppConfig
+from src.config import DatabaseConfig, AppConfig
 from src.intelligence_classes import IntelligenceClass
 from src.models import (
     KIND_MODE_WORKTREE,
@@ -54,6 +54,7 @@ from src.runtimes.base import Runtime
 from src.scheduler import AssignAction
 from src.sessions.harness_registry import load_from_vault
 from src.sessions.tmux import TmuxProvider
+from tests.db_fixtures import lease_dsn
 
 pytestmark = pytest.mark.tmux
 
@@ -144,7 +145,7 @@ Test-only harness: a raw-mode Python REPL that paints Claude's prompt.
 async def orch(tmp_path: Path):
     config = AppConfig(
         data_dir=str(tmp_path / "data"),
-        database_path=str(tmp_path / "aq.db"),
+        database=DatabaseConfig(url=lease_dsn("aq.db")),
         workspace_dir=str(tmp_path / "workspaces"),
     )
     config.worktrees.enabled = True

@@ -29,7 +29,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from src.config import AppConfig
+from src.config import DatabaseConfig, AppConfig
 from src.models import (
     KIND_MODE_EXCLUSIVE_CLONE,
     KIND_MODE_WORKTREE,
@@ -48,6 +48,7 @@ from src.orchestrator import Orchestrator
 from src.orchestrator.workspace import SlotGrowth
 from src.orchestrator.worktree_manager import slot_path
 from src.scheduler import Scheduler, SchedulerState
+from tests.db_fixtures import lease_dsn
 
 
 def _git(args: list[str], cwd: str | Path) -> str:
@@ -83,7 +84,7 @@ def base_repo(tmp_path: Path) -> Path:
 async def _orch(tmp_path: Path, *, worktrees_enabled: bool = True) -> Orchestrator:
     config = AppConfig(
         data_dir=str(tmp_path / "data"),
-        database_path=str(tmp_path / "aq.db"),
+        database=DatabaseConfig(url=lease_dsn("aq.db")),
         workspace_dir=str(tmp_path / "workspaces"),
     )
     config.worktrees.enabled = worktrees_enabled

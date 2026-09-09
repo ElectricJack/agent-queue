@@ -4,15 +4,16 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from src.config import AppConfig, DiscordConfig
+from src.config import AppConfig, DatabaseConfig, DiscordConfig
 from src.database import Database
 from src.models import Project, RepoConfig, RepoSourceType, Workspace
 from src.plugins.services import WorkspaceServiceImpl
+from tests.db_fixtures import lease_dsn
 
 
 @pytest.fixture
 async def db(tmp_path):
-    database = Database(str(tmp_path / "plugins.db"))
+    database = Database(lease_dsn("plugins.db"))
     await database.initialize()
     yield database
     await database.close()
@@ -25,7 +26,7 @@ def service(db, tmp_path):
     config = AppConfig(
         discord=DiscordConfig(bot_token="test", guild_id="1"),
         workspace_dir=str(tmp_path / "workspace"),
-        database_path=str(tmp_path / "plugins.db"),
+        database=DatabaseConfig(url=lease_dsn("plugins.db")),
         data_dir=str(tmp_path / "data"),
     )
     return WorkspaceServiceImpl(db, git, config)
@@ -60,7 +61,7 @@ async def test_validate_path_rejects_sibling_prefix_directory(service, tmp_path)
 
 
 async def test_resolve_workspace_rejects_workspace_from_another_project(db, service, tmp_path):
-    path = tmp_path / "other"
+    path = tmp_path / "other-project-workspace"
     path.mkdir()
     await db.create_project(Project(id="project-b", name="B"))
     await db.create_workspace(Workspace("ws", "project-b", str(path), RepoSourceType.LINK))

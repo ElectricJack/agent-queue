@@ -18,6 +18,8 @@ class _Handler(PlaybookCommandsMixin):
                 "health": "ready",
             }]),
             list_runs=AsyncMock(return_value=[]),
+            latest_run_per_playbook=AsyncMock(return_value={}),
+            count_active_runs_per_playbook=AsyncMock(return_value={}),
         )
         self.config = SimpleNamespace(data_dir=str(tmp_path) if tmp_path else "/tmp/aq-test")
         artifact = SimpleNamespace(
@@ -51,15 +53,44 @@ async def test_list_playbooks_projects_v2_activations_to_dashboard_summaries() -
             "node_count": 2,
             "status": "ready",
             "enabled": True,
+            "running_count": 0,
+            "last_run": None,
         }],
         "count": 1,
     }
 
 
+async def test_list_playbooks_reports_the_newest_run_and_the_live_count() -> None:
+    handler = _Handler()
+    handler.db.latest_run_per_playbook.return_value = {"router": SimpleNamespace(
+        run_id="run-9",
+        lifecycle=SimpleNamespace(value="completed"),
+        budget=SimpleNamespace(total_tokens=42),
+        started_at=10.0,
+        completed_at=12.5,
+    )}
+    handler.db.count_active_runs_per_playbook.return_value = {"router": 2}
+
+    result = await handler._cmd_list_playbooks({})
+
+    assert result["playbooks"][0]["last_run"] == {
+        "run_id": "run-9",
+        "status": "completed",
+        "started_at": 10.0,
+        "completed_at": 12.5,
+        "tokens_used": 42,
+    }
+    assert result["playbooks"][0]["running_count"] == 2
+    handler.db.latest_run_per_playbook.assert_awaited_once_with(["router"])
+
+
 async def test_list_playbooks_applies_scope_filter() -> None:
-    result = await _Handler()._cmd_list_playbooks({"scope": "project"})
+    handler = _Handler()
+
+    result = await handler._cmd_list_playbooks({"scope": "project"})
 
     assert result == {"playbooks": [], "count": 0}
+    handler.db.latest_run_per_playbook.assert_awaited_once_with([])
 
 
 async def test_list_runs_projects_v2_snapshots_to_dashboard_summaries() -> None:

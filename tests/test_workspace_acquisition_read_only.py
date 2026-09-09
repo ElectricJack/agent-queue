@@ -33,6 +33,7 @@ from src.models import (
     WorkspaceKind,
 )
 from src.orchestrator.workspace_attachments import acquire_for_task
+from tests.db_fixtures import lease_dsn
 
 
 def _now() -> float:
@@ -41,7 +42,7 @@ def _now() -> float:
 
 @pytest.fixture
 async def db(tmp_path):
-    database = Database(str(tmp_path / "ro.db"))
+    database = Database(lease_dsn("ro.db"))
     await database.initialize()
     await database.create_project(Project(id="p1", name="ro"))
     yield database

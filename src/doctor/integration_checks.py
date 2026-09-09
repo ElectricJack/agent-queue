@@ -285,6 +285,106 @@ async def _check_unreviewed_prs(ctx: DoctorContext) -> CheckResult:
     )
 
 
+async def _find_parked_discards(ctx: DoctorContext) -> list[dict]:
+    """Branch discards that stopped short of removing their ref."""
+    from sqlalchemy import select
+
+    from src.database.tables import task_branch_origins
+
+    async with ctx.db._engine.connect() as conn:
+        rows = (
+            (
+                await conn.execute(
+                    select(task_branch_origins)
+                    .where(task_branch_origins.c.discard_state.in_(("conflict", "failed")))
+                    .order_by(task_branch_origins.c.discard_requested_at.desc())
+                    .limit(50)
+                )
+            )
+            .mappings()
+            .all()
+        )
+    return [
+        {
+            "origin_id": row["id"],
+            "task_id": row["task_id"],
+            "branch": f"aq/{row['task_id']}",
+            "state": row["discard_state"],
+            "attempts": row["discard_attempts"],
+            "error": row["discard_last_error"],
+        }
+        for row in rows
+    ]
+
+
+async def _check_branch_discards(ctx: DoctorContext) -> CheckResult:
+    if ctx.db is None:
+        return CheckResult(
+            id="integration.branch_discards",
+            severity=Severity.INFO,
+            detail="database not initialised — branch discard state unknown",
+        )
+    parked = await _find_parked_discards(ctx)
+    if not parked:
+        return CheckResult(
+            id="integration.branch_discards",
+            severity=Severity.OK,
+            detail="no branch discard is parked",
+        )
+    first = parked[0]
+    return CheckResult(
+        id="integration.branch_discards",
+        severity=Severity.WARN,
+        detail=(
+            f"{len(parked)} branch discard(s) did not finish — e.g. {first['branch']}: "
+            f"{first['error']}. The task is already deleted; the ref is still on the "
+            "remote. Delete it by hand, or re-arm the discard with "
+            "`aq doctor --check integration.branch_discards --fix`"
+        ),
+        fixable=True,
+        data={"count": len(parked), "discards": parked},
+    )
+
+
+async def _fix_branch_discards(ctx: DoctorContext) -> CheckResult:
+    """Re-arm parked discards for one more pass.
+
+    Safe to repeat: it only moves rows back to ``pending``, and the drain
+    re-derives the head and the owner check from scratch.  A conflict that is
+    still a conflict simply parks again.
+    """
+    from sqlalchemy import update
+
+    from src.database.tables import task_branch_origins
+
+    parked = await _find_parked_discards(ctx)
+    if not parked:
+        return CheckResult(
+            id="integration.branch_discards",
+            severity=Severity.OK,
+            detail="no branch discard is parked",
+        )
+    async with ctx.db.immediate() as conn:
+        await conn.execute(
+            update(task_branch_origins)
+            .where(task_branch_origins.c.id.in_([row["origin_id"] for row in parked]))
+            .values(
+                discard_state="pending",
+                discard_attempts=0,
+                discard_next_attempt_at=None,
+                discard_last_error=None,
+            )
+        )
+    return CheckResult(
+        id="integration.branch_discards",
+        severity=Severity.OK,
+        detail=f"re-armed {len(parked)} branch discard(s) for another attempt",
+        fixable=True,
+        fix_applied=True,
+        data={"count": len(parked)},
+    )
+
+
 def integration_checks() -> list[DoctorCheck]:
     return [
         DoctorCheck(
@@ -304,6 +404,16 @@ def integration_checks() -> list[DoctorCheck]:
             run=_check_unreviewed_prs,
             owner=OWNER,
             timeout_s=30.0,
+        ),
+        # Fixable, but the fix only re-arms: it never deletes a ref itself.
+        # A discard parks as ``conflict`` precisely when the remote stopped
+        # matching what the operator asked about, and doctor is not the place
+        # to overrule that.
+        DoctorCheck(
+            id="integration.branch_discards",
+            run=_check_branch_discards,
+            fix=_fix_branch_discards,
+            owner=OWNER,
         ),
     ]
 

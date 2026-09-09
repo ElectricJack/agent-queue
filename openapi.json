@@ -1195,6 +1195,68 @@
         }
       }
     },
+    "/api/providers/usage": {
+      "get": {
+        "summary": "Get Provider Usage",
+        "operationId": "get_provider_usage_api_providers_usage_get",
+        "parameters": [
+          {
+            "name": "provider",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Provider"
+            }
+          },
+          {
+            "name": "since",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Since"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProviderUsageResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/projects/{project_id}/graph/extent": {
       "get": {
         "summary": "Get Extent",
@@ -7530,8 +7592,8 @@
         "tags": [
           "pool"
         ],
-        "summary": "Supply/demand/bounds snapshot for every worker pool (one row per project, profile). Backs `aq pool status`.",
-        "description": "Supply/demand/bounds snapshot for every worker pool (one row per project, profile). Backs `aq pool status`.",
+        "summary": "Supply/demand/bounds snapshot for every worker pool (one row per profile, fleet-wide, with the per-project placement detail nested in `projects`). Backs `aq pool status`.",
+        "description": "Supply/demand/bounds snapshot for every worker pool (one row per profile, fleet-wide, with the per-project placement detail nested in `projects`). Backs `aq pool status`.",
         "operationId": "pool_status",
         "requestBody": {
           "content": {
@@ -14271,6 +14333,22 @@
           "settings": {
             "$ref": "#/components/schemas/AgentSettings"
           },
+          "last_activity": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Activity"
+          },
+          "live": {
+            "type": "boolean",
+            "title": "Live",
+            "default": false
+          },
           "last_heartbeat": {
             "anyOf": [
               {
@@ -17711,6 +17789,18 @@
             "title": "Cascade",
             "description": "",
             "default": false
+          },
+          "branches": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Branches",
+            "description": "What to do with any branch the subtree already put on the remote. Omitted, a subtree that has one is refused with hierarchy.branch_discard_required rather than guessed at."
           }
         },
         "type": "object",
@@ -17728,6 +17818,14 @@
           "title": {
             "type": "string",
             "title": "Title"
+          },
+          "discarded_branches": {
+            "items": {
+              "$ref": "#/components/schemas/DeletedBranch"
+            },
+            "type": "array",
+            "title": "Discarded Branches",
+            "default": []
           }
         },
         "type": "object",
@@ -17736,6 +17834,30 @@
           "title"
         ],
         "title": "DeleteTaskResponse"
+      },
+      "DeletedBranch": {
+        "properties": {
+          "task_id": {
+            "type": "string",
+            "title": "Task Id"
+          },
+          "branch": {
+            "type": "string",
+            "title": "Branch"
+          },
+          "base_sha": {
+            "type": "string",
+            "title": "Base Sha"
+          }
+        },
+        "type": "object",
+        "required": [
+          "task_id",
+          "branch",
+          "base_sha"
+        ],
+        "title": "DeletedBranch",
+        "description": "One branch a ``branch_discard_required`` refusal is asking about."
       },
       "DiscordCleanupThreadsRequest": {
         "properties": {
@@ -31720,6 +31842,17 @@
             "type": "string",
             "title": "Session Id"
           },
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Id"
+          },
           "name": {
             "type": "string",
             "title": "Name"
@@ -31822,6 +31955,83 @@
         ],
         "title": "PoolProjectCap",
         "description": "A project's runtime ceiling for a pool whose bounds are global."
+      },
+      "PoolProjectStatus": {
+        "properties": {
+          "project_id": {
+            "type": "string",
+            "title": "Project Id"
+          },
+          "ready": {
+            "type": "integer",
+            "title": "Ready",
+            "default": 0
+          },
+          "running_idle": {
+            "type": "integer",
+            "title": "Running Idle",
+            "default": 0
+          },
+          "running_busy": {
+            "type": "integer",
+            "title": "Running Busy",
+            "default": 0
+          },
+          "starting": {
+            "type": "integer",
+            "title": "Starting",
+            "default": 0
+          },
+          "draining": {
+            "type": "integer",
+            "title": "Draining",
+            "default": 0
+          },
+          "max_concurrent_agents": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Concurrent Agents"
+          },
+          "workspace_capacity": {
+            "type": "integer",
+            "title": "Workspace Capacity",
+            "default": 0
+          },
+          "quarantined_until": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Quarantined Until"
+          },
+          "quarantined_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Quarantined Reason"
+          }
+        },
+        "type": "object",
+        "required": [
+          "project_id"
+        ],
+        "title": "PoolProjectStatus",
+        "description": "Where one pool's workers actually are, in a single project.\n\nSizing is fleet-wide, but a worker still lives in one project for its\nlifetime, so \"where are my workers running\" has to stay answerable.\nThese are the placement inputs and the per-project share of the pool's\nsupply, for the one project named by ``project_id``."
       },
       "PoolScaleRequest": {
         "properties": {
@@ -32150,7 +32360,7 @@
               }
             ],
             "title": "Project Id",
-            "description": "Limit to this project (optional \u2014 defaults to all)."
+            "description": "View filter on the per-project breakdown (optional \u2014 defaults to all). Pool bounds and totals stay fleet-wide."
           }
         },
         "type": "object",
@@ -32177,10 +32387,6 @@
       },
       "PoolStatusRow": {
         "properties": {
-          "project_id": {
-            "type": "string",
-            "title": "Project Id"
-          },
           "profile_id": {
             "type": "string",
             "title": "Profile Id"
@@ -32204,6 +32410,11 @@
               }
             ],
             "title": "Max Active"
+          },
+          "min_per_project": {
+            "type": "integer",
+            "title": "Min Per Project",
+            "default": 0
           },
           "desired": {
             "type": "integer",
@@ -32229,27 +32440,13 @@
             "type": "integer",
             "title": "Ready"
           },
-          "quarantined_until": {
-            "anyOf": [
-              {
-                "type": "number"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Quarantined Until"
-          },
-          "quarantined_reason": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Quarantined Reason"
+          "projects": {
+            "items": {
+              "$ref": "#/components/schemas/PoolProjectStatus"
+            },
+            "type": "array",
+            "title": "Projects",
+            "default": []
           },
           "instances": {
             "items": {
@@ -32262,7 +32459,6 @@
         },
         "type": "object",
         "required": [
-          "project_id",
           "profile_id",
           "min_active",
           "desired",
@@ -32273,7 +32469,7 @@
           "ready"
         ],
         "title": "PoolStatusRow",
-        "description": "One (project, profile) worker-pool row \u2014 swarm-work-model \u00a711."
+        "description": "One worker pool -- a profile, fleet-wide (global-worker-pools \u00a76.1).\n\nA row used to be one ``(project_id, profile_id)`` pair, which quietly\nmultiplied ``min_active``/``max_active`` by the number of active\nprojects.  Bounds and supply are aggregates over the whole fleet now,\nand the per-project detail lives in ``projects``."
       },
       "PrMergeBaseFreshness": {
         "properties": {
@@ -33052,6 +33248,17 @@
               }
             ],
             "title": "Max Active"
+          },
+          "min_per_project": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Min Per Project"
           }
         },
         "type": "object",
@@ -33451,6 +33658,114 @@
           "task_id"
         ],
         "title": "ProvideInputResponse"
+      },
+      "ProviderUsageResponse": {
+        "properties": {
+          "now": {
+            "type": "number",
+            "title": "Now"
+          },
+          "snapshots": {
+            "items": {
+              "$ref": "#/components/schemas/ProviderUsageSnapshot"
+            },
+            "type": "array",
+            "title": "Snapshots",
+            "default": []
+          },
+          "series": {
+            "additionalProperties": {
+              "items": {
+                "$ref": "#/components/schemas/ProviderUsageSnapshot"
+              },
+              "type": "array"
+            },
+            "type": "object",
+            "title": "Series",
+            "default": {}
+          }
+        },
+        "type": "object",
+        "required": [
+          "now"
+        ],
+        "title": "ProviderUsageResponse",
+        "description": "``GET /api/providers/usage``.\n\n``snapshots`` is the newest reading per series --- what the cards render.\n``series`` is keyed ``\"<provider>/<window>/<scope>\"`` and is populated only\nwhen ``?since=`` is given, so the default response stays one row per card.\n``now`` is the server clock the staleness verdicts were computed against;\nwithout it a client cannot tell a stale reading from a skewed clock."
+      },
+      "ProviderUsageSnapshot": {
+        "properties": {
+          "id": {
+            "type": "integer",
+            "title": "Id"
+          },
+          "provider": {
+            "type": "string",
+            "title": "Provider"
+          },
+          "account_label": {
+            "type": "string",
+            "title": "Account Label",
+            "default": ""
+          },
+          "window": {
+            "type": "string",
+            "title": "Window"
+          },
+          "scope": {
+            "type": "string",
+            "title": "Scope",
+            "default": ""
+          },
+          "used_percent": {
+            "type": "number",
+            "title": "Used Percent"
+          },
+          "resets_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Resets At"
+          },
+          "observed_at": {
+            "type": "number",
+            "title": "Observed At"
+          },
+          "last_seen_at": {
+            "type": "number",
+            "title": "Last Seen At"
+          },
+          "source": {
+            "type": "string",
+            "title": "Source"
+          },
+          "stale": {
+            "type": "boolean",
+            "title": "Stale",
+            "default": false
+          },
+          "age_seconds": {
+            "type": "number",
+            "title": "Age Seconds",
+            "default": 0.0
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "provider",
+          "window",
+          "used_percent",
+          "observed_at",
+          "last_seen_at",
+          "source"
+        ],
+        "title": "ProviderUsageSnapshot",
+        "description": "One observation of one limit window.\n\n``resets_at`` is nullable because a percentage without a clock still beats\nno reading at all --- the providers do not always print a reset clause."
       },
       "PushBranchRequest": {
         "properties": {

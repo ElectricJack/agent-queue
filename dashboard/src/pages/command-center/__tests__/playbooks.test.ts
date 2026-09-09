@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { PlaybookSummary } from "../../../api/hooks";
-import { manualPlaybookEvent, playbookState, projectPlaybooks } from "../playbooks";
+import { lastRunLabel, manualPlaybookEvent, playbookState, projectPlaybooks } from "../playbooks";
 
 const book = (id: string, patch: Partial<PlaybookSummary> = {}): PlaybookSummary => ({ id, scope: "system", triggers: ["timer.24h"], ...patch });
 describe("persistent playbook definitions", () => {
@@ -38,4 +38,26 @@ it("manual launches retain definition scope and require an object event", () => 
   expect(manualPlaybookEvent(project, '{"task_id":"t"}')).toEqual({ type: "manual", project_id: "alpha", task_id: "t" });
   expect(() => manualPlaybookEvent(project, '{"project_id":"beta"}')).toThrow("match");
   expect(() => manualPlaybookEvent(project, '[]')).toThrow("object");
+});
+
+describe("last run label", () => {
+  const now = Date.UTC(2026, 8, 7, 12, 0, 0);
+  it("reads never until a run exists", () => {
+    expect(lastRunLabel(book("a"), now)).toBe("never");
+  });
+  it("pairs the newest run's status with how long ago it was", () => {
+    const at = now / 1000 - 300;
+    expect(lastRunLabel(book("a", { last_run: { run_id: "r", status: "timed_out", completed_at: at } }), now)).toBe("timed out · 5m ago");
+    expect(lastRunLabel(book("a", { last_run: { run_id: "r", status: "running", started_at: now / 1000 - 10 } }), now)).toBe("running · 10s");
+    expect(lastRunLabel(book("a", { last_run: { run_id: "r", status: "completed", started_at: now / 1000 - 7200 } }), now)).toBe("completed · 2h ago");
+    expect(lastRunLabel(book("a", { last_run: { run_id: "r", status: "failed", started_at: now / 1000 - 3 * 86400 } }), now)).toBe("failed · 3d ago");
+  });
+  it("counts an in-flight run up from its start rather than dating it", () => {
+    const running = (secondsIn: number) => book("a", { last_run: { run_id: "r", status: "running", started_at: now / 1000 - secondsIn } });
+    expect(lastRunLabel(running(90), now)).toBe("running · 1m");
+    expect(lastRunLabel(running(3900), now)).toBe("running · 1h 5m");
+  });
+  it("falls back to the status alone when the run carries no timestamps", () => {
+    expect(lastRunLabel(book("a", { last_run: { run_id: "r", status: "completed" } }), now)).toBe("completed");
+  });
 });

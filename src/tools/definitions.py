@@ -2145,6 +2145,15 @@ _ALL_TOOL_DEFINITIONS = [
             "properties": {
                 "task_id": {"type": "string", "description": "Task ID to delete"},
                 "cascade": {"type": "boolean", "default": False},
+                "branches": {
+                    "type": "string",
+                    "enum": ["keep", "delete"],
+                    "description": (
+                        "What to do with any branch the subtree already put on the "
+                        "remote. Omitted, a subtree that has one is refused with "
+                        "hierarchy.branch_discard_required rather than guessed at."
+                    ),
+                },
             },
             "required": ["task_id"],
         },
@@ -5222,6 +5231,33 @@ _ALL_TOOL_DEFINITIONS = [
             "required": ["project_id"],
         },
     },
+    # provider usage — the Claude quota probe (provider-usage design T4)
+    {
+        "name": "provider_usage_probe",
+        "description": (
+            "Ask a provider's own CLI what is left of the account's limit windows "
+            "and record the reading.  Only ``claude`` is probeable today; Codex "
+            "publishes its rate limits passively on transcript lines and needs no "
+            "probe.  The call is free — a live run reports zero turns and zero "
+            "cost — so it bills none of the quota it reports.  ``outcome`` is "
+            "``probed``, ``unparsed`` (the CLI's wording moved), "
+            "``not_applicable`` (an API-key account has no window), "
+            "``unavailable`` (no CLI on this box) or ``disabled``; all five are "
+            "successes. A timeout is unavailable; a non-zero exit fails and writes nothing, "
+            "so the last good reading survives."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "provider": {
+                    "type": "string",
+                    "enum": ["claude"],
+                    "description": "Provider to probe. Default: claude.",
+                },
+            },
+            "required": [],
+        },
+    },
     {
         "name": "pr_merge",
         "description": (
@@ -5595,14 +5631,18 @@ _ALL_TOOL_DEFINITIONS = [
         "name": "pool_status",
         "description": (
             "Supply/demand/bounds snapshot for every worker pool (one row per "
-            "project, profile). Backs `aq pool status`."
+            "profile, fleet-wide, with the per-project placement detail nested "
+            "in `projects`). Backs `aq pool status`."
         ),
         "input_schema": {
             "type": "object",
             "properties": {
                 "project_id": {
                     "type": "string",
-                    "description": "Limit to this project (optional — defaults to all).",
+                    "description": (
+                        "View filter on the per-project breakdown (optional — defaults "
+                        "to all). Pool bounds and totals stay fleet-wide."
+                    ),
                 },
             },
         },

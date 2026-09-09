@@ -33,14 +33,14 @@ def test_sparse_workspace_pool_and_profile_rows_render_without_keyerror():
     assert "ws-1" in out and "ws-2" in out
     assert "t-9" in out  # the one populated lock still shows
 
-    # Pools: a row with only identity, and one quarantined with no max.
+    # Pools: a row with only identity, and one whose project breakdown is
+    # missing entirely (one row per profile now -- global-worker-pools §6.1).
     out = _render("pool_status", {"pools": [
-        {"project_id": "proj-a", "profile_id": "coder"},
-        {"project_id": "proj-b", "profile_id": "review", "max_active": None,
-         "quarantined_until": 4102444800.0},
+        {"profile_id": "coder"},
+        {"profile_id": "review", "max_active": None, "projects": []},
     ]})
-    assert "proj-a" in out and "coder" in out
-    assert "proj-b" in out and "∞" in out
+    assert "coder" in out and "review" in out
+    assert "∞" in out
 
     # Profile list: profiles with no tools/model/mcp, and count omitted.
     out = _render("list_profiles", {"profiles": [
@@ -144,3 +144,37 @@ def test_recent_activity_renders_an_empty_window_without_a_model_table():
     })
     assert "0 task(s)" in out
     assert "By model" not in out
+
+
+def test_pool_table_summarises_placement_and_keeps_the_quarantine_reason():
+    """§6.2: one line per pool, plus the reason a project stopped growing."""
+    out = _render("pool_status", {"pools": [
+        {
+            "profile_id": "worker-standard-medium-claude",
+            "min_active": 2, "max_active": 8, "min_per_project": 1,
+            "desired": 3, "running_idle": 2, "running_busy": 1,
+            "starting": 0, "draining": 0, "ready": 4,
+            "projects": [
+                {"project_id": "web", "running_idle": 2, "running_busy": 1},
+                {"project_id": "api", "running_idle": 1},
+                {"project_id": "svc", "workspace_capacity": 0,
+                 "quarantined_until": 4102444800.0,
+                 "quarantined_reason": "startup death: harness exited 1"},
+            ],
+        },
+    ]})
+    # The project is no longer a column, and placement is summarised inline.
+    assert "web:2i/1b" in out and "api:1i" in out and "svc:0" in out
+    # A bare deadline is useless to an operator, so the reason travels with it.
+    assert "quarantined until" in out
+    assert "startup death: harness exited 1" in out
+
+
+def test_pool_table_renders_a_reasonless_quarantine():
+    """A key quarantined without a captured reason still reports its deadline."""
+    out = _render("pool_status", {"pools": [
+        {"profile_id": "coder", "projects": [
+            {"project_id": "web", "quarantined_until": 4102444800.0},
+        ]},
+    ]})
+    assert "quarantined until" in out

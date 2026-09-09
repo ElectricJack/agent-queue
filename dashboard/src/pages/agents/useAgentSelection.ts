@@ -5,19 +5,20 @@ import { POOL_PREFIX, poolAddress } from "./pools";
 export const MAX_AGENT_VIEWS = 4;
 
 /**
- * A selected view is either one fixed worker or one worker pool. A pool key
- * carries an optional pinned instance after "@" so a tiled layout — and a
- * shared link — survives a reload:
+ * A selected view is either one fixed worker or one worker pool. A pool is
+ * addressed by its profile alone — sizing is fleet-wide — and the key carries
+ * an optional pinned instance after "@" so a tiled layout, and a shared link,
+ * survives a reload:
  *
  *     agent=agent-7f1c
- *     agent=pool:agent-queue:worker-standard@p-worker-standard--agent-queue--9f2a
+ *     agent=pool:worker-standard@p-worker-standard--agent-queue--9f2a
  */
 export type AgentSelection =
   | { key: string; kind: "agent"; agentId: string }
-  | { key: string; kind: "pool"; projectId: string; profileId: string; instanceId: string | null };
+  | { key: string; kind: "pool"; profileId: string; instanceId: string | null };
 
-export function poolSelectionKey(projectId: string, profileId: string, instanceId?: string | null) {
-  return poolAddress(projectId, profileId) + (instanceId ? "@" + instanceId : "");
+export function poolSelectionKey(profileId: string, instanceId?: string | null) {
+  return poolAddress(profileId) + (instanceId ? "@" + instanceId : "");
 }
 
 /** The view a key addresses, with any pinned instance stripped. */
@@ -31,15 +32,26 @@ export function parseAgentSelection(key: string): AgentSelection {
   const at = key.indexOf("@");
   const address = at === -1 ? key : key.slice(0, at);
   const instanceId = at === -1 ? null : key.slice(at + 1) || null;
+  // A pool key used to be ``pool:<project>:<profile>``.  A pool profile id can
+  // never contain ":" (``_pool_profiles`` filters scoped ids out), so a second
+  // colon is an unambiguous pre-global-pools key: it resolves to no profile at
+  // all, and ``isSelectable`` drops it rather than opening a view addressing a
+  // pool named "agent-queue:worker-standard" that can never exist.
   const rest = address.slice(POOL_PREFIX.length);
-  const colon = rest.indexOf(":");
-  return {
-    key,
-    kind: "pool",
-    projectId: colon === -1 ? rest : rest.slice(0, colon),
-    profileId: colon === -1 ? "" : rest.slice(colon + 1),
-    instanceId,
-  };
+  return { key, kind: "pool", profileId: rest.includes(":") ? "" : rest, instanceId };
+}
+
+/**
+ * Whether a key from the URL still addresses something.
+ *
+ * Selection is shareable and bookmarkable, so keys outlive the format that
+ * wrote them. An unparseable one degrades to "nothing selected" — dropped
+ * before it reaches the workspace — rather than throwing or opening an empty
+ * tile the operator then has to close by hand.
+ */
+function isSelectable(key: string): boolean {
+  const selection = parseAgentSelection(key);
+  return selection.kind !== "pool" || selection.profileId !== "";
 }
 
 /**
@@ -68,7 +80,7 @@ export function useAgentSelection() {
   // still one view, and the last pin wins over an earlier bare key.
   const seen = new Set<string>();
   const selectedIds = location.pathname === "/agents"
-    ? params.getAll("agent").filter(Boolean).filter((id) => {
+    ? params.getAll("agent").filter(Boolean).filter(isSelectable).filter((id) => {
       const address = selectionAddress(id);
       if (seen.has(address)) return false;
       seen.add(address);
@@ -119,7 +131,7 @@ export function useAgentSelection() {
       const selection = parseAgentSelection(key);
       if (selection.kind !== "pool") return;
       navigateTo(latest.current.selectedIds.map((selected) => selectionAddress(selected) === address
-        ? poolSelectionKey(selection.projectId, selection.profileId, instanceId)
+        ? poolSelectionKey(selection.profileId, instanceId)
         : selected));
     },
     /**

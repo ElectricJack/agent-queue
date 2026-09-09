@@ -1,12 +1,14 @@
 """Aggregate global worker definitions with their exact current execution."""
 from __future__ import annotations
 
+import time
 from types import SimpleNamespace
 
 from src.agents.configuration import apply_agent_overrides, resolve_launch_settings
+from src.agents.liveness import LIVE_SESSION_STATES, is_live, session_last_activity
 from src.models import AgentState, TaskStatus
 
-_ACTIVE_SESSIONS = {"starting", "running", "draining"}
+_ACTIVE_SESSIONS = set(LIVE_SESSION_STATES)
 _ACTIVE_TASKS = {TaskStatus.ASSIGNED, TaskStatus.IN_PROGRESS, TaskStatus.WAITING_INPUT}
 
 
@@ -38,6 +40,11 @@ async def list_agent_flock(orchestrator, *, project_id: str | None = None) -> li
     # over every session that ever recorded a subagent event, and the loop
     # below touches each agent's sessions anyway.
     native_by_session = await db.subagent_counts_by_session()
+    # Liveness is the session's activity stamp, never ``agents.last_heartbeat``
+    # -- see :mod:`src.agents.liveness`.
+    now = time.time()
+    config = getattr(orchestrator, "config", None)
+    lease_ttl = getattr(getattr(config, "sessions", None), "lease_ttl_seconds", 0) or 0
     registry = getattr(orchestrator, "harness_registry", None)
     builder = getattr(orchestrator, "session_spec_builder", None)
     rows = []
@@ -150,6 +157,7 @@ async def list_agent_flock(orchestrator, *, project_id: str | None = None) -> li
         count = await subagent_counts(
             db, agent.id, sessions, tasks, native_by_session=native_by_session
         )
+        last_activity = session_last_activity(live)
         state = agent.state.value.lower()
         if live:
             state = "busy" if task else live.state
@@ -171,6 +179,8 @@ async def list_agent_flock(orchestrator, *, project_id: str | None = None) -> li
             "session_state": session.state if session else None,
             "session_provider": session.provider if session else None,
             "settings": configured_settings(agent),
+            "last_activity": last_activity,
+            "live": is_live(last_activity, now=now, ttl=lease_ttl),
             "last_heartbeat": agent.last_heartbeat,
             "session_tokens_used": agent.session_tokens_used,
             **count,

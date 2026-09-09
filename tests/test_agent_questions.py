@@ -4,6 +4,7 @@ import asyncio
 import importlib.util
 import time
 from dataclasses import replace
+from datetime import UTC
 from types import SimpleNamespace
 
 import pytest
@@ -16,11 +17,12 @@ from src.sessions import SessionProviderRegistry
 from src.sessions.fake import FakeProvider
 from src.sessions.provider import NudgeDeferred, SessionSpec
 from src.sessions.transcripts.base import TranscriptEntry
+from tests.db_fixtures import lease_dsn
 
 
 @pytest.fixture
 async def env(tmp_path):
-    db = Database(str(tmp_path / "questions.db"))
+    db = Database(lease_dsn("questions.db"))
     await db.initialize()
     await db.create_project(Project(id="p", name="Project"))
     await db.create_agent(
@@ -269,7 +271,7 @@ async def test_answer_exact_instance_once_concurrent_and_restart(env):
 
     # A second adapter has its own connection pool and in-process locks;
     # only the actual database CAS can arbitrate these competing callers.
-    peer = Database(env.db._path)
+    peer = Database(env.db._dsn)
     await peer.initialize()
     try:
         other = AgentQuestionService(peer, env.bus, env.registry, env.config)
@@ -342,7 +344,7 @@ async def test_draft_defers_without_losing_answer(env):
 
 
 async def test_notifications_retry_bounded_and_ack_persists(env):
-    svc, q = await capture(env)
+    _svc, q = await capture(env)
 
     def notices():
         return [payload for typ, payload in env.events if typ == "agent.question"]
@@ -473,7 +475,7 @@ async def test_discord_outbox_enrolment_and_success_receipt_survive_reopen(env):
     await env.db.mark_message_discord_notified(new.id, "channel", "sent")
     assert await env.db.list_pending_message_discord_notifications() == []
     assert (await env.db.get_message_discord_receipt(new.id))["discord_message_id"] == "sent"
-    reopened = Database(env.db._path)
+    reopened = Database(env.db._dsn)
     await reopened.initialize()
     try:
         assert await reopened.list_pending_message_discord_notifications() == []
@@ -594,9 +596,11 @@ async def test_unscoped_llm_caller_cannot_act_as_human(env):
 
 async def test_mcp_tool_arguments_cannot_forge_local_scope(env, monkeypatch):
     import json
+
     from mcp.server import FastMCP
-    from src.mcp_registration import register_command_tools
+
     from src.commands.handler import CommandHandler
+    from src.mcp_registration import register_command_tools
 
     svc, q = await capture(env)
     handler = CommandHandler(
@@ -648,6 +652,7 @@ async def test_soft_deleted_worker_cannot_capture_or_receive_queued_answer(env):
         "state"
     ] == "answered"
     from sqlalchemy import update
+
     from src.database.tables import agents
 
     # The normal API refuses busy deletion; seed a legacy/admin tombstone
@@ -671,13 +676,14 @@ async def test_disabling_new_work_does_not_reject_current_workers_answer(env):
 
 
 async def test_question_observation_failure_preserves_native_activity_and_stream(env, monkeypatch):
-    from datetime import datetime, timezone
     import json
+    from datetime import datetime
     from pathlib import Path
+
     from src.sessions.transcripts.watcher import TranscriptWatcher
 
     base = Path(env.row.work_dir) / "home"
-    launch_day = datetime.fromtimestamp(env.row.started_at, timezone.utc).strftime("%Y/%m/%d")
+    launch_day = datetime.fromtimestamp(env.row.started_at, UTC).strftime("%Y/%m/%d")
     path = base / ".codex/sessions" / launch_day / "rollout-question-failure.jsonl"
     path.parent.mkdir(parents=True)
     stamp = time.time()

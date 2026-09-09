@@ -8,9 +8,10 @@ from unittest.mock import AsyncMock
 import pytest
 
 from src.config import EventsConfig, load_config
-from src.database import Database, DatabaseBackend, SQLiteDatabaseAdapter
+from src.database import DatabaseBackend, Database
 from src.models import Project, RepoSourceType, Workspace
 from tests.pg_dsn import ensure_worker_postgres_dsn
+from tests.db_fixtures import lease_dsn
 
 POSTGRES_TEST_DSN = ensure_worker_postgres_dsn()
 
@@ -18,7 +19,7 @@ POSTGRES_TEST_DSN = ensure_worker_postgres_dsn()
 def test_onboarding_retention_config_round_trips_and_validates(tmp_path):
     path = tmp_path / "config.yaml"
     path.write_text(
-        "database_path: test.db\n"
+        "database:\n  url: postgresql+asyncpg://test:test@localhost/test\n"
         "discord:\n"
         "  bot_token: test-token\n"
         "  guild_id: '1'\n"
@@ -33,22 +34,13 @@ def test_onboarding_retention_config_round_trips_and_validates(tmp_path):
 
 
 def test_database_protocol_exposes_onboarding_queries():
-    assert issubclass(SQLiteDatabaseAdapter, DatabaseBackend)
+    assert issubclass(Database, DatabaseBackend)
 
 
-@pytest.fixture(params=["sqlite", "postgres"])
+@pytest.fixture
 async def db(request, tmp_path):
-    if request.param == "postgres":
-        if not POSTGRES_TEST_DSN:
-            pytest.skip("POSTGRES_TEST_DSN not set")
-        from src.database.adapters.postgresql import PostgreSQLDatabaseAdapter
-
-        database = PostgreSQLDatabaseAdapter(POSTGRES_TEST_DSN)
-        await database.initialize()
-        await database.reset_for_tests()
-    else:
-        database = Database(str(tmp_path / "onboarding.db"))
-        await database.initialize()
+    database = Database(lease_dsn("onboarding.db"))
+    await database.initialize()
     yield database
     await database.close()
 

@@ -152,22 +152,13 @@ class ProjectQueryMixin:
         async with self._engine.begin() as conn:
             # Block concurrent task FK insertion before collecting identities.
             # SQLite needs an actual write to acquire its database write lock.
-            if conn.dialect.name == "sqlite":
-                await conn.execute(
-                    update(projects)
-                    .where(projects.c.id == project_id)
-                    .values(
-                        id=projects.c.id,
-                    )
+            await conn.execute(
+                select(projects.c.id)
+                .where(
+                    projects.c.id == project_id,
                 )
-            else:
-                await conn.execute(
-                    select(projects.c.id)
-                    .where(
-                        projects.c.id == project_id,
-                    )
-                    .with_for_update()
-                )
+                .with_for_update()
+            )
             # Get all task IDs for this project
             result = await conn.execute(select(tasks.c.id).where(tasks.c.project_id == project_id))
             task_ids = [r[0] for r in result.fetchall()]

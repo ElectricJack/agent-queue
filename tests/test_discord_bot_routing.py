@@ -45,7 +45,7 @@ async def test_unauthorized_project_channel_message_never_reaches_handler_or_rea
     config = AppConfig(
         discord=DiscordConfig(bot_token="t", guild_id="1", authorized_users=["42"]),
         workspace_dir=orch.config.workspace_dir,
-        database_path=orch.config.database_path,
+        database=orch.config.database,
         data_dir=orch.config.data_dir,
     )
     config.supervisor_agent.enabled = True

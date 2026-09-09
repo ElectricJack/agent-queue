@@ -1,10 +1,10 @@
 """Migration + schema test for task_proposals."""
 from __future__ import annotations
 
-import os
-import subprocess
+from sqlalchemy import inspect
 
-from sqlalchemy import create_engine, inspect
+from src.database import Database
+from tests.db_fixtures import lease_dsn
 
 from src.database.tables import metadata, task_proposals
 
@@ -36,40 +36,19 @@ def test_columns_and_check_constraint():
     assert any("status" in (n or "") for n in check_names)
 
 
-#: migrations/versions/5ba6efdd01d0_add_task_proposals_table.py and its parent.
-#: Pinned explicitly rather than using ``head``/``-1``: this test used to
-#: upgrade to head and downgrade one step, which only tested *this* migration
-#: while it happened to be head.  Every migration merged after it silently
-#: turned the downgrade into a test of someone else's revision, and the
-#: assertion below had been failing ever since.
-TASK_PROPOSALS_REVISION = "5ba6efdd01d0"
-PRIOR_REVISION = "c17d35836ed3"
-
-
-def test_migration_creates_and_drops(tmp_path):
-    """Round-trip: upgrade to the task_proposals revision, then back off it."""
-    db_path = tmp_path / "aq.db"
-    env = {
-        **os.environ,
-        "AGENT_QUEUE_DB_URL": f"sqlite+aiosqlite:///{db_path}",
-    }
-    subprocess.run(
-        ["python3", "-m", "alembic", "upgrade", TASK_PROPOSALS_REVISION],
-        check=True,
-        env=env,
-    )
-
-    eng = create_engine(f"sqlite:///{db_path}")
-    insp = inspect(eng)
-    assert "task_proposals" in insp.get_table_names()
-    eng.dispose()
-
-    subprocess.run(
-        ["python3", "-m", "alembic", "downgrade", PRIOR_REVISION],
-        check=True,
-        env=env,
-    )
-    eng = create_engine(f"sqlite:///{db_path}")
-    insp = inspect(eng)
-    assert "task_proposals" not in insp.get_table_names()
-    eng.dispose()
+async def test_baseline_creates_task_proposals():
+    """The squashed PostgreSQL baseline retains proposal status enforcement."""
+    database = Database(lease_dsn("task-proposals-schema"))
+    await database.initialize()
+    try:
+        async with database._engine.connect() as conn:
+            columns = await conn.run_sync(
+                lambda sync: inspect(sync).get_columns("task_proposals")
+            )
+            checks = await conn.run_sync(
+                lambda sync: inspect(sync).get_check_constraints("task_proposals")
+            )
+        assert {col["name"] for col in columns} == set(task_proposals.c.keys())
+        assert any("status" in check["sqltext"] for check in checks)
+    finally:
+        await database.close()

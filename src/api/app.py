@@ -24,6 +24,7 @@ from src.api.graph_layout import router as graph_layout_router
 from src.api.routers.proposals import router as proposals_router
 from src.api.messages import router as messages_router
 from src.api.metrics import router as metrics_router
+from src.api.providers import router as providers_router
 from src.api.pane_stream import router as pane_router
 from src.api.sessions import router as sessions_router
 from src.api.streams import router as streams_router
@@ -162,6 +163,10 @@ def create_app(
     # Fleet metrics history: GET /api/metrics/series — cold start and zoom
     # for the Metrics tab, which otherwise follows metrics.tick over the WS.
     app.include_router(metrics_router)
+
+    # Provider quota as each provider reports it: GET /api/providers/usage.
+    # Distinct from the token ledger's estimate, which is what metrics serves.
+    app.include_router(providers_router)
 
     # Viewport-bounded layout endpoints (spatial-layout design §5):
     # /api/projects/{id}/graph/extent + /tiles + /list + /node + /locate + /tidy + /jobs

@@ -201,9 +201,20 @@ class EditTaskResponse(BaseModel):
     new_status: str | None = None
 
 
+class DeletedBranch(BaseModel):
+    """One branch a ``branch_discard_required`` refusal is asking about."""
+
+    task_id: str
+    branch: str
+    base_sha: str
+
+
 class DeleteTaskResponse(BaseModel):
     deleted: str
     title: str
+    #: Branches the delete discarded, when it was asked to.  Removal itself is
+    #: asynchronous; these are the refs queued for it.
+    discarded_branches: list[DeletedBranch] = []
 
 
 class TaskControlResponse(BaseModel):
@@ -593,6 +604,10 @@ class PoolInstanceStatus(BaseModel):
     """One active or quarantined session belonging to a worker pool."""
 
     session_id: str
+    #: Which project this worker was launched into.  A pool is fleet-wide,
+    #: but a worker's workspace (and therefore its project) is fixed at
+    #: launch, so the instance list is the only place that binding is visible.
+    project_id: str | None = None
     name: str
     state: str
     task_id: str | None = None
@@ -602,28 +617,66 @@ class PoolInstanceStatus(BaseModel):
     quarantine_reason: str | None = None
 
 
-class PoolStatusRow(BaseModel):
-    """One (project, profile) worker-pool row — swarm-work-model §11."""
+class PoolProjectStatus(BaseModel):
+    """Where one pool's workers actually are, in a single project.
+
+    Sizing is fleet-wide, but a worker still lives in one project for its
+    lifetime, so "where are my workers running" has to stay answerable.
+    These are the placement inputs and the per-project share of the pool's
+    supply, for the one project named by ``project_id``.
+    """
 
     project_id: str
+    #: Ready tasks routed to this pool's profile, in this project.
+    ready: int = 0
+    running_idle: int = 0
+    running_busy: int = 0
+    starting: int = 0
+    draining: int = 0
+    #: The project's own ``max_concurrent_agents`` ceiling, which bounds how
+    #: much of the (global) pool this project may hold at once.
+    max_concurrent_agents: int | None = None
+    #: Free workspace slots.  Zero means placement cannot start a worker
+    #: here however much the pool wants to grow.
+    workspace_capacity: int = 0
+    #: Quarantine is per (project, profile) and never a property of the pool
+    #: itself: an unknown harness or a startup death in *this* checkout must
+    #: not disable a healthy fleet.
+    quarantined_until: float | None = None
+    #: Why -- unknown harness, startup death plus the captured output
+    #: excerpt, ...  A bare deadline left an operator with nothing to act on.
+    quarantined_reason: str | None = None
+
+
+class PoolStatusRow(BaseModel):
+    """One worker pool -- a profile, fleet-wide (global-worker-pools §6.1).
+
+    A row used to be one ``(project_id, profile_id)`` pair, which quietly
+    multiplied ``min_active``/``max_active`` by the number of active
+    projects.  Bounds and supply are aggregates over the whole fleet now,
+    and the per-project detail lives in ``projects``.
+    """
+
     profile_id: str
     #: Operator kill-switch on the (global) profile.  A disabled pool keeps
-    #: its row — that is what the dashboard toggles back on — and is sized to
-    #: zero, so idle workers drain and no new work is claimed.
+    #: its row -- that is what the dashboard toggles back on -- and is sized
+    #: to zero, so idle workers drain and no new work is claimed.
     enabled: bool = True
     min_active: int
     max_active: int | None = None
+    #: Per-project warm floor.  The effective global floor is
+    #: ``max(min_active, sum of min_per_project over eligible projects)``.
+    min_per_project: int = 0
     desired: int
     running_idle: int
     running_busy: int
     starting: int
     draining: int
     ready: int
-    quarantined_until: float | None = None
-    #: Why the pool is quarantined (unknown harness, startup death + the
-    #: captured startup-output excerpt, ...).  ``None`` when the key was
-    #: quarantined without one.
-    quarantined_reason: str | None = None
+    #: Per-project placement detail, ascending by project id.  Filtered when
+    #: the caller passed ``project_id`` -- that argument is a view filter,
+    #: never pool identity.
+    projects: list[PoolProjectStatus] = []
     instances: list[PoolInstanceStatus] = []
 
 
@@ -703,6 +756,10 @@ class PoolProjectCap(BaseModel):
 
     project_id: str
     max_concurrent_agents: int | None = None
+    #: The smallest of the pool's ``max_active``, this project's
+    #: ``max_concurrent_agents`` and the box-wide ceiling
+    #: (``swarm.global_max_active``, falling back to
+    #: ``resources.max_concurrent_agents``) -- what actually applies here.
     effective_max_active: int | None = None
 
 

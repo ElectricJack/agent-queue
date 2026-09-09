@@ -195,6 +195,35 @@ The collector retains ownership across sibling promotions and hands it to a conf
 when necessary. Once every required child is delivered, it releases ownership before waking the
 parent verifier. A reviewed child may wait while its parent continues working.
 
+#### Handoff proof for a pool writer
+
+"Stopped writing" has two proof shapes, because writers have two lifecycles.
+
+A **task session** exists for exactly one task, so the daemon proves it stopped by stopping it:
+`provider.stop`, an uncached `confirm_stopped` probe, then a detach of its checkout. That is the
+proof used by task-lifecycle writers. Pool workers and repair delegates instead use the
+claim-bound detach proof below; their configured lifecycle determines the proof shape.
+
+A **pool worker** outlives every task it claims: it closes one task and immediately claims the
+next. Stopping it to release one branch would tear down the worker mid-loop, and ordinary
+hierarchy tasks must stay poolable. Its handoff proof is therefore the other half of the sentence
+above — *released or detached its checkout* — evaluated at close:
+
+- the checkout is clean, its branch tip is exactly the freshly fetched remote tip, and HEAD is
+  then detached off the owned branch (the same Git proof the task-session path performs after
+  stopping the process);
+- the ownership row still names that exact session and workspace, and the session still holds the
+  task, when the proof is consumed; and
+- the release runs inside the closing session's own `task_close`, under the task control lock and
+  behind the claim-epoch fence, immediately before the claim is released — so the session no
+  longer holds the task and nothing routes work back onto the branch.
+
+Both shapes end in the same durable state: the attachment is atomically released and the task
+retains a fresh reserved fence, so a suspended parent can re-attach on wake and a collector can
+transfer without treating expiry as liveness evidence. A pool writer whose slot is dirty or
+unpushed fails its proof exactly like a task session whose stop is unconfirmed: ownership stays
+fenced and the branch keeps its writer.
+
 For each child, the collector:
 
 1. Pins the reviewed source head and current target head.
@@ -442,6 +471,27 @@ stage transition; stale events cannot restart a finished stage or promote an obs
 Before handing ownership onward, stop and reconcile the old writer; inability to stop it blocks
 for human intervention rather than granting a second writer access.
 
+A repair delegate's own successful close is one of those handoffs. The close proves the writer's
+exact pushed head, then stops it, detaches its checkout, and returns the branch to a `reserved`
+reservation still owned by that delegate in its `repair` role. Leaving the row `attached` is not an
+option: the same close releases the workspace lock and the session/task binding that any later
+stop-and-detach proof reads, so an attached row at that point can never be confirmed again and
+permanently blocks every subsequent transfer of the branch.
+
+A pull-model (pool) writer proves the same handoff differently, because stopping it is not
+available: the session is the worker loop itself and survives the close it is running inside.
+Its proof is the claim protocol plus the checkout — the task-hold the close is about to release,
+and the branch verified clean, pushed and then detached — and the branch returns to `reserved`
+exactly as above. The workspace agent-lock, the agent row and the session are left for the claim
+release that follows; only the ownership row moves. The ordering is the load-bearing part: this
+release must run inside the close, while the session/task binding and the workspace's task-hold
+still exist, because the claim release erases precisely the evidence any proof reads.
+
+Failed proof is terminal for the *release*, never for the resources. A writer that cannot be
+proven stopped or detached keeps its workspace, its claim and its session binding, and the close
+records `needs_attention` instead: releasing them on a database unlock alone is what would admit
+a second writer, and it would also destroy the evidence a later handoff attempt needs.
+
 For root batches, activate the primary stage when candidate construction starts, before the first
 CI launch, so an initial run that never completes is bounded too. A green initial candidate marks
 that exact candidate/evidence `awaiting_completion` without dispatching a repair agent; terminal
@@ -482,6 +532,11 @@ unmerged state, and unpushed commits are not pushed, reset, cleaned, stashed, de
 to the free pool. Scheduler preparation must select that exact workspace and must not overwrite
 its contents. Failed proof or CAS remains busy and never admits a second writer. This exception is
 specific to the two repair stages and does not weaken worker, collector, or verifier handoffs.
+
+The retained exception applies only while the primary is still attached. A primary that closed
+successfully is already stopped, detached, and holding a `reserved` reservation in its own `repair`
+role, so the debug stage transfers from it without further evidence, exactly as it would from a
+collector or verifier.
 
 ### 9.3 Human escalation
 

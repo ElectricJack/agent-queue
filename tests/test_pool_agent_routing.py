@@ -4,19 +4,24 @@ from __future__ import annotations
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from dataclasses import replace
 
-from src.config import AppConfig, DiscordConfig
+from src.config import DatabaseConfig, AppConfig, DiscordConfig
 from src.database import Database
 from src.intelligence_classes import IntelligenceClass
 from src.models import Agent, AgentProfile, Project, RepoSourceType, SessionRecord, Workspace
 from src.orchestrator import Orchestrator
 from src.sessions.harness_parser import Harness
+from tests.db_fixtures import lease_dsn
 
 
 @pytest.fixture
 async def pool_routing(tmp_path):
-    db = Database(str(tmp_path / "pool-routing.db"))
+    db = Database(lease_dsn("pool-routing.db"))
     await db.initialize()
+    # These fixtures model independent clones; slot provisioning has its own tests.
+    kind = await db.resolve_workspace_kind("__system__", "project-repo")
+    await db.upsert_workspace_kind(replace(kind, mode="exclusive-clone"))
     await db.create_project(Project(id="p", name="Project"))
     for profile in (
         AgentProfile(
@@ -47,7 +52,7 @@ async def pool_routing(tmp_path):
     cfg = AppConfig(
         discord=DiscordConfig(bot_token="test", guild_id="1"),
         workspace_dir=str(tmp_path / "work"), data_dir=str(tmp_path / "data"),
-        database_path=str(tmp_path / "unused.db"),
+        database=DatabaseConfig(url=lease_dsn("unused.db")),
     )
     cfg.sessions.enabled = True
     cfg.sessions.provider = "fake"

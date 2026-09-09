@@ -4,6 +4,8 @@ from unittest.mock import AsyncMock, patch
 import json
 
 import pytest
+
+from tests.db_fixtures import lease_dsn
 from click.testing import CliRunner
 
 from src.cli.app import cli
@@ -89,22 +91,22 @@ async def test_prime_empty_comments_has_no_history_heading():
 
 @pytest.mark.asyncio
 async def test_prime_restores_comments_after_database_reopen(tmp_path):
-    from src.database.adapters.sqlite import SQLiteDatabaseAdapter
+    from src.database import Database
     from src.models import Project, Task
-    from src.config import AppConfig
+    from src.config import AppConfig, DatabaseConfig
     from src.prime import PrimeRenderer
 
-    filename = str(tmp_path / "history.db")
-    db = SQLiteDatabaseAdapter(filename)
+    filename = lease_dsn("history.db")
+    db = Database(filename)
     await db.initialize()
     await db.create_project(Project(id="p", name="Project"))
     await db.create_task(Task(id="t", project_id="p", title="Preserve findings", description="Original requirements"))
     await db.add_task_comment("t", "Regression reproducer: tests/repro.py", author_kind="agent", author_id="worker-1")
     await db.close()
-    fresh = SQLiteDatabaseAdapter(filename)
+    fresh = Database(filename)
     await fresh.initialize()
     try:
-        doc = await PrimeRenderer(fresh, AppConfig(data_dir=str(tmp_path / "data"))).render_for_task("t")
+        doc = await PrimeRenderer(fresh, AppConfig(database=DatabaseConfig(url=lease_dsn("history.db")), data_dir=str(tmp_path / "data"))).render_for_task("t")
         text = doc.to_markdown()
         assert "Original requirements" in text
         assert "Regression reproducer: tests/repro.py" in text

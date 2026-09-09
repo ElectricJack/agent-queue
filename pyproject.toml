@@ -7,7 +7,7 @@ name = "agent-queue"
 version = "0.1.0"
 requires-python = ">=3.12"
 dependencies = [
-    "aiosqlite>=0.20.0",
+    "asyncpg>=0.29.0",
     "sqlalchemy[asyncio]>=2.0",
     "alembic>=1.13",
     # 2.6+ imports the Python 3.14-only `annotationlib` stdlib module
@@ -107,8 +107,13 @@ inbox = [
     "google-api-python-client>=2.100.0",
     "google-auth-oauthlib>=1.0.0",
 ]
-postgresql = [
-    "asyncpg>=0.29.0",
+# Retained for one release so `pip install -e ".[dev,cli,postgresql]"` in the
+# wild keeps working; asyncpg is a core dependency now.
+postgresql = []
+# The one-way importer for databases left over from the SQLite era
+# (`aq db import-sqlite`).  Not needed to run the daemon.
+sqlite-import = [
+    "aiosqlite>=0.20.0",
 ]
 openai = [
     "openai>=1.0.0",
@@ -129,6 +134,8 @@ cli = [
     "agent-queue-api-client @ file:packages/aq-client",
 ]
 dev = [
+    # Exercise the optional legacy SQLite importer in the default test suite.
+    "aiosqlite>=0.20.0",
     # CVE-2025-71176: pytest <9.0.3 uses predictable /tmp/pytest-of-{user}
     # directory names, allowing local DoS or possible privilege escalation.
     "pytest>=9.0.3",

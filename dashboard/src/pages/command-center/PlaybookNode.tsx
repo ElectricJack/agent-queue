@@ -1,12 +1,25 @@
-import { memo } from "react";
+import { memo, useEffect, useState } from "react";
 import { ArrowPathIcon } from "@heroicons/react/24/outline";
 import type { Node, NodeProps } from "@xyflow/react";
 import { NODE_HEIGHT, NODE_WIDTH, type PlaybookNodeData } from "./types";
-import { playbookRunning, playbookScope, playbookState } from "./playbooks";
+import { lastRunLabel, playbookRunning, playbookScope, playbookState } from "./playbooks";
+
+/** Ticks once a second, but only for a card whose run is still in flight. */
+function useElapsedTick(active: boolean): number {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (!active) return;
+    setNow(Date.now());
+    const id = setInterval(() => setNow(Date.now()), 1_000);
+    return () => clearInterval(id);
+  }, [active]);
+  return now;
+}
 
 export function PlaybookCard({ data, selected = false, fluid = false }: { data: PlaybookNodeData; selected?: boolean; fluid?: boolean }) {
   const { playbook: p, onOpenPlaybook } = data;
   const active = playbookRunning(p);
+  const now = useElapsedTick(active);
   return <button type="button" data-playbook-card data-graph-node-id={`playbook:${p.id}`}
     aria-label={`Open playbook ${p.id}`} aria-pressed={selected}
     style={{ width: fluid ? "100%" : NODE_WIDTH, height: NODE_HEIGHT }}
@@ -16,7 +29,7 @@ export function PlaybookCard({ data, selected = false, fluid = false }: { data: 
     <span className="mt-2 line-clamp-2 w-full font-medium" title={p.id}>{p.id}</span>
     <span className="mt-1 w-full truncate text-[10px] text-gray-400" title={playbookScope(p)}>{playbookScope(p)}</span>
     <span className="mt-1 w-full truncate text-[10px] text-violet-300" title={(p.triggers ?? []).join(", ")}>{[...new Set(p.triggers ?? [])].join(" · ") || "Manual"}</span>
-    <span className="mt-auto text-[10px] text-gray-400">Last run: {p.last_run?.status.replace(/_/g, " ") ?? "never"}{p.enabled === false && active ? " · triggers paused" : ""}</span>
+    <span className="mt-auto text-[10px] text-gray-400">Last run: {lastRunLabel(p, now)}{p.enabled === false && active ? " · triggers paused" : ""}</span>
   </button>;
 }
 

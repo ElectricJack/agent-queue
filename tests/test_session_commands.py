@@ -53,6 +53,7 @@ from src.sessions.fake import FakeProvider
 from src.sessions.harness_registry import HarnessRegistry, load_from_vault
 from src.sessions.reconciler import DRAIN_ACK_KEY, SessionReconciler
 from src.sessions.spec import SessionSpecBuilder
+from tests.db_fixtures import lease_dsn
 
 
 class _Bus:
@@ -236,7 +237,7 @@ def config(tmp_path):
 
 @pytest.fixture
 async def db(tmp_path):
-    database = Database(str(tmp_path / "t.db"))
+    database = Database(lease_dsn("t.db"))
     await database.initialize()
     await database.create_project(Project(id="p1", name="P1"))
     yield database

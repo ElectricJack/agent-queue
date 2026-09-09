@@ -6,7 +6,6 @@ from collections.abc import Sequence
 
 from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as postgresql_insert
-from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 from src.database.tables import task_assignment_routes
 from src.models import TaskAssignmentRoute
@@ -68,7 +67,7 @@ class AssignmentRouteQueryMixin:
         if not routes:
             return
         values = [route.__dict__ for route in routes]
-        insert_fn = postgresql_insert if conn.dialect.name == "postgresql" else sqlite_insert
+        insert_fn = postgresql_insert
         statement = insert_fn(task_assignment_routes).values(values)
         excluded = statement.excluded
         statement = statement.on_conflict_do_update(
@@ -79,4 +78,6 @@ class AssignmentRouteQueryMixin:
 
     @staticmethod
     def _row_to_assignment_route(row) -> TaskAssignmentRoute:
-        return TaskAssignmentRoute(**{column.name: row[column.name] for column in task_assignment_routes.c})
+        return TaskAssignmentRoute(
+            **{column.name: row[column.name] for column in task_assignment_routes.c}
+        )

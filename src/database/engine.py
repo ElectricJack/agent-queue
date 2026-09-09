@@ -1,224 +1,54 @@
 """Async engine creation and schema lifecycle management.
 
-Provides factory functions for creating SQLAlchemy async engines with
-appropriate configuration (WAL mode, FK enforcement for SQLite) and
-running Alembic migrations on startup.
+PostgreSQL is the only supported backend.
 """
 
 from __future__ import annotations
 
-import contextlib
-import hashlib
 import logging
 import os
-import shutil
-import sqlite3
-import stat
-import tempfile
-from functools import lru_cache
-from pathlib import Path
 
-try:
-    import fcntl
-except ImportError:  # pragma: no cover - Windows
-    fcntl = None
-
-from sqlalchemy import event, inspect, text
+from sqlalchemy import inspect, text
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
-from sqlalchemy.pool import NullPool, StaticPool
 
 from src.database.migration_guard import VERIFY, migration_decision
+from src.database.schema_key import (
+    ALEMBIC_INI as _ALEMBIC_INI_SHARED,
+    PROJECT_ROOT as _PROJECT_ROOT_SHARED,
+    alembic_head_revisions,
+    schema_inputs,
+    schema_key,
+)
 
 logger = logging.getLogger(__name__)
 
-# Resolve alembic.ini relative to the project root (two levels up from this file)
-_PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
-_ALEMBIC_INI = _PROJECT_ROOT / "alembic.ini"
-_SCHEMA_CACHE_DIRNAME = "aq-schema-cache"
+# Both re-exported from ``schema_key`` so there is exactly one answer to
+# "where is the repo root" shared by the engine and the test substrate.
+_PROJECT_ROOT = _PROJECT_ROOT_SHARED
+_ALEMBIC_INI = _ALEMBIC_INI_SHARED
 
 
-def _sqlite_database_path(engine: AsyncEngine) -> Path | None:
-    """Return the file path for a SQLite engine, excluding in-memory URLs."""
-    if engine.dialect.name != "sqlite":
-        return None
-    database = engine.url.database
-    if not database or database == ":memory:" or "mode=memory" in database:
-        return None
-    return Path(database).resolve()
 
 
-def _schema_cache_is_enabled(database_path: Path) -> bool:
-    """Return whether a SQLite database may use the disposable schema cache."""
-    configured = os.environ.get("AQ_SCHEMA_CACHE")
-    if configured == "0":
-        return False
-    if configured == "1":
-        return True
-    try:
-        database_path.relative_to(Path(tempfile.gettempdir()).resolve())
-    except ValueError:
-        return False
-    return True
 
 
-def _alembic_head_revisions() -> tuple[str, ...]:
-    """Read Alembic's current heads for cache validation and cache keys."""
-    from alembic.config import Config
-    from alembic.script import ScriptDirectory
-
-    return tuple(sorted(ScriptDirectory.from_config(Config(str(_ALEMBIC_INI))).get_heads()))
-
-
-def _schema_cache_directory() -> Path:
-    """The per-user template directory under the temp root, created ``0700``.
-
-    The temp root is shared, so a fixed world-readable path would let any
-    local user plant a template that passes ``quick_check`` and carries the
-    right ``alembic_version`` rows.  The directory is suffixed with the uid,
-    created private, and refused (``OSError``, which the caller turns into
-    the plain Alembic path) when it is a symlink or owned by someone else.
-    """
-    name = _SCHEMA_CACHE_DIRNAME
-    if hasattr(os, "getuid"):
-        name = f"{name}-{os.getuid()}"
-    directory = Path(tempfile.gettempdir()).resolve() / name
-    directory.mkdir(mode=0o700, parents=True, exist_ok=True)
-    info = directory.lstat()
-    if not stat.S_ISDIR(info.st_mode):
-        raise OSError(f"schema cache path {directory} is not a plain directory")
-    if hasattr(os, "getuid"):
-        if info.st_uid != os.getuid():
-            raise OSError(f"schema cache directory {directory} is owned by uid {info.st_uid}")
-        if info.st_mode & 0o077:
-            os.chmod(directory, 0o700)
-    return directory
+#: Re-exported from :mod:`src.database.schema_key` so the SQLite template
+#: cache and the PostgreSQL test template share one definition of the key.
+_alembic_head_revisions = alembic_head_revisions
+_schema_cache_inputs = schema_inputs
+_schema_cache_key = schema_key
 
 
-def _schema_cache_inputs() -> list[Path]:
-    """Every file whose content decides what a fully migrated schema looks like.
-
-    ``migrations/env.py`` configures how revisions run (batch mode, the
-    per-migration transaction) and revision ``b2c3d4e5f6a7`` imports
-    ``src.database.hierarchy_migration``, so a change to either has to
-    invalidate the template exactly as a changed revision file does.
-    """
-    database = _PROJECT_ROOT / "src" / "database"
-    migrations = _PROJECT_ROOT / "migrations"
-    return [
-        database / "tables.py",
-        database / "hierarchy_migration.py",
-        migrations / "env.py",
-        *sorted((migrations / "versions").glob("*.py")),
-    ]
 
 
-@lru_cache(maxsize=1)
-def _schema_cache_key() -> tuple[str, tuple[str, ...]]:
-    """Hash schema inputs so a changed migration never reuses an old template."""
-    digest = hashlib.sha256()
-    for source in _schema_cache_inputs():
-        digest.update(str(source.relative_to(_PROJECT_ROOT)).encode())
-        digest.update(b"\0")
-        with source.open("rb") as handle:
-            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-                digest.update(chunk)
-    heads = _alembic_head_revisions()
-    return f"{'-'.join(heads)}-{digest.hexdigest()}", heads
 
 
-def _cached_template_is_valid(template: Path, expected_heads: tuple[str, ...]) -> bool:
-    """Reject missing, corrupt, or incorrectly stamped cache templates."""
-    try:
-        if template.stat().st_size == 0:
-            return False
-        with contextlib.closing(sqlite3.connect(str(template))) as connection:
-            if connection.execute("PRAGMA quick_check").fetchone() != ("ok",):
-                return False
-            rows = connection.execute("SELECT version_num FROM alembic_version").fetchall()
-    except (OSError, sqlite3.Error):
-        return False
-    return {row[0] for row in rows} == set(expected_heads)
 
 
-def _remove_sqlite_sidecars(database: Path) -> None:
-    """Drop the ``-wal``/``-shm``/``-journal`` files that belong to *database*."""
-    for suffix in ("-wal", "-shm", "-journal"):
-        Path(f"{database}{suffix}").unlink(missing_ok=True)
 
 
-def _copy_sqlite_database(source: Path, destination: Path) -> None:
-    """Copy a checkpointed SQLite template without its transient WAL files.
-
-    Stale sidecars next to *destination* go first: SQLite would otherwise
-    replay a leftover ``-wal`` from whatever database used that path before
-    into the freshly copied template.
-    """
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    if destination.exists():
-        destination.unlink()
-    _remove_sqlite_sidecars(destination)
-    shutil.copyfile(source, destination)
 
 
-async def _build_schema_template(template: Path) -> bool:
-    """Build a fully migrated SQLite template without consulting the cache.
-
-    The build happens in a ``<key>.<pid>.building.db`` scratch file that is
-    checkpointed, closed, and renamed over *template*.  The checkpoint
-    connection is closed *before* the rename (a ``sqlite3`` context manager
-    only commits), and the scratch file's ``-wal``/``-shm`` sidecars are
-    removed whichever way the build ends -- they were piling up in the temp
-    root.
-    """
-    temporary = template.with_suffix(f".{os.getpid()}.building.db")
-    temporary.unlink(missing_ok=True)
-    _remove_sqlite_sidecars(temporary)
-    try:
-        template_engine = create_sqlite_engine(str(temporary))
-        try:
-            await _run_schema_setup_without_cache(template_engine)
-        finally:
-            await template_engine.dispose()
-        with contextlib.closing(sqlite3.connect(str(temporary))) as connection:
-            connection.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-        os.replace(temporary, template)
-    except Exception:
-        logger.warning("Could not build SQLite schema cache template", exc_info=True)
-        return False
-    finally:
-        temporary.unlink(missing_ok=True)
-        _remove_sqlite_sidecars(temporary)
-    return True
-
-
-async def _restore_schema_from_cache(database_path: Path) -> bool:
-    """Copy a valid migrated template into a new SQLite database when safe."""
-    if database_path.exists() and database_path.stat().st_size > 0:
-        return False
-
-    try:
-        cache_directory = _schema_cache_directory()
-        key, heads = _schema_cache_key()
-        template = cache_directory / f"{key}.db"
-        lock_path = cache_directory / f"{key}.lock"
-        with lock_path.open("a+") as lock:
-            if fcntl is not None:
-                fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
-            try:
-                if not _cached_template_is_valid(template, heads):
-                    template.unlink(missing_ok=True)
-                    _remove_sqlite_sidecars(template)
-                    if not await _build_schema_template(template):
-                        return False
-                _copy_sqlite_database(template, database_path)
-                return True
-            finally:
-                if fcntl is not None:
-                    fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
-    except (OSError, sqlite3.Error):
-        logger.warning("Could not restore SQLite schema cache", exc_info=True)
-        database_path.unlink(missing_ok=True)
-        return False
 
 
 def create_postgres_engine(dsn: str, pool_min: int = 2, pool_max: int = 10) -> AsyncEngine:
@@ -239,43 +69,6 @@ def create_postgres_engine(dsn: str, pool_min: int = 2, pool_max: int = 10) -> A
     )
 
 
-def create_sqlite_engine(path: str) -> AsyncEngine:
-    """Create an async SQLite engine with WAL mode and FK enforcement.
-
-    Pooling depends on whether the database is a real file or in-memory:
-
-    * **File databases use ``NullPool``** — every transaction checks out its
-      own ``sqlite3`` connection.  This matters for correctness, not just
-      throughput: with ``StaticPool`` the whole process shares *one* DBAPI
-      connection, so a plain ``engine.begin()`` writer running concurrently
-      with an in-flight ``BEGIN IMMEDIATE`` claim transaction (see
-      :mod:`src.database.queries.transaction_queries`) issues its ``COMMIT``
-      on the *same* raw connection.  That commits the claim's transaction
-      mid-way; the claim's own ``COMMIT`` then fails with "cannot commit -
-      no transaction is active" and can leave a half-recorded holder behind.
-      Separate connections make SQLite's own writer lock arbitrate instead,
-      with ``PRAGMA busy_timeout`` bounding the wait.
-    * **``:memory:`` databases keep ``StaticPool``** — a private in-memory
-      database vanishes when its connection closes, so a shared connection
-      is the only way the schema survives between checkouts.
-    """
-    url = f"sqlite+aiosqlite:///{path}"
-    is_memory = ":memory:" in path or path == "" or "mode=memory" in path
-    engine = create_async_engine(
-        url,
-        poolclass=StaticPool if is_memory else NullPool,
-        connect_args={"check_same_thread": False},
-    )
-
-    @event.listens_for(engine.sync_engine, "connect")
-    def _set_sqlite_pragmas(dbapi_conn, connection_record):
-        cursor = dbapi_conn.cursor()
-        cursor.execute("PRAGMA journal_mode=WAL")
-        cursor.execute("PRAGMA foreign_keys=ON")
-        cursor.execute("PRAGMA busy_timeout=30000")
-        cursor.close()
-
-    return engine
 
 
 def _preflight_check_alembic_version(sync_connection) -> None:
@@ -387,33 +180,74 @@ def _verify_schema_at_head(sync_connection) -> None:
     )
 
 
-def _stamp_alembic_baseline(sync_connection) -> None:
-    """Stamp an existing database at the baseline migration.
+def _is_stamped_at_head(sync_connection) -> bool:
+    """True when the database is already stamped at this checkout's head.
 
-    Used for pre-Alembic databases that already have the core schema
-    but no ``alembic_version`` table.  By stamping at the baseline
-    (instead of head), any post-baseline migrations (e.g. new tables
-    like ``task_metadata``) are applied on the subsequent upgrade call.
+    Deliberately avoids ``ScriptDirectory`` here and reads the head set from
+    the cached :func:`alembic_head_revisions` instead: this runs on every
+    database construction, and parsing the whole ``migrations/versions`` tree
+    per call is the cost being eliminated.  ``get_current_heads`` is a single
+    read of ``alembic_version`` and returns ``()`` when the table is absent,
+    which correctly falls through to the pre-Alembic stamping path.
     """
-    from alembic import command
-    from alembic.config import Config
+    from alembic.migration import MigrationContext
 
-    alembic_cfg = Config(str(_ALEMBIC_INI))
-    alembic_cfg.attributes["connection"] = sync_connection
-    command.stamp(alembic_cfg, "311e98c39ffa")
+    current = set(MigrationContext.configure(sync_connection).get_current_heads())
+    return bool(current) and current == set(alembic_head_revisions())
+
+
+def _stamp_legacy_database(sync_connection) -> bool:
+    """Stamp a pre-squash database forward, rather than replaying the baseline.
+
+    On 2026-09-07 the 117-revision chain was collapsed into
+    ``a00000000001_squashed_baseline``.  A database stamped at the pre-squash
+    head already *has* that exact schema, so it must be re-stamped, never
+    migrated: running the baseline would try to ``create_all`` over live tables.
+
+    Only the pre-squash head qualifies.  A database stamped anywhere earlier
+    has an incomplete schema, and this returns False so the caller raises the
+    ordinary "unknown revision" diagnostic — the operator must bring it to the
+    pre-squash head on the previous release first.  Guessing there would mark
+    a half-migrated database as current.
+    """
+    from alembic.migration import MigrationContext
+
+    from migrations.versions.a00000000001_squashed_baseline import LEGACY_HEAD
+
+    current = set(MigrationContext.configure(sync_connection).get_current_heads())
+    if current != {LEGACY_HEAD}:
+        return False
+    logger.info(
+        "database is at the pre-squash head %s; stamping forward to the "
+        "squashed baseline without replaying it",
+        LEGACY_HEAD,
+    )
+    sync_connection.exec_driver_sql("DELETE FROM alembic_version")
+    sync_connection.exec_driver_sql(
+        "INSERT INTO alembic_version (version_num) VALUES ('a00000000001')"
+    )
+    sync_connection.commit()
+    return True
+
+
+def _reject_unstamped_legacy_database() -> None:
+    """The squash cannot infer which migrations an unstamped schema needs."""
+    raise RuntimeError(
+        "Existing database has tables but no alembic_version; its migration history "
+        "cannot be verified. Upgrade this database to the pre-squash head "
+        "6ad7aebb8c7c using the previous release first, then retry this release. "
+        "No schema or migration version has been changed."
+    )
 
 
 async def run_schema_setup(engine: AsyncEngine) -> None:
     """Create/migrate the database schema using Alembic.
 
-    Fresh temporary SQLite databases use a copied, fully migrated template
-    when possible. Other databases always follow the normal Alembic path.
-
-    For new databases without a cache template, this runs all migrations from
-    scratch.
+    A database already stamped at this checkout's head returns immediately
+    (see :func:`_is_stamped_at_head`); a new database runs the full chain.
     For existing pre-Alembic databases (have tables but no
-    ``alembic_version``), it stamps them at the baseline revision
-    and then runs any newer migrations to bring the schema up to date.
+    ``alembic_version``), it refuses to guess their migration history and
+    directs the operator to upgrade on the previous release first.
 
     Uses ``engine.connect()`` rather than ``engine.begin()`` so that
     Alembic owns transaction boundaries: ``migrations/env.py`` configures
@@ -427,11 +261,6 @@ async def run_schema_setup(engine: AsyncEngine) -> None:
     if migration_decision(str(engine.url)) == VERIFY:
         await verify_schema_current(engine)
         return
-
-    database_path = _sqlite_database_path(engine)
-    if database_path and _schema_cache_is_enabled(database_path):
-        if await _restore_schema_from_cache(database_path):
-            return
 
     await _run_schema_setup_without_cache(engine)
 
@@ -448,7 +277,7 @@ async def verify_schema_current(engine: AsyncEngine) -> None:
 
 
 async def _run_schema_setup_without_cache(engine: AsyncEngine) -> None:
-    """Run the existing direct Alembic path, bypassing the SQLite cache."""
+    """Run the Alembic path directly."""
     async with engine.connect() as conn:
         # Check if this is a pre-Alembic database (has tables but no alembic_version)
         def _check_and_migrate(sync_conn):
@@ -460,12 +289,21 @@ async def _run_schema_setup_without_cache(engine: AsyncEngine) -> None:
             # can own the per-revision boundaries.
             sync_conn.commit()
 
+            if has_alembic:
+                # Stamping adopts the squashed baseline, but later repairs
+                # still need to run before this database is at current head.
+                _stamp_legacy_database(sync_conn)
+
+            if has_alembic and _is_stamped_at_head(sync_conn):
+                # Already at head: `alembic upgrade head` would be a no-op, but
+                # reaching that conclusion costs a ScriptDirectory build plus an
+                # env.py run. Skipping it is what lets a template-cloned test
+                # database (or a daemon restart with no new revisions) open in
+                # milliseconds instead of hundreds of them.
+                return
+
             if has_data_tables and not has_alembic:
-                # Existing DB from before Alembic — stamp at baseline,
-                # then upgrade so post-baseline migrations are applied.
-                logger.info("Pre-Alembic database detected, stamping at baseline")
-                _stamp_alembic_baseline(sync_conn)
-                _run_alembic_upgrade(sync_conn)
+                _reject_unstamped_legacy_database()
             else:
                 # New DB or already-Alembic DB — run migrations normally
                 _run_alembic_upgrade(sync_conn)

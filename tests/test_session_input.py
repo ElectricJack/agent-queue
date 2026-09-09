@@ -14,11 +14,12 @@ from src.event_bus import EventBus
 from src.models import Agent, AgentProfile, SessionRecord
 from src.sessions.provider import SessionError, SessionHandle
 from src.sessions.tmux import TmuxProvider
+from tests.db_fixtures import lease_dsn
 
 
 @pytest.fixture
 async def terminal(tmp_path):
-    db = Database(str(tmp_path / "terminal.db"))
+    db = Database(lease_dsn("terminal.db"))
     await db.initialize()
     await db.create_profile(AgentProfile(id="worker", name="Worker"))
     await db.create_agent(Agent(id="agent-a", name="Ada", profile_id="worker"))

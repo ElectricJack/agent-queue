@@ -10,6 +10,7 @@ from src.database import Database
 from src.models import Project
 from src.task_graph.creator import FormulaProvenance, build_plan, create_graph, write_plan
 from src.task_graph.parser import parse_graph
+from tests.db_fixtures import lease_dsn
 
 PROJECT_ID = "proj"
 GRAPH = {"version": 1, "parent": {"title": "Epic"},
@@ -18,7 +19,7 @@ GRAPH = {"version": 1, "parent": {"title": "Epic"},
 
 @pytest.fixture
 async def db(tmp_path):
-    database = Database(str(tmp_path / "test.db"))
+    database = Database(lease_dsn("test.db"))
     await database.initialize()
     await database.create_project(Project(id=PROJECT_ID, name="p"))
     yield database

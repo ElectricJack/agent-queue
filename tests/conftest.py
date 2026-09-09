@@ -10,10 +10,18 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from src.models import TaskContext  # noqa: F401  (re-exported for test modules)
+from src.config import DatabaseConfig
+from tests.db_fixtures import lease_dsn
 
 # Fresh per-test SQLite databases use the migration template cache. Individual
 # migration tests can request ``disable_schema_cache`` to exercise Alembic.
 os.environ.setdefault("AQ_SCHEMA_CACHE", "1")
+
+
+def _resolve_base_dsn() -> str | None:
+    from tests.db_fixtures import base_dsn
+
+    return base_dsn()
 
 
 def _refuse_production_database() -> None:
@@ -42,6 +50,81 @@ def _refuse_production_database() -> None:
 
 
 _refuse_production_database()
+
+
+# ── PostgreSQL backend shim (AQ_TEST_BACKEND=postgres) ─────────────────────
+# Off by default.  When on, every SQLite Database(...) in the suite is routed
+# to a template-cloned Postgres database leased per test.  See
+# tests/pg_backend_shim.py and docs/superpowers/specs/
+# 2026-09-07-sqlite-removal-implementation.md §T0.
+_PG_POOL = None
+_PG_POOL_DSNS: list[str] = []
+
+#: Resolved at import time on purpose: ``ensure_worker_postgres_dsn`` calls
+#: ``asyncio.run`` internally, so it cannot run inside the async fixture below.
+_PG_BASE_DSN: str | None = _resolve_base_dsn()
+
+
+@pytest.fixture(scope="session", autouse=True)
+async def _dispose_pg_pool():
+    """Remove this run's uniquely named databases after all tests finish."""
+    yield
+    if _PG_POOL is not None:
+        await _PG_POOL.dispose()
+
+
+@pytest.fixture(autouse=True)
+async def _pg_backend():
+    """Arm this test's pool of leasable Postgres databases.
+
+    ``lease_dsn("name")`` hands out one database per distinct name, and each
+    is reset on teardown.  This replaces the ``Database(str(tmp_path /
+    "x.db"))`` idiom the suite grew under SQLite: there is no file to name any
+    more, so the name is just a key.
+    """
+    global _PG_POOL, _PG_POOL_DSNS
+    from tests import db_fixtures
+    from tests.db_fixtures import POOL_SIZE, LeasePool
+
+    if _PG_POOL is None:
+        if not _PG_BASE_DSN:
+            pytest.fail("POSTGRES_TEST_DSN is not set; the suite needs a PostgreSQL server")
+        pool = LeasePool(_PG_BASE_DSN, os.environ.get("PYTEST_XDIST_WORKER", "master"))
+        try:
+            pool_dsns = [await pool.acquire() for _ in range(POOL_SIZE)]
+        except BaseException:
+            await pool.dispose()
+            raise
+        _PG_POOL, _PG_POOL_DSNS = pool, pool_dsns
+
+    db_fixtures.begin_test(_PG_POOL_DSNS)
+    try:
+        yield
+    finally:
+        # Truncate *and* replay the migration seed rows: the built-in
+        # workspace_kinds live in the template, and a bare truncate would
+        # leave every test after the first without them.
+        for leased in db_fixtures.leased():
+            await db_fixtures.truncate_all(leased)
+            if db_fixtures._SEED:
+                await db_fixtures.restore_seed(leased, db_fixtures._SEED)
+
+
+@pytest.fixture
+def unpooled_postgres(monkeypatch):
+    """TestClient runs on another loop; asyncpg connections cannot cross loops."""
+    from sqlalchemy.pool import NullPool
+    from src.database import engine
+
+    create_engine = engine.create_async_engine
+
+    def create_unpooled_engine(*args, **kwargs):
+        for option in ("pool_size", "max_overflow", "pool_timeout"):
+            kwargs.pop(option, None)
+        kwargs["poolclass"] = NullPool
+        return create_engine(*args, **kwargs)
+
+    monkeypatch.setattr(engine, "create_async_engine", create_unpooled_engine)
 
 
 @pytest.fixture
@@ -235,7 +318,7 @@ async def internal_plugins_handler(tmp_path: Path):
     from unittest.mock import create_autospec
 
     from src.commands.handler import CommandHandler
-    from src.config import AppConfig, DiscordConfig
+    from src.config import DatabaseConfig, AppConfig, DiscordConfig
     from src.database import Database
     from src.event_bus import EventBus
     from src.git.manager import GitManager
@@ -250,11 +333,11 @@ async def internal_plugins_handler(tmp_path: Path):
             config = AppConfig(
                 discord=DiscordConfig(bot_token="test-token", guild_id="123"),
                 workspace_dir=str(tmp_path / "workspaces"),
-                database_path=str(tmp_path / "plugins-handler.db"),
+                database=DatabaseConfig(url=lease_dsn("plugins-handler.db")),
                 data_dir=str(tmp_path / "data"),
             )
         if db is None:
-            db = Database(config.database_path)
+            db = Database(config.database.url)
             await db.initialize()
             created_dbs.append(db)
         if git is None:
@@ -302,11 +385,7 @@ DEFAULT_PIPELINE_PATH = (
 
 #: The live shipped authoring source — prose, no action graph.
 SHIPPED_PIPELINE_PATH = (
-    Path(__file__).parent.parent
-    / "src"
-    / "prompts"
-    / "default_playbooks"
-    / "default-pipeline.md"
+    Path(__file__).parent.parent / "src" / "prompts" / "default_playbooks" / "default-pipeline.md"
 )
 
 
@@ -336,12 +415,12 @@ def command_handler_factory(tmp_path: Path):
         from src.database import Database
         from src.orchestrator import Orchestrator
 
-        db = Database(str(tmp_path / "test.db"))
+        db = Database(lease_dsn("test.db"))
         await db.initialize()
         cfg = AppConfig(
             discord=DiscordConfig(bot_token="t", guild_id="1"),
             workspace_dir=str(tmp_path / "w"),
-            database_path=str(tmp_path / "test.db"),
+            database=DatabaseConfig(url=lease_dsn("test.db")),
             data_dir=str(tmp_path / "d"),
         )
         o = Orchestrator(cfg)
@@ -383,12 +462,12 @@ def orchestrator_factory(tmp_path: Path):
         from src.database import Database
         from src.orchestrator import Orchestrator
 
-        db = Database(str(tmp_path / "orch.db"))
+        db = Database(lease_dsn("orch.db"))
         await db.initialize()
         cfg = AppConfig(
             discord=DiscordConfig(bot_token="t", guild_id="1"),
             workspace_dir=str(tmp_path / "w"),
-            database_path=str(tmp_path / "orch.db"),
+            database=DatabaseConfig(url=lease_dsn("orch.db")),
             data_dir=str(tmp_path / "d"),
         )
         o = Orchestrator(cfg)
@@ -458,12 +537,11 @@ class PipelineEngine:
             task_row = await self._db.get_task(str(hydrated["task_id"]))
             if task_row is not None:
                 from dataclasses import asdict
+
                 try:
                     hydrated["task"] = asdict(task_row)
                 except Exception:
-                    hydrated["task"] = (
-                        vars(task_row) if hasattr(task_row, "__dict__") else {}
-                    )
+                    hydrated["task"] = vars(task_row) if hasattr(task_row, "__dict__") else {}
         # Mirrors the orchestrator: a pipeline-created review row flags the
         # event as ``review_task`` regardless of what the emitter sent.
         from src.review_keys import flag_review_task_event

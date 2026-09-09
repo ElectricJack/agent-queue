@@ -1,4 +1,5 @@
 """Operator task controls: persistence, race fences and existing work-state safety."""
+
 from dataclasses import asdict
 from types import SimpleNamespace
 
@@ -6,40 +7,41 @@ import pytest
 
 from src.api.auth import RequestScope
 from src.commands.handler import CommandHandler
-from src.config import AppConfig
+from src.config import AppConfig, DatabaseConfig
 from src.database import Database
 from src.models import Agent, AgentProfile, Project, Task, TaskStatus
 from src.orchestrator import Orchestrator
 from tests.assignment_routing_helpers import install_already_routed
 from tests.pg_dsn import ensure_worker_postgres_dsn
+from tests.db_fixtures import lease_dsn
 
 pytestmark = pytest.mark.asyncio
 POSTGRES_TEST_DSN = ensure_worker_postgres_dsn()
 
 
-@pytest.fixture(params=["sqlite", "postgres"])
+@pytest.fixture
 async def env(tmp_path, request):
-    if request.param == "postgres":
-        if not POSTGRES_TEST_DSN:
-            pytest.skip("POSTGRES_TEST_DSN not set")
-        from src.database.adapters.postgresql import PostgreSQLDatabaseAdapter
-        db = PostgreSQLDatabaseAdapter(POSTGRES_TEST_DSN)
-        await db.initialize()
-        await db.reset_for_tests()
-    else:
-        db = Database(str(tmp_path / "controls.db"))
-        await db.initialize()
+    db = Database(lease_dsn("controls.db"))
+    await db.initialize()
     for pid in ("p", "other"):
         await db.create_project(Project(id=pid, name=pid))
     await db.create_profile(AgentProfile(id="worker", name="Worker", needs_workspace=False))
     await db.create_agent(Agent(id="agent", name="Worker", profile_id="worker"))
     for tid in ("t", "peer"):
-        await db.create_task(Task(
-            id=tid, project_id="p", title=tid, description="Original requirements",
-            status=TaskStatus.READY, profile_id="worker", retry_count=2,
-            branch_name="preserved", pr_url="https://example.invalid/pr/1",
-        ))
-    config = AppConfig(data_dir=str(tmp_path / "data"), workspace_dir=str(tmp_path / "ws"))
+        await db.create_task(
+            Task(
+                id=tid,
+                project_id="p",
+                title=tid,
+                description="Original requirements",
+                status=TaskStatus.READY,
+                profile_id="worker",
+                retry_count=2,
+                branch_name="preserved",
+                pr_url="https://example.invalid/pr/1",
+            )
+        )
+    config = AppConfig(database=DatabaseConfig(url=lease_dsn("controls.db")), data_dir=str(tmp_path / "data"), workspace_dir=str(tmp_path / "ws"))
     orch = Orchestrator(config)
     orch.db = db
     install_already_routed(orch)
@@ -76,9 +78,15 @@ async def test_ready_pause_persists_reload_without_affecting_peer_or_artifacts(e
     assert (await env.db.get_agent("agent")).current_task_id is None
 
 
-@pytest.mark.parametrize("prior", [
-    TaskStatus.DEFINED, TaskStatus.READY, TaskStatus.BLOCKED, TaskStatus.WAITING_INPUT,
-])
+@pytest.mark.parametrize(
+    "prior",
+    [
+        TaskStatus.DEFINED,
+        TaskStatus.READY,
+        TaskStatus.BLOCKED,
+        TaskStatus.WAITING_INPUT,
+    ],
+)
 async def test_resume_restores_state_without_approving_or_resolving_gate(env, prior):
     await env.db.transition_task("t", prior, force=True)
     gate_id, _ = await env.db.create_gate(
@@ -95,11 +103,15 @@ async def test_resume_restores_state_without_approving_or_resolving_gate(env, pr
     assert await env.db.assign_task_to_agent("t", "agent") is False
 
 
-@pytest.mark.parametrize("name,extra", [
-    ("restart_task", {}), ("set_task_status", {"status": "READY"}),
-    ("edit_task", {"status": "READY", "description": "Must not write"}),
-    ("task_set", {"meta": {"manual_pause": None}, "description": "Must not write"}),
-])
+@pytest.mark.parametrize(
+    "name,extra",
+    [
+        ("restart_task", {}),
+        ("set_task_status", {"status": "READY"}),
+        ("edit_task", {"status": "READY", "description": "Must not write"}),
+        ("task_set", {"meta": {"manual_pause": None}, "description": "Must not write"}),
+    ],
+)
 async def test_operator_pause_cannot_be_bypassed_through_other_commands(env, name, extra):
     await pause(env)
     result = await command(env, name, **extra)
@@ -114,9 +126,13 @@ async def test_comments_and_cas_description_edit_do_not_resume_paused_task(env):
     await pause(env)
     comment = await command(env, "task_comment", body="Please check the edge case.")
     assert "error" not in comment, comment
-    edit = await command(env, "task_set", description="Revised", expected_description="Original requirements")
+    edit = await command(
+        env, "task_set", description="Revised", expected_description="Original requirements"
+    )
     assert "error" not in edit, edit
-    conflict = await command(env, "task_set", description="Stale", expected_description="Original requirements")
+    conflict = await command(
+        env, "task_set", description="Stale", expected_description="Original requirements"
+    )
     assert conflict["error_code"] == "description_conflict"
     assert (await env.db.get_task("t")).status == TaskStatus.PAUSED
     assert (await env.db.get_task("t")).description == "Revised"
@@ -129,8 +145,12 @@ async def test_stale_automatic_transition_cannot_remove_pause_or_bump_retries(en
     await pause(env)
     try:
         await env.db.transition_task(
-            "t", target, force=True, context="late_completion",
-            retry_count=99, resume_after=1,
+            "t",
+            target,
+            force=True,
+            context="late_completion",
+            retry_count=99,
+            resume_after=1,
         )
     except Exception as exc:
         assert "paus" in str(exc).lower()
@@ -190,25 +210,45 @@ async def running_session(env, tmp_path, *, lifecycle="pool"):
     await env.db.transition_task("t", TaskStatus.IN_PROGRESS)
     await env.db.update_agent("agent", state=AgentState.BUSY)
     task = await env.db.get_task("t")
-    await env.db.create_workspace(Workspace(
-        id="workspace", project_id="p", workspace_path=str(tmp_path),
-        source_type=RepoSourceType.LINK,
-        locked_by_task_id="t", locked_by_agent_id="agent",
-    ))
-    await env.db.create_session(SessionRecord(
-        id="s", task_id="t", agent_id="agent", project_id="p",
-        profile_id="worker", harness="fake", provider="fake", name="task-session",
-        lifecycle=lifecycle, state="running", work_dir=str(tmp_path),
-        epoch="test", instance_token="instance", started_at=time.time(),
-        claim_phase="active", last_claim_epoch=task.claim_epoch,
-    ))
+    await env.db.create_workspace(
+        Workspace(
+            id="workspace",
+            project_id="p",
+            workspace_path=str(tmp_path),
+            source_type=RepoSourceType.LINK,
+            locked_by_task_id="t",
+            locked_by_agent_id="agent",
+        )
+    )
+    await env.db.create_session(
+        SessionRecord(
+            id="s",
+            task_id="t",
+            agent_id="agent",
+            project_id="p",
+            profile_id="worker",
+            harness="fake",
+            provider="fake",
+            name="task-session",
+            lifecycle=lifecycle,
+            state="running",
+            work_dir=str(tmp_path),
+            epoch="test",
+            instance_token="instance",
+            started_at=time.time(),
+            claim_phase="active",
+            last_claim_epoch=task.claim_epoch,
+        )
+    )
     provider = FakeProvider()
     env.orch.session_providers = SimpleNamespace(create=lambda *_: provider)
     return provider, task
 
 
 @pytest.mark.parametrize("lifecycle", ["task", "pool"])
-async def test_running_pause_stops_owned_session_and_preserves_work_then_resume(env, tmp_path, lifecycle):
+async def test_running_pause_stops_owned_session_and_preserves_work_then_resume(
+    env, tmp_path, lifecycle
+):
     provider, prior = await running_session(env, tmp_path, lifecycle=lifecycle)
     artifact = tmp_path / "artifact.txt"
     artifact.write_text("keep")
@@ -266,12 +306,15 @@ async def test_pool_claim_cannot_take_manually_paused_task(env):
 
     await pause(env)
     async with env.db._engine.connect() as conn:
-        candidates = (await conn.execute(select(tasks.c.id).where(_frontier_where("p")))).scalars().all()
+        candidates = (
+            (await conn.execute(select(tasks.c.id).where(_frontier_where("p")))).scalars().all()
+        )
     assert candidates == ["peer"]
 
 
 async def test_typed_pause_and_resume_routes_are_registered():
     from src.api.codegen import build_category_routers
+
     routes = {
         route.operation_id: route.path
         for router in build_category_routers()
@@ -281,10 +324,16 @@ async def test_typed_pause_and_resume_routes_are_registered():
     assert routes.get("resume_task") == "/api/task/resume"
 
 
-@pytest.mark.parametrize("fields", [
-    {"status": TaskStatus.READY}, {"resume_after": 1}, {"retry_count": 99},
-    {"assigned_agent_id": "agent"}, {"claim_epoch": 0},
-])
+@pytest.mark.parametrize(
+    "fields",
+    [
+        {"status": TaskStatus.READY},
+        {"resume_after": 1},
+        {"retry_count": 99},
+        {"assigned_agent_id": "agent"},
+        {"claim_epoch": 0},
+    ],
+)
 async def test_raw_lifecycle_writes_cannot_bypass_pause(env, fields):
     await pause(env)
     before = await env.db.get_task("t")
@@ -293,8 +342,18 @@ async def test_raw_lifecycle_writes_cannot_bypass_pause(env, fields):
     except Exception as exc:
         assert "paus" in str(exc).lower()
     after = await env.db.get_task("t")
-    assert (after.status, after.resume_after, after.retry_count, after.assigned_agent_id, after.claim_epoch) == (
-        before.status, None, 2, None, before.claim_epoch,
+    assert (
+        after.status,
+        after.resume_after,
+        after.retry_count,
+        after.assigned_agent_id,
+        after.claim_epoch,
+    ) == (
+        before.status,
+        None,
+        2,
+        None,
+        before.claim_epoch,
     )
 
 
@@ -354,9 +413,11 @@ async def test_pause_during_provider_start_waits_then_stops_the_new_session(env,
     env.orch.session_providers = SimpleNamespace(create=lambda *_: provider)
     task = await env.db.get_task("t")
     await env.db.set_task_meta("t", "manual_pause_checkpoint", {"retained_until_launch": True})
-    launch = asyncio.create_task(env.orch._launch_session_for_task(
-        AssignAction("agent", "t", "p"), task, await env.db.get_profile("worker"), str(tmp_path)
-    ))
+    launch = asyncio.create_task(
+        env.orch._launch_session_for_task(
+            AssignAction("agent", "t", "p"), task, await env.db.get_profile("worker"), str(tmp_path)
+        )
+    )
     await asyncio.wait_for(started.wait(), 15)
     paused = asyncio.create_task(command(env, "pause_task"))
     await asyncio.sleep(0.05)
@@ -369,8 +430,11 @@ async def test_pause_during_provider_start_waits_then_stops_the_new_session(env,
     assert (await env.db.get_task("t")).status == TaskStatus.PAUSED
 
 
-async def test_pause_does_not_release_workspace_during_inflight_completion(env, tmp_path, monkeypatch):
+async def test_pause_does_not_release_workspace_during_inflight_completion(
+    env, tmp_path, monkeypatch
+):
     import asyncio
+
     _, task = await running_session(env, tmp_path)
     entered, proceed = asyncio.Event(), asyncio.Event()
 
@@ -384,9 +448,13 @@ async def test_pause_does_not_release_workspace_during_inflight_completion(env, 
 
     monkeypatch.setattr(env.orch, "_get_default_branch", branch)
     monkeypatch.setattr(env.orch, "_run_completion_pipeline", pipeline)
-    completion = asyncio.create_task(env.orch.complete_session_task(
-        task, outcome="pass", expect_claim_epoch=task.claim_epoch,
-    ))
+    completion = asyncio.create_task(
+        env.orch.complete_session_task(
+            task,
+            outcome="pass",
+            expect_claim_epoch=task.claim_epoch,
+        )
+    )
     await asyncio.wait_for(entered.wait(), 15)
     paused = asyncio.create_task(command(env, "pause_task"))
     await asyncio.sleep(0.05)
@@ -400,6 +468,7 @@ async def test_pause_does_not_release_workspace_during_inflight_completion(env, 
 
 async def test_pausing_unreleased_container_does_not_release_its_children(env):
     from src.models import DepType
+
     await env.db.transition_task("t", TaskStatus.DEFINED, force=True)
     await env.db.add_dependency("peer", "t", dep_type=DepType.PARENT_CHILD.value)
     assert (await env.db.get_task("peer")).is_blocked
@@ -454,17 +523,24 @@ async def test_preparing_reused_pool_session_is_stopped_despite_previous_epoch(e
     assert await env.db.activate_claim("s", "t", epoch=task.claim_epoch, now=1) is None
 
 
-async def test_pause_keeps_workspace_owned_until_pool_preparation_finishes(env, tmp_path, monkeypatch):
+async def test_pause_keeps_workspace_owned_until_pool_preparation_finishes(
+    env, tmp_path, monkeypatch
+):
     import asyncio
+
     provider, task = await running_session(env, tmp_path)
     await env.db.update_session("s", claim_phase="preparing")
     session = await env.db.get_session("s")
     entered, proceed = asyncio.Event(), asyncio.Event()
+
     async def reset(slot, task):
         entered.set()
         await proceed.wait()
         return "branch"
-    monkeypatch.setattr(env.orch, "_worktree_slots", lambda: SimpleNamespace(reset_slot_for_task=reset))
+
+    monkeypatch.setattr(
+        env.orch, "_worktree_slots", lambda: SimpleNamespace(reset_slot_for_task=reset)
+    )
     prepare = asyncio.create_task(env.handler._prepare_and_activate(session, session, task))
     await asyncio.wait_for(entered.wait(), 15)
     paused = asyncio.create_task(command(env, "pause_task"))
@@ -544,8 +620,12 @@ async def test_resume_restores_commits_and_dirty_files_after_slot_reuse(env, tmp
 
     repo = tmp_path / "repo"
     repo.mkdir()
+
     def git(*args):
-        return subprocess.run(["git", *args], cwd=repo, check=True, capture_output=True, text=True).stdout.strip()
+        return subprocess.run(
+            ["git", *args], cwd=repo, check=True, capture_output=True, text=True
+        ).stdout.strip()
+
     git("init", "-b", "main")
     git("config", "user.email", "test@example.invalid")
     git("config", "user.name", "Test")
@@ -601,25 +681,40 @@ async def test_pause_waits_for_push_workspace_preparation(env, tmp_path, monkeyp
 
     env.config.worktrees.enabled = False  # Exercise the legacy push preparation path.
     from src.models import WorkspaceKind, SYSTEM_KIND_SCOPE
-    await env.db.upsert_workspace_kind(WorkspaceKind(
-        project_id=SYSTEM_KIND_SCOPE, id="project-repo", is_git_repo=True,
-        lockable=True, default_lock_mode="exclusive",
-    ))
+
+    await env.db.upsert_workspace_kind(
+        WorkspaceKind(
+            project_id=SYSTEM_KIND_SCOPE,
+            id="project-repo",
+            is_git_repo=True,
+            lockable=True,
+            default_lock_mode="exclusive",
+        )
+    )
     await env.db.assign_task_to_agent("t", "agent")
     await env.db.transition_task("t", TaskStatus.IN_PROGRESS)
-    await env.db.create_workspace(Workspace(
-        id="workspace", project_id="p", workspace_path=str(tmp_path),
-        source_type=RepoSourceType.LINK,
-    ))
+    await env.db.create_workspace(
+        Workspace(
+            id="workspace",
+            project_id="p",
+            workspace_path=str(tmp_path),
+            source_type=RepoSourceType.LINK,
+        )
+    )
     entered, proceed = asyncio.Event(), asyncio.Event()
+
     async def default_branch(*_):
         entered.set()
         await proceed.wait()
         return "main"
+
     monkeypatch.setattr(env.orch, "_get_default_branch", default_branch)
-    preparation = asyncio.create_task(env.orch._prepare_workspace(
-        await env.db.get_task("t"), await env.db.get_agent("agent"),
-    ))
+    preparation = asyncio.create_task(
+        env.orch._prepare_workspace(
+            await env.db.get_task("t"),
+            await env.db.get_agent("agent"),
+        )
+    )
     await asyncio.wait_for(entered.wait(), 15)
     paused = asyncio.create_task(command(env, "pause_task"))
     await asyncio.wait({paused}, timeout=1.0)
@@ -651,16 +746,24 @@ async def test_pending_pause_cannot_be_deleted_and_release_a_live_process(env, t
     assert "task-session" in provider.running
 
 
-async def test_multiple_owned_workspaces_refuse_pause_before_stopping_or_changing_state(env, tmp_path):
+async def test_multiple_owned_workspaces_refuse_pause_before_stopping_or_changing_state(
+    env, tmp_path
+):
     from src.models import Workspace, RepoSourceType
+
     provider, _ = await running_session(env, tmp_path)
     auxiliary = tmp_path / "auxiliary"
     auxiliary.mkdir()
     (auxiliary / "artifact.txt").write_text("keep")
-    await env.db.create_workspace(Workspace(
-        id="auxiliary", project_id="p", workspace_path=str(auxiliary),
-        source_type=RepoSourceType.LINK, locked_by_task_id="t",
-    ))
+    await env.db.create_workspace(
+        Workspace(
+            id="auxiliary",
+            project_id="p",
+            workspace_path=str(auxiliary),
+            source_type=RepoSourceType.LINK,
+            locked_by_task_id="t",
+        )
+    )
     result = await command(env, "pause_task")
     assert "multiple" in result.get("error", "").lower()
     assert "task-session" in provider.running
@@ -671,12 +774,17 @@ async def test_multiple_owned_workspaces_refuse_pause_before_stopping_or_changin
 
 
 @pytest.mark.parametrize("error", [RuntimeError("late failure"), TimeoutError("late timeout")])
-async def test_late_execution_error_does_not_release_paused_workspace(env, tmp_path, monkeypatch, error):
+async def test_late_execution_error_does_not_release_paused_workspace(
+    env, tmp_path, monkeypatch, error
+):
     from src.scheduler import AssignAction
+
     await running_session(env, tmp_path)
+
     async def fail(_):
         await env.db.pause_task("t")
         raise error
+
     monkeypatch.setattr(env.orch, "_execute_task", fail)
     try:
         await env.orch._execute_task_safe_inner(AssignAction("agent", "t", "p"))
@@ -688,6 +796,7 @@ async def test_late_execution_error_does_not_release_paused_workspace(env, tmp_p
 
 async def test_stale_legacy_worktree_cleanup_cannot_delete_paused_work(env, tmp_path):
     from src.models import RepoSourceType
+
     await running_session(env, tmp_path)
     artifact = tmp_path / "artifact.txt"
     artifact.write_text("keep")
@@ -700,10 +809,15 @@ async def test_stale_legacy_worktree_cleanup_cannot_delete_paused_work(env, tmp_
 
 def make_git_repo(root, name):
     import subprocess
+
     repo = root / name
     repo.mkdir()
+
     def git(*args):
-        return subprocess.run(["git", *args], cwd=repo, check=True, capture_output=True, text=True).stdout.strip()
+        return subprocess.run(
+            ["git", *args], cwd=repo, check=True, capture_output=True, text=True
+        ).stdout.strip()
+
     git("init", "-b", "main")
     git("config", "user.email", "test@example.invalid")
     git("config", "user.name", "Test")
@@ -754,7 +868,16 @@ async def test_checkpoint_ref_survives_original_slot_removal(env, tmp_path):
     ws = replace(await env.db.get_workspace("workspace"), workspace_path=str(base))
     await env.orch._worktree_slots().reset_slot_for_task(ws, await env.db.get_task("t"))
     assert (base / "new.txt").read_text() == "dirty progress"
-    assert subprocess.run(["git", "branch", "--show-current"], cwd=base, check=True, capture_output=True, text=True).stdout.strip() == "aq/t"
+    assert (
+        subprocess.run(
+            ["git", "branch", "--show-current"],
+            cwd=base,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        == "aq/t"
+    )
 
 
 @pytest.mark.parametrize("conflict", ["different_repository", "changed_branch"])
@@ -783,6 +906,7 @@ async def test_checkpoint_validation_precedes_destructive_reset(env, tmp_path, c
 
 async def test_unborn_repository_pause_keeps_work_and_lock_with_useful_error(env, tmp_path):
     import subprocess
+
     repo = tmp_path / "unborn"
     repo.mkdir()
     subprocess.run(["git", "init", "-b", "main"], cwd=repo, check=True, capture_output=True)
@@ -796,7 +920,9 @@ async def test_unborn_repository_pause_keeps_work_and_lock_with_useful_error(env
     assert (repo / "new.txt").read_text() == "keep"
 
 
-async def test_late_session_cleanup_cannot_idle_worker_before_pause_stop_confirmation(env, tmp_path):
+async def test_late_session_cleanup_cannot_idle_worker_before_pause_stop_confirmation(
+    env, tmp_path
+):
     provider, _ = await running_session(env, tmp_path)
     sentinel = tmp_path / ".agent-queue-lock"
     sentinel.write_text("t\nagent\n")
@@ -811,6 +937,7 @@ async def test_late_session_cleanup_cannot_idle_worker_before_pause_stop_confirm
 
 async def test_reconciler_old_cleanup_cannot_release_a_resumed_claim(env, tmp_path):
     from src.sessions.reconciler import SessionReconciler
+
     _, stale = await running_session(env, tmp_path, lifecycle="task")
     old_session = await env.db.get_session("s")
     await pause(env)
@@ -906,8 +1033,11 @@ async def test_pause_with_missing_workspace_finishes_instead_of_retrying_forever
     assert (await env.db.get_task_meta("t", "manual_pause"))["cleanup_pending"] is False
     assert await env.db.get_task_meta("t", "manual_pause_checkpoint_retry") is None
     assert (await env.db.get_workspace("workspace")).locked_by_task_id is None
-    notes = [row for row in await env.db.get_task_contexts("t")
-             if row["type"] == "manual_pause_no_checkpoint"]
+    notes = [
+        row
+        for row in await env.db.get_task_contexts("t")
+        if row["type"] == "manual_pause_no_checkpoint"
+    ]
     assert notes and "no checkpoint captured:" in notes[0]["content"]
     await env.orch._resume_paused_tasks()  # nothing pending left for the cascade to retry
     assert (await env.db.get_task("t")).status == TaskStatus.PAUSED
@@ -927,7 +1057,9 @@ async def test_pause_with_clean_worktree_captures_checkpoint_and_finishes(env, t
     assert "error" not in await command(env, "resume_task")
 
 
-async def test_repeated_checkpoint_failure_converges_and_salvages_dirty_work(env, tmp_path, monkeypatch):
+async def test_repeated_checkpoint_failure_converges_and_salvages_dirty_work(
+    env, tmp_path, monkeypatch
+):
     from src.orchestrator import task_checkpoint
 
     repo, _ = make_git_repo(tmp_path, "stuck")
@@ -1005,7 +1137,10 @@ async def test_backoff_resume_clears_needs_attention(env):
 
     await env.db.set_task_meta("t", "needs_attention", "session_exited_open")
     await env.db.transition_task(
-        "t", TaskStatus.PAUSED, force=True, resume_after=_time.time() - 1,
+        "t",
+        TaskStatus.PAUSED,
+        force=True,
+        resume_after=_time.time() - 1,
         assigned_agent_id=None,
     )
     await env.orch._resume_paused_tasks()

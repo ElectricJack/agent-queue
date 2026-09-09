@@ -10,11 +10,12 @@ from src.models import (
     Workspace,
     WorkspaceMode,
 )
+from tests.db_fixtures import lease_dsn
 
 
 @pytest.fixture
 async def db(tmp_path):
-    database = Database(str(tmp_path / "test.db"))
+    database = Database(lease_dsn("test.db"))
     await database.initialize()
     yield database
     await database.close()
@@ -1401,11 +1402,216 @@ class TestTokenLedgerPricingColumns:
         assert current in script.get_heads()
 
 
+class TestAgentProfilesMinPerProject:
+    """``agent_profiles.min_per_project`` (global-worker-pools §2.1).
+
+    The per-project warm floor is nullable with no backfill: NULL reads as 0,
+    so every pre-existing profile keeps today's sizing behaviour.
+    """
+
+    def test_declared_in_metadata(self):
+        from src.database.tables import agent_profiles
+
+        cols = {c.name: c for c in agent_profiles.columns}
+        assert "min_per_project" in cols
+        assert cols["min_per_project"].nullable is True
+
+    async def test_present_in_a_migrated_database(self, db):
+        from sqlalchemy import inspect
+
+        def _cols(sync_conn):
+            return {c["name"] for c in inspect(sync_conn).get_columns("agent_profiles")}
+
+        async with db._engine.begin() as conn:
+            cols = await conn.run_sync(_cols)
+        assert "min_per_project" in cols
+
+    @pytest.mark.migration
+    @pytest.mark.integration
+    async def test_upgrade_adds_the_column_to_a_pre_column_database(self):
+        """The ALTER path, on a database that predates the column.
+
+        Fresh databases get the column from the squashed baseline's
+        ``metadata.create_all``, so only this shape exercises ``a00000000003``'s
+        ``add_column`` at all.
+        """
+        from sqlalchemy import inspect, text
+
+        from src.database.engine import create_postgres_engine, run_schema_setup
+        from src.database.tables import metadata
+        from tests.pg_dsn import create_scratch_database, ensure_worker_postgres_dsn
+
+        if not ensure_worker_postgres_dsn():
+            pytest.skip("POSTGRES_TEST_DSN not set")
+
+        dsn = await create_scratch_database("min_per_project_upgrade")
+        engine = create_postgres_engine(dsn)
+        try:
+            async with engine.begin() as conn:
+                await conn.run_sync(metadata.create_all)
+                await conn.execute(text("ALTER TABLE agent_profiles DROP COLUMN min_per_project"))
+                await conn.execute(text("CREATE TABLE alembic_version (version_num VARCHAR(32))"))
+                await conn.execute(text("INSERT INTO alembic_version VALUES ('a00000000002')"))
+
+            await run_schema_setup(engine)
+
+            def _cols(sync_conn):
+                return {c["name"] for c in inspect(sync_conn).get_columns("agent_profiles")}
+
+            async with engine.begin() as conn:
+                assert "min_per_project" in await conn.run_sync(_cols)
+                version = (await conn.execute(text("SELECT version_num FROM alembic_version"))).scalar()
+            # Asserted against the checkout's head rather than a literal:
+            # ``run_schema_setup`` runs the whole remaining chain, so pinning
+            # ``a00000000003`` here made every later revision fail this test
+            # for a reason that has nothing to do with ``min_per_project``.
+            from src.database.schema_key import alembic_head_revisions
+
+            assert version in alembic_head_revisions()
+        finally:
+            await engine.dispose()
+
+    def test_migration_is_in_the_linear_history(self):
+        """One head, and a00000000003 chains onto the restored-guards revision.
+
+        The head is asserted as "exactly one", not by id: a branch point is the
+        actual hazard (it wedges the daemon at boot), while a later revision
+        moving the head forward is ordinary.
+        """
+        from pathlib import Path
+
+        from alembic.config import Config
+        from alembic.script import ScriptDirectory
+
+        root = Path(__file__).resolve().parent.parent
+        script = ScriptDirectory.from_config(Config(str(root / "alembic.ini")))
+        rev = script.get_revision("a00000000003")
+        assert rev.down_revision == "a00000000002"
+        heads = list(script.get_heads())
+        assert len(heads) == 1, f"migration history has branched: {heads}"
+        ancestry = {r.revision for r in script.iterate_revisions(heads[0], "base")}
+        assert "a00000000003" in ancestry
+
+
+class TestTaskBranchOriginDiscard:
+    """``a00000000004`` — the columns and the narrowed immutability trigger.
+
+    The trigger half is the load-bearing part: before this revision it raised
+    on *any* UPDATE of a materialized origin, which is what made a task with a
+    branch permanently undeletable
+    (``2026-09-08-task-deletion-with-materialized-branches-design`` §3.2).
+    """
+
+    async def test_discard_columns_are_present_in_a_fresh_database(self):
+        from sqlalchemy import inspect
+
+        from src.database import Database
+
+        db = Database(lease_dsn("origin_discard.db"))
+        await db.initialize()
+
+        def _cols(sync_conn):
+            return {c["name"] for c in inspect(sync_conn).get_columns("task_branch_origins")}
+
+        async with db._engine.begin() as conn:
+            cols = await conn.run_sync(_cols)
+        await db.close()
+        assert {
+            "discard_state",
+            "discard_requested_at",
+            "discard_attempts",
+            "discard_next_attempt_at",
+            "discard_last_error",
+        } <= cols
+
+    async def test_retiring_a_materialized_origin_is_allowed(self):
+        """The whole point: the trigger no longer freezes the entire row."""
+        from sqlalchemy import insert, select, update
+
+        from src.database import Database
+        from src.database.tables import task_branch_origins
+
+        db = Database(lease_dsn("origin_discard.db"))
+        await db.initialize()
+        async with db.immediate() as conn:
+            await conn.execute(
+                insert(task_branch_origins).values(
+                    id="o1",
+                    task_id="t1",
+                    repository_id="repo",
+                    parent_ref="main",
+                    base_sha="a" * 40,
+                    creation_generation=0,
+                    reserved=True,
+                    materialized=True,
+                    materialized_at=1.0,
+                    created_at=1.0,
+                )
+            )
+            await conn.execute(
+                update(task_branch_origins)
+                .where(task_branch_origins.c.id == "o1")
+                .values(retired_at=2.0, discard_state="pending", discard_requested_at=2.0)
+            )
+        async with db._engine.connect() as conn:
+            row = (
+                await conn.execute(
+                    select(task_branch_origins).where(task_branch_origins.c.id == "o1")
+                )
+            ).mappings().one()
+        await db.close()
+        assert row["retired_at"] == 2.0
+        assert row["discard_state"] == "pending"
+
+    async def test_identity_of_a_materialized_origin_is_still_frozen(self):
+        from sqlalchemy import delete, insert, update
+
+        from src.database import Database
+        from src.database.tables import task_branch_origins
+
+        db = Database(lease_dsn("origin_discard.db"))
+        await db.initialize()
+        async with db.immediate() as conn:
+            await conn.execute(
+                insert(task_branch_origins).values(
+                    id="o2",
+                    task_id="t2",
+                    repository_id="repo",
+                    parent_ref="main",
+                    base_sha="a" * 40,
+                    creation_generation=0,
+                    reserved=True,
+                    materialized=True,
+                    materialized_at=1.0,
+                    created_at=1.0,
+                )
+            )
+        for values in (
+            {"base_sha": "b" * 40},
+            {"materialized": False},
+            {"task_id": "somewhere-else"},
+        ):
+            with pytest.raises(Exception, match="materialized task branch origin is immutable"):
+                async with db.immediate() as conn:
+                    await conn.execute(
+                        update(task_branch_origins)
+                        .where(task_branch_origins.c.id == "o2")
+                        .values(**values)
+                    )
+        # And it still cannot be removed outright.
+        with pytest.raises(Exception, match="materialized task branch origin is immutable"):
+            async with db.immediate() as conn:
+                await conn.execute(
+                    delete(task_branch_origins).where(task_branch_origins.c.id == "o2")
+                )
+        await db.close()
+
+
 async def test_layout_tables_exist(tmp_path):
     from sqlalchemy import inspect
     from src.database import Database
 
-    db = Database(str(tmp_path / "layout.db"))
+    db = Database(lease_dsn("layout.db"))
     await db.initialize()
     async with db._engine.connect() as conn:
         names = await conn.run_sync(lambda c: inspect(c).get_table_names())

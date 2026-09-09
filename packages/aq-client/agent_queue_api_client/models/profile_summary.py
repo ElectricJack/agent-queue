@@ -28,6 +28,7 @@ class ProfileSummary:
         lifecycle (str | Unset):  Default: 'task'.
         min_active (int | None | Unset):
         max_active (int | None | Unset):
+        min_per_project (int | None | Unset):
     """
 
     id: str
@@ -43,6 +44,7 @@ class ProfileSummary:
     lifecycle: str | Unset = "task"
     min_active: int | None | Unset = UNSET
     max_active: int | None | Unset = UNSET
+    min_per_project: int | None | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -88,6 +90,12 @@ class ProfileSummary:
         else:
             max_active = self.max_active
 
+        min_per_project: int | None | Unset
+        if isinstance(self.min_per_project, Unset):
+            min_per_project = UNSET
+        else:
+            min_per_project = self.min_per_project
+
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update(
@@ -118,6 +126,8 @@ class ProfileSummary:
             field_dict["min_active"] = min_active
         if max_active is not UNSET:
             field_dict["max_active"] = max_active
+        if min_per_project is not UNSET:
+            field_dict["min_per_project"] = min_per_project
 
         return field_dict
 
@@ -171,6 +181,15 @@ class ProfileSummary:
 
         max_active = _parse_max_active(d.pop("max_active", UNSET))
 
+        def _parse_min_per_project(data: object) -> int | None | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(int | None | Unset, data)
+
+        min_per_project = _parse_min_per_project(d.pop("min_per_project", UNSET))
+
         profile_summary = cls(
             id=id,
             name=name,
@@ -185,6 +204,7 @@ class ProfileSummary:
             lifecycle=lifecycle,
             min_active=min_active,
             max_active=max_active,
+            min_per_project=min_per_project,
         )
 
         profile_summary.additional_properties = d

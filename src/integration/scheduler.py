@@ -8,9 +8,11 @@ from typing import Any, Literal
 
 from sqlalchemy import delete, insert, select, update
 
+from src.database.queries.integration_schedule_queries import INTEGRATION_LEASE_SECONDS
 from src.database.tables import (
     integration_batch_members,
     integration_batches,
+    integration_promotion_intents,
     integration_repair_operations,
     playbook_artifacts,
     project_integration_leases,
@@ -18,13 +20,12 @@ from src.database.tables import (
     projects,
     repos,
 )
+from src.git.manager import GitError, _validate_ref
 from src.integration.models import HierarchicalIntegrationPolicy
 from src.integration.outbox import enqueue_integration_event
 from src.integration.repair import RepairService
-from src.git.manager import GitError, _validate_ref
 from src.models import resolve_integration_mode_with_source
 from src.playbooks.artifact_ref import ArtifactRef
-
 
 ScheduleTrigger = Literal["periodic", "manual"]
 
@@ -66,9 +67,7 @@ class IntegrationScheduler:
                 conn, project_id=project_id, values=values
             )
 
-    async def mark_due(
-        self, project_id: str, now: float, trigger: str
-    ) -> dict[str, Any]:
+    async def mark_due(self, project_id: str, now: float, trigger: str) -> dict[str, Any]:
         """Mark one sweep due, or return the durable request already in flight."""
         if trigger not in {"periodic", "manual"}:
             raise ValueError("integration schedule trigger must be periodic or manual")
@@ -80,19 +79,32 @@ class IntegrationScheduler:
             # disabled, observing, hierarchy-only, or draining.
             await self.db.lock_hierarchy_project(conn, project_id)
             project = (
-                await conn.execute(
-                    select(
-                        projects.c.hierarchical_integration_mode,
-                        projects.c.hierarchical_integration_desired_mode,
-                        projects.c.hierarchical_integration_draining,
-                    ).where(projects.c.id == project_id)
+                (
+                    await conn.execute(
+                        select(
+                            projects.c.hierarchical_integration_mode,
+                            projects.c.hierarchical_integration_desired_mode,
+                            projects.c.hierarchical_integration_draining,
+                        ).where(projects.c.id == project_id)
+                    )
                 )
-            ).mappings().one_or_none()
+                .mappings()
+                .one_or_none()
+            )
             if (
                 project is None
                 or project["hierarchical_integration_mode"] != "train"
                 or project["hierarchical_integration_draining"]
             ):
+                if project is not None:
+                    # Disabling new sweeps must not strand the batch being drained.
+                    schedule = (await conn.execute(
+                        select(project_integration_schedules)
+                        .where(project_integration_schedules.c.project_id == project_id)
+                        .with_for_update()
+                    )).mappings().one_or_none()
+                    if schedule is not None:
+                        await self._maintain_batch_lease_on(conn, project_id, schedule, now)
                 return {
                     "outcome": "disabled",
                     "project_id": project_id,
@@ -108,6 +120,7 @@ class IntegrationScheduler:
                 now=now,
                 default_interval_seconds=self.DEFAULT_INTERVAL_SECONDS,
             )
+            await self._maintain_batch_lease_on(conn, project_id, schedule, now)
             if trigger == "periodic" and not schedule["enabled"]:
                 return self._result("disabled", project_id, schedule)
 
@@ -131,8 +144,7 @@ class IntegrationScheduler:
                     await conn.execute(
                         select(integration_batches.c.id).where(
                             integration_batches.c.project_id == project_id,
-                            integration_batches.c.request_id
-                            == schedule["outstanding_request_id"],
+                            integration_batches.c.request_id == schedule["outstanding_request_id"],
                             integration_batches.c.lifecycle.in_(
                                 (
                                     "sealing",
@@ -192,6 +204,92 @@ class IntegrationScheduler:
             )
             return self._result("due", project_id, schedule)
 
+    async def _maintain_batch_lease_on(self, conn, project_id, schedule, now):
+        """Keep the active request fenced independently of its next sweep interval."""
+        if schedule["outstanding_request_id"] is None:
+            return
+        lease = (
+            (
+                await conn.execute(
+                    select(project_integration_leases)
+                    .where(project_integration_leases.c.project_id == project_id)
+                    .with_for_update()
+                )
+            )
+            .mappings()
+            .one_or_none()
+        )
+        if lease is None or float(lease["expires_at"]) > now + INTEGRATION_LEASE_SECONDS / 2:
+            return
+        batch = (
+            (
+                await conn.execute(
+                    select(integration_batches)
+                    .where(integration_batches.c.id == lease["batch_id"])
+                    .with_for_update()
+                )
+            )
+            .mappings()
+            .one_or_none()
+        )
+        if (
+            batch is None
+            or batch["project_id"] != project_id
+            or batch["request_id"] != schedule["outstanding_request_id"]
+            or batch["repository_id"] != lease["repository_id"]
+            or lease["owner_id"] != f"sealer-{batch['id']}"
+            or batch["lifecycle"]
+            not in {"sealed", "building", "testing", "repairing", "human_blocked", "promoting"}
+        ):
+            return
+        expired = float(lease["expires_at"]) <= now
+        # A prepared root intent already freezes project-lease authority. Renew
+        # that exact owner/fence; replacing it would orphan a possible remote push.
+        bound_intent = (await conn.execute(
+            select(integration_promotion_intents).where(
+                integration_promotion_intents.c.intent_kind == "root",
+                integration_promotion_intents.c.root_batch_id == batch["id"],
+                integration_promotion_intents.c.root_candidate_revision == batch["current_revision"],
+                integration_promotion_intents.c.state.in_(("prepared", "pushed")),
+            )
+        )).mappings().one_or_none()
+        if bound_intent is not None and (
+            bound_intent["project_lease_owner_id"] != lease["owner_id"]
+            or int(bound_intent["project_lease_fence_token"]) != int(lease["fence_token"])
+        ):
+            return
+        recovered = expired and bound_intent is None
+        fence = int(lease["fence_token"]) + int(recovered)
+        await conn.execute(
+            update(project_integration_leases)
+            .where(project_integration_leases.c.project_id == project_id)
+            .values(heartbeat_at=now, expires_at=now + INTEGRATION_LEASE_SECONDS, fence_token=fence)
+        )
+        if recovered:
+            operation_id = (
+                await conn.execute(
+                    select(integration_repair_operations.c.id).where(
+                        integration_repair_operations.c.batch_id == batch["id"],
+                        integration_repair_operations.c.state.in_(("active", "escalated")),
+                    )
+                )
+            ).scalar_one_or_none()
+            if operation_id is not None:
+                event_id = f"integration-sealed:{batch['id']}:lease:{fence}"
+                await enqueue_integration_event(
+                    conn,
+                    event_id=event_id,
+                    dedup_key=event_id,
+                    project_id=project_id,
+                    event_type="integration.sealed",
+                    payload={
+                        "project_id": project_id,
+                        "batch_id": batch["id"],
+                        "operation_id": operation_id,
+                    },
+                    available_at=now,
+                )
+
     @staticmethod
     def _result(outcome: str, project_id: str, schedule: dict[str, Any]) -> dict[str, Any]:
         return {
@@ -209,7 +307,7 @@ class TrainService:
     """Seal one request's complete reviewed root frontier without Git I/O."""
 
     DEFAULT_PAGE_SIZE = 64
-    LEASE_SECONDS = 300
+    LEASE_SECONDS = INTEGRATION_LEASE_SECONDS
 
     def __init__(
         self,

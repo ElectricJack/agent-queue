@@ -6,11 +6,12 @@ from src.database import Database
 from src.doctor.models import Severity
 from src.doctor.task_checks import run_check
 from src.models import Project, Task, TaskStatus
+from tests.db_fixtures import lease_dsn
 
 
 @pytest.mark.asyncio
 async def test_stale_attention_check_reports_and_repairs_live_and_completed_rows(tmp_path):
-    db = Database(str(tmp_path / "doctor.db"))
+    db = Database(lease_dsn("doctor.db"))
     await db.initialize()
     await db.create_project(Project(id="p", name="p"))
     for task_id, status in (("live", TaskStatus.IN_PROGRESS), ("done", TaskStatus.COMPLETED)):

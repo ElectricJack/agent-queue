@@ -17,6 +17,49 @@ import src.cli.daemon as daemon_mod
 from src.cli.app import cli
 
 
+@pytest.fixture(autouse=True)
+def _pg_backend():
+    """Daemon lifecycle probes are mocked; never allocate a real test database."""
+
+
+@pytest.mark.parametrize("status, expected", [(503, True), (500, False)])
+def test_start_preserves_degraded_daemon_but_rejects_other_http_errors(
+    tmp_path, monkeypatch, status, expected,
+):
+    import itertools
+    import urllib.error
+    import urllib.request
+    from types import SimpleNamespace
+
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text("{}")
+    for name, path in {
+        "CONFIG_PATH": config_path,
+        "CONFIG_DIR": tmp_path,
+        "LOCK_DIR": tmp_path / "lock",
+        "PID_FILE": tmp_path / "pid",
+        "LOG_PATH": tmp_path / "log",
+    }.items():
+        monkeypatch.setattr(daemon_mod, name, str(path))
+    monkeypatch.setattr(daemon_mod, "_find_daemon_pid", lambda: None)
+    monkeypatch.setattr(daemon_mod, "_config_uses_postgres", lambda: False)
+    monkeypatch.setattr(daemon_mod, "_resolve_agent_queue_bin", lambda: "agent-queue")
+    monkeypatch.setattr(daemon_mod.subprocess, "Popen", lambda *a, **kw: SimpleNamespace(pid=123))
+    signals = []
+    monkeypatch.setattr(daemon_mod.os, "kill", lambda pid, sig: signals.append(sig))
+    ticks = itertools.count(step=15)
+    monkeypatch.setattr(daemon_mod.time, "monotonic", lambda: next(ticks))
+    monkeypatch.setattr(daemon_mod.time, "sleep", lambda _: None)
+
+    def health_error(*args, **kwargs):
+        raise urllib.error.HTTPError("http://localhost/health", status, "health", {}, None)
+
+    monkeypatch.setattr(urllib.request, "urlopen", health_error)
+    assert daemon_mod.start_daemon() is expected
+    assert (tmp_path / "pid").exists() is expected
+    assert any(sig != 0 for sig in signals) is (not expected)
+
+
 @pytest.fixture
 def runner():
     return CliRunner()

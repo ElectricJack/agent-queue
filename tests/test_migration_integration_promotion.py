@@ -1,21 +1,14 @@
-"""Dialect round trips for prepared promotion evidence revision b91."""
+"""Prepared promotion evidence remains indexed and append-only on PostgreSQL."""
 
-from __future__ import annotations
-
+import asyncpg
 import pytest
-from alembic import command
-from alembic.config import Config
-from sqlalchemy import create_engine, inspect
+from sqlalchemy import inspect
 
 from src.database import Database
-from tests.pg_dsn import create_scratch_database, ensure_worker_postgres_dsn
+from tests.db_fixtures import lease_dsn
 
+pytestmark = pytest.mark.migration
 
-pytestmark = [pytest.mark.perf, pytest.mark.migration]
-
-PRIOR = "f02a4a4a3010"
-REVISION = "b91e4d7a2c10"
-POSTGRES_DSN = ensure_worker_postgres_dsn()
 REVIEW_INDEX_COLUMNS = [
     "source_task_id",
     "repository_id",
@@ -27,68 +20,12 @@ REVIEW_INDEX_COLUMNS = [
 ]
 
 
-def _migrate(connection, revision: str, *, downgrade: bool = False) -> None:
-    config = Config("alembic.ini")
-    config.attributes["connection"] = connection
-    (command.downgrade if downgrade else command.upgrade)(config, revision)
-
-
-async def test_sqlite_promotion_revision_upgrade_downgrade_upgrade(tmp_path):
-    path = tmp_path / "promotion-migration.db"
-    database = Database(str(path))
+async def test_baseline_promotion_evidence_is_append_only():
+    dsn = lease_dsn("promotion")
+    database = Database(dsn)
     await database.initialize()
-    await database.close()
-    engine = create_engine(f"sqlite:///{path}")
     try:
-        with engine.begin() as conn:
-            _migrate(conn, PRIOR, downgrade=True)
-            _migrate(conn, REVISION)
-        with engine.connect() as conn:
-            assert "integration_review_evidence" in inspect(conn).get_table_names()
-            review_index = next(
-                index
-                for index in inspect(conn).get_indexes("integration_review_evidence")
-                if index["name"] == "idx_integration_review_evidence_current"
-            )
-            assert review_index["column_names"] == REVIEW_INDEX_COLUMNS
-            assert "authors" in {
-                column["name"]
-                for column in inspect(conn).get_columns("integration_promotion_intents")
-            }
-        with engine.begin() as conn:
-            _migrate(conn, PRIOR, downgrade=True)
-        with engine.connect() as conn:
-            assert "integration_review_evidence" not in inspect(conn).get_table_names()
-        with engine.begin() as conn:
-            _migrate(conn, REVISION)
-        with engine.connect() as conn:
-            assert "integration_review_evidence" in inspect(conn).get_table_names()
-    finally:
-        engine.dispose()
-
-
-@pytest.mark.skipif(not POSTGRES_DSN, reason="POSTGRES_TEST_DSN not set")
-async def test_postgres_promotion_revision_upgrade_downgrade_upgrade():
-    import asyncpg
-
-    from src.database.adapters.postgresql import PostgreSQLDatabaseAdapter
-    from src.database.engine import create_postgres_engine
-
-    dsn = await create_scratch_database("promotion_b91")
-    database = PostgreSQLDatabaseAdapter(dsn, 0, 1)
-    await database.initialize()
-    await database.close()
-    engine = create_postgres_engine(dsn, 0, 1)
-    try:
-
-        async def migrate(revision: str, *, downgrade: bool = False) -> None:
-            async with engine.connect() as conn:
-                await conn.run_sync(lambda sync: _migrate(sync, revision, downgrade=downgrade))
-                await conn.commit()
-
-        await migrate(PRIOR, downgrade=True)
-        await migrate(REVISION)
-        async with engine.connect() as conn:
+        async with database._engine.connect() as conn:
             tables = await conn.run_sync(lambda sync: set(inspect(sync).get_table_names()))
             assert "integration_review_evidence" in tables
             review_indexes = await conn.run_sync(
@@ -124,21 +61,5 @@ async def test_postgres_promotion_revision_upgrade_downgrade_upgrade():
                 )
         finally:
             await evidence_conn.close()
-        await migrate(PRIOR, downgrade=True)
-        async with engine.connect() as conn:
-            tables = await conn.run_sync(lambda sync: set(inspect(sync).get_table_names()))
-            assert "integration_review_evidence" not in tables
-        await migrate(REVISION)
-        async with engine.connect() as conn:
-            tables = await conn.run_sync(lambda sync: set(inspect(sync).get_table_names()))
-            assert "integration_review_evidence" in tables
     finally:
-        await engine.dispose()
-        prefix, _, name = dsn.rpartition("/")
-        admin = await asyncpg.connect(
-            prefix.replace("postgresql+asyncpg://", "postgresql://") + "/postgres"
-        )
-        try:
-            await admin.execute(f'DROP DATABASE IF EXISTS "{name}"')
-        finally:
-            await admin.close()
+        await database.close()

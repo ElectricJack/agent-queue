@@ -58,6 +58,7 @@ from src.models import (
 )
 from src.scheduler import AssignAction
 from src.profiles.capabilities import CapabilityPolicy
+from tests.db_fixtures import lease_dsn
 
 
 STARTING_SHA = "a" * 40
@@ -115,7 +116,7 @@ def _policy() -> dict:
 
 @pytest.fixture
 async def db(tmp_path):
-    database = Database(str(tmp_path / "repair.db"))
+    database = Database(lease_dsn("repair.db"))
     await database.initialize()
     await _configure_db(database)
     yield database
@@ -2980,7 +2981,7 @@ async def test_real_task_close_bypasses_legacy_pipeline_and_rejects_stale_stage(
             "summary": "repair work complete",
         }
     )
-    assert closed["success"] is True
+    assert closed["success"] is True, closed
     assert (await handler.db.get_task(repair_task_id)).status is TaskStatus.COMPLETED
     handler.orchestrator._run_completion_pipeline.assert_not_awaited()
     async with handler.db._engine.connect() as conn:
@@ -3107,3 +3108,652 @@ async def test_batch_repair_delegate_can_file_only_explicit_project_root(
     assert await handler.db.get_typed_dependencies(filed.id) == [
         (repair_task_id, "discovered-from")
     ]
+
+
+@pytest.mark.parametrize("lifecycle", ["task", "pool"])
+async def test_root_repair_close_reads_the_candidate_subject_and_frees_a_pool_slot(
+    command_handler_factory, lifecycle
+):
+    """A root delegate anchors its proof on ``candidate_sha``, not ``head_sha``.
+
+    Root stages bind ``{"kind": "batch", "revision", "candidate_sha"}`` while
+    parent stages bind ``head_sha``.  Reading ``head_sha`` unconditionally
+    raised ``KeyError`` inside the close pipeline's guard, so a passing root
+    repair landed BLOCKED with its pushed commits unrecorded — and on a pool
+    session the slot was released with the delegate never completed.
+    """
+    import time
+
+    from src.integration.repair import RepairService
+
+    handler = await command_handler_factory()
+    await _configure_db(handler.db)
+    operation_id = await _seed_root_operation(handler.db)
+    async with handler.db.immediate() as conn:
+        await conn.execute(
+            insert(integration_branch_owners).values(
+                id="batch-owner",
+                repository_id="repo",
+                ref="aq/integration/batch",
+                owner_id="batch",
+                owner_role="collector",
+                fence_token=1,
+                handoff_state="reserved",
+                created_at=1.0,
+                updated_at=1.0,
+            )
+        )
+    service = RepairService(
+        handler.db,
+        route_validator=lambda _intelligence_class, _profile_id: True,
+    )
+    await service.start(operation_id, STARTING_SHA, "batch", now=time.time())
+    dispatched = await service.dispatch(operation_id, 0)
+    repair_task_id = dispatched["repair_task_id"]
+    repair_head = "d" * 40
+    is_pool = lifecycle == "pool"
+    await handler.db.create_agent(
+        Agent(
+            id="root-repair-agent",
+            name="Root Repair Agent",
+            profile_id="repairer",
+            state=AgentState.BUSY,
+            current_task_id=repair_task_id,
+        )
+    )
+    async with handler.db.immediate() as conn:
+        await conn.execute(
+            update(tasks)
+            .where(tasks.c.id == repair_task_id)
+            .values(status="IN_PROGRESS", claim_epoch=1)
+        )
+        await conn.execute(
+            insert(workspaces).values(
+                id="root-repair-workspace",
+                project_id="p",
+                workspace_path="/tmp/root-repair",
+                source_type="link",
+                locked_by_task_id=repair_task_id,
+                locked_by_agent_id="root-repair-agent",
+                enabled=True,
+                created_at=2.0,
+            )
+        )
+    await handler.db.create_session(
+        SessionRecord(
+            id="root-repair-session",
+            task_id=repair_task_id,
+            project_id="p",
+            profile_id="repairer",
+            harness="fake",
+            provider="fake",
+            name="s-root-repair",
+            lifecycle=lifecycle,
+            state="running",
+            work_dir="/tmp/root-repair",
+            epoch="epoch",
+            instance_token="token",
+            started_at=2.0,
+            agent_id="root-repair-agent",
+            last_claim_epoch=1 if is_pool else None,
+        )
+    )
+    async with handler.db.immediate() as conn:
+        await conn.execute(
+            update(integration_branch_owners)
+            .where(integration_branch_owners.c.id == "batch-owner")
+            .values(
+                handoff_state="attached",
+                session_id="root-repair-session",
+                workspace_id="root-repair-workspace",
+            )
+        )
+
+    handler.orchestrator.git.aget_current_branch = AsyncMock(
+        return_value="aq/integration/batch"
+    )
+
+    async def run_git(args, *, cwd):
+        if args[0] == "status":
+            return ""
+        if args[0] == "rev-list":
+            return f"{repair_head}\n"
+        return repair_head
+
+    handler.orchestrator.git._arun = AsyncMock(side_effect=run_git)
+    handler.orchestrator.git.als_remote_ref = AsyncMock(
+        return_value=RemoteRefResult(RemoteRefState.PRESENT, oid=repair_head)
+    )
+    handler.orchestrator.git.ais_ancestor = AsyncMock(return_value=True)
+    handler.orchestrator.git.arev_parse = AsyncMock(return_value=repair_head)
+    handler.orchestrator._run_completion_pipeline = AsyncMock(
+        side_effect=AssertionError("root repair delegate entered legacy integration")
+    )
+    async def release_proved_owner(*_args, **_kwargs):
+        async with handler.db.immediate() as conn:
+            await conn.execute(update(integration_branch_owners).where(
+                integration_branch_owners.c.id == "batch-owner"
+            ).values(handoff_state="released", session_id=None, workspace_id=None,
+                     confirmed_workspace_id="root-repair-workspace"))
+        return True
+    handler.orchestrator.arelease_integration_writer_for_retry = AsyncMock(
+        side_effect=release_proved_owner
+    )
+    handler.orchestrator.release_session_task_resources = AsyncMock()
+    handler._current_scope = {
+        "kind": "session",
+        "session_id": "root-repair-session",
+        "task_id": repair_task_id,
+        "project_id": "p",
+        "elevated": False,
+    }
+
+    # Legacy built candidates could leave their stage bound to the old
+    # construction base. Close must refresh under the exact writer fence.
+    async with handler.db.immediate() as conn:
+        await conn.execute(update(integration_repair_stages).where(
+            integration_repair_stages.c.operation_id == operation_id,
+            integration_repair_stages.c.ordinal == 0,
+        ).values(current_subject={"kind": "batch", "revision": 0,
+                                  "candidate_sha": "e" * 40}))
+    from src.integration.outbox import enqueue_integration_event
+    async with handler.db.immediate() as conn:
+        await enqueue_integration_event(
+            conn, event_id=f"repair-delegate-closed-{operation_id}-0-{repair_task_id}",
+            dedup_key=f"repair-delegate-closed:{operation_id}:0:{repair_task_id}",
+            project_id="p", event_type="integration.repair_delegate_closed",
+            payload={"task_id": repair_task_id, "fence_token": 0}, available_at=1,
+        )
+    closed = await handler._cmd_task_close(
+        {
+            "task_id": repair_task_id,
+            "session_id": "root-repair-session",
+            "outcome": "pass",
+            "summary": "root repair pushed",
+            **({"claim_epoch": 1} if is_pool else {}),
+        }
+    )
+
+    assert closed["success"] is True, closed
+    assert (await handler.db.get_task(repair_task_id)).status is TaskStatus.COMPLETED
+    handler.orchestrator._run_completion_pipeline.assert_not_awaited()
+    # The lineage proof starts at the batch subject's ``candidate_sha``.
+    assert handler.orchestrator.git.ais_ancestor.await_args.args == (
+        "/tmp/root-repair",
+        STARTING_SHA,
+        repair_head,
+    )
+    async with handler.db._engine.connect() as conn:
+        close_events = (
+            await conn.execute(
+                select(integration_outbox).where(
+                    integration_outbox.c.event_type
+                    == "integration.repair_delegate_closed"
+                )
+            )
+        ).mappings().all()
+    async with handler.db._engine.connect() as conn:
+        candidate = (await conn.execute(select(integration_candidate_revisions).where(
+            integration_candidate_revisions.c.batch_id == "batch",
+            integration_candidate_revisions.c.revision == 1,
+        ))).mappings().one()
+    assert candidate["head_sha"] == repair_head
+    assert candidate["ci_evidence_id"] is None
+    assert candidate["repair_parent_revision"] == 0
+    assert len(close_events) == 2
+    close_events = [e for e in close_events if e["payload"].get("fence_token") != 0]
+    assert close_events[0]["payload"]["task_id"] == repair_task_id
+    assert close_events[0]["payload"]["workspace_id"] == "root-repair-workspace"
+
+    session = await handler.db.get_session("root-repair-session")
+    if is_pool:
+        # The slot goes straight back on the market for the next claim, so
+        # the close has to have completed the delegate before letting go.
+        assert session.task_id is None
+        assert session.last_claim_epoch == 1
+        slot = await handler.db.get_workspace("root-repair-workspace")
+        assert slot.locked_by_task_id is None
+        assert slot.locked_by_agent_id == "root-repair-agent"
+        handler.orchestrator.release_session_task_resources.assert_not_awaited()
+    else:
+        assert session.task_id == repair_task_id
+        handler.orchestrator.release_session_task_resources.assert_awaited()
+
+
+async def test_debug_escalation_accepts_a_released_primary_repair_writer(db):
+    """A primary delegate that closed cleanly is a provable predecessor.
+
+    A successful close self-transfers the delegate back to a ``reserved``
+    fence in its own ``repair`` role
+    (``arelease_integration_writer_for_retry``) — already stopped and
+    detached.  ``_predecessor_matches`` knows only ``collector`` and
+    ``verifier``, so before amber-delta the ladder answered
+    ``human_required`` for exactly the owner state a clean close produces.
+    """
+    from src.integration.repair import RepairService
+
+    await _seed_parent_operation(db)
+    await _add_parent_evidence(
+        db, "failed-check-2", run_id="run-2", conclusion="failure"
+    )
+    async with db.immediate() as conn:
+        await conn.execute(
+            insert(integration_branch_owners).values(
+                id="owner",
+                repository_id="repo",
+                ref="aq/parent",
+                owner_id="operation",
+                owner_role="collector",
+                fence_token=1,
+                handoff_state="reserved",
+                created_at=1.0,
+                updated_at=1.0,
+            )
+        )
+    service = RepairService(
+        db,
+        route_validator=lambda _intelligence_class, _profile_id: True,
+    )
+    await service.start("operation", STARTING_SHA, "failed-check", now=100.0)
+    primary = await service.dispatch("operation", 0)
+    primary_task_id = primary["repair_task_id"]
+
+    # What a clean delegate close leaves behind: the task is COMPLETED and
+    # the branch is reserved back to it with no session or workspace.
+    async with db.immediate() as conn:
+        await conn.execute(
+            update(tasks).where(tasks.c.id == primary_task_id).values(status="COMPLETED")
+        )
+        await conn.execute(
+            update(integration_branch_owners)
+            .where(integration_branch_owners.c.id == "owner")
+            .values(
+                owner_id=primary_task_id,
+                owner_role="repair",
+                handoff_state="reserved",
+                session_id=None,
+                workspace_id=None,
+                confirmed_workspace_id="repair-workspace",
+            )
+        )
+    await service.record_result("operation", "failed-check", now=101.0)
+    await service.record_result("operation", "failed-check-2", now=102.0)
+
+    debug = await service.dispatch("operation", 1)
+
+    assert debug["outcome"] == "dispatched"
+    assert debug["repair_task_id"] != primary_task_id
+    assert (await db.get_task(debug["repair_task_id"])).status is TaskStatus.READY
+    owner = await BranchOwnership(db).get_owner(
+        BranchKey(repository_id="repo", branch="aq/parent")
+    )
+    assert owner["owner_id"] == debug["repair_task_id"]
+    assert owner["owner_role"] == "repair"
+    assert owner["handoff_state"] == "reserved"
+    assert int(owner["fence_token"]) == debug["fence"]["token"]
+
+
+async def test_debug_escalation_still_refuses_an_unrelated_repair_owner(db):
+    """The released-primary allowance is bound to *this* operation's stage 0."""
+    from src.integration.repair import RepairService
+
+    await _seed_parent_operation(db)
+    await _add_parent_evidence(
+        db, "failed-check-2", run_id="run-2", conclusion="failure"
+    )
+    async with db.immediate() as conn:
+        await conn.execute(
+            insert(integration_branch_owners).values(
+                id="owner",
+                repository_id="repo",
+                ref="aq/parent",
+                owner_id="operation",
+                owner_role="collector",
+                fence_token=1,
+                handoff_state="reserved",
+                created_at=1.0,
+                updated_at=1.0,
+            )
+        )
+    service = RepairService(
+        db,
+        route_validator=lambda _intelligence_class, _profile_id: True,
+    )
+    await service.start("operation", STARTING_SHA, "failed-check", now=100.0)
+    await service.dispatch("operation", 0)
+    async with db.immediate() as conn:
+        await conn.execute(
+            update(integration_branch_owners)
+            .where(integration_branch_owners.c.id == "owner")
+            .values(
+                owner_id="some-other-repair-task",
+                owner_role="repair",
+                handoff_state="reserved",
+                session_id=None,
+                workspace_id=None,
+            )
+        )
+    await service.record_result("operation", "failed-check", now=101.0)
+    await service.record_result("operation", "failed-check-2", now=102.0)
+
+    debug = await service.dispatch("operation", 1)
+
+    assert debug["outcome"] == "human_required"
+
+
+async def test_repair_route_dispatches_to_a_pool_lifecycle_profile(
+    command_handler_factory, monkeypatch
+):
+    """A ``lifecycle: pool`` repairer is a normal route, not a config error.
+
+    Both shipped repair profiles (``standard-medium-claude``,
+    ``deep-high-claude``) are pool profiles, so refusing them would make every
+    repair dispatch ``configuration_blocked``.  The pull model is accommodated
+    in the ownership handoff instead (amber-delta).
+    """
+    handler = await command_handler_factory()
+    await _configure_db(handler.db)
+    await _seed_parent_operation(handler.db)
+    async with handler.db.immediate() as conn:
+        await conn.execute(
+            insert(integration_branch_owners).values(
+                id="owner",
+                repository_id="repo",
+                ref="aq/parent",
+                owner_id="operation",
+                owner_role="collector",
+                fence_token=1,
+                handoff_state="reserved",
+                created_at=1.0,
+                updated_at=1.0,
+            )
+        )
+    # The class half of the route is exercised elsewhere; this test is about
+    # the lifecycle half only.
+    monkeypatch.setattr(
+        handler, "_validate_routing_class", lambda *_args, **_kwargs: None
+    )
+    service = handler._integration_repair_service()
+    await service.start("operation", STARTING_SHA, "failed-check", now=100.0)
+
+    await handler.db.update_profile("repairer", lifecycle="pool")
+
+    assert (await service.dispatch("operation", 0))["outcome"] == "dispatched"
+    assert await handler.db.get_task("repair-operation-0") is not None
+
+
+async def _claim_epoch_args(handler, task_id: str, lifecycle: str) -> dict:
+    """A pool close must present the claim epoch it holds; a task close must not."""
+    if lifecycle != "pool":
+        return {}
+    return {"claim_epoch": (await handler.db.get_task(task_id)).claim_epoch}
+
+
+async def _stage_closable_repair_delegate(
+    handler, monkeypatch, *, lifecycle: str, clean: bool = True
+):
+    """Drive a repair delegate to the point of closing, on either lifecycle.
+
+    Returns ``(repair_task_id, stopped)`` where *stopped* accumulates one
+    entry per session-provider stop.  ``clean=False`` makes the checkout
+    report dirty, which is the failed-detach-proof case: no handoff evidence
+    exists and nothing may be released on the strength of a database unlock.
+    """
+    from src.integration.repair import RepairService
+
+    await _configure_db(handler.db)
+    await _seed_parent_operation(handler.db)
+    async with handler.db.immediate() as conn:
+        await conn.execute(
+            insert(integration_branch_owners).values(
+                id="owner",
+                repository_id="repo",
+                ref="aq/parent",
+                owner_id="operation",
+                owner_role="collector",
+                fence_token=1,
+                handoff_state="reserved",
+                created_at=1.0,
+                updated_at=1.0,
+            )
+        )
+    service = RepairService(
+        handler.db,
+        route_validator=lambda _intelligence_class, _profile_id: True,
+    )
+    await service.start("operation", STARTING_SHA, "failed-check", now=100.0)
+    repair_task_id = (await service.dispatch("operation", 0))["repair_task_id"]
+    await handler.db.create_agent(
+        Agent(
+            id="repair-agent",
+            name="Repairer",
+            profile_id="repairer",
+            state=AgentState.BUSY,
+            current_task_id=repair_task_id,
+        )
+    )
+    clean_head = "f" * 40
+    async with handler.db.immediate() as conn:
+        await conn.execute(
+            update(tasks)
+            .where(tasks.c.id == repair_task_id)
+            .values(status="IN_PROGRESS")
+        )
+        await conn.execute(
+            insert(workspaces).values(
+                id="close-workspace",
+                project_id="p",
+                workspace_path="/tmp/close-repair",
+                source_type="link",
+                locked_by_task_id=repair_task_id,
+                locked_by_agent_id="repair-agent",
+                enabled=True,
+                created_at=2.0,
+            )
+        )
+    await handler.db.create_session(
+        SessionRecord(
+            id="close-session",
+            task_id=repair_task_id,
+            agent_id="repair-agent",
+            project_id="p",
+            profile_id="repairer",
+            harness="fake",
+            provider="fake",
+            name="s-close-repair",
+            lifecycle=lifecycle,
+            state="running",
+            work_dir="/tmp/close-repair",
+            epoch="epoch",
+            instance_token="token",
+            started_at=2.0,
+        )
+    )
+    async with handler.db.immediate() as conn:
+        await conn.execute(
+            update(integration_branch_owners)
+            .where(integration_branch_owners.c.id == "owner")
+            .values(
+                handoff_state="attached",
+                session_id="close-session",
+                workspace_id="close-workspace",
+            )
+        )
+        if lifecycle == "pool":
+            # What a real claim records; ``release_claim`` fences on it.
+            await conn.execute(
+                update(sessions)
+                .where(sessions.c.id == "close-session")
+                .values(
+                    last_claim_epoch=(
+                        await handler.db.get_task(repair_task_id)
+                    ).claim_epoch
+                )
+            )
+
+    detached = False
+
+    async def run_unlocked(args, *, cwd):
+        nonlocal detached
+        if args[:3] == ["rev-parse", "--abbrev-ref", "HEAD"]:
+            return "HEAD" if detached else "aq/parent"
+        if args[:2] == ["status", "--porcelain"]:
+            return "" if clean else " M src/x.py"
+        if args[:2] == ["fetch", "origin"]:
+            return ""
+        if args[:2] == ["switch", "--detach"]:
+            detached = True
+            return ""
+        return clean_head
+
+    handler.orchestrator.git.aget_current_branch = AsyncMock(return_value="aq/parent")
+    handler.orchestrator.git._arun = AsyncMock(
+        side_effect=lambda args, **_kwargs: "" if args[0] == "status" else clean_head
+    )
+    handler.orchestrator.git._arun_unlocked = AsyncMock(side_effect=run_unlocked)
+    handler.orchestrator.git.als_remote_ref = AsyncMock(
+        return_value=RemoteRefResult(RemoteRefState.PRESENT, oid=clean_head)
+    )
+    handler.orchestrator.git.ais_ancestor = AsyncMock(return_value=True)
+    handler.orchestrator.git.arev_parse = AsyncMock(return_value=clean_head)
+    stopped: list[str] = []
+
+    async def stop(_handle, *, grace):
+        stopped.append("stop")
+
+    monkeypatch.setattr(
+        handler.orchestrator.session_providers,
+        "create",
+        lambda *_args: SimpleNamespace(
+            stop=stop, confirm_stopped=AsyncMock(return_value=True)
+        ),
+    )
+    handler._current_scope = {
+        "kind": "session",
+        "session_id": "close-session",
+        "task_id": repair_task_id,
+        "project_id": "p",
+        "elevated": False,
+    }
+    return repair_task_id, stopped
+
+
+@pytest.mark.parametrize("lifecycle", ["task", "pool"])
+async def test_successful_delegate_close_leaves_a_transferable_owner(
+    command_handler_factory, monkeypatch, lifecycle
+):
+    """The close itself must free the branch, not leave it attached forever.
+
+    ``execution.py`` already called ``arelease_integration_writer_for_retry``
+    on this leg, but that method only handled ``owner_role='worker'``, so a
+    repair delegate's row stayed ``attached`` to the session the close then
+    stopped.  The teardown next drops ``workspaces.locked_by_task_id`` (and,
+    for a pool session, ``sessions.task_id`` as well), which is evidence
+    ``aconfirm_integration_owner_handoff`` needs, so no later transfer could
+    ever confirm the handoff either and every subsequent transfer of the
+    branch raised ``BranchBusy`` (amber-delta).
+
+    Both lifecycles run it: the shipped repair profiles are pool profiles,
+    and a pool close proves the checkout detached instead of stopping the
+    session it is running inside.
+    """
+    handler = await command_handler_factory()
+    repair_task_id, stopped = await _stage_closable_repair_delegate(
+        handler, monkeypatch, lifecycle=lifecycle
+    )
+    handler.orchestrator.release_session_task_resources = AsyncMock()
+
+    closed = await handler._cmd_task_close(
+        {
+            "task_id": repair_task_id,
+            "session_id": "close-session",
+            "outcome": "pass",
+            "summary": "repair work complete",
+            **await _claim_epoch_args(handler, repair_task_id, lifecycle),
+        }
+    )
+
+    assert closed["success"] is True, closed
+    assert closed.get("retain_claim") is None
+    assert (await handler.db.get_task(repair_task_id)).status is TaskStatus.COMPLETED
+    # A push-model writer is stopped; the pool worker loop is not -- its proof
+    # is the detached checkout plus the claim release that follows.
+    assert stopped == (["stop"] if lifecycle == "task" else [])
+    target = BranchKey(repository_id="repo", branch="aq/parent")
+    owner = await BranchOwnership(handler.db).get_owner(target)
+    assert owner["owner_id"] == repair_task_id
+    assert owner["owner_role"] == "repair"
+    assert owner["handoff_state"] == "reserved"
+    assert owner["session_id"] is None
+    assert owner["workspace_id"] is None
+    assert owner["confirmed_workspace_id"] == "close-workspace"
+    assert (await handler.db.get_workspace("close-workspace")).locked_by_task_id is None
+    if lifecycle == "pool":
+        # The claim really was released afterwards, and the pool keeps the
+        # agent-lock that only ``terminate_pool_session`` drops.
+        assert (await handler.db.get_session("close-session")).task_id is None
+        assert (
+            await handler.db.get_workspace("close-workspace")
+        ).locked_by_agent_id == "repair-agent"
+
+    # The point of all of it: the next owner's transfer is provable.
+    successor = await BranchOwnership(handler.db).transfer(
+        Fence(target=target, owner_id=repair_task_id, token=int(owner["fence_token"])),
+        "operation",
+        "collector",
+    )
+    assert successor.owner_id == "operation"
+
+
+@pytest.mark.parametrize("lifecycle", ["task", "pool"])
+async def test_delegate_close_retains_everything_when_the_handoff_is_unproven(
+    command_handler_factory, monkeypatch, lifecycle
+):
+    """A failed stop/detach proof must not release resources or the claim.
+
+    ``arelease_integration_writer_for_retry`` returning ``False`` means the
+    writer may still hold the checkout.  Tearing down anyway would hand the
+    branch onward on nothing but a database unlock -- what design spec §9.1
+    forbids -- and would erase the session/workspace/claim evidence any later
+    proof reads.  The close still commits (the work is done); what it must
+    not do is let go (amber-delta review).
+    """
+    handler = await command_handler_factory()
+    repair_task_id, _stopped = await _stage_closable_repair_delegate(
+        handler, monkeypatch, lifecycle=lifecycle, clean=False
+    )
+    real_release = handler.orchestrator.release_session_task_resources
+    released_resources = AsyncMock()
+    handler.orchestrator.release_session_task_resources = released_resources
+
+    closed = await handler._cmd_task_close(
+        {
+            "task_id": repair_task_id,
+            "session_id": "close-session",
+            "outcome": "pass",
+            "summary": "repair work complete",
+            **await _claim_epoch_args(handler, repair_task_id, lifecycle),
+        }
+    )
+
+    assert closed["success"] is True, closed
+    assert closed["needs_attention"] == "integration_handoff_unproven"
+    assert (
+        await handler.db.get_task_meta(repair_task_id, "needs_attention")
+        == "integration_handoff_unproven"
+    )
+    # Nothing was released on either lifecycle.
+    released_resources.assert_not_awaited()
+    await real_release(repair_task_id, agent_id="repair-agent")
+    owner = await BranchOwnership(handler.db).get_owner(
+        BranchKey(repository_id="repo", branch="aq/parent")
+    )
+    assert owner["owner_id"] == repair_task_id
+    assert owner["session_id"] == "close-session"
+    assert owner["workspace_id"] == "close-workspace"
+    workspace = await handler.db.get_workspace("close-workspace")
+    assert workspace.locked_by_task_id == repair_task_id
+    assert workspace.locked_by_agent_id == "repair-agent"
+    assert (await handler.db.get_session("close-session")).task_id == repair_task_id
+    if lifecycle == "pool":
+        assert closed["retain_claim"] is True

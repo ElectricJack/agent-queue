@@ -344,16 +344,14 @@ def _stamp(ctx_db_url: str, target: str) -> None:
 def _alembic_url(ctx: DoctorContext) -> str:
     """The daemon's database as a DSN ``migrations/env.py`` can drive.
 
-    That env builds an *async* engine unconditionally, so the driver has to
-    be spelled out — a bare ``sqlite:///`` DSN fails with "the loaded
-    'pysqlite' is not async".
+    That env builds an *async* engine unconditionally, so the driver has to be
+    spelled out: a bare ``postgresql://`` DSN fails with "the loaded 'psycopg2'
+    is not async".
     """
-    url = ctx.config.database.url or ctx.config.database_path
-    if getattr(ctx.config.database, "backend", "sqlite") == "postgresql":
-        if "+" in url.split("://", 1)[0]:
-            return url
-        return url.replace("postgresql://", "postgresql+asyncpg://", 1)
-    return f"sqlite+aiosqlite:///{os.path.expanduser(url)}"
+    url = ctx.config.database.url
+    if "+" in url.split("://", 1)[0]:
+        return url
+    return url.replace("postgresql://", "postgresql+asyncpg://", 1)
 
 
 async def _fix_alembic_orphan(ctx: DoctorContext) -> CheckResult:

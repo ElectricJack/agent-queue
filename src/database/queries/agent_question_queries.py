@@ -5,7 +5,7 @@ from __future__ import annotations
 import time
 from contextlib import asynccontextmanager
 
-from sqlalchemy import insert, or_, select, update, text
+from sqlalchemy import insert, or_, select, update
 from sqlalchemy.exc import IntegrityError
 
 from src.database.tables import (
@@ -172,8 +172,6 @@ class AgentQuestionQueriesMixin:
         use this connection, never a nested database connection.
         """
         async with self._engine.begin() as conn:
-            if conn.dialect.name == "sqlite":
-                await conn.execute(text("BEGIN IMMEDIATE"))
             stmt = (
                 select(questions.c.id)
                 .select_from(

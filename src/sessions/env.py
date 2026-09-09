@@ -46,7 +46,7 @@ __all__ = [
     "ADOPTION_MARKER",
     "AQ_MARKER_KEYS",
     "DB_ISOLATION_KEYS",
-    "SCRATCH_DB_RELPATH",
+    "SCRATCH_DB_SENTINEL",
     "STARTUP_PROMPT_DELIVERED",
     "build_session_env",
     "session_db_isolation",
@@ -77,11 +77,15 @@ AQ_MARKER_KEYS: tuple[str, ...] = (
 )
 
 
-#: Where a session's scratch database lives, relative to its work dir.
-#: ``.aq/`` is already the session's private corner of the worktree (it holds
-#: ``claim.json``) and the repo gitignores it, so nothing here can be
-#: committed by accident.
-SCRATCH_DB_RELPATH = os.path.join(".aq", "scratch.db")
+#: What a session's database-tooling env points at instead of production.
+#:
+#: This used to be a per-slot SQLite file, ``.aq/scratch.db``, which was never
+#: created: a worker that ran a direct-DB command opened an *empty* database
+#: and got a confidently wrong answer ("no plugins installed").  With SQLite
+#: gone there is no such decoy to point at, and the fail-silent behaviour was
+#: not worth reproducing — so the value is a sentinel that the CLI refuses
+#: with an explanation.  Strictly safer than what it replaces.
+SCRATCH_DB_SENTINEL = "aq-worker-no-direct-db://"
 
 #: The database-isolation block every session carries, on top of the nine
 #: identity markers.  ``AQ_DB_SCOPE`` is the guard
@@ -112,18 +116,18 @@ def session_db_isolation(work_dir: str) -> dict[str, str]:
       incident, where an unmerged branch's revision landed in production's
       ``alembic_version`` and the daemon then refused to boot.
     * ``AQ_DATABASE_URL`` / ``AGENT_QUEUE_DB`` point the direct-DB CLI paths
-      at a per-slot scratch SQLite file instead of ``config.yaml``'s URL, so
-      the ordinary case never even reaches the guard.
+      at :data:`SCRATCH_DB_SENTINEL` instead of ``config.yaml``'s URL, so the
+      ordinary case never even reaches the guard — and, unlike the empty
+      SQLite file this replaces, says so instead of answering from nothing.
 
     Set as ``explicit`` env, so an operator who pins one of these in a
     harness file or via ``extra_env`` still wins.
     """
-    scratch = os.path.join(work_dir, SCRATCH_DB_RELPATH) if work_dir else ""
-    isolation = {"AQ_DB_SCOPE": "worker"}
-    if scratch:
-        isolation["AQ_DATABASE_URL"] = scratch
-        isolation["AGENT_QUEUE_DB"] = scratch
-    return isolation
+    return {
+        "AQ_DB_SCOPE": "worker",
+        "AQ_DATABASE_URL": SCRATCH_DB_SENTINEL,
+        "AGENT_QUEUE_DB": SCRATCH_DB_SENTINEL,
+    }
 
 
 def session_markers(

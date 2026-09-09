@@ -9,13 +9,14 @@ import pytest
 from src.database import Database
 from src.database.queries.hierarchy_queries import HierarchyError
 from src.models import Project, Task, TaskCompletion, TaskStatus
+from tests.db_fixtures import lease_dsn
 
 PROJECT_ID = "proj"
 
 
 @pytest.fixture
 async def db(tmp_path):
-    database = Database(str(tmp_path / "test.db"))
+    database = Database(lease_dsn("test.db"))
     await database.initialize()
     await database.create_project(Project(id=PROJECT_ID, name="p"))
     yield database

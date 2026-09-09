@@ -76,6 +76,9 @@ async def mark_integration_handoff_released(
 ) -> bool:
     """Atomically record detach proof and release the exact old DB lock."""
     async with db.immediate() as conn:
+        session_row = (await conn.execute(select(sessions).where(
+            sessions.c.id == owner.get("session_id")
+        ).with_for_update())).mappings().one_or_none()
         owner_row = (
             await conn.execute(
                 select(integration_branch_owners)
@@ -83,15 +86,6 @@ async def mark_integration_handoff_released(
                 .with_for_update()
             )
         ).mappings().one_or_none()
-        session_row = None
-        if owner_row is not None and owner_row["session_id"]:
-            session_row = (
-                await conn.execute(
-                    select(sessions)
-                    .where(sessions.c.id == owner_row["session_id"])
-                    .with_for_update()
-                )
-            ).mappings().one_or_none()
         workspace_row = (
             await conn.execute(
                 select(workspaces)
@@ -165,6 +159,100 @@ async def mark_integration_handoff_released(
             )
         if released_owner.rowcount != 1 or released_workspace.rowcount != 1:
             raise RuntimeError("integration handoff release lost its compare-and-swap")
+    return True
+
+
+async def mark_integration_pool_handoff_released(
+    db,
+    owner: dict,
+    *,
+    workspace,
+    task_id: str,
+    session_instance_token: str,
+) -> bool:
+    """Record a **pool** writer's detach proof without unbinding its slot.
+
+    The push-model twin (:func:`mark_integration_handoff_released`) proves a
+    writer gone by stopping its session and then unwinding the whole
+    attachment -- workspace lock, agent, session state.  A pool session is
+    not a writer the daemon may stop: it holds its workspace agent-lock
+    across tasks (only ``terminate_pool_session`` drops it) and the loop that
+    is mid-``aq task close`` is the same loop that will claim the next task.
+
+    What a pool close *does* provide is the other half of the same proof, in
+    the right order: the caller has already detached the checkout off the
+    branch (clean, pushed, ``origin`` tip verified) and ``release_claim`` is
+    about to erase the task-hold.  Running here -- inside the close, while
+    ``sessions.task_id`` and ``workspaces.locked_by_task_id`` still name this
+    task -- is what makes that evidence checkable at all; afterwards it is
+    gone and the owner row can never be confirmed again (amber-delta).
+
+    So this CAS asserts the same identity as its twin, minus the two clauses
+    a live pool session cannot satisfy (``state``/``desired_state`` stopped),
+    and writes only the owner row.  The workspace lock, the agent and the
+    session are left exactly as they are for ``release_claim`` to unwind on
+    its own terms.
+    """
+    async with db.immediate() as conn:
+        # Match release_claim: session before owner/workspace.
+        session_row = (await conn.execute(select(sessions).where(
+            sessions.c.id == owner.get("session_id")
+        ).with_for_update())).mappings().one_or_none()
+        owner_row = (
+            await conn.execute(
+                select(integration_branch_owners)
+                .where(integration_branch_owners.c.id == owner.get("id"))
+                .with_for_update()
+            )
+        ).mappings().one_or_none()
+        workspace_row = (
+            await conn.execute(
+                select(workspaces)
+                .where(workspaces.c.id == workspace.id)
+                .with_for_update()
+            )
+        ).mappings().one_or_none()
+        if (
+            owner_row is None
+            or session_row is None
+            or workspace_row is None
+            or owner_row["fence_token"] != owner.get("fence_token")
+            or owner_row["owner_id"] != owner.get("owner_id")
+            or owner_row["owner_id"] != task_id
+            or owner_row["owner_role"] not in {"worker", "repair"}
+            or owner_row["handoff_state"] != "handoff_pending"
+            or owner_row["session_id"] != owner.get("session_id")
+            or owner_row["workspace_id"] != workspace.id
+            or session_row["lifecycle"] != "pool"
+            or session_row["instance_token"] != session_instance_token
+            or session_row["task_id"] != task_id
+            or session_row["work_dir"] != workspace_row["workspace_path"]
+            or session_row["project_id"] != workspace_row["project_id"]
+            or workspace_row["locked_by_task_id"] != task_id
+            or workspace_row["locked_by_agent_id"] != session_row["agent_id"]
+        ):
+            return False
+
+        released_owner = await conn.execute(
+            update(integration_branch_owners)
+            .where(
+                integration_branch_owners.c.id == owner_row["id"],
+                integration_branch_owners.c.fence_token == owner_row["fence_token"],
+                integration_branch_owners.c.owner_id == owner_row["owner_id"],
+                integration_branch_owners.c.handoff_state == "handoff_pending",
+                integration_branch_owners.c.session_id == owner_row["session_id"],
+                integration_branch_owners.c.workspace_id == workspace.id,
+            )
+            .values(
+                handoff_state="released",
+                session_id=None,
+                workspace_id=None,
+                confirmed_workspace_id=workspace.id,
+                updated_at=time.time(),
+            )
+        )
+        if released_owner.rowcount != 1:
+            raise RuntimeError("integration pool handoff release lost its compare-and-swap")
     return True
 
 

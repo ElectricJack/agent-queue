@@ -10,9 +10,10 @@ import pytest
 from unittest.mock import MagicMock
 
 from src.commands.handler import CommandHandler
-from src.config import AppConfig, DiscordConfig
+from src.config import DatabaseConfig, AppConfig, DiscordConfig
 from src.database import Database
 from src.models import Project, Task
+from tests.db_fixtures import lease_dsn
 
 
 # ---------------------------------------------------------------------------
@@ -22,7 +23,7 @@ from src.models import Project, Task
 
 @pytest.fixture
 async def db(tmp_path):
-    database = Database(str(tmp_path / "test.db"))
+    database = Database(lease_dsn("test.db"))
     await database.initialize()
     # Create two projects
     await database.create_project(
@@ -40,7 +41,7 @@ def config(tmp_path):
     return AppConfig(
         discord=DiscordConfig(bot_token="test-token", guild_id="123"),
         workspace_dir=str(tmp_path / "workspaces"),
-        database_path=str(tmp_path / "test.db"),
+        database=DatabaseConfig(url=lease_dsn("test.db")),
         data_dir=str(tmp_path / "data"),
     )
 

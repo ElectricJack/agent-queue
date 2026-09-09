@@ -12,7 +12,9 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from src.config import AppConfig
+from tests.db_fixtures import lease_dsn
+
+from src.config import AppConfig, DatabaseConfig
 from src.event_bus import EventBus
 from src.models import Project, Task
 
@@ -48,9 +50,9 @@ async def _ensure_agent_profile(db, profile_id: str) -> None:
 
 @pytest.fixture
 async def db():
-    from src.database.adapters.sqlite import SQLiteDatabaseAdapter
+    from src.database import Database
 
-    adapter = SQLiteDatabaseAdapter(":memory:")
+    adapter = Database(lease_dsn("surface"))
     await adapter.initialize()
     yield adapter
     await adapter.close()
@@ -73,7 +75,7 @@ async def prime_handler(db, tmp_path):
     """
     from src.commands.handler import CommandHandler
 
-    config = AppConfig(data_dir=str(tmp_path / "data"))
+    config = AppConfig(database=DatabaseConfig(url=lease_dsn("surface")), data_dir=str(tmp_path / "data"))
     orchestrator = MagicMock()
     orchestrator.db = db
     orchestrator.bus = EventBus()

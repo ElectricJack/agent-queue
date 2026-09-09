@@ -574,21 +574,55 @@ class Scheduler:
 
 @dataclass(frozen=True)
 class PoolKey:
-    """Identifies one (project, profile) worker pool."""
+    """Identifies one worker pool — a profile, fleet-wide.
 
-    project_id: str
+    A pool used to be keyed ``(project_id, profile_id)``, which quietly
+    multiplied ``min_active`` / ``max_active`` by the number of active
+    projects: one profile across five active projects was five independent
+    pools with five independent floors and ceilings.  The *configuration*
+    was always global (profiles are global, and ``pool_scale`` already
+    deprecated its ``project_id``), so the key is global now too, and
+    *which* project each authorised start lands in is decided afterwards by
+    :func:`place_pool_actions`.
+    """
+
     profile_id: str
 
 
 @dataclass
+class PoolProjectSupply:
+    """One project's share of a pool's observed sessions, this tick.
+
+    The same five counters :class:`PoolSupply` carries, restricted to a
+    single project.  Sizing never reads these — the aggregate is
+    authoritative there — but placement does: this breakdown is what lets
+    :func:`place_pool_actions` choose where a start goes, and which idle
+    session a drain takes, without a second measurement pass.
+    """
+
+    running_idle: int = 0
+    running_busy: int = 0
+    starting: int = 0
+    draining: int = 0
+    idle_session_ids: list[str] = field(default_factory=list)  # oldest first
+
+
+@dataclass
 class PoolSupply:
-    """Observed pool session counts for one :class:`PoolKey`, this tick."""
+    """Observed pool session counts for one :class:`PoolKey`, this tick.
+
+    The top-level counters are fleet-wide sums over every project running
+    this profile, and they are the only thing :func:`size_pools` reads.
+    ``by_project`` carries the same numbers broken down per project, for the
+    placement step that follows.
+    """
 
     running_idle: int = 0  # running, claim_phase NULL, task_id NULL
     running_busy: int = 0  # running, task_id set (any claim_phase)
     starting: int = 0  # state == 'starting'
     draining: int = 0  # desired_state == 'stopped'
     idle_session_ids: list[str] = field(default_factory=list)  # oldest first
+    by_project: dict[str, PoolProjectSupply] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -606,7 +640,6 @@ def size_pools(
     supply: dict[PoolKey, PoolSupply],
     demand: dict[PoolKey, int],
     bounds: dict[PoolKey, tuple[int, int | None]],  # (min_active, max_active)
-    project_caps: dict[str, int | None],
     global_cap: int | None,
     surplus_since: dict[PoolKey, float],
     now: float,
@@ -619,24 +652,30 @@ def size_pools(
     ``want = busy + ready``; ``desired = clamp(want, min_active, max_active)``
     (``max_active=None`` is unbounded); ``desired`` is then floored at
     ``busy + starting`` so a launch already in flight or a task already
-    claimed never gets undercut mid-task.
+    claimed never gets undercut mid-task.  All three quantities are now
+    fleet-wide sums, so that floor protects a launch in flight in project A
+    and a task held in project B alike.
 
     Scale-up hands out ``max_starts_per_tick`` one start at a time,
-    round-robin across pools that still want more, bounded first by each
-    pool's project cap (the sum of that project's pools) and then by the
-    global cap (everything) — so a saturated cap fair-shares whatever
-    headroom remains instead of starving later pools in iteration order.
+    round-robin across the pools that still want more and bounded by the
+    box-wide ``global_cap``, so a saturated fleet fair-shares whatever
+    headroom is left instead of starving later pools in iteration order.
+    Per-project caps are deliberately *not* considered here: they are a
+    property of a project, not of a pool, and belong to
+    :func:`place_pool_actions` — the only step that still knows projects
+    exist.
 
     Scale-down only touches idle sessions, oldest first, and only after a
     pool has been in continuous surplus for ``scale_down_grace`` seconds
     (tracked via ``surplus_since``, returned updated) — never mid-task, and
-    never flapping on a one-tick dip in demand.
+    never flapping on a one-tick dip in demand.  The ``session_ids`` on a
+    drain action are the fleet-wide oldest-first idle set; placement
+    re-selects which of them actually go, because "oldest in the fleet" is a
+    poor answer once a quiet project's one warm worker is in the running.
     """
     actions: list[PoolAction] = []
     new_surplus: dict[PoolKey, float] = {}
-    keys = sorted(
-        set(supply) | set(demand) | set(bounds), key=lambda k: (k.project_id, k.profile_id)
-    )
+    keys = sorted(set(supply) | set(demand) | set(bounds), key=lambda k: k.profile_id)
     desired: dict[PoolKey, int] = {}
     current: dict[PoolKey, int] = {}
     for key in keys:
@@ -650,12 +689,8 @@ def size_pools(
         desired[key] = d
         current[key] = sup.running_idle + sup.running_busy + sup.starting
 
-    # --- scale up: round-robin under project caps, then the global cap ----
+    # --- scale up: round-robin across profiles, under the global cap ------
     starts: dict[PoolKey, int] = {k: 0 for k in keys}
-    used_project = {
-        p: sum(current[k] for k in keys if k.project_id == p)
-        for p in {k.project_id for k in keys}
-    }
     used_global = sum(current.values())
     budget = max_starts_per_tick
     progressed = True
@@ -664,13 +699,9 @@ def size_pools(
         for key in keys:
             if current[key] + starts[key] >= desired[key]:
                 continue
-            cap = project_caps.get(key.project_id)
-            if cap is not None and used_project[key.project_id] >= cap:
-                continue
             if global_cap is not None and used_global >= global_cap:
                 continue
             starts[key] += 1
-            used_project[key.project_id] += 1
             used_global += 1
             budget -= 1
             progressed = True
@@ -699,3 +730,235 @@ def size_pools(
         )
         drains_left -= n
     return actions, new_surplus
+
+
+# ---------------------------------------------------------------------------
+# Placement — which project each sized start or drain applies to.
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class PlacementCandidate:
+    """One project's standing as a home for a pool's next start or drain.
+
+    Everything :func:`place_pool_actions` is allowed to know about a
+    project, gathered once by ``_measure_pools``.  ``starting`` is broken
+    out of ``live`` because both the unserved-deficit ordering and the drain
+    surplus rule are defined against it: a launch already in flight serves
+    the ready queue exactly as an idle worker does, and neither ordering can
+    be computed from ``live`` alone.
+    """
+
+    project_id: str
+    ready: int  # ready tasks for this profile in this project
+    live: int  # idle + busy + starting pool sessions, this profile
+    project_live_total: int  # all pool sessions in this project, any profile
+    project_cap: int | None  # project.max_concurrent_agents
+    workspace_capacity: int  # count_available_workspaces
+    quarantined: bool  # (project, profile) inside its backoff window
+    warm_floor: int  # profile.min_per_project
+    idle_session_ids: tuple[str, ...] = ()  # oldest first
+    starting: int = 0  # of ``live``, how many are still booting
+
+
+@dataclass(frozen=True)
+class PlacedStart:
+    """``count`` starts for *key*, in *project_id*, and why they went there."""
+
+    key: PoolKey
+    project_id: str
+    count: int
+    reason: str  # "warm_floor" | "deficit" | "spread"
+
+
+@dataclass(frozen=True)
+class PlacedDrain:
+    """The idle sessions of *key* in *project_id* that this tick stops."""
+
+    key: PoolKey
+    project_id: str
+    session_ids: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class PlacementStarvation:
+    """*key* was authorised ``wanted`` starts and no project could take them.
+
+    Invisible before this existed: the start was attempted, the launch
+    returned ``None``, and the only trace was a log line.  ``reasons`` maps
+    each candidate project to the first predicate it failed, which is the
+    whole diagnosis — "every project is quarantined" and "every project is
+    out of worktree slots" want very different operator responses.
+    """
+
+    key: PoolKey
+    wanted: int
+    reasons: dict[str, str]
+
+
+#: Why a candidate could not take a start, in the order the predicates are
+#: evaluated.  Reported per project on a :class:`PlacementStarvation`.
+_NO_CANDIDATES = "no active project runs this profile"
+
+
+def _start_ineligibility(
+    cand: PlacementCandidate, *, live: int, total: int, capacity: int, unserved: int
+) -> str:
+    """First start predicate *cand* fails under this tick's running state, or ``""``.
+
+    Every argument is a *working* value, not the measured one: within a tick
+    a start already placed here has consumed a workspace, taken a slot under
+    the project cap and put itself in front of the ready queue, and the next
+    placement decision has to see all three.
+    """
+    if cand.quarantined:
+        return "quarantined"
+    if capacity <= 0:
+        return "no workspace capacity"
+    if cand.project_cap is not None and total >= cand.project_cap:
+        return f"at project cap ({cand.project_cap})"
+    if live >= cand.warm_floor and cand.idle_session_ids and unserved <= 0:
+        # An idle worker is already sitting here with nothing queued behind
+        # it: it will claim the next ready task itself, so launching beside
+        # it only manufactures a drain candidate two minutes from now.
+        return "an idle worker is already available"
+    return ""
+
+
+def place_pool_actions(
+    *,
+    actions: list[PoolAction],
+    candidates: dict[PoolKey, list[PlacementCandidate]],
+) -> tuple[list[PlacedStart], list[PlacedDrain], list[PlacementStarvation]]:
+    """Assign each sized start/drain to a project.  Pure — no I/O, no clock.
+
+    :func:`size_pools` decides *how many* workers a profile should have
+    fleet-wide; this decides *where* they go, which is the half of the
+    problem that still cares about projects.  A worker is bound to one
+    project for its lifetime (its workspace and its token's scope fence are
+    both minted at launch), so this is the only moment the choice is made.
+
+    Starts are handed out one at a time, re-sorting after each, so a budget
+    of two does not pile onto whichever project sorts first:
+
+    1. projects below their ``warm_floor``, largest shortfall first — a
+       stated per-project reservation outranks raw demand;
+    2. then by unserved deficit ``ready - (idle + starting)``, largest first;
+    3. then by fewest ``live`` sessions, spreading rather than concentrating;
+    4. then ``project_id`` ascending, so the result is deterministic and a
+       test can assert on it.
+
+    Drains invert it: a project at or below its warm floor is excluded
+    outright, and the rest are ordered by idle surplus *relative to their own
+    demand* (``idle - max(0, ready - starting)``) so a quiet project's single
+    warm worker is not reaped first simply for being idle and old.
+
+    Returns ``(placed_starts, placed_drains, starvations)``; a start budget
+    that no project could absorb comes back as a
+    :class:`PlacementStarvation` rather than being dropped silently.
+    """
+    placed_starts: list[PlacedStart] = []
+    placed_drains: list[PlacedDrain] = []
+    starvations: list[PlacementStarvation] = []
+
+    for action in actions:
+        cands = {c.project_id: c for c in candidates.get(action.key, [])}
+        # Working copies: placements within this tick move these, the
+        # measured ``PlacementCandidate`` values stay as observed.
+        live = {pid: c.live for pid, c in cands.items()}
+        total = {pid: c.project_live_total for pid, c in cands.items()}
+        capacity = {pid: c.workspace_capacity for pid, c in cands.items()}
+        idle_ids = {pid: list(c.idle_session_ids) for pid, c in cands.items()}
+        # Starts placed here this tick.  A worker on its way into a project
+        # serves that project's ready queue exactly as a booting one does,
+        # so the unserved-deficit ordering has to count it or a single deep
+        # backlog swallows the whole budget on stale arithmetic.
+        pending = {pid: 0 for pid in cands}
+
+        def unserved(c: PlacementCandidate) -> int:
+            pid = c.project_id
+            return c.ready - (len(idle_ids[pid]) + c.starting + pending[pid])
+
+        if action.kind == "start":
+            # (project_id, reason) -> count, insertion-ordered so the caller
+            # emits one event per project in the order placement chose them.
+            chosen: dict[tuple[str, str], int] = {}
+            unplaced = 0
+            blocked: dict[str, str] = {}
+            for _ in range(action.count):
+                eligible = []
+                blocked = {}
+                for pid, cand in cands.items():
+                    why = _start_ineligibility(
+                        cand,
+                        live=live[pid],
+                        total=total[pid],
+                        capacity=capacity[pid],
+                        unserved=unserved(cand),
+                    )
+                    if why:
+                        blocked[pid] = why
+                        continue
+                    eligible.append(cand)
+                if not eligible:
+                    unplaced = action.count - sum(chosen.values())
+                    break
+                eligible.sort(
+                    key=lambda c: (
+                        0 if live[c.project_id] < c.warm_floor else 1,
+                        -max(0, c.warm_floor - live[c.project_id]),
+                        -unserved(c),
+                        live[c.project_id],
+                        c.project_id,
+                    )
+                )
+                pick = eligible[0]
+                pid = pick.project_id
+                if live[pid] < pick.warm_floor:
+                    reason = "warm_floor"
+                elif unserved(pick) > 0:
+                    reason = "deficit"
+                else:
+                    reason = "spread"
+                chosen[(pid, reason)] = chosen.get((pid, reason), 0) + 1
+                live[pid] += 1
+                total[pid] += 1
+                capacity[pid] -= 1
+                pending[pid] += 1
+            for (pid, reason), count in chosen.items():
+                placed_starts.append(
+                    PlacedStart(key=action.key, project_id=pid, count=count, reason=reason)
+                )
+            if unplaced:
+                starvations.append(
+                    PlacementStarvation(
+                        key=action.key,
+                        wanted=unplaced,
+                        reasons=blocked or {"": _NO_CANDIDATES},
+                    )
+                )
+            continue
+
+        # --- drains ------------------------------------------------------
+        taken: dict[str, list[str]] = {}
+        for _ in range(action.count):
+            eligible = [
+                c for pid, c in cands.items() if idle_ids[pid] and live[pid] > c.warm_floor
+            ]
+            if not eligible:
+                break
+            eligible.sort(
+                key=lambda c: (
+                    -(len(idle_ids[c.project_id]) - max(0, c.ready - c.starting)),
+                    c.project_id,
+                )
+            )
+            pid = eligible[0].project_id
+            taken.setdefault(pid, []).append(idle_ids[pid].pop(0))
+            live[pid] -= 1
+        for pid, session_ids in taken.items():
+            placed_drains.append(
+                PlacedDrain(key=action.key, project_id=pid, session_ids=tuple(session_ids))
+            )
+
+    return placed_starts, placed_drains, starvations

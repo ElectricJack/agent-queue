@@ -1,7 +1,7 @@
 import { UsersIcon } from "@heroicons/react/24/outline";
 import { usePoolSetEnabled } from "../../api/hooks";
 import EnableToggle from "./EnableToggle";
-import { PoolBadge, PoolQuarantine, PoolSupplyRow } from "./PoolMetadata";
+import { PoolBadge, PoolPlacementRow, PoolQuarantine, PoolSupplyRow } from "./PoolMetadata";
 import type { PoolEntry } from "./pools";
 
 /**
@@ -45,9 +45,9 @@ export default function PoolDirectory({ entries, onOpen }: { entries: PoolEntry[
                     <PoolBadge />
                   </span>
                 </span>
-                <span className="block truncate text-[10px] text-gray-500" title={entry.projectId}>{entry.projectId}</span>
+                <PoolPlacementRow projects={entry.projects} />
                 <PoolSupplyRow pool={entry.pool} />
-                <PoolQuarantine pool={entry.pool} />
+                <PoolQuarantine projects={entry.projects} />
                 {!enabled && (
                   <span className="block text-[10px] text-amber-300">
                     Disabled — no new work is claimed; workers already on a task finish it.

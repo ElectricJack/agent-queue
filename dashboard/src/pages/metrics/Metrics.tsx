@@ -11,6 +11,7 @@ import { useCallback, useMemo, useState } from "react";
 import { ArrowPathIcon } from "@heroicons/react/24/outline";
 import { RANGES, type RangeKey } from "../../api/metrics";
 import { useEventStreamStatus } from "../../ws/EventStreamProvider";
+import ProviderUsage from "./ProviderUsage";
 import StatTiles from "./StatTiles";
 import TimeSeriesChart from "./TimeSeriesChart";
 import { buildCharts } from "./series";
@@ -95,6 +96,8 @@ export default function Metrics() {
       )}
 
       <StatTiles sample={feed.latest} />
+
+      <ProviderUsage />
 
       {feed.isLoading ? (
         <p className="text-sm text-gray-500">Loading history…</p>

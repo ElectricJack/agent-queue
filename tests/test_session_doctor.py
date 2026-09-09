@@ -19,6 +19,7 @@ from src.models import AgentProfile, Project, SessionRecord, Task, TaskStatus
 from src.sessions import SessionProviderRegistry
 from src.sessions.fake import FakeProvider
 from src.sessions.provider import NotSubmitted, SessionHandle, SessionSpec
+from tests.db_fixtures import lease_dsn
 
 # ``src/doctor/__init__.py`` rebinds the package attribute ``session_checks``
 # to the *factory function*, so the submodule is only reachable through
@@ -34,7 +35,7 @@ NUDGE = "No progress for 8 min on task t1. Close or continue: ..."
 async def db(tmp_path):
     from src.database import Database
 
-    database = Database(str(tmp_path / "test.db"))
+    database = Database(lease_dsn("test.db"))
     await database.initialize()
     await database.create_project(Project(id=PROJECT_ID, name="p"))
     await database.create_profile(AgentProfile(id="worker", name="w", lifecycle="pool"))

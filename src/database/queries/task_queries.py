@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import logging
-import sqlite3
 import time
 import uuid
 from collections.abc import Callable
@@ -58,15 +57,13 @@ _INTEGRATION_COMPLETION_TOKEN = object()
 _INTEGRATION_WAKE_TOKEN = object()
 
 
-#: ``UPDATE … RETURNING`` / ``INSERT … RETURNING`` landed in SQLite 3.35.
-#: PostgreSQL has always had it.  Every RETURNING-based fast path in the
-#: claim path (spec §15) keeps a two-statement fallback for older SQLite.
-SQLITE_RETURNING = sqlite3.sqlite_version_info >= (3, 35, 0)
-
-
 def supports_returning(conn) -> bool:
-    """True when *conn*'s dialect can run ``… RETURNING`` (see above)."""
-    return conn.dialect.name != "sqlite" or SQLITE_RETURNING
+    """PostgreSQL has always had ``… RETURNING``.
+
+    Kept as a function rather than inlined at ~20 call sites: the claim path
+    (spec §15) reads better asking a named question than asserting True.
+    """
+    return True
 
 
 #: Statuses that no clause of ``blocked_predicate()`` can distinguish: the
@@ -1303,9 +1300,20 @@ class TaskQueryMixin:
                 await ctx.__aexit__(None, None, None)
 
     async def delete_task(
-        self, task_id: str, *, cascade: bool = False, conn=None
+        self,
+        task_id: str,
+        *,
+        cascade: bool = False,
+        conn=None,
+        branch_policy: str | None = None,
     ) -> TransitionResult:
         """Delete a task; with *cascade*, its whole subtree (spec §7).
+
+        ``branch_policy`` (``"keep"`` / ``"discard"`` / ``None``) says what to
+        do about any branch the subtree has already put on the remote; see
+        :meth:`guard_integration_mutation`.  It matters only in a
+        hierarchy/train project, and ``None`` there refuses with
+        ``branch_discard_required`` rather than silently choosing.
 
         Refuses a container with children unless *cascade*.  One transaction:
         dependents are snapshotted while the edges exist, the subtree is
@@ -1321,21 +1329,27 @@ class TaskQueryMixin:
         ``_notify_ready`` once its own transaction has committed.
         """
         if conn is not None:
-            return await self._delete_task_body(task_id, cascade=cascade, conn=conn)
+            return await self._delete_task_body(
+                task_id, cascade=cascade, conn=conn, branch_policy=branch_policy
+            )
 
         async with self._engine.begin() as c:
-            result = await self._delete_task_body(task_id, cascade=cascade, conn=c)
+            result = await self._delete_task_body(
+                task_id, cascade=cascade, conn=c, branch_policy=branch_policy
+            )
         await self.log_blocked_flips(result.flipped)
         await self._notify_settled(result.settled)
         await self._notify_ready(result.ready)
         return result
 
-    async def _delete_task_body(self, task_id: str, *, cascade: bool, conn) -> TransitionResult:
+    async def _delete_task_body(
+        self, task_id: str, *, cascade: bool, conn, branch_policy: str | None = None
+    ) -> TransitionResult:
         """The transactional body of :meth:`delete_task`, on a supplied ``conn``."""
         from src.database.queries.hierarchy_queries import HierarchyError
 
         await self.guard_integration_mutation(
-            task_id, "delete", conn=conn, retire_pending=True
+            task_id, "delete", conn=conn, retire_pending=True, branch_policy=branch_policy
         )
         parent = (
             await conn.execute(select(tasks.c.parent_task_id).where(tasks.c.id == task_id))
@@ -1383,10 +1397,7 @@ class TaskQueryMixin:
     async def _assert_pause_cleanup_complete(self, task_id: str, *, conn) -> None:
         # Lock the task before reading metadata: a concurrent pause cannot
         # install a hold between this check and a cascading deletion.
-        if conn.dialect.name == "sqlite":
-            await conn.execute(update(tasks).where(tasks.c.id == task_id).values(id=tasks.c.id))
-        else:
-            await conn.execute(select(tasks.c.id).where(tasks.c.id == task_id).with_for_update())
+        await conn.execute(select(tasks.c.id).where(tasks.c.id == task_id).with_for_update())
         saved = (await conn.execute(select(task_metadata.c.value).where(
             task_metadata.c.task_id == task_id, task_metadata.c.key == "manual_pause"
         ))).scalar_one_or_none()

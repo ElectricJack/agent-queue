@@ -6,18 +6,20 @@ tags: [spec, database]
 
 ## 1. Overview
 
-The `Database` class in `src/database.py` is the sole persistence layer for the Agent Queue system. It wraps an `aiosqlite` connection to a SQLite file on disk, exposed through async methods organized by domain (projects, repos, tasks, dependencies, agents, token ledger, task results, events, hooks, hook runs, system config, rate limits).
+`Database` (an alias for `PostgreSQLDatabaseAdapter`) is the sole persistence layer. **PostgreSQL is the only supported backend** — SQLite was removed on 2026-09-07, see [[superpowers/specs/2026-09-07-sqlite-removal-implementation]]. It wraps a SQLAlchemy async engine over `asyncpg`, exposed through async methods organized by domain (projects, repos, tasks, dependencies, agents, token ledger, task results, events, system config, rate limits).
 
-All database interaction is async. The `Database` object is constructed with a file path, then explicitly initialized with `initialize()` before use. A `row_factory` of `aiosqlite.Row` is applied so columns can be accessed by name. Every mutating method issues an explicit `await self._db.commit()` before returning. There is no connection pooling; one `aiosqlite.Connection` is held for the lifetime of the process.
+All database interaction is async. The `Database` object is constructed with a **PostgreSQL DSN** — anything else is a hard error, not a fall-through to a file — then explicitly initialized with `initialize()` before use. `initialize()` runs the Alembic chain, which returns immediately when the database is already stamped at this checkout's head.
 
-The class uses a convention of thin `_row_to_<model>` private methods to map raw `aiosqlite.Row` objects into typed dataclass instances from `src/models.py` (see [[specs/models-and-state-machine]]). Update methods accept arbitrary `**kwargs` and build parameterized `SET` clauses dynamically, converting enum values to their `.value` string automatically.
+The class uses a convention of thin `_row_to_<model>` private methods to map result rows into typed dataclass instances from `src/models.py` (see [[specs/models-and-state-machine]]). Update methods accept arbitrary `**kwargs` and build parameterized `SET` clauses dynamically, converting enum values to their `.value` string automatically.
 
 ---
 
 ## Source Files
 - `src/database/tables.py` — SQLAlchemy Core `Table` definitions (the schema)
-- `src/database/engine.py` — engine factory, PRAGMAs, Alembic startup upgrade
-- `src/database/adapters/sqlite.py`, `adapters/postgresql.py` — backends
+- `src/database/engine.py` — engine factory and the Alembic startup upgrade
+- `src/database/schema_key.py` — schema identity, shared by the engine and the test template
+- `src/database/adapters/postgresql.py` — the backend
+- `src/database/legacy_sqlite_import.py` — one-way importer for pre-PostgreSQL installs (`aq db import-sqlite`)
 - `src/database/queries/` — domain query mixins
 - `migrations/` — Alembic revision history
 
@@ -41,8 +43,7 @@ await db.initialize()
 
 Performs the following steps in order:
 
-1. Opens a connection with `aiosqlite.connect(path)`.
-2. Sets `row_factory = aiosqlite.Row` so all rows support column-name access.
+1. Opens a SQLAlchemy async engine over `asyncpg`.
 3. Executes the full `SCHEMA` string via `executescript`, which creates all tables with `CREATE TABLE IF NOT EXISTS` (idempotent on existing databases).
 4. Enables WAL journal mode: `PRAGMA journal_mode=WAL`.
 5. Enables foreign key enforcement: `PRAGMA foreign_keys=ON`.
@@ -61,7 +62,7 @@ Closes the connection if one is open. Safe to call even if `initialize()` was ne
 
 ## 3. Schema
 
-Every table is declared as a SQLAlchemy Core `Table` in `src/database/tables.py`, which is the single source of truth; DDL is applied by Alembic (`migrations/`). Foreign keys are declared with `ForeignKey(...)`. A `CHECK` constraint exists on `task_dependencies`. Integer booleans (SQLite has no native boolean) are used for flags such as `is_plan_subtask` and `is_blocked` (tasks). Timestamps are stored as `REAL` (Unix epoch, floating-point seconds).
+Every table is declared as a SQLAlchemy Core `Table` in `src/database/tables.py`, which is the single source of truth; DDL is applied by Alembic (`migrations/`). Foreign keys are declared with `ForeignKey(...)`. A `CHECK` constraint exists on `task_dependencies`. Booleans are declared with `Boolean` and `sa.false()`/`sa.true()` server defaults. Timestamps are stored as `REAL` (Unix epoch, floating-point seconds).
 
 > **This catalog is enforced.** `tests/test_docs_sync.py` compares the `### Table:` headings below against `src/database/tables.py` and fails when they drift, so a schema change lands with its doc row in the same commit (see `docs/specs/design/trust-and-ops.md` §6). `alembic_version` is the one deliberate exclusion.
 
@@ -767,7 +768,7 @@ ended attempt may compute `transcript_end_at` from the next known launch sharing
 its conversation or workspace. This is a read boundary, not a stored exit time.
 The task history API filters by the resolved task's project and creation time; older
 audit associations stay stored and remain addressable by attempt ID.
-The SQLite-to-PostgreSQL copy inventory includes this audit table.
+The legacy-import copy inventory (`aq db import-sqlite`) includes this audit table.
 
 ### Table: `subagent_events`
 
@@ -796,7 +797,7 @@ Indexes cover (`session_id`, `event`) for the per-session fold and (`occurred_at
 for time-ordered listing. The fold clamps at zero: a `stop` whose `start` never
 arrived is still stored, because losing a Start must not make a session look like
 it is running a child forever.
-The SQLite-to-PostgreSQL copy inventory includes this table.
+The legacy-import copy inventory (`aq db import-sqlite`) includes this table.
 
 ### Table: `transcript_checkpoints`
 
@@ -828,6 +829,27 @@ passes `byte_offset=0`, and a zero offset always wins, because a rewritten file
 genuinely has to be read from its start again. A missed update falls through to
 an insert, and a racing writer's `IntegrityError` is swallowed: the conflict is
 itself proof the row now exists.
+
+### Table: `provider_usage_snapshots`
+
+Provider quota readings from transcripts and probes. Repeated readings update
+`last_seen_at` while preserving the original `observed_at` for usage history.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| id | INTEGER | Auto-increment primary key |
+| provider | TEXT | Provider identifier |
+| account_label | TEXT | Provider-reported plan or limit label; defaults to empty |
+| window | TEXT | Provider quota window |
+| scope | TEXT | Provider-reported model scope; defaults to empty |
+| used_percent | FLOAT | Observed quota utilization |
+| resets_at | FLOAT | Nullable reset time, Unix epoch seconds |
+| observed_at | FLOAT | First observation time, Unix epoch seconds |
+| last_seen_at | FLOAT | Latest confirmation time, Unix epoch seconds |
+| source | TEXT | `transcript` or `probe`, enforced by a check constraint |
+
+The series index covers `(provider, window, scope, observed_at DESC)`.
+This table has no foreign keys.
 
 ### Table: `metrics_samples`
 
@@ -2198,7 +2220,7 @@ Returns all tasks whose `parent_task_id` matches the given value. No ordering gu
 
 ### `assign_task_to_agent(task_id: str, agent_id: str) -> None`
 
-Atomic multi-table update (no explicit transaction — relies on SQLite's default serialized writes):
+Atomic multi-table update inside one transaction:
 
 1. Validates the READY → ASSIGNED transition using `is_valid_status_transition`. If invalid, logs a warning (does not abort).
 2. Updates the task: `status = ASSIGNED`, `assigned_agent_id = agent_id`, `updated_at = now`.

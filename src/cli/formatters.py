@@ -255,7 +255,10 @@ def format_agent_table(agents: list[Any]) -> Table:
     table.add_column("Type", style="dim")
     table.add_column("State", no_wrap=True)
     table.add_column("Current Task", style="bright_cyan")
-    table.add_column("Heartbeat", style="dim")
+    # Liveness is session activity, not ``last_heartbeat`` -- that field only
+    # advances while the agent holds a task, so an idle-but-healthy pool
+    # worker would render as hours stale.  See ``src.agents.liveness``.
+    table.add_column("Activity", style="dim")
     table.add_column("Tokens", justify="right", style="dim")
 
     for agent in agents:
@@ -272,7 +275,7 @@ def format_agent_table(agents: list[Any]) -> Table:
             agent.profile_id,
             state_text,
             agent.current_task_id or "—",
-            _relative_time(agent.last_heartbeat),
+            _relative_time(agent.last_activity),
             tokens,
         )
 
@@ -1167,55 +1170,115 @@ def format_task_recent_activity(data: dict) -> Group:
 # ---------------------------------------------------------------------------
 
 
-def format_pool_table(pools: list[dict]) -> Table:
-    """Format ``pool_status`` rows (one per project/profile) as a Rich table."""
+def _pool_project_summary(row: dict) -> str:
+    """The **Projects** cell for one pool row: where its workers actually are.
+
+    A pool is fleet-wide now, so placement is the one thing an operator
+    cannot read off the aggregate columns.  One compact token per project
+    (``web:2i/1b`` — idle/busy/starting/draining, zero parts omitted) keeps
+    the one-line-per-pool shape the table had when the project was a column.
+    """
+    summary = []
+    for project in row.get("projects") or []:
+        counts = "/".join(
+            f"{project.get(field, 0)}{suffix}"
+            for field, suffix in (
+                ("running_idle", "i"),
+                ("running_busy", "b"),
+                ("starting", "s"),
+                ("draining", "d"),
+            )
+            if project.get(field, 0)
+        )
+        summary.append(f"{project.get('project_id', '?')}:{counts or '0'}")
+    return "  ".join(summary) if summary else "—"
+
+
+def _pool_quarantine_notes(pools: list[dict]) -> Text | None:
+    """Quarantine detail for every ``(pool, project)`` inside its backoff.
+
+    Quarantine used to have a column of its own, and it cannot keep one: the
+    reason carries the startup-output excerpt for a session that died on
+    launch, which does not fit beside ten numeric columns, and a bare "until
+    14:02:11" with no reason is useless to an operator.  So it moves below
+    the table, where it has the full terminal width.
+
+    Built as a :class:`~rich.text.Text` rather than console markup because
+    the reason is captured process output and may contain square brackets.
+    """
+    notes = Text()
+    for row in pools:
+        for project in row.get("projects") or []:
+            quarantined_until = project.get("quarantined_until")
+            if not quarantined_until:
+                continue
+            if notes:
+                notes.append("\n")
+            notes.append(
+                "  {} in {} — quarantined until {}".format(
+                    row.get("profile_id", "?"),
+                    project.get("project_id", "?"),
+                    time.strftime("%H:%M:%S", time.localtime(quarantined_until)),
+                ),
+                style="yellow",
+            )
+            reason = project.get("quarantined_reason")
+            if reason:
+                notes.append(f" — {reason}", style="dim yellow")
+    if not notes:
+        return None
+    return Text("Quarantined\n", style="bold yellow") + notes
+
+
+def format_pool_table(pools: list[dict]):
+    """Format ``pool_status`` rows (one per **profile**) for ``aq pool status``.
+
+    The leading Project column is gone with per-project pool identity
+    (global-worker-pools §6.1): bounds, ``desired`` and the supply counters
+    are fleet-wide sums, and *where* those workers sit is summarised in the
+    trailing Projects column instead of multiplying the rows.
+
+    Returns a bare :class:`~rich.table.Table` unless something is
+    quarantined, in which case the table is grouped with the quarantine
+    notes that used to be a column.
+    """
     table = Table(
         title="Worker pools",
         title_style="bold bright_white",
         border_style="bright_black",
         expand=True,
     )
-    table.add_column("Project", style="bold bright_magenta", no_wrap=True)
-    table.add_column("Profile", style="cyan", no_wrap=True)
+    table.add_column("Profile", style="bold cyan", overflow="fold")
     table.add_column("Min", justify="right")
     table.add_column("Max", justify="right")
+    table.add_column("Min/pp", justify="right")
     table.add_column("Desired", justify="right")
     table.add_column("Idle", justify="right")
     table.add_column("Busy", justify="right")
-    table.add_column("Starting", justify="right")
-    table.add_column("Draining", justify="right")
+    table.add_column("Start", justify="right")
+    table.add_column("Drain", justify="right")
     table.add_column("Ready", justify="right")
-    # Wraps: the reason carries the startup-output excerpt for a session that
-    # died on launch, which is the whole point of showing it -- a bare
-    # "until 14:02:11" told an operator nothing they could act on.
-    table.add_column("Quarantined", style="yellow", overflow="fold", max_width=48)
+    table.add_column(
+        "Projects", style="bright_magenta", overflow="fold", min_width=22
+    )
 
     for row in pools:
-        quarantined_until = row.get("quarantined_until")
-        if quarantined_until:
-            quarantined = "until " + time.strftime(
-                "%H:%M:%S", time.localtime(quarantined_until)
-            )
-            reason = row.get("quarantined_reason")
-            if reason:
-                quarantined += f" — {reason}"
-        else:
-            quarantined = "—"
         table.add_row(
-            row.get("project_id", ""),
             row.get("profile_id", ""),
             str(row.get("min_active", 0)),
             "∞" if row.get("max_active") is None else str(row.get("max_active")),
+            str(row.get("min_per_project", 0) or 0),
             str(row.get("desired", 0)),
             str(row.get("running_idle", 0)),
             str(row.get("running_busy", 0)),
             str(row.get("starting", 0)),
             str(row.get("draining", 0)),
             str(row.get("ready", 0)),
-            quarantined,
+            _pool_project_summary(row),
         )
 
-    return table
+    notes = _pool_quarantine_notes(pools)
+    return table if notes is None else Group(table, Text(), notes)
 
 
 def format_formula_list(data: dict) -> Table:

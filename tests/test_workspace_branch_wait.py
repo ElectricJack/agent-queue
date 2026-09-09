@@ -19,7 +19,7 @@ from types import SimpleNamespace
 import pytest
 from sqlalchemy import insert
 
-from src.config import AppConfig
+from src.config import AppConfig, DatabaseConfig
 from src.database import Database
 from src.database.tables import task_branch_origins
 from src.git.manager import GitError
@@ -38,6 +38,7 @@ from src.models import (
     WorkspaceKind,
 )
 from src.orchestrator import Orchestrator
+from tests.db_fixtures import lease_dsn
 
 pytestmark = pytest.mark.asyncio
 
@@ -72,7 +73,7 @@ class _SuccessfulSlots:
 
 @pytest.fixture
 async def env(tmp_path):
-    db = Database(str(tmp_path / "wait.db"))
+    db = Database(lease_dsn("wait.db"))
     await db.initialize()
     await db.create_project(Project(id="p", name="p"))
     await db.create_profile(AgentProfile(id="worker", name="Worker"))
@@ -96,7 +97,7 @@ async def env(tmp_path):
     await db.create_workspace(base)
     await db.create_workspace(slot)
 
-    config = AppConfig(data_dir=str(tmp_path / "data"), workspace_dir=str(tmp_path / "ws"))
+    config = AppConfig(database=DatabaseConfig(url=lease_dsn("wait.db")), data_dir=str(tmp_path / "data"), workspace_dir=str(tmp_path / "ws"))
     orch = Orchestrator(config)
     orch.db = db
     notices: list[str] = []

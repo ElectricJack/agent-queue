@@ -949,6 +949,7 @@ def test_ensure_default_playbooks_installs_all_defaults(tmp_path):
         "default-pipeline.md",
         "hierarchical-delivery.md",
         "memory-consolidation.md",
+        "provider-usage-probe.md",
         "root-integration-train.md",
     ]
 

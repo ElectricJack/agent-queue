@@ -3,18 +3,19 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from src.commands.handler import CommandHandler
-from src.config import AppConfig, DiscordConfig
+from src.config import DatabaseConfig, AppConfig, DiscordConfig
 from src.database import Database
 from src.models import AgentProfile, Project, Task, TaskStatus
 from src.orchestrator import Orchestrator
 from src.vault import ensure_default_intelligence_classes
+from tests.db_fixtures import lease_dsn
 
 PROJECT_ID = "p"
 
 
 @pytest.fixture
 async def db(tmp_path):
-    d = Database(str(tmp_path / "et.db"))
+    d = Database(lease_dsn("et.db"))
     await d.initialize()
     await d.create_project(Project(id=PROJECT_ID, name="P"))
     yield d
@@ -28,7 +29,7 @@ def config(tmp_path):
     return AppConfig(
         discord=DiscordConfig(bot_token="t", guild_id="1"),
         workspace_dir=str(tmp_path / "w"),
-        database_path=str(tmp_path / "et.db"),
+        database=DatabaseConfig(url=lease_dsn("et.db")),
         data_dir=data_dir,
     )
 

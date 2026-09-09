@@ -17,11 +17,12 @@ from src.commands.ops_commands import OpsCommandsMixin, _parse_since
 from src.config import AppConfig, ModelPricing, PricingConfig
 from src.database import Database
 from src.models import Agent, AgentState, Project
+from tests.db_fixtures import lease_dsn
 
 
 @pytest.fixture
 async def db(tmp_path):
-    database = Database(str(tmp_path / "costs.db"))
+    database = Database(lease_dsn("costs.db"))
     await database.initialize()
     yield database
     await database.close()
@@ -463,7 +464,7 @@ class TestConfigWiring:
         return (
             f"data_dir: {d}\n"
             f"workspace_dir: {d}/ws\n"
-            f"database:\n  url: {d}/aq.db\n"
+            "database:\n  url: postgresql+asyncpg://test:test@localhost/test\n"
             "discord:\n  bot_token: t\n  guild_id: '1'\n"
         )
 

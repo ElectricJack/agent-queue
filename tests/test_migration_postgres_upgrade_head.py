@@ -1,34 +1,50 @@
 # tests/test_migration_postgres_upgrade_head.py
-"""``alembic upgrade head`` must succeed on PostgreSQL, not just SQLite.
+"""Fresh PostgreSQL baseline creation, usable defaults, and schema parity.
 
-PostgreSQL is the production backend (SQLite is the dev default), but
-the revision chain is almost always exercised against SQLite, which is
-far more forgiving about types in DDL — it happily accepts
-``BOOLEAN DEFAULT 0`` where Postgres raises
-
-    DatatypeMismatchError: column "..." is of type boolean but default
-    expression is of type integer
-
-Revision ``33bdb059ceff`` shipped exactly that and took every
-Postgres-parametrised test down at fixture setup.  This module is the
-smoke check for that whole class: run the real chain from an empty
-database to head on a real Postgres server and then use the schema.
+The pre-squash revision paths are retired. These tests run the supported
+baseline from an empty scratch database, independently of the template cache.
 """
 
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 import sys
 
 import pytest
 
-from tests.pg_dsn import ensure_worker_postgres_dsn
+from tests.pg_dsn import create_scratch_database, ensure_worker_postgres_dsn
 
 pytestmark = [pytest.mark.migration, pytest.mark.integration]
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 POSTGRES_DSN = ensure_worker_postgres_dsn()
+
+
+async def _assert_integration_guards(conn):
+    from migrations.integration_guards import FUNCTIONS, TRIGGERS
+
+    expected_functions = {
+        re.search(r"FUNCTION\s+(\w+)\(", statement).group(1) for statement in FUNCTIONS
+    }
+    installed_functions = {
+        row["proname"]
+        for row in await conn.fetch(
+            "SELECT proname FROM pg_proc JOIN pg_namespace n ON n.oid=pronamespace "
+            "WHERE n.nspname='public'"
+        )
+    }
+    installed_triggers = {
+        (row["tgname"], row["relname"])
+        for row in await conn.fetch(
+            "SELECT tgname, relname FROM pg_trigger JOIN pg_class c ON c.oid=tgrelid "
+            "JOIN pg_namespace n ON n.oid=c.relnamespace "
+            "WHERE NOT tgisinternal AND n.nspname='public'"
+        )
+    }
+    assert expected_functions <= installed_functions
+    assert {(name, table) for name, table, _ in TRIGGERS} <= installed_triggers
 
 
 def _alembic_pg(dsn: str, *args: str) -> subprocess.CompletedProcess:
@@ -48,11 +64,10 @@ async def _pg_conn(dsn: str):
     return await asyncpg.connect(dsn.replace("postgresql+asyncpg://", "postgresql://"))
 
 
-async def test_upgrade_head_applies_the_whole_chain_on_postgres():
+async def test_upgrade_head_applies_the_baseline_on_postgres():
     """Empty database -> head, on real PostgreSQL, with no manual repair."""
     if not POSTGRES_DSN:
         pytest.skip("POSTGRES_TEST_DSN not set")
-    from tests.pg_dsn import create_scratch_database
 
     dsn = await create_scratch_database("uphead")
     res = _alembic_pg(dsn, "upgrade", "head")
@@ -65,6 +80,7 @@ async def test_upgrade_head_applies_the_whole_chain_on_postgres():
     conn = await _pg_conn(dsn)
     try:
         assert await conn.fetchval("SELECT version_num FROM alembic_version") == head_revision
+        await _assert_integration_guards(conn)
     finally:
         await conn.close()
 
@@ -79,7 +95,6 @@ async def test_boolean_columns_added_by_migrations_default_correctly_on_postgres
     """
     if not POSTGRES_DSN:
         pytest.skip("POSTGRES_TEST_DSN not set")
-    from tests.pg_dsn import create_scratch_database
 
     dsn = await create_scratch_database("upheadbool")
     res = _alembic_pg(dsn, "upgrade", "head")
@@ -98,9 +113,7 @@ async def test_boolean_columns_added_by_migrations_default_correctly_on_postgres
             "provider, name, lifecycle, work_dir, epoch, instance_token, started_at) "
             "VALUES ('s','t','p','prof','claude','tmux','n-s','task','/w','e','tok',0)"
         )
-        assert (
-            await conn.fetchval("SELECT hooks_provisioned FROM sessions WHERE id='s'")
-        ) is False
+        assert (await conn.fetchval("SELECT hooks_provisioned FROM sessions WHERE id='s'")) is False
     finally:
         await conn.close()
 
@@ -131,7 +144,6 @@ async def test_autogenerate_against_a_fresh_head_database_is_empty():
     from sqlalchemy.ext.asyncio import create_async_engine
 
     from src.database.tables import metadata
-    from tests.pg_dsn import create_scratch_database
 
     dsn = await create_scratch_database("updrift")
     res = _alembic_pg(dsn, "upgrade", "head")
@@ -153,3 +165,49 @@ async def test_autogenerate_against_a_fresh_head_database_is_empty():
         "src/database/tables.py has drifted from the migration chain:\n"
         + "\n".join(f"  {d}" for d in diffs)
     )
+
+
+async def test_baseline_downgrade_is_refused_without_losing_data():
+    dsn = await create_scratch_database("baselineguard")
+    upgraded = _alembic_pg(dsn, "upgrade", "a00000000001")
+    assert upgraded.returncode == 0, upgraded.stderr
+    conn = await _pg_conn(dsn)
+    try:
+        await conn.execute("INSERT INTO projects (id, name, created_at) VALUES ('keep','Keep',0)")
+        original_revision = await conn.fetchval("SELECT version_num FROM alembic_version")
+    finally:
+        await conn.close()
+
+    refused = _alembic_pg(dsn, "downgrade", "base")
+    assert refused.returncode != 0
+    assert "the squashed baseline has no downgrade" in refused.stderr
+    conn = await _pg_conn(dsn)
+    try:
+        assert await conn.fetchval("SELECT name FROM projects WHERE id='keep'") == "Keep"
+        assert await conn.fetchval("SELECT version_num FROM alembic_version") == original_revision
+    finally:
+        await conn.close()
+
+
+async def test_upgrade_repairs_guards_on_original_squashed_database():
+    from migrations.integration_guards import TRIGGERS
+
+    dsn = await create_scratch_database("repairguards")
+    upgraded = _alembic_pg(dsn, "upgrade", "a00000000001")
+    assert upgraded.returncode == 0, upgraded.stderr
+    conn = await _pg_conn(dsn)
+    try:
+        # Reproduce the first baseline release: tables existed without triggers.
+        for name, table, _ in TRIGGERS:
+            await conn.execute(f'DROP TRIGGER "{name}" ON "{table}"')
+        await conn.execute("INSERT INTO projects (id, name, created_at) VALUES ('keep','Keep',0)")
+    finally:
+        await conn.close()
+    upgraded = _alembic_pg(dsn, "upgrade", "head")
+    assert upgraded.returncode == 0, upgraded.stderr
+    conn = await _pg_conn(dsn)
+    try:
+        await _assert_integration_guards(conn)
+        assert await conn.fetchval("SELECT name FROM projects WHERE id='keep'") == "Keep"
+    finally:
+        await conn.close()

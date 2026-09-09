@@ -1,27 +1,12 @@
-"""Dual-dialect migration coverage for integration schedule catch-up state."""
-
-from __future__ import annotations
+"""Catch-up schedule state in the current baseline."""
 
 import pytest
-from alembic import command
-from alembic.config import Config
-from sqlalchemy import create_engine, inspect, text
+from sqlalchemy import inspect, text
 
 from src.database import Database
-from tests.pg_dsn import create_scratch_database, ensure_worker_postgres_dsn
+from tests.db_fixtures import lease_dsn
 
-
-pytestmark = [pytest.mark.perf, pytest.mark.migration]
-
-PRIOR = "e9b2f1b7c3d5"
-REVISION = "ed46f4aec7be"
-POSTGRES_DSN = ensure_worker_postgres_dsn()
-
-
-def _migrate(connection, revision: str, *, downgrade: bool = False) -> None:
-    config = Config("alembic.ini")
-    config.attributes["connection"] = connection
-    (command.downgrade if downgrade else command.upgrade)(config, revision)
+pytestmark = pytest.mark.migration
 
 
 def _columns(connection) -> set[str]:
@@ -42,10 +27,8 @@ def _seed_schedule(connection) -> None:
     )
 
 
-def _exercise_round_trip(connection) -> None:
-    _migrate(connection, PRIOR, downgrade=True)
+def _assert_catchup_contract(connection) -> None:
     _seed_schedule(connection)
-    _migrate(connection, REVISION)
     catchup_columns = {
         "catchup_trigger",
         "catchup_requested_at",
@@ -54,9 +37,7 @@ def _exercise_round_trip(connection) -> None:
     assert catchup_columns <= _columns(connection)
     assert "ck_project_integration_schedules_catchup" in {
         constraint["name"]
-        for constraint in inspect(connection).get_check_constraints(
-            "project_integration_schedules"
-        )
+        for constraint in inspect(connection).get_check_constraints("project_integration_schedules")
     }
     row = connection.execute(
         text(
@@ -72,64 +53,13 @@ def _exercise_round_trip(connection) -> None:
             "WHERE project_id = 'project-z'"
         )
     )
-    with pytest.raises(RuntimeError, match="project-z.*live catch-up state"):
-        _migrate(connection, PRIOR, downgrade=True)
-    assert connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one() == REVISION
-    connection.execute(
-        text(
-            "UPDATE project_integration_schedules SET catchup_trigger = NULL, "
-            "catchup_requested_at = NULL, catchup_after_sequence = NULL "
-            "WHERE project_id = 'project-z'"
-        )
-    )
-    _migrate(connection, PRIOR, downgrade=True)
-    assert not (catchup_columns & _columns(connection))
-    outstanding = connection.execute(
-        text(
-            "SELECT outstanding_request_id, outstanding_trigger, request_sequence "
-            "FROM project_integration_schedules WHERE project_id = 'project-z'"
-        )
-    ).one()
-    assert outstanding == ("request-4", "manual", 4)
-    _migrate(connection, REVISION)
-    assert catchup_columns <= _columns(connection)
 
 
-async def test_sqlite_catchup_migration_guarded_round_trip(tmp_path):
-    path = tmp_path / "catchup.db"
-    database = Database(str(path))
+async def test_baseline_catchup_contract():
+    database = Database(lease_dsn("catchup"))
     await database.initialize()
-    await database.close()
-    engine = create_engine(f"sqlite:///{path}")
     try:
-        with engine.begin() as connection:
-            _exercise_round_trip(connection)
+        async with database._engine.begin() as conn:
+            await conn.run_sync(_assert_catchup_contract)
     finally:
-        engine.dispose()
-
-
-@pytest.mark.skipif(not POSTGRES_DSN, reason="POSTGRES_TEST_DSN not set")
-async def test_postgres_catchup_migration_guarded_round_trip():
-    import asyncpg
-
-    from src.database.adapters.postgresql import PostgreSQLDatabaseAdapter
-    from src.database.engine import create_postgres_engine
-
-    dsn = await create_scratch_database("task10a_schedule_catchup")
-    database = PostgreSQLDatabaseAdapter(dsn, 0, 1)
-    await database.initialize()
-    await database.close()
-    engine = create_postgres_engine(dsn, 0, 1)
-    try:
-        async with engine.begin() as connection:
-            await connection.run_sync(_exercise_round_trip)
-    finally:
-        await engine.dispose()
-        prefix, _, name = dsn.rpartition("/")
-        admin = await asyncpg.connect(
-            prefix.replace("postgresql+asyncpg://", "postgresql://") + "/postgres"
-        )
-        try:
-            await admin.execute(f'DROP DATABASE IF EXISTS "{name}"')
-        finally:
-            await admin.close()
+        await database.close()

@@ -25,6 +25,7 @@ from src.models import (
     Workspace,
     WorktreeSentinel,
 )
+from tests.db_fixtures import lease_dsn
 
 pytestmark = pytest.mark.asyncio
 
@@ -35,7 +36,7 @@ PROJECT_ID = "proj"
 async def db(tmp_path):
     from src.database import Database
 
-    database = Database(str(tmp_path / "test.db"))
+    database = Database(lease_dsn("test.db"))
     await database.initialize()
     await database.create_project(Project(id=PROJECT_ID, name="p"))
     yield database
@@ -168,7 +169,7 @@ async def test_missing_sentinel_is_not_a_finding(db, slots_root):
 async def test_non_slot_workspaces_are_ignored(db, tmp_path):
     """A plain clone has no slot semantics — a stray sentinel there is not
     this check's business."""
-    path = tmp_path / "clone"
+    path = tmp_path / "external-workspace"
     path.mkdir()
     ws = Workspace(
         id="clone",

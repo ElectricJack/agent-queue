@@ -10,30 +10,22 @@ from sqlalchemy import select
 
 from src.api.auth import RequestScope
 from src.commands.handler import CommandHandler
-from src.config import AppConfig
+from src.config import AppConfig, DatabaseConfig
 from src.database import Database
 from src.database.tables import messages
 from src.models import AgentProfile, Project, SessionRecord, Task, TaskStatus
 from src.orchestrator import Orchestrator
 from tests.pg_dsn import ensure_worker_postgres_dsn
+from tests.db_fixtures import lease_dsn
 
 pytestmark = pytest.mark.asyncio
 POSTGRES_TEST_DSN = ensure_worker_postgres_dsn()
 
 
-@pytest.fixture(params=["sqlite", "postgres"])
+@pytest.fixture
 async def env(tmp_path, request):
-    if request.param == "postgres":
-        if not POSTGRES_TEST_DSN:
-            pytest.skip("disposable PostgreSQL not configured")
-        from src.database.adapters.postgresql import PostgreSQLDatabaseAdapter
-
-        db = PostgreSQLDatabaseAdapter(POSTGRES_TEST_DSN)
-        await db.initialize()
-        await db.reset_for_tests()
-    else:
-        db = Database(str(tmp_path / "recovery.db"))
-        await db.initialize()
+    db = Database(lease_dsn("recovery.db"))
+    await db.initialize()
     await db.create_project(Project(id="p", name="Project"))
     await db.create_project(Project(id="other", name="Other"))
     await db.create_profile(AgentProfile(id="worker", name="Worker"))
@@ -52,7 +44,7 @@ async def env(tmp_path, request):
         )
     )
     await db.update_task("t", created_at=100)
-    config = AppConfig(data_dir=str(tmp_path / "data"), workspace_dir=str(tmp_path / "ws"))
+    config = AppConfig(database=DatabaseConfig(url=lease_dsn("recovery.db")), data_dir=str(tmp_path / "data"), workspace_dir=str(tmp_path / "ws"))
     orch = Orchestrator(config)
     orch.db = db
     orch.session_providers = SimpleNamespace(
@@ -370,11 +362,16 @@ async def test_delivered_incident_rearmed_after_supervisor_exit_without_duplicat
 @pytest.mark.parametrize("probe", ["unavailable", "still-listed"])
 async def test_cached_tmux_absence_is_not_stop_confirmation(env, probe):
     from src.sessions.tmux import TmuxProvider, TmuxCommandError
+
     current = await incident(env)
     provider = TmuxProvider(env.config)
     provider.socket = "disposable-never-contacted"
     provider.is_running = AsyncMock(return_value=False)
-    provider._tmux = AsyncMock(side_effect=TmuxCommandError(("list-sessions",), 1, "probe unavailable")) if probe == "unavailable" else AsyncMock(return_value="s\n")
+    provider._tmux = (
+        AsyncMock(side_effect=TmuxCommandError(("list-sessions",), 1, "probe unavailable"))
+        if probe == "unavailable"
+        else AsyncMock(return_value="s\n")
+    )
     env.orch.session_providers = SimpleNamespace(create=lambda *_: provider)
     result = await decide(env, current)
     assert "error" in result
@@ -384,8 +381,11 @@ async def test_cached_tmux_absence_is_not_stop_confirmation(env, probe):
 async def test_strict_tmux_probe_bypasses_cached_absence_and_confirms_missing_name():
     from src.sessions.tmux import TmuxProvider
     from src.sessions.provider import SessionHandle
+
     provider = TmuxProvider()
     provider.socket = "disposable-never-contacted"
     provider._tmux = AsyncMock(return_value="n-supervisor--global\nother-worker\n")
-    assert await provider.confirm_stopped(SessionHandle("old-worker", "tmux", "old-instance")) is True
+    assert (
+        await provider.confirm_stopped(SessionHandle("old-worker", "tmux", "old-instance")) is True
+    )
     provider._tmux.assert_awaited_once_with("list-sessions", "-F", "#{session_name}")

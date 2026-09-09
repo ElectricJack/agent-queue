@@ -9,9 +9,10 @@ security) is tested separately at the end.
 import pytest
 from unittest.mock import MagicMock
 
-from src.config import AppConfig, DiscordConfig
+from src.config import DatabaseConfig, AppConfig, DiscordConfig
 from src.database import Database
 from src.models import Project, RepoConfig, RepoSourceType, Workspace
+from tests.db_fixtures import lease_dsn
 
 
 # ---------------------------------------------------------------------------
@@ -22,7 +23,7 @@ from src.models import Project, RepoConfig, RepoSourceType, Workspace
 @pytest.fixture
 async def db(tmp_path):
     """Create a real in-memory database for tests."""
-    database = Database(str(tmp_path / "test.db"))
+    database = Database(lease_dsn("test.db"))
     await database.initialize()
     yield database
     await database.close()
@@ -33,7 +34,7 @@ def config(tmp_path):
     return AppConfig(
         discord=DiscordConfig(bot_token="test-token", guild_id="123"),
         workspace_dir=str(tmp_path / "workspaces"),
-        database_path=str(tmp_path / "test.db"),
+        database=DatabaseConfig(url=lease_dsn("test.db")),
         data_dir=str(tmp_path / "data"),
     )
 

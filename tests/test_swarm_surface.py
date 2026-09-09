@@ -9,11 +9,12 @@ import pytest
 from click.testing import CliRunner
 
 from src.commands.handler import CommandHandler
-from src.config import AppConfig, DiscordConfig
+from src.config import DatabaseConfig, AppConfig, DiscordConfig
 from src.database import Database
 from src.models import Project
 from src.orchestrator import Orchestrator
 from src.tools.definitions import _ALL_TOOL_DEFINITIONS, _TOOL_CATEGORIES
+from tests.db_fixtures import lease_dsn
 
 PROJECT_ID = "proj"
 
@@ -280,13 +281,13 @@ def test_cli_claim_timeout_is_long():
 
 @pytest.fixture
 async def handler(tmp_path):
-    db = Database(str(tmp_path / "test.db"))
+    db = Database(lease_dsn("test.db"))
     await db.initialize()
     await db.create_project(Project(id=PROJECT_ID, name="p"))
     cfg = AppConfig(
         discord=DiscordConfig(bot_token="t", guild_id="1"),
         workspace_dir=str(tmp_path / "ws"),
-        database_path=str(tmp_path / "test.db"),
+        database=DatabaseConfig(url=lease_dsn("test.db")),
         data_dir=str(tmp_path / "data"),
     )
     orch = Orchestrator(cfg)
@@ -396,13 +397,17 @@ async def test_pool_scale_db_row_matches_vault(pool_handler, tmp_path):
     assert await pool_handler.db.get_profile(f"project:{PROJECT_ID}:worker") is None
 
 
-async def test_pool_scale_accepts_project_id_as_a_deprecated_no_op(pool_handler, tmp_path):
-    """Existing scripts keep working, and are told the argument is ignored."""
+async def test_pool_scale_ignores_project_id_without_warning(pool_handler, tmp_path):
+    """The deprecation window is over: the argument is simply not pool identity.
+
+    It stays accepted so existing scripts keep working, but a pool is a
+    profile now and there is nothing left to warn about.
+    """
     res = await pool_handler._cmd_pool_scale(
         {"project_id": PROJECT_ID, "profile_id": "worker", "min": 2, "max": 5}
     )
     assert res["success"], res
-    assert res["warnings"] and "deprecated" in res["warnings"][0]
+    assert res["warnings"] == []
     system = await pool_handler.db.get_profile("worker")
     assert (system.min_active, system.max_active) == (2, 5)
     assert await pool_handler.db.get_profile(f"project:{PROJECT_ID}:worker") is None
@@ -617,6 +622,20 @@ async def test_pool_scale_reports_each_project_cap(pool_handler):
     assert caps[PROJECT_ID]["effective_max_active"] == 2
 
 
+async def test_pool_scale_effective_max_folds_in_the_box_wide_ceiling(pool_handler):
+    """``swarm.global_max_active`` bounds a pool no project cap would have."""
+    await pool_handler.db.update_project(PROJECT_ID, max_concurrent_agents=50)
+    pool_handler.config.swarm.global_max_active = 3
+
+    scaled = await pool_handler._cmd_pool_scale({"profile_id": "worker", "max": 9})
+    assert scaled["success"], scaled
+    caps = {row["project_id"]: row for row in scaled["project_caps"]}
+    assert caps[PROJECT_ID]["max_concurrent_agents"] == 50
+    # Neither the pool's own max nor this project's generous cap is the
+    # binding constraint -- the box-wide ceiling is.
+    assert caps[PROJECT_ID]["effective_max_active"] == 3
+
+
 async def test_disabled_pool_stays_listed_and_is_sized_to_zero(pool_handler):
     """A disabled pool keeps its row (that is what re-enables it) at desired 0.
 
@@ -694,6 +713,7 @@ async def test_pool_status_includes_live_instance_detail(pool_handler):
     instance = result["pools"][0]["instances"][0]
     assert instance == {
         "session_id": "pool-1",
+        "project_id": PROJECT_ID,
         "name": "p-worker--proj--deadbeef",
         "state": "running",
         "task_id": None,
@@ -702,3 +722,102 @@ async def test_pool_status_includes_live_instance_detail(pool_handler):
         "started_at": pytest.approx(now - 30, abs=2),
         "quarantine_reason": None,
     }
+
+
+# ──────────────── pool_status is one row per profile (§6.1) ──────────────
+
+
+async def test_pool_status_reports_one_row_per_profile_across_projects(pool_handler):
+    """Bounds and supply are fleet-wide; placement is nested, not multiplied."""
+    import time
+
+    from src.models import SessionRecord
+
+    await pool_handler.db.create_project(Project(id="other-project", name="other"))
+    now = time.time()
+    for suffix, project_id in (("a", PROJECT_ID), ("b", "other-project")):
+        await pool_handler.db.create_session(
+            SessionRecord(
+                id="pool-" + suffix, project_id=project_id, profile_id="worker",
+                harness="fake", provider="fake", name="p-worker--" + suffix,
+                lifecycle="pool", work_dir="/tmp/" + suffix, epoch="test",
+                instance_token="token-" + suffix, started_at=now - 30,
+                last_activity=now - 5, state="running",
+            )
+        )
+
+    result = await pool_handler._cmd_pool_status({})
+    assert [row["profile_id"] for row in result["pools"]] == ["worker"]
+    row = result["pools"][0]
+    assert "project_id" not in row and "quarantined_until" not in row
+    # Two projects, two idle workers, one pool.
+    assert row["running_idle"] == 2
+    assert [p["project_id"] for p in row["projects"]] == ["other-project", PROJECT_ID]
+    assert {p["running_idle"] for p in row["projects"]} == {1}
+    assert {i["project_id"] for i in row["instances"]} == {PROJECT_ID, "other-project"}
+    assert row["min_per_project"] == 0
+
+
+async def test_pool_status_project_id_filters_the_view_not_the_pool(pool_handler):
+    """``--project-id`` narrows ``projects``/``instances``; bounds stay global."""
+    import time
+
+    from src.models import SessionRecord
+
+    await pool_handler.db.create_project(Project(id="other-project", name="other"))
+    now = time.time()
+    for suffix, project_id in (("a", PROJECT_ID), ("b", "other-project")):
+        await pool_handler.db.create_session(
+            SessionRecord(
+                id="pool-" + suffix, project_id=project_id, profile_id="worker",
+                harness="fake", provider="fake", name="p-worker--" + suffix,
+                lifecycle="pool", work_dir="/tmp/" + suffix, epoch="test",
+                instance_token="token-" + suffix, started_at=now - 30,
+                last_activity=now - 5, state="running",
+            )
+        )
+
+    filtered = (await pool_handler._cmd_pool_status({"project_id": PROJECT_ID}))["pools"][0]
+    assert [p["project_id"] for p in filtered["projects"]] == [PROJECT_ID]
+    assert [i["session_id"] for i in filtered["instances"]] == ["pool-a"]
+    # The pool itself did not shrink to one project: bounds and the supply
+    # totals are the fleet's, which is what the sizer acts on.
+    assert (filtered["min_active"], filtered["max_active"]) == (1, 2)
+    assert filtered["running_idle"] == 2
+
+
+async def test_pool_status_nests_quarantine_under_the_project_that_earned_it(pool_handler):
+    """A quarantine is per (project, profile) and never a property of a pool."""
+    await pool_handler.db.create_project(Project(id="other-project", name="other"))
+    pool_handler.orchestrator._quarantine_pool(
+        PROJECT_ID, "worker", "unknown harness 'fake'"
+    )
+
+    row = (await pool_handler._cmd_pool_status({}))["pools"][0]
+    by_project = {p["project_id"]: p for p in row["projects"]}
+    assert by_project[PROJECT_ID]["quarantined_until"] is not None
+    assert "unknown harness" in by_project[PROJECT_ID]["quarantined_reason"]
+    assert by_project["other-project"]["quarantined_until"] is None
+    assert by_project["other-project"]["quarantined_reason"] is None
+
+
+async def test_pool_status_reports_the_per_project_warm_floor(pool_handler):
+    """``min_per_project`` raises the effective floor and is reported as itself."""
+    await pool_handler.db.update_profile("worker", min_per_project=2, max_active=9)
+    await pool_handler.db.create_project(Project(id="other-project", name="other"))
+
+    row = (await pool_handler._cmd_pool_status({}))["pools"][0]
+    assert row["min_per_project"] == 2
+    # A reservation only counts for a project that could actually host the
+    # worker.  Neither project has a workspace here, so neither holds one
+    # open against the rest of the fleet and the global floor stands.
+    assert {p["workspace_capacity"] for p in row["projects"]} == {0}
+    assert row["min_active"] == 1
+
+
+async def test_list_profiles_surfaces_the_per_project_warm_floor(pool_handler):
+    """An operator sizing a fleet needs all three bounds in one place."""
+    await pool_handler.db.update_profile("worker", min_per_project=1)
+    listed = await pool_handler._cmd_list_profiles({})
+    worker = next(p for p in listed["profiles"] if p["id"] == "worker")
+    assert (worker["min_active"], worker["max_active"], worker["min_per_project"]) == (1, 2, 1)

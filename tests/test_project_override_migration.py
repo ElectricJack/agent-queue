@@ -25,6 +25,7 @@ from src.profiles.project_override_migration import (
     promote_project_profile_overrides,
     retire_project_scoped_profiles,
 )
+from tests.db_fixtures import lease_dsn
 
 SYSTEM_MD = """---
 id: worker
@@ -68,7 +69,7 @@ name: Worker (proj-a)
 
 @pytest.fixture
 async def db(tmp_path):
-    database = Database(str(tmp_path / "test.db"))
+    database = Database(lease_dsn("test.db"))
     await database.initialize()
     yield database
     await database.close()

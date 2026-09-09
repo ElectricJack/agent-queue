@@ -22,10 +22,14 @@ from src.database.queries.hierarchy_queries import (
 )
 from src.database.queries.session_queries import _row_to_session
 from src.database.queries.task_queries import (
-    ManualPauseActive, TransitionResult, _not_manually_paused, supports_returning,
+    ManualPauseActive,
+    TransitionResult,
+    _not_manually_paused,
+    supports_returning,
 )
 from src.database.tables import (
     agents,
+    integration_branch_owners,
     sessions,
     task_metadata,
     task_workspace_requirements,
@@ -63,6 +67,41 @@ CLAIM_PREPARATION_METADATA_KEYS = (
     PREPARE_BACKOFF_UNTIL_KEY,
     PREPARE_BACKOFF_ATTEMPTS_KEY,
 )
+
+#: Matches exactly what PostgreSQL's ``double precision`` input accepts here:
+#: an optional sign, digits, and an optional fractional part.  Deliberately
+#: narrower than ``float8`` (no exponents, no ``NaN``/``Infinity``) because
+#: every writer of a numeric metadata value writes a plain timestamp.
+_NUMERIC_TEXT = r"^-?[0-9]+(\.[0-9]+)?$"
+
+
+def numeric_meta_value(column, *, default: str = "0"):
+    """``column`` cast to ``Float``, with non-numeric text read as *default*.
+
+    ``task_metadata.value`` is free-form JSON text: ``json.dumps`` writes a
+    bare ``0`` for the number and ``"0"`` -- quotes included -- for the
+    string, and nothing in the schema stops a caller storing either.  A bare
+    ``cast(value, Float)`` therefore raises
+    ``invalid input syntax for type double precision`` on the *whole
+    statement* the moment one malformed row is scanned.
+
+    That is not a hypothetical.  On 2026-09-07 two rows holding ``"0"`` made
+    every ``select_ready_for_profile`` call in one project raise for ~18
+    hours: no pool worker could claim anything, and because the failure was
+    a database error rather than an empty result, the queue looked idle
+    rather than broken.
+
+    The ``CASE`` is what makes this safe rather than merely likely to work:
+    PostgreSQL does not guarantee evaluation order between a regex guard and
+    a cast sitting in the same ``AND``, so the guard has to be *inside* the
+    expression being cast.  A malformed row then reads as *default* -- for a
+    backoff deadline, "expired", which fails open to claimable rather than
+    silently withholding work.
+    """
+    return cast(
+        case((column.op("~")(_NUMERIC_TEXT), column), else_=literal(default)),
+        Float,
+    )
 
 
 class ClaimQueryMixin:
@@ -166,19 +205,29 @@ class ClaimQueryMixin:
         )
 
     async def select_ready_for_profile(
-        self, conn, *, project_id, profile_id, default_profile_id, agent_id, task_id=None,
-        enforce_routing=False, intelligence_class=None, llm_provider=None, options_hash=None,
+        self,
+        conn,
+        *,
+        project_id,
+        profile_id,
+        default_profile_id,
+        agent_id,
+        task_id=None,
+        enforce_routing=False,
+        intelligence_class=None,
+        llm_provider=None,
+        options_hash=None,
     ) -> str | None:
         """The §10 work query.  Postgres takes the row FOR UPDATE SKIP LOCKED."""
         profile_ok = tasks.c.profile_id == profile_id
-        if default_profile_id == profile_id:
+        if default_profile_id == profile_id and not enforce_routing:
             profile_ok = (tasks.c.profile_id == profile_id) | tasks.c.profile_id.is_(None)
         req = task_workspace_requirements.alias("req")
         prepare_backoff_active = exists(
             select(literal(1)).where(
                 task_metadata.c.task_id == tasks.c.id,
                 task_metadata.c.key == PREPARE_BACKOFF_UNTIL_KEY,
-                cast(task_metadata.c.value, Float) > time.time(),
+                numeric_meta_value(task_metadata.c.value) > time.time(),
             )
         )
         stmt = (
@@ -188,7 +237,10 @@ class ClaimQueryMixin:
                 profile_ok,
                 ~exists(
                     select(literal(1)).where(
-                        and_(req.c.task_id == tasks.c.id, req.c.kind_id != "project-repo")
+                        and_(
+                            req.c.task_id == tasks.c.id,
+                            req.c.kind_id.notin_(("project-repo", "vault")),
+                        )
                     )
                 ),
                 ~prepare_backoff_active,
@@ -211,8 +263,7 @@ class ClaimQueryMixin:
             )
         if task_id is not None:
             stmt = stmt.where(tasks.c.id == task_id)
-        if conn.dialect.name == "postgresql":
-            stmt = stmt.with_for_update(of=tasks, skip_locked=True)
+        stmt = stmt.with_for_update(of=tasks, skip_locked=True)
         row = (await conn.execute(stmt)).fetchone()
         return row[0] if row else None
 
@@ -249,7 +300,9 @@ class ClaimQueryMixin:
             .values(state=AgentState.BUSY.value, current_task_id=task_id)
         )
         if supports_returning(conn):
-            reserved = (await conn.execute(reserve.returning(agents.c.id))).scalar_one_or_none() is not None
+            reserved = (
+                await conn.execute(reserve.returning(agents.c.id))
+            ).scalar_one_or_none() is not None
         else:
             reserved = (await conn.execute(reserve)).rowcount == 1
         if not reserved:
@@ -335,10 +388,24 @@ class ClaimQueryMixin:
                     .where(agents.c.id == agent_id)
                     .values(state=AgentState.BUSY.value, current_task_id=task_id)
                 )
+            # Pool sessions keep the agent lock for their lifetime; claiming
+            # another task only changes the task hold within that same slot.
             stmt = (
                 update(workspaces)
-                .where(workspaces.c.locked_by_agent_id == agent_id)
-                .values(locked_by_task_id=task_id)
+                .where(
+                    workspaces.c.project_id
+                    == select(sessions.c.project_id)
+                    .where(sessions.c.id == session_id)
+                    .scalar_subquery(),
+                    workspaces.c.workspace_path == work_dir,
+                    workspaces.c.enabled.is_(True),
+                    workspaces.c.locked_by_agent_id == agent_id,
+                )
+                .values(
+                    locked_by_agent_id=agent_id,
+                    locked_by_task_id=task_id,
+                    locked_at=now,
+                )
             )
             if supports_returning(conn):
                 row = (await conn.execute(stmt.returning(*workspaces.c))).mappings().fetchone()
@@ -348,7 +415,14 @@ class ClaimQueryMixin:
                 row = (
                     (
                         await conn.execute(
-                            select(workspaces).where(workspaces.c.locked_by_agent_id == agent_id)
+                            select(workspaces).where(
+                                workspaces.c.project_id
+                                == select(sessions.c.project_id)
+                                .where(sessions.c.id == session_id)
+                                .scalar_subquery(),
+                                workspaces.c.workspace_path == work_dir,
+                                workspaces.c.locked_by_agent_id == agent_id,
+                            )
                         )
                     )
                     .mappings()
@@ -359,7 +433,10 @@ class ClaimQueryMixin:
             task_id, {"claimed_by_session": session_id, "work_dir": work_dir}, conn=conn
         )
         await self._start_task_session_attempt(
-            conn, session_id, started_at=now, work_dir=work_dir,
+            conn,
+            session_id,
+            started_at=now,
+            work_dir=work_dir,
         )
         return slot
 
@@ -377,17 +454,30 @@ class ClaimQueryMixin:
         async def _run(c):
             # Claims and release acquire the session before the task. Keep
             # activation in that order as well to avoid a PostgreSQL deadlock.
-            holder = (await c.execute(select(sessions.c.id).where(
-                sessions.c.id == session_id,
-            ).with_for_update())).scalar_one_or_none()
+            holder = (
+                await c.execute(
+                    select(sessions.c.id)
+                    .where(
+                        sessions.c.id == session_id,
+                    )
+                    .with_for_update()
+                )
+            ).scalar_one_or_none()
             if holder is None:
                 return None
             # Share the task row lock with pause. An EXISTS predicate alone
             # can observe a pre-pause PostgreSQL statement snapshot.
-            claim = (await c.execute(select(tasks.c.id).where(
-                tasks.c.id == task_id, tasks.c.status == TaskStatus.IN_PROGRESS.value,
-                tasks.c.claim_epoch == epoch,
-            ).with_for_update())).scalar_one_or_none()
+            claim = (
+                await c.execute(
+                    select(tasks.c.id)
+                    .where(
+                        tasks.c.id == task_id,
+                        tasks.c.status == TaskStatus.IN_PROGRESS.value,
+                        tasks.c.claim_epoch == epoch,
+                    )
+                    .with_for_update()
+                )
+            ).scalar_one_or_none()
             if claim is None:
                 return None
             stmt = (
@@ -451,11 +541,17 @@ class ClaimQueryMixin:
         prepare_backoff=False,
         expected_task_id=None,
         expected_claim_epoch=None,
+        expected_task_status=None,
         drain_after_release=False,
+        release_workspace_lock=False,
         end_reason=None,
     ) -> TransitionResult:
         row = (
-            (await conn.execute(select(sessions).where(sessions.c.id == session_id).with_for_update()))
+            (
+                await conn.execute(
+                    select(sessions).where(sessions.c.id == session_id).with_for_update()
+                )
+            )
             .mappings()
             .fetchone()
         )
@@ -474,6 +570,32 @@ class ClaimQueryMixin:
             and row["last_claim_epoch"] != expected_claim_epoch
         ):
             return out
+        # An attached integration owner is durable evidence that this exact
+        # session is still responsible for its workspace.  Do not clear the
+        # claim or either workspace binding until its handoff completes: a
+        # pool reconciler can otherwise destroy the evidence a repair or
+        # integration close needs.  Lock the owner row in this transaction so
+        # the decision composes with ownership handoff on Postgres too.
+        if agent_id:
+            protected_owner = (
+                await conn.execute(
+                    select(integration_branch_owners.c.id)
+                    .join(
+                        workspaces,
+                        integration_branch_owners.c.workspace_id == workspaces.c.id,
+                    )
+                    .where(
+                        integration_branch_owners.c.session_id == session_id,
+                        integration_branch_owners.c.handoff_state.in_(
+                            ("attached", "handoff_pending")
+                        ),
+                        workspaces.c.locked_by_agent_id == agent_id,
+                    )
+                    .with_for_update()
+                )
+            ).first()
+            if protected_owner is not None:
+                return out
         epoch = None
         if task_id:
             # ``projection_stable``: IN_PROGRESS -> READY cannot move any
@@ -487,6 +609,10 @@ class ClaimQueryMixin:
                 assigned_agent_id=None,
                 projection_stable=True,
                 returning=True,
+                # Releasing the worker's ownership must not resume or alter
+                # an explicit manual pause.  It only clears its stale agent
+                # assignment after a task moved out from under the claim.
+                _manual_pause_control=task_status is TaskStatus.PAUSED,
             )
             if task_status == TaskStatus.READY:
                 # An active claim can only release the IN_PROGRESS,
@@ -500,12 +626,20 @@ class ClaimQueryMixin:
                         tasks.c.is_blocked == 0,
                     ),
                 )
+            elif expected_task_status is not None:
+                # The reconciler observed a non-live task before entering
+                # this transaction.  Do not replay that old state over a
+                # concurrent resume: the guarded write is also the proof
+                # that this session may release its claim and workspace.
+                transition["extra_where"] = tasks.c.status == expected_task_status.value
             out = await self._apply_transition(
                 conn,
                 task_id,
                 task_status,
                 **transition,
             )
+            if expected_task_status is not None and out.row is None:
+                return out
             epoch = (out.row or {}).get("claim_epoch")
             if needs_attention:
                 await self._upsert_meta(task_id, "needs_attention", needs_attention, conn=conn)
@@ -537,19 +671,25 @@ class ClaimQueryMixin:
                 )
         if task_id:
             await self.finish_task_session_attempt(
-                session_id, task_id=task_id, ended_at=now,
-                end_reason=end_reason or needs_attention or context, conn=conn,
+                session_id,
+                task_id=task_id,
+                ended_at=now,
+                end_reason=end_reason or needs_attention or context,
+                conn=conn,
             )
         if agent_id:
             # Clear the task lock unconditionally — even a session that held no
             # task (e.g. released mid-``claiming``) must not leave a stale
-            # ``locked_by_task_id`` on its agent's workspace.  The agent lock
-            # itself (``locked_by_agent_id``) is retained; only
-            # ``terminate_pool_session`` releases it.
+            # ``locked_by_task_id`` on its agent's workspace.  A task that
+            # became non-live underneath an active worker must also release
+            # the agent lock, so the slot can serve the next claim.
             await conn.execute(
                 update(workspaces)
                 .where(workspaces.c.locked_by_agent_id == agent_id)
-                .values(locked_by_task_id=None)
+                .values(
+                    locked_by_agent_id=None if release_workspace_lock else workspaces.c.locked_by_agent_id,
+                    locked_by_task_id=None,
+                )
             )
             await conn.execute(
                 update(agents)
@@ -566,9 +706,7 @@ class ClaimQueryMixin:
         if drain_after_release:
             session_values["desired_state"] = "stopped"
         await conn.execute(
-            update(sessions)
-            .where(sessions.c.id == session_id)
-            .values(**session_values)
+            update(sessions).where(sessions.c.id == session_id).values(**session_values)
         )
         out.released = True
         return out
@@ -589,7 +727,9 @@ class ClaimQueryMixin:
         needs_attention=None,
         expected_task_id=None,
         expected_claim_epoch=None,
+        expected_task_status=None,
         drain_after_release=False,
+        release_workspace_lock=False,
         prepare_backoff=False,
         conn=None,
     ) -> TransitionResult:
@@ -601,7 +741,9 @@ class ClaimQueryMixin:
             needs_attention=needs_attention,
             expected_task_id=expected_task_id,
             expected_claim_epoch=expected_claim_epoch,
+            expected_task_status=expected_task_status,
             drain_after_release=drain_after_release,
+            release_workspace_lock=release_workspace_lock,
             prepare_backoff=prepare_backoff,
         )
         if conn is not None:
@@ -625,6 +767,8 @@ class ClaimQueryMixin:
                 result="released",
                 needs_attention=None,
             )
+            if not out.released:
+                return out
             row = (
                 await c.execute(select(sessions.c.agent_id).where(sessions.c.id == session_id))
             ).fetchone()
@@ -665,25 +809,16 @@ class ClaimQueryMixin:
         ids = sorted(set(task_ids))
         if not ids:
             return {}
-        if conn.dialect.name == "postgresql":
-            project_id = await conn.scalar(
-                select(tasks.c.project_id).where(tasks.c.id == anchor_id)
-            )
-            if project_id is None:
-                return {}
-            await self.lock_hierarchy_project(conn, project_id)
-            stmt = (
-                select(tasks.c.id, tasks.c.parent_task_id)
-                .where(tasks.c.id.in_(ids))
-                .order_by(tasks.c.id)
-                .with_for_update()
-            )
-        else:
-            stmt = (
-                select(tasks.c.id, tasks.c.parent_task_id)
-                .where(tasks.c.id.in_(ids))
-                .order_by(tasks.c.id)
-            )
+        project_id = await conn.scalar(select(tasks.c.project_id).where(tasks.c.id == anchor_id))
+        if project_id is None:
+            return {}
+        await self.lock_hierarchy_project(conn, project_id)
+        stmt = (
+            select(tasks.c.id, tasks.c.parent_task_id)
+            .where(tasks.c.id.in_(ids))
+            .order_by(tasks.c.id)
+            .with_for_update()
+        )
         rows = (await conn.execute(stmt)).fetchall()
         return {r.id: r.parent_task_id for r in rows if r.id in ids}
 

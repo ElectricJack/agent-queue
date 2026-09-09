@@ -1,12 +1,17 @@
-"""size_pools — spec §11.1 desired-state sizing.  Pure function, no I/O."""
+"""size_pools — desired-state sizing over the global (profile-only) pool key.
+
+Pure function, no I/O.  Everything here is fleet-wide: a profile is one
+pool no matter how many projects run it, and the only ceiling above
+``max_active`` is the box-wide ``global_cap``.  Which project a start lands
+in is ``place_pool_actions``' problem — see ``tests/test_pool_placement.py``.
+"""
 
 from __future__ import annotations
 
-from src.scheduler import PoolKey, PoolSupply, size_pools
+from src.scheduler import PoolKey, PoolProjectSupply, PoolSupply, size_pools
 
-K = PoolKey("proj", "worker")
-K2 = PoolKey("proj", "reviewer")
-KB = PoolKey("other", "worker")
+K = PoolKey("worker")
+K2 = PoolKey("reviewer")
 
 
 def run(**over):
@@ -14,7 +19,6 @@ def run(**over):
         supply={},
         demand={},
         bounds={},
-        project_caps={},
         global_cap=None,
         surplus_since={},
         now=1000.0,
@@ -79,25 +83,12 @@ def test_draining_sessions_excluded_from_current_so_idle_alone_drains():
     assert [(a.kind, a.count, a.session_ids) for a in actions] == [("drain", 2, ("a", "b"))]
 
 
-def test_project_cap_is_fair_shared_across_pools():
-    sup = {K: PoolSupply(), K2: PoolSupply()}
-    actions, _ = run(
-        supply=sup,
-        demand={K: 4, K2: 4},
-        bounds={K: (0, 4), K2: (0, 4)},
-        project_caps={"proj": 2},
-        max_starts_per_tick=10,
-    )
-    starts = {a.key: a.count for a in actions if a.kind == "start"}
-    assert starts == {K: 1, K2: 1}
-
-
 def test_global_cap_counts_running_sessions():
-    sup = {K: PoolSupply(running_busy=2), KB: PoolSupply()}
+    sup = {K: PoolSupply(running_busy=2), K2: PoolSupply()}
     actions, _ = run(
         supply=sup,
-        demand={K: 3, KB: 3},
-        bounds={K: (0, 5), KB: (0, 5)},
+        demand={K: 3, K2: 3},
+        bounds={K: (0, 5), K2: (0, 5)},
         global_cap=3,
         max_starts_per_tick=10,
     )
@@ -118,31 +109,30 @@ def test_drains_bounded_per_tick():
     assert [(a.kind, a.count) for a in actions] == [("drain", 3)]
 
 
-def test_starting_sessions_count_against_project_and_global_caps():
-    supply = {K: PoolSupply(starting=1), K2: PoolSupply(), KB: PoolSupply(starting=1)}
+def test_starting_sessions_count_against_the_global_cap():
+    supply = {K: PoolSupply(starting=1), K2: PoolSupply(starting=1)}
     actions, _ = run(
         supply=supply,
-        demand={K: 3, K2: 3, KB: 3},
-        bounds={K: (0, 4), K2: (0, 4), KB: (0, 4)},
-        project_caps={"proj": 2, "other": 2},
+        demand={K: 3, K2: 3},
+        bounds={K: (0, 4), K2: (0, 4)},
         global_cap=3,
+        max_starts_per_tick=10,
+    )
+    assert sum(action.count for action in actions) == 1
+
+
+def test_global_cap_is_fair_shared_round_robin_across_profiles():
+    """A saturated fleet spreads its remaining headroom instead of draining it
+    into whichever profile sorts first."""
+    actions, _ = run(
+        supply={K: PoolSupply(), K2: PoolSupply()},
+        demand={K: 5, K2: 5},
+        bounds={K: (0, 5), K2: (0, 5)},
+        global_cap=2,
         max_starts_per_tick=10,
     )
     starts = {action.key: action.count for action in actions}
-    assert sum(starts.values()) == 1
-    assert starts.get(K, 0) + starts.get(K2, 0) <= 1
-
-
-def test_round_robin_skips_project_capped_pool_and_gives_remaining_global_headroom():
-    actions, _ = run(
-        supply={K: PoolSupply(running_busy=1), KB: PoolSupply()},
-        demand={K: 5, KB: 5},
-        bounds={K: (0, 5), KB: (0, 5)},
-        project_caps={"proj": 1},
-        global_cap=3,
-        max_starts_per_tick=10,
-    )
-    assert [(action.key, action.count) for action in actions] == [(KB, 2)]
+    assert starts == {K: 1, K2: 1}
 
 
 def test_surplus_timer_survives_partial_drain_then_resets_on_demand():
@@ -179,3 +169,118 @@ def test_scale_down_never_selects_busy_or_starting_session_ids():
         max_drains_per_tick=5,
     )
     assert actions[0].session_ids == ("old", "mid", "new")
+
+
+# ---------------------------------------------------------------------------
+# Global keying — the behaviour this rewrite exists for.
+# ---------------------------------------------------------------------------
+
+
+def aggregated(*locals_):
+    """A ``PoolSupply`` folded from per-project breakdowns, as ``_measure_pools`` builds it."""
+    sup = PoolSupply()
+    for project_id, local in locals_:
+        sup.running_idle += local.running_idle
+        sup.running_busy += local.running_busy
+        sup.starting += local.starting
+        sup.draining += local.draining
+        sup.idle_session_ids.extend(local.idle_session_ids)
+        sup.by_project[project_id] = local
+    return sup
+
+
+def test_demand_and_supply_aggregate_across_projects_into_one_pool():
+    """Three projects with one ready task each is a fleet of three, not three
+    fleets of three: the pre-change key minted one pool per project and gave
+    every one of them the profile's full bounds."""
+    supply = {
+        K: aggregated(
+            ("a", PoolProjectSupply(running_busy=1)),
+            ("b", PoolProjectSupply()),
+            ("c", PoolProjectSupply()),
+        )
+    }
+    actions, _ = run(
+        supply=supply,
+        demand={K: 3},  # one ready task in each of the three projects
+        bounds={K: (0, 3)},
+        max_starts_per_tick=10,
+    )
+    # want = busy(1) + ready(3) = 4, clamped to max_active 3, minus the one
+    # session already live.
+    assert [(a.key, a.kind, a.count) for a in actions] == [(K, "start", 2)]
+
+
+def test_max_active_is_a_fleet_ceiling_not_a_per_project_one():
+    supply = {
+        K: aggregated(
+            ("a", PoolProjectSupply(running_idle=1)),
+            ("b", PoolProjectSupply(running_idle=1)),
+        )
+    }
+    actions, _ = run(supply=supply, demand={K: 9}, bounds={K: (0, 2)}, max_starts_per_tick=10)
+    assert actions == []  # already at max_active fleet-wide
+
+
+def test_min_active_is_a_fleet_floor_funded_once():
+    """``min_active: 2`` parks two workers somewhere, not two per project."""
+    supply = {K: aggregated(("a", PoolProjectSupply(running_idle=1)), ("b", PoolProjectSupply()))}
+    actions, _ = run(supply=supply, demand={K: 0}, bounds={K: (2, 5)}, max_starts_per_tick=10)
+    assert [(a.kind, a.count) for a in actions] == [("start", 1)]
+
+
+def test_effective_floor_raised_by_per_project_reservations():
+    """``_measure_pools`` folds ``Σ min_per_project`` into the floor it hands the
+    sizer, so a reservation the global ``min_active`` cannot fund raises the
+    fleet rather than being silently ignored."""
+    actions, _ = run(
+        supply={K: PoolSupply()},
+        demand={K: 0},
+        bounds={K: (3, 8)},  # min_active 1, three eligible projects reserving 1 each
+        max_starts_per_tick=10,
+    )
+    assert [(a.kind, a.count) for a in actions] == [("start", 3)]
+
+
+def test_effective_floor_is_still_clamped_by_max_active():
+    """A floor that exceeds ``max_active`` is a contradictory configuration; the
+    ceiling wins (doctor names it, sizing does not invent a new failure mode)."""
+    actions, _ = run(
+        supply={K: PoolSupply()},
+        demand={K: 0},
+        bounds={K: (5, 2)},
+        max_starts_per_tick=10,
+    )
+    assert [(a.kind, a.count) for a in actions] == [("start", 2)]
+
+
+def test_global_max_active_binds_below_the_sum_of_pool_ceilings():
+    """``swarm.global_max_active`` is the box-wide bound that did not exist while
+    ``global_cap=None`` was hardcoded at the call site."""
+    actions, _ = run(
+        supply={K: PoolSupply(running_idle=2), K2: PoolSupply(running_idle=2)},
+        demand={K: 10, K2: 10},
+        bounds={K: (0, 8), K2: (0, 8)},
+        global_cap=4,
+        max_starts_per_tick=10,
+    )
+    assert actions == []
+
+
+def test_drain_session_ids_are_the_fleet_wide_idle_set():
+    """The sizer names candidates fleet-wide; placement re-selects which of them
+    actually stop, per project."""
+    supply = {
+        K: aggregated(
+            ("a", PoolProjectSupply(running_idle=1, idle_session_ids=["a1"])),
+            ("b", PoolProjectSupply(running_idle=1, idle_session_ids=["b1"])),
+        )
+    }
+    actions, _ = run(
+        supply=supply,
+        demand={K: 0},
+        bounds={K: (0, 4)},
+        surplus_since={K: 0.0},
+        now=500.0,
+    )
+    assert [(a.kind, a.count, a.session_ids) for a in actions] == [("drain", 2, ("a1", "b1"))]

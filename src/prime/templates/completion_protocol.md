@@ -19,6 +19,22 @@ correct it.
 
 An explicit close is what lets the scheduler promote the next task. If you're blocked on a human decision, report it with aq message send --to user:dashboard --project "$AQ_PROJECT_ID" --body "Blocked: <question>" instead of stopping silently. The canonical human-operator recipient is `user:dashboard`.
 
+## Prepare feature history before review
+
+Before the first passing close submits a leaf feature for review, squash its
+implementation commits on its own task branch into one commit based on its
+recorded source base. Preserve the final tree, author attribution, and test
+results. Push that final SHA, then close; review must bind the pushed SHA.
+If the branch was already pushed, use an explicit expected-SHA
+`--force-with-lease=<ref>:<observed-remote-sha>` only on your own task branch.
+Do not rewrite a branch held by another worker or rewrite reviewed/delivered
+history. Fixes after review require a fresh review of their final SHA.
+
+Do not squash a parent/integration branch or erase child merge ancestry.
+AQ merges reviewed feature tips with merge commits into parent/integration
+branches, tests the complete candidate, and fast-forwards main to that exact
+candidate. Already-reviewed branches retain their existing commits.
+
 ## Never close over unpushed commits
 
 A close that is not a pass does not run the completion pipeline, so nothing

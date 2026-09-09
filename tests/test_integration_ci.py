@@ -13,6 +13,7 @@ from src.database.tables import (
     integration_check_evidence,
     integration_parent_episodes,
     integration_repair_operations,
+    integration_repair_stages,
     task_integration_checkpoints,
 )
 
@@ -34,6 +35,7 @@ from src.integration.ci import (
     select_trusted_attestation,
 )
 from src.models import Project, RepoConfig, RepoSourceType, Task, TaskStatus
+from tests.db_fixtures import lease_dsn
 
 
 SHA = "a" * 40
@@ -703,7 +705,7 @@ async def test_publish_rejects_loose_numeric_app_identity(malformed_app_id):
 
 @pytest.fixture
 async def ci_db(tmp_path):
-    database = Database(str(tmp_path / "ci.db"))
+    database = Database(lease_dsn("ci.db"))
     await database.initialize()
     await database.create_project(Project(id="p", name="project"))
     await database.create_repo(
@@ -1051,13 +1053,17 @@ async def test_parent_declared_check_transport_absence_requests_safe_full_suite(
 
 
 @pytest.mark.asyncio
-async def test_ci_service_binds_root_evidence_to_exact_batch_revision_and_candidate(ci_db):
+@pytest.mark.parametrize("initial_lifecycle", ["testing", "repairing"])
+async def test_ci_service_binds_root_evidence_to_exact_batch_revision_and_candidate(
+    ci_db, initial_lifecycle
+):
     async with ci_db.immediate() as conn:
         await conn.execute(
             insert(integration_batches).values(
                 id="batch", project_id="p", repository_id="repo-config-1", request_id="request",
                 source_manifest_digest="sha256:" + "d" * 64, base_sha="0" * 40,
-                lifecycle="testing", current_revision=4, integration_branch="integration/batch",
+                lifecycle=initial_lifecycle, current_revision=4,
+                integration_branch="integration/batch",
                 policy_snapshot=policy_snapshot(), artifact_snapshot={}, cleanup_state="pending",
                 created_at=1.0, updated_at=1.0,
             )
@@ -1081,6 +1087,13 @@ async def test_ci_service_binds_root_evidence_to_exact_batch_revision_and_candid
                 required_check_version="checks-v1", created_at=1.0, updated_at=1.0,
             )
         )
+    async with ci_db.immediate() as conn:
+        await conn.execute(insert(integration_repair_stages).values(
+            operation_id="root-op", ordinal=0, state="active", policy={},
+            intelligence_class="standard-medium", starting_sha="0" * 40,
+            current_subject={"kind": "batch", "revision": 4, "candidate_sha": SHA},
+            deadline_at=10.0,
+        ))
     observation = TrustedCIObservation(
         payload=AttestationPayload.model_validate(payload_dict()), workflow_ids={21: 301, 22: 302}
     )
@@ -1091,6 +1104,19 @@ async def test_ci_service_binds_root_evidence_to_exact_batch_revision_and_candid
             operation_id="root-op", batch_id="batch", revision=4, candidate_sha=SHA
         )
     )
+    if initial_lifecycle == "repairing":
+        async with ci_db.immediate() as conn:
+            await conn.execute(
+                update(integration_batches)
+                .where(integration_batches.c.id == "batch")
+                .values(lifecycle="repairing")
+            )
+        replay = await service.observe_candidate(
+            CandidateCISubject(
+                operation_id="root-op", batch_id="batch", revision=4, candidate_sha=SHA
+            )
+        )
+        assert replay["outcome"] == "green"
     stale = await service.observe_candidate(
         CandidateCISubject(
             operation_id="root-op", batch_id="batch", revision=3, candidate_sha=SHA
@@ -1113,10 +1139,16 @@ async def test_ci_service_binds_root_evidence_to_exact_batch_revision_and_candid
         batch = (
             await conn.execute(select(integration_batches).where(integration_batches.c.id == "batch"))
         ).mappings().one()
+    from src.integration.repair import RepairService
+
+    expired = await RepairService(ci_db).expire("root-op", 0, now=100.0)
+    assert expired["outcome"] == "not_due"
+    assert expired["action"] == "awaiting_promotion"
     assert candidate["state"] == "green"
     assert candidate["ci_evidence_id"] == result["aggregate_evidence_id"]
     assert batch["ci_evidence_id"] == result["aggregate_evidence_id"]
     assert batch["tested_candidate_sha"] == SHA
+    assert batch["lifecycle"] == "testing"
     assert all(
         row["operation_id"] == "root-op"
         and row["batch_id"] == "batch"

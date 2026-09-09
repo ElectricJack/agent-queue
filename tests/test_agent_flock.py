@@ -14,11 +14,12 @@ from src.models import Agent, AgentProfile, Project
 from src.sessions.harness_parser import Harness
 from src.sessions.harness_registry import HarnessRegistry
 from src.sessions.spec import SessionSpecBuilder
+from tests.db_fixtures import lease_dsn
 
 
 @pytest.fixture
 async def handler(tmp_path):
-    db = Database(str(tmp_path / "flock.db"))
+    db = Database(lease_dsn("flock.db"))
     await db.initialize()
     config = AppConfig(
         discord=DiscordConfig(bot_token="test", guild_id="1"),

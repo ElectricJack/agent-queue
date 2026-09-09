@@ -26,6 +26,7 @@ from src.task_graph import (
 )
 from src.task_graph.creator import build_plan, write_plan
 from src.task_graph.models import TaskGraph
+from tests.db_fixtures import lease_dsn
 
 FIXTURES = Path(__file__).parent / "fixtures" / "task_graphs"
 GOLDEN = FIXTURES / "golden"
@@ -671,7 +672,7 @@ async def db(tmp_path):
     from src.database import Database
     from src.models import AgentProfile, Project
 
-    database = Database(str(tmp_path / "graph.db"))
+    database = Database(lease_dsn("graph.db"))
     await database.initialize()
     await database.create_project(Project(id="p1", name="p1"))
     # tasks.profile_id is a real FK — a graph referencing a profile that

@@ -11,6 +11,7 @@ placeholder names.
 
 from __future__ import annotations
 
+import json
 import sys
 import time
 
@@ -29,6 +30,7 @@ from src.models import (
     TaskStatus,
     Workspace,
 )
+from tests.db_fixtures import lease_dsn
 
 # ``src/doctor/__init__.py`` does ``from src.doctor.pool_checks import
 # pool_checks`` (the factory function) to build ``default_registry()`` --
@@ -49,7 +51,7 @@ PROJECT_ID = "proj"
 async def db(tmp_path):
     from src.database import Database
 
-    database = Database(str(tmp_path / "test.db"))
+    database = Database(lease_dsn("test.db"))
     await database.initialize()
     await database.create_project(Project(id=PROJECT_ID, name="p"))
     await database.create_profile(AgentProfile(id="worker", name="w", lifecycle="pool"))
@@ -67,6 +69,9 @@ def test_check_names():
         "pools.preparing_stuck",
         "pools.disabled",
         "claims.holder_consistency",
+        "pools.global_bounds_migration",
+        "pools.floor_exceeds_max",
+        "pools.placement_starved",
     }
     assert all(c.owner == "swarm-work-model" for c in pool_checks.CHECKS)
 
@@ -434,3 +439,239 @@ async def test_pools_disabled_ok_when_flag_on(db):
     cfg.swarm.enabled = True
     finding = await pool_checks.run_check(db, "pools.disabled", config=cfg)
     assert finding.severity is Severity.OK
+
+
+# ---------------------------------------------------------------------------
+# pools.global_bounds_migration
+# ---------------------------------------------------------------------------
+
+
+async def _rescoped(db, profile_id, *, eligible, max_active):
+    """Write the audit row ``_announce_bounds_rescoped`` writes at upgrade."""
+    await db.log_event(
+        "pool.bounds_rescoped",
+        payload=json.dumps(
+            {
+                "profile_id": profile_id,
+                "eligible_projects": eligible,
+                "effective_max_active": max_active,
+                "effective_min_active": 0,
+                "previous_effective_max_active": (
+                    None if max_active is None else max_active * eligible
+                ),
+                "previous_effective_min_active": 0,
+            },
+            sort_keys=True,
+        ),
+    )
+
+
+async def test_bounds_migration_reports_the_lost_ceiling(db):
+    await db.update_profile("worker", max_active=4)
+    await _rescoped(db, "worker", eligible=5, max_active=4)
+    finding = await pool_checks.run_check(db, "pools.global_bounds_migration")
+    assert finding.severity is Severity.INFO
+    assert finding.data["count"] == 1
+    entry = finding.data["profiles"][0]
+    assert entry["previous_effective_max_active"] == 20
+    assert entry["effective_max_active"] == 4
+    assert entry["suggested_max_active"] == 20
+    assert entry["command"] == "aq pool scale --profile-id worker --max 20"
+
+
+async def test_bounds_migration_self_resolves_once_max_active_changes(db):
+    """Re-scaling the pool *is* the acknowledgement — whichever way it went."""
+    await db.update_profile("worker", max_active=4)
+    await _rescoped(db, "worker", eligible=5, max_active=4)
+    await db.update_profile("worker", max_active=6)
+    finding = await pool_checks.run_check(db, "pools.global_bounds_migration")
+    assert finding.severity is Severity.OK
+    assert finding.data["count"] == 0
+
+
+async def test_bounds_migration_reads_the_oldest_record_not_the_newest(db):
+    """A restart re-announces; the notice must not reset with it.
+
+    ``_announce_bounds_rescoped`` runs once per daemon lifetime, so a box that
+    reboots after the operator has re-scaled writes a *second* row carrying
+    the new ceiling.  Reading the newest row would compare the new ceiling
+    against itself and start nagging again forever.
+    """
+    await db.update_profile("worker", max_active=4)
+    await _rescoped(db, "worker", eligible=5, max_active=4)
+    await db.update_profile("worker", max_active=20)
+    await _rescoped(db, "worker", eligible=5, max_active=20)
+    finding = await pool_checks.run_check(db, "pools.global_bounds_migration")
+    assert finding.severity is Severity.OK
+
+
+async def test_bounds_migration_silent_for_a_single_project_install(db):
+    """One eligible project: per-project and fleet-wide bounds meant the same."""
+    await db.update_profile("worker", max_active=4)
+    await _rescoped(db, "worker", eligible=1, max_active=4)
+    finding = await pool_checks.run_check(db, "pools.global_bounds_migration")
+    assert finding.severity is Severity.OK
+
+
+async def test_bounds_migration_silent_without_an_upgrade_record(db):
+    """No reconcile tick has ever run — there is nothing to say."""
+    await db.update_profile("worker", max_active=4)
+    finding = await pool_checks.run_check(db, "pools.global_bounds_migration")
+    assert finding.severity is Severity.OK
+
+
+async def test_bounds_migration_ignores_an_unbounded_pool(db):
+    await _rescoped(db, "worker", eligible=5, max_active=None)
+    finding = await pool_checks.run_check(db, "pools.global_bounds_migration")
+    assert finding.severity is Severity.OK
+
+
+async def test_bounds_migration_survives_a_junk_payload(db):
+    """Doctor reporting nothing beats doctor raising on a hand-written row."""
+    await db.log_event("pool.bounds_rescoped", payload="not json")
+    finding = await pool_checks.run_check(db, "pools.global_bounds_migration")
+    assert finding.severity is Severity.OK
+
+
+def test_bounds_migration_has_no_fix():
+    """§4: choosing a fleet size is an operator decision, explicitly."""
+    check = next(c for c in pool_checks.CHECKS if c.id == "pools.global_bounds_migration")
+    assert check.fix is None
+
+
+# ---------------------------------------------------------------------------
+# pools.floor_exceeds_max
+# ---------------------------------------------------------------------------
+
+
+async def test_floor_exceeds_max_names_the_numbers_and_the_projects(db):
+    await db.create_project(Project(id="second", name="second"))
+    await db.create_project(Project(id="third", name="third"))
+    await db.update_profile("worker", min_active=1, max_active=2, min_per_project=1)
+    finding = await pool_checks.run_check(db, "pools.floor_exceeds_max")
+    assert finding.severity is Severity.WARN
+    assert finding.data["count"] == 1
+    entry = finding.data["profiles"][0]
+    assert entry["effective_min_active"] == 3
+    assert entry["max_active"] == 2
+    assert entry["projects"] == ["proj", "second", "third"]
+    assert "worker" in finding.detail and "min_per_project 1" in finding.detail
+
+
+async def test_floor_exceeds_max_ok_when_the_ceiling_funds_it(db):
+    await db.create_project(Project(id="second", name="second"))
+    await db.update_profile("worker", min_active=1, max_active=4, min_per_project=1)
+    finding = await pool_checks.run_check(db, "pools.floor_exceeds_max")
+    assert finding.severity is Severity.OK
+
+
+async def test_floor_exceeds_max_counts_only_active_projects(db):
+    """Eligibility matches ``_measure_pools``: ACTIVE projects, nothing else."""
+    from src.models import ProjectStatus
+
+    await db.create_project(Project(id="second", name="second"))
+    await db.create_project(Project(id="paused", name="paused"))
+    await db.update_project("paused", status=ProjectStatus.PAUSED)
+    await db.update_profile("worker", max_active=2, min_per_project=1)
+    finding = await pool_checks.run_check(db, "pools.floor_exceeds_max")
+    assert finding.severity is Severity.OK
+
+
+async def test_floor_exceeds_max_catches_a_bare_min_active(db):
+    """``min_per_project`` is not required — ``min_active`` alone can overshoot."""
+    await db.update_profile("worker", min_active=5, max_active=2)
+    finding = await pool_checks.run_check(db, "pools.floor_exceeds_max")
+    assert finding.severity is Severity.WARN
+    assert finding.data["profiles"][0]["effective_min_active"] == 5
+
+
+async def test_floor_exceeds_max_ignores_an_unbounded_pool(db):
+    await db.update_profile("worker", min_active=9, max_active=None, min_per_project=3)
+    finding = await pool_checks.run_check(db, "pools.floor_exceeds_max")
+    assert finding.severity is Severity.OK
+
+
+def test_floor_exceeds_max_has_no_fix():
+    check = next(c for c in pool_checks.CHECKS if c.id == "pools.floor_exceeds_max")
+    assert check.fix is None
+
+
+# ---------------------------------------------------------------------------
+# pools.placement_starved
+# ---------------------------------------------------------------------------
+
+
+class _FakeHandler:
+    """The one thing the check reaches for: ``handler.orchestrator``."""
+
+    def __init__(self, orchestrator):
+        self.orchestrator = orchestrator
+
+
+class _FakeOrchestrator:
+    def __init__(self, state, observing_since):
+        self._pool_starvation_state = state
+        self._pool_starvation_observing_since = observing_since
+
+
+def _starving(db, state, observing_since):
+    return pool_checks.run_check(
+        db,
+        "pools.placement_starved",
+        handler=_FakeHandler(_FakeOrchestrator(state, observing_since)),
+    )
+
+
+async def test_placement_starved_warns_past_five_minutes_with_reasons(db):
+    now = time.time()
+    state = {
+        "worker": {
+            "since": now - 900,
+            "wanted": 2,
+            "reasons": {"proj": "no_workspace", "second": "quarantined"},
+        }
+    }
+    finding = await _starving(db, state, now - 3600)
+    assert finding.severity is Severity.WARN
+    assert finding.data["count"] == 1
+    entry = finding.data["profiles"][0]
+    assert entry["wanted"] == 2
+    assert entry["reasons"] == {"proj": "no_workspace", "second": "quarantined"}
+    assert "proj: no_workspace" in finding.detail
+    assert "second: quarantined" in finding.detail
+
+
+async def test_placement_starved_ok_below_the_threshold(db):
+    now = time.time()
+    state = {"worker": {"since": now - 30, "wanted": 1, "reasons": {"proj": "at_cap"}}}
+    finding = await _starving(db, state, now - 3600)
+    assert finding.severity is Severity.OK
+    assert finding.data["count"] == 0
+    assert finding.data["recent"][0]["profile_id"] == "worker"
+
+
+async def test_placement_starved_ok_when_nothing_is_starved(db):
+    finding = await _starving(db, {}, time.time() - 3600)
+    assert finding.severity is Severity.OK
+    assert finding.data["count"] == 0
+
+
+async def test_placement_starved_says_so_when_the_daemon_is_young(db):
+    """Honest about not knowing: a young daemon cannot see a five-minute history."""
+    now = time.time()
+    state = {"worker": {"since": now - 320, "wanted": 1, "reasons": {"proj": "at_cap"}}}
+    finding = await _starving(db, state, now - 330)
+    assert finding.severity is Severity.WARN
+    assert "only been observing placement" in finding.detail
+
+
+async def test_placement_starved_info_without_a_reachable_orchestrator(db):
+    """INFO, never OK: doctor must not report health it cannot observe."""
+    finding = await pool_checks.run_check(db, "pools.placement_starved")
+    assert finding.severity is Severity.INFO
+    assert "not visible from here" in finding.detail
+
+
+def test_placement_starved_has_no_fix():
+    check = next(c for c in pool_checks.CHECKS if c.id == "pools.placement_starved")
+    assert check.fix is None

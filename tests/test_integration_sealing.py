@@ -8,7 +8,7 @@ import subprocess
 from unittest.mock import AsyncMock
 
 import pytest
-from sqlalchemy import delete, insert, select, text, update
+from sqlalchemy import delete, insert, select, update
 from sqlalchemy.exc import DBAPIError, IntegrityError
 
 from src.commands.principal import ExecutionPrincipal, PrincipalKind, principal_context
@@ -46,8 +46,9 @@ from src.integration.models import (
 )
 from src.models import Project, RepoConfig, RepoSourceType, TaskStatus
 from src.profiles.capabilities import CapabilityPolicy
+from tests.db_fixtures import lease_dsn
 from tests.pg_dsn import ensure_worker_postgres_dsn
-
+from tests.pg_trigger_helpers import injected_trigger
 
 BASE_SHA = "a" * 40
 POSTGRES_TEST_DSN = ensure_worker_postgres_dsn()
@@ -68,9 +69,7 @@ def _artifact() -> ArtifactSnapshot:
 
 def _policy() -> dict:
     boundary = IntegrationBoundaryPolicy(
-        required_checks=RequiredCheckSet(
-            version="checks-v1", names=("unit",), producer_id="forge"
-        ),
+        required_checks=RequiredCheckSet(version="checks-v1", names=("unit",), producer_id="forge"),
         repair=RepairPolicy(
             primary_seconds=30,
             primary_attempts=2,
@@ -101,7 +100,7 @@ def _policy() -> dict:
 
 @pytest.fixture
 async def db(tmp_path):
-    database = Database(str(tmp_path / "integration-sealing.db"))
+    database = Database(lease_dsn("integration-sealing.db"))
     await database.initialize()
     await database.create_project(Project(id="p", name="integration project"))
     await database.create_repo(
@@ -116,19 +115,10 @@ async def db(tmp_path):
     await database.close()
 
 
-@pytest.fixture(params=["sqlite", "postgres"])
+@pytest.fixture
 async def concurrent_db(request, tmp_path):
-    if request.param == "postgres":
-        if not POSTGRES_TEST_DSN:
-            pytest.skip("POSTGRES_TEST_DSN not set")
-        from src.database.adapters.postgresql import PostgreSQLDatabaseAdapter
-
-        database = PostgreSQLDatabaseAdapter(POSTGRES_TEST_DSN)
-        await database.initialize()
-        await database.reset_for_tests()
-    else:
-        database = Database(str(tmp_path / "integration-sealing-concurrent.db"))
-        await database.initialize()
+    database = Database(lease_dsn("integration-sealing-concurrent.db"))
+    await database.initialize()
     await database.create_project(Project(id="p", name="integration project"))
     await database.create_repo(
         RepoConfig(
@@ -180,9 +170,7 @@ async def _seed_leaf(db, task_id: str, head: str, **task_overrides) -> dict:
         await conn.execute(insert(tasks).values(**_task_row(task_id, **task_overrides)))
         await conn.execute(insert(task_branch_origins).values(**_origin_row(task_id)))
         await conn.execute(
-            insert(task_integration_checkpoints).values(
-                **_checkpoint_row(task_id, head)
-            )
+            insert(task_integration_checkpoints).values(**_checkpoint_row(task_id, head))
         )
         await conn.execute(insert(integration_review_evidence).values(**review))
     return review
@@ -483,9 +471,7 @@ async def test_root_projection_requires_leaf_or_exact_current_parent_identity(db
             )
         )
         await conn.execute(
-            insert(task_integration_checkpoints).values(
-                **_checkpoint_row("leaf", leaf_head)
-            )
+            insert(task_integration_checkpoints).values(**_checkpoint_row("leaf", leaf_head))
         )
         await conn.execute(
             insert(task_integration_checkpoints).values(
@@ -569,19 +555,13 @@ async def test_root_projection_excludes_each_common_near_miss(db):
     )
     async with db.immediate() as conn:
         await conn.execute(
-            update(tasks)
-            .where(tasks.c.id == "nested")
-            .values(parent_task_id="not-completed")
+            update(tasks).where(tasks.c.id == "nested").values(parent_task_id="not-completed")
         )
         await conn.execute(
-            update(tasks)
-            .where(tasks.c.id == "not-completed")
-            .values(status=TaskStatus.READY.value)
+            update(tasks).where(tasks.c.id == "not-completed").values(status=TaskStatus.READY.value)
         )
         await conn.execute(
-            update(tasks)
-            .where(tasks.c.id == "wrong-repository")
-            .values(repo_id="other-repo")
+            update(tasks).where(tasks.c.id == "wrong-repository").values(repo_id="other-repo")
         )
         await conn.execute(
             delete(task_integration_checkpoints).where(
@@ -625,12 +605,16 @@ async def test_root_projection_excludes_each_common_near_miss(db):
             )
         )
         batched_review = (
-            await conn.execute(
-                select(integration_review_evidence).where(
-                    integration_review_evidence.c.source_task_id == "already-batched"
+            (
+                await conn.execute(
+                    select(integration_review_evidence).where(
+                        integration_review_evidence.c.source_task_id == "already-batched"
+                    )
                 )
             )
-        ).mappings().one()
+            .mappings()
+            .one()
+        )
         await conn.execute(
             insert(integration_batch_members).values(
                 batch_id="prior-batch",
@@ -662,9 +646,7 @@ async def test_root_projection_excludes_each_common_near_miss(db):
                 created_at=2.0,
             )
         )
-        await conn.execute(
-            update(tasks).where(tasks.c.id == "blank-pr").values(pr_url="   ")
-        )
+        await conn.execute(update(tasks).where(tasks.c.id == "blank-pr").values(pr_url="   "))
 
         page = await db.eligible_root_page_on(
             conn,
@@ -693,19 +675,25 @@ async def test_zero_root_seal_is_terminal_resource_free_and_request_replay(db):
     assert first["operation_id"] is None
     async with db._engine.connect() as conn:
         batch = (
-            await conn.execute(
-                select(integration_batches).where(
-                    integration_batches.c.id == first["batch_id"]
+            (
+                await conn.execute(
+                    select(integration_batches).where(integration_batches.c.id == first["batch_id"])
                 )
             )
-        ).mappings().one()
+            .mappings()
+            .one()
+        )
         schedule = (
-            await conn.execute(
-                select(project_integration_schedules).where(
-                    project_integration_schedules.c.project_id == "p"
+            (
+                await conn.execute(
+                    select(project_integration_schedules).where(
+                        project_integration_schedules.c.project_id == "p"
+                    )
                 )
             )
-        ).mappings().one()
+            .mappings()
+            .one()
+        )
         assert (
             await conn.execute(
                 select(project_integration_leases).where(
@@ -755,26 +743,36 @@ async def test_one_root_seal_freezes_review_and_real_unstarted_operation(db):
     assert first["batch_id"] != first["operation_id"]
     async with db._engine.connect() as conn:
         batch = (
-            await conn.execute(
-                select(integration_batches).where(
-                    integration_batches.c.id == first["batch_id"]
+            (
+                await conn.execute(
+                    select(integration_batches).where(integration_batches.c.id == first["batch_id"])
                 )
             )
-        ).mappings().one()
+            .mappings()
+            .one()
+        )
         member = (
-            await conn.execute(
-                select(integration_batch_members).where(
-                    integration_batch_members.c.batch_id == first["batch_id"]
+            (
+                await conn.execute(
+                    select(integration_batch_members).where(
+                        integration_batch_members.c.batch_id == first["batch_id"]
+                    )
                 )
             )
-        ).mappings().one()
+            .mappings()
+            .one()
+        )
         operation = (
-            await conn.execute(
-                select(integration_repair_operations).where(
-                    integration_repair_operations.c.id == first["operation_id"]
+            (
+                await conn.execute(
+                    select(integration_repair_operations).where(
+                        integration_repair_operations.c.id == first["operation_id"]
+                    )
                 )
             )
-        ).mappings().one()
+            .mappings()
+            .one()
+        )
         stages = (
             await conn.execute(
                 select(integration_repair_stages).where(
@@ -783,20 +781,27 @@ async def test_one_root_seal_freezes_review_and_real_unstarted_operation(db):
             )
         ).all()
         pins = (
-            await conn.execute(
-                select(integration_operation_artifact_pins).where(
-                    integration_operation_artifact_pins.c.operation_id
-                    == first["operation_id"]
+            (
+                await conn.execute(
+                    select(integration_operation_artifact_pins).where(
+                        integration_operation_artifact_pins.c.operation_id == first["operation_id"]
+                    )
                 )
             )
-        ).mappings().all()
+            .mappings()
+            .all()
+        )
         sealed_events = (
-            await conn.execute(
-                select(integration_outbox).where(
-                    integration_outbox.c.event_type == "integration.sealed"
+            (
+                await conn.execute(
+                    select(integration_outbox).where(
+                        integration_outbox.c.event_type == "integration.sealed"
+                    )
                 )
             )
-        ).mappings().all()
+            .mappings()
+            .all()
+        )
 
     assert batch["lifecycle"] == "sealed"
     assert batch["integration_branch"].startswith("refs/heads/aq/integration/")
@@ -840,17 +845,27 @@ async def test_seal_freezes_source_ref_and_retention_from_authoritative_checkpoi
 
     async with db._engine.connect() as conn:
         batch = (
-            await conn.execute(
-                select(integration_batches).where(integration_batches.c.id == sealed["batch_id"])
-            )
-        ).mappings().one()
-        member = (
-            await conn.execute(
-                select(integration_batch_members).where(
-                    integration_batch_members.c.batch_id == sealed["batch_id"]
+            (
+                await conn.execute(
+                    select(integration_batches).where(
+                        integration_batches.c.id == sealed["batch_id"]
+                    )
                 )
             )
-        ).mappings().one()
+            .mappings()
+            .one()
+        )
+        member = (
+            (
+                await conn.execute(
+                    select(integration_batch_members).where(
+                        integration_batch_members.c.batch_id == sealed["batch_id"]
+                    )
+                )
+            )
+            .mappings()
+            .one()
+        )
 
     assert member["source_ref"] == "refs/heads/aq/root"
     assert member["source_ref_retention"] == "retain"
@@ -863,9 +878,7 @@ async def test_nonempty_seal_retains_first_request_for_manual_and_periodic_coale
     await _enable_train(db)
     await _seed_leaf(db, "root", "b" * 40)
     scheduler = IntegrationScheduler(db)
-    await scheduler.configure(
-        project_id="p", now=1.0, enabled=True, interval_seconds=5
-    )
+    await scheduler.configure(project_id="p", now=1.0, enabled=True, interval_seconds=5)
     first = await scheduler.mark_due("p", 10.0, "manual")
     sealed = await TrainService(db).seal("p", first["request_id"], 20.0)
 
@@ -881,19 +894,27 @@ async def test_nonempty_seal_retains_first_request_for_manual_and_periodic_coale
         assert replay["request_sequence"] == 1
     async with db._engine.connect() as conn:
         schedule = (
-            await conn.execute(
-                select(project_integration_schedules).where(
-                    project_integration_schedules.c.project_id == "p"
+            (
+                await conn.execute(
+                    select(project_integration_schedules).where(
+                        project_integration_schedules.c.project_id == "p"
+                    )
                 )
             )
-        ).mappings().one()
+            .mappings()
+            .one()
+        )
         sweep_events = (
-            await conn.execute(
-                select(integration_outbox).where(
-                    integration_outbox.c.event_type == "integration.sweep_due"
+            (
+                await conn.execute(
+                    select(integration_outbox).where(
+                        integration_outbox.c.event_type == "integration.sweep_due"
+                    )
                 )
             )
-        ).mappings().all()
+            .mappings()
+            .all()
+        )
     assert schedule["outstanding_request_id"] == first["request_id"]
     assert schedule["outstanding_trigger"] == "manual"
     assert schedule["outstanding_requested_at"] == 10.0
@@ -913,9 +934,7 @@ def test_integration_branch_is_ref_safe_for_adversarial_project_and_request_ids(
 
     assert refs[0] != refs[1]
     for ref in refs:
-        assert re.fullmatch(
-            r"refs/heads/aq/integration/p-[0-9a-f]{32}/r-[0-9a-f]{32}", ref
-        )
+        assert re.fullmatch(r"refs/heads/aq/integration/p-[0-9a-f]{32}/r-[0-9a-f]{32}", ref)
         assert _validate_ref(ref) == ref
         checked = subprocess.run(
             ["git", "check-ref-format", ref],
@@ -926,9 +945,7 @@ def test_integration_branch_is_ref_safe_for_adversarial_project_and_request_ids(
         assert checked.returncode == 0, checked.stderr
 
 
-async def test_live_batch_is_busy_without_frontier_read_and_expired_batch_resumes(
-    db, monkeypatch
-):
+async def test_live_batch_is_busy_without_frontier_read_and_expired_batch_resumes(db, monkeypatch):
     from src.integration.scheduler import TrainService
 
     await _enable_train(db)
@@ -980,15 +997,13 @@ async def test_live_batch_is_busy_without_frontier_read_and_expired_batch_resume
     }
 
     monkeypatch.undo()
-    resumed = await TrainService(db, page_size=1).seal(
-        "p", first_request["request_id"], 50.0
-    )
+    resumed = await TrainService(db, page_size=1).seal("p", first_request["request_id"], 50.0)
     assert resumed["outcome"] == "sealed"
     assert resumed["batch_id"] == "existing-batch"
     async with db._engine.connect() as conn:
-        assert (
-            await conn.execute(select(integration_batches.c.id))
-        ).scalars().all() == ["existing-batch"]
+        assert (await conn.execute(select(integration_batches.c.id))).scalars().all() == [
+            "existing-batch"
+        ]
 
 
 async def test_seal_exhausts_small_pages_past_200_and_advances_over_rejections(db):
@@ -1026,21 +1041,21 @@ async def test_seal_exhausts_small_pages_past_200_and_advances_over_rejections(d
         await conn.execute(insert(integration_review_evidence), review_rows)
     request = await _request(db)
 
-    result = await TrainService(db, page_size=7).seal(
-        "p", request["request_id"], 20.0
-    )
+    result = await TrainService(db, page_size=7).seal("p", request["request_id"], 20.0)
 
     async with db._engine.connect() as conn:
         members = (
-            await conn.execute(
-                select(integration_batch_members)
-                .where(integration_batch_members.c.batch_id == result["batch_id"])
-                .order_by(integration_batch_members.c.ordinal)
+            (
+                await conn.execute(
+                    select(integration_batch_members)
+                    .where(integration_batch_members.c.batch_id == result["batch_id"])
+                    .order_by(integration_batch_members.c.ordinal)
+                )
             )
-        ).mappings().all()
-    expected = [
-        task_id for task_id in leaf_ids if task_id not in {"root-050", "root-100"}
-    ]
+            .mappings()
+            .all()
+        )
+    expected = [task_id for task_id in leaf_ids if task_id not in {"root-050", "root-100"}]
     assert result["outcome"] == "sealed"
     assert [member["task_id"] for member in members] == expected
     assert [member["ordinal"] for member in members] == list(range(203))
@@ -1054,42 +1069,41 @@ async def test_failure_after_first_member_insert_rolls_back_every_sealing_write(
     await _seed_leaf(db, "root-a", "b" * 40)
     await _seed_leaf(db, "root-b", "c" * 40)
     request = await _request(db)
-    async with db.immediate() as conn:
-        await conn.execute(
-            text(
-                "CREATE TRIGGER task8b_fail_second_member BEFORE INSERT ON "
-                "integration_batch_members WHEN NEW.ordinal = 1 BEGIN "
-                "SELECT RAISE(ABORT, 'injected second member failure'); END"
-            )
-        )
+    async with injected_trigger(
+        db,
+        name="task8b_fail_second_member",
+        table="integration_batch_members",
+        event="INSERT",
+        condition="NEW.ordinal = 1",
+        body="RAISE EXCEPTION 'injected second member failure';",
+    ):
+        with pytest.raises((IntegrityError, DBAPIError), match="injected second member failure"):
+            await TrainService(db, page_size=1).seal("p", request["request_id"], 20.0)
 
-    with pytest.raises((IntegrityError, DBAPIError), match="injected second member failure"):
-        await TrainService(db, page_size=1).seal("p", request["request_id"], 20.0)
-
-    async with db._engine.connect() as conn:
-        assert (await conn.execute(select(integration_batches))).all() == []
-        assert (await conn.execute(select(integration_batch_members))).all() == []
-        assert (await conn.execute(select(project_integration_leases))).all() == []
-        assert (await conn.execute(select(integration_repair_operations))).all() == []
-        assert (
-            await conn.execute(
-                select(integration_outbox.c.event_type).order_by(integration_outbox.c.id)
-            )
-        ).scalars().all() == ["integration.sweep_due"]
-        schedule = (
-            await conn.execute(
-                select(project_integration_schedules).where(
-                    project_integration_schedules.c.project_id == "p"
+        async with db._engine.connect() as conn:
+            assert (await conn.execute(select(integration_batches))).all() == []
+            assert (await conn.execute(select(integration_batch_members))).all() == []
+            assert (await conn.execute(select(project_integration_leases))).all() == []
+            assert (await conn.execute(select(integration_repair_operations))).all() == []
+            assert (
+                await conn.execute(
+                    select(integration_outbox.c.event_type).order_by(integration_outbox.c.id)
                 )
+            ).scalars().all() == ["integration.sweep_due"]
+            schedule = (
+                (
+                    await conn.execute(
+                        select(project_integration_schedules).where(
+                            project_integration_schedules.c.project_id == "p"
+                        )
+                    )
+                )
+                .mappings()
+                .one()
             )
-        ).mappings().one()
-        assert schedule["outstanding_request_id"] == request["request_id"]
+            assert schedule["outstanding_request_id"] == request["request_id"]
 
-    async with db.immediate() as conn:
-        await conn.execute(text("DROP TRIGGER task8b_fail_second_member"))
-    replay = await TrainService(db, page_size=1).seal(
-        "p", request["request_id"], 30.0
-    )
+    replay = await TrainService(db, page_size=1).seal("p", request["request_id"], 30.0)
     assert replay["outcome"] == "sealed"
     async with db._engine.connect() as conn:
         assert len((await conn.execute(select(integration_batches))).all()) == 1
@@ -1172,9 +1186,7 @@ async def test_integration_seal_command_is_typed_and_project_scoped(
     await handler.db.close()
 
 
-async def test_seal_lock_excludes_descendant_reopen_until_frozen(
-    concurrent_db, monkeypatch
-):
+async def test_seal_lock_excludes_descendant_reopen_until_frozen(concurrent_db, monkeypatch):
     from src.integration.scheduler import TrainService
 
     await _enable_train(concurrent_db)
@@ -1196,14 +1208,10 @@ async def test_seal_lock_excludes_descendant_reopen_until_frozen(
 
     monkeypatch.setattr(concurrent_db, "eligible_root_page_on", pause_after_first_page)
     seal_task = asyncio.create_task(
-        TrainService(concurrent_db, page_size=1).seal(
-            "p", request["request_id"], 20.0
-        )
+        TrainService(concurrent_db, page_size=1).seal("p", request["request_id"], 20.0)
     )
     await asyncio.wait_for(first_page_scanned.wait(), timeout=3)
-    reopen_task = asyncio.create_task(
-        concurrent_db.transition_task("child", TaskStatus.READY)
-    )
+    reopen_task = asyncio.create_task(concurrent_db.transition_task("child", TaskStatus.READY))
     await asyncio.sleep(0.05)
     assert not reopen_task.done()
     finish_snapshot.set()
@@ -1224,9 +1232,7 @@ async def test_descendant_reopen_before_seal_changes_fresh_snapshot(concurrent_d
     await concurrent_db.transition_task("child", TaskStatus.READY)
     request = await _request(concurrent_db)
 
-    result = await TrainService(concurrent_db, page_size=1).seal(
-        "p", request["request_id"], 20.0
-    )
+    result = await TrainService(concurrent_db, page_size=1).seal("p", request["request_id"], 20.0)
 
     assert result["outcome"] == "empty"
     assert (await concurrent_db.get_task("child")).status is TaskStatus.READY
@@ -1259,9 +1265,7 @@ async def test_postgres_sealer_first_freezes_approval_before_later_rejection(
         await finish_seal.wait()
         return reviews
 
-    monkeypatch.setattr(
-        concurrent_db, "latest_exact_reviews_on", pause_after_review_read
-    )
+    monkeypatch.setattr(concurrent_db, "latest_exact_reviews_on", pause_after_review_read)
     seal_task = asyncio.create_task(
         TrainService(concurrent_db).seal("p", request["request_id"], 20.0)
     )
@@ -1274,9 +1278,7 @@ async def test_postgres_sealer_first_freezes_approval_before_later_rejection(
         evidence={"decision": "rejected"},
         created_at=2.0,
     )
-    append_task = asyncio.create_task(
-        concurrent_db.append_integration_review_evidence(rejection)
-    )
+    append_task = asyncio.create_task(concurrent_db.append_integration_review_evidence(rejection))
     await asyncio.sleep(0.05)
     assert not append_task.done()
     finish_seal.set()
@@ -1285,19 +1287,21 @@ async def test_postgres_sealer_first_freezes_approval_before_later_rejection(
     await asyncio.wait_for(append_task, timeout=5)
     async with concurrent_db._engine.connect() as conn:
         member = (
-            await conn.execute(
-                select(integration_batch_members).where(
-                    integration_batch_members.c.batch_id == sealed["batch_id"]
+            (
+                await conn.execute(
+                    select(integration_batch_members).where(
+                        integration_batch_members.c.batch_id == sealed["batch_id"]
+                    )
                 )
             )
-        ).mappings().one()
+            .mappings()
+            .one()
+        )
     assert sealed["outcome"] == "sealed"
     assert member["review_evidence_id"] == approval["id"]
 
 
-async def test_postgres_rejection_writer_first_makes_seal_exclude_root(
-    concurrent_db, monkeypatch
-):
+async def test_postgres_rejection_writer_first_makes_seal_exclude_root(concurrent_db, monkeypatch):
     if concurrent_db._engine.dialect.name != "postgresql":
         pytest.skip("PostgreSQL advisory-lock ordering only")
     from src.integration.scheduler import TrainService
@@ -1364,3 +1368,118 @@ async def test_immediate_transition_preserves_ordinary_status_and_post_commit_ca
 
     assert (await db.get_task("ordinary")).status is TaskStatus.READY
     assert ready_events == [("ordinary", "promoted")]
+
+
+@pytest.mark.parametrize("expired", [False, True])
+async def test_scheduler_maintains_batch_lease_before_next_sweep(db, expired):
+    from src.integration.scheduler import IntegrationScheduler, TrainService
+
+    await _enable_train(db)
+    await _seed_leaf(db, "root", "b" * 40)
+    scheduler = IntegrationScheduler(db)
+    await scheduler.configure(project_id="p", now=1.0, enabled=True, interval_seconds=3600)
+    request = await _request(db)
+    sealed = await TrainService(db).seal("p", request["request_id"], 20.0)
+    now = 400.0 if expired else 200.0
+    due = await db.due_integration_schedule_page(now=now, after=None, limit=10)
+    assert [row["project_id"] for row in due] == ["p"]
+    await scheduler.mark_due("p", now, "periodic")
+    async with db._engine.connect() as conn:
+        first_lease = dict(
+            (await conn.execute(select(project_integration_leases))).mappings().one()
+        )
+    await scheduler.mark_due("p", now + 1, "periodic")
+    async with db._engine.connect() as conn:
+        lease = (await conn.execute(select(project_integration_leases))).mappings().one()
+        events = (
+            (
+                await conn.execute(
+                    select(integration_outbox).where(
+                        integration_outbox.c.event_type == "integration.sealed"
+                    )
+                )
+            )
+            .mappings()
+            .all()
+        )
+    assert lease["batch_id"] == sealed["batch_id"]
+    assert dict(lease) == first_lease
+    assert await db.due_integration_schedule_page(now=now + 1, after=None, limit=10) == []
+    assert lease["expires_at"] > now + 150
+    assert lease["fence_token"] == (2 if expired else 1)
+    assert len(events) == (2 if expired else 1)
+    if expired:
+        recovered = next(e for e in events if "lease" in e["id"])
+        assert recovered["payload"]["batch_id"] == sealed["batch_id"]
+        assert recovered["payload"]["operation_id"]
+
+
+@pytest.mark.parametrize("expired", [False, True])
+async def test_scheduler_does_not_renew_or_recover_another_lease_owner(db, expired):
+    from src.integration.scheduler import IntegrationScheduler, TrainService
+
+    await _enable_train(db)
+    await _seed_leaf(db, "root", "b" * 40)
+    scheduler = IntegrationScheduler(db)
+    await scheduler.configure(project_id="p", now=1.0, enabled=True, interval_seconds=3600)
+    request = await _request(db)
+    await TrainService(db).seal("p", request["request_id"], 20.0)
+    now = 400.0 if expired else 200.0
+    async with db.immediate() as conn:
+        await conn.execute(update(project_integration_leases).values(owner_id="another-owner"))
+        before = dict((await conn.execute(select(project_integration_leases))).mappings().one())
+    assert await db.due_integration_schedule_page(now=now, after=None, limit=10) == []
+    await scheduler.mark_due("p", now, "periodic")
+    async with db._engine.connect() as conn:
+        after = dict((await conn.execute(select(project_integration_leases))).mappings().one())
+        events = (
+            (
+                await conn.execute(
+                    select(integration_outbox).where(
+                        integration_outbox.c.event_type == "integration.sealed"
+                    )
+                )
+            )
+            .mappings()
+            .all()
+        )
+    assert after == before
+    assert len(events) == 1
+
+
+@pytest.mark.parametrize("draining", [False, True])
+@pytest.mark.parametrize("expired", [False, True])
+async def test_disabled_schedule_maintains_existing_batch_without_new_sweep(db, draining, expired):
+    from src.integration.scheduler import IntegrationScheduler, TrainService
+
+    await _enable_train(db)
+    await _seed_leaf(db, "root", "b" * 40)
+    scheduler = IntegrationScheduler(db)
+    await scheduler.configure(project_id="p", now=1, enabled=True, interval_seconds=3600)
+    request = await _request(db)
+    sealed = await TrainService(db).seal("p", request["request_id"], 20)
+    await scheduler.configure(project_id="p", now=21, enabled=False)
+    if draining:
+        async with db.immediate() as conn:
+            from src.database.tables import projects
+            await conn.execute(update(projects).where(projects.c.id == "p").values(
+                hierarchical_integration_draining=True,
+                hierarchical_integration_desired_mode="disabled",
+            ))
+    now = 400 if expired else 200
+    assert [row["project_id"] for row in await db.due_integration_schedule_page(
+        now=now, after=None, limit=10
+    )] == ["p"]
+    result = await scheduler.mark_due("p", now, "periodic")
+    assert result["outcome"] == "disabled"
+    async with db._engine.connect() as conn:
+        lease = (await conn.execute(select(project_integration_leases))).mappings().one()
+        schedule = (await conn.execute(select(project_integration_schedules))).mappings().one()
+        events = (await conn.execute(select(integration_outbox).where(
+            integration_outbox.c.event_type == "integration.sweep_due"
+        ))).mappings().all()
+    assert lease["batch_id"] == sealed["batch_id"]
+    assert lease["expires_at"] == now + 300
+    assert schedule["outstanding_request_id"] == request["request_id"]
+    assert schedule["request_sequence"] == request["request_sequence"]
+    assert len(events) == 1

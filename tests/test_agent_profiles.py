@@ -16,7 +16,7 @@ from pathlib import Path
 
 import pytest
 
-from src.config import AgentProfileConfig, AppConfig, load_config
+from src.config import AgentProfileConfig, AppConfig, DatabaseConfig, load_config
 from src.database import Database
 from src.models import (
     Agent,
@@ -27,6 +27,7 @@ from src.models import (
 )
 from src.orchestrator import Orchestrator
 from src.profiles.parser import parse_profile
+from tests.db_fixtures import lease_dsn
 from tests.session_dispatch_helpers import (
     create_session_profile,
     create_session_project,
@@ -37,7 +38,7 @@ from tests.session_dispatch_helpers import (
 
 @pytest.fixture
 async def db(tmp_path):
-    database = Database(str(tmp_path / "test.db"))
+    database = Database(lease_dsn("test.db"))
     await database.initialize()
     yield database
     await database.close()
@@ -258,7 +259,7 @@ class TestProfileResolution:
     @pytest.fixture
     async def orch(self, tmp_path):
         config = AppConfig(
-            database_path=str(tmp_path / "test.db"),
+            database=DatabaseConfig(url=lease_dsn("test.db")),
             workspace_dir=str(tmp_path / "workspaces"),
             data_dir=str(tmp_path / "data"),
         )
@@ -402,7 +403,7 @@ class TestConfigProfileLoading:
         config_path = tmp_path / "config.yaml"
         config_path.write_text("""
 database:
-  url: "sqlite:///:memory:"
+  url: "postgresql+asyncpg://localhost/aq_test"
 discord:
   bot_token: "test-token"
   guild_id: "123456"
@@ -444,7 +445,7 @@ agent_profiles:
     def test_no_profiles_section(self, tmp_path):
         config_path = tmp_path / "config.yaml"
         config_path.write_text(
-            'database:\n  url: "sqlite:///:memory:"\n'
+            'database:\n  url: "postgresql+asyncpg://localhost/aq_test"\n'
             "discord:\n  bot_token: test-token\n  guild_id: '123'\n"
             "scheduling:\n  rolling_window_hours: 48\n"
         )
@@ -461,7 +462,7 @@ class TestProfileSyncFromConfig:
     async def test_sync_creates_profiles(self, tmp_path):
         config = AppConfig(
             data_dir=str(tmp_path / "data"),
-            database_path=str(tmp_path / "test.db"),
+            database=DatabaseConfig(url=lease_dsn("test.db")),
             workspace_dir=str(tmp_path / "workspaces"),
             agent_profiles=[
                 AgentProfileConfig(
@@ -494,7 +495,7 @@ class TestProfileSyncFromConfig:
         """
         config = AppConfig(
             data_dir=str(tmp_path / "data"),
-            database_path=str(tmp_path / "test.db"),
+            database=DatabaseConfig(url=lease_dsn("test.db")),
             workspace_dir=str(tmp_path / "workspaces"),
             agent_profiles=[
                 AgentProfileConfig(id="test-reviewer", name="Reviewer v1"),
@@ -507,7 +508,7 @@ class TestProfileSyncFromConfig:
         # Second startup with updated YAML but untouched vault markdown.
         config2 = AppConfig(
             data_dir=str(tmp_path / "data"),
-            database_path=str(tmp_path / "test.db"),
+            database=DatabaseConfig(url=lease_dsn("test.db")),
             workspace_dir=str(tmp_path / "workspaces"),
             agent_profiles=[
                 AgentProfileConfig(id="test-reviewer", name="Reviewer v2"),
@@ -533,7 +534,7 @@ class TestProfileCommands:
         from src.commands.handler import CommandHandler
 
         config = AppConfig(
-            database_path=str(tmp_path / "test.db"),
+            database=DatabaseConfig(url=lease_dsn("test.db")),
             workspace_dir=str(tmp_path / "workspaces"),
             data_dir=str(tmp_path / "data"),
         )
@@ -1048,7 +1049,7 @@ class TestToolValidation:
         from src.commands.handler import CommandHandler
 
         config = AppConfig(
-            database_path=str(tmp_path / "test.db"),
+            database=DatabaseConfig(url=lease_dsn("test.db")),
             workspace_dir=str(tmp_path / "workspaces"),
             data_dir=str(tmp_path / "data"),
         )
@@ -1071,7 +1072,7 @@ class TestToolValidation:
         from src.commands.handler import CommandHandler
 
         config = AppConfig(
-            database_path=str(tmp_path / "test.db"),
+            database=DatabaseConfig(url=lease_dsn("test.db")),
             workspace_dir=str(tmp_path / "workspaces"),
             data_dir=str(tmp_path / "data"),
         )
@@ -1095,7 +1096,7 @@ class TestToolValidation:
         from src.commands.handler import CommandHandler
 
         config = AppConfig(
-            database_path=str(tmp_path / "test.db"),
+            database=DatabaseConfig(url=lease_dsn("test.db")),
             workspace_dir=str(tmp_path / "workspaces"),
             data_dir=str(tmp_path / "data"),
         )
@@ -1126,7 +1127,7 @@ class TestListAvailableTools:
         from src.commands.handler import CommandHandler
 
         config = AppConfig(
-            database_path=str(tmp_path / "test.db"),
+            database=DatabaseConfig(url=lease_dsn("test.db")),
             workspace_dir=str(tmp_path / "workspaces"),
             data_dir=str(tmp_path / "data"),
         )
@@ -1153,7 +1154,7 @@ class TestCheckProfile:
         from src.commands.handler import CommandHandler
 
         config = AppConfig(
-            database_path=str(tmp_path / "test.db"),
+            database=DatabaseConfig(url=lease_dsn("test.db")),
             workspace_dir=str(tmp_path / "workspaces"),
             data_dir=str(tmp_path / "data"),
         )
@@ -1177,7 +1178,7 @@ class TestCheckProfile:
         from src.commands.handler import CommandHandler
 
         config = AppConfig(
-            database_path=str(tmp_path / "test.db"),
+            database=DatabaseConfig(url=lease_dsn("test.db")),
             workspace_dir=str(tmp_path / "workspaces"),
             data_dir=str(tmp_path / "data"),
         )
@@ -1202,7 +1203,7 @@ class TestCheckProfile:
         from src.commands.handler import CommandHandler
 
         config = AppConfig(
-            database_path=str(tmp_path / "test.db"),
+            database=DatabaseConfig(url=lease_dsn("test.db")),
             workspace_dir=str(tmp_path / "workspaces"),
             data_dir=str(tmp_path / "data"),
         )
@@ -1224,7 +1225,7 @@ class TestExportImport:
         from src.commands.handler import CommandHandler
 
         config = AppConfig(
-            database_path=str(tmp_path / "test.db"),
+            database=DatabaseConfig(url=lease_dsn("test.db")),
             workspace_dir=str(tmp_path / "workspaces"),
             data_dir=str(tmp_path / "data"),
         )
@@ -1250,7 +1251,7 @@ class TestExportImport:
         from src.commands.handler import CommandHandler
 
         config = AppConfig(
-            database_path=str(tmp_path / "test.db"),
+            database=DatabaseConfig(url=lease_dsn("test.db")),
             workspace_dir=str(tmp_path / "workspaces"),
             data_dir=str(tmp_path / "data"),
         )
@@ -1288,7 +1289,7 @@ class TestExportImport:
         from src.commands.handler import CommandHandler
 
         config = AppConfig(
-            database_path=str(tmp_path / "test.db"),
+            database=DatabaseConfig(url=lease_dsn("test.db")),
             workspace_dir=str(tmp_path / "workspaces"),
             data_dir=str(tmp_path / "data"),
         )
@@ -1319,7 +1320,7 @@ agent_profile:
         from src.commands.handler import CommandHandler
 
         config = AppConfig(
-            database_path=str(tmp_path / "test.db"),
+            database=DatabaseConfig(url=lease_dsn("test.db")),
             workspace_dir=str(tmp_path / "workspaces"),
             data_dir=str(tmp_path / "data"),
         )
@@ -1347,7 +1348,7 @@ agent_profile:
         from src.commands.handler import CommandHandler
 
         config = AppConfig(
-            database_path=str(tmp_path / "test.db"),
+            database=DatabaseConfig(url=lease_dsn("test.db")),
             workspace_dir=str(tmp_path / "workspaces"),
             data_dir=str(tmp_path / "data"),
         )
@@ -1389,7 +1390,7 @@ agent_profile:
         from src.commands.handler import CommandHandler
 
         config = AppConfig(
-            database_path=str(tmp_path / "test.db"),
+            database=DatabaseConfig(url=lease_dsn("test.db")),
             workspace_dir=str(tmp_path / "workspaces"),
             data_dir=str(tmp_path / "data"),
         )
@@ -1413,7 +1414,7 @@ agent_profile:
         from src.commands.handler import CommandHandler
 
         config = AppConfig(
-            database_path=str(tmp_path / "test.db"),
+            database=DatabaseConfig(url=lease_dsn("test.db")),
             workspace_dir=str(tmp_path / "workspaces"),
             data_dir=str(tmp_path / "data"),
         )
@@ -1435,7 +1436,7 @@ agent_profile:
         from src.commands.handler import CommandHandler
 
         config = AppConfig(
-            database_path=str(tmp_path / "test.db"),
+            database=DatabaseConfig(url=lease_dsn("test.db")),
             workspace_dir=str(tmp_path / "workspaces"),
             data_dir=str(tmp_path / "data"),
         )
@@ -1486,7 +1487,7 @@ class TestProfileMcpServersShape:
         from src.commands.handler import CommandHandler
 
         config = AppConfig(
-            database_path=str(tmp_path / "test.db"),
+            database=DatabaseConfig(url=lease_dsn("test.db")),
             workspace_dir=str(tmp_path / "workspaces"),
             data_dir=str(tmp_path / "data"),
         )
@@ -1628,3 +1629,121 @@ class TestProfileMcpServersShape:
         assert resp.status_code == 200, resp.text
         profile = await handler.db.get_profile("coder")
         assert profile.install == {"npm": ["eslint-mcp"]}
+
+
+# ---------------------------------------------------------------------------
+# min_per_project — the per-project warm floor (global-worker-pools §2.1)
+# ---------------------------------------------------------------------------
+
+
+def _pool_profile_md(config_body: str) -> str:
+    """A minimal valid ``lifecycle: pool`` profile with the given Config JSON."""
+    return (
+        "---\n"
+        "id: warm-worker\n"
+        "name: Warm worker\n"
+        "---\n"
+        "## Config\n"
+        "```json\n"
+        f"{config_body}\n"
+        "```\n"
+        "## Role\n"
+        "A pool worker.\n"
+    )
+
+
+class TestMinPerProjectParsing:
+    """``min_per_project`` follows ``min_active``, not ``max_claims_per_session``.
+
+    It is a floor, so 0 is the meaningful default ("keep nothing resident in a
+    project with no work") rather than the parse error it is for the
+    "positive or omitted" sizing keys.
+    """
+
+    def test_parses_from_config_block(self):
+        parsed = parse_profile(
+            _pool_profile_md(
+                '{"harness": "claude", "lifecycle": "pool", "min_active": 4, '
+                '"max_active": 12, "min_per_project": 1}'
+            )
+        )
+        assert parsed.is_valid, f"Errors: {parsed.errors}"
+        assert parsed.config["min_per_project"] == 1
+
+    def test_zero_is_valid(self):
+        parsed = parse_profile(
+            _pool_profile_md(
+                '{"harness": "claude", "lifecycle": "pool", "min_per_project": 0}'
+            )
+        )
+        assert parsed.is_valid, f"Errors: {parsed.errors}"
+        assert parsed.config["min_per_project"] == 0
+
+    def test_negative_is_rejected(self):
+        parsed = parse_profile(
+            _pool_profile_md(
+                '{"harness": "claude", "lifecycle": "pool", "min_per_project": -1}'
+            )
+        )
+        assert not parsed.is_valid
+        assert any("min_per_project" in e for e in parsed.errors)
+
+    def test_non_integer_is_rejected(self):
+        parsed = parse_profile(
+            _pool_profile_md(
+                '{"harness": "claude", "lifecycle": "pool", "min_per_project": true}'
+            )
+        )
+        assert not parsed.is_valid
+
+    def test_rejected_on_a_non_pool_lifecycle(self):
+        parsed = parse_profile(
+            _pool_profile_md(
+                '{"harness": "claude", "lifecycle": "task", "min_per_project": 1}'
+            )
+        )
+        assert not parsed.is_valid
+
+    def test_absent_leaves_the_key_unset(self):
+        parsed = parse_profile(
+            _pool_profile_md('{"harness": "claude", "lifecycle": "pool"}')
+        )
+        assert parsed.is_valid, f"Errors: {parsed.errors}"
+        assert "min_per_project" not in parsed.config
+
+    def test_dataclass_default_is_none(self):
+        assert AgentProfile(id="x", name="X").min_per_project is None
+
+
+class TestMinPerProjectPersistence:
+    async def test_round_trips_through_the_vault_sync_path(self, db):
+        from src.profiles.sync import sync_profile_text_to_db
+
+        result = await sync_profile_text_to_db(
+            _pool_profile_md(
+                '{"harness": "claude", "lifecycle": "pool", "min_active": 4, '
+                '"max_active": 12, "min_per_project": 2}'
+            ),
+            db,
+            fallback_id="warm-worker",
+        )
+        assert result.success, result.errors
+        profile = await db.get_profile("warm-worker")
+        assert profile.min_active == 4
+        assert profile.max_active == 12
+        assert profile.min_per_project == 2
+
+    async def test_update_path_carries_the_column(self, db):
+        profile = AgentProfile(
+            id="warm-worker", name="Warm worker", lifecycle="pool", min_per_project=1
+        )
+        await db.create_profile(profile)
+        assert (await db.get_profile("warm-worker")).min_per_project == 1
+
+        profile.min_per_project = 3
+        await db.upsert_profile(profile)
+        assert (await db.get_profile("warm-worker")).min_per_project == 3
+
+    async def test_defaults_to_none_when_never_set(self, db, sample_profile):
+        await db.create_profile(sample_profile)
+        assert (await db.get_profile("test-reviewer")).min_per_project is None

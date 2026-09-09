@@ -20,11 +20,14 @@ from src.commands.handler import CommandHandler
 from src.config import MessagesConfig
 from src.database import Database
 from src.models import Project
+from tests.db_fixtures import lease_dsn
+
+pytestmark = pytest.mark.usefixtures("unpooled_postgres")
 
 
 @pytest.fixture
 async def handler(tmp_path):
-    db = Database(str(tmp_path / "relay.db"))
+    db = Database(lease_dsn("relay.db"))
     await db.initialize()
     await db.create_project(Project(id="agent-queue", name="Agent Queue"))
 
@@ -203,7 +206,7 @@ from src.api.middleware import RequestContextMiddleware, TokenAuthMiddleware  # 
 
 async def _seed_messages_app(tmp_path):
     """Build a FastAPI app with the messages router + auth middleware wired up."""
-    db = Database(str(tmp_path / "msg_scope.db"))
+    db = Database(lease_dsn("msg_scope.db"))
     await db.initialize()
     await db.create_project(Project(id="proj-a", name="Project A"))
     await db.create_project(Project(id="proj-b", name="Project B"))

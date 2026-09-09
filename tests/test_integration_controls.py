@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 from sqlalchemy import event, insert, select, update
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import DBAPIError
 
 from src.database import Database
 from src.database.tables import (
@@ -24,11 +24,12 @@ from src.database.tables import (
 )
 from src.integration.status import IntegrationStatusService
 from src.models import Project, RepoConfig, RepoSourceType, Task, TaskStatus
+from tests.db_fixtures import lease_dsn
 
 
 @pytest.fixture
 async def db(tmp_path):
-    database = Database(str(tmp_path / "integration-controls.db"))
+    database = Database(lease_dsn("integration-controls.db"))
     await database.initialize()
     await database.create_project(Project(id="p", name="project"))
     await database.create_repo(
@@ -370,10 +371,10 @@ async def test_waiver_consumption_and_gate_applicability_are_append_only(db):
         integration_legacy_gate_applicability,
     )
     for table in immutable_tables:
-        with pytest.raises(IntegrityError):
+        with pytest.raises(DBAPIError, match="integration control history is immutable"):
             async with db._engine.begin() as conn:
                 await conn.execute(update(table).values(created_at=99.0))
-        with pytest.raises(IntegrityError):
+        with pytest.raises(DBAPIError, match="integration control history is immutable"):
             async with db._engine.begin() as conn:
                 await conn.execute(table.delete())
 

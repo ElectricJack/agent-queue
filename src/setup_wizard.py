@@ -373,7 +373,7 @@ def _test_pg_dsn(dsn: str) -> bool:
         return False
 
 
-def _select_postgresql(existing_sqlite_path: str | None = None) -> dict:
+def _select_postgresql(legacy_sqlite_db: str | None = None) -> dict:
     """Interactive PostgreSQL selection sub-flow.
 
     Returns:
@@ -391,14 +391,14 @@ def _select_postgresql(existing_sqlite_path: str | None = None) -> dict:
             dsn = prompt("PostgreSQL DSN", default_dsn)
             if _test_pg_dsn(dsn):
                 success("Connected to PostgreSQL")
-                return _build_pg_config(dsn, existing_sqlite_path)
+                return _build_pg_config(dsn, legacy_sqlite_db)
             else:
                 warn("Could not connect. Enter a different DSN or check credentials.")
                 dsn = prompt("PostgreSQL DSN", dsn)
                 if not _test_pg_dsn(dsn):
                     error("Still cannot connect. Aborting PostgreSQL setup.")
                     raise SystemExit(1)
-                return _build_pg_config(dsn, existing_sqlite_path)
+                return _build_pg_config(dsn, legacy_sqlite_db)
 
     # No PG running — try Docker
     compose_file = _find_docker_compose()
@@ -417,7 +417,7 @@ def _select_postgresql(existing_sqlite_path: str | None = None) -> dict:
                 if _boot_docker_postgres(compose_file):
                     if _test_pg_dsn(default_dsn):
                         success("Connected to Docker PostgreSQL")
-                        return _build_pg_config(default_dsn, existing_sqlite_path)
+                        return _build_pg_config(default_dsn, legacy_sqlite_db)
                     else:
                         error("Container started but connection failed")
 
@@ -431,13 +431,13 @@ def _select_postgresql(existing_sqlite_path: str | None = None) -> dict:
         raise SystemExit(1)
     if _test_pg_dsn(dsn):
         success("Connected to PostgreSQL")
-        return _build_pg_config(dsn, existing_sqlite_path)
+        return _build_pg_config(dsn, legacy_sqlite_db)
     else:
         error("Cannot connect to PostgreSQL. Check your DSN and try again.")
         raise SystemExit(1)
 
 
-def _build_pg_config(dsn: str, existing_sqlite_path: str | None) -> dict:
+def _build_pg_config(dsn: str, legacy_sqlite_db: str | None) -> dict:
     """Build PG config dict and optionally migrate SQLite data."""
     config = {
         "backend": "postgresql",
@@ -446,21 +446,21 @@ def _build_pg_config(dsn: str, existing_sqlite_path: str | None) -> dict:
         "pool_max_size": 10,
     }
 
-    if existing_sqlite_path and os.path.exists(existing_sqlite_path):
+    if legacy_sqlite_db and os.path.exists(legacy_sqlite_db):
         print()
-        info(f"Existing SQLite database found at: {existing_sqlite_path}")
+        info(f"Existing SQLite database found at: {legacy_sqlite_db}")
         migrate = prompt_yes_no("Migrate existing data to PostgreSQL?")
         if migrate:
-            config["_migrate_from"] = existing_sqlite_path
+            config["_migrate_from"] = legacy_sqlite_db
 
     return config
 
 
 def step_database(existing: dict) -> dict:
-    """Step 1b: Configure database backend.
+    """Step 1b: Configure the PostgreSQL connection.
 
-    Handles re-run detection: if an existing config specifies PostgreSQL,
-    confirms it. If SQLite, offers to switch. If no config, prompts for choice.
+    PostgreSQL is the only supported backend.  A config still carrying a
+    SQLite path is offered the one-way import rather than being kept.
 
     Args:
         existing: Pre-loaded config values from ``_load_existing_config()``.
@@ -489,40 +489,17 @@ def step_database(existing: dict) -> dict:
             }
         # Fall through to re-select
 
-    # Re-run: existing SQLite config
+    # Re-run: a config left over from the SQLite era.  There is nothing to
+    # keep -- offer to carry the data across instead of stranding it.
     elif existing_sqlite:
         default_db = os.path.expanduser(existing_sqlite)
-        # Check if this is just defaults that already exist
-        has_saved_db = existing.get("DATABASE_PATH") or yaml_cfg.get("database_path")
-        defaults_exist = os.path.isdir(os.path.dirname(default_db))
-        if has_saved_db or defaults_exist:
-            success(f"Database: SQLite ({default_db})")
-            switch = prompt_yes_no("Switch to PostgreSQL?", default=False)
-            if not switch:
-                os.makedirs(os.path.dirname(default_db), exist_ok=True)
-                return {"backend": "sqlite", "url": default_db}
-            return _select_postgresql(existing_sqlite_path=default_db)
+        if os.path.exists(default_db):
+            info(f"Found a SQLite database from a previous release: {default_db}")
+            info("SQLite is no longer supported; its data can be imported into PostgreSQL.")
+            return _select_postgresql(legacy_sqlite_db=default_db)
 
-    # Fresh install
-    step_header(1, "Database Backend")
-
-    print(f"  {BOLD}Database options:{RESET}")
-    print(f"    1) SQLite {DIM}(default — zero config, file-based){RESET}")
-    print(f"    2) PostgreSQL {DIM}(recommended for production){RESET}")
-    print()
-    choice = prompt("Select database backend", "1")
-
-    if choice == "2":
-        return _select_postgresql()
-
-    # SQLite
-    default_db = os.path.expanduser("~/.agent-queue/agent-queue.db")
-    db_path = prompt("Database path", default_db)
-    db_path = os.path.expanduser(db_path)
-    _save_env_value("DATABASE_PATH", db_path)
-    os.makedirs(os.path.dirname(db_path), exist_ok=True)
-    success(f"Directory ready: {os.path.dirname(db_path)}")
-    return {"backend": "sqlite", "url": db_path}
+    step_header(1, "Database")
+    return _select_postgresql()
 
 
 # ── Step 2: Discord ──────────────────────────────────────────────────────────
@@ -1408,7 +1385,7 @@ def main():
     if migrate_from:
         info("Migrating data from SQLite to PostgreSQL...")
         try:
-            from src.database.migrate_sqlite_to_pg import migrate_sqlite_to_postgres
+            from src.database.legacy_sqlite_import import migrate_sqlite_to_postgres
 
             def _progress(table: str, count: int):
                 if count:

@@ -22,11 +22,12 @@ from src.models import (
     Workspace,
 )
 from src.orchestrator.agent_reconciler import AgentReconciler
+from tests.db_fixtures import lease_dsn
 
 
 @pytest.fixture
 async def db(tmp_path):
-    db = Database(str(tmp_path / "delete.db"))
+    db = Database(lease_dsn("delete.db"))
     await db.initialize()
     await db.create_profile(AgentProfile(id="worker", name="Worker", harness="claude"))
     await db.create_project(Project(id="p", name="P", default_profile_id="worker"))

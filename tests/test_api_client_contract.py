@@ -36,6 +36,8 @@ from unittest.mock import MagicMock
 
 import httpx
 import pytest
+from tests.db_fixtures import lease_dsn
+from src.config import DatabaseConfig
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 CLIENT_DIR = REPO_ROOT / "packages" / "aq-client"
@@ -90,12 +92,12 @@ async def live_app(tmp_path):
     from src.event_bus import EventBus
     from src.orchestrator import Orchestrator
 
-    db = Database(str(tmp_path / "contract.db"))
+    db = Database(lease_dsn("contract.db"))
     await db.initialize()
     config = AppConfig(
         discord=DiscordConfig(bot_token="t", guild_id="1"),
         workspace_dir=str(tmp_path / "w"),
-        database_path=str(tmp_path / "contract.db"),
+        database=DatabaseConfig(url=lease_dsn("contract.db")),
         data_dir=str(tmp_path / "d"),
     )
     orch = Orchestrator(config)

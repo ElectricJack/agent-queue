@@ -2,7 +2,7 @@
 
 Drives the real ``src.main.run`` coroutine with monkeypatched config,
 logging, Orchestrator, messaging adapter, and runtime registry so startup
-ordering, degraded messaging, SQLite-only directory creation, argument
+ordering, degraded messaging, database URL handling, argument
 parsing, health checks, and the readiness-race teardown are exercised
 without a real daemon, database, or Discord connection.
 """
@@ -61,11 +61,11 @@ class _FakeAdapter:
         self.events.append("adapter.close")
 
 
-def _sqlite_config(tmp_path) -> AppConfig:
+def _postgres_config(tmp_path) -> AppConfig:
     config = AppConfig(
         discord=DiscordConfig(bot_token="t", guild_id="1"),
         workspace_dir=str(tmp_path / "workspaces"),
-        database_path=str(tmp_path / "db" / "agent-queue.db"),
+        database=DatabaseConfig(url="postgresql+asyncpg://user:pw@localhost:5432/aq"),
         data_dir=str(tmp_path / "data"),
     )
     config.mcp_server.enabled = False
@@ -126,7 +126,7 @@ async def test_run_initializes_before_adapter_and_runs_degraded_after_login_fail
     """Orchestrator initialization precedes adapter startup; a login failure
     degrades messaging instead of tearing the daemon down; shutdown closes
     the adapter and the orchestrator."""
-    config = _sqlite_config(tmp_path)
+    config = _postgres_config(tmp_path)
     monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "parent-session")
     adapter = _FakeAdapter([])
     events_ref, state = _install_run_env(monkeypatch, config, adapter)
@@ -147,9 +147,8 @@ async def test_run_initializes_before_adapter_and_runs_degraded_after_login_fail
     assert "CLAUDE_CODE_SESSION_ID" not in os.environ
 
 
-async def test_run_uses_database_url_only_for_sqlite_directory_creation(monkeypatch, tmp_path):
-    """SQLite: the database parent directory is created. PostgreSQL: no
-    URL-derived path is ever passed to makedirs."""
+async def test_run_never_creates_a_directory_from_the_database_url(monkeypatch, tmp_path):
+    """A PostgreSQL URL must never be passed to makedirs."""
 
     class _StopStartup(Exception):
         pass
@@ -168,23 +167,12 @@ async def test_run_uses_database_url_only_for_sqlite_directory_creation(monkeypa
     monkeypatch.setattr(main_mod, "Orchestrator", exploding_orchestrator)
     monkeypatch.setattr(os, "makedirs", recording_makedirs)
 
-    sqlite_config = _sqlite_config(tmp_path)
-    monkeypatch.setattr(main_mod, "load_config", lambda path, profile=None: sqlite_config)
-    with pytest.raises(_StopStartup):
-        await main_mod.run(str(tmp_path / "config.yaml"))
-    expected_parent = os.path.dirname(
-        sqlite_config.database.url or sqlite_config.database_path
-    )
-    assert makedirs_calls == [expected_parent]
-
-    makedirs_calls.clear()
     pg_config = AppConfig(
         discord=DiscordConfig(bot_token="t", guild_id="1"),
         workspace_dir=str(tmp_path / "workspaces"),
         database=DatabaseConfig(url="postgresql+asyncpg://user:pw@localhost:5432/aq"),
         data_dir=str(tmp_path / "data"),
     )
-    assert pg_config.database.backend == "postgresql"
     monkeypatch.setattr(main_mod, "load_config", lambda path, profile=None: pg_config)
     with pytest.raises(_StopStartup):
         await main_mod.run(str(tmp_path / "config.yaml"))
@@ -215,7 +203,7 @@ def test_parse_args_preserves_path_and_profile_precedence(monkeypatch):
 async def test_health_checks_reports_each_failed_dependency_independently(tmp_path):
     """One failing DB call marks only its own check unhealthy; healthy
     subsystems and the messaging status stay present alongside it."""
-    config = _sqlite_config(tmp_path)
+    config = _postgres_config(tmp_path)
     orch = SimpleNamespace(
         config=config,
         _paused=False,
@@ -246,7 +234,7 @@ async def test_readiness_race_tasks_are_awaited_after_cancellation(monkeypatch, 
     """PLA-2: when the readiness race resolves, the losing task must be
     awaited — its cancellation cleanup observed — before the scheduler
     proceeds, so no pending readiness coroutine survives into shutdown."""
-    config = _sqlite_config(tmp_path)
+    config = _postgres_config(tmp_path)
     adapter = _FakeAdapter([])
     events_ref, state = _install_run_env(monkeypatch, config, adapter)
     adapter.events = events_ref

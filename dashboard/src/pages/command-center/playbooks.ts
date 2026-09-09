@@ -23,6 +23,37 @@ export function playbookState(p: PlaybookSummary): string {
   return p.triggers?.length ? "Waiting for trigger" : "Ready to run";
 }
 
+/** Lifecycles a run can still leave on its own — everything else is history. */
+const LIVE_STATUSES = new Set(["running", "paused", "cancelling"]);
+
+/**
+ * "completed · 5m ago", or "running · 12s" while a run is still in flight.
+ *
+ * A finished run is dated from when it ended; a live one counts up from its
+ * start, which is the difference between "something happened here once" and
+ * "work is happening right now".
+ */
+export function lastRunLabel(p: PlaybookSummary, now = Date.now()): string {
+  const run = p.last_run;
+  if (!run) return "never";
+  const status = run.status.replace(/_/g, " ");
+  const at = run.completed_at ?? run.started_at;
+  if (!at) return status;
+  const seconds = Math.max(0, Math.round(now / 1000 - at));
+  if (LIVE_STATUSES.has(run.status)) return `${status} · ${elapsed(seconds)}`;
+  const since = seconds < 60 ? "just now"
+    : seconds < 3600 ? `${Math.floor(seconds / 60)}m ago`
+    : seconds < 86400 ? `${Math.floor(seconds / 3600)}h ago`
+    : `${Math.floor(seconds / 86400)}d ago`;
+  return `${status} · ${since}`;
+}
+
+function elapsed(seconds: number): string {
+  if (seconds < 60) return `${seconds}s`;
+  if (seconds < 3600) return `${Math.floor(seconds / 60)}m`;
+  return `${Math.floor(seconds / 3600)}h ${Math.floor((seconds % 3600) / 60)}m`;
+}
+
 export function playbookScope(p: PlaybookSummary) {
   return p.scope === "project" ? `Project · ${p.scope_identifier}`
     : p.scope === "system" ? "System · shared" : `${p.scope} · shared`;

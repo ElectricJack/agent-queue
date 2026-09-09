@@ -743,7 +743,7 @@ a starter template — update it as you discover project-specific patterns.
   the combined result
 
 ## Database and State Testing
-- Use temporary databases (in-memory SQLite, temp-dir-backed files)
+- Use temporary databases (a scratch PostgreSQL database per test)
   for isolation — never test against shared or production data
 - Always initialize and tear down the database in fixtures:
   `await db.initialize()` / `yield db` / `await db.close()`

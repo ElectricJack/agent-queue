@@ -12,11 +12,12 @@ from src.api.routers.proposals import build_proposals_router
 from src.database import Database
 from src.database.queries import proposal_queries
 from src.models import Project
+from tests.db_fixtures import lease_dsn
 
 
 @pytest.fixture
 async def db(tmp_path):
-    database = Database(str(tmp_path / "prop.db"))
+    database = Database(lease_dsn("prop.db"))
     await database.initialize()
     await database.create_project(Project(id="p1", name="P1"))
     yield database

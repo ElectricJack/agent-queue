@@ -28,6 +28,7 @@ from src.database.tables import (
     integration_candidate_ref_mutations,
     integration_candidate_resolutions,
     integration_repair_operations,
+    integration_repair_stages,
     project_integration_leases,
     projects,
 )
@@ -237,7 +238,13 @@ class CandidateService:
         store = await self._ensure_store(repository)
         await self._fetch_inputs(store, state)
         await self._retain_sources(store, state)
-        if revision["state"] != "built":
+        if (revision.get("head_sha") and revision["state"] in {"built", "green"}
+                and not await self._commit_exists(store, revision["head_sha"])):
+            await self._fetch_oid(
+                store, revision["head_sha"],
+                self._recovery_ref(batch_id, int(revision["revision"])),
+            )
+        if revision["state"] not in {"built", "green"}:
             try:
                 revision = await self._construct(state, revision, store, operation_id=operation_id)
             except (CandidateStaleAuthority, StaleFence, BranchBusy):
@@ -249,11 +256,33 @@ class CandidateService:
                 )
         if revision["state"] in {"conflict", "source_moved", "base_moved"}:
             return self._result(revision["state"], state, revision, operation_id)
+        # A legacy squash or accepted linear repair must not publish a candidate
+        # that loses the reviewed source ancestry. Rebuild through the existing
+        # revision fence; this also invalidates any old candidate CI evidence.
+        if not await self._has_reviewed_ancestry(store, state, revision):
+            new_base = await self.app_client.exact_head_ref(repository.default_branch)
+            if new_base is None:
+                return self._result("base_moved", state, revision, operation_id)
+            return await self.rebuild(batch_id, revision_number, new_base)
+        if revision["state"] == "green":
+            return self._result("already_built", state, revision, operation_id)
         outcome = "already_built" if was_built or batch["pr_url"] else "built"
         pushed = await self._publish(state, revision, store)
         if pushed.get("publication_wait"):
             return self._result("wait", state, pushed, operation_id)
         return self._result(outcome, state, pushed, operation_id)
+
+    async def _has_reviewed_ancestry(self, store, state, revision) -> bool:
+        for member in state["members"]:
+            ancestry = await self.git.arun_git_result(
+                ["merge-base", "--is-ancestor", member["reviewed_head_sha"], revision["head_sha"]],
+                cwd=str(store),
+            )
+            if ancestry.returncode not in {0, 1}:
+                raise RuntimeError(ancestry.stderr or "candidate ancestry check failed")
+            if ancestry.returncode == 1:
+                return False
+        return True
 
     async def rebuild(
         self, batch_id: str, expected_revision: int, new_base_sha: str
@@ -323,6 +352,9 @@ class CandidateService:
         current = await self._revision(batch_id, expected_revision)
         if current is None or not current.get("head_sha"):
             raise ValueError("current candidate revision is not recoverable")
+        preserved_head = await self._preserve_ci_repair(state, current, store, new_base_sha)
+        if preserved_head is False:
+            return self._result("human_required", state, current, state["operation"]["id"])
         await self._pin(store, self._recovery_ref(batch_id, expected_revision), current["head_sha"])
         await self._crash("after_superseded_pin")
         if await self.app_client.exact_head_ref(repository.default_branch) != authoritative_base:
@@ -406,10 +438,10 @@ class CandidateService:
                     batch_id=batch_id,
                     revision=next_revision,
                     construction_base_sha=new_base_sha,
-                    next_member_ordinal=0,
+                    next_member_ordinal=(current["next_member_ordinal"] if preserved_head else 0),
                     repair_parent_revision=expected_revision,
-                    head_sha=new_base_sha,
-                    state="constructing",
+                    head_sha=preserved_head or new_base_sha,
+                    state="built" if preserved_head else "constructing",
                     created_at=now,
                     updated_at=now,
                 )
@@ -417,8 +449,19 @@ class CandidateService:
             await conn.execute(
                 update(integration_batches)
                 .where(integration_batches.c.id == batch_id)
-                .values(current_revision=next_revision, tested_candidate_sha=None, updated_at=now)
+                .values(current_revision=next_revision, tested_candidate_sha=None,
+                        ci_evidence_id=None, updated_at=now)
             )
+            if preserved_head:
+                member_rows = (await conn.execute(select(integration_candidate_member_results).where(
+                    integration_candidate_member_results.c.batch_id == batch_id,
+                    integration_candidate_member_results.c.revision == expected_revision,
+                ))).mappings().all()
+                for member in member_rows:
+                    await conn.execute(insert(integration_candidate_member_results).values(
+                        **{**dict(member), "revision": next_revision,
+                           "created_at": now, "updated_at": now}
+                    ))
             binding = await self.repair.bind_current_batch_subject_on(
                 conn, state["operation"]["id"], now=now
             )
@@ -457,6 +500,52 @@ class CandidateService:
                         operation_id=state["operation"]["id"],
                     )
         return await self.build(batch_id)
+
+    async def _preserve_ci_repair(self, state, revision, store, new_base_sha):
+        """Merge an accepted CI-repaired candidate with main, preserving both histories."""
+        async with self.db._engine.connect() as conn:
+            dossier = (await conn.execute(select(integration_repair_stages.c.dossier).where(
+                integration_repair_stages.c.operation_id == state["operation"]["id"],
+                integration_repair_stages.c.ordinal == state["operation"]["active_stage"],
+            ))).scalar_one_or_none()
+        repairs = (dossier or {}).get("repair_commits", [])
+        if not repairs:
+            return None
+        if revision["state"] not in {"built", "testing", "green", "red"}:
+            raise ValueError("CI repair preservation requires a completed candidate")
+        if not await self._commit_exists(store, revision["head_sha"]):
+            await self._fetch_oid(store, revision["head_sha"],
+                self._recovery_ref(state["batch"]["id"], int(revision["revision"])))
+        for repair in repairs:
+            if not is_valid_git_oid(repair):
+                raise ValueError("persisted CI repair is not an exact commit")
+            ancestry = await self.git.arun_git_result(
+                ["merge-base", "--is-ancestor", repair, revision["head_sha"]], cwd=str(store))
+            if ancestry.returncode != 0:
+                raise ValueError("current candidate lost its accepted CI repair ancestry")
+        tree = await self.git.arun_git_result(
+            ["merge-tree", "--write-tree", new_base_sha, revision["head_sha"]], cwd=str(store))
+        if tree.returncode == 1:
+            return False
+        if tree.returncode != 0:
+            raise RuntimeError(tree.stderr or "CI repair preservation merge failed")
+        authored_at = f"@{int(state['batch']['created_at'])} +0000"
+        commit = await self.git.arun_git_result(
+            ["commit-tree", tree.stdout.splitlines()[0].strip(), "-p", new_base_sha,
+             "-p", revision["head_sha"], "-m", "Preserve accepted integration CI repairs on new main"],
+            cwd=str(store), env={
+                "GIT_AUTHOR_NAME": "Agent Queue Integration",
+                "GIT_AUTHOR_EMAIL": "integration@agent-queue.local",
+                "GIT_COMMITTER_NAME": "Agent Queue Integration",
+                "GIT_COMMITTER_EMAIL": "integration@agent-queue.local",
+                "GIT_AUTHOR_DATE": authored_at, "GIT_COMMITTER_DATE": authored_at,
+            })
+        if commit.returncode != 0:
+            raise RuntimeError(commit.stderr or "CI repair preservation commit failed")
+        head = commit.stdout.strip()
+        await self._pin(store, self._recovery_ref(state["batch"]["id"],
+                        int(revision["revision"]) + 1), head)
+        return head
 
     async def reserve_repair(self, request: CandidateResolutionInput) -> str:
         """Freeze an exact candidate repair from the current instance-bound writer."""
@@ -1354,7 +1443,10 @@ class CandidateService:
             )
             authored_at = f"@{int(state['batch']['created_at'])} +0000"
             committed = await self.git.arun_git_result(
-                ["commit-tree", tree_sha, "-p", current, "-m", message],
+                [
+                    "commit-tree", tree_sha, "-p", current,
+                    "-p", member["reviewed_head_sha"], "-m", message,
+                ],
                 cwd=str(store),
                 env={
                     "GIT_AUTHOR_NAME": primary["name"],
@@ -1394,6 +1486,7 @@ class CandidateService:
                 .where(integration_batches.c.id == batch_id)
                 .values(lifecycle="testing", updated_at=self.clock())
             )
+            await self.repair.bind_current_batch_subject_on(conn, operation_id, now=self.clock())
         return {**revision, "state": "built", "head_sha": current}
 
     async def _publish(self, state, revision, store):
@@ -2407,14 +2500,27 @@ class CandidateService:
 
     async def _accepted_parent_repair(self, revision, ordinal, store: Path):
         parent = revision.get("repair_parent_revision")
-        if parent is None:
-            return None
-        row = await self._member_result(revision["batch_id"], int(parent), ordinal)
-        evidence = row.get("conflict_evidence") if row else None
-        if row is None or row["result"] != "applied" or not evidence:
-            return None
-        reservation_id = evidence.get("accepted_reservation_id")
-        if not reservation_id:
+        child_revision = int(revision["revision"])
+        while parent is not None:
+            if int(parent) >= child_revision:
+                raise CandidateStaleAuthority("candidate repair revision ancestry is invalid")
+            row = await self._member_result(revision["batch_id"], int(parent), ordinal)
+            evidence = row.get("conflict_evidence") if row else None
+            if row is None or row["result"] != "applied" or not evidence:
+                return None
+            reservation_id = evidence.get("accepted_reservation_id")
+            if reservation_id:
+                break
+            if not evidence.get("accepted_lineage"):
+                return None
+            # A replay stores the validated lineage, not a new acceptance.
+            # Follow strictly older revisions back to the original reservation.
+            previous = await self._revision(revision["batch_id"], int(parent))
+            if previous is None:
+                raise CandidateStaleAuthority("candidate repair revision is missing")
+            child_revision = int(parent)
+            parent = previous.get("repair_parent_revision")
+        else:
             return None
         accepted = await self._resolution(reservation_id)
         if (

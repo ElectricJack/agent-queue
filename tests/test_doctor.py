@@ -6,7 +6,6 @@ Covers ``docs/specs/implementation/trust-and-ops.md`` §8 rows 2 and 3.
 from __future__ import annotations
 
 import asyncio
-import os
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -22,6 +21,7 @@ from src.doctor.models import (
     Severity,
 )
 from src.doctor.runner import DoctorRegistry, exit_code_for, run_doctor
+from tests.db_fixtures import lease_dsn
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -79,8 +79,9 @@ class TestRegistry:
         from src.doctor.intelligence_class_checks import intelligence_class_checks
         from src.doctor.playbook_v2_checks import playbook_v2_checks
         from src.doctor.pool_checks import pool_checks
-        from src.doctor.project_checks import project_checks
         from src.doctor.profile_checks import profile_checks
+        from src.doctor.project_checks import project_checks
+        from src.doctor.provider_checks import provider_checks
         from src.doctor.resource_checks import resource_checks
         from src.doctor.session_checks import session_checks
         from src.doctor.task_checks import task_checks
@@ -103,6 +104,7 @@ class TestRegistry:
             | {c.id for c in db_checks()}
             | {c.id for c in playbook_v2_checks()}
             | {c.id for c in project_checks()}
+            | {c.id for c in provider_checks()}
             | {c.id for c in session_checks()}
         )
         assert set(reg.ids()) == expected
@@ -378,7 +380,6 @@ class TestBuiltinCatalog:
             "vault.parse",
             "harness.binaries",
             "harness.drift",
-            "db.wal_size",
             "logs.llm_size",
             "tasks.stuck",
             "pauses.active",
@@ -389,7 +390,7 @@ class TestBuiltinCatalog:
     def test_fixable_set_matches_design(self):
         """Only the enumerated checks may declare a fix (design §5.4)."""
         fixable = {c.id for c in builtin_checks() if c.fix is not None}
-        assert fixable == {"db.wal_size", "logs.llm_size", "harness.drift"}
+        assert fixable == {"logs.llm_size", "harness.drift"}
 
     async def test_all_builtins_survive_a_bare_context(self, ctx):
         """No built-in may crash when the DB / handler are absent."""
@@ -419,7 +420,7 @@ class TestConfigParseCheck:
         path.write_text(
             f"data_dir: {d}\n"
             f"workspace_dir: {d}/ws\n"
-            f"database:\n  url: {d}/aq.db\n"
+            "database:\n  url: postgresql+asyncpg://localhost/aq_test\n"
             "discord:\n  bot_token: t-1\n  guild_id: '1'\n",
             encoding="utf-8",
         )
@@ -435,7 +436,7 @@ class TestDbChecks:
     async def test_connect_ok_on_real_db(self, tmp_path):
         from src.database import Database
 
-        db = Database(str(tmp_path / "t.db"))
+        db = Database(lease_dsn("t.db"))
         await db.initialize()
         try:
             config = AppConfig(data_dir=str(tmp_path))
@@ -453,7 +454,7 @@ class TestDbChecks:
     async def test_migrations_at_head_on_fresh_db(self, tmp_path):
         from src.database import Database
 
-        db = Database(str(tmp_path / "t.db"))
+        db = Database(lease_dsn("t.db"))
         await db.initialize()
         try:
             config = AppConfig(data_dir=str(tmp_path))
@@ -469,8 +470,9 @@ class TestDbChecks:
         from sqlalchemy import text
 
         from src.database import Database
+        from tests.pg_dsn import create_scratch_database
 
-        db = Database(str(tmp_path / "t.db"))
+        db = Database(await create_scratch_database("doctor_behind"))
         await db.initialize()
         try:
             async with db._engine.begin() as conn:
@@ -484,57 +486,8 @@ class TestDbChecks:
         finally:
             await db.close()
 
-    async def test_wal_size_ok_below_threshold(self, tmp_path):
-        from src.database import Database
-
-        path = str(tmp_path / "t.db")
-        db = Database(path)
-        await db.initialize()
-        try:
-            config = AppConfig(data_dir=str(tmp_path))
-            ctx = DoctorContext(config=config, db=db, handler=None)
-            result = await _run_single("db.wal_size", ctx)
-            assert result.severity is Severity.OK
-        finally:
-            await db.close()
-
-    async def test_wal_size_warns_above_threshold_and_fix_truncates(self, tmp_path):
-        from src.database import Database
-        from src.models import Project
-
-        path = str(tmp_path / "t.db")
-        db = Database(path)
-        await db.initialize()
-        try:
-            # Generate WAL content, then set the threshold to 0 MB so any WAL warns.
-            for i in range(50):
-                await db.create_project(Project(id=f"p-{i}", name=f"n{i}"))
-            config = AppConfig(data_dir=str(tmp_path))
-            config.security.wal_warn_mb = 1
-            ctx = DoctorContext(config=config, db=db, handler=None)
-
-            check = _get_check("db.wal_size")
-            if not os.path.exists(f"{path}-wal"):
-                pytest.skip("no WAL file produced on this platform")
-
-            # The fix must be idempotent: run it twice, both times clean.
-            first = await check.fix(ctx)
-            assert first.severity is Severity.OK
-            second = await check.fix(ctx)
-            assert second.severity is Severity.OK
-            after = await check.run(ctx)
-            assert after.severity is Severity.OK
-        finally:
-            await db.close()
-
-    async def test_wal_size_info_on_postgres(self, tmp_path):
-        config = AppConfig(data_dir=str(tmp_path))
-        # ``backend`` is inferred from the URL scheme, not settable directly.
-        config.database.url = "postgresql://u:p@localhost:5432/aq"
-        result = await _run_single(
-            "db.wal_size", DoctorContext(config=config, db=None, handler=None)
-        )
-        assert result.severity is Severity.INFO
+    def test_sqlite_wal_check_is_not_registered(self):
+        assert "db.wal_size" not in {check.id for check in builtin_checks()}
 
 
 class TestVaultParseCheck:
@@ -849,7 +802,7 @@ class TestFixIdempotency:
     async def test_double_run_on_pristine_state(self, tmp_path):
         from src.database import Database
 
-        db = Database(str(tmp_path / "t.db"))
+        db = Database(lease_dsn("t.db"))
         await db.initialize()
         try:
             config = AppConfig(data_dir=str(tmp_path))

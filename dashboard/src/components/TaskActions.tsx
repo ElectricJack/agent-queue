@@ -23,7 +23,9 @@ import {
   useProvideInput,
 } from "../api/hooks";
 import { sendChatMessage } from "../api/chat";
+import { branchesAwaitingChoice, type BranchChoice, type DiscardBranch } from "../api/branchDiscard";
 import Modal from "./Modal";
+import BranchDiscardPrompt from "./BranchDiscardPrompt";
 import TaskAgentTerminalButton from "./TaskAgentTerminalButton";
 import { workspaceHref } from "../shell/projectNavigation";
 
@@ -45,6 +47,10 @@ export default function TaskActions({ task, returnTo, onDeleted, onOpenTerminal 
   const location = useLocation();
   const [modal, setModal] = useState<ModalType>(null);
   const [textInput, setTextInput] = useState("");
+  // Set when a delete came back asking what to do about branches the subtree
+  // already put on the remote; the modal then shows them and asks.
+  const [branchPrompt, setBranchPrompt] = useState<DiscardBranch[] | null>(null);
+  const [branchChoice, setBranchChoice] = useState<BranchChoice>("keep");
 
   const stopTask = useStopTask();
   const pauseTask = usePauseTask();
@@ -90,10 +96,35 @@ export default function TaskActions({ task, returnTo, onDeleted, onOpenTerminal 
 
   const openModal = (type: ModalType) => {
     setTextInput("");
+    setBranchPrompt(null);
+    setBranchChoice("keep");
+    deleteTask.reset();
     setModal(type);
   };
 
-  const closeModal = () => setModal(null);
+  const closeModal = () => {
+    setBranchPrompt(null);
+    setModal(null);
+  };
+
+  const runDelete = (branches?: BranchChoice) => {
+    deleteTask.mutate(
+      { task_id: task.id, cascade: true, ...(branches ? { branches } : {}) },
+      {
+        onSuccess: () => {
+          closeModal();
+          onDeleted?.();
+          const destination = returnTo ?? (location.state as { from?: string } | null)?.from ?? workspaceHref(task.project_id, "tasks");
+          if (destination !== location.pathname + location.search) navigate(destination);
+        },
+        onError: (error) => {
+          // Not a failure to report — a question to put to the operator.
+          const awaiting = branchesAwaitingChoice(error);
+          if (awaiting) setBranchPrompt(awaiting);
+        },
+      },
+    );
+  };
 
   const handleSubmitModal = () => {
     if (modal === "reopen") {
@@ -101,15 +132,7 @@ export default function TaskActions({ task, returnTo, onDeleted, onOpenTerminal 
     } else if (modal === "answer") {
       provideInput.mutate({ task_id: task.id, input: textInput }, { onSuccess: closeModal });
     } else if (modal === "delete") {
-      deleteTask.mutate(
-        { task_id: task.id, cascade: true },
-        { onSuccess: () => {
-          closeModal();
-          onDeleted?.();
-          const destination = returnTo ?? (location.state as { from?: string } | null)?.from ?? workspaceHref(task.project_id, "tasks");
-          if (destination !== location.pathname + location.search) navigate(destination);
-        } },
-      );
+      runDelete(branchPrompt ? branchChoice : undefined);
     }
   };
 
@@ -255,7 +278,14 @@ export default function TaskActions({ task, returnTo, onDeleted, onOpenTerminal 
           <p className="text-sm text-gray-300">
             Delete <strong>{task.title}</strong> and any descendant tasks? This cannot be undone.
           </p>
-          {deleteTask.isError && (
+          {branchPrompt && (
+            <BranchDiscardPrompt
+              branches={branchPrompt}
+              choice={branchChoice}
+              onChoose={setBranchChoice}
+            />
+          )}
+          {deleteTask.isError && !branchPrompt && (
             <p role="alert" className="text-sm text-red-300">
               Could not delete task. {deleteTask.error.message}
             </p>
@@ -272,7 +302,11 @@ export default function TaskActions({ task, returnTo, onDeleted, onOpenTerminal 
               disabled={isPending}
               className="rounded-md bg-red-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-red-500 disabled:opacity-50"
             >
-              {isPending ? "Deleting..." : "Delete task and descendants"}
+              {isPending
+                ? "Deleting..."
+                : branchPrompt && branchChoice === "delete"
+                  ? "Delete task and branches"
+                  : "Delete task and descendants"}
             </button>
           </div>
         </div>

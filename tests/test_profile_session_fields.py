@@ -19,6 +19,7 @@ from src.profiles.parser import (
     parsed_profile_to_agent_profile,
 )
 from src.profiles.sync import sync_profile_to_db
+from tests.db_fixtures import lease_dsn
 
 SUPERVISOR_PROFILE = """---
 id: supervisor
@@ -145,7 +146,7 @@ class TestParsing:
 class TestSync:
     @pytest.fixture
     async def db(self, tmp_path):
-        database = Database(str(tmp_path / "profiles.db"))
+        database = Database(lease_dsn("profiles.db"))
         await database.initialize()
         yield database
         await database.close()

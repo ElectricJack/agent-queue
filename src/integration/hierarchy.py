@@ -95,7 +95,7 @@ async def resolve_workspace_checkpoint(db, git, task: dict, repo: RepoConfig) ->
         raise HierarchyError("dirty", "task has no exact owned integration workspace")
     checkout = workspace.workspace_path
     branch = await git.aget_current_branch(checkout, strict=True)
-    if branch != task["branch_name"]:
+    if branch != task["branch_name"].removeprefix("refs/heads/"):
         raise HierarchyError("dirty", "workspace is not on the canonical task branch")
     status = await git._arun(["status", "--porcelain"], cwd=checkout)
     if status:
@@ -105,7 +105,7 @@ async def resolve_workspace_checkpoint(db, git, task: dict, repo: RepoConfig) ->
         raise HierarchyError("dirty", "workspace HEAD is not an exact Git OID")
     from src.git.manager import RemoteRefState
 
-    remote = await git.als_remote_ref(checkout, task["branch_name"])
+    remote = await git.als_remote_ref(checkout, task["branch_name"].removeprefix("refs/heads/"))
     if remote.state is not RemoteRefState.PRESENT or remote.oid != actual_head:
         raise HierarchyError("dirty", "workspace HEAD is not exactly pushed")
     return actual_head

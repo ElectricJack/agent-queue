@@ -1500,7 +1500,8 @@ class TestValidateConfig:
         the named-session fields from
         docs/specs/implementation/supervisor-agent.md §7, and the
         pool-only sizing fields (``min_active``, ``max_active``,
-        ``max_claims_per_session``) from swarm-work-model §9.
+        ``max_claims_per_session``) from swarm-work-model §9 and
+        ``min_per_project`` from global-worker-pools §2.1.
 
         Note: none of ``model``, ``agent_name`` or ``runtime`` is a known
         key.  ``model`` was replaced by ``default_class`` (the class and the
@@ -1530,6 +1531,7 @@ class TestValidateConfig:
             "allow_base_checkout",
             "min_active",
             "max_active",
+            "min_per_project",
             "max_claims_per_session",
         }
 

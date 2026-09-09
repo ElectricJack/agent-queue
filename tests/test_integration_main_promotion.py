@@ -7,8 +7,8 @@ import hashlib
 import json
 import os
 import subprocess
-from types import SimpleNamespace
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from sqlalchemy import func, insert, select, update
@@ -27,33 +27,37 @@ from src.database.tables import (
     integration_candidate_ref_mutations,
     integration_candidate_revisions,
     integration_check_evidence,
+    integration_outbox,
     integration_promotion_intents,
     integration_repair_operations,
     integration_repair_stages,
     integration_review_evidence,
     integration_root_intent_members,
-    integration_outbox,
     project_integration_leases,
+    project_integration_schedules,
     task_delivery_receipts,
 )
+from src.git.github_app import GitHubRepositoryBinding
+from src.git.manager import GitError, GitManager
+from src.integration.attestation import IntegrationAttestationService
+from src.integration.candidates import CandidateBuildResult, CandidateService
+from src.integration.ci import ATTESTATION_CHECK_NAME, AttestationPayload
 from src.integration.main_promotion import (
     RootAttestationProof,
     RootPromotionInvariantError,
+)
+from src.integration.main_promotion import (
     RootPromotionService as _RootPromotionService,
 )
-from src.integration.attestation import IntegrationAttestationService
-from src.integration.ci import ATTESTATION_CHECK_NAME, AttestationPayload
-from src.integration.candidates import CandidateBuildResult, CandidateService
 from src.integration.models import BranchKey, Fence
 from src.integration.ownership import BranchBusy, BranchOwnership
 from src.integration.promotion import PromotionInvariantError, PromotionService
 from src.integration.repair import RepairService
-from src.git.manager import GitError, GitManager
-from src.git.github_app import GitHubRepositoryBinding
 from src.models import Project, RepoConfig, RepoSourceType
 from src.profiles.capabilities import DENY_ALL
+from tests.db_fixtures import lease_dsn
 from tests.pg_dsn import create_scratch_database, ensure_worker_postgres_dsn
-
+from tests.pg_trigger_helpers import injected_trigger, suspended_trigger
 
 BASE = "a" * 40
 HEAD = "b" * 40
@@ -133,7 +137,7 @@ async def prepared_db(tmp_path, request):
         postgres_dsn = await create_scratch_database("root_finalizer_e9")
         database = PostgreSQLDatabaseAdapter(postgres_dsn, 0, 1)
     else:
-        database = Database(str(tmp_path / "main-promotion.db"))
+        database = Database(lease_dsn("main-promotion.db"))
     await database.initialize()
     await database.create_project(Project(id="p", name="project"))
     await database.create_repo(
@@ -183,7 +187,12 @@ async def prepared_db(tmp_path, request):
                     repository_id="repo", source_base_sha=BASE,
                     reviewed_head_sha=chr(ord("c") + ordinal) * 40,
                     reviewed_tree_sha=chr(ord("e") + ordinal) * 40,
-                    review_evidence_id=f"review-{ordinal}", review_evidence={"approved": True},
+                    review_evidence_id=f"review-{ordinal}",
+                    review_evidence=dict((await conn.execute(
+                        select(integration_review_evidence).where(
+                            integration_review_evidence.c.id == f"review-{ordinal}"
+                        )
+                    )).mappings().one()),
                 )
             )
         await conn.execute(
@@ -431,7 +440,6 @@ class GitHubCLIRootProvider(RootAttestationProvider):
 
     async def installation_token(self):
         self.token_calls += 1
-        return None
 
     async def exact_head_ref(self, branch):
         assert branch == "main"
@@ -1006,7 +1014,7 @@ async def test_publication_and_main_are_ordered_in_both_directions(prepared_db):
 
 @pytest.mark.asyncio
 async def test_root_prepare_empty_replays_without_durable_side_effects(tmp_path):
-    db = Database(str(tmp_path / "empty.db"))
+    db = Database(lease_dsn("empty.db"))
     await db.initialize()
     await db.create_project(Project(id="p", name="project"))
     await db.create_repo(
@@ -1186,17 +1194,25 @@ async def test_public_root_finalization_rejects_incomplete_frozen_member_set(
     prepared = await service.prepare("batch", 0)
     async with db.immediate() as conn:
         if corruption == "missing":
-            await conn.exec_driver_sql("DROP TRIGGER trg_integration_root_member_delete")
-            await conn.exec_driver_sql(
-                "DELETE FROM integration_root_intent_members WHERE member_ordinal = 1"
-            )
+            async with suspended_trigger(
+                conn,
+                table="integration_root_intent_members",
+                name="trg_integration_root_member_delete",
+            ):
+                await conn.exec_driver_sql(
+                    "DELETE FROM integration_root_intent_members WHERE member_ordinal = 1"
+                )
         else:
-            await conn.exec_driver_sql("DROP TRIGGER trg_integration_root_member_update")
-            await conn.execute(
-                update(integration_root_intent_members)
-                .where(integration_root_intent_members.c.member_ordinal == 0)
-                .values(result_evidence={"drift": True})
-            )
+            async with suspended_trigger(
+                conn,
+                table="integration_root_intent_members",
+                name="trg_integration_root_member_update",
+            ):
+                await conn.execute(
+                    update(integration_root_intent_members)
+                    .where(integration_root_intent_members.c.member_ordinal == 0)
+                    .values(result_evidence={"drift": True})
+                )
     app.remote = HEAD
 
     with pytest.raises(RootPromotionInvariantError, match="root finalization"):
@@ -1214,40 +1230,17 @@ async def test_public_root_finalization_rejects_incomplete_frozen_member_set(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("terminal", "trigger"),
+    ("terminal", "table", "condition"),
     [
-        (
-            "candidate",
-            "CREATE TRIGGER lose_root_candidate_cas BEFORE UPDATE ON "
-            "integration_candidate_revisions WHEN NEW.state = 'promoted' "
-            "BEGIN SELECT RAISE(IGNORE); END",
-        ),
-        (
-            "batch",
-            "CREATE TRIGGER lose_root_batch_cas BEFORE UPDATE ON integration_batches "
-            "WHEN NEW.lifecycle = 'promoted' BEGIN SELECT RAISE(IGNORE); END",
-        ),
-        (
-            "stage",
-            "CREATE TRIGGER lose_root_stage_cas BEFORE UPDATE ON integration_repair_stages "
-            "WHEN NEW.state = 'passed' BEGIN SELECT RAISE(IGNORE); END",
-        ),
-        (
-            "operation",
-            "CREATE TRIGGER lose_root_operation_cas BEFORE UPDATE ON "
-            "integration_repair_operations WHEN NEW.state = 'completed' "
-            "BEGIN SELECT RAISE(IGNORE); END",
-        ),
-        (
-            "intent",
-            "CREATE TRIGGER lose_root_intent_cas BEFORE UPDATE ON "
-            "integration_promotion_intents WHEN NEW.state = 'committed' "
-            "BEGIN SELECT RAISE(IGNORE); END",
-        ),
+        ("candidate", "integration_candidate_revisions", "NEW.state = 'promoted'"),
+        ("batch", "integration_batches", "NEW.lifecycle = 'promoted'"),
+        ("stage", "integration_repair_stages", "NEW.state = 'passed'"),
+        ("operation", "integration_repair_operations", "NEW.state = 'completed'"),
+        ("intent", "integration_promotion_intents", "NEW.state = 'committed'"),
     ],
 )
 async def test_public_root_finalization_rolls_back_every_lost_terminal_cas(
-    prepared_db, terminal, trigger
+    prepared_db, terminal, table, condition
 ):
     db, data_dir = prepared_db
     app = FakeAppClient()
@@ -1256,21 +1249,74 @@ async def test_public_root_finalization_rolls_back_every_lost_terminal_cas(
         db, data_dir=data_dir, git_manager=git, app_client=app, clock=lambda: 10.0
     )
     prepared = await service.prepare("batch", 0)
+    async with injected_trigger(
+        db,
+        name=f"lose_root_{terminal}_cas",
+        table=table,
+        event="UPDATE",
+        condition=condition,
+        body="RETURN NULL;",
+    ):
+        app.remote = HEAD
+
+        with pytest.raises(RootPromotionInvariantError, match="terminal CAS failed"):
+            await service.reconcile(prepared.intent_id)
+
+        async with db._engine.connect() as conn:
+            assert await conn.scalar(select(func.count()).select_from(task_delivery_receipts)) == 0
+            assert await conn.scalar(select(func.count()).select_from(integration_outbox)) == 0
+            assert await conn.scalar(select(integration_candidate_revisions.c.state)) == "green"
+            assert await conn.scalar(select(integration_batches.c.lifecycle)) == "promoting"
+            assert (
+                await conn.scalar(select(integration_repair_stages.c.state))
+                == "awaiting_completion"
+            )
+            assert await conn.scalar(select(integration_repair_operations.c.state)) == "active"
+            assert await conn.scalar(select(integration_promotion_intents.c.state)) == "pushed"
+
+
+@pytest.mark.asyncio
+
+
+@pytest.mark.parametrize("intent_state", ["prepared", "pushed"])
+async def test_scheduler_renews_expired_frozen_root_authority(prepared_db, intent_state):
+    from src.integration.scheduler import IntegrationScheduler
+
+    db, data_dir = prepared_db
     async with db.immediate() as conn:
-        await conn.exec_driver_sql(trigger)
-    app.remote = HEAD
-
-    with pytest.raises(RootPromotionInvariantError, match="terminal CAS failed"):
-        await service.reconcile(prepared.intent_id)
-
+        await conn.execute(update(project_integration_leases).values(owner_id="sealer-batch"))
+        await conn.execute(insert(project_integration_schedules).values(
+            project_id="p", enabled=True, interval_seconds=3600, next_due_at=3601,
+            request_sequence=1, outstanding_request_id="request", outstanding_trigger="manual",
+            outstanding_requested_at=1, updated_at=1,
+        ))
+    now = [10.0]
+    app = FakeAppClient()
+    service = RootPromotionService(
+        db, data_dir=data_dir, git_manager=PushGit(app), app_client=app, clock=lambda: now[0]
+    )
+    prepared = await service.prepare("batch", 0)
+    async with db.immediate() as conn:
+        if intent_state == "pushed":
+            await conn.execute(update(integration_promotion_intents).values(state="pushed"))
+        intent_before = dict((await conn.execute(select(integration_promotion_intents))).mappings().one())
+        await conn.execute(update(project_integration_leases).values(expires_at=20))
+    now[0] = 400
+    scheduler = IntegrationScheduler(db)
+    assert [row["project_id"] for row in await db.due_integration_schedule_page(
+        now=400, after=None, limit=10
+    )] == ["p"]
+    await scheduler.mark_due("p", 400, "periodic")
     async with db._engine.connect() as conn:
-        assert await conn.scalar(select(func.count()).select_from(task_delivery_receipts)) == 0
-        assert await conn.scalar(select(func.count()).select_from(integration_outbox)) == 0
-        assert await conn.scalar(select(integration_candidate_revisions.c.state)) == "green"
-        assert await conn.scalar(select(integration_batches.c.lifecycle)) == "promoting"
-        assert await conn.scalar(select(integration_repair_stages.c.state)) == "awaiting_completion"
-        assert await conn.scalar(select(integration_repair_operations.c.state)) == "active"
-        assert await conn.scalar(select(integration_promotion_intents.c.state)) == "pushed"
+        lease = (await conn.execute(select(project_integration_leases))).mappings().one()
+        intent_after = dict((await conn.execute(select(integration_promotion_intents))).mappings().one())
+    assert intent_after == intent_before
+    assert lease["fence_token"] == intent_before["project_lease_fence_token"]
+    assert lease["owner_id"] == intent_before["project_lease_owner_id"]
+    assert lease["expires_at"] == 700
+    app.remote = HEAD
+    result = await service.reconcile(prepared.intent_id)
+    assert result.outcome == "promoted"
 
 
 @pytest.mark.asyncio
@@ -1916,25 +1962,26 @@ async def test_authenticated_descendant_is_imported_before_real_ancestry_proof(p
         text=True,
     ).stdout.strip()
     _git(origin, "update-ref", "refs/heads/main", descendant)
-    assert subprocess.run(
-        ["git", "cat-file", "-e", f"{descendant}^{{commit}}"], cwd=store
-    ).returncode != 0
+    assert (
+        subprocess.run(["git", "cat-file", "-e", f"{descendant}^{{commit}}"], cwd=store).returncode
+        != 0
+    )
 
     async with db.immediate() as conn:
         # Rebind the generic fixture to the real object graph before the root
         # intent exists; publication immutability itself is covered elsewhere.
-        await conn.exec_driver_sql("DROP TRIGGER trg_candidate_publication_identity")
         await conn.execute(
             update(integration_candidate_revisions).values(
                 construction_base_sha=base, head_sha=head
             )
         )
-        await conn.execute(
-            update(integration_batches).values(tested_candidate_sha=head)
-        )
-        await conn.execute(
-            update(integration_candidate_publications).values(head_sha=head)
-        )
+        await conn.execute(update(integration_batches).values(tested_candidate_sha=head))
+        async with suspended_trigger(
+            conn,
+            table="integration_candidate_publications",
+            name="trg_candidate_publication_monotone",
+        ):
+            await conn.execute(update(integration_candidate_publications).values(head_sha=head))
 
     class LocalExactFetchGit(GitManager):
         async def afetch_exact_oid_with_app_auth(self, destination_git_dir, **kwargs):
@@ -1955,11 +2002,14 @@ async def test_authenticated_descendant_is_imported_before_real_ancestry_proof(p
         clock=lambda: 10.0,
     ).promote("batch", 0)
     assert result.outcome == "promoted"
-    assert _git(
-        store,
-        "rev-parse",
-        f"refs/aq/root-main-observed/{result.intent_id}^{{commit}}",
-    ) == descendant
+    assert (
+        _git(
+            store,
+            "rev-parse",
+            f"refs/aq/root-main-observed/{result.intent_id}^{{commit}}",
+        )
+        == descendant
+    )
 
 
 @pytest.mark.asyncio

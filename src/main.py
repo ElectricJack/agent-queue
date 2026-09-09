@@ -122,11 +122,6 @@ async def run(config_path: str, profile: str | None = None) -> bool:
         console_format=config.logging.console_format,
     )
 
-    # Ensure database directory exists (SQLite only)
-    if config.database.backend == "sqlite":
-        db_path = config.database.url or config.database_path
-        os.makedirs(os.path.dirname(db_path), exist_ok=True)
-
     orch = Orchestrator(config, runtimes=None)
 
     # Daemon-wide doctor registry: built-in checks now; subsystem-contributed

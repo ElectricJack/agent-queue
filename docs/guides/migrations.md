@@ -33,7 +33,7 @@ Verifying reads `alembic_version`, and raises rather than repairing:
 * anything else → `SchemaBehindCode`: *schema behind code; ask the operator to
   upgrade*.
 
-Every other database — every `tmp_path` SQLite file, every per-xdist-worker
+Every other database — every leased test database, every per-xdist-worker
 Postgres database, every e2e scratch DSN — is not production and migrates
 exactly as it always did.
 

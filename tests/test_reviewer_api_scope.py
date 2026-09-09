@@ -25,12 +25,13 @@ from src.api.execute import router as execute_router
 from src.api.middleware import TokenAuthMiddleware
 from src.api.scope import _FINAL_REVIEWER_COMMANDS, _TRIAGE_COMMANDS
 from src.commands.handler import CommandHandler
-from src.config import AppConfig, DiscordConfig
+from src.config import DatabaseConfig, AppConfig, DiscordConfig
 from src.database import Database
 from src.git.manager import PullRequestIdentity
 from src.models import Agent, AgentProfile, AgentState, Project, SessionRecord, Task, TaskStatus
 from src.orchestrator import Orchestrator
 from src.vault import ensure_default_intelligence_classes
+from tests.db_fixtures import lease_dsn
 
 #: The identity ``pr_merge`` resolves for the final reviewer's PR.  ``gh``
 #: never runs in this test, so the OIDs only have to be well-formed.
@@ -53,13 +54,13 @@ def generated_routers():
 
 @pytest.fixture(params=["execute", "typed"])
 async def api(tmp_path, monkeypatch, request, generated_routers):
-    db = Database(str(tmp_path / "reviewer-auth.db"))
+    db = Database(lease_dsn("reviewer-auth.db"))
     await db.initialize()
     data_dir = str(tmp_path / "data")
     ensure_default_intelligence_classes(data_dir)
     config = AppConfig(
         discord=DiscordConfig(bot_token="test", guild_id="1"),
-        database_path=str(tmp_path / "reviewer-auth.db"),
+        database=DatabaseConfig(url=lease_dsn("reviewer-auth.db")),
         workspace_dir=str(tmp_path / "workspaces"),
         data_dir=data_dir,
     )

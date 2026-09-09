@@ -38,13 +38,14 @@ from src.git.manager import GitError, GitManager
 from src.integration.models import BranchKey, Fence, PromotionInput
 from src.integration.ownership import BranchOwnership
 from src.models import Project, RepoConfig, RepoSourceType, SessionRecord, Task, TaskStatus
+from tests.db_fixtures import lease_dsn
 
 _DEFAULT_INSTANCE = object()
 
 
 @pytest.fixture
 async def db(tmp_path):
-    database = Database(str(tmp_path / "promotion.db"))
+    database = Database(lease_dsn("promotion.db"))
     await database.initialize()
     await database.create_project(Project(id="project", name="Promotion project"))
     await database.create_repo(
@@ -856,7 +857,9 @@ async def test_clean_promotion_is_retained_attributed_pushed_and_reconciled(db, 
         _git(["rev-parse", f"refs/aq/integration-intents/{prepared.intent_id}"], retained)
         == prepared.prepared_sha
     )
-    assert _git(["show", "-s", "--format=%P", prepared.prepared_sha], retained) == case["base"]
+    assert _git(["show", "-s", "--format=%P", prepared.prepared_sha], retained).split() == [
+        case["base"], case["request"].source_head,
+    ]
     assert _git(["show", "-s", "--format=%ae", prepared.prepared_sha], retained) == (
         "alice@example.test"
     )
@@ -1601,10 +1604,10 @@ async def test_clean_promotion_preserves_independent_parent_changes(db, promotio
     await service.push(prepared.intent_id, case["fence"])
 
     retained = next((case["data_dir"] / "integration-repositories").glob("*.git"))
-    assert _git(["show", "-s", "--format=%P", prepared.prepared_sha], retained) == target
+    assert _git(["show", "-s", "--format=%P", prepared.prepared_sha], retained) == f"{target} {request.source_head}"
     assert _git(["show", f"{prepared.prepared_sha}:parent.txt"], retained) == "parent-only"
     assert _git(["show", f"{prepared.prepared_sha}:child.txt"], retained) == "one\ntwo"
-    assert _git(["rev-list", "--count", f"{target}..{prepared.prepared_sha}"], retained) == "1"
+    assert _git(["rev-list", "--first-parent", "--count", f"{target}..{prepared.prepared_sha}"], retained) == "1"
 
 
 async def test_late_push_marker_cannot_regress_a_committed_intent(db, promotion_case):
@@ -1653,7 +1656,7 @@ class CrashOnce:
         "before_outbox_ack",
     ],
 )
-async def test_crash_retries_make_one_squash_and_one_receipt(db, promotion_case, phase):
+async def test_crash_retries_make_one_merge_and_one_receipt(db, promotion_case, phase):
     from src.integration.promotion import PromotionService
 
     case = promotion_case
@@ -1691,7 +1694,7 @@ async def test_crash_retries_make_one_squash_and_one_receipt(db, promotion_case,
     ).split()[0]
     audit = case["data_dir"] / "integration-repositories"
     retained = next(audit.glob("*.git"))
-    assert _git(["rev-list", "--count", f"{case['base']}..{remote_tip}"], retained) == "1"
+    assert _git(["rev-list", "--first-parent", "--count", f"{case['base']}..{remote_tip}"], retained) == "1"
     async with db._engine.connect() as conn:
         assert await conn.scalar(select(func.count()).select_from(task_delivery_receipts)) == 1
         assert await conn.scalar(select(func.count()).select_from(integration_outbox)) == 2

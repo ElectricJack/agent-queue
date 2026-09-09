@@ -9,11 +9,14 @@ import pytest
 
 from src.api.auth import LOCAL_SCOPE, RequestScope, SessionTokenStore, TOKEN_PREFIX
 from src.database import Database
+from tests.db_fixtures import lease_dsn
+
+pytestmark = pytest.mark.usefixtures("unpooled_postgres")
 
 
 class TestApiSessionTokenQueries:
     async def _db(self, tmp_path):
-        db = Database(str(tmp_path / "auth.db"))
+        db = Database(lease_dsn("auth.db"))
         await db.initialize()
         return db
 
@@ -129,7 +132,7 @@ class TestApiSessionTokenQueries:
 
 class TestSessionTokenStore:
     async def _store(self, tmp_path, *, ttl_hours=72):
-        db = Database(str(tmp_path / "store.db"))
+        db = Database(lease_dsn("store.db"))
         await db.initialize()
         return db, SessionTokenStore(db, ttl_hours=ttl_hours)
 
@@ -335,7 +338,7 @@ async def _seed_session_identity(db, *, session_ids, profile_id="worker"):
 
 
 async def _seed_app(tmp_path, *, require=False):
-    db = Database(str(tmp_path / "mw.db"))
+    db = Database(lease_dsn("mw.db"))
     await db.initialize()
 
     orch = MagicMock()
@@ -555,7 +558,7 @@ class TestTokenAuthMiddleware:
 
 class TestRevokeExpiredCascade:
     async def test_revoke_expired_runs_when_flag_on(self, tmp_path):
-        db = Database(str(tmp_path / "cascade.db"))
+        db = Database(lease_dsn("cascade.db"))
         await db.initialize()
         store = SessionTokenStore(db, ttl_hours=72)
         await db.insert_api_token(
@@ -573,7 +576,7 @@ class TestRevokeExpiredCascade:
 
 class TestWebSocketAuth:
     async def test_invalid_token_rejects_handshake(self, tmp_path):
-        db = Database(str(tmp_path / "ws.db"))
+        db = Database(lease_dsn("ws.db"))
         await db.initialize()
         from fastapi import FastAPI, WebSocket
         from src.api.websocket import WebSocketManager
@@ -609,7 +612,7 @@ class TestWebSocketAuth:
             await db.close()
 
     async def test_no_token_permits_connection_when_not_required(self, tmp_path):
-        db = Database(str(tmp_path / "ws2.db"))
+        db = Database(lease_dsn("ws2.db"))
         await db.initialize()
         from starlette.applications import Starlette
         from starlette.routing import WebSocketRoute
@@ -651,7 +654,7 @@ class TestPrimeScopeResolution:
         from src.commands.handler import CommandHandler as _CH
         from src.models import Project, Task, TaskStatus
 
-        db = Database(str(tmp_path / "prime.db"))
+        db = Database(lease_dsn("prime.db"))
         await db.initialize()
         await db.create_project(Project(id="p1", name="P1"))
         await db.create_task(
@@ -715,7 +718,7 @@ class TestPrimeScopeResolution:
     async def test_prime_without_scope_or_arg_still_errors(self, tmp_path):
         from src.commands.handler import CommandHandler as _CH
 
-        db = Database(str(tmp_path / "prime2.db"))
+        db = Database(lease_dsn("prime2.db"))
         await db.initialize()
         orch = MagicMock()
         orch.db = db
@@ -735,7 +738,7 @@ class TestPrimeScopeResolution:
         from src.commands.handler import CommandHandler as _CH
         from src.models import Project, SessionRecord, Task, TaskStatus
 
-        db = Database(str(tmp_path / "close.db"))
+        db = Database(lease_dsn("close.db"))
         await db.initialize()
         await db.create_project(Project(id="p1", name="P1"))
         await db.create_task(
@@ -799,7 +802,7 @@ class TestPrimeScopeResolution:
         from src.commands.handler import CommandHandler as _CH
         from src.models import Project, SessionRecord, Task, TaskStatus
 
-        db = Database(str(tmp_path / "close_raise.db"))
+        db = Database(lease_dsn("close_raise.db"))
         await db.initialize()
         await db.create_project(Project(id="p1", name="P1"))
         await db.create_task(
@@ -860,7 +863,7 @@ class TestPrimeScopeResolution:
         from src.commands.handler import CommandHandler as _CH
         from src.models import Project, SessionRecord, Task, TaskStatus
 
-        db = Database(str(tmp_path / "close_wrong.db"))
+        db = Database(lease_dsn("close_wrong.db"))
         await db.initialize()
         await db.create_project(Project(id="p1", name="P1"))
         await db.create_task(
@@ -942,7 +945,7 @@ async def _seed_codegen_app(tmp_path, cmd_name: str, *, require: bool = False):
     """Build an app with a single codegen-generated typed route for ``cmd_name``."""
     from src.api.codegen import _make_route_handler
 
-    db = Database(str(tmp_path / f"{cmd_name}.db"))
+    db = Database(lease_dsn("{cmd_name}.db"))
     await db.initialize()
 
     orch = MagicMock()
@@ -1091,7 +1094,7 @@ async def _seed_typed_surface_app(tmp_path, monkeypatch, generated_routers, stub
     Returns ``(db, store, ch, app, paths)`` where ``paths`` maps
     operation_id → typed route path.
     """
-    db = Database(str(tmp_path / "typed-surface.db"))
+    db = Database(lease_dsn("typed-surface.db"))
     await db.initialize()
 
     orch = MagicMock()

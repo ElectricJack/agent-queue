@@ -537,8 +537,10 @@ class ClaimCommandsMixin:
                 project, "hierarchical_integration_mode", "disabled"
             ) in {"hierarchy", "train"}
 
-            async def prepare_and_activate(*, conn=None, base_branch=None):
+            async def prepare_and_activate(*, conn=None, base_branch=None, target_branch=None):
                 reset_kwargs = {"base_branch": base_branch} if base_branch else {}
+                if target_branch is not None:
+                    reset_kwargs["target_branch"] = target_branch
                 await self.orchestrator._worktree_slots().reset_slot_for_task(
                     slot, task, **reset_kwargs
                 )
@@ -566,6 +568,12 @@ class ClaimCommandsMixin:
                     task, project
                 )
                 ownership = BranchOwnership(self.db)
+                base_sha = origin["base_sha"]
+                if owner_role == "repair":
+                    async with ownership.mutation_exclusion(fence, expected_role=owner_role):
+                        base_sha = await self.orchestrator._hierarchy_repair_start(
+                            slot.workspace_path, origin, fence
+                        )
                 await ownership.attach(
                     fence,
                     session.id,
@@ -578,7 +586,7 @@ class ClaimCommandsMixin:
                     fence, state="attached", expected_role=owner_role
                 ) as conn:
                     fresh = await prepare_and_activate(
-                        conn=conn, base_branch=origin["base_sha"]
+                        conn=conn, base_branch=base_sha, target_branch=fence.target.branch
                     )
             else:
                 fresh = await prepare_and_activate()

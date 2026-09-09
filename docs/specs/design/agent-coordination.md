@@ -258,6 +258,27 @@ The scheduler continues to handle:
 - **Fairness** — deficit-based allocation across projects
 - **Assignment mechanics** — lock workspace, launch adapter process
 
+### Agent Liveness Has One Definition
+
+An agent is **live** when it owns a live session (`starting` / `running` /
+`draining`) whose `sessions.last_activity` is inside the session lease TTL.
+That is the only definition; every surface — `aq agent list`, the agents API
+(`live` / `last_activity` on `AgentSummary`), the MCP `agentqueue://agents`
+resources — reads it from `src/agents/liveness.py`, which is also where the
+stall ladder's notion of activity comes from.
+
+`agents.last_heartbeat` is **task-scoped** and is not liveness. Its only
+writers are `aq task heartbeat` (`_cmd_task_heartbeat`) and the transcript
+watcher's in-turn tail, and both require the agent to be holding a task. A
+pool worker parked in `aq task claim --next --wait 60` holds no task, so its
+heartbeat stays at whatever the last task left there: an idle-but-healthy
+worker reads as hours stale, and a reader concludes the fleet is hung when it
+is not. The field remains in the schema because it is load bearing as a
+lease/reservation fence — `reserve_agent` compare-and-sets on it, and the
+agent reconciler uses it as a grace window for a launch that has not attached
+a session yet — but it must be labelled as the task heartbeat wherever it is
+surfaced, never as liveness.
+
 ### What Coordination Playbooks Own: Workflow Structure
 
 Coordination playbooks define **what work exists and how it relates** — they build
@@ -309,9 +330,13 @@ a second, opt-in mode alongside it, split by profile `lifecycle`: `lifecycle: ta
 profiles keep push unchanged; `lifecycle: pool` profiles instead pull — a fixed-size pool
 of long-running sessions each call `aq task claim [--next] [--wait S]` against the ready
 frontier the coordination-playbook DAG already produces. The scheduler still owns *how
-many* pool sessions exist per `(project, profile)` (`_reconcile_pools` in
+many* pool sessions exist per **profile**, fleet-wide (`_reconcile_pools` in
 `src/orchestrator/pools.py`, sized by `size_pools` in `src/scheduler.py` — the same
-deficit/fair-share caps as push) and *which* work is admissible (project state, budget);
+deficit/fair-share caps as push), *which project* each of them launches into
+(`place_pool_actions`, where per-project caps, workspace capacity, quarantine and the
+`min_per_project` warm floor apply — see
+`docs/superpowers/specs/2026-09-08-global-worker-pools-design.md`), and *which* work is
+admissible (project state, budget);
 a pool session only decides *which admissible task it takes next*, because the consumer
 is the only party that knows precisely when it is free. Off by default
 (`swarm.enabled: false`); nothing above this section changes when it is on.

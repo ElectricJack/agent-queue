@@ -4,7 +4,7 @@ Everything in **CLAUDE.md** applies here too — read it first for the repo map,
 
 ## Testing — read this before running anything
 
-The suite is **11,330 tests** and, until the schema-cache work lands, every fresh test database replays 58 alembic migrations (~8 s each, ~2,700 tests pay it). A full run takes **~14 minutes on 24 cores and effectively never finishes serially**. Running it casually stalls every agent on the machine.
+The suite is **~13,950 tests** (13,816 collected after the default marker deselects). The old per-database replay of 58 alembic migrations is gone — `migrations/versions/` is a squashed baseline plus two revisions, so a fresh test database is cheap and schema setup is no longer the dominant cost. The *suite* still is: a full run is a whole-box, many-minute affair even on 24 cores and **effectively never finishes serially**. Running it casually stalls every agent on the machine.
 
 Rules:
 - **Use `aq test`, not bare `pytest`, for anything past a single file.** It takes one of the box's global test slots first, so eight agents testing at once cannot become 200 test processes, and it applies the worker cap and the default marker deselects for you. Everything that is not an `--aq-*` option goes to pytest untouched:
@@ -40,7 +40,7 @@ stamped `alembic_version` with an unmerged branch's revision, after which the
 daemon refused to boot until an operator hand-wrote a merge revision.
 
 - Your session carries `AQ_DB_SCOPE=worker` and `AQ_DATABASE_URL` /
-  `AGENT_QUEUE_DB` pointing at a per-slot scratch SQLite file. Leave all
+  `AGENT_QUEUE_DB` set to a refusal sentinel. Leave all
   three alone. Tests build their own temporary databases and are unaffected.
 - `run_schema_setup` refuses to migrate the production URL from any scope but
   `daemon`/`operator`, and instead raises **"schema behind code; ask the

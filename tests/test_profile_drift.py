@@ -30,6 +30,8 @@ from src.profiles.drift import (
     scan_profile_drift,
     system_profile_ids,
 )
+from tests.db_fixtures import lease_dsn
+from src.config import DatabaseConfig
 
 # ``src/doctor/__init__.py`` rebinds the package attribute ``profile_checks``
 # to the *factory function*, shadowing the submodule; sys.modules is the only
@@ -369,7 +371,7 @@ async def handler(tmp_path):
     from src.orchestrator import Orchestrator
 
     config = AppConfig(
-        database_path=str(tmp_path / "test.db"),
+        database=DatabaseConfig(url=lease_dsn("test.db")),
         workspace_dir=str(tmp_path / "workspaces"),
         data_dir=str(tmp_path / "data"),
     )

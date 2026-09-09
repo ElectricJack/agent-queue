@@ -18,7 +18,7 @@ from pathlib import Path
 
 import pytest
 
-from src.config import AppConfig
+from src.config import DatabaseConfig, AppConfig
 from src.models import (
     Agent,
     AgentProfile,
@@ -34,6 +34,7 @@ from src.models import (
 from src.orchestrator import Orchestrator
 from src.orchestrator.worktree_manager import WorktreeSlotManager, slot_path
 from src.runtimes.base import Runtime
+from tests.db_fixtures import lease_dsn
 
 
 def _git(args: list[str], cwd: str | Path) -> str:
@@ -75,7 +76,7 @@ def base_repo(tmp_path: Path) -> Path:
 async def _orch(tmp_path: Path, *, worktrees_enabled: bool) -> Orchestrator:
     config = AppConfig(
         data_dir=str(tmp_path / "data"),
-        database_path=str(tmp_path / "aq.db"),
+        database=DatabaseConfig(url=lease_dsn("aq.db")),
         workspace_dir=str(tmp_path / "workspaces"),
     )
     config.worktrees.enabled = worktrees_enabled

@@ -298,7 +298,9 @@ class GitHubAppClient:
     async def has_comment_marker(self, *, number: int, marker: str) -> bool:
         if not marker or "\n" in marker:
             raise ValueError("comment marker must be one non-empty line")
-        path = f"/repositories/{self.repository.repository_id}/issues/{number}/comments?per_page=100"
+        path = (
+            f"/repositories/{self.repository.repository_id}/issues/{number}/comments?per_page=100"
+        )
         for comment in await self.paged_list(path):
             if marker in str(comment.get("body") or ""):
                 return True
@@ -365,6 +367,42 @@ class GitHubAppClient:
         ):
             raise ValueError("candidate audit ref identity was malformed")
         marker = self._audit_marker(idempotency_key)
+        pulls = await self.paged_list(
+            f"/repositories/{self.repository.repository_id}/pulls?state=open&per_page=100"
+        )
+        matches = [
+            pull
+            for pull in pulls
+            if isinstance(pull.get("head"), dict) and pull["head"].get("ref") == branch
+        ]
+        if matches:
+            if len(matches) != 1:
+                raise GitHubAppError("conflict_or_invalid", "audit PR branch was not unique")
+            existing = matches[0]
+            body = str(existing.get("body") or "")
+            old_markers = re.findall(r"<!-- aq-integration-audit:([0-9a-f]{64}) -->", body)
+            if not old_markers or f"Root integration batch `{batch_id}`." not in body:
+                raise GitHubAppError("conflict_or_invalid", "existing PR belongs to another batch")
+            result = self._audit_pull_request(existing, old_markers[0])
+            if result.head_sha != head_sha or result.base_branch != base_branch:
+                raise GitHubAppError("conflict_or_invalid", "existing audit PR target moved")
+            if marker not in body:
+                existing = await self.request_json(
+                    "PATCH",
+                    f"/repositories/{self.repository.repository_id}/pulls/{result.number}",
+                    json_body={"body": f"{body}\n{marker}"},
+                )
+            result = self._audit_pull_request(existing, idempotency_key)
+            if (
+                result.head_sha != head_sha
+                or result.head_branch != branch
+                or result.base_branch != base_branch
+                or existing.get("state") != "open"
+            ):
+                raise GitHubAppError(
+                    "conflict_or_invalid", "audit PR changed during revision update"
+                )
+            return result
         payload = await self.request_json(
             "POST",
             f"/repositories/{self.repository.repository_id}/pulls",
@@ -541,9 +579,7 @@ class GitHubAppClient:
             try:
                 page = json.loads(response.body)
             except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-                raise GitHubAppError(
-                    "conflict_or_invalid", "GitHub page was malformed"
-                ) from exc
+                raise GitHubAppError("conflict_or_invalid", "GitHub page was malformed") from exc
             if not isinstance(page, list) or not all(isinstance(item, dict) for item in page):
                 raise GitHubAppError("conflict_or_invalid", "GitHub page was malformed")
             items.extend(page)

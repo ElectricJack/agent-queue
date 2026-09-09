@@ -10,9 +10,9 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from src.commands.handler import CommandHandler
-from src.config import AppConfig, DiscordConfig
+from src.config import DatabaseConfig, AppConfig, DiscordConfig
 from src.database import Database
-from src.database.tables import task_branch_origins
+from src.database.tables import task_branch_origins, task_metadata
 from src.intelligence_classes import IntelligenceClass
 from src.integration.models import BranchKey
 from src.integration.ownership import BranchOwnership
@@ -31,6 +31,7 @@ from src.models import (
 from src.orchestrator import Orchestrator
 from src.sessions import SessionProviderRegistry
 from src.sessions.reconciler import SessionReconciler
+from tests.db_fixtures import lease_dsn
 
 PROJECT_ID = "proj"
 NOW = time.time()
@@ -38,7 +39,7 @@ NOW = time.time()
 
 @pytest.fixture
 async def db(tmp_path):
-    database = Database(str(tmp_path / "test.db"))
+    database = Database(lease_dsn("test.db"))
     await database.initialize()
     await database.create_project(Project(id=PROJECT_ID, name="p"))
     await database.create_profile(
@@ -53,7 +54,7 @@ def config(tmp_path):
     cfg = AppConfig(
         discord=DiscordConfig(bot_token="t", guild_id="1"),
         workspace_dir=str(tmp_path / "ws"),
-        database_path=str(tmp_path / "test.db"),
+        database=DatabaseConfig(url=lease_dsn("test.db")),
         data_dir=str(tmp_path / "data"),
     )
     cfg.sessions.enabled = True
@@ -212,6 +213,7 @@ class TestClaim:
         assert result["result"] == "claimed"
         reset = handler.orchestrator._worktree_slots.return_value.reset_slot_for_task
         assert reset.await_args.kwargs["base_branch"] == "a" * 40
+        assert reset.await_args.kwargs["target_branch"] == "aq/child"
         owner = await ownership.get_owner(
             BranchKey(repository_id="repo", branch="aq/child")
         )
@@ -359,6 +361,51 @@ class TestClaim:
         assert (session.desired_state, session.task_id) == ("running", "t2")
         assert (task.status, task.assigned_agent_id) == (TaskStatus.IN_PROGRESS, "agent-1")
 
+    @pytest.mark.parametrize("status", [TaskStatus.PAUSED, TaskStatus.BLOCKED, TaskStatus.FAILED])
+    async def test_reclaimed_pool_claim_retains_its_slot_for_the_next_claim(
+        self, handler, db, tmp_path, status
+    ):
+        """A live worker can claim again after the reconciler releases its slot."""
+        handler.config.swarm.fresh_context_per_task = False
+        await db.update_profile("worker", max_claims_per_session=None)
+        await mktask(db, "t1", profile_id="worker")
+        sid, _ = await pool_session(db, tmp_path)
+        await db.create_project(Project(id="other-project", name="other"))
+        await db.create_workspace(
+            Workspace(
+                id="ws-other-project",
+                project_id="other-project",
+                workspace_path=str(tmp_path / "agent-1"),
+                kind_id="project-repo",
+                source_type=RepoSourceType.LINK,
+            )
+        )
+        h = scoped(handler, sid)
+        await h._cmd_task_claim({"next": True})
+
+        await db.transition_task("t1", status, context="test", force=True)
+        reconciler = SessionReconciler(
+            db,
+            handler.config,
+            SessionProviderRegistry({}),
+            bus=handler.orchestrator.bus,
+            orchestrator=handler.orchestrator,
+            epoch="test",
+        )
+        await reconciler._step_orphans(await db.list_sessions(live_only=True), time.time())
+        assert (await db.get_session(sid)).task_id is None
+        assert (await db.get_workspace_for_agent("agent-1")).locked_by_task_id is None
+
+        await mktask(db, "t2", profile_id="worker")
+        next_claim = await h._cmd_task_claim({"next": True})
+
+        assert next_claim["result"] == "claimed", next_claim
+        assert next_claim["task"]["id"] == "t2"
+        workspace = await db.get_workspace("ws-agent-1")
+        assert (workspace.locked_by_agent_id, workspace.locked_by_task_id) == ("agent-1", "t2")
+        assert (await db.get_workspace("ws-other-project")).locked_by_agent_id is None
+        assert (await db.get_session(sid)).claim_phase == "active"
+
     async def test_claim_next_returns_task_epoch_and_writes_file(self, handler, db, tmp_path):
         handler.orchestrator.bus.emit = AsyncMock()
         await mktask(db, "t1", profile_id="worker")
@@ -369,6 +416,52 @@ class TestClaim:
         assert (data["task_id"], data["claim_epoch"], data["session_id"]) == ("t1", 1, sid)
         assert (await db.get_session(sid)).claim_phase == "active"
         assert "task.claimed" in emitted(handler) and "task.started" in emitted(handler)
+
+    @pytest.mark.parametrize("bad_value", ['"0"', '"1788823522.8"', '""', "null", "not-a-number"])
+    async def test_malformed_backoff_metadata_does_not_break_the_work_query(
+        self, handler, db, tmp_path, bad_value
+    ):
+        """One unparseable backoff value must not take the whole project down.
+
+        ``task_metadata.value`` is free-form JSON text, so a caller that
+        stores the *string* ``"0"`` where the number ``0`` was meant leaves a
+        row that ``cast(value, Float)`` cannot read.  The cast sits in a
+        correlated EXISTS over every candidate task, so before
+        :func:`numeric_meta_value` that single row raised
+        ``invalid input syntax for type double precision`` for the entire
+        statement -- every claim in the project failed for ~18 hours on
+        2026-09-07 while the queue reported no ready work.
+
+        A malformed deadline reads as expired: failing open to claimable is
+        right for a value whose only job is to *withhold* a task briefly.
+        """
+        await mktask(db, "t1", profile_id="worker")
+        async with db.immediate() as conn:
+            await conn.execute(
+                task_metadata.insert().values(
+                    task_id="t1", key="claim_prepare_backoff_until", value=bad_value
+                )
+            )
+        sid, _wd = await pool_session(db, tmp_path)
+        res = await scoped(handler, sid)._cmd_task_claim({"next": True})
+        assert res["result"] == "claimed"
+        assert res["task"]["id"] == "t1"
+
+    async def test_a_well_formed_backoff_deadline_still_withholds_the_task(
+        self, handler, db, tmp_path
+    ):
+        """The guard must not defeat the backoff it is guarding.
+
+        Companion to the test above: reading a malformed value as expired is
+        only safe if a *valid* future deadline is still honoured, otherwise
+        the fix would have quietly removed the hot-loop protection that
+        ``prepare_failed`` relies on.
+        """
+        await mktask(db, "t1", profile_id="worker")
+        await db.set_task_meta("t1", "claim_prepare_backoff_until", time.time() + 300)
+        sid, _wd = await pool_session(db, tmp_path)
+        res = await scoped(handler, sid)._cmd_task_claim({"next": True})
+        assert res["result"] == "no_ready_work"
 
     @pytest.mark.parametrize("live_class,live_model", [
         ("fast-low", "gpt-5.6-luna"),
@@ -464,6 +557,31 @@ class TestClaim:
         res = await scoped(handler, sid)._cmd_task_claim({"next": True})
         assert res["result"] == "claimed" and res["task"]["id"] == "fast"
         assert (await db.get_task("deep")).status == TaskStatus.READY
+
+    async def test_pool_claim_takes_an_integration_repair_delegate(
+        self, handler, db, tmp_path
+    ):
+        """A repair delegate is ordinary claimable work for a pool session.
+
+        Both shipped repair profiles are ``lifecycle: pool``, so excluding
+        delegates from the frontier would strand every repair dispatch.  The
+        ownership half of the ladder is what has to accommodate the pull
+        model (``aconfirm_integration_pool_owner_handoff``), not the queue.
+        """
+        await mktask(
+            db,
+            "repair-operation-0",
+            profile_id="worker",
+            priority=1,
+            created_by_kind="integration_repair",
+            created_by_id="operation",
+        )
+        await mktask(db, "ordinary", profile_id="worker", priority=100)
+        sid, _ = await pool_session(db, tmp_path)
+
+        res = await scoped(handler, sid)._cmd_task_claim({"next": True})
+
+        assert res["result"] == "claimed" and res["task"]["id"] == "repair-operation-0"
 
     async def test_no_ready_work_without_wait(self, handler, db, tmp_path):
         sid, _ = await pool_session(db, tmp_path)

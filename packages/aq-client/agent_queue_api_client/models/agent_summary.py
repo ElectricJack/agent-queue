@@ -45,6 +45,8 @@ class AgentSummary:
         aq_subagent_count (int | Unset):  Default: 0.
         native_subagent_count (int | None | Unset):
         subagents_spawned_total (int | Unset):  Default: 0.
+        last_activity (float | None | Unset):
+        live (bool | Unset):  Default: False.
         last_heartbeat (float | None | Unset):
         session_tokens_used (int | Unset):  Default: 0.
     """
@@ -74,6 +76,8 @@ class AgentSummary:
     aq_subagent_count: int | Unset = 0
     native_subagent_count: int | None | Unset = UNSET
     subagents_spawned_total: int | Unset = 0
+    last_activity: float | None | Unset = UNSET
+    live: bool | Unset = False
     last_heartbeat: float | None | Unset = UNSET
     session_tokens_used: int | Unset = 0
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
@@ -193,6 +197,14 @@ class AgentSummary:
 
         subagents_spawned_total = self.subagents_spawned_total
 
+        last_activity: float | None | Unset
+        if isinstance(self.last_activity, Unset):
+            last_activity = UNSET
+        else:
+            last_activity = self.last_activity
+
+        live = self.live
+
         last_heartbeat: float | None | Unset
         if isinstance(self.last_heartbeat, Unset):
             last_heartbeat = UNSET
@@ -253,6 +265,10 @@ class AgentSummary:
             field_dict["native_subagent_count"] = native_subagent_count
         if subagents_spawned_total is not UNSET:
             field_dict["subagents_spawned_total"] = subagents_spawned_total
+        if last_activity is not UNSET:
+            field_dict["last_activity"] = last_activity
+        if live is not UNSET:
+            field_dict["live"] = live
         if last_heartbeat is not UNSET:
             field_dict["last_heartbeat"] = last_heartbeat
         if session_tokens_used is not UNSET:
@@ -429,6 +445,17 @@ class AgentSummary:
 
         subagents_spawned_total = d.pop("subagents_spawned_total", UNSET)
 
+        def _parse_last_activity(data: object) -> float | None | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(float | None | Unset, data)
+
+        last_activity = _parse_last_activity(d.pop("last_activity", UNSET))
+
+        live = d.pop("live", UNSET)
+
         def _parse_last_heartbeat(data: object) -> float | None | Unset:
             if data is None:
                 return data
@@ -466,6 +493,8 @@ class AgentSummary:
             aq_subagent_count=aq_subagent_count,
             native_subagent_count=native_subagent_count,
             subagents_spawned_total=subagents_spawned_total,
+            last_activity=last_activity,
+            live=live,
             last_heartbeat=last_heartbeat,
             session_tokens_used=session_tokens_used,
         )

@@ -9,6 +9,8 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 
 from tests.pg_dsn import ensure_worker_postgres_dsn
+from tests.db_fixtures import lease_dsn
+from src.config import DatabaseConfig
 
 POSTGRES_DSN = ensure_worker_postgres_dsn() or ""
 
@@ -66,7 +68,7 @@ async def pool_api(tmp_path, monkeypatch):
 
     config = AppConfig(
         discord=DiscordConfig(bot_token="t", guild_id="1"),
-        database_path=str(tmp_path / "unused.db"),
+        database=DatabaseConfig(url=lease_dsn("unused.db")),
         data_dir=str(data_dir),
         workspace_dir=str(tmp_path / "workspaces"),
     )
@@ -134,21 +136,39 @@ async def test_pool_management_routes_round_trip_on_postgres(pool_api):
 
         status = await client.post("/api/pool/status", json={"project_id": "pool-project"})
         assert status.status_code == 200, status.text
+        # One row per profile, fleet-wide: ``project_id`` is a view filter on
+        # the nested breakdown, never pool identity (global-worker-pools §6.1).
         assert status.json()["pools"] == [
             {
-                "project_id": "pool-project",
                 "profile_id": "worker",
+                # The operator kill-switch on the (global) profile; a pool that
+                # has never been disabled reports it on.
                 "enabled": True,
                 "min_active": 0,
                 "max_active": None,
+                "min_per_project": 0,
                 "desired": 0,
                 "running_idle": 0,
                 "running_busy": 0,
                 "starting": 0,
                 "draining": 0,
                 "ready": 0,
-                "quarantined_until": None,
-                "quarantined_reason": None,
+                "projects": [
+                    {
+                        "project_id": "pool-project",
+                        "ready": 0,
+                        "running_idle": 0,
+                        "running_busy": 0,
+                        "starting": 0,
+                        "draining": 0,
+                        "max_concurrent_agents": 2,
+                        "workspace_capacity": 0,
+                        # Quarantine is a property of a (project, profile)
+                        # pair, so it lives here and not on the pool.
+                        "quarantined_until": None,
+                        "quarantined_reason": None,
+                    }
+                ],
                 "instances": [],
             }
         ]

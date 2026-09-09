@@ -68,6 +68,15 @@ class TranscriptEntry:
     usage: dict | None
     ts: float
     turn_complete: bool = False
+    #: Normalized provider quota reading carried by the same line, when the
+    #: harness publishes one.  Codex puts ``rate_limits`` beside the usage
+    #: block on its ``token_count`` line; Claude publishes nothing locally.
+    #: Shape: ``{"account_label": str, "windows": [{"window", "used_percent",
+    #: "resets_at"}, ...]}`` — already mapped out of the harness's own
+    #: vocabulary by the reader, so the watcher stays harness-agnostic.
+    #: Defaulted so the Claude reader and every existing construction are
+    #: untouched.
+    rate_limits: dict | None = None
 
 
 class TranscriptReader(ABC):
@@ -122,7 +131,11 @@ class TranscriptReader(ABC):
         meaningful = [
             entry
             for entry in tail
-            if not (entry.type == "assistant" and not entry.text and entry.usage)
+            if not (
+                entry.type == "assistant"
+                and not entry.text
+                and (entry.usage or entry.rate_limits)
+            )
         ]
         if not meaningful:
             return "idle"

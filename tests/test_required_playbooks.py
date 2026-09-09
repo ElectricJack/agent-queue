@@ -16,6 +16,7 @@ from src.playbooks.required import (
 from src.playbooks.runtime import V2PlaybookRuntime
 from src.playbooks.profiles import shipped_profile_lookup
 from src.playbooks.validation import RegisteredEventLookup, RegistryContractLookup
+from tests.db_fixtures import lease_dsn
 
 
 class _Handler(PlaybookV2CommandsMixin):
@@ -37,7 +38,7 @@ class _Handler(PlaybookV2CommandsMixin):
 
 
 async def _reconciler(tmp_path):
-    db = Database(str(tmp_path / "required-playbooks.db"))
+    db = Database(lease_dsn("required-playbooks.db"))
     await db.initialize()
     ensure_reviewed_playbook_bundles(str(tmp_path))
     handler = _Handler(tmp_path, db)
@@ -102,7 +103,7 @@ async def test_hash_mismatched_reviewed_bundle_is_a_readiness_diagnostic(tmp_pat
 
 
 async def test_route_events_during_an_inactive_gap_are_retained(tmp_path):
-    db = Database(str(tmp_path / "pending.db"))
+    db = Database(lease_dsn("pending.db"))
     await db.initialize()
     try:
         runtime = object.__new__(V2PlaybookRuntime)

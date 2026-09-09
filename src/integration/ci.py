@@ -545,7 +545,7 @@ class CIService:
                 integration_candidate_revisions.c.batch_id == subject.batch_id,
                 integration_candidate_revisions.c.revision == subject.revision,
                 integration_candidate_revisions.c.head_sha == subject.candidate_sha,
-                integration_candidate_revisions.c.state.in_(("built", "testing")),
+                integration_candidate_revisions.c.state.in_(("built", "testing", "green")),
             )
             .values(state="green", ci_evidence_id=aggregate_id, updated_at=self.clock())
         )
@@ -557,6 +557,7 @@ class CIService:
                 integration_batches.c.lifecycle.in_(("testing", "repairing")),
             )
             .values(
+                lifecycle="testing",
                 tested_candidate_sha=subject.candidate_sha,
                 ci_evidence_id=aggregate_id,
                 updated_at=self.clock(),
@@ -569,8 +570,22 @@ class CIService:
             .where(
                 integration_repair_stages.c.operation_id == subject.operation_id,
                 integration_repair_stages.c.state == "active",
+                integration_repair_stages.c.ordinal == select(
+                    integration_repair_operations.c.active_stage
+                ).where(integration_repair_operations.c.id == subject.operation_id).scalar_subquery(),
             )
-            .values(state="awaiting_completion")
+            .values(
+                state="awaiting_completion",
+                current_subject={
+                    "kind": "batch", "revision": subject.revision,
+                    "candidate_sha": subject.candidate_sha,
+                },
+                success_subject={
+                    "kind": "batch", "revision": subject.revision,
+                    "candidate_sha": subject.candidate_sha,
+                },
+                success_evidence_id=aggregate_id,
+            )
         )
         return aggregate_id
 
@@ -723,7 +738,7 @@ class CIService:
             and operation["state"] in {"active", "escalated"}
             and self._operation_trust(operation, "root") == self.trust
             and candidate["head_sha"] == subject.candidate_sha
-            and candidate["state"] in {"built", "testing"}
+            and candidate["state"] in {"built", "testing", "green"}
         )
 
     def _enabled_project_repository(self, project: Any | None) -> bool:

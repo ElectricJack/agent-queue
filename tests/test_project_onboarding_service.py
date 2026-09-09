@@ -16,7 +16,7 @@ from src.commands.contracts.project_onboarding import (
     parse_onboard_project_request,
 )
 from src.commands.handler import CommandHandler
-from src.config import AppConfig, ProjectRoot
+from src.config import DatabaseConfig, AppConfig, ProjectRoot
 from src.database import Database
 from src.git.manager import GitError, GitManager
 from src.models import Project, RepoSourceType, Workspace
@@ -24,6 +24,7 @@ from src.orchestrator import Orchestrator
 from src.projects.github import GhClient
 from src.projects.onboarding import ProjectOnboardingService
 from tests.pg_dsn import ensure_worker_postgres_dsn
+from tests.db_fixtures import lease_dsn
 
 
 FAKE_GH = Path(__file__).parent / "fixtures" / "fake_gh" / "gh"
@@ -196,7 +197,7 @@ def _request(**overrides):
     return parse_onboard_project_request(values)
 
 
-@pytest.fixture(params=["sqlite", "postgres"])
+@pytest.fixture
 async def onboarding(request, tmp_path: Path):
     root = tmp_path / "root"
     root.mkdir()
@@ -204,19 +205,10 @@ async def onboarding(request, tmp_path: Path):
     config = AppConfig(
         project_roots=[ProjectRoot(id="dev", label="Development", path=str(root))],
         data_dir=str(data_dir),
-        database_path=str(tmp_path / "onboarding.db"),
+        database=DatabaseConfig(url=lease_dsn("onboarding.db")),
     )
-    if request.param == "postgres":
-        if not POSTGRES_TEST_DSN:
-            pytest.skip("POSTGRES_TEST_DSN not set")
-        from src.database.adapters.postgresql import PostgreSQLDatabaseAdapter
-
-        database = PostgreSQLDatabaseAdapter(POSTGRES_TEST_DSN)
-        await database.initialize()
-        await database.reset_for_tests()
-    else:
-        database = Database(config.database_path)
-        await database.initialize()
+    database = Database(config.database.url)
+    await database.initialize()
     service = ProjectOnboardingService(database, config, GitManager())
     yield service, database, config, root, data_dir
     await database.close()
@@ -227,12 +219,13 @@ async def onboarding(request, tmp_path: Path):
     [
         (None, None),
         ("https://example.invalid/acme/repo.git", "https://example.invalid/acme/repo.git"),
-        ("https://token:secret@example.invalid/acme/repo.git", "https://example.invalid/acme/repo.git"),
+        (
+            "https://token:secret@example.invalid/acme/repo.git",
+            "https://example.invalid/acme/repo.git",
+        ),
     ],
 )
-async def test_link_registers_repository_without_modifying_it(
-    onboarding, remote, expected_remote
-):
+async def test_link_registers_repository_without_modifying_it(onboarding, remote, expected_remote):
     service, database, _, root, data_dir = onboarding
     repo = _make_repo(root / "repo", remote=remote)
     before = _repository_snapshot(repo)
@@ -283,12 +276,8 @@ async def test_init_publishes_main_repository_with_optional_readme(onboarding, c
     assert result.default_branch == "main"
     assert _git(destination, "symbolic-ref", "HEAD").stdout.strip() == "refs/heads/main"
     if create_readme:
-        assert (destination / "README.md").read_text(encoding="utf-8") == (
-            "# Example Project\n"
-        )
-        assert _git(destination, "log", "-1", "--format=%s").stdout.strip() == (
-            "Initial commit"
-        )
+        assert (destination / "README.md").read_text(encoding="utf-8") == ("# Example Project\n")
+        assert _git(destination, "log", "-1", "--format=%s").stdout.strip() == ("Initial commit")
         assert "readme_committed" in result.actions
     else:
         assert not (destination / "README.md").exists()
@@ -438,9 +427,7 @@ async def test_concurrent_replay_reports_phase_without_failing_active_request(on
     active = asyncio.create_task(service.onboard_project(request))
     await git.init_started.wait()
 
-    replay = await ProjectOnboardingService(database, config, GitManager()).onboard_project(
-        request
-    )
+    replay = await ProjectOnboardingService(database, config, GitManager()).onboard_project(request)
 
     assert replay.status == "running"
     assert replay.phase == "prepare"
@@ -553,9 +540,7 @@ async def test_command_handler_delegates_onboard_and_status_to_service(onboardin
     payload = _request().model_dump(mode="json")
 
     result = await handler.execute("onboard_project", payload)
-    status = await handler.execute(
-        "get_project_onboarding", {"request_id": payload["request_id"]}
-    )
+    status = await handler.execute("get_project_onboarding", {"request_id": payload["request_id"]})
 
     assert result["success"] is True
     assert result["project_id"] == "example-project"
@@ -688,9 +673,7 @@ async def test_clone_retry_ledgers_published_directory_before_registration(
     assert list(root.glob(".*aq-onboard*"))
     record = await database.get_onboarding_request(request.request_id)
     assert record is not None
-    assert not any(
-        item["kind"] == "final_directory" for item in record["created_resources"]
-    )
+    assert not any(item["kind"] == "final_directory" for item in record["created_resources"])
 
     monkeypatch.setattr(database, "append_onboarding_resource", append_resource)
 
@@ -704,10 +687,7 @@ async def test_clone_retry_ledgers_published_directory_before_registration(
     assert failure.value.code == "registration_failed"
     failed_record = await database.get_onboarding_request(request.request_id)
     assert failed_record is not None
-    assert any(
-        item["kind"] == "final_directory"
-        for item in failed_record["created_resources"]
-    )
+    assert any(item["kind"] == "final_directory" for item in failed_record["created_resources"])
     assert not destination.exists()
     assert not list(root.glob(".*aq-onboard*"))
 
@@ -877,9 +857,7 @@ class _FailingGitManager(GitManager):
         await super().acreate_checkout(repo_url, checkout_path)
 
 
-async def test_clone_failure_scrubs_credentials_from_error_ledger_and_logs(
-    onboarding, caplog
-):
+async def test_clone_failure_scrubs_credentials_from_error_ledger_and_logs(onboarding, caplog):
     _, database, config, root, _ = onboarding
     service = ProjectOnboardingService(database, config, _FailingGitManager(fail_command="clone"))
 
@@ -911,9 +889,7 @@ async def test_clone_failure_scrubs_credentials_from_error_ledger_and_logs(
     assert not list(root.glob(".*aq-onboard*"))
 
 
-async def test_push_failure_retains_remote_and_reports_safe_recovery(
-    onboarding, tmp_path, caplog
-):
+async def test_push_failure_retains_remote_and_reports_safe_recovery(onboarding, tmp_path, caplog):
     _, database, config, root, _ = onboarding
     gh, argv_log = _fake_gh(tmp_path)
     service = ProjectOnboardingService(
@@ -941,9 +917,7 @@ async def test_push_failure_retains_remote_and_reports_safe_recovery(
         )
 
     assert failure.value.code == "push_failed"
-    assert failure.value.details["github_repository_url"] == (
-        "https://github.com/acme/widgets"
-    )
+    assert failure.value.details["github_repository_url"] == ("https://github.com/acme/widgets")
     assert "retained" in failure.value.details["recovery_action"].lower()
     assert _gh_invocations(argv_log) == [["repo", "create", "acme/widgets", "--private"]]
     record = await database.get_onboarding_request("push-secret")
@@ -961,9 +935,7 @@ async def test_push_failure_retains_remote_and_reports_safe_recovery(
     assert not list(root.glob(".*aq-onboard*"))
 
 
-async def test_create_failure_scrubs_fake_gh_error_from_every_surface(
-    onboarding, tmp_path, caplog
-):
+async def test_create_failure_scrubs_fake_gh_error_from_every_surface(onboarding, tmp_path, caplog):
     _, database, config, root, _ = onboarding
     gh, _ = _fake_gh(tmp_path, fail_stderr=CREDENTIALED_GIT_ERROR)
     service = ProjectOnboardingService(database, config, GitManager(), gh_client=gh)
@@ -1031,9 +1003,7 @@ async def test_registration_failure_after_github_creation_retains_remote_url(
         )
 
     assert failure.value.code == "registration_failed"
-    assert failure.value.details["github_repository_url"] == (
-        "https://github.com/acme/widgets"
-    )
+    assert failure.value.details["github_repository_url"] == ("https://github.com/acme/widgets")
     assert "retained" in failure.value.details["recovery_action"].lower()
     assert _gh_invocations(argv_log) == [["repo", "create", "acme/widgets", "--private"]]
     record = await database.get_onboarding_request("registration-github")
@@ -1073,9 +1043,7 @@ async def test_created_remote_is_reported_when_created_ledger_append_fails(
 
     assert _gh_invocations(argv_log) == [["repo", "create", "acme/widgets", "--private"]]
     assert failure.value.code == "registration_failed"
-    assert failure.value.details["github_repository_url"] == (
-        "https://github.com/acme/widgets"
-    )
+    assert failure.value.details["github_repository_url"] == ("https://github.com/acme/widgets")
     assert "retained" in failure.value.details["recovery_action"].lower()
     record = await database.get_onboarding_request("created-ledger-failure")
     assert record is not None
@@ -1133,9 +1101,7 @@ async def test_retry_after_crash_post_create_reports_retained_remote(
         ).onboard_project(request)
 
     assert failure.value.code == "github_repository_conflict"
-    assert failure.value.details["github_repository_url"] == (
-        "https://github.com/acme/widgets"
-    )
+    assert failure.value.details["github_repository_url"] == ("https://github.com/acme/widgets")
     assert "retained" in failure.value.details["recovery_action"].lower()
     assert _gh_invocations(argv_log) == [
         ["repo", "create", "acme/widgets", "--private"],

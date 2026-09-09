@@ -14,12 +14,13 @@ from httpx import ASGITransport, AsyncClient
 
 from src.api import dependencies as deps
 from src.api.app import create_app
-from src.config import AppConfig, DiscordConfig
+from src.config import DatabaseConfig, AppConfig, DiscordConfig
 from src.database import Database
 from src.event_bus import EventBus
 from src.models import Project, Task
 from src.orchestrator import Orchestrator
 from src.prime.renderer import PrimeRenderer
+from tests.db_fixtures import lease_dsn
 
 PNG_BYTES = base64.b64decode(
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUB"
@@ -29,7 +30,7 @@ PNG_BYTES = base64.b64decode(
 
 @pytest.fixture
 async def attachment_app(tmp_path):
-    db = Database(str(tmp_path / "attachments.db"))
+    db = Database(lease_dsn("attachments.db"))
     await db.initialize()
     await db.create_project(Project(id="proj", name="Project"))
     await db.create_task(Task(id="task/unsafe", project_id="proj", title="Screenshots", description=""))
@@ -37,7 +38,7 @@ async def attachment_app(tmp_path):
     config = AppConfig(
         discord=DiscordConfig(bot_token="t", guild_id="1"),
         workspace_dir=str(tmp_path / "workspaces"),
-        database_path=str(tmp_path / "attachments.db"),
+        database=DatabaseConfig(url=lease_dsn("attachments.db")),
         data_dir=str(tmp_path / "data"),
     )
     orch = Orchestrator(config)

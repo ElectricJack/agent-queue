@@ -1,40 +1,20 @@
-"""Worktree-execution schema: migration + model/parser round-trip.
+"""Current PostgreSQL worktree schema and model/parser contracts.
 
-Covers worktree-execution implementation spec §3.1–3.6 and §10's
-``tests/test_worktree_migration.py`` row.
-
-The DDL itself shipped in the Wave 0 substrate revision
-(``93a8a9e48fb8``) rather than a lane-owned one — see that revision's
-docstring.  These tests pin the properties the spec cares about:
-
-* the columns and the ``merge_slots`` table exist after ``upgrade head``;
-* the partial unique index on ``(base_workspace_id, slot_index)`` really is
-  partial (many NULL/NULL rows allowed, one row per populated pair);
-* every kind row that existed *before* the revision is backfilled to
-  ``exclusive-clone`` so no install changes provisioning strategy on
-  upgrade;
-* downgrade/re-upgrade is clean and the backfill re-applies;
-* pre-existing ``workspaces`` rows are untouched (``slot_index`` NULL).
-
-``tmp_path`` is used rather than ``tempfile.TemporaryDirectory`` because
-Windows cannot unlink the SQLite file while the engine still holds it —
-the pre-existing failures in ``tests/test_migration_workspaces_v2.py`` are
-exactly that.
+The pre-substrate backfill and downgrade paths were retired with the historical
+revision chain. The baseline still promises nullable slot fields, uniqueness
+within a base workspace, and the worktree default for newly inserted kinds.
 """
 
 from __future__ import annotations
 
 import json
-from pathlib import Path
 
 import pytest
 import sqlalchemy as sa
-from alembic import command
-from alembic.config import Config
-from sqlalchemy import create_engine
 
+from src.database import Database
+from tests.db_fixtures import lease_dsn
 from src.models import (
-    KIND_MODE_EXCLUSIVE_CLONE,
     KIND_MODE_WORKTREE,
     WORKSPACE_KIND_MODES,
     MergeSlot,
@@ -46,281 +26,76 @@ from src.models import (
 
 pytestmark = pytest.mark.migration
 
-# The Wave 0 substrate revision that carries the worktree-execution DDL.
-SUBSTRATE_REVISION = "93a8a9e48fb8"
-# Its parent — the point just before the worktree columns exist.
-PRE_SUBSTRATE_REVISION = "e252a41eb210"
 
-
-def _alembic_config(async_url: str) -> Config:
-    cfg = Config("alembic.ini")
-    cfg.set_main_option("sqlalchemy.url", async_url)
-    return cfg
-
-
-def _urls(tmp_path: Path, name: str = "wt.db") -> tuple[Config, str]:
-    """(alembic config on the async URL, sync URL for verification)."""
-    db_path = tmp_path / name
-    return _alembic_config(f"sqlite+aiosqlite:///{db_path}"), f"sqlite:///{db_path}"
-
-
-def _columns(conn, table: str) -> dict[str, dict]:
-    return {
-        r[1]: {"type": r[2], "notnull": r[3], "default": r[4]}
-        for r in conn.execute(sa.text(f"PRAGMA table_info({table})")).fetchall()
-    }
-
-
-# ─────────────────────────────── schema shape ────────────────────────────
-
-
-def test_upgrade_head_adds_worktree_columns(tmp_path: Path):
-    cfg, url = _urls(tmp_path)
-    command.upgrade(cfg, "head")
-
-    engine = create_engine(url)
+@pytest.fixture
+async def database():
+    db = Database(lease_dsn("worktree-schema"))
+    await db.initialize()
     try:
-        with engine.connect() as conn:
-            kinds = _columns(conn, "workspace_kinds")
-            assert "mode" in kinds and kinds["mode"]["notnull"] == 1
-            assert "worktree_setup" in kinds
-            assert kinds["worktree_setup"]["notnull"] == 1
-
-            ws = _columns(conn, "workspaces")
-            assert "slot_index" in ws and ws["slot_index"]["notnull"] == 0
-            assert "base_workspace_id" in ws
-            assert ws["base_workspace_id"]["notnull"] == 0
-
-            merge = _columns(conn, "merge_slots")
-            assert set(merge) == {
-                "project_id",
-                "holder_task_id",
-                "acquired_at",
-                "expires_at",
-                "updated_at",
-            }
+        yield db
     finally:
-        engine.dispose()
+        await db.close()
 
 
-def test_partial_unique_index_is_partial(tmp_path: Path):
-    """Many NULL/NULL rows are fine; one row per populated (base, slot)."""
-    cfg, url = _urls(tmp_path)
-    command.upgrade(cfg, "head")
-
-    engine = create_engine(url)
-    try:
-        with engine.begin() as conn:
-            conn.execute(
-                sa.text(
-                    "INSERT INTO projects (id, name, repo_url, status, created_at) "
-                    "VALUES ('p1', 'p1', '', 'active', 0)"
-                )
+async def test_upgrade_head_adds_worktree_columns(database):
+    async with database._engine.connect() as conn:
+        async def columns(table):
+            return await conn.run_sync(
+                lambda sync: {
+                    col["name"]: col for col in sa.inspect(sync).get_columns(table)
+                }
             )
 
-            def _ins(wid, path, slot, base):
-                conn.execute(
-                    sa.text(
-                        "INSERT INTO workspaces "
-                        "(id, project_id, workspace_path, source_type, kind_id, "
-                        " enabled, slot_index, base_workspace_id, created_at) "
-                        "VALUES (:i, 'p1', :p, 'clone', 'project-repo', 1, "
-                        ":s, :b, 0)"
-                    ),
-                    {"i": wid, "p": path, "s": slot, "b": base},
-                )
-
-            # Three clone rows: all NULL/NULL — the partial index must ignore them.
-            _ins("w1", "/r/a", None, None)
-            _ins("w2", "/r/b", None, None)
-            _ins("w3", "/r/c", None, None)
-
-            # Slots under one base: distinct indices are fine.
-            _ins("s0", "/r/a/.aq/worktrees/slot-0", 0, "w1")
-            _ins("s1", "/r/a/.aq/worktrees/slot-1", 1, "w1")
-            # Same index under a *different* base is also fine.
-            _ins("t0", "/r/b/.aq/worktrees/slot-0", 0, "w2")
-
-        with engine.begin() as conn:
-            with pytest.raises(sa.exc.IntegrityError):
-                conn.execute(
-                    sa.text(
-                        "INSERT INTO workspaces "
-                        "(id, project_id, workspace_path, source_type, kind_id, "
-                        " enabled, slot_index, base_workspace_id, created_at) "
-                        "VALUES ('dup', 'p1', '/r/a/dup', 'clone', "
-                        "'project-repo', 1, 0, 'w1', 0)"
-                    )
-                )
-    finally:
-        engine.dispose()
+        kinds = await columns("workspace_kinds")
+        assert kinds["mode"]["nullable"] is False
+        assert kinds["worktree_setup"]["nullable"] is False
+        ws = await columns("workspaces")
+        assert ws["slot_index"]["nullable"] is True
+        assert ws["base_workspace_id"]["nullable"] is True
+        assert set(await columns("merge_slots")) == {
+            "project_id", "holder_task_id", "acquired_at", "expires_at", "updated_at"
+        }
 
 
-# ──────────────────────────── the one data step ──────────────────────────
+async def test_partial_unique_index_is_partial(database):
+    """Many NULL pairs are allowed, but each populated (base, slot) is unique."""
+    async with database._engine.begin() as conn:
+        await conn.execute(sa.text(
+            "INSERT INTO projects (id, name, created_at) VALUES ('p1', 'p1', 0)"
+        ))
+        statement = sa.text(
+            "INSERT INTO workspaces "
+            "(id, project_id, workspace_path, source_type, kind_id, enabled, "
+            "slot_index, base_workspace_id, created_at) "
+            "VALUES (:id, 'p1', :path, 'clone', 'project-repo', true, :slot, :base, 0)"
+        )
+        for wid, slot, base in [
+            ("w1", None, None), ("w2", None, None), ("w3", None, None),
+            ("s0", 0, "w1"), ("s1", 1, "w1"), ("t0", 0, "w2"),
+        ]:
+            await conn.execute(statement, {
+                "id": wid, "path": f"/r/{wid}", "slot": slot, "base": base,
+            })
+        with pytest.raises(sa.exc.IntegrityError):
+            async with conn.begin_nested():
+                await conn.execute(statement, {
+                    "id": "duplicate", "path": "/r/duplicate", "slot": 0, "base": "w1",
+                })
 
 
-def test_pre_existing_kinds_are_backfilled_to_exclusive_clone(tmp_path: Path):
-    """A row that existed before the revision keeps clone behavior."""
-    cfg, url = _urls(tmp_path)
-    command.upgrade(cfg, PRE_SUBSTRATE_REVISION)
-
-    engine = create_engine(url)
-    try:
-        with engine.begin() as conn:
-            conn.execute(
-                sa.text(
-                    "INSERT INTO workspace_kinds "
-                    "(project_id, id, description, writable, lockable, "
-                    " is_git_repo, auto_attach, created_at, updated_at) "
-                    "VALUES ('proj-x', 'custom-repo', '', 1, 1, 1, 0, 0, 0)"
-                )
-            )
-    finally:
-        engine.dispose()
-
-    command.upgrade(cfg, "head")
-
-    engine = create_engine(url)
-    try:
-        with engine.connect() as conn:
-            modes = dict(
-                conn.execute(
-                    sa.text("SELECT id || '@' || project_id, mode FROM workspace_kinds")
-                ).fetchall()
-            )
-        # Every row present at revision time — the three seeded system kinds
-        # and the operator's own — is exclusive-clone.
-        assert modes, "expected seeded kinds"
-        assert set(modes.values()) == {KIND_MODE_EXCLUSIVE_CLONE}, modes
-        assert modes["custom-repo@proj-x"] == KIND_MODE_EXCLUSIVE_CLONE
-    finally:
-        engine.dispose()
-
-
-def test_new_rows_get_the_shipped_worktree_default(tmp_path: Path):
-    """The column's server_default is 'worktree' — only pre-existing rows
-    were backfilled, so a row inserted after the migration opts in."""
-    cfg, url = _urls(tmp_path)
-    command.upgrade(cfg, "head")
-
-    engine = create_engine(url)
-    try:
-        with engine.begin() as conn:
-            conn.execute(
-                sa.text(
-                    "INSERT INTO workspace_kinds "
-                    "(project_id, id, description, writable, lockable, "
-                    " is_git_repo, auto_attach, created_at, updated_at) "
-                    "VALUES ('__system__', 'fresh-repo', '', 1, 1, 1, 0, 0, 0)"
-                )
-            )
-        with engine.connect() as conn:
-            mode = conn.execute(
-                sa.text(
-                    "SELECT mode FROM workspace_kinds WHERE id = 'fresh-repo'"
-                )
-            ).scalar()
-            setup = conn.execute(
-                sa.text(
-                    "SELECT worktree_setup FROM workspace_kinds "
-                    "WHERE id = 'fresh-repo'"
-                )
-            ).scalar()
+async def test_new_rows_get_the_shipped_worktree_default(database):
+    async with database._engine.begin() as conn:
+        await conn.execute(sa.text(
+            "INSERT INTO workspace_kinds "
+            "(project_id, id, description, writable, lockable, is_git_repo, "
+            "auto_attach, created_at, updated_at) "
+            "VALUES ('__system__', 'fresh-repo', '', true, true, true, false, 0, 0)"
+        ))
+        mode, setup = (await conn.execute(sa.text(
+            "SELECT mode, worktree_setup FROM workspace_kinds WHERE id = 'fresh-repo'"
+        ))).one()
         assert mode == KIND_MODE_WORKTREE
         assert json.loads(setup) == []
-    finally:
-        engine.dispose()
-
-
-def test_existing_workspaces_untouched_by_the_revision(tmp_path: Path):
-    cfg, url = _urls(tmp_path)
-    command.upgrade(cfg, PRE_SUBSTRATE_REVISION)
-
-    engine = create_engine(url)
-    try:
-        with engine.begin() as conn:
-            conn.execute(
-                sa.text(
-                    "INSERT INTO projects (id, name, repo_url, status, created_at) "
-                    "VALUES ('p1', 'p1', '', 'active', 0)"
-                )
-            )
-            conn.execute(
-                sa.text(
-                    "INSERT INTO workspaces "
-                    "(id, project_id, workspace_path, source_type, kind_id, "
-                    " enabled, created_at) "
-                    "VALUES ('w1', 'p1', '/r/a', 'clone', 'project-repo', 1, 0)"
-                )
-            )
-    finally:
-        engine.dispose()
-
-    command.upgrade(cfg, "head")
-
-    engine = create_engine(url)
-    try:
-        with engine.connect() as conn:
-            row = conn.execute(
-                sa.text(
-                    "SELECT workspace_path, slot_index, base_workspace_id "
-                    "FROM workspaces WHERE id = 'w1'"
-                )
-            ).fetchone()
-        assert row == ("/r/a", None, None)
-    finally:
-        engine.dispose()
-
-
-def test_downgrade_then_reupgrade_reapplies_the_backfill(tmp_path: Path):
-    cfg, url = _urls(tmp_path)
-    command.upgrade(cfg, "head")
-    command.downgrade(cfg, PRE_SUBSTRATE_REVISION)
-
-    engine = create_engine(url)
-    try:
-        with engine.connect() as conn:
-            cols = _columns(conn, "workspace_kinds")
-            assert "mode" not in cols
-            tables = {
-                r[0]
-                for r in conn.execute(
-                    sa.text("SELECT name FROM sqlite_master WHERE type='table'")
-                ).fetchall()
-            }
-            assert "merge_slots" not in tables
-    finally:
-        engine.dispose()
-
-    command.upgrade(cfg, "head")
-
-    engine = create_engine(url)
-    try:
-        with engine.connect() as conn:
-            modes = [
-                r[0]
-                for r in conn.execute(
-                    sa.text("SELECT mode FROM workspace_kinds")
-                ).fetchall()
-            ]
-            n_kinds = conn.execute(
-                sa.text(
-                    "SELECT COUNT(*) FROM workspace_kinds "
-                    "WHERE project_id = '__system__'"
-                )
-            ).scalar()
-        assert n_kinds == 3, "re-upgrade must not duplicate the seeded kinds"
-        assert set(modes) == {KIND_MODE_EXCLUSIVE_CLONE}
-    finally:
-        engine.dispose()
-
-
-# The single-head guard moved to ``tests/test_migration_single_head.py``.  It needs no
-# database, and this module's ``pytestmark = pytest.mark.migration`` kept it out
-# of the default selection — which is how ``main`` acquired two heads unnoticed.
-
-
-# ───────────────────────────── models (§3.5) ─────────────────────────────
 
 
 def test_workspace_kind_model_defaults():

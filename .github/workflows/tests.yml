@@ -2,15 +2,17 @@ name: Tests
 
 on:
   push:
-  pull_request:
-  # Merge-queue entries (Settings → Rules → "Require merge queue"). Not in
-  # use yet; declaring the trigger is what lets an operator turn the queue
-  # on without a workflow change — see docs/guides/merge-gating.md.
-  merge_group:
+    branches:
+      - main
+      - 'aq/parent/**'
+      - 'aq/integration/**'
+      # Existing parent origin is frozen; retain coverage during rollout.
+      - 'aq/sound-current'
+  workflow_dispatch:
 
-# Every push to `main` is a merge commit, and its run is the only CI run
-# that ever sees the *combination* of PRs that landed. Two PRs that were
-# each green on their own (stale) base can still put a red `main` together
+# Integration candidates test the assembled feature changes. A main run
+# reuses exact candidate evidence when available; otherwise it tests main.
+# Two PRs green on their own stale bases can still put a red `main` together
 # (#390 + #391, 2026-09-03: one committed a generated file, the other
 # changed how it is generated). That run must therefore never be lost.
 #
@@ -19,8 +21,8 @@ on:
 # #391's runs were both cancelled that way, so #391's merge commit was never
 # tested on main at all). Keying main's group by commit gives each merge
 # commit its own run, so a red main is reported on the commit that caused
-# it, within one CI cycle, and needs no bisecting. PR branches keep one
-# group per ref so a newer push still supersedes its own stale checks.
+# it, within one CI cycle, and needs no bisecting. Integration branches keep
+# one group per ref so a newer push supersedes their obsolete checks.
 concurrency:
   group: tests-${{ github.ref }}-${{ github.ref == 'refs/heads/main' && github.sha || 'head' }}
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
@@ -243,21 +245,13 @@ jobs:
           cache-dependency-path: pyproject.toml
 
       - name: Install project
-        run: pip install -e ".[dev,cli,postgresql]"
+        run: pip install -e ".[dev,cli]"
 
-      - name: Apply migrations to a scratch SQLite database
-        env:
-          # Keep the migration check off the developer default
-          # (~/.agent-queue/agent-queue.db) and out of pytest's collection path.
-          AGENT_QUEUE_DB_URL: sqlite+aiosqlite:///${{ runner.temp }}/ci-migration-check.db
-        run: alembic upgrade head
-
-      # SQLite is not a proxy for the production backend: it stores booleans
-      # as integers and accepts DDL Postgres rejects outright (revision
-      # 33bdb059ceff shipped ``BOOLEAN DEFAULT 0``, which upgraded cleanly on
-      # SQLite and failed every Postgres run with DatatypeMismatchError).
-      # Run the same chain against a real Postgres so that class of break
-      # fails here, in seconds, instead of in every Postgres test fixture.
+      # The SQLite half of this check is gone with the backend.  It was never
+      # a proxy for production anyway: it stored booleans as integers and
+      # accepted DDL Postgres rejects outright (revision 33bdb059ceff shipped
+      # ``BOOLEAN DEFAULT 0``, which upgraded cleanly on SQLite and failed
+      # every Postgres run with DatatypeMismatchError).
       - name: Apply migrations to a scratch PostgreSQL database
         env:
           PGPASSWORD: agent_queue

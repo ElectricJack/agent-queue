@@ -25,14 +25,13 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from dataclasses import replace
 
 from src.commands.handler import CommandHandler
-from src.config import AppConfig, DiscordConfig
+from src.config import DatabaseConfig, AppConfig, DiscordConfig
 from src.database import Database
 from src.intelligence_classes import IntelligenceClass
 from src.models import (
-    KIND_MODE_EXCLUSIVE_CLONE,
-    SYSTEM_KIND_SCOPE,
     AgentProfile,
     AgentState,
     Project,
@@ -40,11 +39,11 @@ from src.models import (
     Task,
     TaskStatus,
     Workspace,
-    WorkspaceKind,
 )
 from src.orchestrator import Orchestrator
 from src.sessions.harness_parser import Harness
 from tests.pg_dsn import ensure_worker_postgres_dsn
+from tests.db_fixtures import lease_dsn
 
 PROJECT_ID = "proj"
 
@@ -62,38 +61,13 @@ _CLASSES = {
 }
 
 
-@pytest.fixture(params=["sqlite", "postgres"])
+@pytest.fixture
 async def db(request, tmp_path):
-    if request.param == "postgres":
-        if not POSTGRES_TEST_DSN:
-            pytest.skip("POSTGRES_TEST_DSN not set")
-        from src.database.adapters.postgresql import PostgreSQLDatabaseAdapter
-
-        database = PostgreSQLDatabaseAdapter(POSTGRES_TEST_DSN)
-        await database.initialize()
-        await database.reset_for_tests()
-        # ``reset_for_tests`` truncates every table, including the system
-        # workspace kinds the workspaces-v2 migration seeded. Without the
-        # ``project-repo`` kind back, every pool launch reports "starved: no
-        # project-repo workspace kind" and the suite tests nothing.
-        await database.upsert_workspace_kind(
-            WorkspaceKind(
-                project_id=SYSTEM_KIND_SCOPE,
-                id="project-repo",
-                description="Default project repository.",
-                writable=True,
-                lockable=True,
-                is_git_repo=True,
-                default_lock_mode="exclusive",
-                # The migration seeds exclusive-clone; the dataclass default is
-                # ``worktree``, which would send every launch through the
-                # slot manager this fixture has no real git repo for.
-                mode=KIND_MODE_EXCLUSIVE_CLONE,
-            )
-        )
-    else:
-        database = Database(str(tmp_path / "test.db"))
-        await database.initialize()
+    database = Database(lease_dsn("test.db"))
+    await database.initialize()
+    # These fixtures model independent clones; slot provisioning has its own tests.
+    kind = await database.resolve_workspace_kind("__system__", "project-repo")
+    await database.upsert_workspace_kind(replace(kind, mode="exclusive-clone"))
     await database.create_project(Project(id=PROJECT_ID, name="p"))
     await database.create_profile(
         AgentProfile(
@@ -127,7 +101,7 @@ def config(tmp_path):
     cfg = AppConfig(
         discord=DiscordConfig(bot_token="t", guild_id="1"),
         workspace_dir=str(tmp_path / "ws"),
-        database_path=str(tmp_path / "test.db"),
+        database=DatabaseConfig(url=lease_dsn("test.db")),
         data_dir=str(tmp_path / "data"),
     )
     cfg.sessions.enabled = True
@@ -227,7 +201,9 @@ class TestFullPullLoop:
         await orch._reconcile_pools()
         session = await only_pool_session(db)
         assert (session.lifecycle, session.state, session.desired_state) == (
-            "pool", "running", "running",
+            "pool",
+            "running",
+            "running",
         )
         assert session.agent_id and session.task_id is None
         slot = await db.get_workspace_for_agent(session.agent_id)
@@ -248,9 +224,7 @@ class TestFullPullLoop:
         # -- prime (pool variant) -------------------------------------------
         primed = await handler._cmd_prime({})
         assert primed["success"], primed
-        protocol = next(
-            s for s in primed["sections"] if s["key"] == "completion_protocol"
-        )
+        protocol = next(s for s in primed["sections"] if s["key"] == "completion_protocol")
         assert "--claim-next" in protocol["body"]
 
         # -- close with --claim-next, no further work -----------------------
@@ -302,9 +276,7 @@ class TestFullPullLoop:
         await handler._cmd_task_close(
             {"outcome": "pass", "summary": "s", "claim_epoch": res["claim_epoch"]}
         )
-        await orch.session_reconciler._step_drain_ack(
-            [await db.get_session(first.id)], time.time()
-        )
+        await orch.session_reconciler._step_drain_ack([await db.get_session(first.id)], time.time())
         assert (await db.get_session(first.id)).state == "stopped"
 
         # Next tick: the stopped row is no longer supply, so the pool
@@ -413,10 +385,13 @@ class TestQuarantine:
 
         status = await handler._cmd_pool_status({"project_id": PROJECT_ID})
         row = next(r for r in status["pools"] if r["profile_id"] == "worker")
-        assert row["quarantined_until"] > time.time()
+        # The pool is global; the quarantine belongs to the project whose
+        # checkout the harness died in.
+        entry = next(p for p in row["projects"] if p["project_id"] == PROJECT_ID)
+        assert entry["quarantined_until"] > time.time()
         # The captured startup output is what makes the row actionable; a
         # bare timestamp left an operator with nowhere to look.
-        assert "unknown flag --nope" in row["quarantined_reason"]
+        assert "unknown flag --nope" in entry["quarantined_reason"]
 
         assert len(_pool_warnings(caplog)) == 1
 
@@ -470,27 +445,21 @@ class TestReconcilerInterplay:
         # The push-path capacity codes would send an operator looking for an
         # idle worker that is never going to be created for this task.
         assert "no_idle_agent" not in res["reason_codes"]
-        detail = next(
-            r["detail"] for r in res["reasons"] if r["code"] == "awaiting_pool_session"
-        )
+        detail = next(r["detail"] for r in res["reasons"] if r["code"] == "awaiting_pool_session")
         assert "worker" in detail
 
     async def test_explain_names_the_quarantine_as_the_blocker(self, orch, db, handler):
         await ready(db, "t1")
         orch._quarantine_pool(PROJECT_ID, "worker", "unknown harness 'nope'")
         res = await handler._cmd_explain_task({"task_id": "t1"})
-        detail = next(
-            r["detail"] for r in res["reasons"] if r["code"] == "awaiting_pool_session"
-        )
+        detail = next(r["detail"] for r in res["reasons"] if r["code"] == "awaiting_pool_session")
         assert "quarantined" in detail and "unknown harness" in detail
 
     async def test_explain_names_the_swarm_flag_when_it_is_off(self, orch, db, handler):
         orch.config.swarm.enabled = False
         await ready(db, "t1")
         res = await handler._cmd_explain_task({"task_id": "t1"})
-        detail = next(
-            r["detail"] for r in res["reasons"] if r["code"] == "awaiting_pool_session"
-        )
+        detail = next(r["detail"] for r in res["reasons"] if r["code"] == "awaiting_pool_session")
         assert "swarm.enabled is false" in detail
 
     async def test_pool_task_keeps_the_capacity_reasons_that_still_bite(self, orch, db, handler):
@@ -534,21 +503,23 @@ class TestPoolStatusRendering:
         Console(file=buf, width=200).print(format_pool_table([row]))
         return buf.getvalue()
 
-    def _row(self, **kw):
-        base = {
-            "project_id": PROJECT_ID,
+    def _row(self, **project):
+        """One pool row, with ``project`` folded into its single project entry."""
+        entry = {"project_id": PROJECT_ID, "ready": 1, "workspace_capacity": 1}
+        entry.update(project)
+        return {
             "profile_id": "worker",
             "min_active": 0,
             "max_active": 2,
+            "min_per_project": 0,
             "desired": 0,
             "running_idle": 0,
             "running_busy": 0,
             "starting": 0,
             "draining": 0,
             "ready": 1,
+            "projects": [entry],
         }
-        base.update(kw)
-        return base
 
     def test_quarantine_reason_is_rendered(self):
         out = self._render(
@@ -558,6 +529,10 @@ class TestPoolStatusRendering:
             )
         )
         assert "unknown harness" in out
+        # And the project it applies to, now that the pool spans projects.
+        assert PROJECT_ID in out
 
-    def test_healthy_pool_renders_a_dash(self):
-        assert "—" in self._render(self._row())
+    def test_healthy_pool_renders_placement_and_no_quarantine_note(self):
+        out = self._render(self._row())
+        assert f"{PROJECT_ID}:0" in out
+        assert "quarantined" not in out

@@ -6,13 +6,14 @@ from sqlalchemy import inspect
 
 from src.database import Database
 from src.database.tables import GATE_TYPES
+from tests.db_fixtures import lease_dsn
 
 pytestmark = pytest.mark.migration
 
 
 @pytest.fixture
 async def db(tmp_path):
-    d = Database(str(tmp_path / "phase1.db"))
+    d = Database(lease_dsn("phase1.db"))
     await d.initialize()
     yield d
     await d.close()

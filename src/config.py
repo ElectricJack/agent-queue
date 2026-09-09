@@ -746,7 +746,7 @@ class HealthCheckConfig:
 #: is the form this repo's own tooling passes around (``POSTGRES_TEST_DSN``,
 #: ``alembic.ini``).  Matching only ``postgresql://`` made such a URL fall
 #: through to the SQLite branch, where it was treated as a *file path* — the
-#: daemon then silently ran on an empty SQLite database and
+#: daemon then silently ran on an empty database and
 #: :func:`src.main.run` created a directory literally named
 #: ``postgresql+asyncpg:/agent_queue:…@host:5533``.  Fail-fast is not
 #: possible here (a bare path is a legal value), so the scheme list has to
@@ -770,7 +770,7 @@ SYNC_ONLY_POSTGRES_SCHEMES: tuple[str, ...] = ("postgresql+psycopg2://",)
 
 
 def is_postgres_url(url: str) -> bool:
-    """True when *url* is a PostgreSQL DSN rather than a SQLite file path."""
+    """True when *url* is a PostgreSQL DSN rather than a bare path."""
     return str(url or "").startswith(POSTGRES_URL_SCHEMES)
 
 
@@ -781,11 +781,11 @@ class DatabaseConfig:
     The ``url`` field determines the backend automatically:
 
     - Any scheme in :data:`POSTGRES_URL_SCHEMES` → PostgreSQL (asyncpg)
-    - Anything else (file path or empty) → SQLite (aiosqlite)
+    - Anything else (a bare path, or empty) → rejected by ``validate()``
 
     Examples::
 
-        # SQLite (default — same as the legacy database_path field):
+        # PostgreSQL is the only supported backend:
         database:
           url: ~/.agent-queue/agent-queue.db
 
@@ -805,7 +805,7 @@ class DatabaseConfig:
     @property
     def backend(self) -> str:
         """Infer backend from the URL scheme."""
-        return "postgresql" if is_postgres_url(self.url) else "sqlite"
+        return "postgresql"
 
     def validate(self) -> list[ConfigError]:
         errors: list[ConfigError] = []
@@ -1949,12 +1949,28 @@ class SwarmConfig:
 
     ``enabled`` gates ``_reconcile_pools`` and ``lifecycle: pool`` launches.
     Everything else is a tunable read each tick — hot-reloadable.
+
+    ``global_max_active`` is the box-wide ceiling on running pool workers
+    across every profile (global-worker-pools §2.2).  ``None`` resolves to
+    ``resources.max_concurrent_agents`` so the bound exists by default; an
+    explicit integer overrides it.
+
+    It is a knob of its own rather than a direct read of
+    ``resources.max_concurrent_agents`` because that value is not only a fleet
+    size.  ``ResourcesConfig.cpu_share`` divides the core budget by it to
+    derive each session's xdist worker share, and ``test_worker_cap`` inherits
+    that share for ``aq test`` (``config.py`` ~1911) — so raising it to run
+    more workers would silently shrink every session's test parallelism, and
+    lowering it would silently inflate it.  Fleet size and test parallelism
+    are tuned for different reasons and must move independently.
     """
 
     enabled: bool = False
     # Retire a pool conversation after each task; the global worker is reused.
     fresh_context_per_task: bool = True
     claim_wait_max: int = 60  # seconds a `task_claim --wait` may block
+    #: None -> resources.max_concurrent_agents.
+    global_max_active: int | None = None
     max_starts_per_tick: int = 2
     max_drains_per_tick: int = 5
     scale_down_grace: int = 120  # seconds of surplus before a drain
@@ -1967,6 +1983,20 @@ class SwarmConfig:
                     "scale_down_grace", "prepare_timeout", "max_filings_per_task"):
             if getattr(self, key) < 0:
                 errors.append(ConfigError("swarm", key, "must be >= 0"))
+        # Unlike its siblings, an explicit ``global_max_active`` of 0 is not a
+        # degenerate-but-meaningful setting: it says "no pool worker may ever
+        # run", which is what ``enabled: false`` already says, more honestly
+        # and without leaving the reconciler churning against a zero ceiling.
+        # Omit the key (``None``) to inherit ``resources.max_concurrent_agents``.
+        if self.global_max_active is not None and self.global_max_active < 1:
+            errors.append(
+                ConfigError(
+                    "swarm",
+                    "global_max_active",
+                    "must be >= 1 (omit it to inherit resources.max_concurrent_agents, "
+                    "or set swarm.enabled: false to stop pools entirely)",
+                )
+            )
         return errors
 
 
@@ -2051,6 +2081,54 @@ class MetricsConfig:
 
 
 @dataclass
+class ClaudeProviderConfig:
+    """The Claude side of ``providers``.
+
+    ``binary`` exists because a box with a harness shim does not have the real
+    CLI first on ``PATH``; the probe must be pointable at it.
+
+    ``stale_after_seconds`` is the single horizon T5's API, the dashboard card
+    and the doctor check all read.  Three independently hard-coded horizons
+    would eventually disagree about what the same card means -- one would mute
+    a bar the other still called fresh.  The default is twice the probe
+    playbook's ten-minute cadence plus slack.
+    """
+
+    usage_probe_enabled: bool = True
+    binary: str = "claude"
+    stale_after_seconds: float = 1500.0
+
+
+@dataclass
+class ProvidersConfig:
+    """Per-provider quota reporting (dashboard "provider usage" cards).
+
+    Codex gets a horizon of its own rather than sharing Claude's: its numbers
+    ride in on transcript lines, so they only advance while a Codex session is
+    live and a four-hour-old reading is normal on a Claude-only afternoon.
+    Holding it to the probe's 25 minutes would mark every Codex card stale
+    overnight and teach the operator to ignore the word.
+    """
+
+    claude: ClaudeProviderConfig = field(default_factory=ClaudeProviderConfig)
+    codex_stale_after_seconds: float = 4 * 3600.0
+
+    def validate(self) -> list[ConfigError]:
+        errors: list[ConfigError] = []
+        if self.claude.stale_after_seconds <= 0:
+            errors.append(
+                ConfigError("providers", "claude.stale_after_seconds", "must be > 0")
+            )
+        if self.codex_stale_after_seconds <= 0:
+            errors.append(
+                ConfigError("providers", "codex_stale_after_seconds", "must be > 0")
+            )
+        if not str(self.claude.binary).strip():
+            errors.append(ConfigError("providers", "claude.binary", "must not be empty"))
+        return errors
+
+
+@dataclass
 class GraphLayoutConfig:
     """Server-side task graph layout (spatial-layout design §8).
 
@@ -2100,7 +2178,7 @@ class AppConfig:
         default_factory=lambda: os.path.expanduser("~/agent-queue-workspaces")
     )
     project_roots: list[ProjectRoot] = field(default_factory=list)
-    database_path: str = ""  # Legacy SQLite path — use database.url instead
+    database_path: str = ""  # Deprecated alias for database.url; removed next release
     database: DatabaseConfig = field(default_factory=DatabaseConfig)
     profile: str = ""
     env: str = "production"
@@ -2138,6 +2216,7 @@ class AppConfig:
     swarm: SwarmConfig = field(default_factory=SwarmConfig)
     resources: ResourcesConfig = field(default_factory=ResourcesConfig)
     metrics: MetricsConfig = field(default_factory=MetricsConfig)
+    providers: ProvidersConfig = field(default_factory=ProvidersConfig)
     graph_layout: GraphLayoutConfig = field(default_factory=GraphLayoutConfig)
     agent_profiles: list[AgentProfileConfig] = field(default_factory=list)
     global_token_budget_daily: int | None = None
@@ -2286,28 +2365,15 @@ class AppConfig:
 
         # Validate database config
         errors.extend(self.database.validate())
-        if self.database.backend == "sqlite":
-            db_path = self.database.url
-            if not db_path:
-                errors.append(ConfigError("database", "url", "database path is required"))
-            else:
-                db_parent = os.path.dirname(db_path)
-                if db_parent and not os.path.exists(db_parent):
-                    grandparent = os.path.dirname(db_parent)
-                    if (
-                        grandparent
-                        and os.path.exists(grandparent)
-                        and not os.access(grandparent, os.W_OK)
-                    ):
-                        errors.append(
-                            ConfigError(
-                                "database",
-                                "url",
-                                f"parent directory '{db_parent}' does not exist "
-                                "and cannot be created",
-                                severity="warning",
-                            )
-                        )
+        if not is_postgres_url(self.database.url):
+            errors.append(
+                ConfigError(
+                    "database",
+                    "url",
+                    "a PostgreSQL DSN is required (postgresql://...); SQLite is no "
+                    "longer supported — see `aq db import-sqlite`",
+                )
+            )
 
         # Validate messaging_platform field. "telegram" gets a dedicated,
         # actionable error rather than folding into the generic "must be
@@ -2366,6 +2432,7 @@ class AppConfig:
         errors.extend(self.swarm.validate())
         errors.extend(self.resources.validate())
         errors.extend(self.metrics.validate())
+        errors.extend(self.providers.validate())
         errors.extend(self.graph_layout.validate())
         # Sessions are the only execution path (the runtime subsystem was
         # removed), so a disabled session runtime is a daemon that accepts
@@ -2470,6 +2537,7 @@ class AppConfig:
         updated.resources = fresh.resources
         updated.pricing = fresh.pricing
         updated.surface = fresh.surface
+        updated.providers = fresh.providers
 
         return updated
 
@@ -2510,6 +2578,10 @@ HOT_RELOADABLE_SECTIONS = {
     "swarm",
     "resources",
     "metrics",
+    # Both consumers read it per use -- the API resolves the staleness horizon
+    # on each request, the probe resolves its binary on each run -- so an edit
+    # takes effect without a restart.
+    "providers",
     "graph_layout",
     "pricing",
     "surface",
@@ -3421,6 +3493,10 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
             enabled=bool(sw.get("enabled", False)),
             fresh_context_per_task=bool(sw.get("fresh_context_per_task", True)),
             claim_wait_max=int(sw.get("claim_wait_max", 60)),
+            global_max_active=(
+                None if sw.get("global_max_active") is None
+                else int(sw["global_max_active"])
+            ),
             max_starts_per_tick=int(sw.get("max_starts_per_tick", 2)),
             max_drains_per_tick=int(sw.get("max_drains_per_tick", 5)),
             scale_down_grace=int(sw.get("scale_down_grace", 120)),
@@ -3458,6 +3534,14 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
 
     if "metrics" in raw:
         config.metrics = MetricsConfig(**_dataclass_kwargs(MetricsConfig, raw["metrics"]))
+
+    if "providers" in raw:
+        prov = raw["providers"] or {}
+        claude_kwargs = _dataclass_kwargs(ClaudeProviderConfig, prov.get("claude"))
+        config.providers = ProvidersConfig(
+            **_dataclass_kwargs(ProvidersConfig, {k: v for k, v in prov.items() if k != "claude"}),
+            claude=ClaudeProviderConfig(**claude_kwargs),
+        )
 
     # Both spellings: the spec nests it under ``dashboard``, while
     # ``config_editor``/``update_config`` write AppConfig field names as

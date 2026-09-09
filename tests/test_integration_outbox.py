@@ -8,7 +8,7 @@ from types import SimpleNamespace
 
 import pytest
 from sqlalchemy import delete, select, text
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import DBAPIError
 
 from src.config import PlaybooksConfig
 from src.database import Database
@@ -35,6 +35,7 @@ from src.playbooks.artifact_store import ArtifactStore
 from src.playbooks.definition import PlaybookDefinition
 from src.playbooks import runtime as runtime_module
 from src.playbooks.runtime import V2PlaybookRuntime
+from tests.db_fixtures import lease_dsn
 
 
 NOW = 1_789_000_000.0
@@ -42,7 +43,7 @@ NOW = 1_789_000_000.0
 
 @pytest.fixture
 async def db(tmp_path):
-    database = Database(str(tmp_path / "integration-outbox.db"))
+    database = Database(lease_dsn("integration-outbox.db"))
     await database.initialize()
     await database.create_project(Project(id="p", name="integration project"))
     yield database
@@ -201,6 +202,23 @@ async def _enable_with_route(
             "cleanup": {},
         },
     )
+
+
+@pytest.fixture(autouse=True)
+async def managed_runtimes(db, monkeypatch):
+    """Stop every background dispatcher before its database is closed."""
+    runtimes = []
+    create_runtime = _runtime
+
+    def tracked_runtime(*args, **kwargs):
+        runtime = create_runtime(*args, **kwargs)
+        runtimes.append(runtime)
+        return runtime
+
+    monkeypatch.setattr(__name__ + "._runtime", tracked_runtime)
+    yield
+    for runtime in reversed(runtimes):
+        await runtime.shutdown()
 
 
 def _runtime(db, compiled_root) -> V2PlaybookRuntime:
@@ -479,6 +497,9 @@ async def test_pending_row_stays_protected_until_every_selected_rule_has_a_run(d
     )
     runtime = _runtime(db, tmp_path / "compiled")
     await runtime.refresh()
+    # Exercise one dispatch directly without the reconciler claiming the same
+    # row or clearing last_error for its next retry before we inspect it.
+    await runtime.shutdown()
     pending_id = await db.retain_integration_event(
         playbook_id="integration-train",
         activation_id=activation_id,
@@ -1153,10 +1174,10 @@ async def test_operation_pin_is_a_reference_for_gc_file_rechecks(db, tmp_path):
     )
     assert old_sha not in {sha for sha, _path in collected}
     # The file collector re-checks references after the artifact row has been
-    # deleted.  Simulate a SQLite deployment without FK enforcement so the
+    # deleted. Temporarily bypass FK triggers in this test transaction so the
     # normalized operation pin must protect the hash on its own.
     async with db._engine.connect() as conn:
-        await conn.execute(text("PRAGMA foreign_keys = OFF"))
+        await conn.execute(text("SET LOCAL session_replication_role = replica"))
         await conn.execute(
             delete(playbook_artifacts).where(
                 playbook_artifacts.c.artifact_sha256 == old_sha
@@ -1295,16 +1316,29 @@ async def test_artifact_gc_retains_a_candidate_on_concurrent_fk_conflict(db, tmp
     async with db.immediate() as conn:
         await conn.execute(
             text(
-                "CREATE TRIGGER test_concurrent_artifact_pin BEFORE DELETE ON "
-                f"playbook_artifacts WHEN OLD.artifact_sha256 = '{old_sha}' BEGIN "
+                "CREATE FUNCTION test_concurrent_artifact_pin() RETURNS trigger "
+                "LANGUAGE plpgsql AS $$ BEGIN "
                 "INSERT INTO integration_outbox_artifact_pins(event_id, artifact_sha256) "
-                "VALUES ('event-1', OLD.artifact_sha256); END"
+                "VALUES ('event-1', OLD.artifact_sha256); RETURN OLD; END $$"
             )
         )
+        await conn.execute(text(
+            "CREATE TRIGGER test_concurrent_artifact_pin BEFORE DELETE ON "
+            "playbook_artifacts FOR EACH ROW "
+            f"WHEN (OLD.artifact_sha256 = '{old_sha}') "
+            "EXECUTE FUNCTION test_concurrent_artifact_pin()"
+        ))
 
-    collected = await db.collect_playbook_artifacts(
-        NOW + 1_000_000, min_versions=0, limit=100
-    )
+    try:
+        collected = await db.collect_playbook_artifacts(
+            NOW + 1_000_000, min_versions=0, limit=100
+        )
+    finally:
+        async with db.immediate() as conn:
+            await conn.execute(text(
+                "DROP TRIGGER test_concurrent_artifact_pin ON playbook_artifacts"
+            ))
+            await conn.execute(text("DROP FUNCTION test_concurrent_artifact_pin()"))
 
     assert old_sha not in {sha for sha, _path in collected}
     assert await db.get_playbook_artifact(old_sha) is not None
@@ -1414,7 +1448,7 @@ async def test_acceptance_cursor_cannot_regress(db):
             .values(acceptance_cursor=1)
         )
 
-    with pytest.raises(IntegrityError, match="acceptance cursor cannot decrease"):
+    with pytest.raises(DBAPIError, match="acceptance cursor cannot decrease"):
         async with db.immediate() as conn:
             await conn.execute(
                 integration_outbox.update()

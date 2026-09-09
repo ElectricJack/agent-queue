@@ -9,7 +9,6 @@ all file effects are real.
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 
 import pytest
@@ -61,14 +60,6 @@ def test_load_existing_config_merges_yaml_and_env_without_resolving_secrets(fake
     assert yaml_cfg["discord"]["guild_id"] == "42"
 
 
-def test_step_database_keeps_existing_sqlite_and_creates_parent(fake_home, monkeypatch):
-    db_path = str(fake_home / "aq-data" / "agent-queue.db")
-    monkeypatch.setattr(sw, "prompt_yes_no", lambda *a, **kw: False)  # don't switch
-
-    result = sw.step_database({"DATABASE_PATH": db_path})
-
-    assert result == {"backend": "sqlite", "url": db_path}
-    assert os.path.isdir(os.path.dirname(db_path))
 
 
 def test_select_postgresql_stops_after_two_failed_dsn_attempts(monkeypatch):

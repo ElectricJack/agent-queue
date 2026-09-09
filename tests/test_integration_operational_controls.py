@@ -43,6 +43,7 @@ from src.models import Project, RepoConfig, RepoSourceType
 from src.playbooks.artifact_ref import ArtifactRef
 from src.playbooks.definition import PlaybookDefinition
 from src.profiles.capabilities import CapabilityPolicy
+from tests.db_fixtures import lease_dsn
 
 
 def _artifact(
@@ -152,7 +153,7 @@ def _policy(
 
 @pytest.fixture
 async def db(tmp_path):
-    database = Database(str(tmp_path / "operational-controls.db"))
+    database = Database(lease_dsn("operational-controls.db"))
     await database.initialize()
     await database.create_project(Project(id="p", name="project"))
     await database.create_repo(

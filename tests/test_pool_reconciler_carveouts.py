@@ -8,10 +8,14 @@ import time
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from sqlalchemy import insert
 
 from src.commands.claim_commands import write_claim_file
-from src.config import AppConfig, DiscordConfig
+from src.config import DatabaseConfig, AppConfig, DiscordConfig
 from src.database import Database
+from src.database.tables import integration_branch_owners
+from src.doctor.models import Severity
+from src.doctor.pool_checks import run_check
 from src.models import (
     Agent,
     AgentProfile,
@@ -28,13 +32,14 @@ from src.sessions import SessionProviderRegistry
 from src.sessions.exit_classifier import ExitVerdict, Verdict
 from src.sessions.fake import FakeProvider
 from src.sessions.reconciler import META_STALL_LAST_ACTION, META_STALL_NUDGES, SessionReconciler
+from tests.db_fixtures import lease_dsn
 
 PROJECT_ID = "proj"
 
 
 @pytest.fixture
 async def db(tmp_path):
-    database = Database(str(tmp_path / "test.db"))
+    database = Database(lease_dsn("test.db"))
     await database.initialize()
     await database.create_project(Project(id=PROJECT_ID, name="p"))
     await database.create_profile(AgentProfile(id="worker", name="w", harness="claude"))
@@ -61,7 +66,7 @@ async def orch(db, tmp_path, registry):
     cfg = AppConfig(
         discord=DiscordConfig(bot_token="t", guild_id="1"),
         workspace_dir=str(tmp_path / "ws"),
-        database_path=str(tmp_path / "test.db"),
+        database=DatabaseConfig(url=lease_dsn("test.db")),
         data_dir=str(tmp_path / "data"),
     )
     cfg.sessions.enabled = True
@@ -89,23 +94,25 @@ def reconciler(db, orch, registry):
     )
 
 
-async def held_pool_session(db, sid="s1", agent_id="agent-1", phase="active", phase_at=None):
+async def held_pool_session(
+    db, sid="s1", agent_id="agent-1", phase="active", phase_at=None, task_id="t1"
+):
     # ``tasks.assigned_agent_id`` and ``agents.current_task_id`` form a
     # cycle -- insert both with the cross-reference unset, then backfill.
-    await db.create_task(Task(id="t1", project_id=PROJECT_ID, title="t1", description="t1",
+    await db.create_task(Task(id=task_id, project_id=PROJECT_ID, title=task_id, description=task_id,
                               status=TaskStatus.IN_PROGRESS, claim_epoch=1, profile_id="worker"))
     await db.create_agent(Agent(id=agent_id, name=agent_id, profile_id="worker",
                                 state=AgentState.BUSY))
-    await db.update_task("t1", assigned_agent_id=agent_id)
-    await db.update_agent(agent_id, current_task_id="t1")
+    await db.update_task(task_id, assigned_agent_id=agent_id)
+    await db.update_agent(agent_id, current_task_id=task_id)
     await db.create_workspace(Workspace(id=f"ws-{agent_id}", project_id=PROJECT_ID,
                                         workspace_path=f"/wd/{agent_id}",
                                         source_type=RepoSourceType.LINK, kind_id="project-repo",
-                                        locked_by_agent_id=agent_id, locked_by_task_id="t1"))
+                                        locked_by_agent_id=agent_id, locked_by_task_id=task_id))
     await db.create_session(SessionRecord(
         id=sid, project_id=PROJECT_ID, profile_id="worker", harness="claude", provider="fake",
         name=sid, lifecycle="pool", work_dir=f"/wd/{agent_id}", epoch="e", instance_token="t",
-        started_at=time.time() - 600, state="running", agent_id=agent_id, task_id="t1",
+        started_at=time.time() - 600, state="running", agent_id=agent_id, task_id=task_id,
         claim_phase=phase, claim_phase_at=phase_at if phase_at is not None else time.time()))
     return sid
 
@@ -292,6 +299,161 @@ class TestPrepareTimeoutFlagGate:
 
 
 class TestOrphans:
+    @pytest.mark.parametrize("status", [TaskStatus.PAUSED, TaskStatus.BLOCKED, TaskStatus.FAILED])
+    @pytest.mark.parametrize("handoff_state", ["attached", "handoff_pending"])
+    async def test_integration_owned_non_live_claim_is_retained(
+        self, db, reconciler, status, handoff_state
+    ):
+        """An attached branch owner is durable evidence that cleanup must wait."""
+        sid = await held_pool_session(db)
+        await db.transition_task("t1", status, context="test", force=True)
+        async with db.immediate() as conn:
+            await conn.execute(
+                insert(integration_branch_owners).values(
+                    id="owner-1",
+                    repository_id="repo-1",
+                    ref="aq/t1",
+                    owner_id="t1",
+                    owner_role="worker",
+                    fence_token=1,
+                    handoff_state=handoff_state,
+                    session_id=sid,
+                    workspace_id="ws-agent-1",
+                    created_at=time.time(),
+                    updated_at=time.time(),
+                )
+            )
+
+        live, now = await observe(reconciler)
+        await reconciler._step_orphans(live, now)
+
+        session = await db.get_session(sid)
+        workspace = await db.get_workspace("ws-agent-1")
+        assert (session.task_id, session.claim_phase) == ("t1", "active")
+        assert workspace.locked_by_agent_id == "agent-1"
+        assert await db.get_pending_messages("session", sid) == []
+
+    async def test_owned_orphan_does_not_block_reclaiming_an_unrelated_orphan(self, db, reconciler):
+        sid = await held_pool_session(db)
+        other_sid = await held_pool_session(db, "s2", "agent-2", task_id="t2")
+        await db.transition_task("t1", TaskStatus.PAUSED, context="test", force=True)
+        await db.transition_task("t2", TaskStatus.BLOCKED, context="test", force=True)
+        async with db.immediate() as conn:
+            await conn.execute(
+                insert(integration_branch_owners).values(
+                    id="owner-1", repository_id="repo-1", ref="aq/t1", owner_id="t1",
+                    owner_role="worker", fence_token=1, handoff_state="attached", session_id=sid,
+                    workspace_id="ws-agent-1", created_at=time.time(), updated_at=time.time(),
+                )
+            )
+
+        live, now = await observe(reconciler)
+        await reconciler._step_orphans(live, now)
+
+        assert (await db.get_session(sid)).task_id == "t1"
+        assert (await db.get_workspace("ws-agent-1")).locked_by_agent_id == "agent-1"
+        assert (await db.get_session(other_sid)).task_id is None
+        assert (await db.get_workspace("ws-agent-2")).locked_by_agent_id == "agent-2"
+
+    async def test_released_integration_owner_allows_non_live_claim_reclaim(self, db, reconciler):
+        sid = await held_pool_session(db)
+        await db.transition_task("t1", TaskStatus.PAUSED, context="test", force=True)
+        async with db.immediate() as conn:
+            await conn.execute(
+                insert(integration_branch_owners).values(
+                    id="owner-1", repository_id="repo-1", ref="aq/t1", owner_id="t1",
+                    owner_role="worker", fence_token=1, handoff_state="released", session_id=None,
+                    workspace_id=None, confirmed_workspace_id="ws-agent-1", created_at=time.time(),
+                    updated_at=time.time(),
+                )
+            )
+
+        live, now = await observe(reconciler)
+        await reconciler._step_orphans(live, now)
+
+        assert (await db.get_session(sid)).task_id is None
+        assert (await db.get_workspace("ws-agent-1")).locked_by_agent_id == "agent-1"
+
+    async def test_termination_retains_attached_integration_owner_bindings(self, db):
+        sid = await held_pool_session(db)
+        async with db.immediate() as conn:
+            await conn.execute(
+                insert(integration_branch_owners).values(
+                    id="owner-1", repository_id="repo-1", ref="aq/t1", owner_id="t1",
+                    owner_role="worker", fence_token=1, handoff_state="attached", session_id=sid,
+                    workspace_id="ws-agent-1", created_at=time.time(), updated_at=time.time(),
+                )
+            )
+
+        result = await db.terminate_pool_session(sid, reason="test")
+
+        assert not result.released
+        assert (await db.get_session(sid)).task_id == "t1"
+        assert (await db.get_workspace("ws-agent-1")).locked_by_agent_id == "agent-1"
+
+    @pytest.mark.parametrize("status", [TaskStatus.PAUSED, TaskStatus.BLOCKED, TaskStatus.FAILED])
+    async def test_non_live_active_pool_claim_is_released_and_worker_is_notified(
+        self, db, reconciler, status
+    ):
+        sid = await held_pool_session(db)
+        await db.transition_task("t1", status, context="test", force=True)
+
+        live, now = await observe(reconciler)
+        await reconciler._step_orphans(live, now)
+
+        session = await db.get_session(sid)
+        task = await db.get_task("t1")
+        workspace = await db.get_workspace("ws-agent-1")
+        messages = await db.get_pending_messages("session", sid)
+        assert (session.task_id, session.claim_phase) == (None, None)
+        assert task.status is status
+        assert workspace.locked_by_agent_id == "agent-1"
+        assert len(messages) == 1
+        assert messages[0].from_kind == "system"
+        assert messages[0].to_id == sid
+        assert status.value in messages[0].body
+        finding = await run_check(db, "pools.stuck", config=None)
+        assert finding.severity is Severity.OK
+
+    async def test_live_active_pool_claim_is_not_reclaimed(self, db, reconciler):
+        sid = await held_pool_session(db)
+
+        live, now = await observe(reconciler)
+        await reconciler._step_orphans(live, now)
+
+        session = await db.get_session(sid)
+        workspace = await db.get_workspace("ws-agent-1")
+        assert (session.task_id, session.claim_phase) == ("t1", "active")
+        assert workspace.locked_by_agent_id == "agent-1"
+        assert await db.get_pending_messages("session", sid) == []
+
+    @pytest.mark.parametrize("status", [TaskStatus.PAUSED, TaskStatus.BLOCKED])
+    async def test_reclaim_does_not_overwrite_a_concurrent_resume(
+        self, db, reconciler, monkeypatch, status
+    ):
+        """The release transaction, not the earlier orphan read, owns the race."""
+        sid = await held_pool_session(db)
+        transition_kwargs = {"resume_after": time.time() + 60} if status is TaskStatus.PAUSED else {}
+        await db.transition_task("t1", status, context="test", force=True, **transition_kwargs)
+
+        real_release_claim = db.release_claim
+
+        async def resume_before_release(*args, **kwargs):
+            await db.transition_task("t1", TaskStatus.IN_PROGRESS, context="concurrent_resume", force=True)
+            return await real_release_claim(*args, **kwargs)
+
+        monkeypatch.setattr(db, "release_claim", resume_before_release)
+        live, now = await observe(reconciler)
+        await reconciler._step_orphans(live, now)
+
+        task = await db.get_task("t1")
+        session = await db.get_session(sid)
+        workspace = await db.get_workspace("ws-agent-1")
+        assert task.status is TaskStatus.IN_PROGRESS
+        assert (session.task_id, session.claim_phase) == ("t1", "active")
+        assert workspace.locked_by_agent_id == "agent-1"
+        assert await db.get_pending_messages("session", sid) == []
+
     async def test_terminal_pool_task_release_removes_claim_file(
         self, db, reconciler, tmp_path
     ):
@@ -346,4 +508,4 @@ class TestOrphans:
             None,
         )
         assert (await db.get_agent("agent-1")).state == AgentState.IDLE
-        assert (await db.get_workspace_for_agent("agent-1")).locked_by_agent_id == "agent-1"
+        assert (await db.get_workspace("ws-agent-1")).locked_by_agent_id == "agent-1"

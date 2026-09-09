@@ -23,11 +23,12 @@ from src.database.tables import (
 from src.integration.scheduler import IntegrationScheduler
 from src.integration.service import IntegrationService
 from src.integration.models import HierarchicalIntegrationPolicy
+from tests.db_fixtures import lease_dsn
 
 
 @pytest.fixture
 async def db(tmp_path):
-    database = Database(str(tmp_path / "integration-service.db"))
+    database = Database(lease_dsn("integration-service.db"))
     await database.initialize()
     yield database
     await database.close()

@@ -39,6 +39,7 @@ from src.integration.models import (
     RequiredCheckSet,
 )
 from src.models import AgentProfile, Project, RepoConfig, RepoSourceType, SessionRecord
+from tests.db_fixtures import lease_dsn
 
 
 BASE = "a" * 40
@@ -119,7 +120,7 @@ def _policy() -> dict:
 
 @pytest.fixture
 async def db(tmp_path):
-    database = Database(str(tmp_path / "candidates.db"))
+    database = Database(lease_dsn("candidates.db"))
     await database.initialize()
     await database.create_profile(AgentProfile(id="repairer", name="Repairer"))
     await database.create_profile(AgentProfile(id="debugger", name="Debugger"))
@@ -535,6 +536,12 @@ async def test_many_members_build_in_ordinal_order_without_moving_sources(db, tm
     assert revision["next_member_ordinal"] == 2
     assert [row["result"] for row in applied] == ["applied", "applied"]
     assert [row["input_head_sha"] for row in applied] == [members[0][1], members[1][1]]
+    previous = base
+    for member, row in zip(members, applied, strict=True):
+        merged = row["generated_squash_sha"]
+        assert _git(origin, "show", "-s", "--format=%P", merged).split() == [previous, member[1]]
+        _git(origin, "merge-base", "--is-ancestor", member[1], result.head_sha)
+        previous = merged
     assert replay.outcome == "already_built"
     assert replay.head_sha == result.head_sha
     assert replay.pr_url == "https://github.com/example/repo/pull/9"
@@ -581,6 +588,55 @@ async def test_one_member_build_and_local_replay_are_deterministic(db, tmp_path)
         "base.txt",
         "member-0.txt",
     ]
+
+
+async def test_build_replaces_legacy_squash_candidate_with_reviewed_ancestry(db, tmp_path):
+    from src.git.github_app import GitHubRepositoryBinding
+    from src.integration.candidates import CandidateService
+
+    origin, _work, base, members = _make_origin(tmp_path)
+    await db.update_repo("repo", url=str(origin))
+    await _seed_batch(db, members=members, base_sha=base)
+    app = _AppClient(origin)
+    app.repository = GitHubRepositoryBinding(repository_id=9, full_name="example/repo")
+    git = _LocalPushGit(origin)
+    run = git.arun_git_result
+
+    async def legacy_commit(args, **kwargs):
+        args = list(args)
+        if args[0] == "commit-tree" and args.count("-p") > 1:
+            second = args.index("-p", args.index("-p") + 1)
+            del args[second:second + 2]
+        return await run(args, **kwargs)
+
+    git.arun_git_result = legacy_commit
+    service = CandidateService(
+        db, data_dir=tmp_path / "data", git_manager=git,
+        forge_provider=_AuditForge(), app_client=app, clock=lambda: 100.0,
+    )
+    from unittest.mock import AsyncMock
+
+    ancestry = service._has_reviewed_ancestry
+    service._has_reviewed_ancestry = AsyncMock(return_value=True)
+    old = await service.build("batch")
+    service._has_reviewed_ancestry = ancestry
+    git.arun_git_result = run
+    service.forge_provider = _AuditForge()
+    rebuilt = await service.build("batch")
+    assert rebuilt.revision == old.revision + 1
+    assert rebuilt.head_sha != old.head_sha
+    assert _git(origin, "rev-parse", f"{old.head_sha}^{{tree}}") == _git(
+        origin, "rev-parse", f"{rebuilt.head_sha}^{{tree}}"
+    )
+    for member in members:
+        _git(origin, "merge-base", "--is-ancestor", member[1], rebuilt.head_sha)
+    async with db._engine.connect() as conn:
+        rows = (await conn.execute(select(integration_candidate_revisions).order_by(
+            integration_candidate_revisions.c.revision
+        ))).mappings().all()
+    assert [row["state"] for row in rows] == ["superseded", "built"]
+    assert rows[1]["ci_evidence_id"] is None
+    assert (await service.build("batch")).head_sha == rebuilt.head_sha
 
 
 async def test_conflict_dispatches_and_rejects_caller_supplied_lineage(db, tmp_path):
@@ -2433,13 +2489,16 @@ async def test_instance_bound_repair_reservation_push_and_accept_once(
     if repair_change == "exact" and stage == 0:
         resumed = await service.build("batch")
         assert resumed.outcome in {"built", "already_built"}
+        assert resumed.revision == 1
+        for member in members:
+            _git(origin, "merge-base", "--is-ancestor", member[1], resumed.head_sha)
         assert resumed.pr_url == "https://github.com/example/repo/pull/9"
         async with db._engine.connect() as conn:
             publication = (
                 await conn.execute(
                     select(integration_candidate_publications).where(
                         integration_candidate_publications.c.batch_id == "batch",
-                        integration_candidate_publications.c.revision == 0,
+                        integration_candidate_publications.c.revision == resumed.revision,
                     )
                 )
             ).mappings().one()
@@ -2452,7 +2511,7 @@ async def test_instance_bound_repair_reservation_push_and_accept_once(
         new_base = _git(work, "rev-parse", "HEAD")
         _git(work, "push", "--force", "origin", "main")
         service.forge_provider = _AuditForge()
-        rebuilt = await service.rebuild("batch", 0, new_base)
+        rebuilt = await service.rebuild("batch", resumed.revision, new_base)
         assert rebuilt.outcome in {"built", "already_built"}
         assert _git(origin, "show", f"{rebuilt.head_sha}:shared.txt") == "first and second"
         assert _git(origin, "rev-parse", "refs/heads/root-1") == source_before
@@ -2503,7 +2562,7 @@ async def test_persisted_pr_never_hides_diverged_candidate_ref(db, tmp_path):
 
 
 async def test_published_pr_identity_is_immutable_and_replay_is_canonical(db, tmp_path):
-    from sqlalchemy.exc import IntegrityError
+    from sqlalchemy.exc import DBAPIError
 
     from src.git.github_app import GitHubRepositoryBinding
     from src.integration.candidates import CandidateService
@@ -2525,7 +2584,7 @@ async def test_published_pr_identity_is_immutable_and_replay_is_canonical(db, tm
     built = await service.build("batch")
     replay = await service.build("batch")
     assert replay.pr_url == built.pr_url
-    with pytest.raises(IntegrityError):
+    with pytest.raises(DBAPIError):
         async with db.immediate() as conn:
             await conn.execute(
                 update(integration_candidate_publications)

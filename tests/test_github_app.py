@@ -102,8 +102,7 @@ async def test_mints_narrow_installation_token_after_app_and_repository_binding(
                     '"repositories":[{"id":303}],"permissions":'
                     '{"checks":"write","actions":"read","contents":"write",'
                     '"administration":"read","pull_requests":"write",'
-                    '"issues":"write","variables":"read","metadata":"read"}}'
-                    % expires
+                    '"issues":"write","variables":"read","metadata":"read"}}' % expires
                 ).encode(),
             ),
             HttpResponse(200, {}, b'{"id":303,"full_name":"acme/widgets"}'),
@@ -241,6 +240,7 @@ async def test_audit_pr_transport_reconciles_by_marker_and_creates_exact_bound_p
     transport = ScriptedTransport(
         [
             HttpResponse(200, {}, json.dumps([payload]).encode()),
+            HttpResponse(200, {}, b"[]"),
             HttpResponse(201, {}, json.dumps(payload).encode()),
         ]
     )
@@ -269,7 +269,7 @@ async def test_audit_pr_transport_reconciles_by_marker_and_creates_exact_bound_p
     assert found == created
     assert found.idempotency_key == key
     assert transport.requests[0][1].endswith("/repositories/303/pulls?state=all&per_page=100")
-    assert transport.requests[1][3] == {
+    assert transport.requests[2][3] == {
         "title": "Integration train batch",
         "head": "aq/integration/batch",
         "base": "main",
@@ -361,3 +361,66 @@ def test_file_key_provider_rejects_group_readable_and_symlink_paths(tmp_path):
     link.symlink_to(key)
     with pytest.raises(GitHubAppError, match="unreadable"):
         provider.read_private_key(str(link))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mismatch", [None, "head", "base", "batch", "repository"])
+async def test_audit_pr_reuses_exact_batch_pr_for_new_revision(mismatch):
+    private, _public = _private_key()
+    old_key, key, head = "a" * 64, "b" * 64, "c" * 40
+    payload = {
+        "html_url": "https://github.com/acme/widgets/pull/7",
+        "number": 7,
+        "state": "open",
+        "body": f"<!-- aq-integration-audit:{old_key} -->\nRoot integration batch `batch`.",
+        "head": {
+            "sha": head,
+            "ref": "aq/integration/batch",
+            "repo": {"id": 303, "full_name": "acme/widgets"},
+        },
+        "base": {"ref": "main"},
+    }
+    if mismatch == "head":
+        payload["head"]["sha"] = "d" * 40
+    if mismatch == "base":
+        payload["base"]["ref"] = "other"
+    if mismatch == "batch":
+        payload["body"] = payload["body"].replace("`batch`", "`other`")
+    if mismatch == "repository":
+        payload["head"]["repo"]["id"] = 404
+    updated = dict(payload, body=payload["body"] + f"\n<!-- aq-integration-audit:{key} -->")
+    transport = ScriptedTransport(
+        [
+            HttpResponse(200, {}, json.dumps([payload]).encode()),
+            HttpResponse(200, {}, json.dumps(updated).encode()),
+        ]
+    )
+    client = GitHubAppClient(
+        GitHubAppConfig("Iv1.client", 101, 202, "/daemon/key.pem"),
+        GitHubRepositoryBinding(303, "acme/widgets"),
+        key_provider=StaticKeyProvider(private),
+        transport=transport,
+        clock=lambda: 1_800_000_000.0,
+    )
+    client._token = "installation-secret"
+    client._token_expires_at = 1_800_001_000.0
+    kwargs = dict(
+        repository_id="repo",
+        branch="aq/integration/batch",
+        head_sha=head,
+        base_branch="main",
+        batch_id="batch",
+        idempotency_key=key,
+        repository_numeric_id=303,
+        repository_full_name="acme/widgets",
+    )
+    if mismatch:
+        with pytest.raises(GitHubAppError):
+            await client.create_audit_pr(**kwargs)
+        assert len(transport.requests) == 1
+    else:
+        result = await client.create_audit_pr(**kwargs)
+        assert result.number == 7
+        assert result.head_sha == head
+        assert transport.requests[1][0] == "PATCH"
+        assert transport.requests[1][3]["body"] == updated["body"]

@@ -10,6 +10,7 @@ from ..types import UNSET, Unset
 
 if TYPE_CHECKING:
     from ..models.pool_instance_status import PoolInstanceStatus
+    from ..models.pool_project_status import PoolProjectStatus
 
 
 T = TypeVar("T", bound="PoolStatusRow")
@@ -17,26 +18,29 @@ T = TypeVar("T", bound="PoolStatusRow")
 
 @_attrs_define
 class PoolStatusRow:
-    """One (project, profile) worker-pool row — swarm-work-model §11.
+    """One worker pool -- a profile, fleet-wide (global-worker-pools §6.1).
 
-    Attributes:
-        project_id (str):
-        profile_id (str):
-        min_active (int):
-        desired (int):
-        running_idle (int):
-        running_busy (int):
-        starting (int):
-        draining (int):
-        ready (int):
-        enabled (bool | Unset):  Default: True.
-        max_active (int | None | Unset):
-        quarantined_until (float | None | Unset):
-        quarantined_reason (None | str | Unset):
-        instances (list[PoolInstanceStatus] | Unset):
+    A row used to be one ``(project_id, profile_id)`` pair, which quietly
+    multiplied ``min_active``/``max_active`` by the number of active
+    projects.  Bounds and supply are aggregates over the whole fleet now,
+    and the per-project detail lives in ``projects``.
+
+        Attributes:
+            profile_id (str):
+            min_active (int):
+            desired (int):
+            running_idle (int):
+            running_busy (int):
+            starting (int):
+            draining (int):
+            ready (int):
+            enabled (bool | Unset):  Default: True.
+            max_active (int | None | Unset):
+            min_per_project (int | Unset):  Default: 0.
+            projects (list[PoolProjectStatus] | Unset):
+            instances (list[PoolInstanceStatus] | Unset):
     """
 
-    project_id: str
     profile_id: str
     min_active: int
     desired: int
@@ -47,14 +51,12 @@ class PoolStatusRow:
     ready: int
     enabled: bool | Unset = True
     max_active: int | None | Unset = UNSET
-    quarantined_until: float | None | Unset = UNSET
-    quarantined_reason: None | str | Unset = UNSET
+    min_per_project: int | Unset = 0
+    projects: list[PoolProjectStatus] | Unset = UNSET
     instances: list[PoolInstanceStatus] | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
-        project_id = self.project_id
-
         profile_id = self.profile_id
 
         min_active = self.min_active
@@ -79,17 +81,14 @@ class PoolStatusRow:
         else:
             max_active = self.max_active
 
-        quarantined_until: float | None | Unset
-        if isinstance(self.quarantined_until, Unset):
-            quarantined_until = UNSET
-        else:
-            quarantined_until = self.quarantined_until
+        min_per_project = self.min_per_project
 
-        quarantined_reason: None | str | Unset
-        if isinstance(self.quarantined_reason, Unset):
-            quarantined_reason = UNSET
-        else:
-            quarantined_reason = self.quarantined_reason
+        projects: list[dict[str, Any]] | Unset = UNSET
+        if not isinstance(self.projects, Unset):
+            projects = []
+            for projects_item_data in self.projects:
+                projects_item = projects_item_data.to_dict()
+                projects.append(projects_item)
 
         instances: list[dict[str, Any]] | Unset = UNSET
         if not isinstance(self.instances, Unset):
@@ -102,7 +101,6 @@ class PoolStatusRow:
         field_dict.update(self.additional_properties)
         field_dict.update(
             {
-                "project_id": project_id,
                 "profile_id": profile_id,
                 "min_active": min_active,
                 "desired": desired,
@@ -117,10 +115,10 @@ class PoolStatusRow:
             field_dict["enabled"] = enabled
         if max_active is not UNSET:
             field_dict["max_active"] = max_active
-        if quarantined_until is not UNSET:
-            field_dict["quarantined_until"] = quarantined_until
-        if quarantined_reason is not UNSET:
-            field_dict["quarantined_reason"] = quarantined_reason
+        if min_per_project is not UNSET:
+            field_dict["min_per_project"] = min_per_project
+        if projects is not UNSET:
+            field_dict["projects"] = projects
         if instances is not UNSET:
             field_dict["instances"] = instances
 
@@ -129,10 +127,9 @@ class PoolStatusRow:
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
         from ..models.pool_instance_status import PoolInstanceStatus
+        from ..models.pool_project_status import PoolProjectStatus
 
         d = dict(src_dict)
-        project_id = d.pop("project_id")
-
         profile_id = d.pop("profile_id")
 
         min_active = d.pop("min_active")
@@ -160,23 +157,16 @@ class PoolStatusRow:
 
         max_active = _parse_max_active(d.pop("max_active", UNSET))
 
-        def _parse_quarantined_until(data: object) -> float | None | Unset:
-            if data is None:
-                return data
-            if isinstance(data, Unset):
-                return data
-            return cast(float | None | Unset, data)
+        min_per_project = d.pop("min_per_project", UNSET)
 
-        quarantined_until = _parse_quarantined_until(d.pop("quarantined_until", UNSET))
+        _projects = d.pop("projects", UNSET)
+        projects: list[PoolProjectStatus] | Unset = UNSET
+        if _projects is not UNSET:
+            projects = []
+            for projects_item_data in _projects:
+                projects_item = PoolProjectStatus.from_dict(projects_item_data)
 
-        def _parse_quarantined_reason(data: object) -> None | str | Unset:
-            if data is None:
-                return data
-            if isinstance(data, Unset):
-                return data
-            return cast(None | str | Unset, data)
-
-        quarantined_reason = _parse_quarantined_reason(d.pop("quarantined_reason", UNSET))
+                projects.append(projects_item)
 
         _instances = d.pop("instances", UNSET)
         instances: list[PoolInstanceStatus] | Unset = UNSET
@@ -188,7 +178,6 @@ class PoolStatusRow:
                 instances.append(instances_item)
 
         pool_status_row = cls(
-            project_id=project_id,
             profile_id=profile_id,
             min_active=min_active,
             desired=desired,
@@ -199,8 +188,8 @@ class PoolStatusRow:
             ready=ready,
             enabled=enabled,
             max_active=max_active,
-            quarantined_until=quarantined_until,
-            quarantined_reason=quarantined_reason,
+            min_per_project=min_per_project,
+            projects=projects,
             instances=instances,
         )
 

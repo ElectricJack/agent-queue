@@ -11,6 +11,7 @@ import pytest
 from src.database import Database
 from src.models import Agent, AgentState, Project, SessionRecord, Task, TaskStatus
 from src.sessions.transcripts.watcher import TranscriptWatcher
+from tests.db_fixtures import lease_dsn
 
 
 class _Bus:
@@ -29,7 +30,7 @@ class _Bus:
 
 @pytest.fixture
 async def db(tmp_path):
-    database = Database(str(tmp_path / "t.db"))
+    database = Database(lease_dsn("t.db"))
     await database.initialize()
     await database.create_project(Project(id="p1", name="P1"))
     yield database
@@ -643,3 +644,125 @@ async def test_a_rewritten_transcript_is_read_from_the_start(tmp_path, db, bus):
     fresh_bus = _Bus()
     await TranscriptWatcher(db=db, bus=fresh_bus, base_dir=tmp_path).tick()
     assert [p["message"] for p in fresh_bus.payloads("notify.task_message")] == ["short"]
+
+
+# ---------------------------------------------------------------------------
+# Provider usage: Codex publishes its account quota on the token_count line
+# the watcher already reads (T2 of the provider-usage implementation spec).
+# ---------------------------------------------------------------------------
+
+#: The verified live block, from the implementation spec.
+CODEX_RATE_LIMITS = {
+    "limit_id": "codex",
+    "plan_type": "pro",
+    "primary": {"used_percent": 88.0, "window_minutes": 10080, "resets_at": 1789135776},
+    "secondary": None,
+    "credits": {"has_credits": False, "balance": "0"},
+}
+
+
+def _append_codex_line(path: Path, payload: dict) -> None:
+    """Append one ``event_msg`` to a rollout, stamped now so it is not
+    discarded as pre-session history."""
+    with path.open("a") as handle:
+        handle.write(
+            json.dumps(
+                {"timestamp": time.time(), "type": "event_msg", "payload": payload}
+            )
+            + "\n"
+        )
+
+
+@pytest.mark.asyncio
+async def test_codex_rate_limits_become_one_provider_snapshot(tmp_path, db, bus):
+    """The dashboard's only source of Codex's own quota: nobody probes for
+    it, so a missed line is a number that stays wrong until the next turn."""
+    work_dir = "/work/codex-quota"
+    path = _make_codex_transcript(tmp_path, work_dir)
+    _append_codex_line(
+        path, {"type": "token_count", "info": None, "rate_limits": CODEX_RATE_LIMITS}
+    )
+    await _make_codex_session(db, work_dir, task_id="tq1")
+
+    await TranscriptWatcher(db=db, bus=bus, base_dir=tmp_path).tick()
+
+    rows = await db.latest_provider_usage()
+    assert len(rows) == 1
+    assert rows[0]["provider"] == "codex"
+    assert rows[0]["window"] == "primary"
+    assert rows[0]["used_percent"] == 88.0
+    assert rows[0]["account_label"] == "pro"
+    assert rows[0]["source"] == "transcript"
+    assert rows[0]["resets_at"] == 1789135776.0
+
+
+@pytest.mark.asyncio
+async def test_a_token_count_without_rate_limits_records_no_snapshot(tmp_path, db, bus):
+    """An idle fleet must not gain a synthesised reading — absence of a new
+    line is exactly what makes the stored number stale, and that has to show."""
+    work_dir = "/work/codex-noquota"
+    _make_codex_transcript(tmp_path, work_dir)
+    await _make_codex_session(db, work_dir, task_id="tq2")
+
+    await TranscriptWatcher(db=db, bus=bus, base_dir=tmp_path).tick()
+
+    assert await db.latest_provider_usage() == []
+
+
+@pytest.mark.asyncio
+async def test_replaying_the_same_line_still_yields_one_row(tmp_path, db, bus):
+    """Charged once per assistant uuid, exactly like token usage: a watcher
+    that re-reads the file (relaunch, adoption, a second tick) must not turn
+    one reading into a row per tick."""
+    work_dir = "/work/codex-replay"
+    path = _make_codex_transcript(tmp_path, work_dir)
+    _append_codex_line(
+        path, {"type": "token_count", "info": None, "rate_limits": CODEX_RATE_LIMITS}
+    )
+    await _make_codex_session(db, work_dir, task_id="tq3")
+
+    w = TranscriptWatcher(db=db, bus=bus, base_dir=tmp_path)
+    await w.tick()
+    await w.tick()
+    # A fresh watcher re-adopts the file from its durable mark rather than
+    # from byte zero; both paths have to stay idempotent.
+    await TranscriptWatcher(db=db, bus=bus, base_dir=tmp_path).tick()
+
+    series = await db.provider_usage_series("codex", "primary", "", since=0.0)
+    assert len(series) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_quota_reading_is_stored_even_with_no_agent_to_bill(tmp_path, db, bus):
+    """A provider quota is an account-wide fact, not this agent's spend.
+    Gating it on the ledger's agent lookup would lose the reading entirely
+    whenever a session outlives its agent row."""
+    work_dir = "/work/codex-noagent"
+    path = _make_codex_transcript(tmp_path, work_dir)
+    _append_codex_line(
+        path, {"type": "token_count", "info": None, "rate_limits": CODEX_RATE_LIMITS}
+    )
+    await _make_codex_session(db, work_dir, task_id="tq4")
+
+    w = TranscriptWatcher(db=db, bus=bus, base_dir=tmp_path)
+    w._resolve_agent_id = lambda row: _none()
+    await w.tick()
+
+    assert len(await db.latest_provider_usage()) == 1
+
+
+async def _none():
+    return None
+
+
+@pytest.mark.parametrize("block", [{"windows": [None]}, {"windows": [{"window": "primary"}]}])
+async def test_malformed_normalized_quota_is_contained(tmp_path, db, bus, block):
+    from src.sessions.transcripts.base import TranscriptEntry
+
+    entry = TranscriptEntry(
+        uuid="bad-quota", parent_uuid=None, type="assistant", text="", model=None,
+        usage=None, ts=time.time(), rate_limits=block,
+    )
+    watcher = TranscriptWatcher(db=db, bus=bus, base_dir=tmp_path)
+    await watcher._record_provider_usage(entry)
+    assert await db.latest_provider_usage() == []

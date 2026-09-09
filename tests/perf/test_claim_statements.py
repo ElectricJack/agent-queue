@@ -5,7 +5,7 @@ the claim transaction alone; ``_apply_transition``, activation and metadata
 bring the whole command to a larger budget.  The measured numbers are
 recorded in each test's docstring.
 
-Ruling P2-7: ``any_db`` (``tests/perf/conftest.py``) parametrises SQLite
+Ruling P2-7: ``any_db`` (``tests/perf/conftest.py``) provides PostgreSQL
 (always) and Postgres (only when ``POSTGRES_TEST_DSN`` is set), at
 ``seed_scale(n_tasks=5000, profile_id="worker")``.
 
@@ -21,7 +21,6 @@ that plugin's handler to a statement budget owned by the claim path.
 
 from __future__ import annotations
 
-import sqlite3
 import time
 from unittest.mock import AsyncMock, MagicMock
 
@@ -39,6 +38,8 @@ from src.models import (
 )
 from src.intelligence_classes import IntelligenceClass
 from tests.perf.test_hierarchy_statements import count_statements, seed_scale
+from tests.db_fixtures import lease_dsn
+from src.config import DatabaseConfig
 
 pytestmark = pytest.mark.perf
 
@@ -48,13 +49,13 @@ NOW = time.time()
 
 async def build_handler(any_db, tmp_path):
     from src.commands.handler import CommandHandler
-    from src.config import AppConfig, DiscordConfig
+    from src.config import DatabaseConfig, AppConfig, DiscordConfig
     from src.orchestrator import Orchestrator
 
     cfg = AppConfig(
         discord=DiscordConfig(bot_token="t", guild_id="1"),
         workspace_dir=str(tmp_path / "ws"),
-        database_path=str(tmp_path / "test.db"),
+        database=DatabaseConfig(url=lease_dsn("test.db")),
         data_dir=str(tmp_path / "data"),
     )
     cfg.sessions.enabled = True
@@ -143,21 +144,6 @@ async def _seed_worker_scale(any_db):
     )
 
 
-def _require_returning(any_db):
-    """The budgets below assume the ``RETURNING`` fast paths are live.
-
-    SQLite only grew ``RETURNING`` in 3.35; the production code keeps a
-    two-statement fallback for older builds, and those extra re-reads are
-    exactly what these budgets forbid.  Skipping (loudly) beats asserting
-    a number the fallback path cannot hit.
-    """
-    from src.database.queries.task_queries import SQLITE_RETURNING
-
-    if any_db._engine.dialect.name == "sqlite" and not SQLITE_RETURNING:
-        pytest.skip(
-            f"sqlite {sqlite3.sqlite_version} < 3.35 has no RETURNING; the claim path "
-            "runs its two-statement fallback, which these budgets deliberately exclude"
-        )
 
 
 class TestClaimStatementBudgets:
@@ -189,7 +175,6 @@ class TestClaimStatementBudgets:
         where ``POSTGRES_TEST_DSN`` is set — Docker is unavailable on the
         machine this was measured on.
         """
-        _require_returning(any_db)
         await _seed_worker_scale(any_db)
         sid, _wd = await pool_session(any_db, tmp_path)
         handler = await build_handler(any_db, tmp_path)
@@ -197,7 +182,6 @@ class TestClaimStatementBudgets:
         async with count_statements(any_db) as c:
             res = await h._cmd_task_claim({"next": True})
         assert res["result"] == "claimed"
-        dialect = any_db._engine.dialect.name
         # The durable-worker eligibility guard (+1), pre-launch task/session
         # revalidation (+2), activation claim fence (+1), and the durable
         # task-session-attempt insert (+1) protect concurrent
@@ -208,8 +192,8 @@ class TestClaimStatementBudgets:
         # whether the claim takes the hierarchical-integration branch path
         # from the project's *current* ``hierarchical_integration_mode`` —
         # the outer loop's read may be a full ``--wait`` old by then.
-        budget = 22 if dialect == "sqlite" else 18
-        print(f"\ntask_claim happy path ({dialect}): {c['n']} statements (budget {budget})")
+        budget = 18
+        print(f"\ntask_claim happy path: {c['n']} statements (budget {budget})")
         assert c["n"] <= budget, f"{c['n']} statements > budget {budget}"
 
     async def test_claim_transaction_statement_budget(self, any_db, tmp_path):
@@ -230,7 +214,6 @@ class TestClaimStatementBudgets:
         (PostgreSQL does not emit them as cursor statements, hence the
         lower budget there).
         """
-        _require_returning(any_db)
         await _seed_worker_scale(any_db)
         sid, _wd = await pool_session(any_db, tmp_path)
         handler = await build_handler(any_db, tmp_path)
@@ -247,14 +230,13 @@ class TestClaimStatementBudgets:
             res = await h._cmd_task_claim({"next": True})
         assert res["result"] == "claimed"
         assert prepared["task"] is not None
-        dialect = any_db._engine.dialect.name
         # The two outer-loop pre-reads (session+profile join, project) are
         # not part of the transaction.  The durable task-session-attempt
         # insert is required so every pool claim has restart/audit history;
         # it adds one logical statement after the original claim budget.
         n = c["n"] - 2
-        budget = 11 if dialect == "sqlite" else 9
-        print(f"\nclaim transaction only ({dialect}): {n} statements (budget {budget})")
+        budget = 9
+        print(f"\nclaim transaction only: {n} statements (budget {budget})")
         assert n <= budget, f"{n} statements > budget {budget}"
 
     async def test_no_ready_work_statement_budget(self, any_db, tmp_path):
@@ -266,7 +248,6 @@ class TestClaimStatementBudgets:
         re-read), the ready-task SELECT that finds nothing, the
         release-slot UPDATE, COMMIT.
         """
-        _require_returning(any_db)
         await any_db.create_profile(
             AgentProfile(id="worker", name="w", lifecycle="pool", needs_workspace=False)
         )
@@ -280,22 +261,19 @@ class TestClaimStatementBudgets:
         async with count_statements(any_db) as c:
             res = await h._cmd_task_claim({"next": True})
         assert res["result"] == "no_ready_work"
-        dialect = any_db._engine.dialect.name
         budget = 8
-        print(f"\nno_ready_work ({dialect}): {c['n']} statements (budget {budget})")
+        print(f"\nno_ready_work: {c['n']} statements (budget {budget})")
         assert c["n"] <= budget, f"{c['n']} statements > budget {budget}"
 
     async def test_release_claim_statement_budget(self, any_db, tmp_path):
         """``release_claim`` on an active claim.
 
-        **Measured on SQLite after the task-11 trim: 10** (was 17) —
-        BEGIN, the session read, ``_apply_transition``'s pre-read, the
-        status ``UPDATE … RETURNING`` (which also carries back the
-        ``claim_epoch`` that used to be a separate read), the merged
-        ``task.ready`` frontier ``INSERT … SELECT … RETURNING``, the
-        workspace / agent / session writes, COMMIT — plus the ready
-        listener's one post-commit task read for the ``task.ready``
-        fan-out.
+        **Measured: PostgreSQL 9** — the session read,
+        integration-owner guard, status ``UPDATE … RETURNING``, merged
+        ``task.ready`` frontier ``INSERT … SELECT … RETURNING``, attempt
+        completion, workspace / agent / session writes, and the ready
+        listener's post-commit task read. Driver transaction boundaries
+        are not counted as SQL statements.
 
         The 5-statement blocked-state recompute is gone:
         IN_PROGRESS → READY is invisible to every clause of
@@ -303,7 +281,6 @@ class TestClaimStatementBudgets:
         asserts (and ``_apply_transition`` re-checks — a release to a
         terminal or BLOCKED status still recomputes in full).
         """
-        _require_returning(any_db)
         await _seed_worker_scale(any_db)
         sid, _wd = await pool_session(any_db, tmp_path)
         handler = await build_handler(any_db, tmp_path)
@@ -314,10 +291,11 @@ class TestClaimStatementBudgets:
             await any_db.release_claim(
                 sid, task_status=TaskStatus.READY, context="perf", now=time.time()
             )
-        dialect = any_db._engine.dialect.name
-        budget = 10 if dialect == "sqlite" else 9
-        print(f"\nrelease_claim ({dialect}): {c['n']} statements (budget {budget})")
-        assert c["n"] <= budget, f"{c['n']} statements > budget {budget}"
+        budget = 9
+        print(f"\nrelease_claim: {c['n']} statements (budget {budget})")
+        assert c["n"] <= budget, (
+            f"{c['n']} statements > budget {budget}:\n" + "\n".join(c["statements"])
+        )
 
     async def test_count_ready_by_profile_statement_budget(self, any_db):
         """``count_ready_by_profile`` is exactly one statement."""
@@ -327,12 +305,14 @@ class TestClaimStatementBudgets:
         assert c["n"] == 1
 
     async def test_reconcile_pools_no_starts_statement_budget(self, any_db, tmp_path):
-        """3 projects x 3 pool profiles, no starts -- budget <= 3 + 3*3.
+        """3 projects x 3 pool profiles, no starts -- budget <= 2 + 3*3 + 3.
 
         One ``list_profiles()`` for the whole tick, one ``list_projects()``,
-        then one ``count_ready_by_profile`` + one ``list_sessions`` per
-        active project with a pool profile (``_measure_pools``'s
-        docstring) -- no starts means no further writes.
+        then one ``count_ready_by_profile`` + one ``count_available_workspaces``
+        + one ``list_sessions`` per active project with a pool profile
+        (``_measure_pools``'s docstring), plus one first-tick
+        ``pool.bounds_rescoped`` audit write per profile. No starts means no
+        further writes.
         """
         from src.config import AppConfig, DiscordConfig
         from src.orchestrator import Orchestrator
@@ -356,7 +336,7 @@ class TestClaimStatementBudgets:
         cfg = AppConfig(
             discord=DiscordConfig(bot_token="t", guild_id="1"),
             workspace_dir=str(tmp_path / "ws"),
-            database_path=str(tmp_path / "test.db"),
+            database=DatabaseConfig(url=lease_dsn("test.db")),
             data_dir=str(tmp_path / "data"),
         )
         cfg.sessions.enabled = True
@@ -369,9 +349,8 @@ class TestClaimStatementBudgets:
         async with count_statements(any_db) as c:
             await orch._reconcile_pools()
         assert await any_db.list_sessions(lifecycle="pool") == []
-        dialect = any_db._engine.dialect.name
-        budget = 3 + 3 * 3
-        print(f"\n_reconcile_pools no-starts ({dialect}): {c['n']} statements (budget {budget})")
+        budget = 2 + 3 * 3 + 3
+        print(f"\n_reconcile_pools no-starts: {c['n']} statements (budget {budget})")
         assert c["n"] <= budget, f"{c['n']} statements > budget {budget}"
 
 
@@ -389,13 +368,6 @@ class TestClaimLatency:
         this only runs with ``AQ_PERF_STRICT=1`` set (the ``perf_strict``
         fixture, shared with the layout budgets).
         """
-        if any_db._engine.dialect.name == "sqlite":
-            # Ruling P3-5: PostgreSQL is the production backend and SQLite is
-            # deprecated.  Under ``NullPool`` (P2-16, required for claim
-            # correctness) every transaction opens a fresh sqlite3
-            # connection, which puts this loop at ~900 ms p99; the budget is
-            # asserted on Postgres (measured 43.65 ms on postgres:18).
-            pytest.xfail("SQLite is deprecated; the p99 budget is a Postgres budget")
         await _seed_worker_scale(any_db)
         sid, _wd = await pool_session(any_db, tmp_path)
         handler = await build_handler(any_db, tmp_path)

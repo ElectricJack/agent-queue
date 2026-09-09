@@ -1,9 +1,5 @@
-"""Database adapter implementations.
+"""Database backend adapters.  PostgreSQL is the only supported backend."""
 
-Each adapter satisfies the :class:`~src.database.base.DatabaseBackend`
-protocol for a specific database engine.
-"""
+from src.database.adapters.postgresql import PostgreSQLDatabaseAdapter
 
-from src.database.adapters.sqlite import SQLiteDatabaseAdapter
-
-__all__ = ["SQLiteDatabaseAdapter"]
+__all__ = ["PostgreSQLDatabaseAdapter"]

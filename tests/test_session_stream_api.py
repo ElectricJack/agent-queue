@@ -13,6 +13,7 @@ from httpx import ASGITransport, AsyncClient
 
 from src.database import Database
 from src.models import Project, SessionRecord, Task
+from tests.db_fixtures import lease_dsn
 
 
 def _slug(work_dir: str) -> str:
@@ -38,7 +39,7 @@ def _now_iso(offset: float = 0.0) -> str:
 
 @pytest.fixture
 async def db(tmp_path):
-    database = Database(str(tmp_path / "t.db"))
+    database = Database(lease_dsn("t.db"))
     await database.initialize()
     await database.create_project(Project(id="p1", name="P1"))
     yield database

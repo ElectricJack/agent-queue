@@ -153,8 +153,8 @@ def render_facts_file(
 
     Examples
     --------
-    >>> render_facts_file({"project": {"lang": "Python", "db": "SQLite"}})
-    '## project\\ndb: SQLite\\nlang: Python\\n'
+    >>> render_facts_file({"project": {"lang": "Python", "db": "Postgres"}})
+    '## project\\ndb: Postgres\\nlang: Python\\n'
     """
     if not data and not frontmatter:
         return ""

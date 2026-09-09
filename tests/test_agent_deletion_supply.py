@@ -4,19 +4,24 @@ import asyncio
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from dataclasses import replace
 
-from src.config import AppConfig, DiscordConfig
+from src.config import DatabaseConfig, AppConfig, DiscordConfig
 from src.database import Database
 from src.models import Agent, AgentProfile, Project, RepoSourceType, Task, TaskStatus, Workspace
 from src.orchestrator import Orchestrator
 from src.orchestrator.agent_reconciler import AgentReconciler
 from src.sessions.harness_parser import Harness
+from tests.db_fixtures import lease_dsn
 
 
 @pytest.fixture
 async def db(tmp_path):
-    db = Database(str(tmp_path / "supply.db"))
+    db = Database(lease_dsn("supply.db"))
     await db.initialize()
+    # These fixtures model independent clones; slot provisioning has its own tests.
+    kind = await db.resolve_workspace_kind("__system__", "project-repo")
+    await db.upsert_workspace_kind(replace(kind, mode="exclusive-clone"))
     for profile in (
         AgentProfile(id="worker", name="Worker", harness="claude"),
         AgentProfile(id="personal", name="Personal", harness="claude"),
@@ -60,7 +65,7 @@ async def deleted_worker(db):
 async def orch(db, tmp_path):
     cfg = AppConfig(
         discord=DiscordConfig(bot_token="t", guild_id="1"),
-        database_path=str(tmp_path / "supply.db"),
+        database=DatabaseConfig(url=lease_dsn("supply.db")),
         data_dir=str(tmp_path / "data"),
         workspace_dir=str(tmp_path / "workspaces"),
     )
@@ -90,7 +95,7 @@ async def test_fresh_registry_keeps_task_bootstrap(db):
 async def test_deleted_worker_is_not_replaced_for_another_profile_after_restart(db, tmp_path):
     await demand(db)
     await deleted_worker(db)
-    restarted = Database(str(tmp_path / "supply.db"))
+    restarted = Database(lease_dsn("supply.db"))
     await restarted.initialize()
     try:
         for _ in range(2):

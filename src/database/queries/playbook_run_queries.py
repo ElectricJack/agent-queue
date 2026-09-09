@@ -29,7 +29,6 @@ from typing import Any
 
 from sqlalchemy import and_, delete, func, insert, or_, select, text, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
-from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncConnection
 
@@ -131,9 +130,7 @@ PENDING_EVENT_EXPIRY_ACTOR = "retention_sweep"
 # the quota's decision, and the row has to say so rather than look like an
 # operator discard.
 PENDING_EVENT_OVERFLOW_ACTOR = "pending_event_overflow"
-PENDING_EVENT_EXPIRY_REASON = (
-    "expired unresolved after its pending-event retention TTL"
-)
+PENDING_EVENT_EXPIRY_REASON = "expired unresolved after its pending-event retention TTL"
 
 # Inbox rows are resolved immediately because they have already entered the
 # wait-delivery path.  They remain durable for the normal pending-event
@@ -150,6 +147,7 @@ class PendingEventPurge:
 
     expired: int
     purged: int
+
 
 #: One quota warning per playbook per minute — a flood is exactly the case
 #: where an unthrottled warning turns a full retention table into a full disk.
@@ -206,9 +204,7 @@ def _row_to_wait(row) -> WaitSpec:
     )
 
 
-def _row_to_claim(
-    row, event: _InboxEvent | None, now: float, *, expired: bool
-) -> WaitClaim:
+def _row_to_claim(row, event: _InboxEvent | None, now: float, *, expired: bool) -> WaitClaim:
     return WaitClaim(
         wait_id=row["wait_id"],
         run_id=row["run_id"],
@@ -441,9 +437,7 @@ class PlaybookRunQueryMixin:
             check_result_size(snapshot.run_id, step_id, value, limits=limits)
         for turn in snapshot.llm_turns:
             for message in turn.get("transcript_delta", ()):
-                if message.get("role") != "user" or not isinstance(
-                    message.get("content"), list
-                ):
+                if message.get("role") != "user" or not isinstance(message.get("content"), list):
                     continue
                 for block in message["content"]:
                     if isinstance(block, dict) and block.get("type") == "tool_result":
@@ -740,12 +734,74 @@ class PlaybookRunQueryMixin:
             for row in rows
         ]
 
+    async def latest_run_per_playbook(
+        self, playbook_ids: Collection[str] | None = None
+    ) -> dict[str, RunSnapshot]:
+        """The newest run of each playbook, keyed by ``playbook_id``.
+
+        The listing surfaces ("last run" on the playbook cards and tables) need
+        one row per *definition*, not the newest N runs box-wide, so this ranks
+        within each playbook rather than paging ``list_runs``.
+        """
+        ranked = select(
+            playbook_v2_runs.c.playbook_id,
+            playbook_v2_runs.c.snapshot,
+            playbook_v2_runs.c.snapshot_version,
+            func.row_number()
+            .over(
+                partition_by=playbook_v2_runs.c.playbook_id,
+                order_by=(
+                    playbook_v2_runs.c.started_at.desc(),
+                    playbook_v2_runs.c.run_id.desc(),
+                ),
+            )
+            .label("rank"),
+        )
+        if playbook_ids is not None:
+            wanted = list(playbook_ids)
+            if not wanted:
+                return {}
+            ranked = ranked.where(playbook_v2_runs.c.playbook_id.in_(wanted))
+        subquery = ranked.subquery()
+        stmt = select(subquery).where(subquery.c.rank == 1)
+        async with self._engine.connect() as conn:
+            rows = (await conn.execute(stmt)).mappings().fetchall()
+        return {
+            str(row["playbook_id"]): deserialize_snapshot(
+                row["snapshot"], version=int(row["snapshot_version"])
+            )
+            for row in rows
+        }
+
+    async def count_active_runs_per_playbook(
+        self, playbook_ids: Collection[str] | None = None
+    ) -> dict[str, int]:
+        """Non-terminal run counts for many playbooks in one round trip."""
+        terminal = [state.value for state in TERMINAL_LIFECYCLES]
+        stmt = (
+            select(playbook_v2_runs.c.playbook_id, func.count().label("active"))
+            .where(playbook_v2_runs.c.lifecycle.not_in(terminal))
+            .group_by(playbook_v2_runs.c.playbook_id)
+        )
+        if playbook_ids is not None:
+            wanted = list(playbook_ids)
+            if not wanted:
+                return {}
+            stmt = stmt.where(playbook_v2_runs.c.playbook_id.in_(wanted))
+        async with self._engine.connect() as conn:
+            rows = (await conn.execute(stmt)).mappings().fetchall()
+        return {str(row["playbook_id"]): int(row["active"]) for row in rows}
+
     async def count_active_runs(self, playbook_id: str) -> int:
         """Non-terminal runs for one playbook, for activation-health summaries."""
         terminal = [state.value for state in TERMINAL_LIFECYCLES]
-        stmt = select(func.count()).select_from(playbook_v2_runs).where(
-            playbook_v2_runs.c.playbook_id == playbook_id,
-            playbook_v2_runs.c.lifecycle.not_in(terminal),
+        stmt = (
+            select(func.count())
+            .select_from(playbook_v2_runs)
+            .where(
+                playbook_v2_runs.c.playbook_id == playbook_id,
+                playbook_v2_runs.c.lifecycle.not_in(terminal),
+            )
         )
         async with self._engine.connect() as conn:
             value = await conn.scalar(stmt)
@@ -781,8 +837,10 @@ class PlaybookRunQueryMixin:
         self, run_id: str, *, receipt_kinds: Collection[str] | None = None
     ) -> int:
         """Number of durable receipt rows for one run."""
-        stmt = select(func.count()).select_from(playbook_step_receipts).where(
-            playbook_step_receipts.c.run_id == run_id
+        stmt = (
+            select(func.count())
+            .select_from(playbook_step_receipts)
+            .where(playbook_step_receipts.c.run_id == run_id)
         )
         if receipt_kinds is not None:
             stmt = stmt.where(playbook_step_receipts.c.receipt_kind.in_(list(receipt_kinds)))
@@ -884,13 +942,9 @@ class PlaybookRunQueryMixin:
                 return 0
             run_ids = list(doomed)
             await conn.execute(
-                delete(playbook_step_receipts).where(
-                    playbook_step_receipts.c.run_id.in_(run_ids)
-                )
+                delete(playbook_step_receipts).where(playbook_step_receipts.c.run_id.in_(run_ids))
             )
-            await conn.execute(
-                delete(playbook_waits).where(playbook_waits.c.run_id.in_(run_ids))
-            )
+            await conn.execute(delete(playbook_waits).where(playbook_waits.c.run_id.in_(run_ids)))
             await conn.execute(
                 delete(playbook_v2_runs).where(playbook_v2_runs.c.run_id.in_(run_ids))
             )
@@ -926,15 +980,10 @@ class PlaybookRunQueryMixin:
         an explicit common lock because neither side has a wait row it can
         lock until after the race window has opened.
         """
-        if conn.dialect.name == "postgresql":
-            route = _dumps([playbook_id, scope, scope_identifier])
-            await conn.execute(
-                select(
-                    func.pg_advisory_xact_lock(
-                        func.hashtextextended(route, 0x41515754)
-                    )
-                )
-            )
+        route = _dumps([playbook_id, scope, scope_identifier])
+        await conn.execute(
+            select(func.pg_advisory_xact_lock(func.hashtextextended(route, 0x41515754)))
+        )
 
     async def _claim_registered_wait_from_inbox(
         self,
@@ -1059,7 +1108,7 @@ class PlaybookRunQueryMixin:
             _warn_pending_quota(event.playbook_id, quota, now)
             raise PendingEventQuotaExceeded(event.playbook_id, quota)
 
-        insert_fn = pg_insert if conn.dialect.name == "postgresql" else sqlite_insert
+        insert_fn = pg_insert
         await conn.execute(
             insert_fn(playbook_pending_events)
             .values(
@@ -1080,9 +1129,7 @@ class PlaybookRunQueryMixin:
                 resolved_by=WAIT_EVENT_RESOLVER,
                 resolution="dispatched",
             )
-            .on_conflict_do_nothing(
-                index_elements=[playbook_pending_events.c.pending_event_id]
-            )
+            .on_conflict_do_nothing(index_elements=[playbook_pending_events.c.pending_event_id])
         )
         row = (
             (
@@ -1242,8 +1289,7 @@ class PlaybookRunQueryMixin:
                             .where(
                                 playbook_v2_runs.c.playbook_id == canonical.playbook_id,
                                 playbook_artifacts.c.scope == canonical.scope,
-                                playbook_artifacts.c.scope_identifier
-                                == canonical.scope_identifier,
+                                playbook_artifacts.c.scope_identifier == canonical.scope_identifier,
                             )
                             .order_by(playbook_waits.c.created_at, playbook_waits.c.wait_id)
                             .limit(limit)
@@ -1347,9 +1393,7 @@ class PlaybookRunQueryMixin:
                 claims.append(_row_to_claim(row, None, now, expired=True))
         return claims
 
-    async def clear_for_run(
-        self, run_id: str, *, conn: AsyncConnection | None = None
-    ) -> int:
+    async def clear_for_run(self, run_id: str, *, conn: AsyncConnection | None = None) -> int:
         """Deactivate every active wait of one run; returns how many moved."""
         async with self._wait_conn(conn) as active:
             result = await active.execute(
@@ -1517,7 +1561,7 @@ class PlaybookRunQueryMixin:
         pending_event_id = uuid.uuid4().hex
         try:
             async with self.immediate() as conn:
-                insert_fn = pg_insert if conn.dialect.name == "postgresql" else sqlite_insert
+                insert_fn = pg_insert
                 result = await conn.execute(
                     insert_fn(playbook_pending_events)
                     .values(
@@ -1612,7 +1656,7 @@ class PlaybookRunQueryMixin:
         dedup_key = f"integration:{activation_id}:{artifact_sha256}:{event_id}"
         try:
             async with self.immediate() as conn:
-                insert_fn = pg_insert if conn.dialect.name == "postgresql" else sqlite_insert
+                insert_fn = pg_insert
                 await conn.execute(
                     insert_fn(playbook_pending_events)
                     .values(
@@ -1650,8 +1694,7 @@ class PlaybookRunQueryMixin:
                     (
                         await conn.execute(
                             select(playbook_pending_events).where(
-                                playbook_pending_events.c.pending_event_id
-                                == pending_event_id
+                                playbook_pending_events.c.pending_event_id == pending_event_id
                             )
                         )
                     )
@@ -1859,13 +1902,17 @@ class PlaybookRunQueryMixin:
             return []
         async with self._engine.connect() as conn:
             rows = (
-                await conn.execute(
-                    select(playbook_pending_events).where(
-                        playbook_pending_events.c.pending_event_id.in_(wanted),
-                        playbook_pending_events.c.resolved_at.is_(None),
+                (
+                    await conn.execute(
+                        select(playbook_pending_events).where(
+                            playbook_pending_events.c.pending_event_id.in_(wanted),
+                            playbook_pending_events.c.resolved_at.is_(None),
+                        )
                     )
                 )
-            ).mappings().fetchall()
+                .mappings()
+                .fetchall()
+            )
         by_id = {row["pending_event_id"]: _row_to_pending_event(row) for row in rows}
         return [by_id[event_id] for event_id in wanted if event_id in by_id]
 
@@ -1916,9 +1963,13 @@ class PlaybookRunQueryMixin:
         self, playbook_id: str, *, reasons: Collection[str] | None = None
     ) -> int:
         """Unresolved operator-visible events for one playbook."""
-        stmt = select(func.count()).select_from(playbook_pending_events).where(
-            playbook_pending_events.c.playbook_id == playbook_id,
-            playbook_pending_events.c.resolved_at.is_(None),
+        stmt = (
+            select(func.count())
+            .select_from(playbook_pending_events)
+            .where(
+                playbook_pending_events.c.playbook_id == playbook_id,
+                playbook_pending_events.c.resolved_at.is_(None),
+            )
         )
         if reasons is not None:
             stmt = stmt.where(playbook_pending_events.c.reason.in_(list(reasons)))

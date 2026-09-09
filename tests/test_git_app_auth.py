@@ -377,12 +377,22 @@ def test_askpass_username_and_invalid_prompts_do_not_send_broker_requests():
         request.close()
 
 
-async def _wait_for_file(path: Path) -> None:
-    for _ in range(200):
-        if path.exists():
-            return
+async def _wait_for_file(path: Path, *, fields: int = 0) -> str:
+    """Wait for ``path`` and return its text once it holds ``fields`` words.
+
+    Existence alone is not enough: a shell redirect creates the file before the
+    writer has put anything in it, so a loaded runner can read it empty.  The
+    caller says how many whitespace-separated values it needs.
+    """
+    for _ in range(1000):
+        try:
+            text = path.read_text()
+        except FileNotFoundError:
+            text = ""
+        if text and len(text.split()) >= fields:
+            return text
         await asyncio.sleep(0.01)
-    raise AssertionError(f"timed out waiting for {path}")
+    raise AssertionError(f"timed out waiting for {fields} value(s) in {path}")
 
 
 def _process_group_exists(group_id: int) -> bool:
@@ -608,13 +618,16 @@ async def test_app_push_timeout_or_cancellation_kills_entire_process_group(
         "#!/bin/sh\n"
         "sleep 300 &\n"
         "child=$!\n"
-        f'printf \'%s %s\' "$$" "$child" > {pid_file}\n'
+        f'printf \'%s %s\' "$$" "$child" > {pid_file}.tmp\n'
+        f"mv {pid_file}.tmp {pid_file}\n"
         'wait "$child"\n'
     )
     hanging_git.chmod(0o700)
     manager = GitManager()
     manager._APP_GIT_EXECUTABLE = str(hanging_git)
-    timeout = 0.2 if not cancel else 30
+    # Long enough that a loaded runner still records the pids before the kill
+    # lands — the assertion is that the group dies, not how fast.
+    timeout = 2.0 if not cancel else 30
     manager._GIT_TIMEOUT = timeout
     monkeypatch.setattr(manager_module, "APP_AUTH_PUSH_TIMEOUT_SECONDS", timeout)
     open_fds_before = _open_fd_count()
@@ -628,8 +641,8 @@ async def test_app_push_timeout_or_cancellation_kills_entire_process_group(
             expected_old_oid=base,
         )
     )
-    await _wait_for_file(pid_file)
-    leader, descendant = (int(value) for value in pid_file.read_text().split())
+    recorded = await _wait_for_file(pid_file, fields=2)
+    leader, descendant = (int(value) for value in recorded.split())
     if cancel:
         task.cancel()
         with pytest.raises(asyncio.CancelledError):

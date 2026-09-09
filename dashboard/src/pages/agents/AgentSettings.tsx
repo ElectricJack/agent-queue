@@ -2,6 +2,7 @@ import { useState } from "react";
 import { useEditAgent, useDeleteAgent, type FlockAgent } from "../../api/agents";
 import { usePoolStatus } from "../../api/hooks";
 import AgentDefinitionFields, { type DefinitionForm } from "./AgentDefinitionFields";
+import PoolProjects from "./PoolProjects";
 import PoolScaleFields from "./PoolScaleFields";
 
 export default function AgentSettings({ agent, onDeleted }: { agent: FlockAgent; onDeleted: () => void }) {
@@ -15,9 +16,10 @@ export default function AgentSettings({ agent, onDeleted }: { agent: FlockAgent;
   const [draft, setDraft] = useState<DefinitionForm | null>(null);
   const [saved, setSaved] = useState(false);
   const settings = agent.settings;
-  // A pool profile is sized per project, so one worker can front several
-  // sets of bounds; pool_status reports one row per (project, profile).
-  const poolRows = (usePoolStatus().data ?? []).filter((row) => row.profile_id === agent.profile_id);
+  // A pool is sized fleet-wide, so a pool worker fronts exactly one set of
+  // bounds; pool_status reports one row per profile, with the projects its
+  // supply is spread across nested inside it.
+  const poolRow = (usePoolStatus().data ?? []).find((row) => row.profile_id === agent.profile_id);
   const baseline: DefinitionForm = {
     name: settings.name,
     profile_id: settings.profile_id,
@@ -68,19 +70,15 @@ export default function AgentSettings({ agent, onDeleted }: { agent: FlockAgent;
           Discard changes
         </button>
       </div>
-      {poolRows.length > 0 && (
+      {poolRow && (
         <section aria-label="Worker pool settings" className="space-y-4 border-t border-gray-800 pt-4">
           <p className="text-xs leading-relaxed text-gray-400">
             Profile <span className="text-gray-200">{agent.profile_id}</span> runs as a worker pool
             (lifecycle: pool). The daemon starts and drains its sessions to stay between the bounds
-            below, per project — this worker is one of them.
+            below — fleet-wide, across every project — and this worker is one of them.
           </p>
-          {poolRows.map((row) => (
-            <div key={row.project_id + "/" + row.profile_id} className="space-y-2">
-              <p className="text-xs font-medium text-gray-300">{row.project_id}</p>
-              <PoolScaleFields pool={row} />
-            </div>
-          ))}
+          <PoolScaleFields pool={poolRow} />
+          <PoolProjects projects={poolRow.projects ?? []} />
         </section>
       )}
       <div className="space-y-3 border-t border-gray-800 pt-4">

@@ -9,16 +9,17 @@ Covers:
 """
 
 import pytest
-from src.config import AppConfig, DiscordConfig
+from src.config import DatabaseConfig, AppConfig, DiscordConfig
 from src.commands.handler import CommandHandler
 from src.database import Database
 from src.models import Project
 from src.orchestrator import Orchestrator
+from tests.db_fixtures import lease_dsn
 
 
 @pytest.fixture
 async def db(tmp_path):
-    database = Database(str(tmp_path / "test.db"))
+    database = Database(lease_dsn("test.db"))
     await database.initialize()
     yield database
     await database.close()
@@ -29,7 +30,7 @@ def config(tmp_path):
     return AppConfig(
         discord=DiscordConfig(bot_token="test-token", guild_id="123"),
         workspace_dir=str(tmp_path / "workspaces"),
-        database_path=str(tmp_path / "test.db"),
+        database=DatabaseConfig(url=lease_dsn("test.db")),
         data_dir=str(tmp_path / "data"),
     )
 

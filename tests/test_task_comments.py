@@ -12,29 +12,21 @@ import pytest
 
 from src.api.auth import RequestScope
 from src.commands.handler import CommandHandler
-from src.config import AppConfig
+from src.config import AppConfig, DatabaseConfig
 from src.database import Database
 from src.models import Agent, AgentProfile, Project, SessionRecord, Task, TaskStatus
 from src.orchestrator import Orchestrator
 from tests.pg_dsn import ensure_worker_postgres_dsn
+from tests.db_fixtures import lease_dsn
 
 pytestmark = pytest.mark.asyncio
 POSTGRES_TEST_DSN = ensure_worker_postgres_dsn()
 
 
-@pytest.fixture(params=["sqlite", "postgres"])
+@pytest.fixture
 async def env(tmp_path, request):
-    if request.param == "postgres":
-        if not POSTGRES_TEST_DSN:
-            pytest.skip("POSTGRES_TEST_DSN not set")
-        from src.database.adapters.postgresql import PostgreSQLDatabaseAdapter
-
-        db = PostgreSQLDatabaseAdapter(POSTGRES_TEST_DSN)
-        await db.initialize()
-        await db.reset_for_tests()
-    else:
-        db = Database(str(tmp_path / "comments.db"))
-        await db.initialize()
+    db = Database(lease_dsn("comments.db"))
+    await db.initialize()
     for pid in ("p", "other"):
         await db.create_project(Project(id=pid, name=pid))
     await db.create_profile(AgentProfile(id="worker", name="Worker", needs_workspace=False))
@@ -69,7 +61,7 @@ async def env(tmp_path, request):
             started_at=time.time(),
         )
     )
-    config = AppConfig(data_dir=str(tmp_path / "data"), workspace_dir=str(tmp_path / "ws"))
+    config = AppConfig(database=DatabaseConfig(url=lease_dsn("comments.db")), data_dir=str(tmp_path / "data"), workspace_dir=str(tmp_path / "ws"))
     orch = Orchestrator(config)
     orch.db = db
     orch.bus.emit = AsyncMock()
@@ -412,15 +404,24 @@ async def seed_cross_project_collision(env):
 
     await env.db.create_project(Project(id="comment-archive", name="Comment archive"))
     await env.db.update_task("peer", project_id="comment-archive")
-    original = await run(env, "task_comment", {"task_id": "peer", "body": "Archived project secret"})
+    original = await run(
+        env, "task_comment", {"task_id": "peer", "body": "Archived project secret"}
+    )
     await env.db.update_task("peer", status=TaskStatus.COMPLETED)
     await env.db.archive_task("peer")
     # Legacy allocation allowed a different project to reuse archived IDs.
     async with env.db._engine.begin() as conn:
-        await conn.execute(insert(tasks).values(
-            id="peer", project_id="other", title="Collision", description="Active requirements",
-            status="READY", created_at=time.time(), updated_at=time.time(),
-        ))
+        await conn.execute(
+            insert(tasks).values(
+                id="peer",
+                project_id="other",
+                title="Collision",
+                description="Active requirements",
+                status="READY",
+                created_at=time.time(),
+                updated_at=time.time(),
+            )
+        )
     return original["comment"]
 
 
@@ -430,10 +431,15 @@ async def test_existing_collision_supports_comments_and_description_without_leak
     assert page == {"comments": [], "total": 0, "limit": 50, "offset": 0}
     added = await run(env, "task_comment", {"task_id": "peer", "body": "Active project feedback"})
     assert "error" not in added, added
-    updated = await run(env, "task_set", {
-        "task_id": "peer", "description": "Corrected requirements",
-        "expected_description": "Active requirements",
-    })
+    updated = await run(
+        env,
+        "task_set",
+        {
+            "task_id": "peer",
+            "description": "Corrected requirements",
+            "expected_description": "Active requirements",
+        },
+    )
     assert "error" not in updated, updated
     page = await run(env, "task_comments", {"task_id": "peer"})
     assert page["comments"] == [added["comment"]]
@@ -442,9 +448,13 @@ async def test_existing_collision_supports_comments_and_description_without_leak
     assert (await env.db.get_archived_task("peer"))["description"] == "Original requirements"
     from sqlalchemy import select
     from src.database.tables import task_comments
+
     async with env.db._engine.connect() as conn:
-        assert (await conn.execute(select(task_comments.c.body).where(
-            task_comments.c.id == original["id"]))).scalar_one() == "Archived project secret"
+        assert (
+            await conn.execute(
+                select(task_comments.c.body).where(task_comments.c.id == original["id"])
+            )
+        ).scalar_one() == "Archived project secret"
 
 
 @pytest.mark.parametrize("operation", ["active", "archive", "active_project", "archive_project"])
@@ -463,10 +473,20 @@ async def test_collision_cleanup_preserves_other_projects_comments(env, operatio
         await env.db.delete_project("comment-archive")
     from sqlalchemy import select
     from src.database.tables import task_comments
+
     async with env.db._engine.connect() as conn:
-        remaining = (await conn.execute(select(task_comments.c.id).where(
-            task_comments.c.task_id == "peer"))).scalars().all()
-    assert remaining == [original["id"] if operation in {"active", "active_project"} else active["id"]]
+        remaining = (
+            (
+                await conn.execute(
+                    select(task_comments.c.id).where(task_comments.c.task_id == "peer")
+                )
+            )
+            .scalars()
+            .all()
+        )
+    assert remaining == [
+        original["id"] if operation in {"active", "active_project"} else active["id"]
+    ]
 
 
 @pytest.mark.parametrize("operation", ["delete", "archive"])
@@ -505,7 +525,9 @@ async def test_append_race_with_task_removal_is_lossless_or_clean(env, monkeypat
         if not entered.is_set():
             return
         if operation == "archive":
-            match = statement.startswith("SELECT tasks.id, tasks.status") and "FOR UPDATE" in statement
+            match = (
+                statement.startswith("SELECT tasks.id, tasks.status") and "FOR UPDATE" in statement
+            )
         elif env.db._engine.dialect.name == "postgresql":
             # Pending-pause deletion safety locks the task before FK cleanup.
             match = statement.startswith("SELECT tasks.id") and "FOR UPDATE" in statement
@@ -615,17 +637,28 @@ async def test_unknown_legacy_comments_stay_hidden_after_collision_removed(env):
 
     await seed_cross_project_collision(env)
     async with env.db._engine.begin() as conn:
-        await conn.execute(insert(task_comments).values(
-            id="unknown-history", task_id="peer", project_id=None, body="Uncertain owner",
-            author_kind="user", author_id="local", created_at=1,
-        ))
+        await conn.execute(
+            insert(task_comments).values(
+                id="unknown-history",
+                task_id="peer",
+                project_id=None,
+                body="Uncertain owner",
+                author_kind="user",
+                author_id="local",
+                created_at=1,
+            )
+        )
     assert (await env.db.list_task_comments("peer"))["comments"] == []
     await env.db.delete_archived_task("peer")
     assert (await env.db.list_task_comments("peer", project_id="other"))["comments"] == []
     from sqlalchemy import select
+
     async with env.db._engine.connect() as conn:
-        assert (await conn.execute(select(task_comments.c.body).where(
-            task_comments.c.id == "unknown-history"))).scalar_one() == "Uncertain owner"
+        assert (
+            await conn.execute(
+                select(task_comments.c.body).where(task_comments.c.id == "unknown-history")
+            )
+        ).scalar_one() == "Uncertain owner"
 
 
 async def test_comments_follow_authorized_project_move(env):
@@ -647,15 +680,28 @@ async def test_collision_move_keeps_archive_and_unknown_comments_unchanged(env):
     old = await seed_cross_project_collision(env)
     active = await run(env, "task_comment", {"task_id": "peer", "body": "Move active only"})
     async with env.db._engine.begin() as conn:
-        await conn.execute(insert(task_comments).values(
-            id="unknown", task_id="peer", body="Unknown", author_kind="user", author_id="local", created_at=1,
-        ))
+        await conn.execute(
+            insert(task_comments).values(
+                id="unknown",
+                task_id="peer",
+                body="Unknown",
+                author_kind="user",
+                author_id="local",
+                created_at=1,
+            )
+        )
     moved = await run(env, "edit_task", {"task_id": "peer", "project_id": "p"})
     assert "error" not in moved, moved
     assert (await run(env, "task_comments", {"task_id": "peer"}))["comments"] == [active["comment"]]
     async with env.db._engine.connect() as conn:
-        ownership = dict((await conn.execute(select(task_comments.c.id, task_comments.c.project_id))).all())
-    assert ownership == {old["id"]: "comment-archive", active["comment"]["id"]: "p", "unknown": None}
+        ownership = dict(
+            (await conn.execute(select(task_comments.c.id, task_comments.c.project_id))).all()
+        )
+    assert ownership == {
+        old["id"]: "comment-archive",
+        active["comment"]["id"]: "p",
+        "unknown": None,
+    }
 
 
 @pytest.mark.parametrize("archived_owner", ["source", "destination"])
@@ -680,7 +726,9 @@ async def test_project_move_refuses_merging_archived_comment_identity(env, archi
 async def test_operator_can_edit_and_delete_comments_and_agents_cannot(env):
     first = await run(env, "task_comment", {"task_id": "t", "body": "Human finding"})
     worker = await run(
-        env, "task_comment", {"task_id": "t", "body": "Worker finding", "claim_epoch": 7},
+        env,
+        "task_comment",
+        {"task_id": "t", "body": "Worker finding", "claim_epoch": 7},
         scope=env.scope,
     )
     env.orch.bus.emit.reset_mock()
@@ -745,8 +793,6 @@ async def test_comment_mutations_are_fenced_to_the_owning_task(env):
     cid = mine["comment"]["id"]
     # The comment id is real, but it belongs to another task in the project.
     for command in ("task_comment_edit", "task_comment_delete"):
-        result = await run(
-            env, command, {"task_id": "peer", "comment_id": cid, "body": "Hijack"}
-        )
+        result = await run(env, command, {"task_id": "peer", "comment_id": cid, "body": "Hijack"})
         assert "not found" in result["error"], result
     assert (await run(env, "task_comments", {"task_id": "t"}))["comments"][0]["body"] == "On t"
