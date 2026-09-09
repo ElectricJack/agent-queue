@@ -1,5 +1,5 @@
 {
-  "source_commit": "a9c6cb389d4c040887389bee446b8174663f4168",
+  "source_commit": "0ccebe62277d34a1c5327285e2100c3f43cd37ab",
   "generated_by": "docs/plans/documentation-overhaul/refresh_inventory.py",
   "note": "Assignment, not authored coverage.  Each entry's `purpose` is the rule-level description of the family the path belongs to; the per-module sentence is written by the owning shard's catalog page (`shards[<shard>].catalog`).  `component` is the prose page that explains the module.  There is no catch-all rule: a tracked path matching nothing is an error, not a default assignment.",
   "shards": {
@@ -4466,6 +4466,41 @@
       "purpose": "Overhaul page owned by the `cli` ticket.",
       "catalog": null
     },
+    "docs/reference/database/README.md": {
+      "shard": "database",
+      "component": "docs/reference/database/README.md",
+      "category": "documentation",
+      "purpose": "Overhaul page owned by the `database` ticket.",
+      "catalog": null
+    },
+    "docs/reference/database/data-lifecycle.md": {
+      "shard": "database",
+      "component": "docs/reference/database",
+      "category": "documentation",
+      "purpose": "Overhaul page owned by the `database` ticket.",
+      "catalog": null
+    },
+    "docs/reference/database/migrations.md": {
+      "shard": "database",
+      "component": "docs/reference/database",
+      "category": "documentation",
+      "purpose": "Overhaul page owned by the `database` ticket.",
+      "catalog": null
+    },
+    "docs/reference/database/queries.md": {
+      "shard": "database",
+      "component": "docs/reference/database",
+      "category": "documentation",
+      "purpose": "Overhaul page owned by the `database` ticket.",
+      "catalog": null
+    },
+    "docs/reference/database/tables.md": {
+      "shard": "database",
+      "component": "docs/reference/database",
+      "category": "documentation",
+      "purpose": "Overhaul page owned by the `database` ticket.",
+      "catalog": null
+    },
     "docs/reference/glossary.md": {
       "shard": "foundation",
       "component": "docs/reference/glossary.md",
@@ -4506,6 +4541,13 @@
       "component": "docs/reference/modules/contributing.md",
       "category": "documentation",
       "purpose": "Overhaul page owned by the `contributing` ticket.",
+      "catalog": null
+    },
+    "docs/reference/modules/database.md": {
+      "shard": "database",
+      "component": "docs/reference/modules/database.md",
+      "category": "documentation",
+      "purpose": "Overhaul page owned by the `database` ticket.",
       "catalog": null
     },
     "docs/reference/modules/integration.md": {
@@ -23443,6 +23485,13 @@
       "purpose": "Test module or fixture.",
       "catalog": null
     },
+    "tests/test_documentation_coverage.py": {
+      "shard": "contributing",
+      "component": "docs/contributing/testing.md",
+      "category": "test",
+      "purpose": "Test module or fixture.",
+      "catalog": null
+    },
     "tests/test_dv2_phase1_migration.py": {
       "shard": "contributing",
       "component": "docs/contributing/testing.md",
@@ -24557,6 +24606,13 @@
       "catalog": null
     },
     "tests/test_override_injection.py": {
+      "shard": "contributing",
+      "component": "docs/contributing/testing.md",
+      "category": "test",
+      "purpose": "Test module or fixture.",
+      "catalog": null
+    },
+    "tests/test_packaging_entry_points.py": {
       "shard": "contributing",
       "component": "docs/contributing/testing.md",
       "category": "test",

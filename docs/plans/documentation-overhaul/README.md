@@ -64,6 +64,12 @@ The `foundation` ticket has landed. Everything below is the contract the other
 | [`known-inaccuracies.md`](known-inaccuracies.md) | Where existing pages contradict current behaviour, with evidence. |
 | [`refresh_inventory.py`](refresh_inventory.py) | Regenerates and checks the two JSON artefacts. |
 
+Tickets run the coverage half; the freshness half is this shard's gate, because
+the two artefacts are foundation-owned and a per-branch rewrite of a
+3,700-entry JSON conflicts with every other in-flight ticket:
+
 ```bash
-python3 docs/plans/documentation-overhaul/refresh_inventory.py --check
+python3 docs/plans/documentation-overhaul/refresh_inventory.py --check            # every ticket
+python3 docs/plans/documentation-overhaul/refresh_inventory.py --check-artefacts  # this shard
+python3 docs/plans/documentation-overhaul/refresh_inventory.py                    # this shard
 ```

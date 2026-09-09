@@ -15,13 +15,29 @@ page, and writes two artefacts next to this script:
 
 Usage::
 
-    python3 docs/plans/documentation-overhaul/refresh_inventory.py          # write
-    python3 docs/plans/documentation-overhaul/refresh_inventory.py --check  # verify
+    python3 .../refresh_inventory.py                    # rewrite the artefacts
+    python3 .../refresh_inventory.py --check            # coverage (every author)
+    python3 .../refresh_inventory.py --check-artefacts  # freshness (acceptance)
 
-``--check`` regenerates in memory and fails when a tracked path matches no rule
-or when the committed artefacts are stale.  That is the guarantee behind the
-foundation acceptance criterion "no unassigned catch-all left unexplained":
-adding a new file under ``src/`` without an owning rule turns the check red.
+The two halves of the check are deliberately separate, because they have
+different owners.
+
+``--check`` is the **coverage** half and is what every ticket runs before it
+pushes.  It regenerates in memory and fails only when a tracked path matches no
+rule.  That is the guarantee behind the foundation acceptance criterion "no
+unassigned catch-all left unexplained": adding a new file under ``src/``
+without an owning rule turns the check red.  When the committed artefacts have
+fallen behind the tree it says so and still exits 0 — the paths that drifted
+are printed with the shard they were assigned to, so an author can see where
+their new file landed.
+
+``--check-artefacts`` is the **freshness** half and is an acceptance gate, not
+a per-ticket check.  It additionally fails when the committed JSON no longer
+matches the tree, and the fix is to run the regenerator.  The artefacts are
+owned by the overhaul's foundation/acceptance shard: they are one 3,700-entry
+JSON pair, so twenty in-flight tickets each regenerating them on their own
+branch would conflict with each other at delivery.  One owner regenerates on a
+cadence instead.
 """
 
 from __future__ import annotations
@@ -740,11 +756,98 @@ def write(obj: dict, path: Path) -> None:
     path.write_text(json.dumps(obj, indent=2, sort_keys=False) + "\n", encoding="utf-8")
 
 
+def _rel(path: Path) -> Path:
+    """``path`` relative to the repository root, or unchanged when outside it."""
+    try:
+        return path.relative_to(REPO)
+    except ValueError:
+        return path
+
+
+def _load(path: Path) -> dict | None:
+    """Read a committed artefact, or ``None`` when it is missing or unreadable."""
+    if not path.exists():
+        return None
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return None
+
+
+def stale_artefacts(inventory: dict, manifest: dict) -> list[Path]:
+    """Return the committed artefacts that no longer match the tree.
+
+    ``source_commit`` is provenance, not content: it changes with every commit,
+    so comparing it would make the check red the moment the regenerated
+    artefacts are committed.  Only the assignments are compared.
+    """
+    stale: list[Path] = []
+    for obj, path in ((inventory, INVENTORY), (manifest, OWNERSHIP)):
+        have = _load(path)
+        if have is None:
+            stale.append(_rel(path))
+            continue
+        want = dict(obj)
+        want.pop("source_commit", None)
+        have.pop("source_commit", None)
+        if have != want:
+            stale.append(_rel(path))
+    return stale
+
+
+def drift(manifest: dict) -> list[tuple[str, str, str]]:
+    """Paths the tree has gained, lost or re-assigned since the last rewrite.
+
+    Each entry is ``(sign, path, shard)`` with ``sign`` one of ``+``, ``-`` or
+    ``~``.  Returns an empty list when the committed manifest is unreadable —
+    that is reported as staleness, not as drift.
+    """
+    have = _load(OWNERSHIP)
+    if have is None:
+        return []
+    before: dict[str, dict] = have.get("modules", {})
+    after: dict[str, dict] = manifest["modules"]
+    out: list[tuple[str, str, str]] = []
+    for path in sorted(set(after) - set(before)):
+        out.append(("+", path, str(after[path]["shard"])))
+    for path in sorted(set(before) - set(after)):
+        out.append(("-", path, str(before[path].get("shard", "?"))))
+    for path in sorted(set(before) & set(after)):
+        if before[path] != after[path]:
+            out.append(("~", path, str(after[path]["shard"])))
+    return out
+
+
+def report_drift(entries: list[tuple[str, str, str]], recorded: str | None) -> None:
+    at = f" at {recorded[:12]}" if recorded else ""
+    print(
+        f"note: {len(entries)} tracked path(s) have changed since the coverage "
+        f"manifest was regenerated{at}:",
+    )
+    for sign, path, shard in entries[:20]:
+        print(f"  {sign} {path}  →  shard {shard}")
+    if len(entries) > 20:
+        print(f"  ... and {len(entries) - 20} more")
+    print(
+        "The manifest is owned by the overhaul's foundation/acceptance shard. "
+        "Do not\nregenerate it on a ticket branch — twenty branches each "
+        "rewriting a 3,700-entry\nJSON all conflict at delivery. Freshness is "
+        "an acceptance gate: --check-artefacts.",
+    )
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--check", action="store_true",
-        help="verify coverage and that the committed artefacts are current",
+        help="verify coverage: every tracked path has an owning rule",
+    )
+    parser.add_argument(
+        "--check-artefacts", action="store_true",
+        help=(
+            "acceptance gate: coverage, plus the committed artefacts being "
+            "current with the tree"
+        ),
     )
     args = parser.parse_args()
 
@@ -762,37 +865,33 @@ def main() -> int:
         )
         return 1
 
-    if args.check:
-        # ``source_commit`` is provenance, not content: it changes with every
-        # commit, so comparing it would make the check red the moment the
-        # regenerated artefacts are committed.  Compare the assignments.
-        stale = []
-        recorded = None
-        for obj, path in ((inventory, INVENTORY), (manifest, OWNERSHIP)):
-            if not path.exists():
-                stale.append(path.relative_to(REPO))
-                continue
-            try:
-                have = json.loads(path.read_text(encoding="utf-8"))
-            except json.JSONDecodeError:
-                stale.append(path.relative_to(REPO))
-                continue
-            recorded = recorded or have.get("source_commit")
-            want = dict(obj)
-            want.pop("source_commit", None)
-            have.pop("source_commit", None)
-            if have != want:
-                stale.append(path.relative_to(REPO))
-        if stale:
+    if args.check or args.check_artefacts:
+        recorded = (_load(OWNERSHIP) or {}).get("source_commit")
+        stale = stale_artefacts(inventory, manifest)
+        entries = drift(manifest)
+
+        if args.check_artefacts and stale:
             print("stale artefact(s): " + ", ".join(str(p) for p in stale))
+            if entries:
+                report_drift(entries, recorded)
             print("run: python3 docs/plans/documentation-overhaul/refresh_inventory.py")
             return 1
+
         print(
             f"ok — {sum(inventory['counts'].values())} tracked paths assigned "
             f"({inventory['counts'].get('production', 0)} production modules)",
         )
-        if recorded and recorded != head_commit():
-            print(f"note: artefacts last regenerated at {recorded[:12]}")
+        if args.check_artefacts:
+            if recorded and recorded != head_commit():
+                print(f"note: artefacts last regenerated at {recorded[:12]}")
+            return 0
+        if stale and entries:
+            report_drift(entries, recorded)
+        elif stale:
+            print(
+                "note: the committed artefacts are stale and are regenerated by "
+                "the foundation/acceptance shard (--check-artefacts).",
+            )
         return 0
 
     write(inventory, INVENTORY)
