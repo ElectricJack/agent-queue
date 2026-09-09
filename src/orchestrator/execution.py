@@ -1772,8 +1772,26 @@ class ExecutionMixin:
                 and not managed_parent_completed
             ):
                 failed_writer = owns_own_branch
+        requeued_writer = False
+        if new_status == TaskStatus.READY and task.repo_id and task.branch_name:
+            from src.integration.models import BranchKey
+            from src.integration.ownership import BranchOwnership
+            from src.orchestrator.workspace import REQUEUE_INTEGRATION_OWNER_ROLES
+
+            requeued_owner = await BranchOwnership(self.db).get_owner(
+                BranchKey(repository_id=task.repo_id, branch=task.branch_name)
+            )
+            requeued_writer = bool(
+                requeued_owner
+                and requeued_owner["owner_id"] == task.id
+                and requeued_owner["owner_role"] in REQUEUE_INTEGRATION_OWNER_ROLES
+                and requeued_owner["handoff_state"] != "reserved"
+            )
+        from src.integration.models import REQUEUE_INTEGRATION_OWNER_ROLES, RETRYABLE_INTEGRATION_OWNER_ROLES
+
         release_needed = (
             repair_writer_closed or managed_parent_suspended or completed_writer or failed_writer
+            or requeued_writer
         )
         handoff_unproven = False
         slot_restored = False
@@ -1811,6 +1829,8 @@ class ExecutionMixin:
                     else "integration_parent_suspended"
                 ),
                 pool=pool,
+                roles=(REQUEUE_INTEGRATION_OWNER_ROLES if requeued_writer
+                       else RETRYABLE_INTEGRATION_OWNER_ROLES),
             )
             # ``False`` is a *failed proof*, not a no-op: the writer may still
             # hold the checkout.  Releasing the workspace or the claim anyway
