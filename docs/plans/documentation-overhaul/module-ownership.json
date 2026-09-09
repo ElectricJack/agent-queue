@@ -1,5 +1,5 @@
 {
-  "source_commit": "cedead51f061cde669085773022da69e9c7c932c",
+  "source_commit": "610f38996e88b27e3404113047e43242c484e32e",
   "generated_by": "docs/plans/documentation-overhaul/refresh_inventory.py",
   "note": "Assignment, not authored coverage.  Each entry's `purpose` is the rule-level description of the family the path belongs to; the per-module sentence is written by the owning shard's catalog page (`shards[<shard>].catalog`).  `component` is the prose page that explains the module.  There is no catch-all rule: a tracked path matching nothing is an error, not a default assignment.",
   "shards": {
@@ -4214,6 +4214,20 @@
       "purpose": "This overhaul's own planning material.",
       "catalog": null
     },
+    "docs/plans/install-onboarding/README.md": {
+      "shard": "legacy",
+      "component": "docs/history/README.md",
+      "category": "documentation",
+      "purpose": "Existing page; the legacy ticket records its disposition.",
+      "catalog": null
+    },
+    "docs/plans/install-onboarding/tasks.graph.json": {
+      "shard": "legacy",
+      "component": "docs/history/README.md",
+      "category": "documentation",
+      "purpose": "Existing page; the legacy ticket records its disposition.",
+      "catalog": null
+    },
     "docs/playbooks/integration-only/default-pipeline/artifact.json": {
       "shard": "legacy",
       "component": "docs/history/README.md",
@@ -4284,6 +4298,41 @@
       "purpose": "Existing page; the legacy ticket records its disposition.",
       "catalog": null
     },
+    "docs/reference/cli/README.md": {
+      "shard": "cli",
+      "component": "docs/reference/cli/README.md",
+      "category": "documentation",
+      "purpose": "Overhaul page owned by the `cli` ticket.",
+      "catalog": null
+    },
+    "docs/reference/cli/agent-tools.md": {
+      "shard": "cli",
+      "component": "docs/reference/cli",
+      "category": "documentation",
+      "purpose": "Overhaul page owned by the `cli` ticket.",
+      "catalog": null
+    },
+    "docs/reference/cli/commands.md": {
+      "shard": "cli",
+      "component": "docs/reference/cli",
+      "category": "documentation",
+      "purpose": "Overhaul page owned by the `cli` ticket.",
+      "catalog": null
+    },
+    "docs/reference/cli/contracts.md": {
+      "shard": "cli",
+      "component": "docs/reference/cli",
+      "category": "documentation",
+      "purpose": "Overhaul page owned by the `cli` ticket.",
+      "catalog": null
+    },
+    "docs/reference/cli/prime.md": {
+      "shard": "cli",
+      "component": "docs/reference/cli",
+      "category": "documentation",
+      "purpose": "Overhaul page owned by the `cli` ticket.",
+      "catalog": null
+    },
     "docs/reference/glossary.md": {
       "shard": "foundation",
       "component": "docs/reference/glossary.md",
@@ -4296,6 +4345,13 @@
       "component": "docs/reference/modules/README.md",
       "category": "documentation",
       "purpose": "Overhaul page owned by the `foundation` ticket.",
+      "catalog": null
+    },
+    "docs/reference/modules/cli.md": {
+      "shard": "cli",
+      "component": "docs/reference/modules/cli.md",
+      "category": "documentation",
+      "purpose": "Overhaul page owned by the `cli` ticket.",
       "catalog": null
     },
     "docs/reports/cli-audit-2026-09-08/README.md": {

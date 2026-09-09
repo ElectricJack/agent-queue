@@ -89,6 +89,26 @@ format or its coverage guarantee.
 | Stale count in `CLAUDE.md` | `CLAUDE.md:144` says "4 internal plugins (files, git, notes, vibecop)". Discovery is dynamic and five internal plugins are found: `files`, `git`, `notes`, `vibecop` and the `inbox` package. | `contributing` |
 | Empty tracked file | `src/schema.sql` is zero bytes and referenced by nothing in `src/`. It is a leftover of the pre-Alembic schema. Assigned to the `database` shard as `supporting` so coverage stays honest; it should be deleted by a code change, not by a documentation ticket. | `database` |
 
+## 8. Shipped skill describes reviewer creation as the default pipeline
+
+| | |
+|---|---|
+| **Claim** | `src/skills/aq-playbooks-and-gates/SKILL.md:84-95` — under the heading "Default pipeline (shipped)" it lists `task.created` → `task_route`, `task.completed` with `branch_name` → "create a per-task review task under the `reviewer` profile", and `task.completed` with `branch_name AND pr_url` → "create a per-branch final-review task under the `final-reviewer` profile". The skill's own `description:` frontmatter repeats it ("how the default pipeline routes task events into review + final-review + spec-ingest flows"). |
+| **Actually** | The shipped default pipeline ships three rules — spec ingest, a proposal human gate, and batch commit on that gate resolving — and says in its own text that it "does not create per-task reviewers, final branch reviewers, or review/PR gates on downstream work". Routing is a separate playbook. This is entry 1 of this ledger, reproduced inside shipped *prompt* content rather than a documentation page. |
+| **Evidence** | [`src/prompts/default_playbooks/default-pipeline.md`](../../../src/prompts/default_playbooks/default-pipeline.md) lines 15-23 against [`src/skills/aq-playbooks-and-gates/SKILL.md`](../../../src/skills/aq-playbooks-and-gates/SKILL.md) lines 81-95. |
+| **Note** | This is shipped text that reaches an agent's context, so correcting it changes agent behaviour and belongs in a code change, not a documentation ticket. Skill installation is write-if-absent, so an already-installed copy also needs `aq doctor`'s `skills.installed_drift` check to notice. |
+| **Owner** | `playbooks` for the wording; whoever fixes the skill file. Recorded by `cli`, which owns the shipped-skill coverage rows. |
+
+## 9. Shipped skill describes a removed inbox hook
+
+| | |
+|---|---|
+| **Claim** | `src/skills/aq-comms/SKILL.md:23-27` — "The `aq inbox --inject` hook the Claude harness runs at every prompt boundary rendering pending messages inline — you don't usually need to poll `aq message inbox` manually", repeated at lines 122-124. |
+| **Actually** | The `UserPromptSubmit` hook was removed on 2026-08-27. The shipped Claude hook file wires `SessionStart` (matcher `resume\|compact`), `PreCompact` and the two sub-agent events, and nothing else. `aq inbox --inject` is still a supported command; it is simply not wired into a hook. Pending messages reach a session at the next prime or through the cascade's nudge when the session goes idle. |
+| **Evidence** | [`src/prime/templates/hooks/claude.json`](../../../src/prime/templates/hooks/claude.json); the removal note in [`src/sessions/default_harnesses/claude.md`](../../../src/sessions/default_harnesses/claude.md) lines 186-190. |
+| **Note** | `CLAUDE.md`'s "Messages" bullet carries the same stale claim ("`aq inbox --inject` hook in claude harness"). |
+| **Owner** | `communications` for the messaging page; whoever fixes the skill file and `CLAUDE.md`. Recorded by `cli`. |
+
 ## How to use this ledger
 
 * **Do not fix a page you do not own.** Add findings here instead; the map
