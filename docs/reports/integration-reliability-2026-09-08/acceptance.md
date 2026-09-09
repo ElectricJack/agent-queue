@@ -780,3 +780,26 @@ stopped-writer recovery; the goal is not marked complete.
 - `sharp-glacier` was reopened because its added tests did not exercise the
   automatic authority transition or the live closed/no-op audit-PR case.
   The overall goal remains active and incomplete.
+
+### 2026-09-09 — pre-reservation recovery delivered the CLI child
+
+Operator fix `3d28ddb7` adds exact frozen-conflict proof for explicit resume
+before a writer has reserved an external push, plus idempotent retry with the
+same deadline. Direct regression cases and the full focused repair/control
+area passed (111 tests). The fix was committed, published on an operator
+source branch, and loaded in daemon PID 822772; `sound-nexus` is now claimed
+for normal AQ delivery and fresh review.
+
+Public resume of operation `81d0aaee-0c3a-482c-b04c-d3afe6631cbe` succeeded,
+preserving its stage and granting the configured deadline 1788955789.4166033.
+The existing collector then reserved and pushed its tested repair through the
+public commands. Durable receipt `receipt-2fc75f07-92f8-5928-84fc-e828450d8c2f`
+delivers `keen-harbor.9` to its parent at
+`d6d7bede968033780c845d903e454ce46b32178f`. Independent `git ls-remote`
+confirmed that exact SHA on `refs/heads/aq/keen-harbor`. This proves the resumed
+child delivery; it does not yet prove final epic delivery to main.
+
+The corrected `wise-nexus` worker closed at `4ff4db60` with 34 handoff and
+179 related tests reported passing. Its isolated swarm was 7/8: S7 timed out
+waiting for two fresh sessions before reaching its race assertion. That
+limitation is recorded and is not counted as successful swarm acceptance.
