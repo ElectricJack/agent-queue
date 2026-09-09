@@ -127,3 +127,25 @@ the reserved branch and is READY. Its disabled-Claude route was changed through
 `aq task route` to enabled `deep-high-codex`. Recovery waits for that authorized
 repair; it does not seize its reservation. Automatic live publication acceptance
 is therefore still pending.
+
+## Live publication recovery verified; moved-main continuation fixed
+
+The second batch's stage-1 repair completed without code changes. AQ then
+automatically published revision 1 at `371391a11fc7035545d58ec9bf16af3cea123710`,
+returned its detached branch to the collector, and entered promotion. GitHub run
+34319555915 independently confirmed success at that exact SHA. No manual build
+command was used for that publication recovery.
+
+Main had moved from the batch's expected base
+`999990a7520dd2caa78cfbfcf388d2819a6a38c8` to
+`6d2b07db0ea59aae1c2230091c6863b5d178da78`. After the unattempted mutation lease
+expired, AQ superseded the stale intent and entered `building`, but emitted no
+rebuild continuation. `7cc03e02` now queues the existing pinned sealed-batch
+construction route atomically with that transition. Root-promotion validation:
+52 other tests passed in the area run; the corrected moved-main test passed
+separately, including one durable event across replay and preserved repair budget.
+The fix is loaded. The already-stranded live batch was resumed once through
+`aq system integration-build-candidate`; its result is still being monitored.
+
+A stale-attention cleanup timed out and was not counted as successful. Subsequent
+read-only PostgreSQL inspection found no active blocking transaction.
