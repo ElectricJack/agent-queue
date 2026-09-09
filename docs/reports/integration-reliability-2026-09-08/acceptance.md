@@ -720,3 +720,25 @@ regressions passing and broader suites in progress; its attempted default e2e
 port was occupied, so operator supplied the unique-port/private-DB swarm helper.
 CLI collector's14-scenario run reached13passing; it corrected the remaining old
 stderr expectation to validate structured usage_error and is rerunning acceptance.
+
+
+### 2026-09-09 — exact candidate publication recovery remains fenced
+
+Matter batchb579 revision1 at7a39e65a has successful native CI34339238909.
+At deadline escalation, the branch was reserved for unclaimed stage1 delegate
+at token2. Public integration-transfer-owner returned it to the collector at
+token3 without stopping an attached writer (none existed). This transfer alone
+did not complete publication/attestation. Explicit public integration-ci-evidence
+for revision1 returns stale_subject; publication remains pr_reserved, while
+revision0 is pr_published. GitHub audit PR9 is CLOSED at exact7a39e65a after the
+candidate became identical to main. Public integration-build-candidate refuses
+candidate mutation identity changed under the new stage/fence. No reservation,
+CI evidence or membership was manually rewritten. Filed priority5 sharp-glacier
+with the CI-deadline, closed/no-change audit PR, and exact mutation-resumption
+cases; it must preserve finite policy budgets and deny attached/newer writers.
+
+Live CLI collector session8bfc4f44 reports its final disposable-daemon stateful
+smoke passing (1 pytest integration case in377.74s, covering14 scenarios) after
+fixing collection envelopes and the usage_error expectation. Final publication
+and receipt are still pending. wise-nexus remains actively implementing/testing
+stopped-writer recovery; the goal is not marked complete.
