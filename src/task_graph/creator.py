@@ -397,6 +397,23 @@ async def _file_hierarchical_plan(db, conn, plan: GraphPlan, service) -> None:
     })
 
 
+async def _graph_route(service, conn, plan: GraphPlan):
+    """The hierarchy route *plan* files through, or ``None`` for a legacy project.
+
+    A plan with a ``parent_row`` mints a new root; one without files under
+    its existing ``parent_id``.  Raises :class:`HierarchyError` for an enabled
+    project the graph cannot file into (no designated repository, a parent
+    bound elsewhere) — the same error the filing itself would raise.
+    """
+    mode = await conn.scalar(
+        select(projects.c.hierarchical_integration_mode).where(projects.c.id == plan.project_id)
+    )
+    if mode not in {"hierarchy", "train"}:
+        return None
+    existing_parent = plan.parent_id if plan.parent_row is None else None
+    return await service.graph_route(conn, plan.project_id, existing_parent)
+
+
 async def write_plan(
     db: Any,
     plan: GraphPlan,
@@ -436,10 +453,7 @@ async def write_plan(
     async with db._engine.begin() as conn:
         hierarchical = False
         if hierarchy_service is not None and plan.project_id is not None:
-            mode = await conn.scalar(select(projects.c.hierarchical_integration_mode).where(
-                projects.c.id == plan.project_id
-            ))
-            hierarchical = mode in {"hierarchy", "train"}
+            hierarchical = await _graph_route(hierarchy_service, conn, plan) is not None
         if hierarchical:
             await _file_hierarchical_plan(db, conn, plan, hierarchy_service)
         elif plan.project_id is not None:
@@ -618,17 +632,25 @@ async def create_graph(
     """
     db = handler.db
     plan = await build_plan(db, graph, project_id=project_id, parent_id=parent_id)
+    hierarchy_service = (
+        handler._hierarchy_integration_service()
+        if callable(getattr(handler, "_hierarchy_integration_service", None))
+        else None
+    )
     if dry_run:
+        if hierarchy_service is not None:
+            # Same route check the real run performs first, so a dry run
+            # refuses what the real run would refuse instead of reporting a
+            # graph the project cannot file (keen-harbor.14).
+            async with db._engine.connect() as conn:
+                await _graph_route(hierarchy_service, conn, plan)
         return build_report(graph, plan, dry_run=True, provenance=provenance)
     await write_plan(
         db,
         plan,
         provenance=provenance,
         routing_manager=getattr(getattr(handler, "orchestrator", None), "playbook_manager", None),
-        hierarchy_service=(
-            handler._hierarchy_integration_service()
-            if callable(getattr(handler, "_hierarchy_integration_service", None)) else None
-        ),
+        hierarchy_service=hierarchy_service,
     )
     for task_id in plan.routing_task_ids:
         await handler._emit_admitted_routing_gates(task_id)

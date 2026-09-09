@@ -2553,9 +2553,17 @@ class TaskCommandsMixin:
             }
 
         dry_run = bool(args.get("dry_run", False))
-        report = await create_graph(
-            self, graph, project_id=project_id, dry_run=dry_run, parent_id=parent_id
-        )
+        try:
+            report = await create_graph(
+                self, graph, project_id=project_id, dry_run=dry_run, parent_id=parent_id
+            )
+        except HierarchyError as exc:
+            # ``write_plan`` is one transaction, so nothing was created; a
+            # dry run performs the same route check and fails the same way.
+            return {
+                "error": f"hierarchy.{exc.code}: {exc.detail} — nothing was created",
+                "code": f"hierarchy.{exc.code}",
+            }
         if not dry_run:
             container = await self.db.get_task(report["parent_id"])
             if container is not None:
