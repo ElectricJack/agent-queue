@@ -151,7 +151,7 @@ def _create_task_graph(
 @click.option("-p", "--project", default=None, help="Project ID (skips wizard step)")
 @click.option("-t", "--title", default=None, help="Task title (skips wizard step)")
 @click.option("-d", "--description", default=None, help="Task description")
-@click.option("--priority", default=None, type=int, help="Priority (1-300)")
+@click.option("--priority", default=None, type=click.IntRange(1, 300), help="Priority (1-300)")
 @click.option("--type", "task_type", default=None, help="Task type")
 @click.option(
     "--integration-mode",
@@ -279,12 +279,15 @@ def task_create(
     if dry_run:
         raise click.UsageError("--dry-run only applies with --graph or --from-spec")
 
-    if project and title and description:
+    required_values = {"project": project, "title": title, "description": description}
+    missing_required = [name for name, value in required_values.items() if value is None]
+
+    if not missing_required:
         params = {
             "project_id": project,
             "title": title,
             "description": description,
-            "priority": priority or 100,
+            "priority": 100 if priority is None else priority,
             "task_type": task_type,
         }
         if integration_mode:
@@ -296,14 +299,35 @@ def task_create(
     else:
         from .menus import task_creation_wizard
 
-        async def _get_projects():
-            async with _get_client(api_url) as client:
-                result = await client.execute("list_projects")
-                projects = _getval(result, "projects", [])
-                return [_getval(p, "id") for p in projects]
+        # A prompt-toolkit wizard cannot safely read piped input, and JSON is
+        # a machine-facing output contract.  Fail before contacting the daemon
+        # so an incomplete command never lists projects or creates a task.
+        if (ctx.obj or {}).get("json") or not click.get_text_stream("stdin").isatty():
+            missing = ", ".join(f"--{name}" for name in missing_required)
+            raise click.UsageError(
+                f"missing required option(s): {missing}; provide --project, --title, and "
+                "--description when stdin is not interactive"
+            )
 
-        project_ids = _run(_get_projects())
-        params = task_creation_wizard(project_ids)
+        if project is None:
+            async def _get_projects():
+                async with _get_client(api_url) as client:
+                    result = await client.execute("list_projects")
+                    projects = _getval(result, "projects", [])
+                    return [_getval(p, "id") for p in projects]
+
+            project_ids = _run(_get_projects())
+        else:
+            project_ids = []
+        params = task_creation_wizard(
+            project_ids,
+            project=project,
+            title=title,
+            description=description,
+            priority=priority,
+            task_type=task_type,
+            integration_mode=integration_mode,
+        )
         if not params:
             console.print("[dim]Task creation cancelled.[/]")
             return
