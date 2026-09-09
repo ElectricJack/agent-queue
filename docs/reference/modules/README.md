@@ -9,9 +9,9 @@ The catalog is split into **shards**, one per subject area, so that the people
 documenting different subsystems never edit the same file. Each shard lists its
 own modules; this page is only the index.
 
-> **Status.** The overhaul is in progress. No shard has been written yet, so
-> the file names below are not yet links. The module counts are already fixed
-> by the
+> **Status.** The overhaul is in progress. Shard files that have been written
+> are linked below; the rest are shown as plain file names. The module counts
+> are already fixed by the
 > [coverage manifest](../../plans/documentation-overhaul/module-ownership.json),
 > so you can see how much of each area is outstanding.
 
@@ -36,7 +36,7 @@ own modules; this page is only the index.
 | `plugins.md` | `plugins` | 24 | — | `guides/plugins-and-mcp.md` |
 | `communications.md` | `communications` | 38 | — | `concepts/messaging.md` |
 | `operations.md` | `operations` | 24 | — | `guides/operations.md` |
-| `contributing.md` | `contributing` | 0 | — | — |
+| [`contributing.md`](contributing.md) | `contributing` | 0 | — | `contributing/README.md`, `contributing/setup.md`, `contributing/testing.md`, `contributing/repo-map.md`, `contributing/codegen.md`, `contributing/checks.md`, `contributing/scripts.md`, `contributing/ci.md`, `contributing/pull-requests.md`, `contributing/releases.md` |
 
 `contributing` carries no production modules: it documents the 81 supporting
 files — scripts, CI workflows, packaging and build configuration — and the test

@@ -1,5 +1,5 @@
 {
-  "source_commit": "cedead51f061cde669085773022da69e9c7c932c",
+  "source_commit": "610f38996e88b27e3404113047e43242c484e32e",
   "generated_by": "docs/plans/documentation-overhaul/refresh_inventory.py",
   "note": "Assignment, not authored coverage.  Each entry's `purpose` is the rule-level description of the family the path belongs to; the per-module sentence is written by the owning shard's catalog page (`shards[<shard>].catalog`).  `component` is the prose page that explains the module.  There is no catch-all rule: a tracked path matching nothing is an error, not a default assignment.",
   "shards": {
@@ -3815,11 +3815,81 @@
       "purpose": "Existing page; the legacy ticket records its disposition.",
       "catalog": null
     },
+    "docs/contributing/README.md": {
+      "shard": "contributing",
+      "component": "docs/contributing/README.md",
+      "category": "documentation",
+      "purpose": "Overhaul page owned by the `contributing` ticket.",
+      "catalog": null
+    },
+    "docs/contributing/checks.md": {
+      "shard": "contributing",
+      "component": "docs/contributing",
+      "category": "documentation",
+      "purpose": "Overhaul page owned by the `contributing` ticket.",
+      "catalog": null
+    },
+    "docs/contributing/ci.md": {
+      "shard": "contributing",
+      "component": "docs/contributing",
+      "category": "documentation",
+      "purpose": "Overhaul page owned by the `contributing` ticket.",
+      "catalog": null
+    },
+    "docs/contributing/codegen.md": {
+      "shard": "contributing",
+      "component": "docs/contributing",
+      "category": "documentation",
+      "purpose": "Overhaul page owned by the `contributing` ticket.",
+      "catalog": null
+    },
     "docs/contributing/documentation-style.md": {
       "shard": "foundation",
       "component": "docs/contributing/documentation-style.md",
       "category": "documentation",
       "purpose": "Style and runnable-example rules.",
+      "catalog": null
+    },
+    "docs/contributing/pull-requests.md": {
+      "shard": "contributing",
+      "component": "docs/contributing",
+      "category": "documentation",
+      "purpose": "Overhaul page owned by the `contributing` ticket.",
+      "catalog": null
+    },
+    "docs/contributing/releases.md": {
+      "shard": "contributing",
+      "component": "docs/contributing",
+      "category": "documentation",
+      "purpose": "Overhaul page owned by the `contributing` ticket.",
+      "catalog": null
+    },
+    "docs/contributing/repo-map.md": {
+      "shard": "contributing",
+      "component": "docs/contributing",
+      "category": "documentation",
+      "purpose": "Overhaul page owned by the `contributing` ticket.",
+      "catalog": null
+    },
+    "docs/contributing/scripts.md": {
+      "shard": "contributing",
+      "component": "docs/contributing",
+      "category": "documentation",
+      "purpose": "Overhaul page owned by the `contributing` ticket.",
+      "catalog": null
+    },
+    "docs/contributing/setup.md": {
+      "shard": "contributing",
+      "component": "docs/contributing",
+      "category": "documentation",
+      "purpose": "Overhaul page owned by the `contributing` ticket.",
+      "catalog": null
+    },
+    "docs/contributing/testing.md": {
+      "shard": "contributing",
+      "component": "docs/contributing",
+      "category": "documentation",
+      "purpose": "Overhaul page owned by the `contributing` ticket.",
       "catalog": null
     },
     "docs/default_rules/README.md": {
@@ -4214,6 +4284,20 @@
       "purpose": "This overhaul's own planning material.",
       "catalog": null
     },
+    "docs/plans/install-onboarding/README.md": {
+      "shard": "legacy",
+      "component": "docs/history/README.md",
+      "category": "documentation",
+      "purpose": "Existing page; the legacy ticket records its disposition.",
+      "catalog": null
+    },
+    "docs/plans/install-onboarding/tasks.graph.json": {
+      "shard": "legacy",
+      "component": "docs/history/README.md",
+      "category": "documentation",
+      "purpose": "Existing page; the legacy ticket records its disposition.",
+      "catalog": null
+    },
     "docs/playbooks/integration-only/default-pipeline/artifact.json": {
       "shard": "legacy",
       "component": "docs/history/README.md",
@@ -4296,6 +4380,13 @@
       "component": "docs/reference/modules/README.md",
       "category": "documentation",
       "purpose": "Overhaul page owned by the `foundation` ticket.",
+      "catalog": null
+    },
+    "docs/reference/modules/contributing.md": {
+      "shard": "contributing",
+      "component": "docs/reference/modules/contributing.md",
+      "category": "documentation",
+      "purpose": "Overhaul page owned by the `contributing` ticket.",
       "catalog": null
     },
     "docs/reports/cli-audit-2026-09-08/README.md": {
