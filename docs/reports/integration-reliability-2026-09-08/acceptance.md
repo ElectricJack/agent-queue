@@ -532,3 +532,45 @@ resolve-conflict command is a different protocol. Filed priority2 quick-falcon
 to expose/test the actual CLI path and continuation, and recorded guidance on
 repair-repair-batch-integration-batch-2c484c0890ebecbbf98b0b12fd5469ff-0.
 This next-batch conflict remains open; the prior verified main delivery stands.
+
+## Live unpublished-resolution recovery and Matter baseline release
+
+Sharp-beacon1a7ac2c1 was integrated as8df33de8, preserving reviewed ancestry
+and restoring the10 existing repair regressions/helpers its merge had removed.
+Combined repair/promotion/operational tests173passed in62.13s; migration suite
+9passed in21.71s. Operator also made a00000000006 recreate the resolution-binding
+constraint so upgraded databases enforce the new fields; historical-constraint
+upgrade1passed in7.46s. Logs:/tmp/aq-legacy-resolution-combined-tests.log,
+/tmp/aq-legacy-resolution-migration-tests.log,
+/tmp/aq-legacy-resolution-binding-tests.log.
+
+Operator stopped only the daemon with --keep-sessions, applied aq db upgrade
+--yes from the root operator checkout(AQ_DB_SCOPE unset), confirmed production
+schemaa00000000006, and started daemon514280. Intent
+intent-5b9abac2-3cbb-5973-8a0d-c530bd1e37bd correctly carried legacy marker0.0.
+Public resume81d0aaee succeeded: exact observed remote3eada329 evidence persisted,
+marker cleared only with all guards, parent restoredPAUSED, same writer/fence11
+preserved, deadline1788950851.2801652. Its worker held an old unsubmitted AQ
+stall reminder. Doctor returnedOK because its provider marker was lost at
+restart; operator submitted the exact existing reminder with Enter, after which
+the worker resumed. Filed smart-horizon for durable restart-safe composer proof.
+
+Guarded push and reconciliation finalized receipt
+receipt-71755ac2-3bca-5bfe-8221-11fd243860fc for keen-harbor.10→keen-harbor.
+Remote parent is5f41738e; this is actual child delivery, not only task completion.
+
+Matter batch6172c137 was promoted at7a39e65a5321f0e6c7864068703d29940b2f117c;
+exact candidate CI34335827337 isSUCCESS, remote main matches, and root receipt
+receipt-4f1c3d42-0a58-573a-9404-72c24de2fb26 exists. Released both feature
+containers and entry-leaf manual holds through aq task resume. Nimble-dune.1
+isREADY with explicit instructions to merge the delivered baseline into its
+older immutable origin; smart-dune.1 isDEFINED behind the first epic.
+
+The next Matter sweep incorrectly resealed sharp-nexus because root eligibility
+compared receipt target refs/heads/main against repository default main. Fixed
+6340eab7 normalizes both spellings; unrelated branch receipts remain eligible.
+Focused3passed; full sealing29passed in21.02s; Ruffpassed. Existing duplicate
+batchb5798e8c remains frozen and is not silently rewritten. Source branch
+origin/aq/operator-recovery-followups-20260909 and delivery taskgrand-vault cover
+this fix plus recovery test/constraint follow-through. Corrected daemon restart
+is in progress, log/tmp/aq-receipt-normalization-restart.log.
