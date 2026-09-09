@@ -149,3 +149,22 @@ The fix is loaded. The already-stranded live batch was resumed once through
 
 A stale-attention cleanup timed out and was not counted as successful. Subsequent
 read-only PostgreSQL inspection found no active blocking transaction.
+
+## Queue progression and isolated swarm acceptance
+
+Both `nimble-forge` (parent continuation) and `eager-falcon` (root moved-main
+conflict continuation) have live AQ worker sessions. Newly ready `noble-ridge.2`
+and `keen-harbor.10` were routed from the disabled Claude pool to enabled Codex.
+No pool bounds or agent roster entries were changed for this step.
+
+The canonical Windows preflight passed on the engine checkout, verifying the
+pinned native toolchain. `sharp-nexus` now records CI/bootstrap and baseline
+delivery in matter-engine-cpp, and `nimble-dune.1` has a verified blocks dependency
+on it. Workstation CI is the working assumption; no runner is installed yet.
+
+The required Tier-1 swarm kit is running in an isolated environment:
+`AQ_E2E_HOME=/tmp/aq-goal-e2e-20260909d`, port8199, database
+`aq_goal_e2e_20260909d`, fake session provider (no model processes). Setup passed;
+its daemon and smoke process were confirmed live. Output is in
+`/tmp/aq-goal-e2e-smoke.log`; no pass/fail claim yet. This is functional protocol
+acceptance, not the still-required hundreds-of-tasks/day capacity measurement.
