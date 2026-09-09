@@ -13,7 +13,7 @@ import uuid
 from collections.abc import Mapping, Sequence
 from typing import Any
 
-from sqlalchemy import and_, or_, select, update
+from sqlalchemy import and_, func, or_, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from src.database.tables import (
@@ -1039,6 +1039,28 @@ class EscalationQueriesMixin:
             rows = (await conn.execute(statement)).mappings().all()
         return [dict(row) for row in rows]
 
+    async def count_due_escalation_deliveries(self, now: float) -> int:
+        """How many escalation deliveries are owed an external send right now.
+
+        §7 gives escalations priority over digests.  The digest pump asks this
+        before it claims anything, so an incident that is still waiting for its
+        channel post is never queued behind a routine hourly message -- and
+        because the digest simply does not claim, no rate-limit budget or
+        delivery attempt is spent establishing that.
+        """
+        due = or_(
+            and_(
+                escalation_deliveries.c.status.in_(("pending", "retry")),
+                escalation_deliveries.c.next_attempt_at <= now,
+            ),
+            escalation_deliveries.c.status == "sending",
+        )
+        async with self._engine.connect() as conn:
+            total = await conn.scalar(
+                select(func.count()).select_from(escalation_deliveries).where(due)
+            )
+        return int(total or 0)
+
     async def reserve_digest_window(
         self,
         *,
@@ -1264,14 +1286,24 @@ class EscalationQueriesMixin:
         self,
         *,
         destination: str | None = None,
+        config_generation: int | None = None,
         statuses: Sequence[str] | None = None,
         limit: int = 100,
     ) -> list[dict[str, Any]]:
+        """Newest windows first.
+
+        ``config_generation`` narrows the read to one schedule generation,
+        which is what lets the evaluator anchor a new generation at the
+        configuration change instead of continuing the retired one's
+        coverage (§9).
+        """
         if limit <= 0:
             return []
         statement = select(digest_windows)
         if destination is not None:
             statement = statement.where(digest_windows.c.destination == destination)
+        if config_generation is not None:
+            statement = statement.where(digest_windows.c.config_generation == config_generation)
         if statuses is not None:
             statement = statement.where(digest_windows.c.send_status.in_(tuple(statuses)))
         statement = statement.order_by(

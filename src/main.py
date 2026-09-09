@@ -309,6 +309,23 @@ async def run(config_path: str, profile: str | None = None) -> bool:
             )
             logger.info("Escalation delivery service wired to the Discord transport")
 
+            # Hourly digest (discord-simplification §8).  It shares the
+            # transport, the rate guard and the destination with escalations
+            # but keeps its own durable outbox, and it stands down whenever an
+            # escalation is still owed a send.
+            from src.digest import DigestScheduleService
+
+            orch.digest_schedule = DigestScheduleService(
+                orch.db,
+                DiscordEscalationTransport(bot, config),
+                config=config,
+                lease_owner=f"daemon-{os.getpid()}",
+                base_url=base_url,
+                rate_guard=_bot_rate_guard(bot),
+                escalation_priority=orch.db.count_due_escalation_deliveries,
+            )
+            logger.info("Digest scheduler wired to the Discord transport")
+
         await _run_scheduler_cycles(orch, shutdown_event)
 
     # Start embedded MCP server (if enabled).  Lazy-imports the MCP SDK

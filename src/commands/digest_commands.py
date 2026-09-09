@@ -28,6 +28,7 @@ from typing import Any
 
 from src.commands.principal import TRUSTED_LOCAL, PrincipalKind, current_principal
 from src.digest.aggregate import build_digest
+from src.digest.dispatch import reported_so_far
 from src.digest.facts import CATEGORIES
 from src.digest.schedule import schedule_for, validate_settings
 
@@ -83,17 +84,9 @@ class DigestCommandsMixin:
 
         Without this a preview would happily re-offer a highlight the channel
         has already seen, and disagree with the delivery it claims to predict.
+        The dispatcher reads the same history through the same helper.
         """
-        keys: set[str] = set()
-        highlights: set[str] = set()
-        for window in await self.db.list_digest_windows(
-            destination=destination, statuses=["sent"], limit=_RECENT_WINDOWS
-        ):
-            payload = window.get("payload") or {}
-            if isinstance(payload, dict):
-                keys.update(payload.get("reported_keys") or [])
-                highlights.update(payload.get("reported_highlights") or [])
-        return frozenset(keys), frozenset(highlights)
+        return await reported_so_far(self.db, destination, limit=_RECENT_WINDOWS)
 
     async def _cmd_digest_preview(self, args: dict[str, Any]) -> dict[str, Any]:
         """Dry-run the current digest window. Sends nothing, reserves nothing."""

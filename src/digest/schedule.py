@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 from dataclasses import dataclass
 
 from src.config import (
@@ -90,6 +91,39 @@ class DigestSchedule:
             return DigestWindow(since=last_window_end, until=now)
         since = max(last_window_end, now - self.catchup_seconds)
         return DigestWindow(since=since, until=now, catchup=True)
+
+    def boundary_at(self, now: float) -> float:
+        """The most recent UTC interval boundary at or before ``now``.
+
+        Window bounds are snapped to this grid so that two daemons evaluating
+        the same interval compute *byte-identical* bounds and collide on
+        ``uq_digest_windows_schedule`` instead of each reserving a window of
+        its own.  Without it the window key would carry each process's own
+        ``now`` and the uniqueness constraint would never fire.
+        """
+        return math.floor(now / self.interval_seconds) * self.interval_seconds
+
+    def due_window(self, now: float, *, anchor: float) -> DigestWindow | None:
+        """The grid-aligned window that is due at ``now``, or ``None``.
+
+        ``anchor`` is where this generation's coverage currently ends: the
+        newest persisted window's end, or -- for a generation nothing has been
+        written for yet -- the boundary at which it was first observed.  §9's
+        "a configuration change starts a new schedule generation at the change
+        time" is exactly that second case: a new generation anchors at the
+        change and never reaches back over windows the old one owned.
+
+        A gap wider than one interval coalesces into a single ``catchup``
+        window bounded by the configured horizon, which is §8's "at most one
+        labelled catch-up message, never one per missed hour".
+        """
+        boundary = self.boundary_at(now)
+        if boundary <= anchor:
+            return None
+        if boundary - anchor <= self.interval_seconds:
+            return DigestWindow(since=anchor, until=boundary)
+        since = max(anchor, boundary - self.catchup_seconds)
+        return DigestWindow(since=since, until=boundary, catchup=True)
 
     def next_evaluation_at(self, now: float, *, last_window_end: float | None = None) -> float:
         """When the next evaluation is due, in epoch seconds."""

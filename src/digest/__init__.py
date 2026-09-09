@@ -14,6 +14,7 @@ rows, and it is kept separate so eligibility stays testable as a pure table.
 """
 
 from src.digest.aggregate import DigestResult, build_digest
+from src.digest.dispatch import DigestScheduleService, DigestTickReport
 from src.digest.eligibility import Eligibility, evaluate_eligibility
 from src.digest.facts import (
     CATEGORIES,
@@ -37,6 +38,8 @@ __all__ = [
     "DigestInputs",
     "DigestResult",
     "DigestSchedule",
+    "DigestScheduleService",
+    "DigestTickReport",
     "DigestWindow",
     "Eligibility",
     "WorkFact",

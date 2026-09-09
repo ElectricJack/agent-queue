@@ -355,6 +355,11 @@ class Orchestrator(
         # escalation surface", which never affects scheduling or the durable
         # escalation records themselves.
         self.escalation_delivery = None
+        # Hourly digest scheduler (discord-simplification §8).  Also wired by
+        # ``main.py``; ``None`` means no external routine surface.  Evaluation
+        # and delivery both live in the service, so nothing about the cycle
+        # depends on whether Discord is reachable.
+        self.digest_schedule = None
         # MCP server registry — populated from vault/mcp-servers/*.md and
         # vault/projects/*/mcp-servers/*.md on startup, kept current by the
         # vault watcher.  Resolves the ``list[str]`` of names on each
@@ -2572,6 +2577,17 @@ class Orchestrator(
                     await self.escalation_delivery.tick()
                 except Exception:
                     logger.warning("Escalation delivery tick failed", exc_info=True)
+
+            # 7d-ter. Hourly digest scheduler (discord-simplification §8):
+            # reserve and evaluate the due window, then deliver the ones that
+            # had something to say.  Escalations are pumped first above and
+            # the digest pump stands down while any are owed a send, which is
+            # §7's priority rule.  ``tick`` never raises.
+            if self.digest_schedule is not None:
+                try:
+                    await self.digest_schedule.tick()
+                except Exception:
+                    logger.warning("Digest schedule tick failed", exc_info=True)
 
             # 7e. Periodic orphan workflow check (Roadmap 7.5.6).
             # Detects workflows whose coordination playbook died and emits
