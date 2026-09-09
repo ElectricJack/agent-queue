@@ -901,8 +901,9 @@ async def test_clean_promotion_is_retained_attributed_pushed_and_reconciled(db, 
         assert expected_route.items() <= delivery["payload"].items()
 
 
+@pytest.mark.parametrize("pool_token", [False, True])
 async def test_conflict_resolution_push_reconcile_writes_original_receipt_and_events(
-    db, conflict_resolution_case, command_handler_factory
+    db, conflict_resolution_case, command_handler_factory, pool_token
 ):
     from src.commands.principal import principal_context
     from src.integration.promotion import PromotionService
@@ -914,7 +915,7 @@ async def test_conflict_resolution_push_reconcile_writes_original_receipt_and_ev
     handler.orchestrator.promotion_service = PromotionService(
         db, data_dir=case["data_dir"], git_manager=GitManager()
     )
-    principal = _resolution_principal()
+    principal = _resolution_principal(task_id=None if pool_token else "repair-task")
     reserve_args = {
         "intent_id": case["intent_id"],
         "operation_id": "resolution-op",
@@ -2390,3 +2391,148 @@ async def test_playbook_project_scope_cannot_be_mixed_with_another_promotion(
 
     assert result["outcome"] == "unauthorized"
     handler.orchestrator.promotion_service.prepare.assert_not_awaited()
+
+
+@pytest.mark.parametrize("mismatch", ["session", "instance", "project", "task"])
+async def test_pool_resolution_rejects_mismatched_live_authority(
+    db, conflict_resolution_case, mismatch
+):
+    from dataclasses import replace
+
+    from src.commands.principal import principal_context
+    from src.integration.promotion import PromotionService, PromotionTargetMoved
+
+    case = conflict_resolution_case
+    principal = _resolution_principal(task_id=None)
+    fields = {
+        "session": {"session_id": "unrelated-session"},
+        "instance": {"session_instance_token": "expired-instance"},
+        "project": {"project_id": "another-project"},
+        "task": {"task_id": "another-task"},
+    }
+    service = PromotionService(db, data_dir=case["data_dir"], git_manager=GitManager())
+    with (
+        principal_context(replace(principal, **fields[mismatch])),
+        pytest.raises(PromotionTargetMoved),
+    ):
+        await service.reserve_resolution(_resolution_request(case))
+
+
+async def test_http_pool_claim_token_resolves_and_pushes_conflict_resolution(
+    db, conflict_resolution_case, command_handler_factory
+):
+    """A pool worker's HTTP token carries no task id, but its claim is authority.
+
+    ``src/orchestrator/pools.py`` mints pool tokens with ``task_id=None``;
+    ``/api/execute`` forwards that scope unchanged, so the principal reaches
+    ``PromotionService`` without a fixed task.  The live held task must be
+    derived server-side from the session row and verified against the fence
+    owner, instance token, project and workspace -- not rejected as an
+    incomplete identity.
+    """
+    import httpx
+    from fastapi import FastAPI
+
+    from src.api import dependencies as deps
+    from src.api.auth import SessionTokenStore
+    from src.api.execute import router as execute_router
+    from src.api.middleware import RequestContextMiddleware, TokenAuthMiddleware
+    from src.integration.promotion import PromotionService
+    from src.models import Agent, AgentProfile, AgentState
+
+    case = conflict_resolution_case
+    # The repair delegate is a claimed pool task: agent BUSY on it, session
+    # lifecycle ``pool`` with the held task on the row, claim epochs aligned.
+    await db.upsert_profile(
+        AgentProfile(
+            id="repairer",
+            name="repairer",
+            harness="claude",
+            needs_workspace=False,
+            aq_commands=[
+                "integration_resolve_conflict",
+                "integration_push_conflict_resolution",
+            ],
+        )
+    )
+    await db.create_agent(Agent(id="repair-agent", name="repair-agent", profile_id="repairer"))
+    await db.update_agent(
+        "repair-agent", state=AgentState.BUSY, current_task_id="repair-task"
+    )
+    await db.update_task("repair-task", assigned_agent_id="repair-agent", claim_epoch=1)
+    async with db.immediate() as conn:
+        await conn.execute(
+            update(sessions)
+            .where(sessions.c.id == "resolution-session")
+            .values(lifecycle="pool", agent_id="repair-agent", last_claim_epoch=1)
+        )
+
+    handler = await command_handler_factory()
+    await handler.orchestrator.db.close()
+    handler.orchestrator.db = db
+    handler.orchestrator.promotion_service = PromotionService(
+        db, data_dir=case["data_dir"], git_manager=GitManager()
+    )
+    store = SessionTokenStore(db, ttl_hours=1)
+    token = await store.mint(
+        session_id="resolution-session",
+        session_instance_token="resolution-instance",
+        task_id=None,
+        project_id="project",
+    )
+    saved = (deps._orchestrator, deps._command_handler, deps._token_store)
+    deps._orchestrator = handler.orchestrator
+    deps._command_handler = handler
+    deps._token_store = store
+    app = FastAPI()
+    app.include_router(execute_router)
+    app.add_middleware(RequestContextMiddleware)
+    app.add_middleware(TokenAuthMiddleware)
+    headers = {"Authorization": f"Bearer {token}"}
+    try:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            reserved = await client.post(
+                "/api/execute",
+                headers=headers,
+                json={
+                    "command": "integration_resolve_conflict",
+                    "args": {
+                        "intent_id": case["intent_id"],
+                        "operation_id": "resolution-op",
+                        "resolved_head_sha": case["resolved_head"],
+                        "resolved_tree_sha": case["resolved_tree"],
+                        "repair_commit_shas": list(case["repair_commits"]),
+                        "fence": case["resolution_fence"],
+                    },
+                },
+            )
+            pushed = await client.post(
+                "/api/execute",
+                headers=headers,
+                json={
+                    "command": "integration_push_conflict_resolution",
+                    "args": {"intent_id": case["intent_id"], "fence": case["resolution_fence"]},
+                },
+            )
+    finally:
+        deps._orchestrator, deps._command_handler, deps._token_store = saved
+
+    assert reserved.status_code == 200, reserved.text
+    assert reserved.json()["result"]["outcome"] == "reserved", reserved.text
+    assert pushed.status_code == 200, pushed.text
+    assert pushed.json()["result"]["outcome"] == "pushed", pushed.text
+    assert (
+        _git(["ls-remote", "origin", "refs/heads/aq/parent"], case["work"]).split()[0]
+        == case["resolved_head"]
+    )
+    # The recorded repair identity is the session's live held task, derived
+    # on the server: the token itself never named one.
+    intent = await db.get_integration_promotion_intent(case["intent_id"])
+    assert intent["state"] == "resolution_reserved"
+    assert intent["resolution_task_id"] == "repair-task"
+    assert intent["resolution_session_id"] == "resolution-session"
+    assert intent["resolution_session_instance_token"] == "resolution-instance"
+    assert intent["resolution_push_evidence"]["repair_task_id"] == "repair-task"
+    assert intent["resolution_push_evidence"]["repair_session_id"] == "resolution-session"

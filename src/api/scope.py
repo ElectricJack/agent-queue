@@ -577,6 +577,21 @@ async def check_request_scope(
     task/session identity; granting queue access never grants operator commands
     or loosens the ownership checks for task mutations such as task_close.
     """
+    if (scope.kind == "session" and not scope.elevated and command in {
+        "integration_resolve_conflict", "integration_push_conflict_resolution",
+    }):
+        if await worker_branches_for_session(db, scope) is None:
+            return "out of scope: conflict resolution requires a live repair assignment"
+        session = await db.get_session(scope.session_id)
+        repair = await db.get_repair_filing_scope(session.task_id, session_id=scope.session_id)
+        if (repair is None or not repair["active"]
+                or repair["writer_kind"] != "repair_delegate"
+                or repair["target_kind"] != "parent"):
+            return "out of scope: conflict resolution requires a live parent repair delegate"
+        # The promotion service validates the exact intent, operation, workspace,
+        # instance and fence against this authenticated session before any write.
+        # Do not inject task/project fields into these strict command models.
+        return None
     if (
         scope.kind == "session"
         and not scope.elevated
