@@ -136,18 +136,20 @@ async def test_resolution_push_fence_upgrade_marks_legacy_reservation_unknown():
     finally:
         await conn.close()
 
-    upgraded = _alembic_pg(dsn, "upgrade", "a00000000005")
+    upgraded = _alembic_pg(dsn, "upgrade", "a00000000006")
     assert upgraded.returncode == 0, upgraded.stderr
     conn = await _pg_conn(dsn)
     try:
         row = await conn.fetchrow(
-            "SELECT state, resolution_push_started_at, resolution_head_sha, "
+            "SELECT state, resolution_push_started_at, resolution_recovery_evidence, "
+            "resolution_head_sha, "
             "resolution_fence_token FROM integration_promotion_intents "
             "WHERE id = 'receipt-71755ac2-3bca-5bfe-8221-11fd243860fc'"
         )
         assert dict(row) == {
             "state": "resolution_reserved",
             "resolution_push_started_at": 0.0,
+            "resolution_recovery_evidence": None,
             "resolution_head_sha": "e" * 40,
             "resolution_fence_token": 11,
         }

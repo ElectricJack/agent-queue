@@ -1941,6 +1941,11 @@ integration_promotion_intents = Table(
     # after the start fence was introduced; legacy reservations use the 0.0
     # unknown-start sentinel and remain deliberately ambiguous.
     Column("resolution_push_started_at", Float, nullable=True),
+    # An operator may turn a legacy unknown-start sentinel back into a new
+    # attempt only after observing that the exact expected old tip is still
+    # remote.  Keep that observation distinct from post-push evidence: the
+    # latter remains the receipt authority.
+    Column("resolution_recovery_evidence", JSON, nullable=True),
     Column("resolution_push_evidence", JSON, nullable=True),
     Column("remote_evidence", JSON, nullable=True),
     Column("committed_at", Float, nullable=True),
@@ -2001,6 +2006,7 @@ integration_promotion_intents = Table(
         "resolution_session_id IS NULL AND resolution_session_instance_token IS NULL AND "
         "resolution_workspace_id IS NULL AND resolution_fence_owner_id IS NULL AND "
         "resolution_fence_token IS NULL AND resolution_push_started_at IS NULL AND "
+        "resolution_recovery_evidence IS NULL AND "
         "resolution_push_evidence IS NULL) OR "
         "(resolution_head_sha IS NOT NULL AND resolution_tree_sha IS NOT NULL AND "
         "resolution_commit_shas IS NOT NULL AND resolution_operation_id IS NOT NULL AND "

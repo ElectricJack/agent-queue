@@ -68,9 +68,22 @@ aq system integration-reconcile-promotion \
 ```
 
 `applied` means the remote exactly matches the reserved head and the existing
-receipt path can complete. `not_applied` or `invariant_error` means the write
-remains uncertain; `aq integration resume operation81d0aaee-0c3a-482c-b04c-d3afe6631cbe`
-will deliberately return `ambiguous` and must not be used to replay the push.
+receipt path can complete. If it instead reports `not_applied` because the
+remote is still the receipt's immutable expected old target, revision
+`a00000000006` permits this narrowly bounded public recovery:
+
+```bash
+aq integration resume operation81d0aaee-0c3a-482c-b04c-d3afe6631cbe
+```
+
+The command requires the same live delegate session, claim epoch, workspace,
+branch owner and fence recorded by the receipt. It reads the exact remote tip
+under the retained-repository lock and records that old-tip observation before
+rearming the existing stage. The subsequent writer uses its ordinary
+expected-old → frozen-head push fence and receipt path; no writer, receipt or
+frozen resolution identity is replaced. A remote mismatch, unavailable remote,
+manual hold, changed ownership, duplicate owner, or any second unresolved
+intent returns `ambiguous` without changing the deadline or operation state.
 
 ### When production is already stamped with an orphan
 

@@ -105,6 +105,27 @@ class PromotionService:
         self.crash_hook = crash_hook
         self.clock = clock
 
+    async def observe_legacy_resolution_target(self, intent: dict[str, Any]) -> str | None:
+        """Read the exact remote target for an operator's legacy recovery.
+
+        This does not mutate Git or the intent.  ``None`` deliberately folds
+        a missing ref and transport failure into an untrusted observation;
+        recovery controls can then retain the legacy reservation as ambiguous.
+        """
+        try:
+            repository = await self._resolve_repository(intent["repository_id"])
+            self._assert_frozen_repository(intent, repository)
+            await self._ensure_retained_repository(repository)
+            async with self.git.arepository_transaction(str(repository.retained_git_dir)):
+                remote = await self.git.als_remote_ref(
+                    str(repository.retained_git_dir), intent["target_branch"]
+                )
+        except PromotionError:
+            return None
+        if remote.state is not RemoteRefState.PRESENT:
+            return None
+        return remote.oid
+
     async def prepare(self, request: PromotionInput) -> PromotionValue:
         route = await self._validated_route(request)
         domain_key = self._domain_key(request)

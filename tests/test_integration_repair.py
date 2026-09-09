@@ -1484,8 +1484,9 @@ async def test_human_resume_rearms_exact_live_unstarted_resolution_writer(db):
     assert stage_after_duplicate["deadline_at"] == 260.0
 
     # The migration's 0.0 legacy-unknown sentinel intentionally turns the
-    # otherwise identical state into an ambiguity: before the marker existed,
-    # the remote write may have begun and must be reconciled, not replayed.
+    # otherwise identical state into an ambiguity without a fresh, exact
+    # remote observation.  Missing instrumentation alone is never proof that
+    # a write did not begin.
     async with db.immediate() as conn:
         await conn.execute(
             update(integration_branch_owners)
@@ -1513,6 +1514,54 @@ async def test_human_resume_rearms_exact_live_unstarted_resolution_writer(db):
     ambiguous = await IntegrationControlService(db, clock=lambda: 202.0).resume("operation")
     assert ambiguous["outcome"] == "ambiguous"
     assert {blocker["ref"] for blocker in ambiguous["blockers"]} == {"promotion", "writer"}
+
+    mismatched = await IntegrationControlService(
+        db,
+        clock=lambda: 202.5,
+        legacy_resolution_observer=AsyncMock(return_value="d" * 40),
+    ).resume("operation")
+    assert mismatched["outcome"] == "ambiguous"
+    async with db._engine.connect() as conn:
+        still_legacy = (
+            await conn.execute(
+                select(integration_promotion_intents.c.resolution_push_started_at).where(
+                    integration_promotion_intents.c.id == intent["id"]
+                )
+            )
+        ).scalar_one()
+    assert still_legacy == 0.0
+
+    # A local-operator resume may recover the actual legacy shape only after
+    # observing its frozen old remote tip.  This retains the same writer,
+    # fence and intent, records the observation, and opens a fresh deadline;
+    # a remote mismatch remains the ambiguity above and writes nothing.
+    observed_old = AsyncMock(return_value="c" * 40)
+    legacy_resumed = await IntegrationControlService(
+        db, clock=lambda: 203.0, legacy_resolution_observer=observed_old
+    ).resume("operation")
+    assert legacy_resumed == {
+        "outcome": "resumed", "operation_id": "operation", "project_id": "p",
+        "state": "escalated", "stage": 1, "deadline_at": 263.0,
+    }
+    observed_old.assert_awaited_once()
+    async with db._engine.connect() as conn:
+        authorized = (
+            await conn.execute(
+                select(integration_promotion_intents).where(
+                    integration_promotion_intents.c.id == intent["id"]
+                )
+            )
+        ).mappings().one()
+    assert authorized["resolution_push_started_at"] is None
+    assert authorized["resolution_push_evidence"] is None
+    assert authorized["resolution_recovery_evidence"] == {
+        "kind": "legacy_resolution_remote_expected_target",
+        "observed_remote_sha": "c" * 40,
+        "expected_target": "c" * 40,
+        "resolution_head_sha": "e" * 40,
+        "operation_id": "operation",
+        "observed_at": 203.0,
+    }
 
 
 async def test_repair_dispatch_command_derives_current_stage_with_real_service(

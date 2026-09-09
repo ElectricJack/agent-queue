@@ -389,6 +389,47 @@ class IntegrationDeliveryQueriesMixin:
             raise ValueError("resolution push marker changed during preflight")
         return intent | {"resolution_push_started_at": started_at}
 
+    async def authorize_legacy_resolution_recovery_on(
+        self, conn, intent_id: str, evidence: dict[str, Any]
+    ) -> dict:
+        """Turn one legacy unknown-start reservation into a newly fenced attempt.
+
+        The caller has already observed the immutable ``expected_target`` on
+        the remote while holding the repair's exact ownership proof.  The
+        sentinel is cleared only once and the observation remains durable, so
+        a restart never mistakes an uninstrumented reservation for a normal
+        post-marker NULL.
+        """
+        intent = await self._locked_intent(conn, intent_id)
+        if (
+            intent["state"] != "resolution_reserved"
+            or intent["resolution_push_started_at"] != 0.0
+            or intent["resolution_push_evidence"] is not None
+            or intent["resolution_recovery_evidence"] is not None
+        ):
+            return intent
+        result = await conn.execute(
+            update(integration_promotion_intents)
+            .where(
+                integration_promotion_intents.c.id == intent_id,
+                integration_promotion_intents.c.state == "resolution_reserved",
+                integration_promotion_intents.c.resolution_push_started_at == 0.0,
+                integration_promotion_intents.c.resolution_push_evidence.is_(None),
+                integration_promotion_intents.c.resolution_recovery_evidence.is_(None),
+            )
+            .values(
+                resolution_push_started_at=None,
+                resolution_recovery_evidence=evidence,
+                updated_at=time.time(),
+            )
+        )
+        if result.rowcount != 1:
+            raise ValueError("legacy resolution recovery changed during authorization")
+        return intent | {
+            "resolution_push_started_at": None,
+            "resolution_recovery_evidence": evidence,
+        }
+
     async def mark_integration_promotion_prepared(
         self, intent_id: str, *, prepared_sha: str, recovery_ref: str
     ) -> dict:

@@ -8,6 +8,7 @@ there are intentionally no optimistic success stubs.
 from __future__ import annotations
 
 import inspect
+import json
 import time
 from typing import Any
 
@@ -281,6 +282,9 @@ class IntegrationCommandsMixin:
             self.db,
             scheduler=self._integration_scheduler(),
             cleanup_service=getattr(self.orchestrator, "integration_cleanup_service", None),
+            legacy_resolution_observer=(
+                self._integration_promotion_service().observe_legacy_resolution_target
+            ),
         )
 
     @staticmethod

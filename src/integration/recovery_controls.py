@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import time
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from typing import Any
 from uuid import uuid4
 
@@ -30,12 +30,22 @@ from src.integration.models import RepairPolicy
 from src.integration.outbox import enqueue_integration_event
 
 
+LegacyResolutionObserver = Callable[[dict[str, Any]], Awaitable[str | None]]
+
+
 class IntegrationRecoveryControls:
     """Resume, abort, and retry only when no external mutation is ambiguous."""
 
-    def __init__(self, db: Any, *, clock: Callable[[], float] = time.time) -> None:
+    def __init__(
+        self,
+        db: Any,
+        *,
+        clock: Callable[[], float] = time.time,
+        legacy_resolution_observer: LegacyResolutionObserver | None = None,
+    ) -> None:
         self.db = db
         self.clock = clock
+        self.legacy_resolution_observer = legacy_resolution_observer
 
     async def resume(self, operation_id: str) -> dict[str, Any]:
         now = self.clock()
@@ -52,6 +62,10 @@ class IntegrationRecoveryControls:
             live_resolution = await self._safe_live_resolution_resume_on(
                 conn, operation, stage, project_id
             )
+            if live_resolution is None:
+                live_resolution = await self._safe_legacy_resolution_resume_on(
+                    conn, operation, stage, project_id, now
+                )
             blockers = await self._ambiguous_writes_on(
                 conn,
                 operation,
@@ -277,7 +291,9 @@ class IntegrationRecoveryControls:
         operation: dict[str, Any],
         stage: dict[str, Any],
         project_id: str,
-    ) -> dict[str, str] | None:
+        *,
+        allow_legacy_marker: bool = False,
+    ) -> dict[str, Any] | None:
         """Recognize one proven, never-started resolution push.
 
         This is intentionally narrower than ordinary resume.  It admits no
@@ -410,14 +426,70 @@ class IntegrationRecoveryControls:
             and intent["resolution_workspace_id"] == workspace["id"]
             and intent["resolution_fence_owner_id"] == repair_task_id
             and intent["resolution_fence_token"] == owner["fence_token"]
-            and intent["resolution_push_started_at"] is None
             and intent["resolution_push_evidence"] is None
         ):
+            return None
+        if allow_legacy_marker:
+            if (
+                intent["resolution_push_started_at"] != 0.0
+                or intent["resolution_recovery_evidence"] is not None
+            ):
+                return None
+        elif intent["resolution_push_started_at"] is not None:
             return None
         # The recovery exception is for these exact durable rows only.  A
         # second owner for the same task on another ref is still a writer and
         # a second intent remains a promotion blocker.
-        return {"writer_id": str(owner["id"]), "promotion_intent_id": str(intent["id"])}
+        proof: dict[str, Any] = {
+            "writer_id": str(owner["id"]),
+            "promotion_intent_id": str(intent["id"]),
+        }
+        if allow_legacy_marker:
+            proof["intent"] = dict(intent)
+        return proof
+
+    async def _safe_legacy_resolution_resume_on(
+        self,
+        conn: Any,
+        operation: dict[str, Any],
+        stage: dict[str, Any],
+        project_id: str,
+        now: float,
+    ) -> dict[str, str] | None:
+        """Authorize one observed-old legacy reservation, or leave it ambiguous.
+
+        A pre-marker ``0.0`` is not evidence that a push never began.  The
+        public resume path may only replace it after an authenticated remote
+        read says that this intent's immutable expected old tip is still
+        present.  Any old process that reaches the remote can only perform
+        the same expected-old -> frozen-head CAS; a different/unknown head is
+        retained as ambiguity rather than converted into a new attempt.
+        """
+        if self.legacy_resolution_observer is None:
+            return None
+        proof = await self._safe_live_resolution_resume_on(
+            conn, operation, stage, project_id, allow_legacy_marker=True
+        )
+        if proof is None:
+            return None
+        intent = proof.pop("intent")
+        observed = await self.legacy_resolution_observer(intent)
+        if observed != intent["expected_target"]:
+            return None
+        evidence = {
+            "kind": "legacy_resolution_remote_expected_target",
+            "observed_remote_sha": observed,
+            "expected_target": intent["expected_target"],
+            "resolution_head_sha": intent["resolution_head_sha"],
+            "operation_id": operation["id"],
+            "observed_at": now,
+        }
+        authorized = await self.db.authorize_legacy_resolution_recovery_on(
+            conn, intent["id"], evidence
+        )
+        if authorized.get("resolution_recovery_evidence") != evidence:
+            return None
+        return proof
 
     @staticmethod
     async def _ambiguous_writes_on(

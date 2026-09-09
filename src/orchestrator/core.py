@@ -1539,6 +1539,7 @@ class Orchestrator(
         from src.integration.branch_discard import BranchDiscardService
         from src.integration.cleanup import IntegrationCleanupService
         from src.integration.main_promotion import RootPromotionService
+        from src.integration.promotion import PromotionService
         from src.integration.release import IntegrationReleaseService
         from src.integration.repair import RepairService
         from src.integration.scheduler import IntegrationScheduler
@@ -1635,6 +1636,11 @@ class Orchestrator(
             app_client_factory=self.integration_app_client_factory,
             attestation_resolver=self.integration_attestation_resolver,
         )
+        self.promotion_service = PromotionService(
+            self.db,
+            data_dir=self.config.data_dir,
+            git_manager=self.git,
+        )
         # Removes the branches an operator explicitly asked to discard when
         # deleting a task.  Its work is recorded on the retired origin row, so
         # it survives a restart and needs no other authority.
@@ -1652,6 +1658,7 @@ class Orchestrator(
             external_preflight=lambda project_id, repository_id: daemon_functional_preflight(
                 self, project_id, repository_id
             ),
+            legacy_resolution_observer=self.promotion_service.observe_legacy_resolution_target,
         )
 
         async def reconcile_root_intent(row: dict[str, Any], _now: float):
