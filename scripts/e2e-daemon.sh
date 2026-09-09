@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # Start / stop / inspect the isolated e2e daemon.
 #
-#   scripts/e2e-daemon.sh start    # background, waits for /api/health
+#   scripts/e2e-daemon.sh start    # background, waits until /ready is ready
 #   scripts/e2e-daemon.sh stop     # SIGTERM, then SIGKILL after a grace
-#   scripts/e2e-daemon.sh status
+#   scripts/e2e-daemon.sh status   # non-zero unless the schema is usable
 #   scripts/e2e-daemon.sh logs [n]
 #
 # The daemon runs from this worktree (`python3 -m src.main <config>`) with
@@ -39,14 +39,45 @@ running_pid() {
     echo "$pid"
 }
 
+# Liveness only.  `/api/health` is a static stub that answers 200 as soon as
+# uvicorn is listening; it never touches the database.  Useful to tell "a
+# daemon owns this port" from "nothing is there", and useless as a readiness
+# gate — see `ready_ok`.
 health_ok() {
-    curl -fsS --max-time 3 "$AQ_E2E_API_URL/api/health" >/dev/null 2>&1
+    curl -fsS --max-time 10 "$AQ_E2E_API_URL/api/health" >/dev/null 2>&1
+}
+
+# Readiness: the daemon can actually query its schema.  This is what `start`
+# and `status` gate on, because a daemon whose schema setup failed, or whose
+# database was dropped under it by a concurrent `e2e-env.sh --reset`, keeps
+# serving `/api/health` while every scenario fails with `relation "projects"
+# does not exist` (task vivid-rapids).
+#
+# Short timeout: this is the conditional the start loop polls once a second,
+# and a daemon that has lost its database answers slowly (every check
+# re-opens a connection and fails), so waiting the probe's full default here
+# would stretch the startup budget.
+ready_ok() {
+    python3 "$REPO_ROOT/scripts/e2e/probe.py" --url "$AQ_E2E_API_URL" --quiet --timeout 10
+}
+
+# The same probe, printing what is wrong and what to do about it.  Runs with
+# the probe's full timeout: this one is allowed to wait for the diagnosis.
+ready_report() {
+    python3 "$REPO_ROOT/scripts/e2e/probe.py" --url "$AQ_E2E_API_URL"
 }
 
 cmd_start() {
     if pid="$(running_pid)"; then
-        echo "already running (pid $pid) at $AQ_E2E_API_URL"
-        return 0
+        if ready_ok; then
+            echo "already running (pid $pid) at $AQ_E2E_API_URL"
+            return 0
+        fi
+        # Reporting this as a successful start is how a broken world reaches
+        # the scenarios: the caller believes it has a daemon and runs anyway.
+        echo "a daemon is running (pid $pid) but is not usable:" >&2
+        ready_report >&2 || true
+        return 1
     fi
     if [ ! -f "$E2E_CONFIG" ]; then
         echo "no config at $E2E_CONFIG — run scripts/e2e-env.sh first" >&2
@@ -77,8 +108,8 @@ cmd_start() {
 
     local waited=0
     while [ "$waited" -lt "$STARTUP_TIMEOUT" ]; do
-        if health_ok; then
-            echo "==> healthy after ${waited}s: $AQ_E2E_API_URL (pid $(cat "$E2E_PID_FILE"))"
+        if ready_ok; then
+            echo "==> ready after ${waited}s: $AQ_E2E_API_URL (pid $(cat "$E2E_PID_FILE"))"
             # Projects live in the database, so they cannot be part of
             # e2e-env.sh's build step.  Doing it here means both tiers find
             # them: Tier 1's scenarios assume them, and a Tier 2 operator
@@ -104,7 +135,8 @@ cmd_start() {
         sleep 1
         waited=$((waited + 1))
     done
-    echo "daemon did not become healthy within ${STARTUP_TIMEOUT}s" >&2
+    echo "daemon did not become ready within ${STARTUP_TIMEOUT}s" >&2
+    ready_report >&2 || true
     tail -n 40 "$E2E_LOG" >&2 || true
     return 1
 }
@@ -136,16 +168,26 @@ cmd_stop() {
 
 cmd_status() {
     local pid
-    if pid="$(running_pid)"; then
-        if health_ok; then
-            echo "running   pid $pid   healthy at $AQ_E2E_API_URL"
-        else
-            echo "running   pid $pid   NOT answering at $AQ_E2E_API_URL"
-        fi
-    else
+    if ! pid="$(running_pid)"; then
         echo "stopped   ($E2E_PID_FILE absent or stale)"
         return 1
     fi
+    if ready_ok; then
+        echo "running   pid $pid   ready at $AQ_E2E_API_URL"
+        return 0
+    fi
+    # Non-zero for both remaining cases: `e2e-smoke.sh` uses this exit code to
+    # decide whether it may reuse a daemon somebody else started, and a
+    # daemon that cannot reach its schema is not reusable.
+    if health_ok; then
+        echo "running   pid $pid   answering but NOT usable at $AQ_E2E_API_URL"
+        # On stdout: `status` is a reporting command, so its whole answer —
+        # including why — belongs in the same stream as the summary line.
+        ready_report 2>&1 || true
+    else
+        echo "running   pid $pid   NOT answering at $AQ_E2E_API_URL"
+    fi
+    return 1
 }
 
 cmd_logs() {

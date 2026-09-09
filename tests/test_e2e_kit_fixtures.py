@@ -252,13 +252,17 @@ def test_stateful_scenarios_cover_the_audited_mutation_families():
     smoke = _load_smoke()
     by_key = {scenario.key: scenario for scenario in smoke.SCENARIOS}
 
-    assert set(by_key) == {f"S{number}" for number in range(1, 15)}
+    # Fifteen since S15 (development delivery) landed — the docs, the runner's
+    # own banner and scripts.md all say fifteen; this ratchet was the one place
+    # left saying fourteen.
+    assert set(by_key) == {f"S{number}" for number in range(1, 16)}
     assert by_key["S9"].families == ("task CRUD/rollback",)
     assert set(by_key["S10"].families) == {"workspace CRUD", "file/git/note CRUD"}
     assert by_key["S11"].families == ("message CRUD",)
     assert by_key["S12"].families == ("MCP registry CRUD",)
     assert by_key["S13"].families == ("plugin extension startup",)
     assert by_key["S14"].families == ("graph/vault",)
+    assert by_key["S15"].families == ("integration",)
 
 
 def test_e2e_env_generates_an_opt_in_plugin_entry_point_and_local_message_sink():
