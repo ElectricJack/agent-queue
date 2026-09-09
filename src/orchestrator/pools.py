@@ -670,8 +670,8 @@ class PoolsMixin:
             if mismatch:
                 logger.info("pool %s/%s cannot start: %s", project.id, profile.id, mismatch)
                 return None
-            # Only the fallback grows the roster. A persisted deletion opts
-            # out of automatic growth; compatible definitions were tried above.
+            # Only the fallback grows the roster; compatible definitions were
+            # tried above. Deleted identities do not constrain pool capacity.
             if not await self.db.create_automatic_agent(agent):
                 return None
             if not await self.db.reserve_idle_agent(agent.id):

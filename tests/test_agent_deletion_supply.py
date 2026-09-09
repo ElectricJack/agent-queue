@@ -1,12 +1,12 @@
-"""Manual roster deletion must not be undone by automatic worker supply."""
+"""Worker deletion preserves identity history without blocking fresh supply."""
 
 import asyncio
+from dataclasses import replace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from dataclasses import replace
 
-from src.config import DatabaseConfig, AppConfig, DiscordConfig
+from src.config import AppConfig, DatabaseConfig, DiscordConfig
 from src.database import Database
 from src.models import Agent, AgentProfile, Project, RepoSourceType, Task, TaskStatus, Workspace
 from src.orchestrator import Orchestrator
@@ -55,9 +55,8 @@ async def demand(db, profile="worker"):
     )
 
 
-async def deleted_worker(db):
-    # It is a global worker: demand need not use its saved profile.
-    await db.create_agent(Agent(id="deleted", name="Personal", profile_id="personal"))
+async def deleted_worker(db, profile="personal"):
+    await db.create_agent(Agent(id="deleted", name="Deleted", profile_id=profile))
     assert await db.soft_delete_agent("deleted")
 
 
@@ -92,16 +91,17 @@ async def test_fresh_registry_keeps_task_bootstrap(db):
     assert len(await db.list_agents()) == 1
 
 
-async def test_deleted_worker_is_not_replaced_for_another_profile_after_restart(db, tmp_path):
+async def test_deleted_identity_stays_deleted_while_same_profile_regrows_after_restart(db, tmp_path):
     await demand(db)
-    await deleted_worker(db)
+    await deleted_worker(db, "worker")
     restarted = Database(lease_dsn("supply.db"))
     await restarted.initialize()
     try:
-        for _ in range(2):
-            assert not (await AgentReconciler(restarted).reconcile()).created
-        assert await restarted.list_agents() == []
-        assert len(await restarted.list_agents(include_deleted=True)) == 1
+        assert (await AgentReconciler(restarted).reconcile()).created == [("p", "worker")]
+        assert not (await AgentReconciler(restarted).reconcile()).created
+        assert len(await restarted.list_agents()) == 1
+        assert (await restarted.get_agent("deleted")).deleted_at is not None
+        assert len(await restarted.list_agents(include_deleted=True)) == 2
     finally:
         await restarted.close()
 
@@ -123,13 +123,14 @@ async def test_fresh_registry_keeps_pool_bootstrap(orch, db):
     assert len(await db.list_agents()) == 1
 
 
-async def test_pool_fallback_does_not_replace_a_deleted_global_worker(orch, db):
+async def test_pool_replenishes_deleted_same_profile_worker_with_new_identity(orch, db):
     await demand(db, "pool-worker")
-    await deleted_worker(db)
+    await deleted_worker(db, "pool-worker")
     await orch._reconcile_pools()
     await orch._reconcile_pools()
-    assert await db.list_agents() == []
-    assert await db.list_sessions(lifecycle="pool") == []
+    assert len(await db.list_agents()) == 1
+    assert len(await db.list_sessions(lifecycle="pool")) == 1
+    assert (await db.get_agent("deleted")).deleted_at is not None
 
 
 async def test_pool_reuses_remaining_definition_after_deletion(orch, db):
@@ -144,7 +145,7 @@ async def test_pool_reuses_remaining_definition_after_deletion(orch, db):
 
 
 async def test_automatic_supply_waits_for_in_flight_deletion(db, monkeypatch):
-    await db.create_agent(Agent(id="original", name="Original", profile_id="personal"))
+    await db.create_agent(Agent(id="original", name="Original", profile_id="worker"))
     locked = asyncio.Event()
     release = asyncio.Event()
     lock_roster = db._lock_agent_roster_on
@@ -169,5 +170,29 @@ async def test_automatic_supply_waits_for_in_flight_deletion(db, monkeypatch):
     finally:
         release.set()
     assert await deletion
-    assert not await creation
-    assert await db.list_agents() == []
+    assert await creation
+    assert [a.id for a in await db.list_agents()] == ["replacement"]
+    assert (await db.get_agent("original")).deleted_at is not None
+
+
+async def test_deleted_unrelated_profile_does_not_block_pool_growth(orch, db):
+    await demand(db, "pool-worker")
+    await deleted_worker(db, "personal")
+    await orch._reconcile_pools()
+    sessions = await db.list_sessions(lifecycle="pool")
+    assert len(sessions) == 1
+    assert sessions[0].profile_id == "pool-worker"
+    assert (await db.get_agent("deleted")).deleted_at is not None
+
+
+async def test_unrelated_deletion_does_not_block_supply_after_restart(db):
+    await demand(db)
+    await deleted_worker(db, "personal")
+    restarted = Database(lease_dsn("supply.db"))
+    await restarted.initialize()
+    try:
+        assert (await AgentReconciler(restarted).reconcile()).created == [("p", "worker")]
+        assert len(await restarted.list_agents()) == 1
+        assert (await restarted.get_agent("deleted")).deleted_at is not None
+    finally:
+        await restarted.close()

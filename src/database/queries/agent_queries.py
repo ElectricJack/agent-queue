@@ -48,25 +48,17 @@ class AgentQueryMixin:
         )
 
     async def _lock_agent_roster_on(self, conn) -> None:
-        """Serialize automatic growth with deletion; SQLite uses BEGIN IMMEDIATE."""
+        """Serialize automatic growth with deletion using a PostgreSQL advisory lock."""
         await conn.execute(select(func.pg_advisory_xact_lock(0x4151464C, 0)))
 
     async def create_automatic_agent(self, agent: Agent) -> bool:
-        """Bootstrap capacity only until the user manually sizes the roster.
+        """Create fresh capacity without resurrecting deleted worker identities.
 
-        Any worker tombstone records that decision across restarts and profile
-        changes. Existing definitions remain reusable; explicit Add Agent is
-        unaffected. Check and insertion share the deletion transaction fence.
+        Pool bounds and demand govern growth. A worker tombstone records only
+        that identity's deletion, not a persistent scaling policy.
         """
         async with self.immediate() as conn:
             await self._lock_agent_roster_on(conn)
-            deleted = await conn.scalar(
-                select(agents.c.id)
-                .where(agents.c.role == "worker", agents.c.deleted_at.is_not(None))
-                .limit(1)
-            )
-            if deleted is not None:
-                return False
             await self._insert_agent_on(conn, agent)
             return True
 

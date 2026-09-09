@@ -585,18 +585,12 @@ Every repair writes a `pool.agent_repaired` event, so
 `aq system get-recent-events --event-type pool.agent_repaired` still answers
 "why is this worker RETIRED?" long after the doctor run has scrolled away.
 
-> **Do not `aq agent delete` worker rows to "clean up" after a cutover.**
-> `create_automatic_agent` refuses to insert *any* new automatic worker while
-> a single soft-deleted `role='worker'` row exists — the tombstone is how the
-> roster records "the operator sizes this by hand now"
-> (`src/database/queries/agent_queries.py:49`). One deletion therefore caps the
-> fleet permanently at whatever `IDLE` definitions already exist:
-> `_launch_pool_session` can still *reuse* them, but it can never create
-> another one, and a pool with nothing left to reuse silently stops growing.
-> Retiring a row (`state=RETIRED`) or disabling it (`aq agent edit --no-enabled`)
-> has no such effect. Prefer leaving redundant fixed rows `IDLE` — pools reuse
-> compatible idle definitions regardless of which profile originally created
-> them, so yesterday's push agents become today's pool capacity for free.
+Deleting a worker removes that identity from the usable roster while preserving
+its history. It does not disable automatic pool growth: when queued demand and
+pool bounds allow it, AQ can create a new worker identity. Existing compatible
+idle workers are reused first. To reduce capacity persistently, change the pool's
+`max_active` bound or disable the pool; deleting individual workers is not a
+scaling policy. Live-session and ownership checks still prevent unsafe deletion.
 
 ---
 

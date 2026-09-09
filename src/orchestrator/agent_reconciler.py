@@ -178,12 +178,11 @@ class AgentReconciler:
                 if mismatch:
                     report.skipped.append((project.id, mismatch))
                     continue
-                # A deletion means the user sized this global roster. Keep
-                # reusing its workers, but never grow it back automatically;
-                # untouched registries retain their normal lazy bootstrap.
+                # Create a fresh identity when existing workers cannot serve demand.
+                # Deleted identities remain historical records, not scaling policy.
                 if not await self._db.create_automatic_agent(agent):
                     report.skipped.append(
-                        (project.id, "roster was manually sized; add an agent explicitly")
+                        (project.id, "automatic worker creation declined")
                     )
                     break
                 agents.append(agent)
