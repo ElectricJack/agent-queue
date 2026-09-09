@@ -247,12 +247,17 @@ class IntegrationAttestationService:
                             tuple(observed.get("evidence_ids") or ()),
                         )
                     return observed
-                await RepairService(self.db, clock=self.clock).resume_root_collection(
-                    candidate.operation_id,
-                    candidate.batch_id,
-                    candidate.revision,
-                    candidate.candidate_sha,
-                )
+            # An earlier observation may already have persisted exact green
+            # evidence before a retry reaches us.  Re-run only the guarded
+            # collector continuation in that case too: it is a no-op unless
+            # the current candidate is exact-green and the stage-one delegate
+            # is still merely an unattached reservation.
+            await RepairService(self.db, clock=self.clock).resume_root_collection(
+                candidate.operation_id,
+                candidate.batch_id,
+                candidate.revision,
+                candidate.candidate_sha,
+            )
             root_subject = RootAttestationSubject(
                 repository_numeric_id=pending["repository_numeric_id"],
                 repository_full_name=pending["repository_full_name"],
