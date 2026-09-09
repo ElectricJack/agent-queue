@@ -302,3 +302,42 @@ an unmet dependency. Amber-crest is now assigned and working on reused-slot
 historical-claim recovery. Sound-apex remains queued for first-resume continuation.
 Neither original epic nor all local AQ fixes have reached final reviewed main
 promotion; hundreds/day throughput remains unverified.
+
+
+## Live capacity recovery, root resume, and Matter assignment
+
+Pool rebalancing27653d02 addresses idle workers stranded in another project
+when fleet-wide supply equals demand. It honors warm floors, destination
+capacity/quarantine/caps, grace and drain budget, and leaves replacement starts
+to normal sizing.92 focused pool tests passed; the additional reconciler
+relocation regression passed. Required isolated real-daemon swarm run passed
+8/8 scenarios, log /tmp/aq-pool-rebalance-e2e.log; its daemon and private database
+were cleaned up. Ruff comparison found no new diagnostics in the changed code;
+existing lint debt is not claimed clean.
+
+Applied amber-crest e7ec6005 as02ca0e24 and operation-identity review guard7391eeac.
+104 repair/handoff tests and2 negative ownership tests passed. Public root resume
+succeeded at deadline1788946538.1471775, retaining the bounded stage and task.
+Old ff7c0266 claim cleared; ws-hidden-hall remained assigned to successor
+sharp-beacon. Existing root repair task is READY pending capacity, not delivered.
+Operator fixes through7391eeac are published at aq/operator-reliability-20260909;
+AQ swift-journey owns reviewed train delivery. No direct main push occurred.
+
+Applied clear-quest32933171 asb79c9e10;107 rollout/contracts/hierarchy tests passed.
+Loaded via restart PID230035. Public reconcile-unmaterialized succeeded at
+Matter generation6 and bound all15 task records. Origins were verified against
+remote main84408b3c01b41d834c86d8b1330d920e43c968f9, not the unpublished local main.
+The formerly idle outrider worker drained and the same global agent87428fad3069
+was assigned to sharp-nexus in Matter session1927290f-4adf-4ce7-bb88-43ffae12fa88.
+Keen-harbor.12 is now IN_PROGRESS; noble-ridge has6/12 children completed.
+
+Correction to prior gating descriptions: a manual pause of an already-released
+container preserves descendant eligibility. Both entry tasks nimble-dune.1 and
+smart-dune.1 are now explicitly PAUSED, in addition to their containers. Resume
+them only after baseline review, exact candidate CI and promotion are verified.
+
+Sharp-beacon is implementing recovery for keen-harbor expiry between resolution
+reservation and push (head5f41738e remains unpublished). Calm-dune tracks another
+restart gap: completed keen-harbor.8 still has an attached pool claim, consuming
+capacity. Sound-apex covers first-human-resume conflict continuation. Full final
+reviewed delivery and hundreds/day capacity proof remain incomplete.
