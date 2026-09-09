@@ -335,7 +335,7 @@ async def test_repeated_events_and_a_second_daemon_produce_one_post_and_one_thre
     await first.tick()
 
     assert sink.calls.count("post_root") == 1
-    assert sink.calls.count("open_thread") == 1
+    assert sink.calls.count("ensure_thread") == 1
     deliveries = await db.list_escalation_deliveries("esc-1")
     roots = [row for row in deliveries if row["kind"] == "root"]
     assert len(roots) == 1
@@ -366,7 +366,7 @@ async def test_restart_rebinds_from_stored_ids_rather_than_reposting(db):
 async def test_partial_root_failure_creates_only_the_missing_thread_on_retry(db):
     await make_incident(db)
     sink = SinkTransport()
-    sink.faults.append(("open_thread", TransportRetryable("gateway hiccup")))
+    sink.faults.append(("ensure_thread", TransportRetryable("gateway hiccup")))
     clock = Clock()
     service = make_service(db, sink, clock=clock)
 
@@ -379,7 +379,7 @@ async def test_partial_root_failure_creates_only_the_missing_thread_on_retry(db)
     clock.advance(120.0)
     await service.tick()
     assert sink.calls.count("post_root") == 1
-    assert sink.calls.count("open_thread") == 2
+    assert sink.calls.count("ensure_thread") == 2
     row = (await db.list_escalation_deliveries("esc-1"))[0]
     assert row["status"] == "sent" and row["thread_id"]
 
@@ -410,6 +410,61 @@ async def test_ambiguous_send_is_reconciled_from_history_instead_of_reposting(db
     row = (await db.list_escalation_deliveries("esc-1"))[0]
     assert row["status"] == "sent"
     assert len([m for m in sink.messages.values() if m.thread_id is None]) == 1
+
+
+async def test_an_opener_that_lands_ambiguously_is_not_posted_twice(db):
+    """Thread creation and the opener are separate sends; only one opener."""
+    await make_incident(db)
+    sink = SinkTransport()
+    clock = Clock()
+    service = make_service(db, sink, clock=clock)
+
+    original_post = sink.post_thread_message
+
+    async def ambiguous_opener(*, thread_id: str, content: str):
+        sink.record(thread_id, content, thread_id=thread_id)  # it really did land
+        raise TransportAmbiguous("timed out waiting for the response")
+
+    sink.post_thread_message = ambiguous_opener  # type: ignore[method-assign]
+    await service.tick()
+    row = (await db.list_escalation_deliveries("esc-1"))[0]
+    assert row["status"] == "retry" and "TransportAmbiguous" in row["last_error"]
+    # The thread binding is durable even though the opener is unconfirmed, so
+    # the retry reconciles inside that thread instead of making a second one.
+    assert row["root_message_id"] and row["thread_id"]
+
+    sink.post_thread_message = original_post  # type: ignore[method-assign]
+    clock.advance(120.0)
+    await service.tick()
+
+    assert sink.calls.count("post_root") == 1
+    assert len(sink.threads) == 1
+    row = (await db.list_escalation_deliveries("esc-1"))[0]
+    assert row["status"] == "sent"
+    openers = [m for m in sink.messages.values() if m.thread_id == row["thread_id"]]
+    assert len(openers) == 1
+
+
+async def test_an_unreconcilable_opener_is_unknown_rather_than_repeated(db):
+    """History cannot confirm the opener: mark it unknown, never repeat it."""
+    await make_incident(db)
+    sink = SinkTransport()
+    clock = Clock()
+    service = make_service(db, sink, clock=clock)
+
+    async def ambiguous_opener(*, thread_id: str, content: str):
+        raise TransportAmbiguous("timed out waiting for the response")
+
+    sink.post_thread_message = ambiguous_opener  # type: ignore[method-assign]
+    await service.tick()
+    clock.advance(120.0)
+    await service.tick()
+
+    row = (await db.list_escalation_deliveries("esc-1"))[0]
+    assert row["status"] == "unknown"
+    assert "nothing was reposted" in row["last_error"]
+    assert sink.calls.count("post_root") == 1
+    assert [m for m in sink.messages.values() if m.thread_id] == []
 
 
 async def test_unreconcilable_ambiguity_is_recorded_unknown_not_reposted(db):
@@ -670,8 +725,8 @@ async def test_a_missing_thread_defers_a_follow_up_rather_than_losing_it(db):
     sink = SinkTransport()
     # The thread stays unavailable across the first two passes, so the reply's
     # acknowledgement has nowhere to go yet.
-    sink.faults.append(("open_thread", TransportRetryable("gateway hiccup")))
-    sink.faults.append(("open_thread", TransportRetryable("gateway hiccup")))
+    sink.faults.append(("ensure_thread", TransportRetryable("gateway hiccup")))
+    sink.faults.append(("ensure_thread", TransportRetryable("gateway hiccup")))
     clock = Clock()
     service = make_service(db, sink, clock=clock)
     await service.tick()  # root posted, thread failed

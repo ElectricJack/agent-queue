@@ -438,15 +438,20 @@ class EscalationDeliveryService:
                 generation=generation,
             )
 
+        # Binding the thread and posting its opener are two separate external
+        # writes.  Creating the thread is idempotent — a Discord message owns
+        # at most one — but the opener is a message like any other, so it goes
+        # through the same reconcile-then-send path as every follow-up.  Only a
+        # thread this very call created is provably empty; a pre-existing one
+        # may already hold an opener from an attempt that timed out after it
+        # landed, and that one must be found rather than repeated.
+        opener_may_exist = True
         if thread_id is None:
             try:
-                opened = await self.transport.open_thread(
+                handle = await self.transport.ensure_thread(
                     channel_id=current.channel_id or channel_id,
                     root_message_id=str(root_id),
                     name=thread_name(facts),
-                    content=render_thread_opener(
-                        facts, base_url=self._base_url, dedup_key=f"{dedup_key}:thread"
-                    ),
                 )
             except TransportMissing as exc:
                 # The root we just recovered is gone: a replacement generation
@@ -472,17 +477,53 @@ class EscalationDeliveryService:
                     row, report, binding=current, error=self._describe(exc), retryable=True
                 )
                 return
+            thread_id = handle.thread_id
+            opener_may_exist = not handle.created
             current = TransportBinding(
-                channel_id=opened.channel_id or current.channel_id,
-                root_message_id=opened.root_message_id or root_id,
-                thread_id=opened.thread_id,
+                channel_id=current.channel_id or channel_id,
+                root_message_id=root_id,
+                thread_id=thread_id,
                 generation=generation,
             )
-            receipt = opened.receipt_id
-        else:
-            receipt = str(row.get("external_receipt_id") or root_id)
 
-        await self._finish(row, report, status="sent", binding=current, receipt_id=receipt)
+        opener_key = f"{dedup_key}:thread"
+        outcome, error = await self._send_thread_text(
+            row,
+            report,
+            binding=current,
+            content=render_thread_opener(facts, base_url=self._base_url, dedup_key=opener_key),
+            dedup_key=opener_key,
+            reconcile=opener_may_exist,
+        )
+        if outcome is None and error is None:
+            return  # unreconcilable ambiguity, already recorded as unknown
+        if error is not None:
+            if isinstance(error, TransportMissing):
+                # The thread vanished between binding it and writing into it.
+                replacement_id = await self._request_replacement(facts, deliveries, report)
+                await self._finish(
+                    row,
+                    report,
+                    status="unknown",
+                    binding=current,
+                    last_error=(
+                        f"{self._describe(error)}; "
+                        + (
+                            f"replacement delivery {replacement_id} recorded"
+                            if replacement_id
+                            else "no replacement (incident is closed or one is already pending)"
+                        )
+                    ),
+                )
+                return
+            await self._fail(
+                row, report, binding=current, error=self._describe(error), retryable=True
+            )
+            return
+
+        await self._finish(
+            row, report, status="sent", binding=current, receipt_id=outcome.receipt_id
+        )
 
     async def _deliver_thread_text(
         self,
@@ -571,15 +612,21 @@ class EscalationDeliveryService:
         binding: TransportBinding,
         content: str,
         dedup_key: str,
+        reconcile: bool = True,
     ) -> tuple[SendOutcome | None, TransportError | None]:
         """Reconcile, then send.  Returns ``(outcome, error)``; never finishes.
 
         The one case it does finish is the honest dead end: a previous attempt
         was ambiguous and the history does not show it, so the row becomes
         ``unknown`` and both halves of the tuple come back ``None``.
+
+        ``reconcile=False`` is for the one destination that cannot hold an
+        earlier copy of this message: a thread the current attempt just
+        created.  Searching it would find nothing and turn a retry that has
+        provably sent nothing into a spurious ``unknown``.
         """
         marker = marker_for(dedup_key)
-        if int(row["attempt_count"]) > 1:
+        if reconcile and int(row["attempt_count"]) > 1:
             found = await self._reconcile_marker(
                 marker, channel_id=self._channel_id, thread_id=binding.thread_id
             )
