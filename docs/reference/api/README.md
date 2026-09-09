@@ -138,6 +138,23 @@ curl -s http://127.0.0.1:8081/api/task/show \
 Clean up by deleting the throwaway project (`POST /api/project/delete`), or
 just drop the throwaway database.
 
+Checking that a daemon is up and serving needs no body and no token:
+
+```bash
+curl -s http://127.0.0.1:8081/api/health
+curl -s http://127.0.0.1:8081/ready
+```
+
+```text
+{"status":"ok"}
+{"ready":true,"timestamp":"2026-09-09T20:08:44.920291+00:00","checks":{"messaging":{"ok":true,"platform":"discord","connected":true},"database":{"ok":true},"required_playbooks":{"ok":true,"required":{"default-assignment-routing":{"ok":true,"artifact_sha256":"sha256:c016bd…"}}}}}
+```
+
+`/api/health` is a bare liveness answer. `/ready` runs the real checks and is
+`503` when any of them fails, so it is the one to poll before deciding the
+daemon is usable. `/health` (no `/api`) returns the full check detail with the
+same 200/503 rule.
+
 ## The three families of routes
 
 ```mermaid
