@@ -97,7 +97,14 @@ describe("Messaging settings", () => {
     fireEvent.click(screen.getByRole("button", { name: "Save messaging settings" }));
 
     await waitFor(() => expect(api.update).toHaveBeenCalledTimes(1));
-    const payload = api.update.mock.calls[0][0] as { section: string; data: Record<string, any> };
+    const payload = api.update.mock.calls[0]![0] as {
+      section: string;
+      data: {
+        bot_token: string;
+        digest: Record<string, unknown>;
+        escalation: { enabled: boolean };
+      };
+    };
     expect(payload.section).toBe("discord");
     expect(payload.data.digest).toMatchObject({
       enabled: false,

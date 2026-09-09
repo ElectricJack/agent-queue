@@ -25,7 +25,6 @@ const project = {
   max_concurrent_agents: 2,
   credit_weight: 1,
   budget_limit: null,
-  discord_channel_id: "",
   paused: false,
 };
 
@@ -111,7 +110,6 @@ describe("ProjectSubject", () => {
         max_concurrent_agents: 2,
         credit_weight: 1,
         budget_limit: null,
-        discord_channel_id: null,
       }),
     );
   });

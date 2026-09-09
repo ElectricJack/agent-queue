@@ -27,7 +27,6 @@ describe("Config.tsx form helpers", () => {
       max_concurrent_agents: "",
       credit_weight: "",
       budget_limit: "",
-      discord_channel_id: "",
     });
     expect(projectToForm({ max_concurrent_agents: 3, credit_weight: 1.5 }).max_concurrent_agents).toBe(
       "3",

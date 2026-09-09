@@ -23,7 +23,6 @@ export interface FormState {
   max_concurrent_agents: string;
   credit_weight: string;
   budget_limit: string;
-  discord_channel_id: string;
 }
 
 const EMPTY_FORM: FormState = {
@@ -33,7 +32,6 @@ const EMPTY_FORM: FormState = {
   max_concurrent_agents: "",
   credit_weight: "",
   budget_limit: "",
-  discord_channel_id: "",
 };
 
 export default function ProjectConfig() {
@@ -81,7 +79,6 @@ export default function ProjectConfig() {
         max_concurrent_agents: parseOptionalInt(form.max_concurrent_agents),
         credit_weight: parseOptionalFloat(form.credit_weight),
         budget_limit: parseOptionalFloat(form.budget_limit),
-        discord_channel_id: form.discord_channel_id.trim() || null,
       };
       await editProject.mutateAsync(body);
       setEditing(false);
@@ -185,18 +182,7 @@ export default function ProjectConfig() {
             project.default_profile_id ?? "—"
           )}
         </Row>
-        <Row label="Discord channel" striped>
-          {editing ? (
-            <TextInput
-              value={form.discord_channel_id}
-              onChange={(v) => setForm({ ...form, discord_channel_id: v })}
-              placeholder="(channel id)"
-            />
-          ) : (
-            project.discord_channel_id ?? "—"
-          )}
-        </Row>
-        <Row label="Max concurrent agents" striped={false}>
+        <Row label="Max concurrent agents" striped>
           {editing ? (
             <NumberInput
               value={form.max_concurrent_agents}
@@ -368,7 +354,6 @@ export interface ProjectData {
   max_concurrent_agents?: number | null;
   credit_weight?: number | null;
   budget_limit?: number | null;
-  discord_channel_id?: string | null;
 }
 
 /** Agent profiles are global, so the picker is just the deduped profile list. */
@@ -387,7 +372,6 @@ export function projectToForm(p: ProjectData): FormState {
       p.max_concurrent_agents != null ? String(p.max_concurrent_agents) : "",
     credit_weight: p.credit_weight != null ? String(p.credit_weight) : "",
     budget_limit: p.budget_limit != null ? String(p.budget_limit) : "",
-    discord_channel_id: p.discord_channel_id ?? "",
   };
 }
 

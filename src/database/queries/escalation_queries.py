@@ -1047,10 +1047,10 @@ class EscalationQueriesMixin:
             ),
         )
         async with self.immediate() as conn:
-            ids = (
+            claimable = (
                 (
                     await conn.execute(
-                        select(escalation_deliveries.c.id)
+                        select(escalation_deliveries.c.id, escalation_deliveries.c.status)
                         .where(due)
                         .order_by(
                             escalation_deliveries.c.priority,
@@ -1061,9 +1061,14 @@ class EscalationQueriesMixin:
                         .with_for_update(skip_locked=True)
                     )
                 )
-                .scalars()
                 .all()
             )
+            ids = [row.id for row in claimable]
+            # A row taken from ``sending`` is one whose previous owner never
+            # finished it: the process died, or the lease simply expired with an
+            # external send in flight.  The dispatcher must know that, because
+            # such an attempt cannot prove whether its send landed.
+            reclaimed = {row.id: row.status == "sending" for row in claimable}
             if not ids:
                 return []
             rows = (
@@ -1084,8 +1089,61 @@ class EscalationQueriesMixin:
                 .mappings()
                 .all()
             )
-        by_id = {row["id"]: dict(row) for row in rows}
+        by_id = {row["id"]: {**dict(row), "reclaimed": reclaimed[row["id"]]} for row in rows}
         return [by_id[item_id] for item_id in ids]
+
+    async def note_escalation_delivery_binding(
+        self,
+        delivery_id: str,
+        *,
+        lease_owner: str,
+        now: float,
+        channel_id: str | None = None,
+        root_message_id: str | None = None,
+        thread_id: str | None = None,
+    ) -> dict[str, Any] | None:
+        """Record a confirmed external binding without ending the attempt.
+
+        An escalation root is more than one external write -- the channel post,
+        then the thread, then its opener -- and the row has to survive a crash
+        between them.  The post is real the moment the platform answers, so it
+        is written straight away while the delivery stays ``sending`` under the
+        same lease.  A later reclaim then sees the binding and repairs the
+        missing half instead of posting a second root.
+
+        Fenced on the lease exactly like :meth:`finish_escalation_delivery`, and
+        never clears a binding: only the fields given are written.
+        """
+        values = {
+            name: value
+            for name, value in (
+                ("channel_id", channel_id),
+                ("root_message_id", root_message_id),
+                ("thread_id", thread_id),
+            )
+            if value
+        }
+        if not values:
+            return None
+        values["updated_at"] = now
+        async with self.immediate() as conn:
+            row = (
+                (
+                    await conn.execute(
+                        update(escalation_deliveries)
+                        .where(
+                            escalation_deliveries.c.id == delivery_id,
+                            escalation_deliveries.c.status == "sending",
+                            escalation_deliveries.c.lease_owner == lease_owner,
+                        )
+                        .values(**values)
+                        .returning(escalation_deliveries)
+                    )
+                )
+                .mappings()
+                .one_or_none()
+            )
+        return _row_dict(row)
 
     async def finish_escalation_delivery(
         self,

@@ -34,6 +34,10 @@ describe("project overview navigation", () => {
     expect(screen.getByRole("link", { name: "Workspaces tab" })).toHaveAttribute("href", "/projects/p1/workspaces?q=keep&completed=1");
     expect(screen.getByRole("link", { name: "Open task graph" })).toHaveAttribute("href", "/projects/p1/graph?q=keep&completed=1");
     expect(screen.getByRole("link", { name: "Open agent flock" })).toHaveAttribute("href", "/agents");
+    expect(screen.getByRole("link", { name: "Open messaging settings" })).toHaveAttribute(
+      "href",
+      "/settings/messaging",
+    );
     expect(screen.queryByRole("link", { name: /chat/i })).not.toBeInTheDocument();
   });
 
