@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import time
 
 import pytest
@@ -511,11 +512,17 @@ class TestNudge:
         fake = providers.create("fake")
         assert fake.sent_nudges == [(handle.name, "hello")]
 
-    async def test_nudge_returns_false_on_notsubmitted(self, db, providers, lens):
+    async def test_nudge_returns_false_on_notsubmitted(self, db, providers, lens, caplog):
         row, handle = await _seed_running_task(db, providers)
         providers.create("fake").swallow_next_nudge(handle.name)
-        ok = await lens.nudge(kind="task", target_id=row.task_id, project_id="proj1", text="hi")
+        with caplog.at_level(logging.WARNING, logger="src.messages.session_lens"):
+            ok = await lens.nudge(
+                kind="task", target_id=row.task_id, project_id="proj1", text="hi"
+            )
         assert ok is False
+        assert "delivery remains pending" in caplog.text
+        assert row.name in caplog.text
+        assert "AQ text remains in the composer" in caplog.text
 
     async def test_nudge_returns_false_when_no_session(self, lens):
         ok = await lens.nudge(kind="task", target_id="never-existed", project_id="proj1", text="hi")

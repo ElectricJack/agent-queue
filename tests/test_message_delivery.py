@@ -63,6 +63,8 @@ class FakeSessionManager:
     - ``nudges`` records each ``nudge()`` call as
       ``(kind, target_id, project_id, text)``.
     - ``nudge_returns`` optionally overrides the default ``True`` return.
+    - ``nudge_results`` can script individual submit confirmations so retry
+      tests exercise a pasted-but-unsubmitted first attempt.
     - ``ensure_started_calls`` records ``ensure_started`` invocations; when
       called, the manager flips the activity for that target to ``"idle"``
       (unless overridden by ``ensure_started_returns``).
@@ -71,6 +73,7 @@ class FakeSessionManager:
 
     activity_map: dict[tuple, str] = field(default_factory=dict)
     nudge_returns: bool = True
+    nudge_results: list[bool] = field(default_factory=list)
     ensure_started_returns: bool = True
     nudges: list[tuple] = field(default_factory=list)
     ensure_started_calls: list[tuple] = field(default_factory=list)
@@ -87,6 +90,8 @@ class FakeSessionManager:
 
     async def nudge(self, *, kind, target_id, project_id, text):
         self.nudges.append((kind, target_id, project_id, text))
+        if self.nudge_results:
+            return self.nudge_results.pop(0)
         return self.nudge_returns
 
     async def tail_assistant_turn(self, *, kind, target_id, project_id, since):
@@ -254,6 +259,49 @@ class TestDeliveryPolicy:
 
         assert (await db.get_message(msg.id)).delivered_at is None
         assert bus.events == []
+
+    @pytest.mark.parametrize(
+        ("to_kind", "to_id", "activity_key"),
+        [
+            (
+                "session",
+                "supervisor-p1",
+                ("session", "supervisor-p1", "p1"),
+            ),
+            (
+                "task",
+                "task-1",
+                ("task", "task-1", "p1"),
+            ),
+        ],
+        ids=["supervisor", "task-session"],
+    )
+    async def test_unconfirmed_nudge_retries_without_duplicate_delivery(
+        self, db, to_kind, to_id, activity_key
+    ):
+        """Only a confirmed retry marks the message delivered, for both routes."""
+        sessions = FakeSessionManager(
+            activity_map={activity_key: "idle"},
+            nudge_results=[False, True],
+        )
+        bus = RecordingBus()
+        engine = make_engine(db, sessions, bus=bus)
+        msg = await _send(db, to_kind=to_kind, to_id=to_id)
+
+        first = await engine.run_delivery_pass()
+
+        assert first["delivered"] == 0
+        assert (await db.get_message(msg.id)).delivered_at is None
+        assert len(sessions.nudges) == 1
+
+        second = await engine.run_delivery_pass()
+
+        assert second["delivered"] == 1
+        stored = await db.get_message(msg.id)
+        assert stored.via == "nudge"
+        assert sessions.nudges[0][3] == sessions.nudges[1][3]
+        delivered_events = [event for event in bus.events if event.event == "message.delivered"]
+        assert [event.payload["message_id"] for event in delivered_events] == [msg.id]
 
     async def test_cas_race_no_double_event(self, db):
         """Pre-marking one message means the engine's mark_delivered returns
