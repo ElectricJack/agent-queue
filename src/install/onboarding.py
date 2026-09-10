@@ -37,7 +37,7 @@ from .command import CommandOutput, CommandRunner, run_command
 from .postgres import CONFIG_HEADER, backup_path_for, read_env_file, split_password
 from .prerequisites import STEP_DATA_DIR
 from .redaction import redact
-from .results import ResourceRecord, StepResult
+from .results import RESOURCE_CONFIG, ResourceRecord, StepResult
 from .state import DEFAULT_STATE_FILENAME, default_state_dir
 from .steps import StepContext, StepSpec
 
@@ -271,7 +271,11 @@ def config_step(
                 STEP_CONFIG,
                 f"{path.name} is in place; default tuning could not be written ({error})",
                 detail={"config_path": str(path), "created": created, "tuned": False},
-                resources=(ResourceRecord(kind="config", id=str(path), owned=created),),
+                resources=(
+                    ResourceRecord(
+                        kind=RESOURCE_CONFIG, id=str(path), owned=created, reused=not created
+                    ),
+                ),
             )
         if outcome.get("validation_errors"):
             return StepResult.failed(
@@ -300,7 +304,11 @@ def config_step(
                 "machine": machine.as_dict(),
                 "rationale": "docs/guides/default-tuning.md",
             },
-            resources=(ResourceRecord(kind="config", id=str(path), owned=created),),
+            resources=(
+                ResourceRecord(
+                    kind=RESOURCE_CONFIG, id=str(path), owned=created, reused=not created
+                ),
+            ),
         )
 
     return StepSpec(

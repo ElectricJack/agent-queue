@@ -81,7 +81,10 @@ facts, selected capabilities, completed states, owned-resource identifiers,
 and redacted diagnostics. It contains no provider credential, raw DSN
 password, OAuth/device code, shell history, project path, or task data. A
 rerun is the normal recovery mechanism: it recomputes preconditions, reuses
-matching owned resources, and stops at the first unsatisfied step. `--resume`
+matching owned resources, and stops at the first unsatisfied step. Ownership is
+monotone: a resource recorded as created by AQ stays owned no matter how many
+later steps or later runs observe it already in place, because a step that
+finds AQ's own handiwork present is not looking at something the host brought. `--resume`
 selects the latest compatible record; `--restart-from <step>` invalidates that
 step and its dependents only. The engine must expose the same records through
 human output and `--json`, with stable result/exit classifications for

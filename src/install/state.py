@@ -27,7 +27,7 @@ from typing import TYPE_CHECKING, Any
 
 from .platform import PlatformFacts
 from .redaction import assert_secret_free, redact
-from .results import ResourceRecord, StepResult, StepState
+from .results import ResourceRecord, StepResult, StepState, merge_resource
 
 if TYPE_CHECKING:  # pragma: no cover - import cycle: lifecycle reads this module
     from .lifecycle import UpgradeRecord
@@ -144,7 +144,13 @@ class InstallState:
 
     # -- mutations ---------------------------------------------------------
     def apply(self, result: StepResult, *, now: str, input_schema_version: int = 1) -> None:
-        """Fold one step result into the record, deduplicating resources."""
+        """Fold one step result into the record, deduplicating resources.
+
+        A resource already in the record keeps its ownership when the newer
+        report would lower it: the record is what a later ``aq uninstall``
+        reads, and a step that finds AQ's own earlier handiwork already present
+        must not turn it into something the host brought.
+        """
         self.steps[result.step_id] = StepRecord(
             step_id=result.step_id,
             state=result.state,
@@ -155,7 +161,10 @@ class InstallState:
             input_schema_version=input_schema_version,
         )
         for resource in result.resources:
-            self.resources[resource.key] = resource
+            previous = self.resources.get(resource.key)
+            self.resources[resource.key] = (
+                resource if previous is None else merge_resource(previous, resource)
+            )
         self.updated_at = now
 
     def invalidate(self, step_ids: Iterable[str], *, now: str) -> tuple[str, ...]:

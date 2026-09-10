@@ -26,7 +26,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from .platform import PlatformFacts, SupportVerdict
-from .results import ResourceRecord, StepResult
+from .results import ResourceRecord, StepResult, merge_resource
 
 
 class InstallPlanError(ValueError):
@@ -224,13 +224,15 @@ class StepRegistry:
 def merge_resources(
     existing: Sequence[ResourceRecord], new: Iterable[ResourceRecord]
 ) -> tuple[ResourceRecord, ...]:
-    """Merge resource records by ``(kind, id)``, last writer winning.
+    """Merge resource records by ``(kind, id)``, newest observation winning.
 
     Deduplication here is the mechanical half of "a rerun does not duplicate
     resources": even a step that re-reports what it created cannot grow the
-    owned-resource list.
+    owned-resource list.  Ownership is the one field the newest writer does not
+    get to lower — see :func:`~src.install.results.merge_resource`.
     """
     merged: dict[tuple[str, str], ResourceRecord] = {record.key: record for record in existing}
     for record in new:
-        merged[record.key] = record
+        previous = merged.get(record.key)
+        merged[record.key] = record if previous is None else merge_resource(previous, record)
     return tuple(merged.values())

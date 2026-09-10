@@ -60,7 +60,7 @@ from .postgres import (
     SqlExecutor,
     backup_path_for,
 )
-from .results import InstallOutcome, ResourceRecord, exit_code
+from .results import RESOURCE_CONFIG, InstallOutcome, ResourceRecord, exit_code
 from .state import InstallState
 
 # ---------------------------------------------------------------------------
@@ -309,7 +309,7 @@ SCOPE_BY_KIND: Mapping[str, RemovalScope] = {
     "daemon": RemovalScope.RUNTIME,
     "shell-profile": RemovalScope.RUNTIME,
     KIND_INSTALL_RECORD: RemovalScope.RUNTIME,
-    "config": RemovalScope.CONFIG,
+    RESOURCE_CONFIG: RemovalScope.CONFIG,
     "directory": RemovalScope.DATA,
     RESOURCE_DATABASE: RemovalScope.DATABASE,
     RESOURCE_ROLE: RemovalScope.DATABASE,
@@ -357,7 +357,7 @@ _REMOVAL_ORDER: tuple[str, ...] = (
     RESOURCE_DATABASE,
     RESOURCE_ROLE,
     "shell-profile",
-    "config",
+    RESOURCE_CONFIG,
     "directory",
     KIND_INSTALL_RECORD,
 )
@@ -835,7 +835,7 @@ def default_handlers(
     return {
         "daemon": _daemon_handler(runner or run_command, which or _shutil.which),
         "shell-profile": _shell_profile_handler(),
-        "config": _config_handler(),
+        RESOURCE_CONFIG: _config_handler(),
         "directory": _directory_handler(allowed_roots=allowed_roots or (home,)),
         RESOURCE_DATABASE: _sql_handler(
             admin,
