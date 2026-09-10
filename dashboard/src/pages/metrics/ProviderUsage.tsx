@@ -73,15 +73,48 @@ export function UsageCard({ row, now }: { row: ProviderUsageSnapshot; now: numbe
   );
 }
 
+/**
+ * A provider that has not supplied a reading must be visible without being
+ * represented by a made-up empty quota.  This is especially important for
+ * Claude: a missing CLI, an API-key account, and a changed `/usage` response
+ * all intentionally produce no snapshot.
+ */
+function UnavailableUsageCard({ provider }: { provider: "Claude" }) {
+  return (
+    <div
+      data-testid={`provider-unavailable-${provider.toLowerCase()}`}
+      className="rounded-xl border border-gray-800 bg-gray-900/40 p-4"
+    >
+      <p className="text-xs uppercase tracking-wide text-gray-500">{provider}</p>
+      <p className="mt-2 text-sm font-medium text-gray-300">Usage unavailable</p>
+      <p className="mt-1 text-xs text-gray-500">
+        No current {provider} usage report is available.
+      </p>
+    </div>
+  );
+}
+
 export default function ProviderUsage() {
-  const { data, isLoading, isError, error } = useProviderUsage();
+  const { data, isLoading, isError, error, isFetching, refetch } = useProviderUsage();
   const rows = sortSnapshots(data?.snapshots ?? []);
+  const hasClaudeReading = rows.some((row) => row.provider === "claude");
   // The server's clock, so a reset time is not read against a skewed browser.
   const now = data?.now ?? Date.now() / 1000;
 
   return (
     <section className="space-y-2">
-      <h2 className="text-xs uppercase tracking-wide text-gray-500">Provider limits</h2>
+      <div className="flex items-center justify-between gap-3">
+        <h2 className="text-xs uppercase tracking-wide text-gray-500">Provider limits</h2>
+        <button
+          type="button"
+          aria-label="Refresh provider usage"
+          disabled={isFetching}
+          onClick={() => void refetch()}
+          className="text-xs text-gray-500 hover:text-gray-200 disabled:cursor-wait disabled:opacity-60"
+        >
+          {isFetching ? "Refreshing…" : "Refresh"}
+        </button>
+      </div>
       {isError ? (
         <p className="rounded-lg border border-red-900/60 bg-red-950/40 p-3 text-sm text-red-200">
           Could not load provider usage: {String((error as Error)?.message ?? error)}
@@ -99,6 +132,7 @@ export default function ProviderUsage() {
           {rows.map((row) => (
             <UsageCard key={row.id} row={row} now={now} />
           ))}
+          {!hasClaudeReading && <UnavailableUsageCard provider="Claude" />}
         </div>
       )}
     </section>
