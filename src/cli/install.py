@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import sys
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -333,6 +334,38 @@ def install(
         progress=None if quiet else _progress(console),
     )
     result = engine.run()
+
+    # Provider availability is a host fact, not a credential.  A real install
+    # or repair refreshes the catalog so a later project default cannot select
+    # a removed or unauthenticated provider.  Dry-runs remain write-free.
+    if not dry_run:
+        from src.install.logins import probe_all
+        from src.profiles.catalog import evaluate_catalog, refresh_catalog_profiles
+
+        # ``--state-file`` is a resume-record override, not a request to put
+        # profiles beside an arbitrary file.  AQ's configured install home
+        # remains the profile catalog location.
+        state_path = default_state_path()
+        probes = probe_all()
+        refresh_catalog_profiles(
+            state_path.parent,
+            probes,
+            facts=support.facts,
+            interactive=interactive,
+        )
+        guidance: dict[str, str] = {}
+        for activation in evaluate_catalog(probes, facts=support.facts, interactive=interactive):
+            if not activation.active:
+                guidance.setdefault(
+                    activation.profile.provider_id,
+                    f"{activation.reason}. {activation.remediation or ''}".strip(),
+                )
+        if guidance:
+            result = replace(
+                result,
+                messages=result.messages
+                + tuple(f"Profile activation: {message}" for message in guidance.values()),
+            )
 
     if as_json:
         click.echo(json.dumps(result.to_dict(), ensure_ascii=False))

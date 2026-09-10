@@ -39,6 +39,7 @@ stalling the queue.
 from __future__ import annotations
 
 from collections.abc import Iterable
+from typing import Any
 
 #: Tried first, in this exact order, when picking a project default.
 #: ``worker-standard-medium-claude`` is named explicitly because the
@@ -82,7 +83,9 @@ def _is_project_scoped(profile_id: str) -> bool:
     return profile_id.startswith("project:")
 
 
-def select_default_profile_id(profile_ids: Iterable[str]) -> str | None:
+def select_default_profile_id(
+    profile_ids: Iterable[str | Any], *, eligible_profile_ids: Iterable[str] | None = None
+) -> str | None:
     """Return the best fallback profile id, or ``None`` if there are none.
 
     ``profile_ids`` is any iterable of registered profile ids (e.g. the
@@ -90,11 +93,28 @@ def select_default_profile_id(profile_ids: Iterable[str]) -> str | None:
     is deterministic: the same profile set always yields the same answer,
     so the reconciler does not flap between profiles across ticks.
     """
+    supplied = {
+        profile_id
+        for value in profile_ids
+        for profile_id in (_profile_id(value),)
+        if profile_id and _profile_enabled(value)
+    }
     candidates = {
         pid
-        for pid in profile_ids
+        for pid in supplied
         if pid and pid not in EXCLUDED_PROFILE_IDS and not _is_project_scoped(pid)
     }
+    if eligible_profile_ids is not None:
+        from src.profiles.catalog import shipped_profile_catalog
+
+        eligible = set(eligible_profile_ids)
+        catalog_ids = {profile.id for profile in shipped_profile_catalog()}
+        candidates.difference_update(catalog_ids - eligible)
+        # A catalog refresh has authoritative evidence that this host has no
+        # usable worker.  Do not turn a planner/reviewer into a pretend coding
+        # default merely because it is the only non-catalog profile left.
+        if not eligible and supplied.intersection(catalog_ids):
+            return None
     if not candidates:
         return None
 
@@ -107,3 +127,11 @@ def select_default_profile_id(profile_ids: Iterable[str]) -> str | None:
         return general[0]
 
     return sorted(candidates)[0]
+
+
+def _profile_id(value: str | Any) -> str:
+    return value if isinstance(value, str) else str(getattr(value, "id", "") or "")
+
+
+def _profile_enabled(value: str | Any) -> bool:
+    return isinstance(value, str) or bool(getattr(value, "enabled", True))

@@ -94,11 +94,27 @@ class ProjectCommandsMixin:
         # default.  None here is fine (no profiles synced yet) — the
         # reconciler backfills it later.
         default_profile_id = args.get("default_profile_id")
+        from src.profiles.catalog import active_catalog_profile_ids, shipped_profile_catalog
+
+        eligible_profile_ids = active_catalog_profile_ids(self.config.data_dir)
+        catalog_ids = {profile.id for profile in shipped_profile_catalog()}
+        if (
+            default_profile_id
+            and eligible_profile_ids is not None
+            and default_profile_id in catalog_ids - eligible_profile_ids
+        ):
+            return {
+                "error": (
+                    f"default profile '{default_profile_id}' is unavailable on this host; "
+                    "set up its provider and rerun aq install, or choose an active profile"
+                )
+            }
         if not default_profile_id:
             from src.profiles.default_selection import select_default_profile_id
 
             default_profile_id = select_default_profile_id(
-                p.id for p in await self.db.list_profiles()
+                await self.db.list_profiles(),
+                eligible_profile_ids=eligible_profile_ids,
             )
 
         project = Project(

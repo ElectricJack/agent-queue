@@ -33,12 +33,15 @@ class AgentReconciler:
     supply matches demand subject to project.max_concurrent_agents.
     """
 
-    def __init__(self, db: Database, *, worktrees_enabled: bool = False):
+    def __init__(
+        self, db: Database, *, worktrees_enabled: bool = False, data_dir: str | None = None
+    ):
         self._db = db
         self._warned_projects: dict[str, str] = {}
         # Rollout gate (worktree-execution §5).  While False the workspace
         # gate below counts inventory exactly as it does today.
         self._worktrees_enabled = worktrees_enabled
+        self._data_dir = data_dir
 
     async def reconcile(
         self, *, provider_cooldowns: dict[str, float] | None = None,
@@ -57,6 +60,12 @@ class AgentReconciler:
         tasks = await self._db.list_tasks()
         agents = await self._db.list_agents()
         profiles = {p.id: p for p in await self._db.list_profiles()}
+        from src.profiles.catalog import active_catalog_profile_ids, shipped_profile_catalog
+
+        active_catalog_ids = (
+            active_catalog_profile_ids(self._data_dir) if self._data_dir else None
+        )
+        catalog_ids = {profile.id for profile in shipped_profile_catalog()}
         live = await self._db.list_sessions(live_only=True)
         live_agents = {row.agent_id for row in live if row.agent_id}
         # Legacy task sessions may not have been linked before adoption.
@@ -144,6 +153,15 @@ class AgentReconciler:
                 profile = profiles.get(profile_id)
                 if not profile or getattr(profile, "lifecycle", "task") == "pool":
                     continue
+                if (
+                    active_catalog_ids is not None
+                    and profile_id in catalog_ids
+                    and profile_id not in active_catalog_ids
+                ):
+                    report.skipped.append(
+                        (project.id, f"profile {profile_id} is unavailable; rerun aq install after provider setup")
+                    )
+                    continue
                 if max(cooldowns.get(profile_id, 0), cooldowns.get(profile.id, 0)) > now:
                     continue
                 # The named supervisor is seeded separately; no per-project
@@ -209,7 +227,10 @@ class AgentReconciler:
         """
         from src.profiles.default_selection import select_default_profile_id
 
-        chosen = select_default_profile_id(profiles)
+        from src.profiles.catalog import active_catalog_profile_ids
+
+        eligible = active_catalog_profile_ids(self._data_dir) if self._data_dir else None
+        chosen = select_default_profile_id(profiles.values(), eligible_profile_ids=eligible)
         if not chosen:
             return None
         try:

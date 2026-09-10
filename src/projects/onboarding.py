@@ -32,6 +32,7 @@ from src.database.base import DatabaseBackend
 from src.git.manager import GitError, GitManager, _validate_ref
 from src.models import Project, RepoSourceType, Workspace
 from src.profiles.default_selection import select_default_profile_id
+from src.profiles.catalog import active_catalog_profile_ids
 from src.projects.github import (
     GhClient,
     GitHubError,
@@ -287,7 +288,8 @@ class ProjectOnboardingService:
 
                 await self.db.update_onboarding_phase(request.request_id, "register")
                 default_profile_id = select_default_profile_id(
-                    profile.id for profile in await self.db.list_profiles()
+                    await self.db.list_profiles(),
+                    eligible_profile_ids=active_catalog_profile_ids(self.config.data_dir),
                 )
                 project = Project(
                     id=request.project_id,
