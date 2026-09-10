@@ -19,6 +19,7 @@ New to AQ? Start with [Install](../tutorials/install.md) and
 | [Troubleshooting worker sessions](session-troubleshooting.md) | A worker is running but nothing is happening, or it stopped and left something behind. |
 | [Worker pools](worker-pools.md) | Operating `lifecycle: pool` profiles — bounds, quarantine, doctor checks, cutover. |
 | [Resource gating](resource-gating.md) | Keeping N concurrent agents from taking the machine down. |
+| [Default tuning](default-tuning.md) | The resource-aware defaults a fresh install gets, why each value, and how to override. |
 | [Escalations and the hourly digest](escalations.md) | Configuring the one Discord channel and answering escalation threads. |
 | [Migration policy](migrations.md) | Who may run Alembic, against which database, and what to do when refused. |
 | [CI at integration boundaries](integration-ci-boundaries.md) | Understanding which pushes launch the full test suite. |

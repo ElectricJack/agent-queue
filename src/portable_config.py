@@ -36,6 +36,7 @@ PROFILE_PREFIX = "profiles/"
 PORTABLE_CONFIG_SECTIONS = frozenset(
     {
         "agents_config",
+        "integration",
         "scheduling",
         "pause_retry",
         "monitoring",
@@ -55,6 +56,23 @@ PORTABLE_CONFIG_SECTIONS = frozenset(
         "rate_limits",
     }
 )
+
+# A section that is only *partly* portable: the keys named here travel, and
+# every other key in it is dropped and reported as excluded.  ``integration``
+# is the case this exists for — its merge policy is exactly the kind of
+# reviewed tuning a bundle should carry, while ``github_app`` and
+# ``scratch_probe`` name an installation's own app id, repository and key
+# paths.
+PORTABLE_SECTION_KEYS: dict[str, frozenset[str]] = {
+    "integration": frozenset(
+        {
+            "default_mode",
+            "merge_ci_policy",
+            "merge_required_checks",
+            "merge_require_up_to_date",
+        }
+    ),
+}
 
 _PROFILE_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*\Z")
 _SECRET_KEY = re.compile(r"(?:api[_-]?key|token|secret|password|credential|private[_-]?key|auth)", re.I)
@@ -100,7 +118,13 @@ def _assert_portable_value(value: Any, location: str = "config") -> None:
             if not isinstance(key, str):
                 raise PortableBundleError(f"{location} has a non-string key")
             child_location = f"{location}.{key}"
-            if _SECRET_KEY.search(key):
+            # The secret-key heuristic is a substring match, so it fires on
+            # perfectly ordinary numeric knobs — ``metrics.token_window_seconds``
+            # and ``surface.context_cost_ceiling_tokens`` both contain "token".
+            # A credential is a string (or a list of them); a number never is,
+            # so exempting scalars keeps the heuristic aggressive on the values
+            # that could actually carry one.
+            if _SECRET_KEY.search(key) and not isinstance(child, (bool, int, float, type(None))):
                 raise PortableBundleError(f"{child_location} is not portable (secret-like key)")
             if key.lower() in {"path", "directory", "dir", "root", "workspace"}:
                 raise PortableBundleError(f"{child_location} is not portable (machine path key)")
@@ -130,12 +154,28 @@ def _validate_profile(profile_id: str, text: str) -> None:
 
 
 def curated_config(raw: dict[str, Any]) -> tuple[dict[str, Any], tuple[str, ...]]:
+    """Split a raw config into the portable part and what was left behind.
+
+    The second element names everything dropped: whole sections outside
+    :data:`PORTABLE_CONFIG_SECTIONS`, and — for a section with a key
+    allowlist — the individual dotted keys inside it that do not travel.
+    Export reports those to the operator; import refuses a bundle that
+    carries any of them, so a hand-built bundle cannot smuggle one in.
+    """
     if not isinstance(raw, dict):
         raise PortableBundleError("configuration must be a mapping")
     selected = {key: copy.deepcopy(raw[key]) for key in PORTABLE_CONFIG_SECTIONS if key in raw}
+    excluded = set(raw) - PORTABLE_CONFIG_SECTIONS
+    for section, allowed in PORTABLE_SECTION_KEYS.items():
+        body = selected.get(section)
+        if not isinstance(body, dict):
+            continue
+        for key in sorted(set(body) - allowed):
+            excluded.add(f"{section}.{key}")
+            del body[key]
     for key, value in selected.items():
         _assert_portable_value(value, key)
-    return selected, tuple(sorted(set(raw) - PORTABLE_CONFIG_SECTIONS))
+    return selected, tuple(sorted(excluded))
 
 
 def bundle_preview(config_path: str, data_dir: str) -> dict[str, Any]:
@@ -262,8 +302,17 @@ def inspect_bundle(source: str) -> dict[str, Any]:
     }
 
 
-def _validate_candidate_config(config_path: str, candidate: dict[str, Any]) -> list[str]:
-    from src.config import load_config
+def validate_candidate_config(config_path: str, candidate: dict[str, Any]) -> list[str]:
+    """Load ``candidate`` as a config file next to ``config_path``.
+
+    Returns the load errors as strings — one entry per :class:`ConfigError`,
+    so a caller can tell an error it introduced from one the file already
+    had — or an empty list when the document is valid.  The temp file lives
+    in the same directory so ``${ENV_VAR}`` resolution and any sibling
+    ``config.{env}.yaml`` overlay behave as they will once the document is
+    written for real.
+    """
+    from src.config import ConfigValidationError, load_config
 
     with tempfile.NamedTemporaryFile(
         mode="w", suffix=".yaml", encoding="utf-8", dir=str(Path(config_path).parent), delete=False
@@ -272,6 +321,8 @@ def _validate_candidate_config(config_path: str, candidate: dict[str, Any]) -> l
         temp_path = tmp.name
     try:
         load_config(temp_path)
+    except ConfigValidationError as exc:
+        return list(exc.errors)
     except Exception as exc:
         return [str(exc)]
     finally:
@@ -308,8 +359,17 @@ async def import_bundle(
     selected_config = {
         key: value for key, value in bundle.config.items() if conflict == "replace" or key not in current
     }
+    # A partly-portable section is *merged*, never replaced: the bundle only
+    # ever carries its allowlisted keys, so writing it whole under
+    # ``conflict=replace`` would delete the local-only rest of the section —
+    # an operator's ``integration.github_app``, for one.
+    for section in PORTABLE_SECTION_KEYS:
+        incoming = selected_config.get(section)
+        existing = current.get(section)
+        if isinstance(incoming, dict) and isinstance(existing, dict):
+            selected_config[section] = {**copy.deepcopy(existing), **incoming}
     candidate.update(selected_config)
-    validation_errors = _validate_candidate_config(config_path, candidate)
+    validation_errors = validate_candidate_config(config_path, candidate)
     if validation_errors:
         return {"error": "bundle configuration is invalid here", "validation_errors": validation_errors}
     selected_profiles = {

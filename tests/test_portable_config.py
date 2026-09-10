@@ -15,6 +15,7 @@ from src.portable_config import (
     CONFIG_NAME,
     MANIFEST_NAME,
     PortableBundleError,
+    bundle_preview,
     export_bundle,
     import_bundle,
     inspect_bundle,
@@ -196,3 +197,126 @@ def test_export_refuses_credentials_even_inside_an_allowlisted_section(tmp_path)
 
     with pytest.raises(PortableBundleError, match="secret-like key"):
         export_bundle(str(tmp_path / "unsafe.aqbundle"), str(config), str(data_dir))
+
+
+def test_numeric_knobs_whose_names_contain_token_are_not_treated_as_secrets(tmp_path):
+    """``metrics.token_window_seconds`` is a window, not a credential.
+
+    The secret-key heuristic is a substring match, so before this exemption
+    any config carrying a ``metrics:`` or ``surface:`` section — which the
+    shipped default tuning writes — could not be exported at all.
+    """
+    config, data_dir = _write_source(tmp_path)
+    raw = yaml.safe_load(config.read_text())
+    raw["metrics"] = {"enabled": True, "token_window_seconds": 300.0}
+    raw["surface"] = {"context_cost_ceiling_tokens": 8000}
+    config.write_text(yaml.safe_dump(raw))
+
+    preview = bundle_preview(str(config), str(data_dir))
+    assert preview["config"]["metrics"]["token_window_seconds"] == 300.0
+    assert preview["config"]["surface"]["context_cost_ceiling_tokens"] == 8000
+
+
+def test_a_string_valued_secret_like_key_is_still_refused(tmp_path):
+    """The exemption is for scalars only; a credential is a string."""
+    config, data_dir = _write_source(tmp_path)
+    raw = yaml.safe_load(config.read_text())
+    raw["metrics"] = {"auth_token": "sk-still-a-credential"}
+    config.write_text(yaml.safe_dump(raw))
+
+    with pytest.raises(PortableBundleError, match="secret-like key"):
+        bundle_preview(str(config), str(data_dir))
+
+
+def test_integration_travels_as_merge_policy_only(tmp_path):
+    """Merge policy is reviewed tuning; the GitHub app is one installation's."""
+    config, data_dir = _write_source(tmp_path)
+    raw = yaml.safe_load(config.read_text())
+    raw["integration"] = {
+        "default_mode": "pull_request",
+        "merge_ci_policy": "warn",
+        "merge_required_checks": ["Tests (default)"],
+        "merge_require_up_to_date": True,
+        "github_app": {"app_id": 12345, "installation_id": 999},
+        "scratch_probe": {"repository": "someone/private-scratch"},
+    }
+    config.write_text(yaml.safe_dump(raw))
+
+    preview = bundle_preview(str(config), str(data_dir))
+    assert preview["config"]["integration"] == {
+        "default_mode": "pull_request",
+        "merge_ci_policy": "warn",
+        "merge_required_checks": ["Tests (default)"],
+        "merge_require_up_to_date": True,
+    }
+    # Dropped, and *reported* — an operator can see what did not travel.
+    assert "integration.github_app" in preview["excluded_sections"]
+    assert "integration.scratch_probe" in preview["excluded_sections"]
+
+
+def test_import_refuses_a_bundle_carrying_a_non_portable_integration_key(tmp_path):
+    """A hand-built bundle cannot smuggle an installation's app id in."""
+    bundle = tmp_path / "handmade.aqbundle"
+    with zipfile.ZipFile(bundle, "w") as archive:
+        archive.writestr(
+            MANIFEST_NAME,
+            json.dumps(
+                {
+                    "format": BUNDLE_FORMAT,
+                    "version": BUNDLE_VERSION,
+                    "config": CONFIG_NAME,
+                    "profiles": [],
+                }
+            ),
+        )
+        archive.writestr(
+            CONFIG_NAME,
+            yaml.safe_dump({"integration": {"default_mode": "direct", "github_app": {"app_id": 7}}}),
+        )
+
+    with pytest.raises(PortableBundleError, match="non-portable config sections"):
+        inspect_bundle(str(bundle))
+
+
+@pytest.mark.asyncio
+async def test_importing_integration_merges_rather_than_dropping_the_local_github_app(tmp_path):
+    """A bundle carries four keys; replacing the section would delete the rest."""
+    config, data_dir = _write_source(tmp_path)
+    raw = yaml.safe_load(config.read_text())
+    # Not "off": ruamel writes that bare and PyYAML reads it back as False.
+    raw["integration"] = {"default_mode": "direct", "merge_ci_policy": "required"}
+    config.write_text(yaml.safe_dump(raw))
+    bundle = tmp_path / "tuning.aqbundle"
+    export_bundle(str(bundle), str(config), str(data_dir))
+
+    target = tmp_path / "target.yaml"
+    target.write_text(
+        yaml.safe_dump(
+            {
+                "database": {"url": "postgresql+asyncpg://u:p@localhost/aq"},
+                "messaging_platform": "none",
+                "integration": {
+                    "default_mode": "pull_request",
+                    "github_app": {
+                        "client_id": "Iv1.abc123def456ghi7",
+                        "app_id": 4242,
+                        "installation_id": 7,
+                        "private_key_path": "/run/secrets/aq-github-app.pem",
+                    },
+                },
+            }
+        )
+    )
+    result = await import_bundle(
+        str(bundle),
+        config_path=str(target),
+        data_dir=str(tmp_path / "target-data"),
+        db=FakeProfileDB(),
+        conflict="replace",
+    )
+    assert result.get("error") is None, result
+    written = yaml.safe_load(target.read_text())["integration"]
+    assert written["default_mode"] == "direct"  # the bundle's policy applied
+    assert written["merge_ci_policy"] == "required"
+    assert written["github_app"]["app_id"] == 4242  # the local app survived
+    assert written["github_app"]["private_key_path"] == "/run/secrets/aq-github-app.pem"

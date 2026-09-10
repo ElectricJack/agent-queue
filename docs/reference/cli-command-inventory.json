@@ -2,31 +2,31 @@
   "schema_version": 1,
   "generated_by": "scripts/generate-cli-command-inventory.py",
   "counts": {
-    "leaf_commands": 328,
+    "leaf_commands": 332,
     "registration": {
-      "generated": 235,
-      "handwritten": 93
+      "generated": 238,
+      "handwritten": 94
     },
     "ownership": {
-      "core": 289,
+      "core": 293,
       "external-plugin": 2,
       "internal-plugin": 37
     },
     "support": {
       "deprecated": 1,
-      "supported": 327
+      "supported": 331
     },
     "evidence_level": {
       "behavioral": 10,
-      "dispatch": 235,
-      "registration": 83
+      "dispatch": 238,
+      "registration": 84
     },
     "acceptance_status": {
       "working": 55,
       "broken": 0,
       "obsolete": 1,
       "unsupported": 0,
-      "untested": 272
+      "untested": 276
     }
   },
   "commands": [
@@ -7373,6 +7373,40 @@
       }
     },
     {
+      "path": "aq system config tune",
+      "registration": "handwritten",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": null,
+      "callback": "src.cli.system_config.config_tune",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "registration",
+      "evidence": [
+        "click-registration"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [],
+        "optional": [
+          "--apply",
+          "--overwrite",
+          "--cores",
+          "--memory-gb",
+          "--explain",
+          "--config",
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": []
+      }
+    },
+    {
       "path": "aq system create-workflow",
       "registration": "generated",
       "owner_kind": "core",
@@ -7586,6 +7620,39 @@
         "structured": [
           "--mapping"
         ],
+        "nullable": []
+      }
+    },
+    {
+      "path": "aq system export-portable-config",
+      "registration": "generated",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": "export_portable_config",
+      "callback": "src.cli.auto_commands.callback",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "dispatch",
+      "evidence": [
+        "click-registration",
+        "json-schema",
+        "mock-dispatch",
+        "core-handler"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "--destination"
+        ],
+        "optional": [
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
+        "structured": [],
         "nullable": []
       }
     },
@@ -7914,6 +7981,41 @@
           "--workflow-id"
         ],
         "optional": [
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": []
+      }
+    },
+    {
+      "path": "aq system import-portable-config",
+      "registration": "generated",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": "import_portable_config",
+      "callback": "src.cli.auto_commands.callback",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "dispatch",
+      "evidence": [
+        "click-registration",
+        "json-schema",
+        "mock-dispatch",
+        "core-handler"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "--source"
+        ],
+        "optional": [
+          "--conflict",
+          "--dry-run",
           "--json",
           "--brief",
           "--api-url"
@@ -8892,6 +8994,37 @@
         "required": [
           "--action"
         ],
+        "optional": [
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": []
+      }
+    },
+    {
+      "path": "aq system preview-portable-config",
+      "registration": "generated",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": "preview_portable_config",
+      "callback": "src.cli.auto_commands.callback",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "dispatch",
+      "evidence": [
+        "click-registration",
+        "json-schema",
+        "mock-dispatch",
+        "core-handler"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [],
         "optional": [
           "--json",
           "--brief",

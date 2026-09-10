@@ -239,3 +239,148 @@ def config_schema(ctx: click.Context, as_json: bool) -> None:
     if as_json:
         ctx.find_root().obj["json"] = True
     emit(ctx, schema)
+
+
+DEFAULT_CONFIG_PATH = os.path.expanduser("~/.agent-queue/config.yaml")
+
+
+@system_config.command("tune")
+@click.option("--apply", "apply_", is_flag=True, help="Write the recommendation (default: preview).")
+@click.option(
+    "--overwrite",
+    is_flag=True,
+    help="Replace sections you have already customized instead of keeping them.",
+)
+@click.option("--cores", type=int, help="Pretend the box has this many cores.")
+@click.option("--memory-gb", type=float, help="Pretend the box has this much RAM.")
+@click.option("--explain", is_flag=True, help="Print the reason and override for every key.")
+@click.option(
+    "--config",
+    "config_path",
+    default=DEFAULT_CONFIG_PATH,
+    show_default=True,
+    help="Config file to read and write.",
+)
+@click.pass_context
+@_handle_errors
+def config_tune(
+    ctx: click.Context,
+    apply_: bool,
+    overwrite: bool,
+    cores: int | None,
+    memory_gb: float | None,
+    explain: bool,
+    config_path: str,
+) -> None:
+    """Write resource-aware default tuning into the config file.
+
+    Reads the machine, not the daemon: this is the install-time path, so it
+    works before there is a database to talk to. Rationale for every value is
+    in ``docs/guides/default-tuning.md`` and behind ``--explain``.
+    """
+    import yaml
+
+    from src.config_editor import read_raw_config
+    from src.config_tuning import (
+        DERIVED_KEYS,
+        MachineResources,
+        apply_tuning,
+        recommended_tuning,
+        tuning_notes,
+        tuning_plan,
+    )
+
+    detected = MachineResources.detect()
+    machine = MachineResources(
+        cores=cores or detected.cores,
+        memory_gb=memory_gb if memory_gb is not None else detected.memory_gb,
+    )
+
+    if not os.path.exists(config_path):
+        raise click.UsageError(
+            f"No config file at {config_path}. Run `aq setup` (or create the file) first — "
+            "tuning edits an existing config, it does not create one."
+        )
+
+    if apply_:
+        result = apply_tuning(config_path, machine, overwrite=overwrite)
+        result["machine"] = machine.as_dict()
+        if result.get("validation_errors"):
+            if (ctx.obj or {}).get("json"):
+                emit_error(
+                    "command_error",
+                    "tuned configuration failed validation; nothing was written",
+                    {"validation_errors": result["validation_errors"]},
+                )
+                ctx.exit(1)
+            console.print("[red]Validation failed; nothing written:[/]")
+            for err in result["validation_errors"]:
+                console.print(f"  • {err}")
+            ctx.exit(1)
+
+        def _render_applied(data: dict) -> None:
+            _print_machine(machine)
+            for section in data.get("written", []):
+                console.print(f"[green]✓ {section}[/] written")
+            for section in data.get("kept", []):
+                console.print(f"[yellow]• {section}[/] kept (already customized; --overwrite replaces it)")
+            for err in data.get("preexisting_errors", []):
+                console.print(f"[yellow]![/] pre-existing config problem: {err}")
+            unchanged = data.get("unchanged", [])
+            if unchanged:
+                console.print(f"[dim]{len(unchanged)} section(s) already match the recommendation.[/]")
+            if data.get("applied"):
+                console.print(
+                    "\n[dim]Restart the daemon to pick up sections that are not hot-reloadable.[/]"
+                )
+
+        emit(ctx, result, render=_render_applied)
+        return
+
+    plans = tuning_plan(read_raw_config(config_path), machine, overwrite=overwrite)
+    payload = {
+        "machine": machine.as_dict(),
+        "config_path": config_path,
+        "plan": [
+            {"section": p.section, "action": p.action, "recommended": p.recommended}
+            for p in plans
+        ],
+        "recommended": recommended_tuning(machine),
+    }
+    if explain:
+        payload["notes"] = [
+            {"key": n.key, "why": n.why, "override": n.override} for n in tuning_notes(machine)
+        ]
+        payload["derived"] = [
+            {"key": n.key, "why": n.why, "override": n.override} for n in DERIVED_KEYS
+        ]
+
+    def _render_preview(data: dict) -> None:
+        _print_machine(machine)
+        for entry in data["plan"]:
+            marker = {"add": "[green]+[/]", "replace": "[yellow]~[/]", "keep": "[dim]=[/]"}.get(
+                entry["action"], "[dim]=[/]"
+            )
+            console.print(f"  {marker} {entry['section']} ({entry['action']})")
+        console.print()
+        console.print(yaml.safe_dump(data["recommended"], sort_keys=False).rstrip())
+        if explain:
+            console.print("\n[bold]Why these values[/]")
+            for note in data["notes"]:
+                console.print(f"  [cyan]{note['key']}[/]: {note['why']}")
+                console.print(f"    [dim]override: {note['override']}[/]")
+            console.print("\n[bold]Deliberately left derived[/]")
+            for note in data["derived"]:
+                console.print(f"  [cyan]{note['key']}[/]: {note['why']}")
+                console.print(f"    [dim]override: {note['override']}[/]")
+        console.print("\n[dim]Nothing written. Re-run with --apply.[/]")
+
+    emit(ctx, payload, render=_render_preview)
+
+
+def _print_machine(machine) -> None:
+    console.print(
+        f"[bold]{machine.cores} cores, {machine.memory_gb:.0f} GiB[/] → "
+        f"{machine.size_class}: {machine.concurrent_agents} concurrent agent(s), "
+        f"{machine.cpu_share} core(s) each, {machine.test_slots} test slot(s)\n"
+    )
