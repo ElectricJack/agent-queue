@@ -9,12 +9,13 @@ does) plus an in-process :class:`FakeSessionManager` that implements
 from __future__ import annotations
 
 import time
+from dataclasses import dataclass, field
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
-from dataclasses import dataclass, field
 
 import pytest
-from sqlalchemy import insert, update as sa_update
+from sqlalchemy import insert
+from sqlalchemy import update as sa_update
 
 from src.config import MessagesConfig
 from src.database import Database
@@ -22,7 +23,6 @@ from src.database.tables import messages
 from src.messages.delivery import PARK_AFTER_SECONDS, MessageDeliveryEngine
 from src.models import Project
 from tests.db_fixtures import lease_dsn
-
 
 # --------------------------------------------------------------------------
 # Fixtures / fakes
@@ -196,7 +196,7 @@ class TestDeliveryPolicy:
         assert len(sessions.nudges) == 1
         text = sessions.nudges[0][3]
         assert "msg-" in text and msg.id in text
-        assert text == f"Read `aq message status {msg.id} --json`."
+        assert text == f"Handle body: `aq message status {msg.id} --json`"
         assert "\n" not in text and len(text) < 78
         stored = await db.get_message(msg.id)
         assert stored.body == "world"
