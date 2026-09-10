@@ -262,10 +262,11 @@ currently holding. It creates a new agent only for READY work that no idle,
 *compatible* worker could take
 ([`src/orchestrator/agent_reconciler.py`](../../src/orchestrator/agent_reconciler.py))
 — an idle triage worker cannot stand in for an explicitly routed Codex task,
-so it does not suppress supply for one. And if an operator has ever deleted an
-agent, that roster is treated as manually sized and is never grown back
-automatically; the skip reason says so: *"roster was manually sized; add an
-agent explicitly"*.
+so it does not suppress supply for one. Deleting an agent removes that
+identity from the usable roster but is not a scaling policy: the tombstone is
+never resurrected, and the reconciler still grows a *fresh* worker when demand
+needs one. To cap capacity persistently, change the pool's `max_active` bound
+or the project's `max_concurrent_agents` rather than deleting workers.
 
 ### Project defaults
 

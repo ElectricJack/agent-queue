@@ -689,11 +689,11 @@ definition to the pool `_launch_pool_session` draws its candidates from
 
 Reuse is not an optimisation. Without it the roster grows by one `agents` row per pool
 session — one per *task* under `fresh_context_per_task` — and there is no sanctioned
-sweep to bound it: `soft_delete_agent` cannot reap retired rows because
-`create_automatic_agent` refuses to grow the roster while *any* worker tombstone exists,
-and a hard delete drops history the task ledger still references. (This supersedes
-§11.2's aside that "`AgentReconciler` deletes retired rows at startup"; no such sweep
-exists, and adding one would disable automatic pool growth.) The agent-flock design
+sweep to bound it: `soft_delete_agent` cannot reap retired rows because it only takes an
+identity *out* of the reuse pool — the tombstone records that identity's deletion, not a
+scaling policy — and a hard delete drops history the task ledger still references. (This
+supersedes §11.2's aside that "`AgentReconciler` deletes retired rows at startup"; no
+such sweep exists.) The agent-flock design
 states the same conclusion: "pools ... may reuse idle definitions after safe
 termination".
 

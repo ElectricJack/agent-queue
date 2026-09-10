@@ -274,16 +274,26 @@ async def test_reconciler_does_not_count_incompatible_idle_worker_as_supply(rout
     assert (await routing_db.get_agent("triage")).intelligence_class == "fast-low"
 
 
-async def test_reconciler_respects_manually_sized_roster_when_only_triage_is_idle(routing_db):
+async def test_reconciler_grows_a_fresh_worker_when_deletion_leaves_only_triage(routing_db):
     from src.orchestrator.agent_reconciler import AgentReconciler
 
     await routing_db.create_agent(workers()[0])
     await routing_db.create_agent(workers()[-1])
     assert await routing_db.soft_delete_agent("sol")
+    # Deleting a worker is not a scaling policy, so the roster grows -- but
+    # only into a *fresh* identity for the demanded profile.  The tombstoned
+    # ``sol`` is not resurrected and the incompatible ``triage`` worker is
+    # neither reused nor reprofiled.
     report = await AgentReconciler(routing_db).reconcile()
-    assert report.created == []
-    assert [agent.id for agent in await routing_db.list_agents()] == ["triage"]
-    assert any("roster was manually sized" in reason for _, reason in report.skipped)
+    assert report.created == [("p", "worker-deep-codex")]
+    roster = await routing_db.list_agents()
+    grown = [agent for agent in roster if agent.id != "triage"]
+    assert len(roster) == 2 and len(grown) == 1
+    assert (grown[0].profile_id, grown[0].intelligence_class) == (
+        "worker-deep-codex", "deep-high",
+    )
+    assert (await routing_db.get_agent("sol")).deleted_at is not None
+    assert (await routing_db.get_agent("triage")).profile_id == "triage"
 
 
 async def test_reconciler_does_not_create_supply_for_a_blocked_ready_task(routing_db):
