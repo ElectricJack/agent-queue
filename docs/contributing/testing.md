@@ -372,6 +372,8 @@ in [scripts](scripts.md#supported-end-to-end-kit).
 ## Related pages
 
 * [Local checks](checks.md) — the shortest sufficient check list before a push.
+* [Testing the installer](installer-testing.md) — the seams `aq install` is
+  tested through, and the platform evidence they cannot stand in for.
 * [Resource gating](../guides/resource-gating.md) — the three enforcement
   layers `aq test` is the middle of.
 * [Code generation](codegen.md) — what to regenerate when a drift guard fails.
