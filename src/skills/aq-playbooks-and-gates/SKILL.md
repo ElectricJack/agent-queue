@@ -44,11 +44,33 @@ aq playbook resume --run-id <run_id> --human-input "approve"
 is what the next transition is evaluated against, so say *approve* / *reject*
 plus the reason rather than a bare token.
 
-Gate rows themselves (`gate_list` / `gate_show` / `gate_resolve`) have no
-usable CLI form right now — `aq task gate-list`, `aq task gate-show` and
-`aq task gate-resolve` are generated with no parameters at all, so they
-cannot name a gate (tracked by `bright-forge-33`). Drive paused runs through
-`aq playbook resume` until that lands.
+Gate rows can also be driven directly, when you have the gate id rather than
+a run id:
+
+```bash
+aq task gate-list --status open                     # everything awaiting an answer
+aq task gate-list --project-id <pid> --gate-type human
+aq task gate-show --gate-id <gate_id>               # the gate + its waiter task ids
+aq task gate-resolve --gate-id <gate_id> --resolved-by <who> --resolution "approve: ..."
+```
+
+`--status` takes `open` / `resolved` / `expired`; `--gate-type` takes `human`,
+`timer`, `pr-merged`, `ci-run`, `event`, `task` or `routing`. On
+`gate-resolve`, `--gate-id` and `--resolved-by` are both required —
+`--resolved-by` is recorded on the gate row — and `--resolution` is the free
+text stored as the answer. Resolving is idempotent.
+
+`routing` gates are the one exception: `gate-resolve` refuses them, because
+routing is a pinned contract that must also write the task's profile,
+intelligence class and workspace. Resolve those with `aq task route`:
+
+```bash
+aq task route --task-id <task_id> --profile-id <profile_id>
+```
+
+Prefer `aq playbook resume` when the paused run's HITL node wants free text
+back in the run conversation; use `gate-resolve` when the gate row itself is
+what you are answering.
 
 When a gate does resolve, two things happen:
 1. The gate row transitions to `resolved` + records who resolved it.
