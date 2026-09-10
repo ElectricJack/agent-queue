@@ -417,6 +417,7 @@ class DatabaseBackend(Protocol):
         project_id: str,
         *,
         worktree_slot_cap: int | None = None,
+        kind_id: str | None = None,
     ) -> int: ...
     async def count_free_slots(self, project_id: str, *, worktree_slot_cap: int) -> int: ...
 
