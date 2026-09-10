@@ -26,6 +26,7 @@ to AQ, which is no longer how the operator surfaces work.
 | Installing it and running one task | [Install](tutorials/install.md) → [Your first task](tutorials/first-task.md) |
 | How the daemon is put together | [System architecture](concepts/architecture.md) |
 | The vocabulary | [Glossary](reference/glossary.md) |
+| The retired Discord controls and their replacements | [Discord migration runbook](guides/discord-migration.md) |
 | Design specs and old plans | [Historical material](history/README.md) |
 
 ## Screenshots

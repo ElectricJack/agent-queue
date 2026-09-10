@@ -249,7 +249,8 @@ class TestUserToSupervisorNudge:
         nudged_name, nudged_text = fake.sent_nudges[0]
         assert nudged_name == runtime_name
         assert message_id in nudged_text
-        assert "what's the status?" in nudged_text
+        assert "aq message status" in nudged_text
+        assert "what's the status?" not in nudged_text
 
         stored = await orch.db.get_message(message_id)
         assert stored.delivered_at is not None

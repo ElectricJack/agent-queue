@@ -26,6 +26,7 @@ This catalog maps every production module owned by the operations documentation 
 | [src/doctor/workspace_checks.py](../../../src/doctor/workspace_checks.py) | Checks workspace base-session consistency. | [Operations guide](../../guides/operations.md) | Focused coverage: workspace doctor tests. |
 | [src/doctor/worktree_checks.py](../../../src/doctor/worktree_checks.py) | Detects slot worktrees still pinned to deleted-task branches. | [Operations guide](../../guides/operations.md) | Focused coverage: `tests/test_worktree_doctor.py`. |
 | [src/logging_config.py](../../../src/logging_config.py) | Configures structured console/JSONL logging and correlation context. | [Operations guide](../../guides/operations.md) | Focused coverage: `tests/test_logging_config.py`. |
+| [src/remote_links.py](../../../src/remote_links.py) | Resolves a safe reachable dashboard base URL for remote operator links without exposing loopback addresses. | [Operations guide](../../guides/operations.md) | Focused coverage: `tests/test_remote_links.py`. |
 | [src/metrics/__init__.py](../../../src/metrics/__init__.py) | Exposes the fleet-metrics package surface. | [Operations guide](../../guides/operations.md) | Covered with sampler tests. |
 | [src/metrics/sampler.py](../../../src/metrics/sampler.py) | Collects, publishes, buffers, rolls up and prunes fleet metric samples. | [Operations guide](../../guides/operations.md) | Focused coverage: `tests/test_metrics_sampler.py`. |
 

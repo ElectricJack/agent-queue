@@ -151,6 +151,16 @@ class ProseIndex:
 
 
 def _remap_pipeline_refs(body: dict[str, Any], index: ProseIndex) -> dict[str, Any]:
+    # The approved semantic body is retained as a recording, while policy may
+    # retire a rule from the shipped prose.  A rebuild must exclude both that
+    # rule and all of its executable steps.
+    active_rules = set(index._rules)
+    body["rules"] = [rule for rule in body["rules"] if rule["id"] in active_rules]
+    body["steps"] = {
+        step_id: step
+        for step_id, step in body["steps"].items()
+        if step["rule"] in active_rules
+    }
     for rule in body["rules"]:
         rule["source"] = index.rule_ref(rule["id"])
     for step_id, step in body["steps"].items():

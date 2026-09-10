@@ -75,11 +75,9 @@ REQUIRED_REVIEW_KEYS = frozenset(
 REQUIRED_REVIEW_SECTIONS = ()
 
 
-#: The rule ids `tests/test_default_pipeline.py` pins.
+#: The rule ids the integration-only default pipeline pins.
 PIPELINE_RULE_IDS = frozenset(
     {
-        "per-task-review",
-        "per-branch-final-review",
         "spec-ingest-on-approve",
         "proposal-ready-gate",
         "commit-on-gate-resolve",
@@ -314,11 +312,11 @@ def test_compiled_against_fingerprints_every_referenced_profile(playbook_id: str
         )
 
 
-def test_the_pipeline_depends_on_its_review_profiles_only_by_delegation() -> None:
-    """The shape that made the empty map easy to miss, pinned.
+def test_the_pipeline_depends_on_its_spec_ingest_profile_by_delegation() -> None:
+    """The integration-only pipeline delegates its sole profile dependency.
 
-    `default-pipeline` has no `llm` or `agent_task` step at all: every one of
-    its three profile dependencies is an `ensure_task` argument.  A future
+    `default-pipeline` has no `llm` or `agent_task` step at all: its
+    `spec-ingest` dependency is an `ensure_task` argument.  A future
     refactor that dropped the delegated half of the snapshot would pass every
     other assertion in this file, so name the shape here.
     """
@@ -329,11 +327,7 @@ def test_the_pipeline_depends_on_its_review_profiles_only_by_delegation() -> Non
         if getattr(step, "profile_id", None)
     }
     assert own == set(), "default-pipeline gained an AI step; re-review this fixture"
-    assert set(definition.compiled_against.profiles) == {
-        "reviewer",
-        "final-reviewer",
-        "spec-ingest",
-    }
+    assert set(definition.compiled_against.profiles) == {"spec-ingest"}
 
 
 def test_shipped_profile_fingerprints_covers_the_shipped_tree() -> None:
@@ -343,12 +337,8 @@ def test_shipped_profile_fingerprints_covers_the_shipped_tree() -> None:
     assert all(value.startswith("sha256:") for value in fingerprints.values())
 
 
-def test_pipeline_references_the_three_review_profiles() -> None:
-    assert _referenced_profile_ids(_artifact("default-pipeline")) == {
-        "reviewer",
-        "final-reviewer",
-        "spec-ingest",
-    }
+def test_pipeline_references_only_the_spec_ingest_profile() -> None:
+    assert _referenced_profile_ids(_artifact("default-pipeline")) == {"spec-ingest"}
 
 
 def test_pipeline_rule_set_unchanged() -> None:
@@ -416,19 +406,15 @@ def test_assignment_router_is_an_authored_pipeline_over_route_commands() -> None
     assert definition.steps["route-task--done"].outcome == "completed"
     assert definition.steps["route-task--failed"].outcome == "failed"
 
-def test_review_dedup_key_matches_doctor() -> None:
-    """The prose rewrite must not silently disarm `integration.unreviewed_prs`."""
+def test_pipeline_policy_retires_automatic_review_steps() -> None:
+    """Integration owns review validation; the default pipeline must not recreate it."""
     from src.doctor.integration_checks import _review_dedup_key
 
     definition = _artifact("default-pipeline")
-    step = definition.steps["per-task-review--create-review"]
-    template = _inputs(step)["dedup_key"]
-    assert template["type"] == "template", template
-    rendered = "".join(
-        part["value"] if part["type"] == "literal" else "TASK-1"
-        for part in template["parts"]
-    )
-    assert rendered == _review_dedup_key("TASK-1")
+    assert not any(step_id.startswith("per-task-review--") for step_id in definition.steps)
+    # The integration doctor retains its durable key independently of this
+    # retired playbook policy.
+    assert _review_dedup_key("TASK-1") == "review:task:TASK-1"
 
 
 def test_artifact_validates_against_the_live_registries() -> None:

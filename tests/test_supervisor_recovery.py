@@ -404,8 +404,8 @@ async def test_internal_recovery_nudge_does_not_request_a_user_reply():
         body="question",
     )
     mixed = _render_nudge([notice, user])
-    assert "Reply with `aq reply user-message" in mixed
-    assert "Reply with `aq reply internal" not in mixed
+    assert mixed == "Handle `aq message status internal --json`."
+    assert "question" not in mixed
 
 
 @pytest.mark.parametrize("still_running", [True, "unknown"])

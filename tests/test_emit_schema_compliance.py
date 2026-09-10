@@ -339,15 +339,12 @@ class TestDiscordEmits:
                     f"{path.name} emits unregistered event type '{event_type}'"
                 )
 
-    def test_system_online_emit_has_required_fields(self):
-        """bot.py emits notify.system_online from the event model's dump."""
+    def test_system_online_schema_remains_valid_after_discord_lifecycle_removal(self):
+        """The retired Discord gateway must not restore lifecycle notifications."""
         from src.notifications.events import SystemOnlineEvent
 
         source = (SRC_DIR / "discord" / "bot.py").read_text(encoding="utf-8")
-        assert re.search(
-            r'emit\(\s*"notify\.system_online"\s*,\s*\n\s*SystemOnlineEvent\(\)',
-            source,
-        ), "notify.system_online emit not found in bot.py"
+        assert "notify.system_online" not in source
 
         errors = validate_payload(
             "notify.system_online", SystemOnlineEvent().model_dump(mode="json")

@@ -28,9 +28,31 @@ def _pg_backend():
 
 @pytest.fixture
 def install_home(tmp_path, monkeypatch):
-    """Point the installer at a disposable data directory."""
+    """Point the installer at a disposable supported host and data directory."""
+    from src.cli import install as install_cli
+    from src.install.platform import PlatformFacts, SupportVerdict, TIER_SUPPORTED
+
     home = tmp_path / "aq-home"
     monkeypatch.setenv("AQ_INSTALL_STATE_DIR", str(home))
+    monkeypatch.setattr(
+        install_cli,
+        "describe_host",
+        lambda: SupportVerdict(
+            host_path="windows-wsl2",
+            tier=TIER_SUPPORTED,
+            facts=PlatformFacts(
+                system="linux",
+                release="5.15.0-microsoft-standard-WSL2",
+                machine="x86_64",
+                arch="x86_64",
+                python_version="3.12.0",
+                wsl=True,
+                wsl_version=2,
+                distro_id="ubuntu",
+                distro_version="24.04",
+            ),
+        ),
+    )
     return home
 
 

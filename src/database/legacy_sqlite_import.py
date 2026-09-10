@@ -28,6 +28,7 @@ from src.database.tables import (
     api_session_tokens,
     archived_tasks,
     chat_analyzer_suggestions,
+    development_deliveries,
     digest_windows,
     escalation_actions,
     escalation_deliveries,
@@ -231,6 +232,7 @@ _ORDERED_TABLES = [
     project_integration_leases,
     project_integration_schedules,
     task_branch_origins,
+    development_deliveries,
     # FK → projects
     integration_history_waivers,
     integration_legacy_suppression,

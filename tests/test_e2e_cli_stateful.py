@@ -62,7 +62,7 @@ def test_disposable_daemon_stateful_cli_smoke(tmp_path):
             timeout=600,
         )
         assert result.returncode == 0, f"{result.stdout}\n--- stderr ---\n{result.stderr}"
-        assert "14/14 scenarios passed" in result.stdout
+        assert "15/15 scenarios passed" in result.stdout
         for status in (
             "passed",
             "unsupported",

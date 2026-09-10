@@ -235,11 +235,9 @@ def test_documented_project_commands_exist() -> None:
         assert f'"{stub}"' in registry_source, f"the {stub!r} core stub is gone"
     live |= {"load_tools", "reply_to_user"}
 
-    for rel, heading in (
-        ("docs/specs/mcp-server.md", "### Project Management"),
-        ("docs/guides/agent-tools.md", "## Project Category"),
-        ("docs/guides/agent-tools.md", "### Navigation & Response"),
-    ):
+    # The former guide is now a redirect; the maintained command menu is the
+    # MCP-server reference, which must remain executable.
+    for rel, heading in (("docs/specs/mcp-server.md", "### Project Management"),):
         section = _section((REPO_ROOT / rel).read_text(encoding="utf-8"), heading)
         documented = re.findall(r"^\| `([a-z_]+)`", section, re.MULTILINE)
         assert documented, f"{rel} no longer has a project tool table"
