@@ -382,6 +382,7 @@ from . import daemon  # noqa: E402, F401
 from . import db as _db_cli  # noqa: E402, F401
 from . import doctor  # noqa: E402, F401
 from . import install as _install_cli  # noqa: E402, F401
+from . import uninstall as _uninstall_cli  # noqa: E402, F401
 from . import logs  # noqa: E402, F401
 from . import tasks  # noqa: E402, F401
 from . import projects  # noqa: E402, F401

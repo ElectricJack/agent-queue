@@ -15,6 +15,7 @@ a caller has. The other pages in this directory go deeper:
 | [Agent-facing tools](agent-tools.md) | The tool definitions, the MCP surface, and the shipped agent skills. |
 | [Command contracts](contracts.md) | The typed, fingerprinted contracts playbooks execute commands through. |
 | [`aq install`](install.md) | The daemon-free installer: flags, JSON payload, exit codes and the resume record. |
+| [`aq uninstall`](uninstall.md) | Removing what the installer owns: scopes, confirmations and what is never touched. |
 
 > **Prerequisite for every example on this page.** The daemon is running on
 > loopback and the shell has no `AQ_API_TOKEN` set — that is an operator
@@ -542,6 +543,7 @@ quoting a number from any page.
   definitions, and the MCP surface that publishes them.
 * [Command contracts](contracts.md) — the typed layer playbooks call commands
   through.
+* [`aq uninstall`](uninstall.md) — removing what the installer owns
 * [`aq install`](install.md) — the one command that runs before a daemon
   exists, and the exit codes a script branches on.
 * [Module catalog: CLI](../modules/cli.md) — every module behind this surface.

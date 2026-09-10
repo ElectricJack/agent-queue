@@ -415,7 +415,9 @@ def test_skipping_discord_leaves_the_run_ready(install_home, wizard_registry):
     assert any("--with discord" in line for line in payload["onboarding"]["skipped"])
 
 
-def test_the_advanced_flag_is_passed_to_the_question_plan(install_home, wizard_registry, monkeypatch):
+def test_the_advanced_flag_is_passed_to_the_question_plan(
+    install_home, wizard_registry, monkeypatch
+):
     from src.cli import install as install_cli
 
     seen: list[bool] = []
@@ -428,3 +430,77 @@ def test_the_advanced_flag_is_passed_to_the_question_plan(install_home, wizard_r
     _invoke("--interactive", "--dry-run", "--advanced")
 
     assert seen == [True]
+
+
+# -- repair and upgrade -----------------------------------------------------
+
+
+def test_repair_and_upgrade_are_mutually_exclusive(install_home, without_database_steps):
+    result = _invoke("--repair", "--upgrade", "--non-interactive")
+    assert result.exit_code == EXIT_CODES[InstallOutcome.INVALID_INPUT]
+    assert "mutually exclusive" in result.output
+
+
+def test_repair_refuses_to_discard_the_record_it_reconciles(install_home, without_database_steps):
+    result = _invoke("--repair", "--fresh", "--non-interactive")
+    assert result.exit_code == EXIT_CODES[InstallOutcome.INVALID_INPUT]
+    assert "--fresh and --repair are mutually exclusive" in result.output
+
+
+def test_a_repair_reruns_and_still_owns_exactly_one_directory(install_home, without_database_steps):
+    first = _payload(_invoke("--non-interactive", "--yes", "--json"))
+    repaired = _payload(_invoke("--repair", "--non-interactive", "--yes", "--json"))
+
+    assert repaired["outcome"] == "ready"
+    assert first["resources"] == repaired["resources"]
+    assert len([row for row in repaired["resources"] if row["kind"] == "directory"]) == 1
+
+
+def test_an_upgrade_records_and_completes_a_version_transition(
+    install_home, without_database_steps, monkeypatch
+):
+    from src.cli import install as install_cli
+
+    monkeypatch.setattr(install_cli, "installer_version", lambda: "1.0.0")
+    _invoke("--non-interactive", "--yes", "--json")
+
+    monkeypatch.setattr(install_cli, "installer_version", lambda: "1.1.0")
+    payload = _payload(_invoke("--upgrade", "--non-interactive", "--yes", "--json"))
+
+    assert payload["outcome"] == "ready"
+    assert any("upgrading 1.0.0 -> 1.1.0" in message for message in payload["messages"])
+    record = json.loads((install_home / "install-state.json").read_text(encoding="utf-8"))
+    assert record["upgrade"] == {
+        "from_version": "1.0.0",
+        "to_version": "1.1.0",
+        "state": "completed",
+        "started_at": record["upgrade"]["started_at"],
+        "finished_at": record["upgrade"]["finished_at"],
+        "attempts": 1,
+    }
+
+
+def test_a_plain_rerun_after_a_version_change_still_refuses(
+    install_home, without_database_steps, monkeypatch
+):
+    """The refusal is what makes ``--repair``/``--upgrade`` an *explicit* plan."""
+    from src.cli import install as install_cli
+
+    monkeypatch.setattr(install_cli, "installer_version", lambda: "1.0.0")
+    _invoke("--non-interactive", "--yes", "--json")
+
+    monkeypatch.setattr(install_cli, "installer_version", lambda: "1.1.0")
+    payload = _payload(_invoke("--non-interactive", "--yes", "--json"))
+    assert payload["outcome"] == "invalid_input"
+    assert "--restart-from" in payload["next_action"]
+
+
+def test_a_repair_carries_forward_the_capabilities_the_record_selected(
+    install_home, wizard_registry
+):
+    """A repair reconciles the installation it has, it does not narrow it."""
+    selected = _payload(_invoke("--non-interactive", "--yes", "--with", "discord", "--json"))
+    assert "discord" in selected["capabilities"]
+
+    repaired = _payload(_invoke("--repair", "--non-interactive", "--yes", "--json"))
+    assert repaired["capabilities"] == selected["capabilities"]

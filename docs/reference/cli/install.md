@@ -31,7 +31,11 @@ aq install --non-interactive --yes --json   # unattended, machine-readable
 aq install --list-steps         # what this build can do, in run order
 aq install --with provider.codex            # select one optional agent CLI
 aq install --with postgres-managed          # let AQ install and run PostgreSQL
+aq install --repair             # reconcile this installation against the host
+aq install --upgrade            # repair, and record the version transition
 ```
+
+To remove an installation, see [`aq uninstall`](uninstall.md).
 
 ## The wizard
 
@@ -369,6 +373,59 @@ Rerunning `aq install` is the normal recovery path, and it is safe:
 * `--restart-from STEP` redoes exactly `STEP` and its dependents. Unrelated
   completed steps are left alone. It never deletes a recorded resource:
   removing something is an explicit uninstall action, not a side effect.
+* Selecting an optional capability on a later run installs it. `aq install
+  --with provider.codex` runs the Codex step even though an earlier run
+  recorded it as `skipped` — a skip that was only "you did not ask for this"
+  is not a decision the record holds you to.
+
+### `--repair`
+
+`--repair` is a rerun that does not take the record's word for it. A step whose
+observable condition can be checked is still revalidated — that is the cheapest
+possible repair — but a step with **no read-only verifier** is re-executed
+instead of being carried forward. Use it when the host has drifted in a way the
+record cannot see.
+
+A repair is still bound by every other rule: it reuses the recorded resources
+rather than creating new ones, it removes nothing, and it asks for consent
+before a mutating step exactly as an install does. It also carries the
+capabilities the record selected forward, so a repair reconciles the
+installation you have rather than quietly narrowing it; an explicit `--with`
+still wins.
+
+`--repair` and `--fresh` are mutually exclusive: `--fresh` starts a new record,
+which is the opposite of reconciling the existing one.
+
+### `--upgrade`
+
+`--upgrade` repairs, and additionally records the version transition **durably**:
+
+```json
+"upgrade": {"from_version": "1.0.0", "to_version": "1.1.0",
+            "state": "in_progress", "started_at": "2026-09-09T09:00:00+00:00",
+            "finished_at": null, "attempts": 1}
+```
+
+The record is written *before* the first step runs and marked `completed` only
+when the run reaches `ready`. So an installer that is killed halfway leaves an
+`in_progress` record behind, and the next run — of **any** mode, including a
+plain `aq install` — finds it, says so in `messages`, and resumes from the first
+unsatisfied step. Nothing is rolled back: the contract resumes over the
+resources named in the ownership record rather than unwinding them.
+
+`--upgrade` to a *different* target supersedes an abandoned transition and says
+which one it replaced. A plain rerun with a different target reports the
+pending transition and leaves it alone.
+
+### A record from another installer version
+
+A resume record written by a different installer version is refused by a plain
+rerun — the message names both versions and the two ways forward. `--repair`
+and `--upgrade` *are* the explicit repair plan the contract asks for: they adopt
+the record, keep every owned resource (forgetting them is what would make the
+next run create a second copy), re-verify every step and re-stamp the version.
+`--fresh` remains the "start over beside the old one" option, and it deletes
+nothing either.
 
 ## The resume record
 
@@ -554,6 +611,7 @@ contract](../../plans/install-onboarding/contract.md).
 ## Related pages
 
 * [CLI reference](README.md) — the whole `aq` surface.
+* [`aq uninstall`](uninstall.md) — removing what this command owns.
 * [Operations guide](../../guides/operations.md) — `aq doctor` and recovery
   once AQ is installed.
 * [Install tutorial](../../tutorials/install.md) — the current

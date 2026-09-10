@@ -80,8 +80,12 @@ LOGIN_PROFILES: dict[str, str] = {
     "sh": ".profile",
 }
 
-_BEGIN_MARKER = "# >>> agent-queue (aq install) >>>"
-_END_MARKER = "# <<< agent-queue (aq install) <<<"
+#: The markers that fence the one block this adapter writes into a login file.
+#: They are public because they are a contract with uninstall as much as with
+#: the operator reading the file: the block AQ added is the block AQ removes,
+#: and everything outside the markers is the operator's own configuration.
+BEGIN_MARKER = "# >>> agent-queue (aq install) >>>"
+END_MARKER = "# <<< agent-queue (aq install) <<<"
 
 #: Prefixes of interpreters macOS itself owns.  ``pip`` into these is
 #: externally managed and is replaced by OS updates.
@@ -472,7 +476,7 @@ def shell_path_step(
         if profile is None or not profile.is_file():
             return False
         text = profile.read_text(encoding="utf-8", errors="replace")
-        return _BEGIN_MARKER in text or shellenv_line(prefix) in text or "brew shellenv" in text
+        return BEGIN_MARKER in text or shellenv_line(prefix) in text or "brew shellenv" in text
 
     def run(context: StepContext) -> StepResult:
         prefix = _prefix(context)
@@ -507,7 +511,7 @@ def shell_path_step(
             )
 
         created = not profile.exists()
-        block = f"\n{_BEGIN_MARKER}\n{line}\n{_END_MARKER}\n"
+        block = f"\n{BEGIN_MARKER}\n{line}\n{END_MARKER}\n"
         try:
             profile.parent.mkdir(parents=True, exist_ok=True)
             with profile.open("a", encoding="utf-8") as handle:
@@ -531,7 +535,12 @@ def shell_path_step(
                     id=str(profile),
                     owned=created,
                     reused=not created,
-                    detail={"marker": _BEGIN_MARKER, "line": line, "created": created},
+                    detail={
+                        "marker": BEGIN_MARKER,
+                        "marker_end": END_MARKER,
+                        "line": line,
+                        "created": created,
+                    },
                 ),
             ),
         )
@@ -839,8 +848,10 @@ def macos_steps(
 
 __all__ = [
     "ARM_PREFIX",
+    "BEGIN_MARKER",
     "BREW_PREREQUISITES",
     "DEFAULT_PREFIXES",
+    "END_MARKER",
     "HOMEBREW_INSTALL_COMMAND",
     "INTEL_PREFIX",
     "LOGIN_PROFILES",

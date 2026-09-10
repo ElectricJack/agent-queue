@@ -31,6 +31,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from .lifecycle import LifecycleMode, complete_upgrade, plan_upgrade
 from .platform import SupportVerdict, describe_host
 from .results import (
     InstallOutcome,
@@ -91,6 +92,10 @@ class InstallOptions:
 
     installer_version: str = "0.0.0"
     target_version: str = "0.0.0"
+    #: Install, repair or upgrade.  One engine runs all three; the mode decides
+    #: how much a completed step is trusted and whether a version transition is
+    #: recorded.  See :class:`src.install.lifecycle.LifecycleMode`.
+    mode: LifecycleMode = LifecycleMode.INSTALL
     interactive: bool = True
     dry_run: bool = False
     resume: bool = True
@@ -175,6 +180,17 @@ class InstallEngine:
     def _plan_step(
         self, step: StepSpec, state: InstallState | None, satisfied: set[str]
     ) -> tuple[PlanAction, str]:
+        action, reason = self._decide(step, state, satisfied)
+        # The dry-run conversion is applied once, to whatever the decision was.
+        # Folding it into the decision itself is how a mutating step that a
+        # repair re-runs would slip past ``--dry-run``.
+        if action is PlanAction.RUN and step.mutating and self.options.dry_run:
+            return PlanAction.WOULD_RUN, "mutating step; not executed in a dry run"
+        return action, reason
+
+    def _decide(
+        self, step: StepSpec, state: InstallState | None, satisfied: set[str]
+    ) -> tuple[PlanAction, str]:
         missing = [dependency for dependency in step.depends_on if dependency not in satisfied]
         if missing:
             return PlanAction.BLOCKED, f"depends on unsatisfied step(s): {', '.join(missing)}"
@@ -183,15 +199,31 @@ class InstallEngine:
                 PlanAction.SKIP_NOT_SELECTED,
                 f"capability '{step.capability}' was not selected",
             )
+        mode = self.options.mode
         record = state.record_for(step.id) if state else None
         if record and record.satisfied:
             if record.state is StepState.SKIPPED:
+                if step.capability:
+                    # The capability gate above passed, so the capability *is*
+                    # selected now.  A record saying "skipped" was written by a
+                    # run that did not select it (or by an operator who declined
+                    # it), and honouring that forever is what would make
+                    # `aq install --with <capability>` a documented no-op.
+                    return (
+                        PlanAction.RUN,
+                        "capability selected since the run that skipped this step",
+                    )
+                if mode.reconciles:
+                    return PlanAction.RUN, f"{mode.value}: re-running a previously skipped step"
                 return PlanAction.SKIP_COMPLETED, f"previously skipped: {record.summary}"
             if step.verify is None:
+                if mode.reconciles:
+                    return (
+                        PlanAction.RUN,
+                        f"{mode.value}: the step has no read-only verifier, so it is re-run",
+                    )
                 return PlanAction.SKIP_COMPLETED, "completed by an earlier run"
             return PlanAction.REVALIDATE, "completed by an earlier run; revalidating"
-        if step.mutating and self.options.dry_run:
-            return PlanAction.WOULD_RUN, "mutating step; not executed in a dry run"
         return PlanAction.RUN, "not yet satisfied"
 
     # -- execution ----------------------------------------------------------
@@ -213,7 +245,7 @@ class InstallEngine:
             )
 
         try:
-            state = self._load_state(state_path)
+            state, adopted, recorded_version = self._load_state(state_path)
         except IncompatibleStateError as error:
             return self._result(
                 InstallOutcome.INVALID_INPUT,
@@ -254,13 +286,34 @@ class InstallEngine:
 
         state.set_platform(support.facts)
         state.capabilities = sorted(options.capabilities)
+
+        # The version transition is decided — and persisted — before the first
+        # step runs.  That ordering is the whole recovery story: a process
+        # killed halfway leaves an ``in_progress`` record on disk, and the next
+        # run of any mode reads it, says so and continues.
+        decision = plan_upgrade(
+            state,
+            mode=options.mode,
+            from_version=recorded_version or options.installer_version,
+            target_version=options.target_version,
+            now=self._clock(),
+        )
+        if decision.record is not None:
+            state.upgrade = decision.record
+        if not options.dry_run and (decision.started or decision.resumed):
+            save_state(state, state_path, now=self._clock())
+
         plan_rows = {row.step_id: row for row in self.plan(state)}
 
         results: list[StepResult] = []
         resources: tuple[ResourceRecord, ...] = tuple(state.resources.values())
         satisfied: set[str] = set()
         stopped = False
-        messages: list[str] = [f"invalidated by --restart-from: {name}" for name in invalidated]
+        messages: list[str] = [
+            *adopted,
+            *decision.messages,
+            *(f"invalidated by --restart-from: {name}" for name in invalidated),
+        ]
 
         for index, step in enumerate(ordered, start=1):
             row = plan_rows[step.id]
@@ -304,6 +357,12 @@ class InstallEngine:
                 )
 
         outcome = self._classify(results)
+        if outcome is InstallOutcome.READY:
+            finished = complete_upgrade(state, now=self._clock())
+            if finished is not None:
+                messages.append(
+                    f"upgrade {finished.from_version} -> {finished.to_version} completed"
+                )
         saved_path: str | None = None
         if not options.dry_run:
             save_state(state, state_path, now=self._clock())
@@ -320,20 +379,45 @@ class InstallEngine:
         )
 
     # -- internals ----------------------------------------------------------
-    def _load_state(self, state_path: Path) -> InstallState:
+    def _load_state(self, state_path: Path) -> tuple[InstallState, tuple[str, ...], str]:
+        """Load the resume record, note an adoption, and report its own version.
+
+        The third element is the installer version the record on disk was
+        written by — the ``from`` side of an upgrade — which adoption is about
+        to overwrite.
+
+        A record written by a different installer version is refused for a
+        plain rerun and *adopted* by a repair or an upgrade: the contract asks
+        for "an explicit repair plan, not automatic deletion", and those two
+        modes are that plan.  Adoption keeps every owned resource — forgetting
+        them is what would make the next run duplicate them — and re-stamps the
+        version so the record describes the installer that now owns it.
+        """
         options = self.options
         fresh = InstallState(
             installer_version=options.installer_version,
             target_version=options.target_version,
         )
         if options.fresh or not options.resume:
-            return fresh
+            return fresh, (), ""
         state = load_state(state_path)
         if state is None:
-            return fresh
-        assert_compatible(state, installer_version=options.installer_version)
+            return fresh, (), ""
+        messages: tuple[str, ...] = ()
+        previous = state.installer_version
+        if previous and previous != options.installer_version:
+            if not options.mode.adopts_foreign_record:
+                assert_compatible(state, installer_version=options.installer_version)
+            messages = (
+                (
+                    f"adopting the resume record written by installer {previous}; this is "
+                    f"{options.installer_version}. Its owned resources are kept and every step "
+                    "is re-verified."
+                ),
+            )
+            state.installer_version = options.installer_version
         state.target_version = options.target_version
-        return state
+        return state, messages, previous
 
     def _apply_restart(self, state: InstallState) -> tuple[str, ...]:
         if not self.options.restart_from:

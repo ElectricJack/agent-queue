@@ -28,6 +28,7 @@ from src.install import (
     InstallOptions,
     InstallOutcome,
     InstallResult,
+    LifecycleMode,
     PlanAction,
     ProgressEvent,
     StepRegistry,
@@ -139,6 +140,7 @@ def build_options(
     config_path: Path | None,
     state_path: Path | None,
     target_version: str | None = None,
+    mode: LifecycleMode = LifecycleMode.INSTALL,
 ) -> InstallOptions:
     """Fold flags and the optional input file into one validated options value.
 
@@ -169,6 +171,11 @@ def build_options(
         )
     if fresh and restart_from:
         raise InstallInputError("--fresh and --restart-from are mutually exclusive")
+    if fresh and mode.reconciles:
+        # ``--fresh`` starts a new record; repair and upgrade reconcile the
+        # existing one.  Accepting both would silently discard the ownership
+        # record the repair was supposed to act on.
+        raise InstallInputError(f"--fresh and --{mode.value} are mutually exclusive")
 
     version = installer_version()
     return InstallOptions(
@@ -179,6 +186,7 @@ def build_options(
         resume=resume and not fresh,
         fresh=fresh,
         restart_from=restart_from,
+        mode=mode,
         capabilities=frozenset(str(name) for name in selected),
         approve=frozenset(str(name) for name in approved),
         settings=dict(payload.get("settings") or {}),
@@ -354,6 +362,16 @@ def render_result(result: InstallResult, target: Console) -> None:
     help="Continue from the existing resume record (default), or ignore it for this run.",
 )
 @click.option("--fresh", is_flag=True, help="Start a new resume record, leaving the old one.")
+@click.option(
+    "--repair",
+    is_flag=True,
+    help="Reconcile the installation against this host: re-run steps that cannot be verified.",
+)
+@click.option(
+    "--upgrade",
+    is_flag=True,
+    help="Repair, and record a durable version transition an interrupted run can resume.",
+)
 @click.option("--restart-from", metavar="STEP", help="Redo STEP and the steps that depend on it.")
 @click.option(
     "--state-file",
@@ -378,6 +396,8 @@ def install(
     assume_yes: bool,
     resume: bool,
     fresh: bool,
+    repair: bool,
+    upgrade: bool,
     restart_from: str | None,
     state_file: Path | None,
     list_steps: bool,
@@ -392,9 +412,28 @@ def install(
     Reruns are the normal recovery path: the command records what it completed
     and what it owns, revalidates a completed step instead of repeating it, and
     stops at the first step that needs attention — including a harness login,
-    which you finish in your own terminal before rerunning.  Exit codes:
-    0 ready, 10 needs_user, 11 invalid_input, 12 unsupported_host, 20 failed.
+    which you finish in your own terminal before rerunning.
+
+    `--repair` goes further: it re-runs even the steps it cannot re-verify, so
+    an installation is reconciled against the host rather than against the
+    record.  `--upgrade` repairs and records the version transition durably —
+    an upgrade killed halfway leaves a record the next run finds, reports and
+    resumes.  Neither removes anything; `aq uninstall` is the only command that
+    does.  Exit codes: 0 ready, 10 needs_user, 11 invalid_input,
+    12 unsupported_host, 20 failed.
     """
+    if repair and upgrade:
+        raise InstallInputError(
+            "--repair and --upgrade are mutually exclusive; --upgrade already repairs"
+        )
+    mode = (
+        LifecycleMode.UPGRADE
+        if upgrade
+        else LifecycleMode.REPAIR
+        if repair
+        else LifecycleMode.INSTALL
+    )
+
     support = describe_host()
     registry = build_registry(support)
     if list_steps:
@@ -408,7 +447,11 @@ def install(
     # selection: an explicit ``--with``/``--config`` is the caller choosing,
     # ``--yes`` means "do the sensible thing without asking me", and ``--json``
     # is a script driving consent rather than a newcomer being onboarded.
-    if interactive and not as_json and not capabilities and not config_path:
+    # A repair or an upgrade reconciles what is already selected. Re-asking the
+    # newcomer's questions would let a plain Enter silently *deselect* a
+    # capability the operator installed on purpose, so the record's own
+    # selection is what those modes carry forward.
+    if interactive and not as_json and not capabilities and not config_path and not mode.reconciles:
         questions = wizard_questions(advanced=advanced)
         answers = {} if assume_yes else ask_questions(questions, console)
         capabilities = tuple(sorted(capabilities_for(questions, answers)))
@@ -425,7 +468,9 @@ def install(
         assume_yes=assume_yes,
         config_path=config_path,
         state_path=state_file,
+        mode=mode,
     )
+    options = _carry_forward_capabilities(options, state_file)
 
     quiet = as_json
     engine = InstallEngine(
@@ -484,6 +529,27 @@ def install(
         render_result(result, console)
         render_summary(summary, console)
     ctx.exit(result.exit_code)
+
+
+def _carry_forward_capabilities(options: InstallOptions, state_file: Path | None) -> InstallOptions:
+    """Give a repair/upgrade the capabilities the recorded install selected.
+
+    Without this, ``aq install --repair`` on a machine that selected Discord
+    would plan every Discord step as ``skip_not_selected`` and quietly narrow
+    the installation it was asked to reconcile.  An explicit ``--with`` still
+    wins: the operator naming a capability is choosing, not reconciling.
+    """
+    if not options.mode.reconciles or options.capabilities:
+        return options
+    from src.install.state import StateError, load_state
+
+    try:
+        state = load_state(state_file or default_state_path())
+    except StateError:
+        return options
+    if state is None or not state.capabilities:
+        return options
+    return replace(options, capabilities=frozenset(state.capabilities))
 
 
 def _emit_steps(registry: StepRegistry, *, as_json: bool) -> None:

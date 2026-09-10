@@ -2,31 +2,31 @@
   "schema_version": 1,
   "generated_by": "scripts/generate-cli-command-inventory.py",
   "counts": {
-    "leaf_commands": 333,
+    "leaf_commands": 334,
     "registration": {
       "generated": 238,
-      "handwritten": 95
+      "handwritten": 96
     },
     "ownership": {
-      "core": 294,
+      "core": 295,
       "external-plugin": 2,
       "internal-plugin": 37
     },
     "support": {
       "deprecated": 1,
-      "supported": 332
+      "supported": 333
     },
     "evidence_level": {
       "behavioral": 10,
       "dispatch": 238,
-      "registration": 85
+      "registration": 86
     },
     "acceptance_status": {
       "working": 55,
       "broken": 0,
       "obsolete": 1,
       "unsupported": 0,
-      "untested": 277
+      "untested": 278
     }
   },
   "commands": [
@@ -2738,6 +2738,8 @@
           "--yes",
           "--resume",
           "--fresh",
+          "--repair",
+          "--upgrade",
           "--restart-from",
           "--state-file",
           "--list-steps",
@@ -11423,6 +11425,42 @@
           "--aq-all-markers",
           "--aq-dry-run",
           "pytest_args"
+        ],
+        "structured": [],
+        "nullable": []
+      }
+    },
+    {
+      "path": "aq uninstall",
+      "registration": "handwritten",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": null,
+      "callback": "src.cli.uninstall.uninstall",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "registration",
+      "evidence": [
+        "click-registration"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [],
+        "optional": [
+          "--remove-config",
+          "--remove-data",
+          "--remove-database",
+          "--all",
+          "--dry-run",
+          "--json",
+          "--yes",
+          "--interactive",
+          "--state-file",
+          "--brief",
+          "--api-url"
         ],
         "structured": [],
         "nullable": []
