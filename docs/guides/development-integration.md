@@ -84,7 +84,7 @@ Options:
 | `--validation advisory` | Runs the commands, records failures, publishes anyway. |
 | `--validation none` | Runs nothing; the journal records `not_run`. |
 | `--command` | Repeatable. Runs under `bash -c` in AQ's retained clone, with the daemon's environment. |
-| `--interval-seconds` | How often the daemon sweeps this project. Default 300. |
+| `--interval-seconds` | Periodic recovery sweep interval. Default 300. Task completion also requests a sweep on the next integration cycle (normally within 5 seconds, once an active batch finishes). |
 | `--reason` | Required, and kept in the journal. |
 
 > **Note.** Validation commands do not run in a worker's worktree. They run in
