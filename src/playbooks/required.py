@@ -17,7 +17,15 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-REQUIRED_SYSTEM_PLAYBOOK_IDS = ("default-assignment-routing",)
+# These policies must be active for the daemon to provide its baseline
+# guarantees.  The usage probe remains opt-out through
+# ``providers.claude.usage_probe_enabled``; making its timer required removes
+# the accidental manual activation step that otherwise leaves Claude's meter
+# empty on every fresh install.
+REQUIRED_SYSTEM_PLAYBOOK_IDS = (
+    "default-assignment-routing",
+    "provider-usage-probe",
+)
 _ACTOR = "service:required-playbook-reconciler"
 
 

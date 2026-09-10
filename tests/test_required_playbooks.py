@@ -9,6 +9,7 @@ from src.commands.playbook_v2_commands import PlaybookV2CommandsMixin
 from src.database import Database
 from src.playbooks.artifact_store import ArtifactStore
 from src.playbooks.required import (
+    REQUIRED_SYSTEM_PLAYBOOK_IDS,
     RequiredPlaybookReconciler,
     ensure_reviewed_playbook_bundles,
     retain_required_route_needed_event,
@@ -46,16 +47,19 @@ async def _reconciler(tmp_path):
     return db, handler, reconciler
 
 
-async def test_fresh_database_bootstraps_required_routing_activation(tmp_path):
+async def test_fresh_database_bootstraps_required_system_activations(tmp_path):
     db, _handler, reconciler = await _reconciler(tmp_path)
     try:
         result = await reconciler.reconcile()
-        [activation] = await db.list_playbook_activations(enabled_only=True)
+        activations = await db.list_playbook_activations(enabled_only=True)
 
         assert result["ok"]
-        assert activation["playbook_id"] == "default-assignment-routing"
-        assert activation["scope"] == "system"
-        assert activation["enabled"] is True
+        assert {activation["playbook_id"] for activation in activations} == set(
+            REQUIRED_SYSTEM_PLAYBOOK_IDS
+        )
+        assert {(activation["scope"], activation["enabled"]) for activation in activations} == {
+            ("system", True)
+        }
     finally:
         await db.close()
 
@@ -64,16 +68,21 @@ async def test_restart_rehydrates_durable_activation_without_rewriting_it(tmp_pa
     db, _handler, reconciler = await _reconciler(tmp_path)
     try:
         assert (await reconciler.reconcile())["ok"]
-        [before] = await db.list_playbook_activations()
+        before = await db.list_playbook_activations()
 
         restarted = RequiredPlaybookReconciler(
             config=reconciler._config, db=db, handler=reconciler._handler
         )
         assert (await restarted.reconcile())["ok"]
-        [after] = await db.list_playbook_activations()
+        after = await db.list_playbook_activations()
 
-        assert after["activation_id"] == before["activation_id"]
-        assert after["active_artifact_sha256"] == before["active_artifact_sha256"]
+        assert {
+            (row["playbook_id"], row["activation_id"], row["active_artifact_sha256"])
+            for row in after
+        } == {
+            (row["playbook_id"], row["activation_id"], row["active_artifact_sha256"])
+            for row in before
+        }
     finally:
         await db.close()
 
@@ -97,7 +106,10 @@ async def test_hash_mismatched_reviewed_bundle_is_a_readiness_diagnostic(tmp_pat
             "required-playbook-inactive"
             in result["required"]["default-assignment-routing"]["diagnostic"]
         )
-        assert await db.list_playbook_activations() == []
+        # One required bundle being invalid must not prevent the independent
+        # Claude usage probe from being imported and activated.
+        [activation] = await db.list_playbook_activations(enabled_only=True)
+        assert activation["playbook_id"] == "provider-usage-probe"
     finally:
         await db.close()
 
