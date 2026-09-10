@@ -24,7 +24,7 @@ engine's own steps rather than nothing.
 from __future__ import annotations
 
 import shutil
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -76,6 +76,7 @@ def build_registry(
     which: Callable[[str], str | None] | None = None,
     state_dir: Path | None = None,
     prefixes: Mapping[str, Path] | None = None,
+    database_steps: Iterable[StepSpec] | None = None,
     **adapter_kwargs: Any,
 ) -> StepRegistry:
     """Build the full step registry for the host described by *support*."""
@@ -115,19 +116,23 @@ def build_registry(
     )
     # PostgreSQL's macOS package plan uses Homebrew.  Make that dependency
     # explicit so a selected managed database cannot race the macOS bootstrap.
-    database_steps = postgres_steps(
-        environ=environ,
-        which=lookup or shutil.which,
-        state_dir=state_dir,
+    postgres_adapter_steps = (
+        tuple(database_steps)
+        if database_steps is not None
+        else postgres_steps(
+            environ=environ,
+            which=lookup or shutil.which,
+            state_dir=state_dir,
+        )
     )
     if macos:
-        database_steps = tuple(
+        postgres_adapter_steps = tuple(
             replace(step, depends_on=(STEP_HOST, STEP_PACKAGES))
             if step.id == STEP_POSTGRES_PACKAGE
             else step
-            for step in database_steps
+            for step in postgres_adapter_steps
         )
-    registry.extend(database_steps)
+    registry.extend(postgres_adapter_steps)
     # Provider adapters remain part of every CLI registry.  They are
     # capability-gated, so this preserves the normal install's behavior while
     # allowing a platform adapter to order the prerequisites they rely on.

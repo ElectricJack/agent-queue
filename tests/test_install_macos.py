@@ -51,7 +51,9 @@ from src.install.platform import (
     SupportVerdict,
 )
 from src.install.prerequisites import STEP_DATA_DIR, STEP_GIT, STEP_HOST, STEP_PYTHON, STEP_TMUX
-from src.install.providers import provider_steps
+from src.install.logins import login_steps
+from src.install.postgres_steps import STEP_PACKAGE as STEP_POSTGRES_PACKAGE, postgres_steps
+from src.install.providers import provider_installers, provider_steps
 from src.install.registry import build_registry
 from src.install.results import InstallOutcome, StepState
 from src.install.steps import StepContext
@@ -608,7 +610,27 @@ def _ids(registry):
 
 
 def _provider_ids():
-    return [step.id for step in provider_steps()]
+    installers = provider_installers()
+    return [
+        *(step.id for step in provider_steps()),
+        *(step.id for step in login_steps(installers=installers)),
+    ]
+
+
+def _database_ids():
+    return [step.id for step in postgres_steps()]
+
+
+def _base_registry_ids():
+    return [
+        STEP_HOST,
+        STEP_PYTHON,
+        STEP_GIT,
+        STEP_TMUX,
+        STEP_DATA_DIR,
+        *_database_ids(),
+        *_provider_ids(),
+    ]
 
 
 def test_a_mac_registry_provisions_before_the_engine_checks_the_prerequisites():
@@ -621,6 +643,13 @@ def test_a_mac_registry_provisions_before_the_engine_checks_the_prerequisites():
     assert registry.get(STEP_TMUX).depends_on == (STEP_HOST, STEP_PACKAGES)
     assert registry.get(STEP_PYTHON).depends_on == (STEP_HOST, STEP_PYTHON_RUNTIME)
     assert STEP_DATA_DIR in ids
+
+
+def test_a_mac_registry_registers_postgresql_after_homebrew_is_ready():
+    registry = build_registry(mac_support("arm64"))
+    ids = _ids(registry)
+    assert STEP_POSTGRES_PACKAGE in ids
+    assert registry.get(STEP_POSTGRES_PACKAGE).depends_on == (STEP_HOST, STEP_PACKAGES)
 
 
 def test_both_mac_architectures_get_the_same_steps():
@@ -645,7 +674,9 @@ def test_a_non_mac_host_registers_no_mac_steps():
     )
     ids = _ids(build_registry(wsl))
     assert not [step for step in ids if step.startswith("macos.")]
-    assert ids == [STEP_HOST, STEP_PYTHON, STEP_GIT, STEP_TMUX, STEP_DATA_DIR, *_provider_ids()]
+    assert ids[:5] == [STEP_HOST, STEP_PYTHON, STEP_GIT, STEP_TMUX, STEP_DATA_DIR]
+    assert set(ids) == set(_base_registry_ids())
+    assert ids.index(STEP_POSTGRES_PACKAGE) < ids.index("postgres.server")
 
 
 def test_an_unsupported_host_still_composes_the_engines_own_steps():
@@ -660,14 +691,10 @@ def test_an_unsupported_host_still_composes_the_engines_own_steps():
             python_version="3.12.4",
         ),
     )
-    assert _ids(build_registry(unsupported)) == [
-        STEP_HOST,
-        STEP_PYTHON,
-        STEP_GIT,
-        STEP_TMUX,
-        STEP_DATA_DIR,
-        *_provider_ids(),
-    ]
+    ids = _ids(build_registry(unsupported))
+    assert ids[:5] == [STEP_HOST, STEP_PYTHON, STEP_GIT, STEP_TMUX, STEP_DATA_DIR]
+    assert set(ids) == set(_base_registry_ids())
+    assert ids.index(STEP_POSTGRES_PACKAGE) < ids.index("postgres.server")
 
 
 def test_every_mac_step_declares_the_adapter_as_its_owner():
@@ -709,6 +736,7 @@ def _mac_registry(brew_home, *, runner, which, arch="arm64", state_dir=None, exe
         home=brew_home.home,
         executable=executable or "/opt/homebrew/opt/python@3.12/bin/python3.12",
         uid=501,
+        database_steps=(),
     )
 
 

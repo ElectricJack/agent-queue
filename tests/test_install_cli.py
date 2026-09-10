@@ -45,7 +45,11 @@ def without_database_steps(monkeypatch):
     from src.cli import install as install_cli
     from src.install.prerequisites import default_registry
 
-    monkeypatch.setattr(install_cli, "default_registry", lambda: default_registry(adapters=()))
+    monkeypatch.setattr(
+        install_cli,
+        "build_registry",
+        lambda _support: default_registry(adapters=()),
+    )
 
 
 def _cli():
