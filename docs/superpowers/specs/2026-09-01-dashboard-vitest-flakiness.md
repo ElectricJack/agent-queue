@@ -1,5 +1,11 @@
 # Dashboard vitest flakiness — root cause and fix
 
+<!-- aq:historical -->
+> **Historical design record.** This spec describes one feature as it was
+> designed, not as the code stands today. Start at [the documentation
+> home](../../README.md) for current behaviour; see [historical
+> material](../../history/README.md).
+
 **Task:** `calm-apex` · **Date:** 2026-09-01
 
 ## Symptom

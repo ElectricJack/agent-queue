@@ -4,11 +4,19 @@ tags: [design, principles]
 
 # Guiding Design Principles
 
+<!-- aq:historical -->
+> **Design record — not current documentation.** A spec states the behaviour
+> intended when it was approved; it is written before the code and is not
+> revised to track it. Where this page and the code disagree, the code is right.
+> Start at [the documentation home](../../README.md) for what AQ does today, and
+> see [historical material](../../history/README.md) for how this material is
+> organised.
+
 These are the core principles behind Agent Queue. When making design decisions,
 trade-offs, or implementation choices — refer here.
 
-See also: [[playbooks]], [[vault]], [[memory-plugin]], [[memory-scoping]],
-[[profiles]], [[self-improvement]], [[agent-coordination]]
+See also: [playbooks](playbooks.md), [vault](vault.md), [memory-plugin](memory-plugin.md), [memory-scoping](memory-scoping.md),
+[profiles](profiles.md), [self-improvement](self-improvement.md), [agent-coordination](agent-coordination.md)
 
 ---
 
@@ -20,8 +28,8 @@ systems — databases, indices, compiled formats — are caches that can be rebu
 at any time. When the file and the cache disagree, the file wins. Data flows one
 direction: files to runtime, never the reverse.
 
-Applied in: [[vault]] (vault as source of truth), [[profiles]] (markdown profiles
-synced to DB), [[playbooks]] (markdown compiled to JSON).
+Applied in: [vault](vault.md) (vault as source of truth), [profiles](profiles.md) (markdown profiles
+synced to DB), [playbooks](playbooks.md) (markdown compiled to JSON).
 
 ## 2. Everything is visible and editable
 
@@ -30,8 +38,8 @@ rule it follows, every decision it has made can be found, read, and changed by a
 human. If the system learned something wrong, someone can fix it with a text
 editor. Transparency is not a feature — it is a prerequisite for trust.
 
-Applied in: [[vault]] (Obsidian integration, vault structure),
-[[agent-coordination]] (coordination playbooks are readable markdown).
+Applied in: [vault](vault.md) (Obsidian integration, vault structure),
+[agent-coordination](agent-coordination.md) (coordination playbooks are readable markdown).
 
 ## 3. Structure guides, intelligence decides
 
@@ -41,8 +49,8 @@ intelligence is brittle automation. Intelligence without structure is
 unpredictable. The goal is processes that are flexible enough to handle novel
 situations but defined enough to be understood and debugged.
 
-Applied in: [[playbooks]] (directed graphs of LLM decision points),
-[[agent-coordination]] (workflow stages structure multi-agent collaboration).
+Applied in: [playbooks](playbooks.md) (directed graphs of LLM decision points),
+[agent-coordination](agent-coordination.md) (workflow stages structure multi-agent collaboration).
 
 ## 4. The system improves with use
 
@@ -51,8 +59,8 @@ Agents reflect on their work, distill patterns, and remember what they learn.
 A system that doesn't get smarter over time is just an expensive way to run
 scripts. Self-improvement is the core value proposition — not a nice-to-have.
 
-Applied in: [[self-improvement]] (the full loop), [[memory-scoping]] (scoped
-memory accumulation), [[playbooks]] (playbook-driven insight extraction).
+Applied in: [self-improvement](self-improvement.md) (the full loop), [memory-scoping](memory-scoping.md) (scoped
+memory accumulation), [playbooks](playbooks.md) (playbook-driven insight extraction).
 
 ## 5. Reduce human effort, don't eliminate human judgment
 
@@ -61,7 +69,7 @@ system hasn't earned yet. Trust is built incrementally as the system proves
 itself — not assumed up front. When in doubt, surface for review rather than
 act autonomously.
 
-Applied in: [[playbooks]] (human-in-the-loop nodes), [[agent-coordination]]
+Applied in: [playbooks](playbooks.md) (human-in-the-loop nodes), [agent-coordination](agent-coordination.md)
 (human merge gates, review cycles).
 
 ## 6. Specificity wins
@@ -71,7 +79,7 @@ answer wins. A project convention overrides a general default. Local knowledge
 outranks global knowledge. The system layers from broad to narrow and never forces
 a generic answer when a specific one is available.
 
-Applied in: [[memory-scoping]] (scope hierarchy, override model, multi-scope
+Applied in: [memory-scoping](memory-scoping.md) (scope hierarchy, override model, multi-scope
 query weighting).
 
 ## 7. Communicate through events, not direct coupling
@@ -81,8 +89,8 @@ This makes behavior observable, extensible, and traceable. New capabilities
 subscribe to existing events without modifying existing code. Any behavior in
 the system can be understood by following the event chain.
 
-Applied in: [[playbooks]] (EventBus triggers, cross-playbook composition via
-events), [[agent-coordination]] (scheduler and playbook communication through
+Applied in: [playbooks](playbooks.md) (EventBus triggers, cross-playbook composition via
+events), [agent-coordination](agent-coordination.md) (scheduler and playbook communication through
 commands and events).
 
 ## 8. Plugins own their dependencies
@@ -92,7 +100,7 @@ component's infrastructure or assume resources it doesn't manage. This keeps
 components replaceable, testable, and independently understandable. Tight
 coupling between subsystems is a design failure, not a convenience.
 
-Applied in: [[memory-plugin]] (memory plugin v2 owns Milvus via memsearch
+Applied in: [memory-plugin](memory-plugin.md) (memory plugin v2 owns Milvus via memsearch
 fork, no PostgreSQL dependency).
 
 ## 9. Simple interfaces, smart routing
@@ -102,8 +110,8 @@ that means an exact lookup, a semantic search, or a compiled graph execution is
 an implementation detail the caller never sees. Complexity belongs behind clean
 interfaces, not in front of them.
 
-Applied in: [[memory-scoping]] (unified memory_get auto-routes between KV
-and vector search), [[playbooks]] (agents call tools without knowing which
+Applied in: [memory-scoping](memory-scoping.md) (unified memory_get auto-routes between KV
+and vector search), [playbooks](playbooks.md) (agents call tools without knowing which
 backend serves them).
 
 ## 10. Favor fewer moving parts
@@ -113,5 +121,5 @@ dependencies, or storage backends — choose that one. Every additional moving
 part is a maintenance burden, a failure mode, and a concept someone has to
 understand. Consolidate where possible. Separate only when the benefit is clear.
 
-Applied in: [[memory-plugin]] (unified Milvus backend for both vectors and
+Applied in: [memory-plugin](memory-plugin.md) (unified Milvus backend for both vectors and
 KV instead of separate databases).

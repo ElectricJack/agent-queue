@@ -4,10 +4,18 @@ tags: [implementation, cli, mcp, api, auth, prime, surface]
 
 # `aq` Surface — Implementation Spec
 
-**Status:** Draft — approved direction (2026-08-19)
-**Related:** [[../design/aq-surface]] (design), [[../design/session-runtime]], [[../design/work-graph]], [[../design/supervisor-agent]], [[../design/feature-pauses]], [[../design/trust-and-ops]], [[../../analysis/framework-overhaul-todo]]
+<!-- aq:historical -->
+> **Design record — not current documentation.** A spec states the behaviour
+> intended when it was approved; it is written before the code and is not
+> revised to track it. Where this page and the code disagree, the code is right.
+> Start at [the documentation home](../../README.md) for what AQ does today, and
+> see [historical material](../../history/README.md) for how this material is
+> organised.
 
-Design decisions live in [[../design/aq-surface]]; this document is the build plan. All code
+**Status:** Draft — approved direction (2026-08-19)
+**Related:** [../design/aq-surface](../design/aq-surface.md) (design), [../design/session-runtime](../design/session-runtime.md), [../design/work-graph](../design/work-graph.md), [../design/supervisor-agent](../design/supervisor-agent.md), [../design/feature-pauses](../design/feature-pauses.md), [../design/trust-and-ops](../design/trust-and-ops.md), [../../analysis/framework-overhaul-todo](../../analysis/framework-overhaul-todo.md)
+
+Design decisions live in [../design/aq-surface](../design/aq-surface.md); this document is the build plan. All code
 is async-first, ruff line-length 100, py312. Every new state-changing operation is a
 `CommandHandler` command returning `{"success": bool, ...}`.
 
@@ -116,7 +124,7 @@ Section builders in `sections.py` reuse `extract_section()` from `src/prompt_bui
 for pulling `## Role` from profile markdown — do not duplicate it. Spec refs (context type
 `spec_ref`) are resolved to the referenced file + heading and inlined.
 
-**Consumers.** (1) `_cmd_prime` (§3). (2) [[../design/session-runtime]]'s prompt-file writer
+**Consumers.** (1) `_cmd_prime` (§3). (2) [../design/session-runtime](../design/session-runtime.md)'s prompt-file writer
 imports `PrimeRenderer` directly (same process) and writes
 `doc.to_markdown()` → `<work_dir>/.aq/prompt.md`, then sets `AQ_STARTUP_PROMPT_DELIVERED=1`
 in the session env.
@@ -134,14 +142,14 @@ allowlist exactly):
 | `prime` | `task_id?`, `session_id?`, `work_dir?` | resolves task from request scope when omitted; returns `{"success": True, "body", "sections", "source", "tokens_est"}` |
 | `get_schema` | — | `{"success": True, "schema_version": 1, "enums": {...}}` — introspects enums from `src/models.py` + work-graph/session enums |
 | `task_show` | `task_id` | task + work-state + deps + gates + context refs (single round trip; composes existing queries) |
-| `task_set` | `task_id`, `branch?`, `pr_url?`, `work_dir?`, `note?`, `labels_add?`, `labels_remove?`, `meta?` | work-state contract writes; **no status transitions** (state machine owned by [[../design/work-graph]]) |
+| `task_set` | `task_id`, `branch?`, `pr_url?`, `work_dir?`, `note?`, `labels_add?`, `labels_remove?`, `meta?` | work-state contract writes; **no status transitions** (state machine owned by [../design/work-graph](../design/work-graph.md)) |
 | `task_close` | `task_id`, `outcome`, `failure_class?`, `work_outcome?`, `commit?`, `notes?` | validates enums via `get_schema` source, delegates transition to work-graph's `transition_task`; emits `task.closed` |
 | `task_heartbeat` | `task_id?` | refreshes `agents.last_heartbeat` / lease; returns `lease_expires_at` |
 | `task_handoff` | `subject?`, `detail?`, `auto: bool` | writes `task_context(type=handoff)`; non-auto also emits `session.restart_requested` on the EventBus |
 
-`message_send|message_inbox|message_reply` are implemented by [[../design/supervisor-agent]];
-`memory_save|memory_search` pause behavior by [[../design/feature-pauses]];
-`session_*` by [[../design/session-runtime]]. This spec only requires their names to match
+`message_send|message_inbox|message_reply` are implemented by [../design/supervisor-agent](../design/supervisor-agent.md);
+`memory_save|memory_search` pause behavior by [../design/feature-pauses](../design/feature-pauses.md);
+`session_*` by [../design/session-runtime](../design/session-runtime.md). This spec only requires their names to match
 the inventory. All new commands are auto-exposed via MCP pass 3
 (`src/mcp_registration.py:142` `_discover_all_commands`) — add explicit rich schemas to
 `src/tools/definitions.py` for the task allowlist commands so task-scope schemas stay tight
@@ -181,7 +189,7 @@ class SessionTokenStore:
     async def revoke_expired(self) -> int          # cascade housekeeping step
 ```
 
-Mint/revoke are called by [[../design/session-runtime]] at session start/end (in-process —
+Mint/revoke are called by [../design/session-runtime](../design/session-runtime.md) at session start/end (in-process —
 no HTTP hop). A `revoke_expired()` sweep joins the existing 5s cascade housekeeping.
 
 **Revocation window (decided; was API-1).** `validate()` serves its in-memory
@@ -373,7 +381,7 @@ In `run_mcp_server`, after the trusted `mcp` instance (src/embedded_mcp.py:86–
 | Key | Default | Purpose |
 |---|---|---|
 | `api_auth.token_ttl_hours` | `72` | backstop expiry for session tokens |
-| `api_auth.require_session_token` | `false` | reserved enforcement hook for [[../design/trust-and-ops]]; when true, agent-surface commands without a token are rejected for non-loopback clients |
+| `api_auth.require_session_token` | `false` | reserved enforcement hook for [../design/trust-and-ops](../design/trust-and-ops.md); when true, agent-surface commands without a token are rejected for non-loopback clients |
 | `mcp_server.task_scope.enabled` | `false` → `true` at Phase-3 flip | serve `/mcp-task` |
 | `mcp_server.task_scope.allowlist_extra` | `[]` | install-wide widening |
 | `mcp_server.inject_into_tasks` | existing | retargeted to `/mcp-task` when task scope enabled |
@@ -538,7 +546,7 @@ covered by the cross-family CLI contract tests.
 | `AQ_JSON_LEGACY=1` (env) | envelope on | removed one release after S0 |
 | `mcp_server.task_scope.enabled` | `false` | after S3 tests + session-runtime injects tokens |
 | `mcp_server.inject_into_tasks` → `/mcp-task` | tied to task_scope flag | same flip |
-| `api_auth.require_session_token` | `false` | [[../design/trust-and-ops]] decision; not this spec's flip |
+| `api_auth.require_session_token` | `false` | [../design/trust-and-ops](../design/trust-and-ops.md) decision; not this spec's flip |
 
 Rollback for each is config-only; no migration is destructive (`api_session_tokens` is
 additive).
@@ -551,7 +559,7 @@ additive).
 |---|---|
 | `--json` envelope breaks existing scripts | `AQ_JSON_LEGACY` escape + stderr deprecation warning; one-release window |
 | `tools/list` shows widened tools a session can't call | call-time guard is the boundary; error message names the CLI fallback; revisit per-session list filtering if agents thrash |
-| Bearer token readable in session env / process table | accepted for v1 (loopback-only daemon); scrubbing + exposure rules in [[../design/trust-and-ops]]; tokens narrow, never widen |
+| Bearer token readable in session env / process table | accepted for v1 (loopback-only daemon); scrubbing + exposure rules in [../design/trust-and-ops](../design/trust-and-ops.md); tokens narrow, never widen |
 | Unauthenticated local path remains fully privileged | by design (today's model); `require_session_token` reserved for hardening |
 | Two FastMCP session managers in one lifespan | combined `async with`; supervised-restart loop (src/embedded_mcp.py:128) resets both `_session_manager`s |
 | `register_auto_commands` name collisions with new groups | import order enforced + a unit test asserting hand-written groups win |

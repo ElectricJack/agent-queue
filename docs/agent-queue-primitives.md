@@ -1,5 +1,11 @@
 # Agent-Queue Primitives — Complete Breakdown
 
+<!-- aq:historical -->
+> **Historical map.** A snapshot of the system's shape when it was drawn, kept
+> for the record. [System architecture](concepts/architecture.md) is the page
+> that is maintained. Start at [the documentation home](README.md); see
+> [historical material](history/README.md).
+
 A map of every first-class primitive in agent-queue, organized by *what role it plays* and *what it exposes to what*. Relationships come first — the primitives themselves are anchors for the flows between them.
 
 ---
@@ -245,7 +251,7 @@ This is the part that usually trips people up. Each arrow is "X makes Y visible 
 | **Tools** (allowlist) | AgentProfile | a specific Agent/Task | `profile.allowed_tools` → filtered at PromptBuilder |
 | **MCP servers** | AgentProfile + Registry | a specific Agent/Task | `profile.mcp_servers` (`list[str]`) → resolved via the MCP server registry → passed through TaskContext to the adapter |
 | **MCP tools** (all ~150 CommandHandler commands) | CommandHandler | external IDEs / Claude Code | Embedded MCP server auto-exposes every command. Builtin entry in the registry; computed in-process so the daemon doesn't probe its own endpoint. |
-| **Sandboxed playbook capabilities** | Playbook frontmatter `profile_id` | the playbook's LLM calls | Runner threads `profile.allowed_tools` as `tool_overrides` into every direct-path `LLMClient` call for this run's nodes. The client gates `tool_use.name ∈ active_tools` and rejects unknown names with a synthetic error. See [[specs/design/sandboxed-playbooks]] (predates the direct LLM path; mechanism unchanged, `supervisor.chat()` → `LLMClient.run_tools`). |
+| **Sandboxed playbook capabilities** | Playbook frontmatter `profile_id` | the playbook's LLM calls | Runner threads `profile.allowed_tools` as `tool_overrides` into every direct-path `LLMClient` call for this run's nodes. The client gates `tool_use.name ∈ active_tools` and rejects unknown names with a synthetic error. See [specs/design/sandboxed-playbooks](specs/design/sandboxed-playbooks.md) (predates the direct LLM path; mechanism unchanged, `supervisor.chat()` → `LLMClient.run_tools`). |
 | **Identity/role** | AgentProfile `## Role` | the running agent | L0 tier in PromptBuilder |
 | **Facts** | `vault/**/memory/facts.md` | the running agent | L1 tier — always in prompt |
 | **Topic knowledge** | `vault/**/memory/knowledge/*.md` | the running agent | L2 tier — topic-filtered, injected at task start |

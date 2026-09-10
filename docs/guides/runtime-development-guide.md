@@ -1,6 +1,14 @@
 # Platform Development Guide
 
-> **Consolidated:** See [[platform-development]] for the
+<!-- aq:historical -->
+> **Retired guide.** The procedure below no longer matches AQ and is kept only
+> so existing links resolve. There are no in-tree runtimes: every agent is a CLI
+> in a tmux session, chosen by a profile's `harness` field, which [System
+> architecture](../concepts/architecture.md) explains. Start at [the
+> documentation home](../README.md); see [historical
+> material](../history/README.md).
+
+> **Consolidated:** See [platform-development](runtime-development.md) for the
 > full step-by-step guide with code examples, interface documentation, and testing
 > instructions.
 

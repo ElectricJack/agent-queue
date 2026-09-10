@@ -4,8 +4,16 @@ tags: [implementation, work-graph, dependencies, gates, labels, state-machine, e
 
 # Work Graph — Implementation Spec
 
+<!-- aq:historical -->
+> **Design record — not current documentation.** A spec states the behaviour
+> intended when it was approved; it is written before the code and is not
+> revised to track it. Where this page and the code disagree, the code is right.
+> Start at [the documentation home](../../README.md) for what AQ does today, and
+> see [historical material](../../history/README.md) for how this material is
+> organised.
+
 **Status:** Draft — approved direction (2026-08-19)
-**Related:** [[design/work-graph]] (authoritative semantics), [[design/workspaces-v2]], `docs/analysis/framework-overhaul-todo.md` §6, `src/database/tables.py`, `src/state_machine.py`
+**Related:** [design/work-graph](../design/work-graph.md) (authoritative semantics), [design/workspaces-v2](../design/workspaces-v2.md), `docs/analysis/framework-overhaul-todo.md` §6, `src/database/tables.py`, `src/state_machine.py`
 
 All file/line references verified against the tree at HEAD (2026-08-19). Python 3.12, async-first, SQLAlchemy Core + Alembic, ruff line-length 100. Commands return `{"success": bool, ...}` dicts through `CommandHandler`.
 
@@ -127,7 +135,7 @@ WHERE tasks.id IN (:affected_ids)
 
 That is exact, not an approximation. `is_blocked` is a pure function of statuses, edges and gates, and blockedness is deliberately not transitive through blockedness (design §4.3), so with a fixed set of statuses **one wave is the whole answer**. A further wave is needed only because the transaction changed a status the previous wave could not have seen, and nothing a wave *writes* can invalidate an earlier wave's result. There is consequently no termination question and no iteration bound to assert.
 
-**Locking:** SQLite — single writer, WAL; the whole mutation+recompute is one write transaction, inherently atomic. PostgreSQL — the single UPDATE takes row locks in one statement (no interleaving); multi-wave loops sort `affected_ids` before each UPDATE so concurrent transactions acquire locks in a canonical order, preventing deadlocks (same discipline as workspace acquisition in [[design/workspaces-v2]]).
+**Locking:** SQLite — single writer, WAL; the whole mutation+recompute is one write transaction, inherently atomic. PostgreSQL — the single UPDATE takes row locks in one statement (no interleaving); multi-wave loops sort `affected_ids` before each UPDATE so concurrent transactions acquire locks in a canonical order, preventing deadlocks (same discipline as workspace acquisition in [design/workspaces-v2](../design/workspaces-v2.md)).
 
 ## 4. Query-layer changes (exact functions)
 
@@ -168,7 +176,7 @@ That is exact, not an approximation. `is_blocked` is a pure function of statuses
 - New `_cmd_explain_task` — returns the design-§9 reason list; graph reasons from the DB, capacity reasons from `src/explain.py` (§6.3).
 - New `_cmd_project_ready` — ready frontier + withheld section.
 - New `_cmd_task_label` (add/remove/list) and label filters on `_cmd_list_tasks` (line 220).
-- New `_cmd_close_task` — the completion-protocol shell: writes outcome metadata keys (`outcome`, `failure_class`, `work_outcome`, `work_commit`, `work_branch`, `verification`, `close_notes`) via `set_task_meta`, then `transition_task` to COMPLETED/FAILED. Consumed by `aq task close` per [[session-runtime]].
+- New `_cmd_close_task` — the completion-protocol shell: writes outcome metadata keys (`outcome`, `failure_class`, `work_outcome`, `work_commit`, `work_branch`, `verification`, `close_notes`) via `set_task_meta`, then `transition_task` to COMPLETED/FAILED. Consumed by `aq task close` per [session-runtime](session-runtime.md).
 - `_cmd_set_task_status` (line 2672): gains `force` arg passed to `transition_task`.
 - New `src/commands/gate_commands.py` mixin on `CommandHandler`: `_cmd_gate_create`, `_cmd_gate_list`, `_cmd_gate_show`, `_cmd_gate_resolve(gate_id, resolved_by, resolution="", …)`. The CLI, API, and dashboard call `gate_resolve`; Discord gate buttons are retired.
 - `event_commands.py::_cmd_get_recent_events` (line 46): new `after: int` param → ascending replay (§8).

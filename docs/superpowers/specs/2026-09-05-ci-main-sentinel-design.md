@@ -1,5 +1,11 @@
 # CI main sentinel — keep `main` green without a human in the loop
 
+<!-- aq:historical -->
+> **Historical design record.** This spec describes one feature as it was
+> designed, not as the code stands today. Start at [the documentation
+> home](../../README.md) for current behaviour; see [historical
+> material](../../history/README.md).
+
 ## Problem
 
 `main` goes red sometimes; that is not preventable. What was preventable on

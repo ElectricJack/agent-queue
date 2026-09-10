@@ -1,5 +1,11 @@
 # Agent question routing — approved design
 
+<!-- aq:historical -->
+> **Historical design record.** This spec describes one feature as it was
+> designed, not as the code stands today. Start at [the documentation
+> home](../../README.md) for current behaviour; see [historical
+> material](../../history/README.md).
+
 User approved supervisor-first handling with Discord escalation on 2026-08-30.
 
 Capture completed assistant turns containing questions from native transcripts, without terminal scraping. Fix the confirmed Codex v0.151 format gap: response_item/message holds visible commentary/final_answer, task_complete carries last_agent_message, legacy event_msg/agent_message remains supported. Do not double-render duplicate events or expose reasoning/system prompts. Claude end_turn must work too.

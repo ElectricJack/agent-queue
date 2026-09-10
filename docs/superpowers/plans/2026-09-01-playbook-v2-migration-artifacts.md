@@ -1,5 +1,12 @@
 # Playbook V2 — Package 6 child plan: Rebuild, review, and migration readiness
 
+<!-- aq:historical -->
+> **Historical implementation plan.** This is how one feature was planned before
+> it was built, kept as the record of the decision. It is not a description of
+> current behaviour and its checklists are not work to do. Start at [the
+> documentation home](../../README.md); see [historical
+> material](../../history/README.md).
+
 > **For agentic workers:** REQUIRED SUB-SKILL: use `superpowers:executing-plans` (or `superpowers:subagent-driven-development` when running the five commits as parallel tasks). Every task below is red/green/refactor: the failing assertion is named before the implementation step that satisfies it.
 
 **Roadmap:** `docs/superpowers/plans/2026-09-01-playbook-v2-implementation-roadmap.md` §5 "Package 6 — Playbook rebuild, review, and migration readiness".

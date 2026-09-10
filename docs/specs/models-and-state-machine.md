@@ -4,11 +4,19 @@ tags: [spec, models, state-machine, core]
 
 # Models and State Machine Specification
 
+<!-- aq:historical -->
+> **Design record — not current documentation.** A spec states the behaviour
+> intended when it was approved; it is written before the code and is not
+> revised to track it. Where this page and the code disagree, the code is right.
+> Start at [the documentation home](../README.md) for what AQ does today, and
+> see [historical material](../history/README.md) for how this material is
+> organised.
+
 ## 1. Overview
 
 This document specifies the core domain models and task state machine for Agent Queue. Together they define every entity the system tracks (tasks, agents, projects, repos, hooks) and the rules governing how a task moves through its lifecycle from initial definition to completion or permanent failure.
 
-See [[design/agent-coordination]] for workflow-level coordination on top of the task state machine.
+See [design/agent-coordination](design/agent-coordination.md) for workflow-level coordination on top of the task state machine.
 
 ---
 

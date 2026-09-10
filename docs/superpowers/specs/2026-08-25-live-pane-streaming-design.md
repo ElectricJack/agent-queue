@@ -1,5 +1,11 @@
 # Live Pane Streaming + Agents Console Grid — Design
 
+<!-- aq:historical -->
+> **Historical design record.** This spec describes one feature as it was
+> designed, not as the code stands today. Start at [the documentation
+> home](../../README.md) for current behaviour; see [historical
+> material](../../history/README.md).
+
 **Status:** design (approved by brainstorming pass 2026-08-25).
 **Depends on:**
 - `2026-08-22-pane-session-peek-design.md` (the `session-peek` pane view

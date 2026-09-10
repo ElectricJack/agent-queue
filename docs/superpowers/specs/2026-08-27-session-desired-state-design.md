@@ -1,5 +1,11 @@
 # Session desired state — design
 
+<!-- aq:historical -->
+> **Historical design record.** This spec describes one feature as it was
+> designed, not as the code stands today. Start at [the documentation
+> home](../../README.md) for current behaviour; see [historical
+> material](../../history/README.md).
+
 *2026-08-27. Recommendation #2 from
 `docs/analysis/2026-08-26-session-runtime-vs-gascity.md`.*
 
@@ -15,7 +21,7 @@ That is the actual reason `_step_named` is drain-only, and its docstring
 says so:
 
 > v1 scope: drain idle sessions to `sleeping`. Starting and recycling named
-> sessions needs the message routing that [[design/supervisor-agent]] owns,
+> sessions needs the message routing that [design/supervisor-agent](../../specs/design/supervisor-agent.md) owns,
 > so this deliberately converges in one direction only rather than
 > half-implementing wake semantics.
 

@@ -1,5 +1,12 @@
 # Playbook V2 Fresh Cutover Implementation Plan
 
+<!-- aq:historical -->
+> **Historical implementation plan.** This is how one feature was planned before
+> it was built, kept as the record of the decision. It is not a description of
+> current behaviour and its checklists are not work to do. Start at [the
+> documentation home](../../README.md); see [historical
+> material](../../history/README.md).
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Activate four reviewed Playbook V2 replacements, retire live V1 definitions, switch the fleet to V2, and purge completed task history after validation.

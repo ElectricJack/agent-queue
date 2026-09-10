@@ -1,5 +1,12 @@
 # Pane View: `task-detail` (v1) Implementation Plan
 
+<!-- aq:historical -->
+> **Historical implementation plan.** This is how one feature was planned before
+> it was built, kept as the record of the decision. It is not a description of
+> current behaviour and its checklists are not work to do. Start at [the
+> documentation home](../../README.md); see [historical
+> material](../../history/README.md).
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Ship the `task-detail` pane view — the shell's `<ShellPane>` projection of a single task's status, actions, metadata, and relationships — so the Command Center graph, task tables, agent rows, and agent-pushed chat messages can all open a task without navigating away from what the user is doing.

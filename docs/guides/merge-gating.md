@@ -1,5 +1,12 @@
 # Merge gating — don't let red CI land on `main`
 
+<!-- aq:historical -->
+> **Retired guide.** The procedure below no longer matches AQ and is kept only
+> so existing links resolve. [CI at integration
+> boundaries](integration-ci-boundaries.md) carries the policy this incident
+> argued for. Start at [the documentation home](../README.md); see [historical
+> material](../history/README.md).
+
 ## What happened
 
 On 2026-09-03, PR #341 ("docs(client): sync README with pinned generator")

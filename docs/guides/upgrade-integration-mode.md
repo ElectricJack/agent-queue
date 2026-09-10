@@ -4,6 +4,14 @@ tags: [guide, operations, migrations, integration]
 
 # Upgrading to `integration_mode` (Alembic `c4d5e6f7a8b9`)
 
+<!-- aq:historical -->
+> **Retired guide.** The procedure below no longer matches AQ and is kept only
+> so existing links resolve. The revision it describes is folded into the
+> squashed Alembic baseline; [Database
+> migrations](../reference/database/migrations.md) is the current page. Start at
+> [the documentation home](../README.md); see [historical
+> material](../history/README.md).
+
 This release replaces the per-task `requires_approval` boolean with an explicit
 integration policy and deletes the legacy approval statuses. Revision
 `c4d5e6f7a8b9`:

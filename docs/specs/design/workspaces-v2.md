@@ -4,9 +4,17 @@ tags: [design, workspaces, multi-repo, vault, locking]
 
 # Workspaces v2 — Multi-Kind, Multi-Instance Workspaces
 
+<!-- aq:historical -->
+> **Design record — not current documentation.** A spec states the behaviour
+> intended when it was approved; it is written before the code and is not
+> revised to track it. Where this page and the code disagree, the code is right.
+> Start at [the documentation home](../../README.md) for what AQ does today, and
+> see [historical material](../../history/README.md) for how this material is
+> organised.
+
 **Status:** Draft
-**Principles:** [[guiding-design-principles]] (#1 files as source of truth, #2 visible and editable, #9 simple interfaces)
-**Related:** [[agent-coordination]], [[profiles]], [[vault]], [[specs/orchestrator]], [[specs/database]]
+**Principles:** [guiding-design-principles](guiding-design-principles.md) (#1 files as source of truth, #2 visible and editable, #9 simple interfaces)
+**Related:** [agent-coordination](agent-coordination.md), [profiles](profiles.md), [vault](vault.md), [specs/orchestrator](../orchestrator.md), [specs/database](../database.md)
 
 ---
 
@@ -444,7 +452,7 @@ Editing kind definitions is done by editing the markdown files in the vault — 
 
 - **Tagged / affinity-based instance selection.** First-unlocked is sufficient. Tags can be added later as a separate column on `workspaces`.
 - **Cross-task lock coordination.** No "give me workspace X if task Y also gets workspace Z." Each task's acquisition is independent.
-- **DIRECTORY_ISOLATED implementation.** Still deferred (see [[agent-coordination]] §7).
+- **DIRECTORY_ISOLATED implementation.** Still deferred (see [agent-coordination](agent-coordination.md) §7).
 - **Profile-level kind capability gates.** Tasks declare needs directly. Profiles do not constrain which kinds a task can request.
 - **`enabled` flag on kinds.** Override management is by file presence (delete a project-scoped file to fall back to the system row). Adding an `enabled` flag is unnecessary surface for a problem the file system already solves.
 - **Auto-clone of missing kind instances.** If a kind is declared but no workspace instance exists, the task fails acquisition — the operator provisions an instance manually (§5.4 rejects this at create time only when the *kind* doesn't resolve, not the instance). Auto-cloning from `kind.repo_url` is tracked as future work.

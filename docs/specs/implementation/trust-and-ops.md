@@ -4,8 +4,16 @@ tags: [implementation, trust, security, ops, doctor, costs, invariants]
 
 # Trust & Ops — Implementation Spec
 
+<!-- aq:historical -->
+> **Design record — not current documentation.** A spec states the behaviour
+> intended when it was approved; it is written before the code and is not
+> revised to track it. Where this page and the code disagree, the code is right.
+> Start at [the documentation home](../../README.md) for what AQ does today, and
+> see [historical material](../../history/README.md) for how this material is
+> organised.
+
 **Status:** Draft — approved direction (2026-08-19)
-**Related:** [[design/trust-and-ops]] (design), [[design/session-runtime]], [[design/worktree-execution]], [[design/aq-surface]], [[design/feature-pauses]], `docs/analysis/framework-overhaul-todo.md` (§10)
+**Related:** [design/trust-and-ops](../design/trust-and-ops.md) (design), [design/session-runtime](../design/session-runtime.md), [design/worktree-execution](../design/worktree-execution.md), [design/aq-surface](../design/aq-surface.md), [design/feature-pauses](../design/feature-pauses.md), `docs/analysis/framework-overhaul-todo.md` (§10)
 
 Implements the design spec `docs/specs/design/trust-and-ops.md`: env scrubbing,
 trust-boundary remediations, `aq doctor`, `aq costs`, and the invariant test suite.
@@ -146,7 +154,7 @@ Integration points:
   the kill switch and the allowlist are inert — pin it with a test that goes
   through `RuntimeRegistry.create`, not one that calls `isolated_env` directly.
   The policy survives this module's planned deletion (overhaul A.8):
-  [[session-runtime]]'s `SessionSpec` builder calls `scrub_env()` directly and
+  [session-runtime](session-runtime.md)'s `SessionSpec` builder calls `scrub_env()` directly and
   injects `AQ_*` markers plus `AQ_API_TOKEN` via `explicit`.
 - `src/commands/system_commands.py` — `_cmd_run_command` passes
   `env=scrub_env_from_config(self.config, harness_credentials=False).env` into
@@ -190,7 +198,7 @@ def _validate_ref(name: str) -> str:
    as trust-boundary examples.
 
 4. `_SUBPROCESS_ENV` (line 90) keeps `**os.environ` for now (daemon-side tool);
-   revisit when [[worktree-execution]] centralizes git invocation.
+   revisit when [worktree-execution](worktree-execution.md) centralizes git invocation.
 
 ---
 
@@ -288,7 +296,7 @@ check (ids per design §5.2):
   fix = `sync_vault_harnesses` (the same routine `ensure_default_harnesses` runs at
   startup: create missing, refresh stale, never touch edited).
 - `leases.stale`, `sessions.stale`, `tmux.server`, `worktrees.orphans` — **not
-  implemented here**: [[session-runtime]] and [[worktree-execution]] register them
+  implemented here**: [session-runtime](session-runtime.md) and [worktree-execution](worktree-execution.md) register them
   at startup via `DoctorRegistry.register()`. Doctor ships the ids reserved and
   reports `info: "check not registered (subsystem not enabled)"` when absent.
   `worktrees.orphans` **has landed** in `src/doctor/worktree_checks.py`, registered
@@ -304,7 +312,7 @@ check (ids per design §5.2):
 - `tasks.stuck` — delegate to `_cmd_get_stuck_tasks`
   (`src/commands/system_commands.py:25`) with
   `monitoring.stuck_task_threshold_seconds`.
-- `pauses.active` — read pause flags ([[feature-pauses]]: `memory.enabled`,
+- `pauses.active` — read pause flags ([feature-pauses](feature-pauses.md): `memory.enabled`,
   `playbooks.enabled`, orchestrator paused state); always INFO.
 - `events.registry` — `registered_event_types()` (`src/event_schemas.py:518`) vs the
   union of `EventBus.seen_event_types` (the types the live bus has dispatched;
@@ -371,10 +379,10 @@ each id to its owning workstream:
 
 | id | owner |
 |---|---|
-| `sessions.stale` | [[session-runtime]] |
-| `tmux.server` | [[session-runtime]] |
-| `worktrees.orphans` | [[worktree-execution]] |
-| `leases.stale` | [[worktree-execution]] |
+| `sessions.stale` | [session-runtime](session-runtime.md) |
+| `tmux.server` | [session-runtime](session-runtime.md) |
+| `worktrees.orphans` | [worktree-execution](worktree-execution.md) |
+| `leases.stale` | [worktree-execution](worktree-execution.md) |
 
 Doctor does **not** pre-register them. Until an owner claims an id, `run_doctor`
 synthesises `info: "check not registered (subsystem not enabled)"` with
@@ -422,7 +430,7 @@ docs-sync test will enforce this).
   input_tokens=None, output_tokens=None)` (line 17). Current call sites
   (`src/orchestrator/execution.py:866`, `src/orchestrator/sync_workflow.py:324`)
   pass the split/model where their runtime result carries usage; otherwise unchanged.
-  Transcript readers ([[session-runtime]] A.6) become the primary fully-populated
+  Transcript readers ([session-runtime](session-runtime.md) A.6) become the primary fully-populated
   writer.
 - New `get_cost_rollup(*, project_id=None, since_ts=None, group_by="project")
   -> list[dict]`: SUM of `input_tokens`/`output_tokens`/`tokens_used` grouped by
@@ -452,7 +460,7 @@ Invariant asserted in `tests/test_costs.py`: per row,
 - [x] `SecurityConfig` + `PricingConfig`/`ModelPricing` in `src/config.py`; wired into `AppConfig`, `validate()`, `load_config()`; config_editor round-trip verified
 - [x] `isolated_env` delegates to `scrub_env` (`src/runtimes/_subprocess.py`) **and the daemon config reaches it** — `RuntimeRegistry(config=…)` → `ACPXRuntime(config=…)` → `isolated_env(config=self._config)`
 - [x] `_cmd_run_command` + `_run_subprocess_shell` accept/pass scrubbed env; `run_command` excluded from MCP **and** CLI **and** the HTTP API (including `/api/execute`)
-- [ ] R6 for the **default** `claude_sdk` runtime — **open gap, recorded** in design §2.5: the Agent SDK inherits the full daemon env and `options.env` cannot remove a key. Closes with [[session-runtime]] owning the spawn
+- [ ] R6 for the **default** `claude_sdk` runtime — **open gap, recorded** in design §2.5: the Agent SDK inherits the full daemon env and `options.env` cannot remove a key. Closes with [session-runtime](session-runtime.md) owning the spawn
 - [x] `_validate_ref` guard + `--` audit applied across `GitManager` branch APIs; `_validate_rev` for the read-only diff APIs so advertised revision expressions (`HEAD~1`, `HEAD^`, `HEAD@{1}`) work
 - [x] `src/doctor/` package: models, runner, builtin checks
 - [x] `OpsCommandsMixin` (`_cmd_doctor`, `_cmd_get_costs`) added to `CommandHandler` bases
@@ -464,7 +472,7 @@ Invariant asserted in `tests/test_costs.py`: per row,
 - [x] `record_token_usage` extension + `get_cost_rollup`
 - [ ] A **writer** that populates `model` / `input_tokens` / `output_tokens` — **not landed.** `AgentOutput` carries only a total, so `src/orchestrator/execution.py` and `src/orchestrator/sync_workflow.py` still record totals alone. Consequence: on a real install every `aq costs` row is unpriced and `total_cost_usd` is `0.0`. The read path is complete and tested; the command is honest, not useful yet
 - [x] Invariant tests: `tests/test_docs_sync.py`, `tests/test_command_surface.py`; event-registry and state-machine tests extended
-- [ ] Golden harness test scaffold — **deferred**: it asserts against a `SessionSpec` type that [[design/session-runtime]] owns and has not landed
+- [ ] Golden harness test scaffold — **deferred**: it asserts against a `SessionSpec` type that [design/session-runtime](../design/session-runtime.md) owns and has not landed
 - [x] Reserve contributed-check ids (`sessions.stale`, `tmux.server`, `worktrees.orphans`, `leases.stale`) and document the registration contract for session-runtime / worktree-execution
 - [x] Document `docs/gates/<change>.md` convention in `docs/specs/design/trust-and-ops.md` §8 and exercise it — see `docs/gates/wave1-1c-trust-ops.md`. No PR template exists yet to reference it from.
 

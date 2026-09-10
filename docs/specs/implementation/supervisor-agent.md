@@ -4,8 +4,16 @@ tags: [implementation, supervisor, messages, sessions, task-graph, alembic]
 
 # Supervisor Agent — Implementation
 
+<!-- aq:historical -->
+> **Design record — not current documentation.** A spec states the behaviour
+> intended when it was approved; it is written before the code and is not
+> revised to track it. Where this page and the code disagree, the code is right.
+> Start at [the documentation home](../../README.md) for what AQ does today, and
+> see [historical material](../../history/README.md) for how this material is
+> organised.
+
 **Status:** Draft — approved direction (2026-08-19)
-**Related:** [[design/supervisor-agent]] (design), [[design/session-runtime]] (named sessions, activity signal, nudge), [[design/work-graph]] (ids, gates, dep types), [[design/aq-surface]] (`aq prime`), `docs/analysis/framework-overhaul-todo.md` §4/§3b
+**Related:** [design/supervisor-agent](../design/supervisor-agent.md) (design), [design/session-runtime](../design/session-runtime.md) (named sessions, activity signal, nudge), [design/work-graph](../design/work-graph.md) (ids, gates, dep types), [design/aq-surface](../design/aq-surface.md) (`aq prime`), `docs/analysis/framework-overhaul-todo.md` §4/§3b
 
 ---
 
@@ -388,12 +396,12 @@ Old YAML carrying `legacy_chat` is silently ignored by the config loader.
       auto-exposure verified; `aq message *`, `aq reply`, `aq chat --once` (poll mode);
       ~~slim-MCP allowlist entries~~ — **not part of Phase 1.**
       `mcp_server.task_scope` is an aq-surface Phase-3 placeholder with no consumer
-      (see [[implementation/aq-surface]] §S3); there is nothing to allowlist until
+      (see [implementation/aq-surface](aq-surface.md) §S3); there is nothing to allowlist until
       `register_task_scope_tools` exists.
 - [ ] **Phase 2 — graphs**: `src/task_graph/` parser/validator/creator with goldens;
       `_cmd_create_task_graph`; `aq task create --graph|--from-spec|--dry-run`;
       `spec_ref` context rows (prime rendering lands with aq-surface); vault
-      `specs/` directory convention documented in [[design/vault]].
+      `specs/` directory convention documented in [design/vault](../design/vault.md).
 - [x] **Phase 3 — delivery engine** (needs session-runtime named sessions + activity):
       `MessageDeliveryEngine` cascade step; wake-on-message; nudge envelope +
       `NotSubmitted` retry; `aq inbox --inject` hook path; prime injection +

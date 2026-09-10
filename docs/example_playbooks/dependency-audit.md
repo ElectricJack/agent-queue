@@ -7,6 +7,12 @@ scope: system
 
 # Dependency Audit
 
+<!-- aq:historical -->
+> **Historical sample.** Illustrative content that nothing installs or loads. It
+> was written for an earlier runtime, so copying it will not reproduce the
+> behaviour it describes. Start at [the documentation home](../README.md); see
+> [historical material](../history/README.md).
+
 Run dependency audit (pip-audit + check-outdated-deps). Create
 high-priority tasks for critical vulnerabilities. Summarize
 non-critical updates as a note.

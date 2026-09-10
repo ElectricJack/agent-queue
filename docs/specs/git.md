@@ -4,6 +4,14 @@ tags: [spec, git, workspace]
 
 # Git Manager Specification
 
+<!-- aq:historical -->
+> **Design record — not current documentation.** A spec states the behaviour
+> intended when it was approved; it is written before the code and is not
+> revised to track it. Where this page and the code disagree, the code is right.
+> Start at [the documentation home](../README.md) for what AQ does today, and
+> see [historical material](../history/README.md) for how this material is
+> organised.
+
 **Source:** `src/git/manager.py`
 
 ## 1. Overview
@@ -26,7 +34,7 @@ tags: [spec, git, workspace]
 ## Source Files
 - `src/git/manager.py`
 
-GitManager emits events (git.commit, git.push, git.pr.created) for playbook triggers. See [[design/playbooks]] Section 7 and Section 17.
+GitManager emits events (git.commit, git.push, git.pr.created) for playbook triggers. See [design/playbooks](design/playbooks.md) Section 7 and Section 17.
 
 ---
 

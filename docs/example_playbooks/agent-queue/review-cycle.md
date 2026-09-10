@@ -7,6 +7,12 @@ scope: agent-type:supervisor
 
 # Review Cycle
 
+<!-- aq:historical -->
+> **Historical sample.** Illustrative content that nothing installs or loads. It
+> was written for an earlier runtime, so copying it will not reproduce the
+> behaviour it describes. Start at [the documentation home](../../README.md);
+> see [historical material](../../history/README.md).
+
 Coordinate code review and feedback iteration when a pull request is created.
 This playbook assigns a reviewer, manages the review-fix loop when changes are
 requested, and handles the final disposition of the PR (merge or escalate).

@@ -9,6 +9,12 @@ scope: agent-type:supervisor
 
 # Feature Pipeline
 
+<!-- aq:historical -->
+> **Historical sample.** Illustrative content that nothing installs or loads. It
+> was written for an earlier runtime, so copying it will not reproduce the
+> behaviour it describes. Start at [the documentation home](../../README.md);
+> see [historical material](../../history/README.md).
+
 Coordinate the full coding, review, and QA lifecycle when a feature task is
 created. This is the primary coordination playbook for new feature work — it
 builds a dependency DAG that flows from implementation through parallel review
