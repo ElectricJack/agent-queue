@@ -16,7 +16,10 @@ vi.mock("../pages/project/onboarding/useProjectRoots", () => ({
   }),
 }));
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  window.localStorage.clear();
+});
 
 function renderRail() {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -35,8 +38,33 @@ function projectsToggle() {
 function addButton() {
   return screen.getByRole("button", { name: "Add project" });
 }
+function newFolderButton() {
+  return screen.getByRole("button", { name: "New folder" });
+}
 
 describe("LeftRail Add project button", () => {
+  it("places a compact, labelled New folder control immediately before Add project", () => {
+    renderRail();
+    const newFolder = newFolderButton();
+    const addProject = addButton();
+    expect(newFolder).toHaveAttribute("title", "New folder");
+    expect(newFolder).toHaveClass("p-1.5");
+    expect(addProject.previousElementSibling).toBe(newFolder);
+    expect(screen.queryByRole("button", { name: "New Project" })).not.toBeInTheDocument();
+    expect(screen.queryByText("New folder")).not.toBeInTheDocument();
+  });
+
+  it("wires the icon to the existing new-folder form and restores focus after creation", async () => {
+    const user = userEvent.setup();
+    renderRail();
+    await user.click(newFolderButton());
+    expect(screen.getByRole("textbox", { name: "Folder name" })).toHaveFocus();
+    await user.type(screen.getByRole("textbox", { name: "Folder name" }), "Clients");
+    await user.click(screen.getByRole("button", { name: "Create folder" }));
+    expect(screen.getByRole("button", { name: /^Clients/ })).toBeInTheDocument();
+    expect(newFolderButton()).toHaveFocus();
+  });
+
   it("renders a separate labelled button with a tooltip", () => {
     renderRail();
     const btn = addButton();
