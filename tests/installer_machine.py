@@ -384,7 +384,7 @@ class Machine:
         del kwargs
         argv = tuple(str(part) for part in argv)
         self.commands.append(argv)
-        if argv[1:] == ("start",):
+        if argv[1] == "start":
             if not self.daemon_starts:
                 return CommandOutput(argv=argv, returncode=1, stderr="database is unreachable")
             self.daemon_up = True

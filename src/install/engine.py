@@ -328,6 +328,7 @@ class InstallEngine:
             )
             started = self._timer()
             result = self._execute(step, row, satisfied, support, resources, state)
+            result = self._soften_dry_run_failure(step, result, plan_rows)
             result = result.with_duration(int((self._timer() - started) * 1000))
             results.append(result)
             self._emit(
@@ -430,6 +431,53 @@ class InstallEngine:
                 state.steps.pop(step_id, None)
             return targets
         return state.invalidate(targets, now=self._clock())
+
+    def _soften_dry_run_failure(
+        self,
+        step: StepSpec,
+        result: StepResult,
+        plan_rows: Mapping[str, PlannedStep],
+    ) -> StepResult:
+        """Do not let a dry run fail on work the dry run itself declined to do.
+
+        A read-only check runs for real in a dry run — that is the point of
+        "reports the plan and runs only read-only checks".  But its precondition
+        may be installed by a *mutating* step the same dry run planned as
+        ``would_run``: on a Mac with no tmux, ``macos.packages`` would install
+        it and ``prereq.tmux`` checks it.  Failing there stopped the run at step
+        four of thirty-two and printed no plan for the rest, which is precisely
+        what the user asked to see (observed natively on macOS 14 and 15,
+        aq/noble-apex.18).
+
+        The relation is declared, never inferred: only a step that named the
+        mutating step in ``provisioned_by`` is softened.  Inferring it from the
+        dependency graph would also swallow a real problem — ``config.check``
+        depends on ``config.defaults``, but a configuration that is already on
+        this host and does not parse is broken whether or not the dry run wrote
+        defaults, and a dry run must still say so.
+        """
+        if not self.options.dry_run or result.state is not StepState.FAILED:
+            return result
+        pending = self._pending_mutations(step, plan_rows)
+        if not pending:
+            return result
+        return StepResult.skipped(
+            step.id,
+            f"{result.summary}; would be satisfied by {', '.join(pending)}, "
+            "which a dry run does not execute",
+            detail={"dry_run": True, "would_be_satisfied_by": list(pending)},
+        )
+
+    def _pending_mutations(
+        self, step: StepSpec, plan_rows: Mapping[str, PlannedStep]
+    ) -> tuple[str, ...]:
+        """The steps *step* declared as its provisioners that this run skipped."""
+        return tuple(
+            step_id
+            for step_id in step.provisioned_by
+            if (row := plan_rows.get(step_id)) is not None
+            and row.action is PlanAction.WOULD_RUN
+        )
 
     def _execute(
         self,

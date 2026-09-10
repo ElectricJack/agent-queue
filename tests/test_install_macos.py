@@ -652,6 +652,42 @@ def test_a_mac_registry_provisions_before_the_engine_checks_the_prerequisites():
     assert STEP_DATA_DIR in ids
 
 
+def test_a_mac_registry_says_which_step_would_install_the_prerequisites_it_checks():
+    """The declaration that keeps `--dry-run` useful on a Mac with no tmux.
+
+    `macos.packages` installs Git and tmux and a dry run does not execute it, so
+    the checks that follow have to say what would have satisfied them. Without
+    this, `aq install --dry-run` on a clean Mac stopped at `prereq.tmux` and
+    printed no plan for the twenty-eight steps after it — observed natively on
+    macOS 14, 15 and 15 (Intel), aq/noble-apex.18.
+    """
+    registry = build_registry(mac_support("arm64"))
+    assert registry.get(STEP_TMUX).provisioned_by == (STEP_PACKAGES,)
+    assert registry.get(STEP_GIT).provisioned_by == (STEP_PACKAGES,)
+
+
+def test_a_non_mac_host_declares_no_provisioner_for_its_prerequisite_checks():
+    """Nothing in the WSL2 registry installs Git or tmux, so nothing is softened."""
+    wsl = SupportVerdict(
+        host_path=HOST_WSL2,
+        tier=TIER_SUPPORTED,
+        facts=PlatformFacts(
+            system="linux",
+            release="6.6.0-microsoft-standard-WSL2",
+            machine="x86_64",
+            arch="x86_64",
+            python_version="3.12.4",
+            distro_id="ubuntu",
+            distro_version="24.04",
+            wsl=True,
+            wsl_version=2,
+        ),
+    )
+    registry = build_registry(wsl)
+    assert registry.get(STEP_TMUX).provisioned_by == ()
+    assert registry.get(STEP_GIT).provisioned_by == ()
+
+
 def test_a_mac_registry_registers_postgresql_after_homebrew_is_ready():
     registry = build_registry(mac_support("arm64"))
     ids = _ids(registry)

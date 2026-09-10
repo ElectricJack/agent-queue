@@ -55,7 +55,7 @@ jobs:
           echo "runners=$value" >> "$GITHUB_OUTPUT"
 
   acceptance:
-    name: ${{ matrix.runner }}
+    name: ${{ matrix.runner }} (postgres ${{ matrix.preinstalled_postgres }})
     needs: matrix
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 90
@@ -63,6 +63,12 @@ jobs:
       fail-fast: false
       matrix:
         runner: ${{ fromJSON(needs.matrix.outputs.runners) }}
+        # A hosted runner arrives with Homebrew's PostgreSQL already linked
+        # into the prefix, which is *not* what a developer's Mac looks like.
+        # `unlinked` unlinks every PostgreSQL the image brought so the journey
+        # sees only what AQ installs -- the state in which Homebrew's keg-only
+        # versioned formula decides whether a `psql` exists at all.
+        preinstalled_postgres: [keep, unlinked]
     env:
       # The journey creates commits through the real CLI; hosted runners ship
       # with no git identity.
@@ -89,6 +95,19 @@ jobs:
           brew --version || true
           brew --prefix || true
           echo "SHELL=$SHELL"
+
+      - name: Unlink the image's own PostgreSQL
+        if: matrix.preinstalled_postgres == 'unlinked'
+        run: |
+          # Nothing is uninstalled: unlinking removes the symlinks from the
+          # Homebrew prefix, which is exactly how a Mac that never had these
+          # formulae looks to `which`.
+          for formula in $(brew list --formula | grep -E '^(postgresql@|libpq$)' || true); do
+            brew services stop "$formula" || true
+            brew unlink "$formula" || true
+            echo "unlinked $formula"
+          done
+          command -v psql && echo "psql still on PATH" || echo "no psql on PATH"
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -138,7 +157,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: macos-acceptance-${{ matrix.runner }}
+          name: macos-acceptance-${{ matrix.runner }}-${{ matrix.preinstalled_postgres }}
           path: ${{ runner.temp }}/macos-acceptance
           if-no-files-found: warn
 

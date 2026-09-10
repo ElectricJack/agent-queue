@@ -132,7 +132,9 @@ def test_the_daemon_is_only_started_after_the_database_answers(tmp_path):
     created_database = next(
         index for index, text in enumerate(executed) if "psql" in text and "--dbname" in text
     )
-    started_daemon = next(index for index, text in enumerate(executed) if text.endswith("aq start"))
+    started_daemon = next(
+        index for index, text in enumerate(executed) if "aq start" in text
+    )
     assert created_database < started_daemon
 
 

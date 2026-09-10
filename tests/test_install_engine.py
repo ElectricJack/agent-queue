@@ -463,6 +463,82 @@ def test_a_dry_run_reports_the_plan_runs_read_only_checks_and_writes_nothing(tmp
     assert not (tmp_path / "install-state.json").exists()
 
 
+def test_a_dry_run_keeps_planning_past_a_check_the_skipped_mutation_would_satisfy(tmp_path):
+    """A dry run must not fail on the work it declined to do.
+
+    Natively on macOS 14, 15 and 15 (Intel): `macos.packages` installs tmux and
+    `prereq.tmux` checks it, so on a Mac with no tmux the dry run failed at step
+    four of thirty-two and printed no plan for the other twenty-eight -- which
+    is exactly what the user ran it to see (aq/noble-apex.18).
+    """
+    installed: list[str] = []
+    registry = StepRegistry(
+        (
+            StepSpec(
+                id="packages",
+                title="Install prerequisites",
+                run=lambda ctx: StepResult.succeeded("packages", "installed"),
+                mutating=True,
+            ),
+            StepSpec(
+                id="check",
+                title="Check the prerequisite",
+                run=lambda ctx: (
+                    StepResult.succeeded("check", "present")
+                    if installed
+                    else StepResult.failed("check", "tmux is not on PATH", "Install tmux.")
+                ),
+                depends_on=("packages",),
+                provisioned_by=("packages",),
+            ),
+            StepSpec(
+                id="later",
+                title="A step after the check",
+                run=lambda ctx: StepResult.succeeded("later", "ran"),
+                depends_on=("check",),
+            ),
+        )
+    )
+    result = _run(registry, tmp_path, dry_run=True)
+
+    states = {step.step_id: step.state for step in result.steps}
+    assert states["packages"] is StepState.SKIPPED
+    assert states["check"] is StepState.SKIPPED
+    # The point of the fix: the plan does not stop at the failing check.
+    assert states["later"] is StepState.SUCCEEDED
+    assert result.outcome is InstallOutcome.READY
+    check = next(step for step in result.steps if step.step_id == "check")
+    assert "tmux is not on PATH" in check.summary
+    assert "packages" in check.summary
+    assert check.detail["would_be_satisfied_by"] == ["packages"]
+
+
+def test_a_dry_run_still_fails_a_check_no_planned_step_would_satisfy(tmp_path):
+    """The softening is scoped to what a step declared.
+
+    A check that names no provisioner is reporting a problem already on this
+    host — `config.check` on an unparseable `config.yaml` — and no mutating
+    step in the plan would repair it, so the dry run must still say so.
+    """
+    registry = StepRegistry(
+        (
+            StepSpec(
+                id="check",
+                title="Check",
+                run=lambda ctx: StepResult.failed("check", "git is missing", "Install git."),
+            ),
+            StepSpec(
+                id="later", title="Later", run=_Counter("later"), depends_on=("check",)
+            ),
+        )
+    )
+    result = _run(registry, tmp_path, dry_run=True)
+    states = {step.step_id: step.state for step in result.steps}
+    assert states["check"] is StepState.FAILED
+    assert states["later"] is StepState.SKIPPED
+    assert result.outcome is InstallOutcome.FAILED
+
+
 def test_a_dry_run_after_a_restart_shows_the_restart_without_changing_the_record(tmp_path):
     registry = StepRegistry(
         (StepSpec(id="a", title="a", run=_Counter("a"), verify=lambda ctx: True),)

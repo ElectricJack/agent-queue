@@ -132,11 +132,16 @@ def build_registry(
     # generic checks run after it and revalidate its work.
     python_after = (STEP_HOST, STEP_PYTHON_RUNTIME) if macos else (STEP_HOST,)
     command_after = (STEP_HOST, STEP_PACKAGES) if macos else (STEP_HOST,)
+    # On macOS the same run installs Git and tmux (``macos.packages``) and then
+    # checks them.  Naming that step as the provisioner is what keeps a dry run
+    # — which executes no mutating step — from failing at the check and hiding
+    # the rest of the plan.
+    provisioned_by = (STEP_PACKAGES,) if macos else ()
     registry.extend(
         (
             python_step(depends_on=python_after),
-            git_step(which=lookup, depends_on=command_after),
-            tmux_step(which=lookup, depends_on=command_after),
+            git_step(which=lookup, depends_on=command_after, provisioned_by=provisioned_by),
+            tmux_step(which=lookup, depends_on=command_after, provisioned_by=provisioned_by),
             data_directory_step(environ=environ, path=state_dir),
         )
     )

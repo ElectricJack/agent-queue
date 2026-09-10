@@ -85,6 +85,14 @@ class StepSpec:
     #: interactive mode, an explicit approval in unattended mode, and are never
     #: executed in a dry run.
     mutating: bool = False
+    #: Mutating steps whose work is what this (read-only) step checks for.
+    #: A dry run does not execute a mutating step, so a check that names one
+    #: here is recorded ``skipped`` -- "would be satisfied by <step>" -- rather
+    #: than failing and stopping the plan the user ran the dry run to see. Only
+    #: a step that knows its subject is *created* by another step may declare
+    #: this: a check that fails because something already on the host is broken
+    #: must still fail, because no planned step would repair it.
+    provisioned_by: tuple[str, ...] = ()
     consent_prompt: str | None = None
     verify: StepVerifier | None = None
     owner: str = "engine"
@@ -108,6 +116,7 @@ class StepSpec:
             "depends_on": list(self.depends_on),
             "capability": self.capability,
             "mutating": self.mutating,
+            "provisioned_by": list(self.provisioned_by),
             "owner": self.owner,
             "input_schema_version": self.input_schema_version,
         }

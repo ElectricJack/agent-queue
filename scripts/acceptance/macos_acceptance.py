@@ -212,7 +212,10 @@ class Journey:
                 id="host",
                 title="Record the host",
                 verdict=verdict,
-                detail=f"macOS {facts.get('platform_mac_ver') or '?'} on {facts['platform_machine']}",
+                detail=(
+                    f"macOS {facts.get('platform_mac_ver') or '?'} "
+                    f"on {facts['platform_machine']}"
+                ),
                 commands=commands,
                 facts=facts,
             )
@@ -245,7 +248,9 @@ class Journey:
                 commands=[steps, host],
                 facts={
                     "verdict": payload,
-                    "steps": (steps.json or {}).get("steps") if isinstance(steps.json, dict) else None,
+                    "steps": (steps.json or {}).get("steps")
+                    if isinstance(steps.json, dict)
+                    else None,
                 },
             )
         )
@@ -337,13 +342,23 @@ class Journey:
     def restart_from(self) -> Phase:
         """``--restart-from`` replays one branch and carries the rest forward."""
         return self._install(
-            "restart-from", "Resume one branch (--restart-from)", extra=("--restart-from", "config.defaults")
+            "restart-from",
+            "Resume one branch (--restart-from)",
+            extra=("--restart-from", "config.defaults"),
         )
 
     def daemon(self) -> Phase:
         """The daemon and dashboard the install claims to have started."""
         health = run(
-            ["curl", "-sS", "-o", "/dev/null", "-w", "%{http_code}", "http://127.0.0.1:8081/health"],
+            [
+                "curl",
+                "-sS",
+                "-o",
+                "/dev/null",
+                "-w",
+                "%{http_code}",
+                "http://127.0.0.1:8081/health",
+            ],
             timeout=60,
         )
         dashboard = run(
@@ -366,7 +381,10 @@ class Journey:
                 id="daemon",
                 title="Daemon and dashboard answer",
                 verdict=PASS if ok else FAIL,
-                detail=f"/health -> {codes[0] or 'no answer'}, /dashboard -> {codes[1] or 'no answer'}",
+                detail=(
+                    f"/health -> {codes[0] or 'no answer'}, "
+                    f"/dashboard -> {codes[1] or 'no answer'}"
+                ),
                 commands=[health, dashboard, status],
                 facts={"health": codes[0], "dashboard": codes[1]},
             )
@@ -384,9 +402,74 @@ class Journey:
                 id="database",
                 title="PostgreSQL under brew services",
                 verdict=PASS if running else FAIL,
-                detail=("a postgresql service is started" if running else "no started postgresql service"),
+                detail=(
+                    "a postgresql service is started"
+                    if running
+                    else "no started postgresql service"
+                ),
                 commands=[services, doctor],
                 facts={"brew_services": services.stdout.strip()},
+            )
+        )
+
+    def postgres_client(self) -> Phase:
+        """Where the `psql` the installer used actually comes from.
+
+        Homebrew's versioned PostgreSQL formulae are keg-only: `brew install
+        postgresql@17` links nothing into `<prefix>/bin`, so on a Mac whose only
+        PostgreSQL is the one AQ just installed, `psql` is not on PATH and the
+        administrator route the role and database steps need does not exist.
+        A hosted runner usually has another PostgreSQL already linked, which
+        hides that — so record which one answered rather than assuming.
+        """
+        formula = "postgresql@17"
+        prefix = run(["brew", "--prefix"], timeout=120)
+        keg = run(["brew", "--prefix", formula], timeout=120)
+        on_path = run(["/bin/sh", "-c", "command -v psql || true"], timeout=120)
+        linked = run(
+            ["/bin/sh", "-c", "brew list --versions | grep -i postgres || true"], timeout=300
+        )
+        keg_path = keg.stdout.strip()
+        psql_path = on_path.stdout.strip()
+        keg_psql = f"{keg_path}/bin/psql" if keg_path else ""
+        from_keg = (
+            bool(psql_path)
+            and bool(keg_psql)
+            and Path(psql_path).resolve() == Path(keg_psql).resolve()
+            if psql_path and keg_psql and Path(psql_path).exists() and Path(keg_psql).exists()
+            else False
+        )
+        facts = {
+            "brew_prefix": prefix.stdout.strip(),
+            "formula": formula,
+            "keg_prefix": keg_path,
+            "psql_on_path": psql_path,
+            "psql_from_installed_formula": from_keg,
+            "installed_postgres_formulae": linked.stdout.strip(),
+        }
+        if not psql_path:
+            detail = (
+                f"no psql on PATH: {formula} is keg-only, so nothing it installed is linked "
+                f"into {facts['brew_prefix']}/bin"
+            )
+            verdict = FAIL
+        elif from_keg:
+            detail = f"psql on PATH is the one {formula} installed ({psql_path})"
+            verdict = PASS
+        else:
+            detail = (
+                f"psql on PATH is {psql_path}, which is not the keg-only {formula} AQ "
+                f"installed ({keg_psql or 'unknown'}) -- this machine already had a client"
+            )
+            verdict = PASS
+        return self.add(
+            Phase(
+                id="postgres-client",
+                title="Where psql comes from",
+                verdict=verdict,
+                detail=detail,
+                commands=[prefix, keg, on_path, linked],
+                facts=facts,
             )
         )
 
@@ -473,15 +556,36 @@ class Journey:
         """Uninstall must plan to remove only what AQ owns."""
         record = self._aq("uninstall", "--dry-run", "--json")
         payload = record.json if isinstance(record.json, dict) else {}
-        rows = payload.get("plan") or payload.get("removals") or []
+        plan = payload.get("plan") if isinstance(payload.get("plan"), dict) else {}
+        items = plan.get("items") if isinstance(plan.get("items"), list) else []
+        manual = payload.get("manual") if isinstance(payload.get("manual"), list) else []
+        kept = payload.get("kept") if isinstance(payload.get("kept"), list) else []
+        removed = payload.get("removed") if isinstance(payload.get("removed"), list) else []
+        # The contract's rule for a default uninstall: nothing shared with the
+        # rest of the machine is removed for you.  Homebrew, the Command Line
+        # Tools, a PostgreSQL server and a formula AQ installed must all be
+        # reported rather than deleted.
+        shared = {"package-manager", "developer-tools", "postgres-server", "brew-formula"}
+        wrongly_removed = sorted(
+            f"{row.get('kind')}:{row.get('id')}"
+            for row in items
+            if isinstance(row, dict) and row.get("action") == "remove" and row.get("kind") in shared
+        )
+        ok = record.ok and not wrongly_removed
+        detail = (
+            f"{len(items)} item(s): {len(removed)} to remove, {len(kept)} kept, "
+            f"{len(manual)} left to the operator"
+        )
+        if wrongly_removed:
+            detail += f"; would remove shared resources: {', '.join(wrongly_removed)}"
         return self.add(
             Phase(
                 id="uninstall-plan",
                 title="Uninstall plan (dry run)",
-                verdict=PASS if record.ok else FAIL,
-                detail=f"{len(rows) if isinstance(rows, list) else '?'} planned removal(s)",
+                verdict=PASS if ok else FAIL,
+                detail=detail,
                 commands=[record],
-                facts={"plan": rows},
+                facts={"items": items, "manual": manual, "kept": kept, "removed": removed},
             )
         )
 
@@ -501,6 +605,7 @@ class Journey:
             self.restart_from()
         self.daemon()
         self.database()
+        self.postgres_client()
         if "first-task" not in self.skip:
             self.first_task()
         if "uninstall-plan" not in self.skip:
@@ -570,7 +675,8 @@ def render_markdown(record: dict[str, Any]) -> str:
         f"- macOS: `{facts.get('platform_mac_ver') or '?'}` "
         f"(`{(facts.get('sw_vers') or '').replace(chr(10), ' / ')}`)",
         f"- Architecture: `{facts.get('platform_machine')}` (`arch` reports `{facts.get('arch')}`)",
-        f"- Homebrew: `{facts.get('brew_version') or 'absent'}` at `{facts.get('brew_prefix') or '-'}`",
+        f"- Homebrew: `{facts.get('brew_version') or 'absent'}` "
+        f"at `{facts.get('brew_prefix') or '-'}`",
         f"- Xcode CLT: `{facts.get('xcode_select') or 'absent'}`",
         f"- Python: `{facts.get('python') or '?'}` (`{facts.get('python_executable')}`)",
         f"- Installer version: `{record['installer_version']}`",
