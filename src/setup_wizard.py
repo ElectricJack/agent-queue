@@ -1133,11 +1133,53 @@ def step_write_config(
     config_path.write_text("\n".join(yaml_lines) + "\n", encoding="utf-8")
     success(f"Config written to {config_path}")
 
+    _write_default_tuning(config_path)
+
     # Offer to add .env sourcing to shell profile
     if env_lines:
         _offer_shell_env(env_path)
 
     return config_path
+
+
+def _write_default_tuning(config_path: Path) -> None:
+    """Add resource-aware default tuning to the config just written.
+
+    The wizard writes connection settings; everything about *how hard this
+    box should work* is derived here from its cores and RAM instead of
+    inheriting values that were tuned for whichever machine happened to
+    write the code defaults.  Rationale for every value, and how to change
+    one: docs/guides/default-tuning.md.
+
+    Never fatal — a fresh install with untuned defaults still runs.
+    """
+    try:
+        from src.config_tuning import MachineResources, apply_tuning
+
+        machine = MachineResources.detect()
+        result = apply_tuning(str(config_path), machine)
+    except Exception as exc:  # noqa: BLE001 - setup must not die on tuning
+        warn(f"Could not write default tuning ({exc}); code defaults will be used.")
+        info("Run `aq system config tune --apply` later to add them.")
+        return
+
+    if result.get("validation_errors"):
+        warn("Default tuning did not validate here; code defaults will be used.")
+        for err in result["validation_errors"]:
+            info(f"  {err}")
+        return
+
+    for err in result.get("preexisting_errors", []):
+        warn(f"Config problem to fix before starting the daemon: {err}")
+
+    info(
+        f"Tuned for this box: {machine.cores} cores, {machine.memory_gb:.0f} GiB "
+        f"({machine.size_class}) → {machine.concurrent_agents} concurrent agent(s), "
+        f"{machine.test_slots} test slot(s)"
+    )
+    if result.get("written"):
+        success(f"Default tuning written ({len(result['written'])} sections)")
+    info("Rationale and overrides: docs/guides/default-tuning.md")
 
 
 def _offer_shell_env(env_path: Path):

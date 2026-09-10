@@ -157,3 +157,44 @@ def test_step_write_config_persists_env_references_and_migration_without_plainte
     # it must never be serialized into the config document.
     assert "_migrate_from" not in yaml_text
     assert f"url: {db_config['url']}" in yaml_text
+
+
+def test_step_write_config_adds_resource_aware_default_tuning(fake_home, monkeypatch):
+    """A fresh config leaves setup already tuned for the box it is on.
+
+    Without this the install inherits the code defaults, which assume the
+    machine the subsystem was written on — eight agents and two test slots
+    on whatever laptop the user actually has.
+    """
+    import yaml
+
+    monkeypatch.setattr(sw, "_offer_shell_env", lambda env_path: None)
+
+    config_path = sw.step_write_config(
+        str(fake_home / "workspaces"),
+        {
+            "backend": "postgresql",
+            "url": "postgresql+asyncpg://agent_queue:pw@localhost:5533/agent_queue",
+        },
+        {"bot_token": "t", "guild_id": "1", "channel_id": "2", "authorized_users": []},
+        {},
+        {
+            "scheduling": {"rolling_window_hours": 24},
+            "pause_retry": {
+                "rate_limit_backoff_seconds": 60,
+                "token_exhaustion_retry_seconds": 300,
+            },
+        },
+    )
+
+    written = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    from src.config_tuning import MachineResources
+
+    machine = MachineResources.detect()
+    assert written["resources"]["max_concurrent_agents"] == machine.concurrent_agents
+    assert written["resources"]["test_slots"] == machine.test_slots
+    assert written["swarm"]["enabled"] is True
+    # Derived-at-runtime knobs stay out of the file so they keep deriving.
+    assert "cores" not in written["resources"]
+    # The wizard already wrote pause_retry; tuning must not clobber it.
+    assert written["pause_retry"]["token_exhaustion_retry_seconds"] == 300
