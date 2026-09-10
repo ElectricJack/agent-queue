@@ -247,13 +247,18 @@ Rules ([`DevelopmentIntegration.adopt`](../../src/integration/development.py)):
 aq integration cancel-preserving <operation-id> --reason 'Superseded by demo.9'
 ```
 
-This cancels the scheduling, not the work. Delegate tasks are paused, the
+This cancels the scheduling, not the work. Repair and verifier tasks are paused, the
 operation and its unfinished stages are marked cancelled, and a `cancelled`
 row goes into the journal. Refs and attached workspaces are **retained** — only
 detached reservations (no session, no workspace) are released. If a repair
 writer's session is not provably stopped by its provider, the command refuses
 with `DevelopmentBusy` rather than pulling a branch out from under a live
 process.
+
+Repeating cancellation also retires leftover tasks from older cancellations
+that omitted the verifier. Once all delegates are terminal or paused, repeating
+the command makes no changes. The verifier's task and audit references are kept;
+cancellation does not claim that verification passed.
 
 ## Designating the repository
 

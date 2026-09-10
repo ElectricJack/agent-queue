@@ -507,7 +507,10 @@ async def test_new_commands_reject_session_principals_without_mutation():
             assert result["outcome"] == "unauthorized"
 
 
-async def test_cancel_detached_repair_does_not_require_human_hold(setup):
+@pytest.mark.parametrize("operation_state", ["active", "cancelled"])
+@pytest.mark.parametrize("verifier_writer", ["detached", "running", "unconfirmed", "confirmed"])
+async def test_cancel_retires_verifier_with_stop_proof(setup, operation_state, verifier_writer):
+    from unittest.mock import AsyncMock
     from sqlalchemy import insert
 
     from src.database.tables import integration_branch_owners as owners
@@ -518,10 +521,15 @@ async def test_cancel_detached_repair_does_not_require_human_hold(setup):
         integration_repair_operations as operations,
     )
     from src.database.tables import integration_repair_stages as stages
+    from src.database.tables import sessions
 
     db, service, _source, remote, _repo = setup
     await feature(setup, "parent")
     await db.create_task(Task(id="repair", project_id="p", title="repair", description=""))
+    await db.create_task(Task(
+        id="verifier", project_id="p", title="obsolete verifier", description="",
+        status=TaskStatus.BLOCKED,
+    ))
     async with db.immediate() as conn:
         await conn.execute(
             insert(integration_parent_episodes).values(
@@ -540,7 +548,8 @@ async def test_cancel_detached_repair_does_not_require_human_hold(setup):
                 parent_task_id="parent",
                 episode_id="episode",
                 active_stage=0,
-                state="active",
+                state=operation_state,
+                verifier_task_id="verifier",
                 policy_snapshot={},
                 artifact_snapshot={},
                 required_check_version="old",
@@ -574,6 +583,25 @@ async def test_cancel_detached_repair_does_not_require_human_hold(setup):
             )
         )
     before = git(remote, "show-ref")
+    if verifier_writer != "detached":
+        async with db.immediate() as conn:
+            await conn.execute(insert(sessions).values(
+                id="verifier-session", task_id="verifier", project_id="p",
+                profile_id="worker", harness="codex", provider="fake", name="verifier",
+                lifecycle="task", state="running" if verifier_writer == "running" else "stopped",
+                desired_state="stopped", work_dir=str(_source), epoch="e",
+                instance_token="verifier-instance", started_at=1, last_claim_epoch=0,
+            ))
+        service.confirm_stopped = AsyncMock(return_value=verifier_writer == "confirmed")
+        if verifier_writer in {"running", "unconfirmed"}:
+            with pytest.raises(DevelopmentBusy):
+                await service.cancel_preserving("op", reason="must retain writer")
+            assert (await db.get_task("verifier")).status == TaskStatus.BLOCKED
+            async with db._engine.connect() as conn:
+                assert await conn.scalar(select(operations.c.state)) == operation_state
+                assert await conn.scalar(select(owners.c.handoff_state)) == "reserved"
+            assert git(remote, "show-ref") == before
+            return
     result = await service.cancel_preserving("op", reason="already manually delivered")
     assert result["outcome"] == "cancelled"
     assert git(remote, "show-ref") == before
@@ -587,6 +615,16 @@ async def test_cancel_detached_repair_does_not_require_human_hold(setup):
             == "cancelled"
         )
     assert (await service.rows("p"))[-1]["evidence"]["kind"] == "cancel_preserving"
+    for task_id in ("repair", "verifier"):
+        task = await db.get_task(task_id)
+        assert task.status == TaskStatus.PAUSED
+        assert task.resume_after is None
+        assert (await db.get_task_meta(task_id, "manual_pause"))["cleanup_pending"] is False
+    async with db._engine.connect() as conn:
+        assert await conn.scalar(select(operations.c.verifier_task_id)) == "verifier"
+    before_rows = await service.rows("p")
+    assert (await service.cancel_preserving("op", reason="replay"))["outcome"] == "already_terminal"
+    assert await service.rows("p") == before_rows
 
 
 async def test_repair_generation_budget_stops_recursive_dispatch(setup):
