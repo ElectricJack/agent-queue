@@ -266,7 +266,7 @@ def default_registry(
     with :meth:`StepRegistry.register`; they never replace it, so every install
     on every host starts from the same admission and prerequisite checks.
     """
-    return StepRegistry(
+    registry = StepRegistry(
         (
             host_step(),
             python_step(),
@@ -275,3 +275,10 @@ def default_registry(
             data_directory_step(environ=environ, path=state_dir),
         )
     )
+    # Provider adapters are capability-gated, so they remain optional: a
+    # normal AQ install records them as skipped until the operator selects one
+    # with ``aq install --with provider.<name>``.
+    from .providers import provider_steps
+
+    registry.extend(provider_steps(which=which))
+    return registry
