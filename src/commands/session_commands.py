@@ -760,6 +760,40 @@ class SessionCommandsMixin:
                 ),
             }
 
+        # Busy sessions cannot receive terminal nudges. Give queued feedback
+        # a final delivery opportunity before close drains this worker. Do not
+        # consume it here: the worker must retrieve the body and reconsider
+        # its result, then retry with the same claim. Operator closes and
+        # disabled messaging retain their existing behavior.
+        if (
+            session is not None
+            and (scope_session_id or caller_session_id) == session.id
+            and session.state in LIVE_SESSION_STATES
+            and session.task_id == task_id
+            and self.config.messages.enabled
+        ):
+            import shlex
+
+            inbox_commands = []
+            for kind, recipient in (("task", task_id), ("session", session.id)):
+                if await self.db.get_pending_messages(kind, recipient, limit=1):
+                    mailbox = shlex.quote(f"{kind}:{recipient}")
+                    inbox_commands.append(
+                        f"aq message inbox --to {mailbox} --inject --limit 50 --json"
+                    )
+            if inbox_commands:
+                return {
+                    "success": False,
+                    "code": "messages.pending_before_close",
+                    "error": (
+                        "Pending feedback arrived while you were working. Your task and "
+                        "claim remain open. Read and handle the messages before closing: "
+                        + "; ".join(inbox_commands)
+                        + ". Recheck any affected evidence, then retry close with the "
+                        "same claim and an updated summary."
+                    ),
+                }
+
         # Deliverables are a worker contract, not a best-effort review hint.
         # Refuse before any metadata, hierarchy, or pipeline side effect so
         # the same claim can add evidence or make a visible exception and
