@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass, replace
 import hashlib
 import json
+from dataclasses import dataclass, replace
 from typing import Any, ClassVar
 
 from jsonschema import Draft202012Validator
@@ -129,13 +129,19 @@ def _result(
 
 
 def _prompt(step: LlmStep, ctx: StepContext) -> str:
-    """Render only the typed prompt expression; receipt code stores its digest."""
+    """Render the prompt, inputs and the exact output contract the model must meet."""
     from src.playbooks.expressions import resolve_value
 
     prompt = str(resolve_value(step.prompt, ctx.scope))
-    if not ctx.inputs:
-        return prompt
-    return f"{prompt}\n\nInputs:\n{json.dumps(dict(ctx.inputs), sort_keys=True, default=str)}"
+    if ctx.inputs:
+        prompt += f"\n\nInputs:\n{json.dumps(dict(ctx.inputs), sort_keys=True, default=str)}"
+    # The validator enforces constraints such as maxLength even when the
+    # authored prompt does not mention them. Give the model the same contract
+    # on its first call, including steps with only one allowed call.
+    return (
+        f"{prompt}\n\nReturn one JSON object satisfying this output JSON Schema:\n"
+        f"{json.dumps(step.output_schema, sort_keys=True)}"
+    )
 
 
 def _resume_state(
