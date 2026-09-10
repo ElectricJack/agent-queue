@@ -268,6 +268,17 @@ def render_summary(summary: OnboardingSummary, target: Console) -> None:
         if summary.dashboard.hint:
             target.print(f"  [dim]{summary.dashboard.hint}[/dim]")
 
+    if summary.readiness:
+        style = "green" if summary.readiness.ready else "yellow"
+        label = "ready for a live first task" if summary.readiness.ready else "needs attention"
+        target.print(f"\n[bold]First-task readiness[/bold] [{style}]{label}[/{style}]")
+        for check in summary.readiness.checks:
+            mark = "OK" if check.ready else "!!"
+            check_style = "green" if check.ready else "yellow"
+            target.print(f"  [{check_style}]{mark}[/{check_style}] {check.label}: {check.detail}")
+            if check.remediation:
+                target.print(f"     [dim]next: {check.remediation}[/dim]")
+
     if summary.skipped:
         target.print("\n[bold]Not installed (optional)[/bold]")
         for line in summary.skipped:
@@ -429,6 +440,8 @@ def install(
     # Provider availability is a host fact, not a credential.  A real install
     # or repair refreshes the catalog so a later project default cannot select
     # a removed or unauthenticated provider.  Dry-runs remain write-free.
+    probes = ()
+    activations = ()
     if not dry_run:
         from src.install.logins import probe_all
         from src.profiles.catalog import evaluate_catalog, refresh_catalog_profiles
@@ -445,7 +458,8 @@ def install(
             interactive=interactive,
         )
         guidance: dict[str, str] = {}
-        for activation in evaluate_catalog(probes, facts=support.facts, interactive=interactive):
+        activations = evaluate_catalog(probes, facts=support.facts, interactive=interactive)
+        for activation in activations:
             if not activation.active:
                 guidance.setdefault(
                     activation.profile.provider_id,
@@ -461,7 +475,7 @@ def install(
     # The summary is derived from the result, so a human and a script are told
     # the same things: what is ready, where the data lives, which URL to open
     # and what was deliberately left out.
-    summary = summarize(result)
+    summary = summarize(result, probes=probes, activations=activations)
     if as_json:
         payload = result.to_dict()
         payload["onboarding"] = summary.to_dict()

@@ -290,6 +290,17 @@ view and a script are told the same things:
     ],
     "dashboard": {"url": "http://127.0.0.1:8081/dashboard", "reachable": true,
                   "source": "bundled", "hint": ""},
+    "readiness": {
+      "ready": true,
+      "checks": [
+        {"id": "database", "status": "ready", "detail": "AQ connected to its PostgreSQL database in this install run."},
+        {"id": "daemon", "status": "ready", "detail": "The daemon answered its health endpoint."},
+        {"id": "dashboard", "status": "ready", "detail": "The dashboard is reachable."},
+        {"id": "agent_authentication", "status": "ready", "detail": "An installed harness authenticated without exposing a credential."},
+        {"id": "profile_routing", "status": "ready", "detail": "An authenticated worker profile is active."},
+        {"id": "workspace_prerequisites", "status": "ready", "detail": "Git, tmux, and the worktree location were verified."}
+      ]
+    },
     "skipped": ["Discord delivery for digests and escalations — not selected; add it with `aq install --with discord`"],
     "next_steps": ["Open the dashboard at http://127.0.0.1:8081/dashboard."]
   }
@@ -297,6 +308,11 @@ view and a script are told the same things:
 ```
 
 * **`onboarding.ready`** agrees with `outcome == "ready"`.
+* **`onboarding.readiness`** is the separate admission check for the first
+  live task. Its database, daemon, dashboard, agent-authentication,
+  profile-routing and workspace-prerequisite checks are all observed; an
+  install that deliberately skipped every provider can still have
+  `onboarding.ready: true` but `onboarding.readiness.ready: false`.
 * **`onboarding.skipped`** lists the *optional* things this run did not do and
   the flag that would add each one. A skipped capability is a finished install,
   not a partial one.

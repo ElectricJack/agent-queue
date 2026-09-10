@@ -2,8 +2,41 @@
 
 Create a disposable Git project, ask AQ for one small change, and inspect the
 result without giving a worker your normal repository. This follows
-[installation](install.md); it assumes `aq status` works and a harness profile
-is ready.
+[installation](install.md); it assumes the installer's **First-task readiness**
+summary is ready.
+
+## Confirm that a live task is admissible
+
+Do this before creating the sample project. `aq install` may complete when an
+optional provider was skipped, but that is not evidence that AQ can start a
+coding worker. Its closing summary (and `--json` under
+`onboarding.readiness`) reports separate, observed checks for the PostgreSQL
+connection, daemon health, dashboard reachability, harness authentication,
+profile routing, and Git/tmux worktree prerequisites.
+
+Every check must say `ready` for this tutorial. In particular, do not infer
+agent authentication from an executable being on `PATH`, or daemon readiness
+from a started process. Repair the named check and rerun the installer; it
+revalidates completed steps rather than starting over.
+
+Choose one active **standard-medium** profile for this demonstration. It is
+small enough to make the live run inexpensive and clear; do not use a
+`deep-high` profile for a one-file hello-world change. The example below uses
+Codex only when it appears as active on *your* daemon; otherwise substitute
+the active `worker-standard-medium-<provider>` profile shown by the command.
+
+```bash
+aq agent list-profiles
+export AQ_FIRST_PROFILE=worker-standard-medium-codex
+aq agent check-profile --profile-id "$AQ_FIRST_PROFILE"
+```
+
+This is a real live-agent demonstration, not a dry run. It starts one worker
+and consumes whatever usage your chosen provider/account applies (included
+plan allowance or API usage) as well as local CPU and one worktree slot. Keep
+the prompt below unchanged and do not queue more tasks until you have observed
+the result. Provider credentials stay with the provider CLI; never paste a
+key into the task description or AQ configuration.
 
 ## Why this exists
 
@@ -85,7 +118,7 @@ aq task create \
   --project hello-aq \
   --title "Add a hello script" \
   --description "Create hello.sh that prints Hello, AQ! and add a short README note." \
-  --profile worker-standard-medium-claude
+  --profile "$AQ_FIRST_PROFILE"
 ```
 
 ```text
@@ -94,8 +127,8 @@ aq task create \
 … status: READY …
 ```
 
-If the chosen profile uses a different harness, substitute its ID. The profile
-is a configured choice. The task's default `project-repo` workspace requirement
+The profile is a configured choice verified above. The task's default
+`project-repo` workspace requirement
 is shipped behaviour; you do not need to pass `--requires-kind` for this
 single-repository example ([task creation](../../src/commands/task_commands.py)).
 
@@ -118,6 +151,19 @@ command. A running task means AQ has assigned a worker session; use the
 dashboard to follow it visually or `aq task get`/`aq task comments` to inspect
 durable task state. The worker will work in an AQ-managed worktree and commit
 to its task branch, leaving `~/aq-tutorials/hello-aq` as the project checkout.
+
+Then inspect the integration that this project's configured policy actually
+performed; do not assume a worker's completion summary means the default
+branch changed:
+
+```bash
+aq integration status hello-aq
+```
+
+The status reports the project's rollout mode, readiness, active work, and
+cleanup. A successful result plus an integration record is the end-to-end
+proof for this disposable run. If the status names a pending or blocked
+integration item, follow that diagnostic before deleting the project.
 
 ```mermaid
 flowchart LR
@@ -170,19 +216,20 @@ on the default branch.
 
 ## Cleanup
 
-Wait for the task to finish and inspect its result first. Then delete the
-disposable AQ project through the dashboard or the project-management CLI, and
-remove `~/aq-tutorials/hello-aq` only after confirming it is the tutorial
-repository. Stop the disposable PostgreSQL container when you no longer need
-AQ:
+Wait for the task to finish, inspect its result, and check the integration
+status first. Then delete the disposable AQ project through the dashboard or
+the project-management CLI. The CLI refuses to delete a project with a live
+task, which protects the worker and its worktree:
 
 ```bash
-aq stop
-docker compose down
+aq project delete --project-id hello-aq
+rm -rf ~/aq-tutorials/hello-aq
 ```
 
-`aq stop` ends agent sessions as well as the daemon. Do not use `--keep-sessions`
-for this disposable cleanup.
+Only run the `rm -rf` line after confirming that exact path is the disposable
+tutorial repository. AQ deletes its own task/project records; the repository
+directory is still yours. `aq stop` is optional and ends all agent sessions,
+so use it only when you mean to stop AQ rather than merely remove the sample.
 
 ## Related pages
 

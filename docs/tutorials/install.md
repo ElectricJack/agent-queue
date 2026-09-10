@@ -87,7 +87,15 @@ machine asks first:
 [1/25] OK Confirm the host is supported
 [5/25] OK Prepare the AQ data directory
 …
-AQ is installed and ready.
+AQ installation is complete.
+
+First-task readiness
+  OK Database: AQ connected to its PostgreSQL database in this install run.
+  OK Daemon: the daemon answered its health endpoint.
+  OK Dashboard: the dashboard is reachable at http://127.0.0.1:8081/dashboard.
+  OK Agent authentication: at least one harness has non-secret authentication evidence.
+  OK Profile routing: an authenticated worker profile is active.
+  OK Workspace prerequisites: Git, tmux, and the worktree location were verified.
 ```
 
 The exact step list depends on the host and what you selected; `aq install
@@ -155,6 +163,14 @@ Next
 Open that URL in a browser. A **source checkout** ships no built dashboard, so
 the summary gives you the development command instead — run
 `npm -w dashboard run dev` in the checkout and open `http://localhost:5173`.
+
+The install outcome and first-task readiness answer different questions. You
+can deliberately finish an installation with every provider skipped, but AQ
+will then show **needs attention** for agent authentication and profile routing
+instead of inviting you to create a task that cannot run. Follow the named
+remediation and rerun `aq install`; it rechecks rather than repeats completed
+work. The machine-readable equivalent is `onboarding.readiness` in
+`aq install --json`.
 
 `aq status` reports what the daemon thinks of itself, and `aq stop` /
 `aq restart` control it.

@@ -8,6 +8,8 @@ would actually feel.
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 
 from src.install.logins import AuthProbe
@@ -206,9 +208,23 @@ def dashboard_step_result(*, reachable: bool = True) -> StepResult:
     )
 
 
+def first_task_machine_steps() -> tuple[StepResult, ...]:
+    """Evidence that is independent from a provider's credential material."""
+    return (
+        check_step_result(),
+        dashboard_step_result(),
+        StepResult.succeeded("postgres.connection", "AQ connected to PostgreSQL"),
+        StepResult.succeeded("daemon.start", "the daemon answered /health"),
+        StepResult.succeeded("prereq.git", "git is available"),
+        StepResult.succeeded("prereq.tmux", "tmux is available"),
+    )
+
+
 def test_a_ready_run_reports_where_data_lives_and_which_url_to_open():
     summary = summarize(
-        result(steps=(check_step_result(), dashboard_step_result()))
+        result(steps=first_task_machine_steps()),
+        probes=(probe("codex", installed=True, authenticated=True),),
+        activations=(SimpleNamespace(active=True),),
     )
 
     assert summary.ready is True
@@ -225,6 +241,44 @@ def test_a_source_checkout_gets_the_dev_server_instruction_as_a_next_step():
     )
 
     assert any("npm -w dashboard run dev" in step for step in summary.next_steps)
+
+
+def test_readiness_requires_a_measured_database_daemon_dashboard_and_routable_agent():
+    summary = summarize(
+        result(steps=first_task_machine_steps()),
+        probes=(probe("codex", installed=True, authenticated=True),),
+        activations=(SimpleNamespace(active=True),),
+    )
+
+    assert summary.readiness is not None
+    assert summary.readiness.ready is True
+    assert [check.id for check in summary.readiness.checks] == [
+        "database",
+        "daemon",
+        "dashboard",
+        "agent_authentication",
+        "profile_routing",
+        "workspace_prerequisites",
+    ]
+    assert all(check.ready for check in summary.readiness.checks)
+    assert any("Create your first project" in step for step in summary.next_steps)
+
+
+def test_an_installed_daemon_does_not_claim_first_task_readiness_without_a_routed_profile():
+    summary = summarize(
+        result(steps=first_task_machine_steps()),
+        probes=(probe("codex", installed=True, authenticated=False),),
+        activations=(SimpleNamespace(active=False),),
+    )
+
+    assert summary.ready is True, "installation can complete with optional providers declined"
+    assert summary.readiness is not None
+    assert summary.readiness.ready is False
+    routing = next(check for check in summary.readiness.checks if check.id == "profile_routing")
+    assert routing.ready is False
+    assert routing.remediation is not None
+    assert not any("Create your first project" in step for step in summary.next_steps)
+    assert any("First-task readiness needs attention" in step for step in summary.next_steps)
 
 
 def test_an_unselected_optional_capability_is_reported_as_a_choice_not_a_gap():

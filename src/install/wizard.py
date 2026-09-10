@@ -32,11 +32,13 @@ from .onboarding import (
     CAPABILITY_DAEMON,
     CAPABILITY_DISCORD,
     STEP_CHECK,
+    STEP_DAEMON,
     STEP_DASHBOARD,
     DashboardInfo,
     Location,
 )
-from .postgres_steps import CAPABILITY_MANAGED, CAPABILITY_ROTATE
+from .postgres_steps import CAPABILITY_MANAGED, CAPABILITY_ROTATE, STEP_CONNECTION
+from .prerequisites import STEP_GIT, STEP_TMUX
 from .providers import ProviderInstaller, provider_installers
 from .results import InstallOutcome, InstallResult, StepState
 
@@ -184,6 +186,8 @@ class OnboardingSummary:
     skipped: tuple[str, ...] = ()
     #: What to do next, most urgent first.
     next_steps: tuple[str, ...] = ()
+    #: A measured answer to whether this installation can run the first live task.
+    readiness: FirstTaskReadiness | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -193,7 +197,45 @@ class OnboardingSummary:
             "dashboard": self.dashboard.to_dict() if self.dashboard else None,
             "skipped": list(self.skipped),
             "next_steps": list(self.next_steps),
+            "readiness": self.readiness.to_dict() if self.readiness else None,
         }
+
+
+@dataclass(frozen=True, slots=True)
+class ReadinessCheck:
+    """One observable prerequisite for a live first task.
+
+    This is deliberately separate from an install step's state.  For example,
+    an install may complete successfully with every provider declined, while a
+    first task still cannot be claimed by a worker.
+    """
+
+    id: str
+    label: str
+    ready: bool
+    detail: str
+    remediation: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "id": self.id,
+            "label": self.label,
+            "ready": self.ready,
+            "status": "ready" if self.ready else "needs_attention",
+            "detail": self.detail,
+            "remediation": self.remediation,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class FirstTaskReadiness:
+    """The non-secret evidence needed before inviting an operator to spend on a task."""
+
+    ready: bool
+    checks: tuple[ReadinessCheck, ...]
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"ready": self.ready, "checks": [check.to_dict() for check in self.checks]}
 
 
 _CAPABILITY_LABELS: dict[str, str] = {
@@ -244,7 +286,84 @@ def _skipped_lines(result: InstallResult) -> tuple[str, ...]:
     return tuple(lines)
 
 
-def _next_steps(result: InstallResult, dashboard: DashboardInfo | None) -> tuple[str, ...]:
+def _step_succeeded(result: InstallResult, step_id: str) -> bool:
+    """Return whether this run observed one named prerequisite as satisfied."""
+    return any(step.step_id == step_id and step.state is StepState.SUCCEEDED for step in result.steps)
+
+
+def _first_task_readiness(
+    result: InstallResult,
+    *,
+    probes: Sequence[AuthProbe],
+    activations: Sequence[Any],
+    dashboard: DashboardInfo | None,
+) -> FirstTaskReadiness:
+    """Turn install evidence into the explicit first-task admission checklist.
+
+    The checks intentionally consume only non-secret probe results.  A profile
+    being active proves both that its provider is authenticated and that AQ's
+    catalog made it eligible for routing; neither requires examining a token
+    or credential cache.
+    """
+    database = _step_succeeded(result, STEP_CONNECTION)
+    daemon = _step_succeeded(result, STEP_DAEMON)
+    dashboard_ready = bool(dashboard and dashboard.reachable)
+    authenticated = any(probe.installed and probe.authenticated for probe in probes)
+    routed = any(bool(getattr(activation, "active", False)) for activation in activations)
+    workspace = all(
+        _step_succeeded(result, step_id) for step_id in (STEP_CHECK, STEP_GIT, STEP_TMUX)
+    )
+
+    checks = (
+        ReadinessCheck(
+            "database", "Database", database,
+            "AQ connected to its PostgreSQL database in this install run."
+            if database else "AQ did not confirm a PostgreSQL connection in this install run.",
+            None if database else "Run `aq doctor`, fix the reported database issue, then rerun `aq install`.",
+        ),
+        ReadinessCheck(
+            "daemon", "Daemon", daemon,
+            "The daemon answered its health endpoint." if daemon else "The daemon was not confirmed healthy.",
+            None if daemon else "Run `aq start` or rerun `aq install` after fixing the reported failure.",
+        ),
+        ReadinessCheck(
+            "dashboard", "Dashboard", dashboard_ready,
+            f"The dashboard is reachable at {dashboard.url}." if dashboard_ready else
+            "No reachable dashboard was observed (a source checkout may need its Vite server).",
+            None if dashboard_ready else "Follow the dashboard hint above, then refresh the browser.",
+        ),
+        ReadinessCheck(
+            "agent_authentication", "Agent authentication", authenticated,
+            "At least one installed harness reported non-secret authentication evidence."
+            if authenticated else "No installed harness reported authentication evidence.",
+            None if authenticated else "Sign in to one selected harness, then rerun `aq install` to recheck it.",
+        ),
+        ReadinessCheck(
+            "profile_routing", "Profile routing", routed,
+            "At least one authenticated provider has an active worker profile."
+            if routed else "No active worker profile can be routed to a live harness.",
+            None if routed else "Rerun `aq install` after harness authentication, then check `aq agent list-profiles`.",
+        ),
+        ReadinessCheck(
+            "workspace_prerequisites", "Workspace prerequisites", workspace,
+            "Git, tmux, and AQ's configured worktree location were verified."
+            if workspace else "Git, tmux, or AQ's configured worktree location was not verified.",
+            None if workspace else "Fix the named prerequisite and rerun `aq install` before creating a project.",
+        ),
+    )
+    return FirstTaskReadiness(
+        ready=result.outcome is InstallOutcome.READY and not result.dry_run and all(
+            check.ready for check in checks
+        ),
+        checks=checks,
+    )
+
+
+def _next_steps(
+    result: InstallResult,
+    dashboard: DashboardInfo | None,
+    readiness: FirstTaskReadiness,
+) -> tuple[str, ...]:
     steps: list[str] = []
     if result.dry_run:
         # A dry run changed nothing, so the only honest next step is the run
@@ -269,15 +388,27 @@ def _next_steps(result: InstallResult, dashboard: DashboardInfo | None) -> tuple
             steps.append(f"Open the dashboard at {dashboard.url}.")
         elif dashboard and dashboard.hint:
             steps.append(dashboard.hint)
-        steps.append(
-            "Create your first project and task: `aq project onboard --help`, or follow "
-            "docs/tutorials/first-task.md."
-        )
+        if readiness.ready:
+            steps.append(
+                "Create your first project and task: `aq project onboard --help`, or follow "
+                "docs/tutorials/first-task.md."
+            )
+        else:
+            first_missing = next(check for check in readiness.checks if not check.ready)
+            steps.append(
+                "First-task readiness needs attention: "
+                f"{first_missing.remediation or first_missing.detail}"
+            )
         steps.append("`aq doctor` checks this installation whenever something looks wrong.")
     return tuple(steps)
 
 
-def summarize(result: InstallResult) -> OnboardingSummary:
+def summarize(
+    result: InstallResult,
+    *,
+    probes: Sequence[AuthProbe] = (),
+    activations: Sequence[Any] = (),
+) -> OnboardingSummary:
     """Fold the engine's result into the closing summary.
 
     Everything comes from the result: the locations the ``config.check`` step
@@ -313,13 +444,17 @@ def summarize(result: InstallResult) -> OnboardingSummary:
         headline = "AQ is installed and ready."
     else:
         headline = f"Installation stopped: {result.outcome.value}."
+    readiness = _first_task_readiness(
+        result, probes=probes, activations=activations, dashboard=dashboard
+    )
     return OnboardingSummary(
         ready=ready,
         headline=headline,
         locations=locations,
         dashboard=dashboard,
         skipped=_skipped_lines(result),
-        next_steps=_next_steps(result, dashboard),
+        next_steps=_next_steps(result, dashboard, readiness),
+        readiness=readiness,
     )
 
 
