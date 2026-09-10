@@ -396,3 +396,15 @@ def test_import_is_exposed_on_every_operator_surface_and_pauses_with_playbooks()
     assert name in get_all_response_models()
     assert name in PAUSED_PLAYBOOK_COMMANDS
     assert hasattr(CommandHandler, f"_cmd_{name}")
+
+
+def test_import_help_matches_the_required_bundle_layout():
+    definition = next(
+        definition
+        for definition in _ALL_TOOL_DEFINITIONS
+        if definition["name"] == "playbook_v2_import"
+    )
+    help_text = definition["input_schema"]["properties"]["path"]["description"]
+
+    assert "artifact.json, artifact.sha256, source.md, and manifest.md" in help_text
+    assert "review.md" not in help_text
