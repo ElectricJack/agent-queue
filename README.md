@@ -21,6 +21,10 @@ development; expect to read logs and use `aq doctor`.
 **→ [Install and start Agent Queue](docs/tutorials/install.md)**, then
 [run your first isolated task](docs/tutorials/first-task.md).
 
+Installing on Windows? Use the [Windows + WSL2 quickstart](docs/tutorials/install.md#windows-wsl2-quickstart).
+On a Mac, use the [macOS quickstart](docs/tutorials/install.md#macos-quickstart).
+Both paths lead to the same resumable installer and [recovery guidance](docs/tutorials/install.md#recovery-upgrade-and-uninstall).
+
 The short version, once the prerequisites on that page are in place:
 
 ```bash
