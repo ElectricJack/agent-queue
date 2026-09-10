@@ -11,9 +11,7 @@ import { act, cleanup, renderHook } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { setExpandedTaskIds, useExpandedTaskIds } from "../useGraphHierarchy";
 
-const STORAGE_KEY = "aq:command-center:expanded-task-ids:v1";
-
-beforeEach(() => localStorage.clear());
+beforeEach(() => setExpandedTaskIds(new Set()));
 afterEach(cleanup);
 
 describe("expanded state ownership", () => {
@@ -23,7 +21,7 @@ describe("expanded state ownership", () => {
 
     act(() => first.result.current.toggleExpanded("epic"));
     expect(first.result.current.expandedTaskIds.has("epic")).toBe(true);
-    expect(JSON.parse(localStorage.getItem(STORAGE_KEY) ?? "[]")).toEqual(["epic"]);
+    expect(localStorage.getItem("aq:command-center:expanded-task-ids:v1")).toBeNull();
 
     // A re-render — what a live graph refresh or a resize produces — leaves
     // the set alone.
@@ -31,8 +29,8 @@ describe("expanded state ownership", () => {
     expect(first.result.current.expandedTaskIds.has("epic")).toBe(true);
     expect(first.result.current.expandedTaskIds.has("other")).toBe(false);
 
-    // A remount (tab switch, page reload, desktop/mobile view swap) restores
-    // the same choices from storage.
+    // A remount keeps the shared in-memory source; the route provider replaces
+    // it with the per-user server document in production.
     first.unmount();
     const second = renderHook(() => useExpandedTaskIds());
     expect(second.result.current.expandedTaskIds.has("epic")).toBe(true);
