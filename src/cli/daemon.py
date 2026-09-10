@@ -252,6 +252,81 @@ def _config_uses_postgres() -> bool:
     return False
 
 
+def _configured_database_endpoint() -> tuple[str, int] | None:
+    """The host and port of the configured database, or ``None`` if unreadable.
+
+    Read from the raw YAML rather than through ``load_config``: this runs
+    before the daemon and must not depend on the whole configuration being
+    valid, and it deliberately never looks at the password.
+    """
+    import yaml
+
+    try:
+        with open(CONFIG_PATH, encoding="utf-8") as handle:
+            raw = yaml.safe_load(handle) or {}
+    except (OSError, yaml.YAMLError):
+        return None
+    section = raw.get("database")
+    url = section.get("url") if isinstance(section, dict) else None
+    if not isinstance(url, str) or not url:
+        return None
+    from urllib.parse import urlsplit
+
+    try:
+        parts = urlsplit(url)
+        return (parts.hostname or "localhost", int(parts.port or 5432))
+    except ValueError:
+        return None
+
+
+def _database_reachable() -> bool:
+    """True when something is already listening where the configuration points.
+
+    A PostgreSQL that `aq install` provisioned — or any server the operator
+    already runs — is the normal case, and it has nothing to do with Docker.
+    Probing first is what keeps `aq start` from demanding a compose file on a
+    machine that has a perfectly good database.
+    """
+    endpoint = _configured_database_endpoint()
+    if endpoint is None:
+        return False
+    import socket
+
+    host, port = endpoint
+    try:
+        with socket.create_connection((host, port), timeout=2):
+            return True
+    except OSError:
+        return False
+
+
+def _ensure_database() -> bool:
+    """Make sure the configured database answers before the daemon is started.
+
+    Three cases, in the order they are true on real machines:
+
+    1. Something is already listening — the installed or operator-run server.
+       Nothing else to do.
+    2. Nothing is listening and this is a source checkout with a compose file —
+       start the development container, as `aq start` always has.
+    3. Nothing is listening and there is no compose file — say so, and name the
+       command that installs or repairs one. AQ is PostgreSQL-only, so a
+       missing server is the whole problem, not a missing Docker.
+    """
+    if _database_reachable():
+        return True
+    if _find_compose_file():
+        return _ensure_docker_postgres()
+    endpoint = _configured_database_endpoint()
+    where = f"{endpoint[0]}:{endpoint[1]}" if endpoint else "the configured address"
+    console.print(
+        f"[bold red]Error:[/] no PostgreSQL server is answering at {where}.\n"
+        "[dim]Start the server you configured, or run `aq install` to install and "
+        "configure one (`aq install --with postgres-managed`).[/]"
+    )
+    return False
+
+
 def _daemon_environment(*, home: str | None = None) -> dict[str, str]:
     """Build a stable daemon environment for non-login shell launches."""
     env = os.environ.copy()
@@ -296,10 +371,10 @@ def start_daemon() -> bool:
         console.print(f"[yellow]Daemon is already running[/] (PID {existing})")
         return True
 
-    # If PostgreSQL is configured, ensure Docker + container are running
-    if _config_uses_postgres():
-        if not _ensure_docker_postgres():
-            return False
+    # The daemon cannot start without its database. Reach for Docker only when
+    # nothing is listening *and* this is a checkout that ships a compose file.
+    if _config_uses_postgres() and not _ensure_database():
+        return False
 
     # Acquire lock
     try:

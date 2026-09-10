@@ -156,7 +156,7 @@ before the credential that lets it reach its database was written.
 | `config.defaults` | yes | — | Creates `~/.agent-queue/config.yaml` when it is absent and adds resource-aware defaults derived from this box's cores and memory (the same values `aq system config tune --apply` writes). A section you have already written is **kept**, and a numbered backup is taken only when something is actually written. Rationale for every value: [default tuning](../../guides/default-tuning.md). |
 | `config.check` | no | — | Loads the configuration exactly as the daemon does, including `${VAR}` references, and reports where AQ stores things. A configuration that does not parse stops the run here rather than at a daemon that dies with a stack trace. |
 | `config.discord` | yes | `discord` | Optional. Points the hourly digest and escalation threads at one channel. |
-| `daemon.start` | yes | `daemon` | Runs `aq start` and waits for `/health`. A daemon that already answers is reused, never restarted. |
+| `daemon.start` | yes | `daemon` | Runs `aq start` and waits for `/health`. A daemon that already answers is reused, never restarted. `aq start` uses the PostgreSQL the configuration names; it reaches for the checkout's `docker-compose.yml` only when nothing is listening there and that file exists, so an installed native server needs no Docker. |
 | `daemon.dashboard` | no | — | Reports the URL to open. Never blocks a run. |
 
 ### Discord is optional

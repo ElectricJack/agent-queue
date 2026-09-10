@@ -100,7 +100,11 @@ def test_daemon_start_reports_docker_or_subprocess_failure_without_claiming_succ
     assert "4242" in result.output
 
     # -- Postgres configured, Docker down and unstartable ------------------
+    # The database probe is patched, not left to the box: on a machine that
+    # happens to run PostgreSQL on 5432 the Docker branch is never reached.
     with patch.object(daemon_mod, "_find_daemon_pid", return_value=None), \
+         patch.object(daemon_mod, "_database_reachable", return_value=False), \
+         patch.object(daemon_mod, "_find_compose_file", return_value="/x/docker-compose.yml"), \
          patch.object(daemon_mod, "_is_docker_running", return_value=False), \
          patch.object(daemon_mod, "_start_docker_desktop", return_value=False):
         result = runner.invoke(cli, ["start", "--no-dashboard"])
@@ -110,6 +114,7 @@ def test_daemon_start_reports_docker_or_subprocess_failure_without_claiming_succ
     # -- Docker up but compose fails to start the container ----------------
     compose_fail = MagicMock(returncode=1, stderr="no such service: postgres")
     with patch.object(daemon_mod, "_find_daemon_pid", return_value=None), \
+         patch.object(daemon_mod, "_database_reachable", return_value=False), \
          patch.object(daemon_mod, "_is_docker_running", return_value=True), \
          patch.object(daemon_mod, "_is_container_running", return_value=False), \
          patch.object(daemon_mod, "_find_compose_file", return_value="/x/docker-compose.yml"), \
@@ -219,3 +224,74 @@ def test_resolve_daemon_falls_back_to_path_without_venv_entry_point(
         resolved = daemon_mod._resolve_agent_queue_bin()
 
     assert resolved == "/usr/local/bin/agent-queue"
+
+
+# -- the database `aq start` needs -------------------------------------------
+
+
+def _config(tmp_path, monkeypatch, body: str) -> None:
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(body, encoding="utf-8")
+    monkeypatch.setattr(daemon_mod, "CONFIG_PATH", str(config_path))
+    monkeypatch.setattr(daemon_mod, "CONFIG_DIR", str(tmp_path))
+
+
+def test_the_configured_database_endpoint_is_read_without_its_password(tmp_path, monkeypatch):
+    _config(
+        tmp_path,
+        monkeypatch,
+        "database:\n  url: postgresql+asyncpg://agent_queue:secret@db.internal:6543/agent_queue\n",
+    )
+
+    assert daemon_mod._configured_database_endpoint() == ("db.internal", 6543)
+
+
+def test_an_unreadable_configuration_yields_no_endpoint(tmp_path, monkeypatch):
+    _config(tmp_path, monkeypatch, "database: [not, a, mapping\n")
+
+    assert daemon_mod._configured_database_endpoint() is None
+
+
+def test_a_reachable_database_needs_no_docker_at_all(tmp_path, monkeypatch):
+    """An installed or operator-run PostgreSQL is the normal case.
+
+    `aq install --with postgres-managed` provisions a *native* server, and a
+    release install has no compose file at all; demanding Docker there made
+    `aq start` impossible on the very machine the installer had just prepared.
+    """
+    _config(tmp_path, monkeypatch, "database:\n  url: postgresql://localhost:5432/aq\n")
+    monkeypatch.setattr(daemon_mod, "_database_reachable", lambda: True)
+
+    def refuse():  # pragma: no cover - the assertion is that it is never called
+        raise AssertionError("Docker must not be consulted for a reachable database")
+
+    monkeypatch.setattr(daemon_mod, "_ensure_docker_postgres", refuse)
+    monkeypatch.setattr(daemon_mod, "_find_compose_file", refuse)
+
+    assert daemon_mod._ensure_database() is True
+
+
+def test_an_unreachable_database_without_a_compose_file_names_the_installer(
+    tmp_path, monkeypatch, capsys,
+):
+    _config(tmp_path, monkeypatch, "database:\n  url: postgresql://db.internal:6543/aq\n")
+    monkeypatch.setattr(daemon_mod, "_database_reachable", lambda: False)
+    monkeypatch.setattr(daemon_mod, "_find_compose_file", lambda: None)
+
+    assert daemon_mod._ensure_database() is False
+    output = capsys.readouterr().out
+    assert "db.internal:6543" in output
+    assert "aq install" in output
+
+
+def test_an_unreachable_database_in_a_checkout_still_starts_the_dev_container(
+    tmp_path, monkeypatch,
+):
+    _config(tmp_path, monkeypatch, "database:\n  url: postgresql://localhost:5432/aq\n")
+    monkeypatch.setattr(daemon_mod, "_database_reachable", lambda: False)
+    monkeypatch.setattr(daemon_mod, "_find_compose_file", lambda: "/x/docker-compose.yml")
+    called: list[bool] = []
+    monkeypatch.setattr(daemon_mod, "_ensure_docker_postgres", lambda: called.append(True) or True)
+
+    assert daemon_mod._ensure_database() is True
+    assert called == [True]
