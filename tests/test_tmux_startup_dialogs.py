@@ -17,6 +17,7 @@ wall-clock guessing — so both glyphs are covered deterministically.
 from __future__ import annotations
 
 from pathlib import Path
+from dataclasses import replace
 from types import SimpleNamespace
 
 import pytest
@@ -222,6 +223,24 @@ async def test_once_answer_that_does_not_clear_dialog_is_not_ready():
     with pytest.raises(SessionDiedDuringStartup, match="remains unresolved"):
         await _await_ready(_provider(pane, budget=0.3), _spec(CODEX_COMPOSER, CODEX_RULE))
     assert pane.sent == [("Enter",)]
+
+
+@pytest.mark.parametrize("lingering_frames", [1, 4])
+async def test_answered_specific_dialog_does_not_fall_through_to_quarantine(lingering_frames):
+    specific = DialogRule(
+        name="skip-optional", pattern="Continue without trusting", keys=("3",),
+    )
+    fallback = DialogRule(
+        name="hook-review-required", pattern="Hooks need review", keys=(), quarantine=True,
+    )
+    screen = "Hooks need review\n› 1. Review hooks\n  3. Continue without trusting\n"
+    pane = _Pane(lambda p: (
+        screen if not p.sent or p.captures - p.dismissed_at < lingering_frames
+        else f"welcome\n{CODEX_COMPOSER}\n"
+    ))
+    spec = replace(_spec(CODEX_COMPOSER, specific), dialogs=(specific, fallback))
+    await _await_ready(_provider(pane), spec)
+    assert pane.sent == [("3",)]
 
 
 async def test_exhausted_dialog_budget_does_not_accept_menu_as_ready():

@@ -91,13 +91,14 @@ def first_match(
     """The first rule in *dialogs* whose pattern is on screen, if any.
 
     Shared with the readiness poll so "is a dialog covering the pane?" has
-    exactly one answer.  Rules already in *fired* are skipped when they are
-    ``once`` rules, matching the dismissal loop's own bookkeeping.
+    exactly one answer. A matching once-only rule that already fired still
+    owns the visible dialog: wait for it to disappear instead of falling
+    through to a broader rule for the same screen.
     """
     for rule in dialogs:
-        if rule.once and fired is not None and rule.name in fired:
-            continue
         if _matches(rule, text):
+            if rule.once and fired is not None and rule.name in fired:
+                return None
             return rule
     return None
 
