@@ -396,7 +396,25 @@ class MessageCommandsMixin:
         if isinstance(limit, bool) or not isinstance(limit, int) or limit < 0:
             return {"error": "limit must be a non-negative integer"}
 
-        pending = await self.db.get_pending_messages(to_kind, to_id, limit=limit)
+        recipients = [to_id]
+        scope = self._current_scope
+        if to_kind == "session" and (
+            not scope or scope.get("kind") == "local" or scope.get("elevated")
+        ):
+            session = await self.db.get_session(to_id)
+            if session is not None and session.lifecycle == "named" and session.profile_id == "supervisor":
+                suffix = session.project_id or "global"
+                if session.name == f"n-supervisor--{suffix}":
+                    if suffix == "global":
+                        scope_error = self._system_message_scope_error()
+                        if scope_error:
+                            return scope_error
+                    recipients.extend([session.name, f"supervisor-{suffix}"])
+        pending = []
+        for recipient in recipients:
+            pending.extend(await self.db.get_pending_messages(to_kind, recipient, limit=limit))
+        pending.sort(key=lambda message: (message.priority, message.created_at, message.id))
+        pending = pending[:limit]
         if any(message.project_id is None for message in pending):
             scope_error = self._system_message_scope_error()
             if scope_error:

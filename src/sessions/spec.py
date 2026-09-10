@@ -128,8 +128,11 @@ def skip_permissions_allowed(profile, workspace_source_type) -> bool:
 #: session exists to process.
 NAMED_BOOTSTRAP_PROMPT = (
     "You are the {profile} session in {work_dir}.\n"
-    "Check `aq inbox` for pending messages and handle anything waiting.\n"
-    "Work arrives as messages; stay running and wait for it. "
+    "Run `aq message inbox --inject --json` once to retrieve pending messages, "
+    "then handle anything waiting.\n"
+    "After handling the messages, finish your turn and leave the session open. "
+    "AQ will wake you when more messages arrive. "
+    "Do not run background inbox polls or shell sleep loops; they can prevent message nudges. "
     "Do not run `aq prime` — it is task-scoped and there is no task here."
 )
 

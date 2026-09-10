@@ -502,6 +502,26 @@ async def _seed_session_row(db, *, task_id: str | None = "task-claimed") -> None
 
 
 class TestInboxMailboxFence:
+    async def test_supervisor_uuid_inbox_includes_named_mailboxes_in_priority_order(self, setup):
+        handler, db, _bus = setup
+        await db.create_session(SessionRecord(
+            id="sess-1", project_id="p1", profile_id="supervisor", harness="codex",
+            provider="tmux", name="n-supervisor--p1", lifecycle="named", work_dir="/tmp",
+            epoch="e", instance_token="token", started_at=1, state="running",
+        ))
+        for recipient, priority in (("sess-1", 3), ("supervisor-p1", 1), ("n-supervisor--p1", 2)):
+            await handler._cmd_message_send(_send_args(to_id=recipient, priority=priority))
+        args = {"to_kind": "session", "to_id": "sess-1", "limit": 2,
+                "_scope": _session_scope(elevated=True)}
+        plain = await handler.execute("message_inbox", {**args, "_scope": _session_scope()})
+        assert [m["to_id"] for m in plain["messages"]] == ["sess-1"]
+        result = await handler.execute("message_inbox", args)
+        assert [m["to_id"] for m in result["messages"]] == ["supervisor-p1", "n-supervisor--p1"]
+        result = await handler.execute("message_inbox", {**args, "inject": True})
+        assert result["injected"] == 2
+        remaining = await handler.execute("message_inbox", args)
+        assert [m["to_id"] for m in remaining["messages"]] == ["sess-1"]
+
     async def test_own_session_mailbox_is_readable(self, setup):
         handler, _db, _bus = setup
         await handler._cmd_message_send(_send_args(to_id="sess-1"))

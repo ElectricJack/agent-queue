@@ -196,9 +196,10 @@ class TestDeliveryPolicy:
         assert len(sessions.nudges) == 1
         text = sessions.nudges[0][3]
         assert "msg-" in text and msg.id in text
-        assert "world" in text
-        assert "aq reply" in text
+        assert text == f"Read `aq message status {msg.id} --json`."
+        assert "\n" not in text and len(text) < 78
         stored = await db.get_message(msg.id)
+        assert stored.body == "world"
         assert stored.delivered_at is not None
         assert stored.via == "nudge"
         assert [e.event for e in bus.events] == ["message.delivered"]
@@ -351,9 +352,8 @@ class TestDeliveryPolicy:
 
         await engine.run_delivery_pass()
 
-        # Both are still nudged (batch renders all pending), but only the
-        # unclaimed one produces a message.delivered event.
-        assert len(sessions.nudges) == 1  # both rendered in a single batch
+        # Only the still-pending message is notified and produces an event.
+        assert len(sessions.nudges) == 1
         delivered_events = [e for e in bus.events if e.event == "message.delivered"]
         assert len(delivered_events) == 1
         assert delivered_events[0].payload["message_id"] == second.id
@@ -367,11 +367,12 @@ class TestDeliveryPolicy:
 
         await engine.run_delivery_pass()
 
-        # First pass takes 2. Second pass takes 2 more.
+        # The configured count is an upper bound. The terminal notification
+        # is deliberately smaller, and omitted messages remain pending.
         assert len(sessions.nudges) == 1
-        # Count msg- markers in the nudge text.
         text = sessions.nudges[0][3]
-        assert text.count("[msg-") == 2
+        assert text.count("msg-") == 1
+        assert len(await db.get_pending_messages("session", "supervisor-p1")) == 3
 
     async def test_unknown_recipient_kind_is_left_pending_without_session_calls(self, db):
         """A defensive to_kind the engine doesn't route (not in today's
@@ -446,7 +447,9 @@ class TestDeliveryPolicy:
         await engine.run_delivery_pass()
 
         text = sessions.nudges[0][3]
-        assert text.index(high.id) < text.index(low.id)
+        assert high.id in text and low.id not in text
+        await engine.run_delivery_pass()
+        assert low.id in sessions.nudges[1][3]
 
 
 class TestParking:
