@@ -161,12 +161,13 @@ def result(
     steps: tuple[StepResult, ...] = (),
     plan: tuple[PlannedStep, ...] = (),
     capabilities: tuple[str, ...] = (),
+    dry_run: bool = False,
 ) -> InstallResult:
     return InstallResult(
         outcome=outcome,
         installer_version="1.2.3",
         target_version="1.2.3",
-        dry_run=False,
+        dry_run=dry_run,
         interactive=True,
         platform={"host_path": "windows-wsl2"},
         capabilities=capabilities,
@@ -382,3 +383,46 @@ def test_step_state_vocabulary_is_the_engines_not_the_wizards():
         literal in source for literal in ('"succeeded"', '"needs_user"', '"failed"')
     )
     assert StepState.SKIPPED.value == "skipped"
+
+
+def test_a_dry_run_is_never_called_ready_and_says_what_would_change_it():
+    """`ready` means an installed machine; a dry run installed nothing."""
+    summary = summarize(
+        result(dry_run=True, steps=(check_step_result(), dashboard_step_result()))
+    )
+
+    assert summary.ready is False
+    assert "Dry run" in summary.headline
+    assert summary.next_steps == (
+        (
+            "This was a dry run: nothing was changed. Rerun without `--dry-run` "
+            "to carry out the plan above."
+        ),
+    )
+    # The locations are still worth reporting: they are where a real run would
+    # put things, and they were read, not written.
+    assert summary.locations
+
+
+def test_a_recovery_capability_is_not_offered_as_something_to_install():
+    """`postgres-rotate` replaces a password; it is not a thing a newcomer lacks."""
+    summary = summarize(
+        result(
+            steps=(
+                StepResult.skipped("postgres.rotate", "not selected"),
+                check_step_result(),
+            ),
+            plan=(
+                PlannedStep(
+                    step_id="postgres.rotate",
+                    title="Rotate the AQ role password",
+                    action=PlanAction.SKIP_NOT_SELECTED,
+                    reason="capability 'postgres-rotate' was not selected",
+                    mutating=True,
+                    capability="postgres-rotate",
+                ),
+            ),
+        )
+    )
+
+    assert summary.skipped == ()

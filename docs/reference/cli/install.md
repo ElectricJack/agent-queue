@@ -9,22 +9,50 @@ on every supported host.
 It is the only `aq` command that expects **no running daemon** — it runs the
 engine in-process and talks to nothing over the network.
 
+It is also the whole newcomer path, not only its first half: prerequisites,
+PostgreSQL, the agent CLIs and their logins, the configuration, the daemon and
+the dashboard URL are one run with one resume record.
+
 > **Status.** The engine, platform matrix, built-in prerequisite, PostgreSQL,
-> and optional agent CLI steps, plus the WSL2 and **macOS** bootstraps, ship
-> today. `aq install --list-steps` always prints what this build actually knows
-> how to do **on the host you run it on** — the registry is composed for the
-> detected host, so a Mac lists the `macos.*` steps and a WSL2 host does not.
+> optional agent CLI and onboarding steps, plus the WSL2 and **macOS**
+> bootstraps, ship today. `aq install --list-steps` always prints what this
+> build actually knows how to do **on the host you run it on** — the registry
+> is composed for the detected host, so a Mac lists the `macos.*` steps and a
+> WSL2 host does not.
 
 ## Usage
 
 ```bash
-aq install                      # interactive: prompt before each change
+aq install                      # the wizard: a few questions, then install
+aq install --advanced           # the same, plus the optional extras (Discord)
+aq install --yes                # take every default without being asked
 aq install --dry-run            # report the plan, run only read-only checks
 aq install --non-interactive --yes --json   # unattended, machine-readable
 aq install --list-steps         # what this build can do, in run order
 aq install --with provider.codex            # select one optional agent CLI
 aq install --with postgres-managed          # let AQ install and run PostgreSQL
 ```
+
+## The wizard
+
+On a terminal, `aq install` asks a short set of yes/no questions before it
+starts, then reports what it did:
+
+| Question | Default | Where the default comes from |
+| --- | --- | --- |
+| Use Claude Code / Codex / Gemini? | the ones already installed | a read-only `PATH` and `--version` probe of each CLI. On a machine with none, the first supported harness is offered, because a machine with no harness cannot run a task. |
+| Let AQ install and run a local PostgreSQL server? | yes when nothing answers on the configured host and port | a TCP probe. AQ never installs a database server without being asked. |
+| Start the AQ daemon when setup finishes? | yes | this is what serves the dashboard and runs your tasks. |
+| Deliver digests and escalations to Discord? | **no**, and only asked under `--advanced` | AQ is operated from the CLI and the dashboard; Discord is a delivery channel and nothing else depends on it. |
+
+Pressing Enter through the list is the supported "just install it" path, and
+`--yes` takes those same defaults without asking. The questions are skipped
+entirely when the selection has already been made — `--with`, `--config`, or
+`--json` (a script parsing stdout is driving consent, not being onboarded) —
+and an unattended run never asks anything.
+
+Answers only *select capabilities*; every mutating step still asks for consent
+(or needs `--approve`/`--yes`) before it changes anything.
 
 | Option | Meaning |
 | --- | --- |
@@ -40,6 +68,7 @@ aq install --with postgres-managed          # let AQ install and run PostgreSQL
 | `--restart-from STEP` | Redo `STEP` and the steps that depend on it. Nothing else is re-executed. |
 | `--state-file PATH` | Where the resume record lives. Defaults to `~/.agent-queue/install-state.json`. |
 | `--list-steps` | Print the registered steps and exit. |
+| `--advanced` | Ask the optional extra questions (Discord delivery) as well as the short set. |
 
 ## Agent CLI providers
 
@@ -116,6 +145,71 @@ The login step's `detail` carries the distinction and nothing else:
 credential material. The resume record refuses to persist anything
 secret-shaped, so a leak fails the write rather than reaching the disk.
 
+## Configuration, the daemon and the dashboard
+
+The last five steps are what turn an equipped machine into a running one. They
+are ordered after `postgres.connection`, so a daemon can never be started
+before the credential that lets it reach its database was written.
+
+| Step | Mutating | Capability | What it does |
+| --- | --- | --- | --- |
+| `config.defaults` | yes | — | Creates `~/.agent-queue/config.yaml` when it is absent and adds resource-aware defaults derived from this box's cores and memory (the same values `aq system config tune --apply` writes). A section you have already written is **kept**, and a numbered backup is taken only when something is actually written. Rationale for every value: [default tuning](../../guides/default-tuning.md). |
+| `config.check` | no | — | Loads the configuration exactly as the daemon does, including `${VAR}` references, and reports where AQ stores things. A configuration that does not parse stops the run here rather than at a daemon that dies with a stack trace. |
+| `config.discord` | yes | `discord` | Optional. Points the hourly digest and escalation threads at one channel. |
+| `daemon.start` | yes | `daemon` | Runs `aq start` and waits for `/health`. A daemon that already answers is reused, never restarted. |
+| `daemon.dashboard` | no | — | Reports the URL to open. Never blocks a run. |
+
+### Discord is optional
+
+AQ is operated from the CLI and the dashboard. Discord receives an hourly
+activity digest and one escalation thread per human decision — nothing creates,
+reviews or controls a task there. An install that never selects it records
+`config.discord` as `skipped` and finishes `ready`, and the configuration it
+writes says `messaging_platform: none`.
+
+Selecting it (`--with discord`, or answering yes under `--advanced`) needs two
+non-secret settings and one secret you place yourself:
+
+```yaml
+version: 1
+capabilities: [discord]
+settings:
+  discord:
+    channel_id: "123456789012345678"   # Copy ID, with Developer Mode on
+    guild_id: "876543210987654321"
+    credential_variable: DISCORD_BOT_TOKEN   # optional; this is the default
+```
+
+The bot token is never asked for, printed, or written by the installer. Put it
+in `~/.agent-queue/.env` as `DISCORD_BOT_TOKEN=…` (mode `0600`); `config.yaml`
+only ever refers to `${DISCORD_BOT_TOKEN}`. Until it is there, the step reports
+`needs_user` (exit `10`) and says exactly where to put it. Add Discord later at
+any time by rerunning with `--with discord`.
+
+### Where AQ stores your data
+
+`config.check` reports these, and so does the closing summary — they are
+computed from the resolved configuration rather than repeated in prose:
+
+| What | Where |
+| --- | --- |
+| Configuration | `~/.agent-queue/config.yaml` — edit with `aq system config edit` |
+| Secrets | `~/.agent-queue/.env`, mode `0600` — the values `${VAR}` references resolve to |
+| Vault | `~/.agent-queue/vault/` — playbooks, agent profiles, memory and facts, as markdown |
+| Worktrees | `workspace_dir` from the configuration — each worker's isolated checkout |
+| Daemon log | `~/.agent-queue/daemon.log` — `aq logs` reads it |
+| Resume record | `~/.agent-queue/install-state.json` — what this command completed and owns |
+| Tasks, projects, sessions, results | PostgreSQL, reported without its password |
+
+### Opening the dashboard
+
+A release install serves the dashboard from the daemon itself, at
+`/dashboard` on the API base (`http://127.0.0.1:8081/dashboard` by default, or
+whatever `mcp_server.host`/`port` and `AQ_API_URL` resolve to). A source
+checkout ships no built assets, so `daemon.dashboard` says so and gives the
+Vite command (`npm -w dashboard run dev`, `http://localhost:5173`) instead of a
+URL that would 404 in a browser.
+
 ## Exit codes
 
 Scripts branch on these. A code may be added in a future release, but an
@@ -179,6 +273,33 @@ existing code is never reassigned.
   `skip_completed` or `blocked`.
 * **`resources`** is what the installer owns (`owned: true`) or found and
   reused (`owned: false`). It is what repair and uninstall act on.
+
+The same object carries the closing summary under `onboarding` — the human
+view and a script are told the same things:
+
+```json
+{
+  "onboarding": {
+    "ready": true,
+    "headline": "AQ is installed and ready.",
+    "locations": [
+      {"label": "Configuration", "path": "/home/you/.agent-queue/config.yaml",
+       "note": "settings, tuned for this machine; edit with `aq system config edit`"}
+    ],
+    "dashboard": {"url": "http://127.0.0.1:8081/dashboard", "reachable": true,
+                  "source": "bundled", "hint": ""},
+    "skipped": ["Discord delivery for digests and escalations — not selected; add it with `aq install --with discord`"],
+    "next_steps": ["Open the dashboard at http://127.0.0.1:8081/dashboard."]
+  }
+}
+```
+
+* **`onboarding.ready`** agrees with `outcome == "ready"`.
+* **`onboarding.skipped`** lists the *optional* things this run did not do and
+  the flag that would add each one. A skipped capability is a finished install,
+  not a partial one.
+* **`onboarding.dashboard.source`** is `bundled` (the daemon serves it),
+  `dev-server` (a source checkout — run Vite) or `unknown` (no daemon answered).
 
 `aq install --list-steps --json` prints `{"schema_version": 1, "steps": [...]}`
 with each step's `id`, `title`, `description`, `depends_on`, `capability`,

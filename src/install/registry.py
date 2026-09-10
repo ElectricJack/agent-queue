@@ -37,7 +37,7 @@ from .macos import (
     brew_aware_which,
     macos_steps,
 )
-from .onboarding import onboarding_steps
+from .onboarding import onboarding_steps as default_onboarding_steps
 from .platform import (
     HOST_MACOS_ARM,
     HOST_MACOS_INTEL,
@@ -81,9 +81,16 @@ def build_registry(
     state_dir: Path | None = None,
     prefixes: Mapping[str, Path] | None = None,
     database_steps: Iterable[StepSpec] | None = None,
+    onboarding_steps: Iterable[StepSpec] | None = None,
     **adapter_kwargs: Any,
 ) -> StepRegistry:
-    """Build the full step registry for the host described by *support*."""
+    """Build the full step registry for the host described by *support*.
+
+    ``database_steps`` and ``onboarding_steps`` replace those groups, which is
+    what lets a suite about one adapter compose the registry without dragging
+    in the others: a macOS test has no PostgreSQL and therefore no
+    configuration a daemon could load.
+    """
     verdict = support or describe_host(environ=environ)
     macos = verdict.host_path in MACOS_HOSTS
     # The prefix-aware lookup has to know the *same* prefixes the adapter uses,
@@ -156,7 +163,9 @@ def build_registry(
         else (STEP_DATA_DIR,)
     )
     registry.extend(
-        onboarding_steps(
+        tuple(onboarding_steps)
+        if onboarding_steps is not None
+        else default_onboarding_steps(
             environ=environ,
             home=state_dir,
             which=lookup or shutil.which,

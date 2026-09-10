@@ -20979,13 +20979,6 @@
       "purpose": "Harness transcript readers.",
       "catalog": "docs/reference/modules/sessions.md"
     },
-    "src/setup_wizard.py": {
-      "shard": "vault",
-      "component": "docs/reference/configuration.md",
-      "category": "production",
-      "purpose": "First-run setup wizard.",
-      "catalog": "docs/reference/modules/vault.md"
-    },
     "src/skills/aq-cli/SKILL.md": {
       "shard": "cli",
       "component": "docs/reference/cli/agent-tools.md",
@@ -25908,13 +25901,6 @@
       "catalog": null
     },
     "tests/test_setup_script.py": {
-      "shard": "contributing",
-      "component": "docs/contributing/testing.md",
-      "category": "test",
-      "purpose": "Test module or fixture.",
-      "catalog": null
-    },
-    "tests/test_setup_wizard.py": {
       "shard": "contributing",
       "component": "docs/contributing/testing.md",
       "category": "test",

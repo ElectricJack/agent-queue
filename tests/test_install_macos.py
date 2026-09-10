@@ -18,6 +18,7 @@ import pytest
 
 from src.install.command import CommandOutput
 from src.install.engine import InstallEngine, InstallOptions
+from src.install.logins import login_steps
 from src.install.macos import (
     ARM_PREFIX,
     HOMEBREW_INSTALL_COMMAND,
@@ -40,6 +41,7 @@ from src.install.macos import (
     shell_path_step,
     shellenv_line,
 )
+from src.install.onboarding import onboarding_steps
 from src.install.platform import (
     HOST_MACOS_ARM,
     HOST_MACOS_INTEL,
@@ -50,9 +52,9 @@ from src.install.platform import (
     PlatformFacts,
     SupportVerdict,
 )
+from src.install.postgres_steps import STEP_PACKAGE as STEP_POSTGRES_PACKAGE
+from src.install.postgres_steps import postgres_steps
 from src.install.prerequisites import STEP_DATA_DIR, STEP_GIT, STEP_HOST, STEP_PYTHON, STEP_TMUX
-from src.install.logins import login_steps
-from src.install.postgres_steps import STEP_PACKAGE as STEP_POSTGRES_PACKAGE, postgres_steps
 from src.install.providers import provider_installers, provider_steps
 from src.install.registry import build_registry
 from src.install.results import InstallOutcome, StepState
@@ -621,6 +623,10 @@ def _database_ids():
     return [step.id for step in postgres_steps()]
 
 
+def _onboarding_ids():
+    return [step.id for step in onboarding_steps()]
+
+
 def _base_registry_ids():
     return [
         STEP_HOST,
@@ -630,6 +636,7 @@ def _base_registry_ids():
         STEP_DATA_DIR,
         *_database_ids(),
         *_provider_ids(),
+        *_onboarding_ids(),
     ]
 
 
@@ -737,6 +744,7 @@ def _mac_registry(brew_home, *, runner, which, arch="arm64", state_dir=None, exe
         executable=executable or "/opt/homebrew/opt/python@3.12/bin/python3.12",
         uid=501,
         database_steps=(),
+        onboarding_steps=(),
     )
 
 

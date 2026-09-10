@@ -2741,6 +2741,7 @@
           "--restart-from",
           "--state-file",
           "--list-steps",
+          "--advanced",
           "--brief",
           "--api-url"
         ],

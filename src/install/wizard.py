@@ -36,7 +36,7 @@ from .onboarding import (
     DashboardInfo,
     Location,
 )
-from .postgres_steps import CAPABILITY_MANAGED
+from .postgres_steps import CAPABILITY_MANAGED, CAPABILITY_ROTATE
 from .providers import ProviderInstaller, provider_installers
 from .results import InstallOutcome, InstallResult, StepState
 
@@ -202,6 +202,11 @@ _CAPABILITY_LABELS: dict[str, str] = {
     CAPABILITY_MANAGED: "installing a local PostgreSQL server",
 }
 
+#: Capabilities that exist for *repair*, not for setup.  Listing them among
+#: "things you could also have installed" would invite a newcomer to rotate a
+#: credential they just created.
+_RECOVERY_CAPABILITIES: frozenset[str] = frozenset({CAPABILITY_ROTATE})
+
 
 def _detail(result: InstallResult, step_id: str) -> dict[str, Any]:
     for step in result.steps:
@@ -225,6 +230,8 @@ def _skipped_lines(result: InstallResult) -> tuple[str, ...]:
         capability = row.capability if row else None
         if not capability or capability in result.capabilities:
             continue
+        if capability in _RECOVERY_CAPABILITIES:
+            continue
         label = _CAPABILITY_LABELS.get(capability)
         if label is None:
             if capability.startswith("provider."):
@@ -239,6 +246,15 @@ def _skipped_lines(result: InstallResult) -> tuple[str, ...]:
 
 def _next_steps(result: InstallResult, dashboard: DashboardInfo | None) -> tuple[str, ...]:
     steps: list[str] = []
+    if result.dry_run:
+        # A dry run changed nothing, so the only honest next step is the run
+        # that would.
+        return (
+            (
+                "This was a dry run: nothing was changed. Rerun without `--dry-run` "
+                "to carry out the plan above."
+            ),
+        )
     if result.outcome is InstallOutcome.NEEDS_USER:
         blocking = result.blocking_step
         subject = f"for {blocking.step_id}" if blocking else "named above"
@@ -290,12 +306,13 @@ def summarize(result: InstallResult) -> OnboardingSummary:
         if isinstance(board, Mapping)
         else None
     )
-    ready = result.outcome is InstallOutcome.READY
-    headline = (
-        "AQ is installed and ready."
-        if ready
-        else f"Installation stopped: {result.outcome.value}."
-    )
+    ready = result.outcome is InstallOutcome.READY and not result.dry_run
+    if result.dry_run:
+        headline = "Dry run: this is the plan, and nothing was changed."
+    elif ready:
+        headline = "AQ is installed and ready."
+    else:
+        headline = f"Installation stopped: {result.outcome.value}."
     return OnboardingSummary(
         ready=ready,
         headline=headline,

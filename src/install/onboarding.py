@@ -66,7 +66,14 @@ DEFAULT_API_PORT = 8081
 #: Seconds ``aq start`` may take.  It waits for ``/health`` itself.
 DAEMON_START_TIMEOUT = 180.0
 
+#: Where the daemon puts worker checkouts when the configuration does not say.
+#: Mirrors ``AppConfig.workspace_dir``'s default in :mod:`src.config`.
+DEFAULT_WORKSPACE_DIR = os.path.expanduser("~/agent-queue-workspaces")
+
 _DISCORD_TOKEN_ENV = "DISCORD_BOT_TOKEN"
+
+#: Keys accepted under ``settings.discord`` in the install input file.
+_DISCORD_SETTING_KEYS = frozenset({"channel_id", "guild_id", "credential_variable"})
 
 
 # ---------------------------------------------------------------------------
@@ -95,7 +102,10 @@ def data_locations(home: Path, config: Mapping[str, Any] | None = None) -> tuple
     a name, never as a DSN with a password in it.
     """
     raw = dict(config or {})
-    workspace = str(raw.get("workspace_dir") or (home / "workspaces"))
+    # The fallback is AppConfig's own default, not a guess: a summary that
+    # named a directory the daemon does not use would send someone looking for
+    # their worktrees in the wrong place.
+    workspace = str(raw.get("workspace_dir") or DEFAULT_WORKSPACE_DIR)
     locations = [
         Location(
             "Configuration",
@@ -348,6 +358,15 @@ def check_step(
             "locations": [location.to_dict() for location in locations],
             "messaging_platform": str(raw.get("messaging_platform") or "none"),
         }
+        if context.dry_run and not path.exists():
+            # The step that writes the configuration is mutating, so a dry run
+            # did not execute it.  Reporting "it does not parse" here would be
+            # a failure the dry run itself caused.
+            return StepResult.skipped(
+                STEP_CHECK,
+                "dry run — the configuration was not written",
+                detail=detail,
+            )
         try:
             config = load_config(str(path))
         except FileNotFoundError:
@@ -378,6 +397,13 @@ def check_step(
                 ),
                 detail=detail,
             )
+        # Now that it has loaded, report what the daemon will actually use
+        # rather than what the file happens to spell out.
+        resolved = dict(raw)
+        resolved["workspace_dir"] = config.workspace_dir
+        detail["locations"] = [
+            location.to_dict() for location in data_locations(path.parent, resolved)
+        ]
         detail["messaging_platform"] = config.messaging_platform
         detail["api_url"] = api_base_url(raw, environ)
         return StepResult.succeeded(
@@ -441,7 +467,19 @@ def discord_step(
         from src.config_editor import write_section
 
         settings = _settings(context)
-        token_env = str(settings.get("token_env") or _DISCORD_TOKEN_ENV)
+        unknown = sorted(set(settings) - _DISCORD_SETTING_KEYS)
+        if unknown:
+            # An unattended run that silently ignored a misspelled setting
+            # would deliver to the wrong channel, or to none.
+            return StepResult.failed(
+                STEP_DISCORD,
+                f"unknown discord setting(s): {', '.join(unknown)}",
+                "Recognised keys under `settings.discord` are "
+                f"{', '.join(sorted(_DISCORD_SETTING_KEYS))}.",
+                detail={"unknown": unknown},
+                retryable=False,
+            )
+        token_env = str(settings.get("credential_variable") or _DISCORD_TOKEN_ENV)
         env_path = path.parent / ".env"
         channel_id = str(settings.get("channel_id") or "").strip()
         guild_id = str(settings.get("guild_id") or "").strip()
@@ -721,6 +759,7 @@ __all__ = [
     "DASHBOARD_PATH",
     "DEFAULT_API_HOST",
     "DEFAULT_API_PORT",
+    "DEFAULT_WORKSPACE_DIR",
     "SOURCE_DASHBOARD_URL",
     "STEP_CHECK",
     "STEP_CONFIG",

@@ -143,11 +143,13 @@ def run(
     capabilities: tuple[str, ...] = (),
     settings: dict | None = None,
     state: Path | None = None,
+    dry_run: bool = False,
 ):
     options = InstallOptions(
         installer_version="1.2.3",
         target_version="1.2.3",
         interactive=False,
+        dry_run=dry_run,
         capabilities=frozenset(capabilities),
         approve=frozenset({"*"}),
         settings=settings or {},
@@ -553,3 +555,118 @@ def test_skipping_every_provider_still_reaches_ready(tmp_path):
     assert result.outcome is InstallOutcome.READY
     skipped = {row.step_id for row in result.steps if row.state is StepState.SKIPPED}
     assert {"provider.claude-cli", "provider.codex-cli", "provider.gemini-cli"} <= skipped
+
+
+# ---------------------------------------------------------------------------
+# The published contract
+# ---------------------------------------------------------------------------
+
+
+def test_the_documented_onboarding_steps_and_capabilities_match_the_registry():
+    """``docs/reference/cli/install.md`` is the published surface, not a summary."""
+    from src.install import build_registry
+
+    doc = (
+        Path(__file__).resolve().parent.parent / "docs" / "reference" / "cli" / "install.md"
+    ).read_text(encoding="utf-8")
+    registry = build_registry(WSL2)
+    for step_id in (STEP_CONFIG, STEP_CHECK, STEP_DISCORD, STEP_DAEMON, STEP_DASHBOARD):
+        assert step_id in registry, f"{step_id} is not registered by build_registry"
+        assert step_id in doc, f"{step_id} is not documented"
+    assert CAPABILITY_DISCORD in registry.capabilities()
+    assert CAPABILITY_DAEMON in registry.capabilities()
+    assert "--with discord" in doc
+    assert "--advanced" in doc
+
+
+def test_an_unknown_discord_setting_is_refused_by_name(tmp_path):
+    """A misspelled setting must not deliver to the wrong channel, or to none."""
+    home = configured(tmp_path)
+    daemon = FakeDaemon(up=True)
+
+    result = run(
+        registry_for(home, daemon),
+        tmp_path,
+        capabilities=(CAPABILITY_DISCORD,),
+        settings={"discord": {"chanel_id": CHANNEL, "guild_id": GUILD}},
+    )
+
+    failure = step(result, STEP_DISCORD)
+    assert failure.state is StepState.FAILED
+    assert "chanel_id" in failure.summary
+    assert failure.retryable is False
+
+
+def test_a_dry_run_on_a_bare_machine_reports_a_plan_rather_than_a_failure(tmp_path):
+    """A dry run must not fail because of what a dry run did not do.
+
+    ``config.defaults`` is mutating, so a dry run never writes the file that
+    ``config.check`` would read; reporting "it does not parse" there would be a
+    failure the dry run itself caused.
+    """
+    home = home_with_config(tmp_path)
+    daemon = FakeDaemon()
+
+    result = run(
+        registry_for(home, daemon),
+        tmp_path,
+        capabilities=(CAPABILITY_DAEMON,),
+        dry_run=True,
+    )
+
+    assert result.outcome is InstallOutcome.READY
+    check = step(result, STEP_CHECK)
+    assert check.state is StepState.SKIPPED
+    assert "dry run" in check.summary
+    assert not (home / "config.yaml").exists()
+    assert daemon.commands == []
+
+
+def test_a_dry_run_still_reports_a_configuration_that_is_already_broken(tmp_path):
+    """A read-only finding is not caused by the dry run, so it is not softened."""
+    home = home_with_config(tmp_path, body="database:\n  url: ''\n")
+    daemon = FakeDaemon()
+
+    result = run(registry_for(home, daemon), tmp_path, dry_run=True)
+
+    assert step(result, STEP_CHECK).state is StepState.FAILED
+
+
+def test_the_reported_worktree_directory_is_the_one_the_daemon_uses(tmp_path):
+    """A configuration that names no worktree directory still reports the real one."""
+    from src.config import AppConfig
+    from src.install.onboarding import DEFAULT_WORKSPACE_DIR
+
+    assert DEFAULT_WORKSPACE_DIR == AppConfig().workspace_dir
+
+    home = configured(tmp_path)
+    daemon = FakeDaemon(up=True)
+    result = run(registry_for(home, daemon), tmp_path)
+
+    worktrees = next(
+        entry
+        for entry in step(result, STEP_CHECK).detail["locations"]
+        if entry["label"] == "Worktrees"
+    )
+    assert worktrees["path"] == AppConfig().workspace_dir
+
+
+def test_a_configured_worktree_directory_is_reported_as_configured(tmp_path):
+    home = home_with_config(
+        tmp_path,
+        body=(
+            f"messaging_platform: none\nworkspace_dir: {tmp_path / 'checkouts'}\n"
+            f"database:\n  url: {VALID_DSN}\n"
+        ),
+    )
+    env_with_password(home)
+    daemon = FakeDaemon(up=True)
+
+    result = run(registry_for(home, daemon), tmp_path)
+
+    worktrees = next(
+        entry
+        for entry in step(result, STEP_CHECK).detail["locations"]
+        if entry["label"] == "Worktrees"
+    )
+    assert worktrees["path"] == str(tmp_path / "checkouts")
