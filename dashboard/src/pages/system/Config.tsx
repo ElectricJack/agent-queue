@@ -4,6 +4,7 @@ import {
   CheckCircleIcon,
   ExclamationTriangleIcon,
   KeyIcon,
+  LockClosedIcon,
 } from "@heroicons/react/24/outline";
 
 import {
@@ -54,6 +55,7 @@ export default function SystemConfig() {
 
   const reloadByName = useMemo(() => buildReloadIndex(configData, schemaData), [configData, schemaData]);
   const refsBySection = useMemo(() => buildRefIndex(configData), [configData]);
+  const redactedBySection = useMemo(() => buildRedactedIndex(configData), [configData]);
 
   if (configError) {
     return (
@@ -70,6 +72,8 @@ export default function SystemConfig() {
   const selectedKind: ReloadKind =
     (selected ? reloadByName[selected] : undefined) ?? "unclassified";
   const selectedRefs: ConfigEnvRef[] = selected ? (refsBySection[selected] ?? []) : [];
+  const selectedRedacted: string[] = selected ? (redactedBySection[selected] ?? []) : [];
+  const placeholder = configData?.secret_placeholder ?? "";
 
   return (
     <div className="space-y-6">
@@ -112,6 +116,7 @@ export default function SystemConfig() {
             {allSections.map((name) => {
               const kind = reloadByName[name] ?? "unclassified";
               const refs = refsBySection[name] ?? [];
+              const hidden = redactedBySection[name] ?? [];
               const isActive = name === selected;
               return (
                 <button
@@ -126,6 +131,11 @@ export default function SystemConfig() {
                 >
                   <span className="truncate font-mono">{name}</span>
                   <span className="ml-2 flex shrink-0 items-center gap-1.5">
+                    {hidden.length > 0 && (
+                      <span title={`${hidden.length} redacted credential${hidden.length === 1 ? "" : "s"}`}>
+                        <LockClosedIcon className="h-3.5 w-3.5 text-gray-500" />
+                      </span>
+                    )}
                     {refs.length > 0 && (
                       <span title={`${refs.length} ${"${ENV_VAR}"} reference${refs.length === 1 ? "" : "s"}`}>
                         <KeyIcon className={`h-3.5 w-3.5 ${refs.some(r => !r.resolved) ? "text-amber-400" : "text-gray-500"}`} />
@@ -166,6 +176,28 @@ export default function SystemConfig() {
                         </li>
                       ))}
                     </ul>
+                  </div>
+                )}
+
+                {selectedRedacted.length > 0 && (
+                  <div className="rounded-md border border-gray-800 bg-gray-900/40 p-3 text-xs text-gray-400">
+                    <p className="mb-1.5 flex items-center gap-1.5 font-medium text-gray-300">
+                      <LockClosedIcon className="h-3.5 w-3.5 text-gray-400" />
+                      Redacted credentials
+                    </p>
+                    <ul className="space-y-0.5">
+                      {selectedRedacted.map((path) => (
+                        <li key={path} className="font-mono text-gray-300">
+                          {path}
+                        </li>
+                      ))}
+                    </ul>
+                    <p className="mt-1.5">
+                      Shown as <span className="font-mono text-gray-300">{placeholder}</span>. Saving
+                      the section with the placeholder untouched keeps the stored value; type a real
+                      value to change the credential. Read the file on the daemon host to see the
+                      literal.
+                    </p>
                   </div>
                 )}
 
@@ -300,6 +332,19 @@ function buildReloadIndex(
       const k = prop["x-reload"];
       if (k) out[name] = k;
     }
+  }
+  return out;
+}
+
+function buildRedactedIndex(
+  configData: ReturnType<typeof useSystemConfig>["data"],
+): Record<string, string[]> {
+  const out: Record<string, string[]> = {};
+  for (const path of configData?.redacted ?? []) {
+    const section = path.split(".")[0]?.split("[")[0];
+    if (!section) continue;
+    if (!out[section]) out[section] = [];
+    out[section]!.push(path);
   }
   return out;
 }

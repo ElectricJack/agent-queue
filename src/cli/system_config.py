@@ -80,6 +80,22 @@ def config_get(ctx: click.Context, section: str | None, as_json: bool) -> None:
         render=lambda data: console.print(yaml.safe_dump(data, sort_keys=False).rstrip()),
     )
 
+    hidden = [
+        path
+        for path in result.get("redacted", [])
+        if not section or path == section or path.startswith(f"{section}.")
+    ]
+    if hidden:
+        target_stderr = as_json or bool((ctx.obj or {}).get("json"))
+        placeholder = result.get("secret_placeholder", "")
+        click.echo(
+            f"Note: {len(hidden)} literal credential(s) shown as {placeholder!r}; "
+            "saving them unchanged keeps the stored value:",
+            err=target_stderr,
+        )
+        for path in hidden:
+            click.echo(f"  • {path}", err=target_stderr)
+
     refs = [r for r in result.get("env_var_references", []) if not r.get("resolved")]
     if refs:
         target_stderr = as_json or bool((ctx.obj or {}).get("json"))

@@ -97,6 +97,14 @@ class EnvVarReference(BaseModel):
 
 
 class GetConfigResponse(BaseModel):
+    """The config as written on disk, with literal credentials redacted.
+
+    ``redacted`` holds the dotted path of every value replaced (or, for a DSN,
+    partially replaced) with ``secret_placeholder``.  Saving a section with the
+    placeholder left in place keeps the stored credential — see
+    :mod:`src.config_secrets`.
+    """
+
     model_config = {"extra": "allow"}
     path: str = ""
     config: dict[str, Any] = {}
@@ -105,6 +113,8 @@ class GetConfigResponse(BaseModel):
     restart_required: list[str] = []
     unclassified: list[str] = []
     env_var_references: list[EnvVarReference] = []
+    redacted: list[str] = []
+    secret_placeholder: str = ""
     error: str | None = None
 
 

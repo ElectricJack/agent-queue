@@ -198,8 +198,12 @@ class SystemCommandsMixin:
         """Return the raw YAML config from disk for the editor UI.
 
         ``${ENV_VAR}`` references are preserved verbatim so the UI never
-        sees resolved secrets.  Pass ``section`` to restrict to one
-        top-level section.
+        sees resolved secrets, and credentials written *literally* are
+        replaced with ``SECRET_PLACEHOLDER`` — the response is a screenshot-safe
+        view of the file, not the file.  ``redacted`` lists every path that was
+        hidden; :func:`~src.config_secrets.restore_section_secrets` puts the
+        stored value back when the section is saved again.  Pass ``section`` to
+        restrict to one top-level section.
         """
         from src.config import ConfigValidationError, validate_github_app_raw_config
         from src.config_editor import (
@@ -207,6 +211,7 @@ class SystemCommandsMixin:
             find_env_var_refs,
             read_raw_config,
         )
+        from src.config_secrets import SECRET_PLACEHOLDER, redact_config
 
         path = self.orchestrator.config._config_path
         if not path:
@@ -229,14 +234,20 @@ class SystemCommandsMixin:
             raw = {section: raw.get(section)}
 
         classification = classify_sections()
+        # Env references are reported from the raw document; redaction leaves
+        # ``${VAR}`` strings byte-identical, so the two agree either way.
+        env_refs = find_env_var_refs(raw)
+        redacted_config, redacted_paths = redact_config(raw)
         return {
             "path": path,
-            "config": raw,
+            "config": redacted_config,
             "section": section,
             "hot_reloadable": classification["hot_reloadable"],
             "restart_required": classification["restart_required"],
             "unclassified": classification["other"],
-            "env_var_references": find_env_var_refs(raw),
+            "env_var_references": env_refs,
+            "redacted": redacted_paths,
+            "secret_placeholder": SECRET_PLACEHOLDER,
         }
 
     async def _cmd_get_config_schema(self, args: dict) -> dict:
@@ -322,12 +333,19 @@ class SystemCommandsMixin:
         Validation runs by writing a candidate YAML to a temp file and
         running ``load_config`` on it — that exercises every section mapper
         and dataclass ``validate()`` without duplicating the logic here.
+
+        Because ``get_config`` redacts literal credentials and this command
+        replaces the whole section, incoming placeholders are resolved back to
+        the stored credential first (see :mod:`src.config_secrets`).  A
+        placeholder with nothing stored behind it is refused rather than
+        written, so a save can never overwrite a secret with the sentinel.
         """
         import shutil
         import tempfile
 
         from src.config import load_config
         from src.config_editor import HOT_RELOADABLE_SECTIONS, read_raw_config, write_section
+        from src.config_secrets import SECRET_PLACEHOLDER, restore_section_secrets
 
         section = args.get("section")
         if not section:
@@ -346,6 +364,18 @@ class SystemCommandsMixin:
         if data is None:
             raw.pop(section, None)
         else:
+            data, unresolved = restore_section_secrets(data, raw.get(section))
+            if unresolved:
+                return {
+                    "applied": False,
+                    "changed": False,
+                    "validation_errors": [
+                        f"Redacted placeholder {SECRET_PLACEHOLDER!r} cannot be resolved at: "
+                        + ", ".join(unresolved)
+                        + ". Re-read the section, or send the real value to change the "
+                        "credential."
+                    ],
+                }
             raw[section] = data
 
         with tempfile.NamedTemporaryFile(
