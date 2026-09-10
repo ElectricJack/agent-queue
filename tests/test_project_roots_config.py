@@ -16,7 +16,7 @@ from src.config import (
     resolve_project_root,
 )
 from src.doctor.models import DoctorContext, Severity
-from src.doctor.project_checks import project_checks
+from src.doctor.project_checks import PROJECT_ROOT_REMEDIATION, project_checks
 from src.doctor import default_registry
 from src.event_bus import EventBus
 
@@ -154,6 +154,31 @@ async def test_doctor_reports_root_that_is_no_longer_readable(tmp_path, monkeypa
     assert result.severity is Severity.ERROR
     assert result.id == "projects.roots"
     assert result.data["roots"][0]["readable"] is False
+
+
+@pytest.mark.asyncio
+async def test_doctor_warns_when_no_project_root_is_configured():
+    """An unconfigured root is a warning, and must not read as OK.
+
+    The installer's closing summary reports "Project root: needs attention"
+    for the same fact and then points at `aq doctor`; the two surfaces have to
+    agree, and send the operator to the same two places.
+    """
+    check = project_checks()[0]
+
+    result = await check.run(DoctorContext(config=AppConfig(project_roots=[])))
+
+    assert result.id == "projects.roots"
+    assert result.severity is Severity.WARN
+    assert "No project root is configured" in result.detail
+    assert PROJECT_ROOT_REMEDIATION in result.detail
+    assert result.data["roots"] == []
+
+
+def test_project_root_remediation_names_both_operator_surfaces():
+    """Same destinations the installation wizard's readiness check names."""
+    assert "Settings → Project Roots" in PROJECT_ROOT_REMEDIATION
+    assert "`project_roots:`" in PROJECT_ROOT_REMEDIATION
 
 
 def test_project_roots_doctor_check_is_registered():
