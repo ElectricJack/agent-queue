@@ -4,10 +4,10 @@ import subprocess
 import time
 
 import pytest
-from sqlalchemy import select, update
+from sqlalchemy import insert, select, update
 
 from src.database import Database
-from src.database.tables import projects
+from src.database.tables import gates, projects, task_gates
 from src.integration.development import DevelopmentBusy, DevelopmentIntegration, DevelopmentPolicy
 from src.models import Project, RepoConfig, RepoSourceType, Task, TaskCompletion, TaskStatus
 from tests.db_fixtures import lease_dsn
@@ -145,12 +145,35 @@ async def test_deleted_delivered_branch_does_not_strand_later_batches(setup):
     later = await feature(setup, "later")
     await db.add_dependency("later", "previous")
     assert (await db.get_task("later")).is_blocked
-    # First pass records ancestry for the cleaned-up predecessor; the next
-    # pass can collect its already-completed dependent.
+    # An already-completed chain is assembled in one dependency-ordered pass.
     assert (await service.sweep("p"))["outcome"] == "delivered"
     assert not (await db.get_task("later")).is_blocked
-    assert (await service.sweep("p"))["outcome"] == "delivered"
+    assert (await service.sweep("p"))["outcome"] == "idle"
     assert git(remote, "merge-base", "--is-ancestor", later, "main") == ""
+
+
+@pytest.mark.parametrize("blocker", ["human_gate", "unfinished_dependency"])
+async def test_batch_keeps_non_delivery_blockers(setup, blocker):
+    db, service, _source, remote, _repo = setup
+    base = git(remote, "rev-parse", "main")
+    await feature(setup, "held")
+    if blocker == "human_gate":
+        async with db._engine.begin() as conn:
+            await conn.execute(insert(gates).values(
+                id="review", project_id="p", gate_type="human", title="Review",
+                question="Approve?", status="open", created_at=time.time(),
+            ))
+            await conn.execute(insert(task_gates).values(task_id="held", gate_id="review"))
+            await db.recompute_blocked({"held"}, conn=conn)
+    else:
+        await db.create_task(Task(
+            id="unfinished", project_id="p", title="unfinished", description="",
+            status=TaskStatus.READY,
+        ))
+        await db.add_dependency("held", "unfinished")
+    assert (await db.get_task("held")).is_blocked
+    assert (await service.sweep("p"))["outcome"] == "idle"
+    assert git(remote, "rev-parse", "main") == base
 
 
 async def test_failed_validation_parks_and_preserves_candidate(setup):

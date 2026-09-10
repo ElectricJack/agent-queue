@@ -134,7 +134,9 @@ def _development_delivery_pending(task):
     )
 
 
-def unmet_dependency_predicate(dependency, depends_on, *, dep_types=None):
+def unmet_dependency_predicate(
+    dependency, depends_on, *, dep_types=None, include_development_delivery=True,
+):
     """Return whether one typed dependency edge is currently unsatisfied.
 
     ``dependency`` is a ``task_dependencies`` table or alias and
@@ -152,7 +154,8 @@ def unmet_dependency_predicate(dependency, depends_on, *, dep_types=None):
                 dependency.c.dep_type == DepType.BLOCKS.value,
                 or_(
                     depends_on.c.status != TaskStatus.COMPLETED.value,
-                    _development_delivery_pending(depends_on),
+                    _development_delivery_pending(depends_on)
+                    if include_development_delivery else false(),
                 ),
             )
         )
@@ -221,7 +224,7 @@ def unmet_dependency_predicate(dependency, depends_on, *, dep_types=None):
     return or_(*clauses) if clauses else false()
 
 
-def _blocks_unsat():
+def _blocks_unsat(*, include_development_delivery=True):
     """``blocks`` — completion plus development publication when applicable."""
     bd = task_dependencies.alias()
     bt = tasks.alias()
@@ -231,7 +234,10 @@ def _blocks_unsat():
         .where(
             and_(
                 bd.c.task_id == tasks.c.id,
-                unmet_dependency_predicate(bd, bt, dep_types={DepType.BLOCKS.value}),
+                unmet_dependency_predicate(
+                    bd, bt, dep_types={DepType.BLOCKS.value},
+                    include_development_delivery=include_development_delivery,
+                ),
             )
         )
         .exists()
@@ -311,7 +317,7 @@ def _gate_open():
     )
 
 
-def blocked_predicate():
+def blocked_predicate(*, include_development_delivery=True):
     """Return the SQL boolean expression for "this ``tasks`` row is blocked".
 
     Correlates against the ``tasks`` table itself, so it can be dropped into
@@ -319,9 +325,12 @@ def blocked_predicate():
     Built from correlated ``EXISTS`` subqueries.
 
     One clause per blocking rule, in the order of design §3.1.
+    Only the development publisher may omit delivery checks: it assembles
+    completed prerequisites in order and publishes them together. Worker
+    readiness always includes delivery.
     """
     return or_(
-        _blocks_unsat(),
+        _blocks_unsat(include_development_delivery=include_development_delivery),
         _parent_child_unsat(),
         _waits_for_unsat(),
         _conditional_unsat(),

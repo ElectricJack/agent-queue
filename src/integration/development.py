@@ -18,6 +18,7 @@ from uuid import uuid4
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import insert, select, text, update
 
+from src.database.queries.blocked_state import blocked_predicate
 from src.database.tables import development_deliveries as deliveries
 from src.database.tables import projects, sessions, tasks
 from src.git.manager import GitError, GitManager, is_valid_git_oid
@@ -441,7 +442,10 @@ class DevelopmentIntegration:
                                 tasks.c.status == "COMPLETED",
                                 (tasks.c.repo_id == repo.id) | tasks.c.repo_id.is_(None),
                                 tasks.c.branch_name.is_not(None),
-                                tasks.c.is_blocked == 0,
+                                # Completion chains can be assembled in this
+                                # batch. Keep gates and unfinished dependencies,
+                                # but do not wait for our own earlier publication.
+                                ~blocked_predicate(include_development_delivery=False),
                             )
                             .order_by(tasks.c.updated_at, tasks.c.id)
                         )
