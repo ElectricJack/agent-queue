@@ -13,6 +13,7 @@ codes — is ``docs/reference/cli/install.md``.
 
 from __future__ import annotations
 
+from .command import CommandOutput, CommandRunner, run_command
 from .engine import (
     ConsentCallback,
     InstallEngine,
@@ -21,6 +22,7 @@ from .engine import (
     ProgressEvent,
     run_install,
 )
+from .macos import macos_steps
 from .platform import (
     PlatformFacts,
     SupportVerdict,
@@ -30,6 +32,7 @@ from .platform import (
 )
 from .prerequisites import default_registry
 from .redaction import SecretLeakError, assert_secret_free, redact
+from .registry import build_registry, platform_steps
 from .results import (
     EXIT_CODES,
     RESULT_SCHEMA_VERSION,
@@ -58,6 +61,8 @@ __all__ = [
     "EXIT_CODES",
     "RESULT_SCHEMA_VERSION",
     "STATE_SCHEMA_VERSION",
+    "CommandOutput",
+    "CommandRunner",
     "ConsentCallback",
     "IncompatibleStateError",
     "InstallEngine",
@@ -82,6 +87,7 @@ __all__ = [
     "StepState",
     "SupportVerdict",
     "assert_secret_free",
+    "build_registry",
     "default_registry",
     "default_state_path",
     "describe_host",
@@ -89,7 +95,10 @@ __all__ = [
     "evaluate_support",
     "exit_code",
     "load_state",
+    "macos_steps",
+    "platform_steps",
     "redact",
+    "run_command",
     "run_install",
     "save_state",
 ]
