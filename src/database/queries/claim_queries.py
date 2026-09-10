@@ -222,7 +222,48 @@ class ClaimQueryMixin:
         llm_provider=None,
         options_hash=None,
     ) -> str | None:
-        """The §10 work query.  Postgres takes the row FOR UPDATE SKIP LOCKED."""
+        """The §10 work query.  Postgres takes the row FOR UPDATE SKIP LOCKED.
+
+        Two statements, not one, and the reason is the ``ORDER BY``.  Affinity
+        is a *soft* preference -- the frontier does not exclude a task pinned
+        to another agent -- and it used to be expressed as the leading sort
+        key, ``CASE WHEN affinity_agent_id = :agent THEN 0 ELSE 1 END``.  The
+        agent id is a runtime parameter, so no index can supply that order:
+        PostgreSQL had to evaluate the whole frontier predicate for every
+        candidate row and top-N sort the result, which at the §15.2 scale
+        (5,000 tasks, 2,499 on the frontier) meant 2,500 rows materialised,
+        the correlated ``NOT EXISTS`` subplans in :func:`_frontier_where`
+        evaluated 2,500 times, and ~10,100 shared buffers per claim -- for a
+        ``LIMIT 1``.
+
+        Sorting by ``priority, created_at`` alone *is* index-orderable, so
+        each half below is an index-ordered scan that stops at the first
+        admissible row (10-14 shared buffers, measured on PostgreSQL 18 at
+        that same scale).  Splitting the preference across two statements
+        preserves it exactly:
+
+        * the first statement is the frontier restricted to tasks pinned to
+          this agent -- if any admissible pinned task exists, the old sort
+          would have returned the best of them, and so does this;
+        * the second is the frontier with no affinity term at all -- reached
+          only when the first found nothing, which is exactly when the old
+          sort's leading key was constant and the answer was the best row
+          overall.
+
+        ``SKIP LOCKED`` falls through the same way it always did: a pinned row
+        another claimer holds is skipped by the first statement, and if every
+        pinned row is held the second statement still considers unpinned work.
+        That fall-through is the reason this is two statements rather than one
+        with the probe hoisted into an ``InitPlan`` and used to *restrict* the
+        frontier -- that shape is a statement cheaper and measures the same,
+        but it answers ``no_ready_work`` when every pinned row is momentarily
+        locked, and the caller then parks on the ``task.ready`` waiter for the
+        rest of its ``--wait`` window rather than taking the unpinned work
+        that was there all along.
+
+        A targeted claim (*task_id* given) skips the probe: with a single
+        candidate row, preferring it over itself is a no-op.
+        """
         profile_ok = tasks.c.profile_id == profile_id
         if default_profile_id == profile_id and not enforce_routing:
             profile_ok = (tasks.c.profile_id == profile_id) | tasks.c.profile_id.is_(None)
@@ -234,41 +275,50 @@ class ClaimQueryMixin:
                 numeric_meta_value(task_metadata.c.value) > time.time(),
             )
         )
-        stmt = (
-            select(tasks.c.id)
-            .where(
-                _frontier_where(project_id),
-                profile_ok,
-                ~exists(
-                    select(literal(1)).where(
-                        and_(
-                            req.c.task_id == tasks.c.id,
-                            req.c.kind_id.notin_(("project-repo", "vault")),
+
+        def candidate(*, pinned: bool):
+            stmt = (
+                select(tasks.c.id)
+                .where(
+                    _frontier_where(project_id),
+                    profile_ok,
+                    ~exists(
+                        select(literal(1)).where(
+                            and_(
+                                req.c.task_id == tasks.c.id,
+                                req.c.kind_id.notin_(("project-repo", "vault")),
+                            )
                         )
-                    )
-                ),
-                ~prepare_backoff_active,
+                    ),
+                    ~prepare_backoff_active,
+                )
+                .order_by(
+                    tasks.c.priority.asc(),
+                    tasks.c.created_at.asc(),
+                )
+                .limit(1)
             )
-            .order_by(
-                case((tasks.c.affinity_agent_id == agent_id, 0), else_=1),
-                tasks.c.priority.asc(),
-                tasks.c.created_at.asc(),
-            )
-            .limit(1)
-        )
-        stmt = apply_label_filters(stmt, exclude_hold=True)
-        if enforce_routing:
-            # The task row is the route (assignment-routing-as-playbook spec
-            # §2): a worker fixed on a class takes only tasks carrying that
-            # class.  An explicit class never inherits a provider pin.
-            explicit_class = func.nullif(func.trim(tasks.c.intelligence_class), "")
-            stmt = stmt.where(
-                explicit_class == intelligence_class if intelligence_class else false(),
-            )
-        if task_id is not None:
-            stmt = stmt.where(tasks.c.id == task_id)
-        stmt = stmt.with_for_update(of=tasks, skip_locked=True)
-        row = (await conn.execute(stmt)).fetchone()
+            if pinned:
+                stmt = stmt.where(tasks.c.affinity_agent_id == agent_id)
+            stmt = apply_label_filters(stmt, exclude_hold=True)
+            if enforce_routing:
+                # The task row is the route (assignment-routing-as-playbook
+                # spec §2): a worker fixed on a class takes only tasks
+                # carrying that class.  An explicit class never inherits a
+                # provider pin.
+                explicit_class = func.nullif(func.trim(tasks.c.intelligence_class), "")
+                stmt = stmt.where(
+                    explicit_class == intelligence_class if intelligence_class else false(),
+                )
+            if task_id is not None:
+                stmt = stmt.where(tasks.c.id == task_id)
+            return stmt.with_for_update(of=tasks, skip_locked=True)
+
+        if task_id is None:
+            row = (await conn.execute(candidate(pinned=True))).fetchone()
+            if row:
+                return row[0]
+        row = (await conn.execute(candidate(pinned=False))).fetchone()
         return row[0] if row else None
 
     async def take_task(self, conn, task_id: str, *, agent_id: str, now: float) -> Task | None:
