@@ -225,6 +225,22 @@ async def test_once_answer_that_does_not_clear_dialog_is_not_ready():
     assert pane.sent == [("Enter",)]
 
 
+async def test_dismissed_dialog_in_scrollback_does_not_kill_ready_session():
+    pane = _Pane(lambda p: f"working\n{CODEX_COMPOSER}Ask Codex to do anything\n")
+    provider = _provider(pane)
+    original = provider._tmux
+
+    async def with_history(*args, **kwargs):
+        current = await original(*args, **kwargs)
+        if args[0] == "capture-pane" and "-S" in args:
+            return CODEX_TRUST + "\n" + current
+        return current
+
+    provider._tmux = with_history
+    await _await_ready(provider, _spec(CODEX_COMPOSER, CODEX_RULE))
+    assert pane.sent == []
+
+
 @pytest.mark.parametrize("lingering_frames", [1, 4])
 async def test_answered_specific_dialog_does_not_fall_through_to_quarantine(lingering_frames):
     specific = DialogRule(
