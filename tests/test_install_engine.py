@@ -648,8 +648,9 @@ def test_the_record_is_written_atomically_and_owner_only(tmp_path):
 def test_the_built_in_registry_admits_the_host_before_it_checks_anything_else():
     registry = default_registry()
     assert registry.ordered()[0].id == STEP_HOST
-    for step in registry.ordered()[1:]:
-        assert STEP_HOST in step.depends_on
+    # Every other step waits on host admission, directly or through the step
+    # it extends: a provider login waits on its CLI, which waits on the host.
+    assert set(registry.dependents_of(STEP_HOST)) == set(registry.ids())
     assert registry.get(STEP_DATA_DIR).mutating is True
     assert registry.get(STEP_PYTHON).mutating is False
 

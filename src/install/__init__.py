@@ -21,6 +21,17 @@ from .engine import (
     ProgressEvent,
     run_install,
 )
+from .logins import (
+    AuthProbe,
+    CredentialStore,
+    EnvironmentCredential,
+    ProviderLogin,
+    login_step,
+    login_steps,
+    probe_all,
+    probe_login,
+    provider_logins,
+)
 from .platform import (
     PlatformFacts,
     SupportVerdict,
@@ -29,6 +40,14 @@ from .platform import (
     evaluate_support,
 )
 from .prerequisites import default_registry
+from .providers import (
+    ExecutableProbe,
+    ProviderInstaller,
+    probe_executable,
+    provider_installers,
+    provider_step,
+    provider_steps,
+)
 from .redaction import SecretLeakError, assert_secret_free, redact
 from .results import (
     EXIT_CODES,
@@ -58,7 +77,11 @@ __all__ = [
     "EXIT_CODES",
     "RESULT_SCHEMA_VERSION",
     "STATE_SCHEMA_VERSION",
+    "AuthProbe",
     "ConsentCallback",
+    "CredentialStore",
+    "EnvironmentCredential",
+    "ExecutableProbe",
     "IncompatibleStateError",
     "InstallEngine",
     "InstallOptions",
@@ -71,6 +94,8 @@ __all__ = [
     "PlatformFacts",
     "ProgressCallback",
     "ProgressEvent",
+    "ProviderInstaller",
+    "ProviderLogin",
     "ResourceRecord",
     "SecretLeakError",
     "StateError",
@@ -89,6 +114,15 @@ __all__ = [
     "evaluate_support",
     "exit_code",
     "load_state",
+    "login_step",
+    "login_steps",
+    "probe_all",
+    "probe_executable",
+    "probe_login",
+    "provider_installers",
+    "provider_logins",
+    "provider_step",
+    "provider_steps",
     "redact",
     "run_install",
     "save_state",

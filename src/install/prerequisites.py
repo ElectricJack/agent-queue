@@ -277,8 +277,15 @@ def default_registry(
     )
     # Provider adapters are capability-gated, so they remain optional: a
     # normal AQ install records them as skipped until the operator selects one
-    # with ``aq install --with provider.<name>``.
-    from .providers import provider_steps
+    # with ``aq install --with provider.<name>``.  Selecting a provider selects
+    # both of its steps — install the CLI, then stop at its login checkpoint —
+    # because "installed" and "authenticated" are one operator decision and two
+    # observable conditions.
+    from .logins import login_steps
+    from .providers import provider_installers, provider_steps
 
     registry.extend(provider_steps(which=which))
+    registry.extend(
+        login_steps(environ=environ, which=which, installers=provider_installers())
+    )
     return registry

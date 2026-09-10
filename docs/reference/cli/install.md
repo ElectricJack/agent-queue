@@ -57,7 +57,62 @@ credentials.
 
 For example, `aq install --with provider.claude --with provider.codex` selects
 two harnesses. `aq install --list-steps` includes the exact step ids for use
-with `--approve` and `--restart-from`.
+with `--approve` and `--restart-from`. Installing a CLI does not log it in;
+that is the separate step described in
+[Provider authentication](#provider-authentication).
+
+## Provider authentication
+
+Selecting a provider selects two steps, because *installed* and
+*authenticated* are two different conditions: `provider.<name>-cli` puts the
+executable on `PATH`, and `provider.<name>-login` reports whether that
+executable can actually talk to its provider.
+
+**AQ never logs you in.** It types no password, captures no token and drives no
+browser. When a selected harness is not authenticated, the login step reports
+`needs_user` (exit code `10`) and names the provider's own login command; you
+run it, then rerun `aq install` — rerunning is the whole retry mechanism.
+
+Readiness is observed without reading credential material, in this order:
+
+1. The provider's own status command, if it documents one. Only its **exit
+   status** is used; its output is never captured.
+2. The **names** of provider-supported environment variables that are set —
+   never their values.
+3. The **existence** of the provider's credential file — never its contents.
+
+| Capability | Login command | Status probe | Headless credential |
+| --- | --- | --- | --- |
+| `provider.claude` | `claude auth login` (or `/login` in a session) | `claude auth status` | `CLAUDE_CODE_OAUTH_TOKEN` from `claude setup-token`, or `ANTHROPIC_API_KEY` |
+| `provider.codex` | `codex login` | `codex login status` | `codex login --device-auth`, or `printenv OPENAI_API_KEY \| codex login --with-api-key` |
+| `provider.gemini` | `gemini`, then `/auth` | *(none documented; store + environment)* | `GEMINI_API_KEY`, or `GOOGLE_GENAI_USE_VERTEXAI=true` with `GOOGLE_CLOUD_PROJECT` and `GOOGLE_CLOUD_LOCATION`, or `GOOGLE_APPLICATION_CREDENTIALS` |
+
+Credentials stay in the provider's own protected store — the macOS Keychain or
+`~/.claude/.credentials.json`, `$CODEX_HOME/auth.json`,
+`~/.gemini/oauth_creds.json`. AQ never creates, reads, moves or deletes one, so
+a credential is never an installer-owned resource and uninstall never offers to
+remove it.
+
+An unattended run (`--non-interactive`) may not open a browser or read a
+terminal, so it reports `needs_user` with the provider's documented
+environment-credential or device-code route instead of choosing an
+authentication method for you. Supply the credential in the environment before
+invoking it, or complete the login once in an interactive shell on that host.
+
+The login step's `detail` carries the distinction and nothing else:
+
+```json
+{"step_id": "provider.codex-login", "state": "succeeded",
+ "summary": "Codex CLI is authenticated (api-key via OPENAI_API_KEY)",
+ "detail": {"installed": true, "authenticated": true, "auth_method": "api-key",
+            "credential_source": "OPENAI_API_KEY", "credential_store": "environment",
+            "checked": ["codex login status", "OPENAI_API_KEY"],
+            "missing_environment": []}}
+```
+
+`credential_source` is a variable name, a store label or a command — never
+credential material. The resume record refuses to persist anything
+secret-shaped, so a leak fails the write rather than reaching the disk.
 
 ## Exit codes
 
