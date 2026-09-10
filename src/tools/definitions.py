@@ -5382,7 +5382,7 @@ _ALL_TOOL_DEFINITIONS = [
                     "type": "string",
                     "description": (
                         "Vault-relative or absolute path to a reviewed bundle directory "
-                        "containing artifact.json, artifact.sha256, source.md, and review.md."
+                        "containing artifact.json, artifact.sha256, source.md, and manifest.md."
                     ),
                 }
             },

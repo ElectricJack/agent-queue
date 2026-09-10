@@ -14,7 +14,7 @@ class PlaybookV2ImportRequest:
     """
     Attributes:
         path (str): Vault-relative or absolute path to a reviewed bundle directory containing artifact.json,
-            artifact.sha256, source.md, and review.md.
+            artifact.sha256, source.md, and manifest.md.
     """
 
     path: str
