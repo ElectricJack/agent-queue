@@ -901,7 +901,7 @@ class DevelopmentIntegration:
             )
             if operation is None:
                 raise ValueError("operation not found")
-            if operation["state"] in {"completed", "cancelled"}:
+            if operation["state"] == "completed":
                 return {"outcome": "already_terminal", "operation_id": operation_id}
             delegates = list(
                 (
@@ -913,6 +913,20 @@ class DevelopmentIntegration:
                     )
                 ).scalars()
             )
+            if operation["verifier_task_id"]:
+                delegates.append(operation["verifier_task_id"])
+            delegates = list(dict.fromkeys(delegates))
+            if operation["state"] == "cancelled":
+                # Older cancellations omitted the verifier. Replaying must
+                # retire those stranded tasks while retaining their audit rows.
+                pending = await conn.scalar(
+                    select(tasks.c.id).where(
+                        tasks.c.id.in_(delegates),
+                        tasks.c.status.not_in(["COMPLETED", "FAILED", "PAUSED"]),
+                    ).limit(1)
+                )
+                if pending is None:
+                    return {"outcome": "already_terminal", "operation_id": operation_id}
             retained = [
                 dict(r)
                 for r in (
