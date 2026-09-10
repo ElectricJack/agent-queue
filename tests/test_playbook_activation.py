@@ -940,7 +940,7 @@ async def test_the_shipped_pipeline_stales_when_a_delegated_profile_widens(db, t
 
     widened = _OverriddenProfiles(
         {
-            "reviewer": CapabilityPolicy.from_namespaces(
+            "spec-ingest": CapabilityPolicy.from_namespaces(
                 aq_commands=frozenset({"task_close", "pr_merge"})
             )
         }
@@ -951,8 +951,8 @@ async def test_the_shipped_pipeline_stales_when_a_delegated_profile_widens(db, t
 
     assert [record.health for record in stale] == [ActivationHealth.STALE_CONTRACT]
     reasons = {reason.subject: reason.code for reason in stale[0].reasons}
-    assert reasons["reviewer"] == "profile_capabilities_changed"
-    assert set(reasons) & {"final-reviewer", "spec-ingest"} == set(), (
+    assert reasons["spec-ingest"] == "profile_capabilities_changed"
+    assert set(reasons) & {"final-reviewer", "reviewer"} == set(), (
         "only the profile that moved may be named"
     )
 
