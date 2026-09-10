@@ -377,7 +377,8 @@ class TestReconcilePools:
         assert len(sessions) == 1
         assert sessions[0].project_id == "other"
 
-    async def test_worktree_mode_grows_a_slot_and_starts(self, orch, db, tmp_path):
+    @pytest.mark.parametrize("workers", [1, 2])
+    async def test_worktree_mode_grows_a_slot_and_starts(self, orch, db, tmp_path, workers):
         orch.config.worktrees.enabled = True
         orch._worktree_slot_manager = _FakeSlotManager(db)
 
@@ -398,14 +399,16 @@ class TestReconcilePools:
         )
         await db.create_workspace(base)
 
-        await ready(db, "t1")
+        for i in range(workers):
+            await ready(db, f"task-{i}")
         await orch._reconcile_pools()
         await orch.wait_for_pool_launches()
 
         pool = await db.list_sessions(lifecycle="pool", project_id=PROJECT_ID)
-        assert len(pool) == 1
+        assert len(pool) == workers
         slots = await db.list_slots_for_base("base0")
-        assert len(slots) == 1 and slots[0].locked_by_agent_id == pool[0].agent_id
+        assert len(slots) == workers
+        assert {slot.locked_by_agent_id for slot in slots} == {row.agent_id for row in pool}
 
     async def test_terminate_pool_session_full_teardown(self, orch, db):
         await ready(db, "t1")
