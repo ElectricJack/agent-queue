@@ -12,7 +12,8 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, call
 
 import pytest
-from src.git.manager import GitManager, GitError, RemoteRefState
+
+from src.git.manager import GitError, GitManager, RemoteRefState
 from src.models import PhaseResult
 from src.orchestrator.git_ops import GitOpsMixin
 
@@ -1837,3 +1838,36 @@ class TestRootDeliveryGatesTheWholeTree:
             ".aq/claim.json",
             ".codex/config.toml",
         ]
+
+
+async def test_cancelling_git_operation_reaps_process(mgr, tmp_path, monkeypatch):
+    import sys
+
+    original_create = asyncio.create_subprocess_exec
+    started = asyncio.Event()
+    processes = []
+
+    async def create(*args, **kwargs):
+        proc = await original_create(
+            sys.executable, "-c", "import time; time.sleep(60)", **kwargs
+        )
+        processes.append(proc)
+        started.set()
+        return proc
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", create)
+    request = asyncio.create_task(mgr._arun_unlocked(["reset", "--hard"], cwd=str(tmp_path)))
+    try:
+        await asyncio.wait_for(started.wait(), timeout=5)
+        request.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await request
+        assert processes[0].returncode is not None
+    finally:
+        for proc in processes:
+            if proc.returncode is None:
+                proc.kill()
+                await proc.wait()
+        if not request.done():
+            request.cancel()
+        await asyncio.gather(request, return_exceptions=True)

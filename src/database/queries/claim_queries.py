@@ -663,6 +663,7 @@ class ClaimQueryMixin:
         result,
         needs_attention,
         prepare_backoff=False,
+        preparation_expired_before=None,
         expected_task_id=None,
         expected_claim_epoch=None,
         expected_task_status=None,
@@ -686,6 +687,13 @@ class ClaimQueryMixin:
         if row is None:
             return out
         task_id, agent_id = row["task_id"], row["agent_id"]
+        # Timeout observations can arrive after preparation activated. Check
+        # its phase and deadline again while holding the session row lock.
+        if preparation_expired_before is not None and (
+            row["claim_phase"] not in ("claiming", "preparing")
+            or (row["claim_phase_at"] or 0.0) > preparation_expired_before
+        ):
+            return out
         # A task close may race pool reconciliation: the reconciler can
         # release the terminal hold and the worker can claim new work before
         # the original close resumes.  Never let that old close release the
@@ -882,6 +890,7 @@ class ClaimQueryMixin:
         drain_after_release=False,
         release_workspace_lock=False,
         prepare_backoff=False,
+        preparation_expired_before=None,
         preserve_terminal_task=False,
         stop_after_release=False,
         end_reason=None,
@@ -900,6 +909,7 @@ class ClaimQueryMixin:
             drain_after_release=drain_after_release,
             release_workspace_lock=release_workspace_lock,
             prepare_backoff=prepare_backoff,
+            preparation_expired_before=preparation_expired_before,
             preserve_terminal_task=preserve_terminal_task,
             stop_after_release=stop_after_release,
             end_reason=end_reason,

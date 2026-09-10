@@ -243,7 +243,7 @@ stateDiagram-v2
   the transaction, it is re-verified against the database before it is
   believed ([`claim_preparation_is_current`](../../src/database/queries/claim_queries.py)).
 * A session that never leaves `claiming` or `preparing` for
-  `swarm.prepare_timeout` is released by the reconciler, so a crash
+  `swarm.prepare_timeout` with no live preparation request is released by the reconciler, so a crash
   mid-preparation cannot hold a task forever.
 
 ### Claim result codes
@@ -281,7 +281,7 @@ All of them are cleared together by one delete
 because they all become stale at the same moment. The first two failures leave
 the task `READY` with an exponential backoff; the third moves it to `BLOCKED`
 with a manual retry. Recovery is in the
-[troubleshooting guide](../guides/session-troubleshooting.md#slot_reset_failed-the-workspace-could-not-be-made-clean).
+[troubleshooting guide](../guides/session-troubleshooting.md).
 
 > **Note.** These live in task metadata rather than task columns on purpose:
 > this is operational claim state, not lifecycle state, and it therefore needs

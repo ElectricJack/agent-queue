@@ -104,7 +104,7 @@ quota.
 | `pause_retry.rate_limit_max_retries` | 3 | Enough to ride out a burst; few enough that a real outage reaches `PAUSED` where an operator sees it. |
 | `pause_retry.token_exhaustion_retry_seconds` | 900 | Raised from the code default of 300. A spent subscription quota window is measured in hours; retrying every five minutes only produces failures to look at. |
 | `auto_task.max_verification_retries` | 2 | One reopen for a genuine flake, then a stop. |
-| `swarm.prepare_timeout` | 120 | A claim stuck in `preparing` past two minutes is a dead session, and its task must return to the frontier. |
+| `swarm.prepare_timeout` | 120 | An abandoned preparation becomes eligible for recovery after two minutes. A live preparation request remains protected while its Git operations run under their own timeouts. |
 | `agents_config.stuck_timeout_seconds` | 1800 (3600 on a small box) | A long tool call on a contended small box legitimately takes longer. |
 | `integration.default_mode` | `pull_request` | Worker output lands on a branch and a PR, never straight onto the default branch. |
 | `integration.merge_ci_policy` | `warn` | The merge path asks GitHub for the check rollup and records the verdict, but still merges. A new install usually has no CI yet, and `required` fails closed on an unreadable rollup — nothing would ever merge. Move to `required` once the default branch is reliably green. |

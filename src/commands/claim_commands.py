@@ -590,9 +590,14 @@ class ClaimCommandsMixin:
             # can await this instead of polling once the row settles.
             key = (session.id, task.claim_epoch)
             self.orchestrator.claim_waiters[key] = asyncio.get_running_loop().create_future()
+            preparation_key = (session.id, task.id, task.claim_epoch)
+            preparation = asyncio.current_task()
+            self.orchestrator.claim_preparations[preparation_key] = preparation
             try:
                 return await self._prepare_and_activate(session, row, task, cap, slot=slot)
             finally:
+                if self.orchestrator.claim_preparations.get(preparation_key) is preparation:
+                    self.orchestrator.claim_preparations.pop(preparation_key, None)
                 # Every ordinary exit already resolved and popped the future
                 # via ``_resolve_claim_waiters``; this covers the paths that
                 # don't -- an unexpected exception, and cancellation (the

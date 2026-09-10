@@ -477,24 +477,34 @@ class SessionReconciler:
                 # ``or now``.
                 if (s.claim_phase_at or 0.0) > now - timeout:
                     continue
-                if s.task_id:
-                    await self.db.release_claim(
-                        s.id,
-                        task_status=TaskStatus.READY,
-                        context="prepare_timeout",
-                        now=now,
-                        result="prepare_failed",
-                        needs_attention="prepare_timeout",
-                        prepare_backoff=True,
-                    )
-                else:
-                    await self.db.update_session(s.id, claim_phase=None, claim_phase_at=None)
+                preparations = getattr(self.orchestrator, "claim_preparations", {})
+                preparation = preparations.get((s.id, s.task_id, s.last_claim_epoch))
+                if preparation is not None and not preparation.done():
+                    # This daemon is still resetting the exact claim's
+                    # workspace. Git operations have their own deadlines;
+                    # releasing here races those writes and activation.
+                    # Restarted daemons have no live request in this map,
+                    # so abandoned preparations still expire normally.
+                    continue
+                released = await self.db.release_claim(
+                    s.id,
+                    task_status=TaskStatus.READY,
+                    context="prepare_timeout",
+                    now=now,
+                    expected_task_id=s.task_id,
+                    expected_claim_epoch=s.last_claim_epoch,
+                    preparation_expired_before=now - timeout,
+                    result="prepare_failed",
+                    needs_attention="prepare_timeout",
+                    prepare_backoff=True,
+                )
+                if not released.released:
+                    continue
                 if self.orchestrator is not None:
                     waiters = getattr(self.orchestrator, "claim_waiters", None) or {}
-                    for key in [k for k in waiters if k[0] == s.id]:
-                        fut = waiters.pop(key, None)
-                        if fut is not None and not fut.done():
-                            fut.set_result("prepare_failed")
+                    fut = waiters.pop((s.id, s.last_claim_epoch), None)
+                    if fut is not None and not fut.done():
+                        fut.set_result("prepare_failed")
                 await self._emit(
                     "session.claim_timeout", session_id=s.id, task_id=s.task_id
                 )
