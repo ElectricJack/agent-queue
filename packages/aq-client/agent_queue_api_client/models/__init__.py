@@ -68,6 +68,14 @@ from .claude_usage_response_active_sessions_item import ClaudeUsageResponseActiv
 from .claude_usage_response_model_usage_type_0 import ClaudeUsageResponseModelUsageType0
 from .claude_usage_response_rate_limit_type_0 import ClaudeUsageResponseRateLimitType0
 from .cluster_bounds_dto import ClusterBoundsDTO
+from .command_center_preferences import CommandCenterPreferences
+from .command_center_preferences_density import CommandCenterPreferencesDensity
+from .command_center_preferences_document import CommandCenterPreferencesDocument
+from .command_center_preferences_document_scope import CommandCenterPreferencesDocumentScope
+from .command_center_project_view import CommandCenterProjectView
+from .command_center_project_view_document import CommandCenterProjectViewDocument
+from .command_center_project_view_document_scope import CommandCenterProjectViewDocumentScope
+from .command_center_project_view_manual_positions import CommandCenterProjectViewManualPositions
 from .commit_changes_request import CommitChangesRequest
 from .commit_changes_response import CommitChangesResponse
 from .commit_changes_response_422 import CommitChangesResponse422
@@ -112,6 +120,18 @@ from .create_task_response import CreateTaskResponse
 from .create_task_response_422 import CreateTaskResponse422
 from .create_task_response_depends_on_item import CreateTaskResponseDependsOnItem
 from .daemon_metrics import DaemonMetrics
+from .dashboard_state_conflict_response import DashboardStateConflictResponse
+from .dashboard_state_document_response import DashboardStateDocumentResponse
+from .dashboard_state_error_response import DashboardStateErrorResponse
+from .dashboard_state_get_request import DashboardStateGetRequest
+from .dashboard_state_get_request_namespace import DashboardStateGetRequestNamespace
+from .dashboard_state_list_request import DashboardStateListRequest
+from .dashboard_state_list_response import DashboardStateListResponse
+from .dashboard_state_put_request import DashboardStatePutRequest
+from .dashboard_state_put_request_namespace import DashboardStatePutRequestNamespace
+from .dashboard_state_put_request_value import DashboardStatePutRequestValue
+from .dashboard_state_reset_request import DashboardStateResetRequest
+from .dashboard_state_reset_request_namespace import DashboardStateResetRequestNamespace
 from .db_preflight_hierarchy_request import DbPreflightHierarchyRequest
 from .db_preflight_hierarchy_response_422 import DbPreflightHierarchyResponse422
 from .delegation_policy_dto import DelegationPolicyDTO
@@ -557,6 +577,7 @@ from .loop_iteration_overlay_dto import LoopIterationOverlayDTO
 from .loop_node_detail_dto import LoopNodeDetailDTO
 from .loop_node_detail_dto_failure_policy import LoopNodeDetailDTOFailurePolicy
 from .machine_metrics import MachineMetrics
+from .manual_position import ManualPosition
 from .mcp_server_summary import McpServerSummary
 from .memory_save_request import MemorySaveRequest
 from .memory_save_response_422 import MemorySaveResponse422
@@ -586,6 +607,11 @@ from .message_status_response_422 import MessageStatusResponse422
 from .metrics_sample import MetricsSample
 from .metrics_series_response import MetricsSeriesResponse
 from .model_tokens import ModelTokens
+from .nav_folder import NavFolder
+from .nav_organization import NavOrganization
+from .nav_organization_assignments import NavOrganizationAssignments
+from .nav_organization_document import NavOrganizationDocument
+from .nav_organization_document_scope import NavOrganizationDocumentScope
 from .node_advanced_dto import NodeAdvancedDTO
 from .node_advanced_dto_result_schema_type_0 import NodeAdvancedDTOResultSchemaType0
 from .node_advanced_dto_typed_step import NodeAdvancedDTOTypedStep
@@ -651,6 +677,10 @@ from .playbook_graph_nodes_edges import PlaybookGraphNodesEdges
 from .playbook_graph_position import PlaybookGraphPosition
 from .playbook_graph_trigger import PlaybookGraphTrigger
 from .playbook_graph_trigger_filter_type_0 import PlaybookGraphTriggerFilterType0
+from .playbook_graph_view import PlaybookGraphView
+from .playbook_graph_view_document import PlaybookGraphViewDocument
+from .playbook_graph_view_document_scope import PlaybookGraphViewDocumentScope
+from .playbook_graph_view_manual_positions import PlaybookGraphViewManualPositions
 from .playbook_graph_view_request import PlaybookGraphViewRequest
 from .playbook_graph_view_response import PlaybookGraphViewResponse
 from .playbook_graph_view_response_422 import PlaybookGraphViewResponse422
@@ -876,6 +906,11 @@ from .resume_project_response_422 import ResumeProjectResponse422
 from .resume_task_request import ResumeTaskRequest
 from .resume_task_response_422 import ResumeTaskResponse422
 from .retry_policy_dto import RetryPolicyDTO
+from .right_surface import RightSurface
+from .right_surface_activity_tab import RightSurfaceActivityTab
+from .right_surface_kind_type_0 import RightSurfaceKindType0
+from .right_surface_pane import RightSurfacePane
+from .right_surface_pane_args import RightSurfacePaneArgs
 from .rule_cluster_dto import RuleClusterDTO
 from .rule_cluster_dto_trigger_filter_type_0 import RuleClusterDTOTriggerFilterType0
 from .rule_diff_dto import RuleDiffDTO
@@ -955,6 +990,11 @@ from .set_task_status_response import SetTaskStatusResponse
 from .set_task_status_response_422 import SetTaskStatusResponse422
 from .shadow_compile_row_dto import ShadowCompileRowDTO
 from .shadow_source_error_dto import ShadowSourceErrorDTO
+from .shell_preferences import ShellPreferences
+from .shell_preferences_document import ShellPreferencesDocument
+from .shell_preferences_document_scope import ShellPreferencesDocumentScope
+from .shell_preferences_pane_widths import ShellPreferencesPaneWidths
+from .shell_preferences_theme import ShellPreferencesTheme
 from .show_effective_profile_request import ShowEffectiveProfileRequest
 from .show_effective_profile_response import ShowEffectiveProfileResponse
 from .show_effective_profile_response_422 import ShowEffectiveProfileResponse422
@@ -1210,6 +1250,14 @@ __all__ = (
     "ClaudeUsageResponseModelUsageType0",
     "ClaudeUsageResponseRateLimitType0",
     "ClusterBoundsDTO",
+    "CommandCenterPreferences",
+    "CommandCenterPreferencesDensity",
+    "CommandCenterPreferencesDocument",
+    "CommandCenterPreferencesDocumentScope",
+    "CommandCenterProjectView",
+    "CommandCenterProjectViewDocument",
+    "CommandCenterProjectViewDocumentScope",
+    "CommandCenterProjectViewManualPositions",
     "CommitChangesRequest",
     "CommitChangesResponse",
     "CommitChangesResponse422",
@@ -1254,6 +1302,18 @@ __all__ = (
     "CreateTaskResponse422",
     "CreateTaskResponseDependsOnItem",
     "DaemonMetrics",
+    "DashboardStateConflictResponse",
+    "DashboardStateDocumentResponse",
+    "DashboardStateErrorResponse",
+    "DashboardStateGetRequest",
+    "DashboardStateGetRequestNamespace",
+    "DashboardStateListRequest",
+    "DashboardStateListResponse",
+    "DashboardStatePutRequest",
+    "DashboardStatePutRequestNamespace",
+    "DashboardStatePutRequestValue",
+    "DashboardStateResetRequest",
+    "DashboardStateResetRequestNamespace",
     "DbPreflightHierarchyRequest",
     "DbPreflightHierarchyResponse422",
     "DelegationPolicyDTO",
@@ -1691,6 +1751,7 @@ __all__ = (
     "LoopNodeDetailDTO",
     "LoopNodeDetailDTOFailurePolicy",
     "MachineMetrics",
+    "ManualPosition",
     "McpServerSummary",
     "MemorySaveRequest",
     "MemorySaveResponse422",
@@ -1720,6 +1781,11 @@ __all__ = (
     "MetricsSample",
     "MetricsSeriesResponse",
     "ModelTokens",
+    "NavFolder",
+    "NavOrganization",
+    "NavOrganizationAssignments",
+    "NavOrganizationDocument",
+    "NavOrganizationDocumentScope",
     "NodeAdvancedDTO",
     "NodeAdvancedDTOResultSchemaType0",
     "NodeAdvancedDTOTypedStep",
@@ -1785,6 +1851,10 @@ __all__ = (
     "PlaybookGraphPosition",
     "PlaybookGraphTrigger",
     "PlaybookGraphTriggerFilterType0",
+    "PlaybookGraphView",
+    "PlaybookGraphViewDocument",
+    "PlaybookGraphViewDocumentScope",
+    "PlaybookGraphViewManualPositions",
     "PlaybookGraphViewRequest",
     "PlaybookGraphViewResponse",
     "PlaybookGraphViewResponse422",
@@ -2008,6 +2078,11 @@ __all__ = (
     "ResumeTaskRequest",
     "ResumeTaskResponse422",
     "RetryPolicyDTO",
+    "RightSurface",
+    "RightSurfaceActivityTab",
+    "RightSurfaceKindType0",
+    "RightSurfacePane",
+    "RightSurfacePaneArgs",
     "RuleClusterDTO",
     "RuleClusterDTOTriggerFilterType0",
     "RuleDiffDTO",
@@ -2087,6 +2162,11 @@ __all__ = (
     "SetTaskStatusResponse422",
     "ShadowCompileRowDTO",
     "ShadowSourceErrorDTO",
+    "ShellPreferences",
+    "ShellPreferencesDocument",
+    "ShellPreferencesDocumentScope",
+    "ShellPreferencesPaneWidths",
+    "ShellPreferencesTheme",
     "ShowEffectiveProfileRequest",
     "ShowEffectiveProfileResponse",
     "ShowEffectiveProfileResponse422",
