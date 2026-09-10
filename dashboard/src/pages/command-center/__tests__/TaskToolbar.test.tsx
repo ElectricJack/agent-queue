@@ -1,5 +1,6 @@
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import type { ReactNode } from "react";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ShortcutsProvider } from "../../../shell/hotkeys/useShortcuts";
@@ -34,6 +35,12 @@ vi.mock("../../../api/graphLayout", () => ({
 }));
 vi.mock("../../../panes/store", () => ({ useShellPaneStore: () => ({ open: mocks.open }) }));
 vi.mock("../useGraphLive", () => ({ useGraphLive: mocks.live }));
+vi.mock("../useGraphHierarchy", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../useGraphHierarchy")>(),
+  // Task-toolbar controls do not own graph-state loading; keep this route
+  // fixture focused on their behavior rather than requiring a query client.
+  GraphStateProvider: ({ children }: { children: ReactNode }) => children,
+}));
 
 function Probe() {
   const workspace = useTaskWorkspace();

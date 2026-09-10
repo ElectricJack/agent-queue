@@ -7,6 +7,7 @@ import { useJumpToResult } from "./layout-v2/useJumpToResult";
 import { useShellPaneStore } from "../../panes/store";
 import { useShortcut } from "../../shell/hotkeys/useShortcuts";
 import { useTaskWorkspace } from "./TaskWorkspace";
+import { useGraphState } from "./useGraphHierarchy";
 import { ACTIVITY_WINDOWS, FINISHED_STATUSES, TASK_STATUSES, taskStatusLabel } from "./taskFilters";
 
 export default function TaskToolbar() {
@@ -18,7 +19,8 @@ export default function TaskToolbar() {
   const onGraph = useLocation().pathname.endsWith("/graph");
   const { next: jumpNext, count: jumpCount } = useJumpToResult(
     onGraph ? projectId : undefined, variant, filters);
-  const tidy = useTidyLayout(projectId ?? "");
+  const { clearGraphPositions } = useGraphState();
+  const tidy = useTidyLayout(projectId ?? "", projectId ? () => clearGraphPositions(projectId) : undefined);
   const [createOpen, setCreateOpen] = useState(false);
   const searchRef = useRef<HTMLInputElement>(null);
   const pane = useShellPaneStore();
