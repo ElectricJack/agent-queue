@@ -29,6 +29,8 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
+from .command import CommandRunner as ProcessRunner
+from .logins import CommandRunner as ProviderRunner
 from .logins import login_steps
 from .macos import (
     DEFAULT_PREFIXES,
@@ -37,6 +39,7 @@ from .macos import (
     brew_aware_which,
     macos_steps,
 )
+from .onboarding import HttpProbe
 from .onboarding import onboarding_steps as default_onboarding_steps
 from .platform import (
     HOST_MACOS_ARM,
@@ -82,6 +85,9 @@ def build_registry(
     prefixes: Mapping[str, Path] | None = None,
     database_steps: Iterable[StepSpec] | None = None,
     onboarding_steps: Iterable[StepSpec] | None = None,
+    provider_runner: ProviderRunner | None = None,
+    daemon_runner: ProcessRunner | None = None,
+    http_probe: HttpProbe | None = None,
     **adapter_kwargs: Any,
 ) -> StepRegistry:
     """Build the full step registry for the host described by *support*.
@@ -90,6 +96,15 @@ def build_registry(
     what lets a suite about one adapter compose the registry without dragging
     in the others: a macOS test has no PostgreSQL and therefore no
     configuration a daemon could load.
+
+    ``provider_runner``, ``daemon_runner`` and ``http_probe`` replace something
+    smaller: the three seams through which the *default* provider, login and
+    onboarding steps reach the host — a subprocess, ``aq start`` and an HTTP
+    probe.  Handing those in keeps the composition itself real (the same steps,
+    the same ids, the same cross-adapter dependencies this function computes)
+    while a whole-installer test drives it on a machine that has no provider
+    CLI, no daemon and no network.  Replacing the step groups instead would
+    mean asserting against wiring the test wrote itself.
     """
     verdict = support or describe_host(environ=environ)
     macos = verdict.host_path in MACOS_HOSTS
@@ -148,8 +163,20 @@ def build_registry(
     # capability-gated, so this preserves the normal install's behavior while
     # allowing a platform adapter to order the prerequisites they rely on.
     installers = provider_installers()
-    registry.extend(provider_steps(which=lookup))
-    registry.extend(login_steps(environ=environ, which=lookup or shutil.which, installers=installers))
+    process = {} if provider_runner is None else {"runner": provider_runner}
+    # ``lookup`` is None on a host with no platform adapter, and the provider
+    # steps take a callable rather than defaulting a None away: without the
+    # fallback here, `aq install --with provider.claude` on WSL2 reported a
+    # TypeError from the probe instead of "claude is not on PATH".
+    registry.extend(provider_steps(which=lookup or shutil.which, **process))
+    registry.extend(
+        login_steps(
+            environ=environ,
+            which=lookup or shutil.which,
+            installers=installers,
+            **process,
+        )
+    )
     # The onboarding steps close the newcomer's path: a configuration with
     # defaults for this box, a daemon that answers and the dashboard URL.  The
     # daemon needs a database and a configuration that names it, so when the
@@ -158,9 +185,7 @@ def build_registry(
     # independent branches, and a daemon started before the credential was
     # written would fail for a reason nobody could read.
     onboarding_after = (
-        (STEP_POSTGRES_CONNECTION,)
-        if STEP_POSTGRES_CONNECTION in registry
-        else (STEP_DATA_DIR,)
+        (STEP_POSTGRES_CONNECTION,) if STEP_POSTGRES_CONNECTION in registry else (STEP_DATA_DIR,)
     )
     registry.extend(
         tuple(onboarding_steps)
@@ -168,7 +193,9 @@ def build_registry(
         else default_onboarding_steps(
             environ=environ,
             home=state_dir,
+            runner=daemon_runner,
             which=lookup or shutil.which,
+            probe=http_probe,
             depends_on=onboarding_after,
         )
     )
