@@ -308,6 +308,26 @@ rather than pulling a branch out from under a live process.
 
 ## Reading a failure message
 
+Strict-mode repair IDs such as `repair-repair-batch-integration-batch-…-1`
+combine the operation ID with a stage number; the repeated prefix does not
+mean a repair recursively created another repair. Stage 0 is the primary
+repair and stage 1 is its debug escalation.
+
+A repair delegate uses its operation's existing branch. The scheduler accepts
+that branch reservation only when the delegate identity, active stage,
+operation, repository and branch match. It does not require a separate
+task-branch origin for the delegate. Ordinary tasks still require their own
+materialized origins in hierarchy and train modes.
+
+When an operation completes or is cancelled, the integration reconciler
+retires its detached, unfinished repair and verifier tasks. They remain
+`PAUSED`, with no automatic resume time and an `integration_retirement`
+record naming the terminal operation. `aq task explain --task-id <id>` reports
+that the delegate is no longer required. This preserves the original task and
+stage evidence without claiming that an unused delegate passed. Active worker,
+claim, workspace and branch-owner attachments prevent retirement. Active
+operations and operations waiting for a human decision are unchanged.
+
 Every integration command wraps its internal error as
 `{"success": false, "outcome": "blocked", "error": "<message>"}`
 ([`src/commands/integration_commands.py`](../../src/commands/integration_commands.py)),

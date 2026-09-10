@@ -3961,6 +3961,13 @@ class TaskCommandsMixin:
         if out_of_scope:
             return out_of_scope
         reasons: list[Reason] = []
+        retirement = await self.db.get_task_meta(str(task_id), "integration_retirement")
+        if retirement:
+            reasons.append(Reason(
+                code="integration_delegate_retired",
+                detail=f"{retirement['reason']}; this delegate is no longer required",
+                ref=retirement["operation_id"],
+            ))
         needs_attention = await self.db.get_task_meta(str(task_id), "needs_attention")
         if needs_attention:
             detail = str(needs_attention)
@@ -3990,7 +3997,7 @@ class TaskCommandsMixin:
         # — it is waiting out a backoff (rate limit, rapid crash, stalled
         # restart, session exit without close).  Without this the answer to
         # "why isn't X running" was silence for the whole cooldown.
-        if task.status is TaskStatus.PAUSED:
+        if task.status is TaskStatus.PAUSED and not retirement:
             if task.resume_after:
                 remaining = max(0.0, float(task.resume_after) - time.time())
                 reasons.append(Reason(

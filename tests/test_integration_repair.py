@@ -260,6 +260,94 @@ async def _repair_stage(db, operation_id: str, ordinal: int) -> dict:
     return dict(row)
 
 
+@pytest.mark.parametrize("operation_state", ["completed", "cancelled", "active", "human_required"])
+@pytest.mark.parametrize("task_status", [TaskStatus.READY, TaskStatus.PAUSED])
+async def test_terminal_delegate_retirement_preserves_outcomes(db, operation_state, task_status):
+    from src.integration.repair import RepairService
+
+    await _seed_parent_operation(db)
+    service = RepairService(db)
+    await service.start("operation", STARTING_SHA, "failed-check", now=100.0)
+    await db.create_task(Task(id="delegate", project_id="p", title="Repair", description="", status=task_status))
+    await db.set_task_meta("delegate", "needs_attention", "slot_reset_failed")
+    async with db.immediate() as conn:
+        await conn.execute(update(integration_repair_operations).values(state=operation_state))
+        await conn.execute(update(integration_repair_stages).values(
+            repair_task_id="delegate", writer_kind="repair_delegate"))
+    before = await _repair_stage(db, "operation", 0)
+    result = await service.retire_terminal_delegates(200.0)
+    if operation_state in {"active", "human_required"}:
+        assert result == []
+        assert (await db.get_task("delegate")).status == task_status
+        assert await db.get_task_meta("delegate", "needs_attention") == "slot_reset_failed"
+        return
+    assert result == ["delegate"]
+    assert (await db.get_task("delegate")).status == TaskStatus.PAUSED
+    assert (await db.get_task("delegate")).resume_after is None
+    assert await db.get_task_meta("delegate", "needs_attention") is None
+    assert (await db.get_task_meta("delegate", "integration_retirement"))["state"] == operation_state
+    assert await _repair_stage(db, "operation", 0) == before
+    assert await service.retire_terminal_delegates(201.0) == []
+
+
+@pytest.mark.parametrize("state", ["running", "stopped"])
+async def test_terminal_delegate_retirement_waits_for_session_detachment(db, state):
+    from src.integration.repair import RepairService
+
+    await _seed_parent_operation(db)
+    service = RepairService(db)
+    await service.start("operation", STARTING_SHA, "failed-check", now=100.0)
+    await db.create_task(Task(id="delegate", project_id="p", title="Repair", description="", status=TaskStatus.READY))
+    async with db.immediate() as conn:
+        await conn.execute(update(integration_repair_operations).values(state="completed"))
+        await conn.execute(update(integration_repair_stages).values(
+            repair_task_id="delegate", writer_kind="repair_delegate"))
+    await db.create_session(SessionRecord(
+        id="leftover", task_id="delegate", project_id="p", profile_id="repairer",
+        harness="fake", provider="fake", name="leftover", lifecycle="task",
+        state=state, desired_state="running", work_dir="/tmp/leftover", epoch="epoch",
+        instance_token="instance", started_at=100.0,
+    ))
+    assert await service.retire_terminal_delegates(200.0) == []
+    assert (await db.get_task("delegate")).status == TaskStatus.READY
+
+
+@pytest.mark.parametrize("invalid", [None, "stage", "operation", "owner", "branch", "provenance"])
+async def test_repair_origin_uses_exact_active_branch_reservation(db, invalid):
+    from src.database.queries.claim_queries import _frontier_where
+    from src.database.queries.hierarchy_queries import ProjectIntegrationMode
+    from src.integration.repair import RepairService
+
+    await _seed_parent_operation(db)
+    async with db.immediate() as conn:
+        await conn.execute(insert(integration_branch_owners).values(
+            id="owner", repository_id="repo", ref="aq/parent", owner_id="operation",
+            owner_role="collector", fence_token=1, handoff_state="reserved",
+            created_at=1.0, updated_at=1.0,
+        ))
+    service = RepairService(db, route_validator=lambda *_: True)
+    await service.start("operation", STARTING_SHA, "failed-check", now=100.0)
+    result = await service.dispatch("operation", 0)
+    task_id = result["repair_task_id"]
+    async with db.immediate() as conn:
+        if invalid == "stage":
+            await conn.execute(update(integration_repair_stages).values(state="expired"))
+        elif invalid == "operation":
+            await conn.execute(update(integration_repair_operations).values(state="completed"))
+        elif invalid == "owner":
+            await conn.execute(update(integration_branch_owners).values(owner_role="collector"))
+        elif invalid == "branch":
+            await conn.execute(update(integration_branch_owners).values(ref="aq/unrelated"))
+        elif invalid == "provenance":
+            await conn.execute(update(tasks).where(tasks.c.id == task_id).values(created_by_id="other"))
+        for mode in (None, ProjectIntegrationMode(True, "repo")):
+            claimable = await conn.scalar(select(tasks.c.id).where(
+                tasks.c.id == task_id, _frontier_where("p", mode),
+            ))
+            assert (claimable == task_id) is (invalid is None)
+    assert await db.is_hierarchy_task_runnable(task_id) is (invalid is None)
+
+
 async def test_start_activates_reserved_parent_operation_once(db):
     """Replaying start must not reset the stage clock or immutable trigger binding."""
     from src.integration.repair import RepairService

@@ -74,6 +74,9 @@ class IntegrationService:
             return
         await self._tick_lock.acquire()
         try:
+            retire = getattr(self._repair, "retire_terminal_delegates", None)
+            if callable(retire):
+                await self._source("terminal repair delegates", retire, now)
             if self._development_handler is not None and (
                 self._development_task is None or self._development_task.done()
             ):
