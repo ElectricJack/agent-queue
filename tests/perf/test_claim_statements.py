@@ -550,6 +550,7 @@ class TestClaimStatementBudgets:
 
         async with count_statements(any_db) as c:
             await orch._reconcile_pools()
+            await orch.wait_for_pool_launches()
         assert await any_db.list_sessions(lifecycle="pool") == []
         budget = 2 + 3 * 3 + 3
         print(f"\n_reconcile_pools no-starts: {c['n']} statements (budget {budget})")

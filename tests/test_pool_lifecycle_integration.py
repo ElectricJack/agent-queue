@@ -209,6 +209,7 @@ class TestFullPullLoop:
 
         # -- launch ---------------------------------------------------------
         await orch._reconcile_pools()
+        await orch.wait_for_pool_launches()
         session = await only_pool_session(db)
         assert (session.lifecycle, session.state, session.desired_state) == (
             "pool",
@@ -278,6 +279,7 @@ class TestFullPullLoop:
         await ready(db, "t1")
         await ready(db, "t2")
         await orch._reconcile_pools()
+        await orch.wait_for_pool_launches()
         first = await only_pool_session(db)
 
         res = await scoped(handler, first.id)._cmd_task_claim({"next": True})
@@ -292,6 +294,7 @@ class TestFullPullLoop:
         # Next tick: the stopped row is no longer supply, so the pool
         # re-launches and the fresh worker takes the remaining task.
         await orch._reconcile_pools()
+        await orch.wait_for_pool_launches()
         second = await only_pool_session(db)
         assert second.id != first.id
         # The roster stays bounded: the replacement reuses the definition the
@@ -310,6 +313,7 @@ class TestFullPullLoop:
         await ready(db, "broken", priority=1)
         await ready(db, "next", priority=100)
         await orch._reconcile_pools()
+        await orch.wait_for_pool_launches()
         first = await only_pool_session(db)
         reset = orch._worktree_slots.return_value.reset_slot_for_task
         reset.side_effect = [RuntimeError("repair checkout cannot be prepared"), "aq/next"]
@@ -330,6 +334,7 @@ class TestFullPullLoop:
         assert (await db.get_session(first.id)).state == "stopped"
 
         await orch._reconcile_pools()
+        await orch.wait_for_pool_launches()
         second = await only_pool_session(db)
         assert second.id != first.id
         claimed = await scoped(handler, second.id)._cmd_task_claim({"next": True})
@@ -343,6 +348,7 @@ class TestFullPullLoop:
         orch.config.swarm.fresh_context_per_task = False
         await ready(db, "t1")
         await orch._reconcile_pools()
+        await orch.wait_for_pool_launches()
         session = await only_pool_session(db)
         res = await scoped(handler, session.id)._cmd_task_claim({"next": True})
         assert res["result"] == "claimed"
@@ -356,10 +362,12 @@ class TestFullPullLoop:
 
         orch.config.swarm.scale_down_grace = 3600
         await orch._reconcile_pools()
+        await orch.wait_for_pool_launches()
         assert (await db.get_session(session.id)).desired_state == "running"
 
         orch.config.swarm.scale_down_grace = 0
         await orch._reconcile_pools()
+        await orch.wait_for_pool_launches()
         assert (await db.get_session(session.id)).desired_state == "stopped"
 
 
@@ -371,6 +379,7 @@ class TestPublicPoolSleep:
         await single_worker_pool(db)
         await ready(db, "t1")
         await orch._reconcile_pools()
+        await orch.wait_for_pool_launches()
         first = await only_pool_session(db)
         provider = orch.session_providers.create(first.provider, orch.config)
         reconciler = SessionReconciler(
@@ -399,6 +408,7 @@ class TestPublicPoolSleep:
         # Sleeping a pool instance does not leave a stale desired state that
         # can stop the worker launched to meet still-ready demand.
         await orch._reconcile_pools()
+        await orch.wait_for_pool_launches()
         successor = await only_pool_session(db)
         assert successor.id != first.id
         assert successor.agent_id == first.agent_id
@@ -411,6 +421,7 @@ class TestPublicPoolSleep:
         orch.config.swarm.fresh_context_per_task = False
         await ready(db, "t1")
         await orch._reconcile_pools()
+        await orch.wait_for_pool_launches()
         session = await only_pool_session(db)
         provider = orch.session_providers.create(session.provider, orch.config)
         reconciler = SessionReconciler(
@@ -444,6 +455,7 @@ class TestClaimAdmissibility:
     async def test_pool_session_cannot_claim_a_higher_class_task(self, orch, db, handler):
         await ready(db, "deep", intelligence_class="deep-high")
         await orch._reconcile_pools()
+        await orch.wait_for_pool_launches()
         session = await only_pool_session(db)
         assert session.intelligence_class == "standard-medium"
 
@@ -456,6 +468,7 @@ class TestClaimAdmissibility:
         await ready(db, "deep", intelligence_class="deep-high", priority=1)
         await ready(db, "std", intelligence_class="standard-medium", priority=50)
         await orch._reconcile_pools()
+        await orch.wait_for_pool_launches()
         session = await only_pool_session(db)
         res = await scoped(handler, session.id)._cmd_task_claim({"next": True})
         # ``deep`` sorts first by priority but is inadmissible for this worker.
@@ -464,6 +477,7 @@ class TestClaimAdmissibility:
     async def test_targeted_claim_of_an_inadmissible_task_is_refused(self, orch, db, handler):
         await ready(db, "deep", intelligence_class="deep-high")
         await orch._reconcile_pools()
+        await orch.wait_for_pool_launches()
         session = await only_pool_session(db)
         res = await scoped(handler, session.id)._cmd_task_claim({"task_id": "deep"})
         assert res["result"] != "claimed"
@@ -499,6 +513,7 @@ class TestQuarantine:
 
         with caplog.at_level("WARNING", logger="src.orchestrator.pools"):
             await orch._reconcile_pools()
+            await orch.wait_for_pool_launches()
         assert await db.list_sessions(lifecycle="pool", project_id=PROJECT_ID) == []
 
         status = await handler._cmd_pool_status({"project_id": PROJECT_ID})
@@ -520,6 +535,7 @@ class TestQuarantine:
         caplog.clear()
         with caplog.at_level("WARNING", logger="src.orchestrator.pools"):
             await orch._reconcile_pools()
+            await orch.wait_for_pool_launches()
         assert _pool_warnings(caplog) == []
         assert await db.list_sessions(lifecycle="pool", project_id=PROJECT_ID) == []
 
@@ -528,6 +544,7 @@ class TestQuarantine:
         orch._pool_quarantine_reason[(PROJECT_ID, "worker")] = "stale"
         await ready(db, "t1")
         await orch._reconcile_pools()
+        await orch.wait_for_pool_launches()
         assert await only_pool_session(db)
 
 

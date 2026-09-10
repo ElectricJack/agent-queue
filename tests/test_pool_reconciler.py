@@ -129,7 +129,8 @@ async def orch(db, tmp_path):
             process_names=("claude",),
         )
     )
-    return o
+    yield o
+    await o.wait_for_pool_launches(cancel=True)
 
 
 async def ready(db, tid, *, profile_id="worker", intelligence_class=None):
@@ -193,6 +194,7 @@ class TestReconcilePools:
         for t in ("t1", "t2", "t3"):
             await ready(db, t)
         await orch._reconcile_pools()
+        await orch.wait_for_pool_launches()
         pool = await db.list_sessions(lifecycle="pool", project_id=PROJECT_ID)
         assert len(pool) == 2  # max_active
         assert all(s.agent_id for s in pool)
@@ -224,12 +226,14 @@ class TestReconcilePools:
 
     async def test_no_audit_row_when_nothing_scales(self, orch, db):
         await orch._reconcile_pools()
+        await orch.wait_for_pool_launches()
         assert await db.get_recent_events(event_type="pool.scaled") == []
 
     async def test_no_starts_when_disabled(self, orch, db):
         orch.config.swarm.enabled = False
         await ready(db, "t1")
         await orch._reconcile_pools()
+        await orch.wait_for_pool_launches()
         assert await db.list_sessions(lifecycle="pool") == []
 
     async def test_starved_pool_starts_nothing_when_no_workspace(self, orch, db):
@@ -237,6 +241,7 @@ class TestReconcilePools:
             await db.delete_workspace(ws.id)
         await ready(db, "t1")
         await orch._reconcile_pools()
+        await orch.wait_for_pool_launches()
         assert await db.list_sessions(lifecycle="pool") == []
         assert await db.list_agents() == []
         # A starved pool is expected, not exceptional -- it must not
@@ -247,6 +252,7 @@ class TestReconcilePools:
         orch._pool_quarantine[(PROJECT_ID, "worker")] = time.time() + 60
         await ready(db, "t1")
         await orch._reconcile_pools()
+        await orch.wait_for_pool_launches()
         assert await db.list_sessions(lifecycle="pool") == []
 
     async def test_drain_marks_idle_sessions_after_grace(self, orch, db):
@@ -255,24 +261,30 @@ class TestReconcilePools:
         # (or possible) to make the session count as idle supply.
         await ready(db, "t1")
         await orch._reconcile_pools()
+        await orch.wait_for_pool_launches()
         session_id = (await db.list_sessions(lifecycle="pool"))[0].id
         await db.delete_task("t1")
         orch.config.swarm.scale_down_grace = 0
         await orch._reconcile_pools()
+        await orch.wait_for_pool_launches()
         await orch._reconcile_pools()
+        await orch.wait_for_pool_launches()
         assert (await db.get_session(session_id)).desired_state == "stopped"
 
     async def test_disabled_profile_starts_nothing_and_drains_idle_workers(self, orch, db):
         """The operator switch sizes the pool to zero without deleting it."""
         await ready(db, "t1")
         await orch._reconcile_pools()
+        await orch.wait_for_pool_launches()
         session_id = (await db.list_sessions(lifecycle="pool"))[0].id
 
         await db.update_profile("worker", enabled=False)
         await ready(db, "t2")
         orch.config.swarm.scale_down_grace = 0
         await orch._reconcile_pools()
+        await orch.wait_for_pool_launches()
         await orch._reconcile_pools()
+        await orch.wait_for_pool_launches()
 
         # No new worker for the newly ready task, and the idle one is drained.
         assert len(await db.list_sessions(lifecycle="pool")) == 1
@@ -281,13 +293,16 @@ class TestReconcilePools:
     async def test_disabled_profile_leaves_a_worker_on_a_task_alone(self, orch, db):
         await ready(db, "t1")
         await orch._reconcile_pools()
+        await orch.wait_for_pool_launches()
         session = (await db.list_sessions(lifecycle="pool"))[0]
         await db.update_session(session.id, task_id="t1")
 
         await db.update_profile("worker", enabled=False)
         orch.config.swarm.scale_down_grace = 0
         await orch._reconcile_pools()
+        await orch.wait_for_pool_launches()
         await orch._reconcile_pools()
+        await orch.wait_for_pool_launches()
 
         # Busy supply floors ``desired``: the task it holds runs to completion.
         assert (await db.get_session(session.id)).desired_state == "running"
@@ -298,6 +313,7 @@ class TestReconcilePools:
 
         await ready(db, "t1")
         await orch._reconcile_pools()
+        await orch.wait_for_pool_launches()
 
         session = (await db.list_sessions(lifecycle="pool", project_id=PROJECT_ID))[0]
         assert str(uuid.UUID(session.id)) == session.id
@@ -320,6 +336,7 @@ class TestReconcilePools:
         monkeypatch.setattr(db, "acquire_one_unlocked", _boom)
         await ready(db, "t1")
         await orch._reconcile_pools()
+        await orch.wait_for_pool_launches()
 
         workers = await db.list_agents()
         assert len(workers) == 1 and workers[0].state == AgentState.IDLE
@@ -352,8 +369,10 @@ class TestReconcilePools:
 
         db.acquire_one_unlocked = fail_busy_project
         await orch._reconcile_pools()
+        await orch.wait_for_pool_launches()
         assert await db.list_sessions(lifecycle="pool") == []
         await orch._reconcile_pools()
+        await orch.wait_for_pool_launches()
         sessions = await db.list_sessions(lifecycle="pool")
         assert len(sessions) == 1
         assert sessions[0].project_id == "other"
@@ -381,6 +400,7 @@ class TestReconcilePools:
 
         await ready(db, "t1")
         await orch._reconcile_pools()
+        await orch.wait_for_pool_launches()
 
         pool = await db.list_sessions(lifecycle="pool", project_id=PROJECT_ID)
         assert len(pool) == 1
@@ -390,6 +410,7 @@ class TestReconcilePools:
     async def test_terminate_pool_session_full_teardown(self, orch, db):
         await ready(db, "t1")
         await orch._reconcile_pools()
+        await orch.wait_for_pool_launches()
         session = (await db.list_sessions(lifecycle="pool"))[0]
         claim_path = os.path.join(session.work_dir, CLAIM_FILE)
         write_claim_file(session.work_dir, {"task_id": "t1"})
@@ -407,6 +428,7 @@ class TestReconcilePools:
     async def test_terminate_pool_session_retains_attached_integration_owner(self, orch, db):
         await ready(db, "t1")
         await orch._reconcile_pools()
+        await orch.wait_for_pool_launches()
         session = (await db.list_sessions(lifecycle="pool"))[0]
         claim_path = os.path.join(session.work_dir, CLAIM_FILE)
         await db.update_session(session.id, task_id="t1", claim_phase="active")
@@ -470,6 +492,7 @@ class TestReconcilePools:
     async def test_schedule_excludes_pool_profile_task_and_pool_agent(self, orch, db):
         await ready(db, "t1")
         await orch._reconcile_pools()
+        await orch.wait_for_pool_launches()
         pool_sessions = await db.list_sessions(lifecycle="pool")
         assert len(pool_sessions) == 1
         pool_agent_id = pool_sessions[0].agent_id
@@ -493,6 +516,7 @@ async def test_durable_pool_reuses_definition_after_teardown(orch, db):
     await db.create_agent(Agent(id="configured-worker", name="Keeper", profile_id="worker", model="fixed-model"))
     await ready(db, "task-a")
     await orch._reconcile_pools()
+    await orch.wait_for_pool_launches()
     first = (await db.list_sessions(lifecycle="pool"))[0]
     assert first.agent_id == "configured-worker"
     assert first.model == "fixed-model" and first.llm_provider == "anthropic"
@@ -511,6 +535,7 @@ async def test_durable_pool_reuses_definition_after_teardown(orch, db):
 async def test_pool_stop_failure_keeps_worker_and_workspace_unavailable(orch, db, monkeypatch):
     await ready(db, "task-a")
     await orch._reconcile_pools()
+    await orch.wait_for_pool_launches()
     record = (await db.list_sessions(lifecycle="pool"))[0]
     provider = orch.session_providers.create(record.provider, orch.config)
     monkeypatch.setattr(provider, "stop", AsyncMock(side_effect=RuntimeError("cannot confirm exit")))
@@ -523,6 +548,7 @@ async def test_pool_stop_failure_keeps_worker_and_workspace_unavailable(orch, db
 async def test_stopped_pool_worker_can_take_push_task_without_reprofile(orch, db):
     await ready(db, "pooled")
     await orch._reconcile_pools()
+    await orch.wait_for_pool_launches()
     row = (await db.list_sessions(lifecycle="pool"))[0]
     await orch._terminate_pool_session(row, reason="rotate")
     await db.create_profile(AgentProfile(id="reviewer", name="Review", harness="claude"))
@@ -537,6 +563,7 @@ async def test_stopped_pool_worker_can_take_push_task_without_reprofile(orch, db
 async def test_repeated_pool_teardown_does_not_steal_new_launch_reservation(orch, db):
     await ready(db, "pooled")
     await orch._reconcile_pools()
+    await orch.wait_for_pool_launches()
     row = (await db.list_sessions(lifecycle="pool"))[0]
     await orch._terminate_pool_session(row, reason="rotate")
     assert await db.reserve_idle_agent(row.agent_id)
@@ -565,6 +592,7 @@ async def test_first_pool_claim_survives_launch_completion(orch, db, monkeypatch
 
     monkeypatch.setattr(db, "create_session", claim_immediately_after_insert)
     await orch._reconcile_pools()
+    await orch.wait_for_pool_launches()
     row = (await db.list_sessions(lifecycle="pool"))[0]
     agent = await db.get_agent(row.agent_id)
     assert agent.state == AgentState.BUSY and agent.current_task_id == "pooled"
@@ -575,6 +603,7 @@ async def test_concurrent_pool_teardown_stops_and_releases_only_once(orch, db, m
     import asyncio
     await ready(db, "pooled")
     await orch._reconcile_pools()
+    await orch.wait_for_pool_launches()
     row = (await db.list_sessions(lifecycle="pool"))[0]
     provider = orch.session_providers.create(row.provider, orch.config)
     original_stop = provider.stop
@@ -668,6 +697,7 @@ async def test_quarantined_project_does_not_burn_the_fleets_start_budget(orch, d
     await db.update_task("t2", project_id="second")
 
     await orch._reconcile_pools()
+    await orch.wait_for_pool_launches()
 
     sessions = await db.list_sessions(lifecycle="pool")
     assert [s.project_id for s in sessions] == ["second"]
@@ -681,6 +711,7 @@ async def test_every_project_quarantined_starves_rather_than_starting(orch, db, 
     await ready(db, "t1")
 
     await orch._reconcile_pools()
+    await orch.wait_for_pool_launches()
 
     assert await db.list_sessions(lifecycle="pool") == []
     assert await db.get_recent_events(event_type="pool.scaled") == []
@@ -689,6 +720,7 @@ async def test_every_project_quarantined_starves_rather_than_starting(orch, db, 
 async def test_pool_scaled_payload_carries_the_placement_reason(orch, db):
     await ready(db, "t1")
     await orch._reconcile_pools()
+    await orch.wait_for_pool_launches()
 
     scaled = [
         call.args[1] for call in orch.bus.emit.await_args_list if call.args[0] == "pool.scaled"
@@ -703,10 +735,12 @@ async def test_pool_scaled_payload_carries_the_placement_reason(orch, db):
 async def test_drain_event_reports_the_project_the_worker_actually_left(orch, db):
     await ready(db, "t1")
     await orch._reconcile_pools()
+    await orch.wait_for_pool_launches()
     await db.delete_task("t1")
     orch.config.swarm.scale_down_grace = 0
     orch.bus.emit.reset_mock()
     await orch._reconcile_pools()
+    await orch.wait_for_pool_launches()
 
     drains = [
         call.args[1]
@@ -728,6 +762,7 @@ async def test_global_cap_bounds_the_whole_fleet(orch, db, tmp_path):
     await ready(db, "t2")
 
     await orch._reconcile_pools()
+    await orch.wait_for_pool_launches()
 
     assert len(await db.list_sessions(lifecycle="pool")) == 1
 
@@ -739,6 +774,7 @@ async def test_swarm_global_max_active_overrides_the_resource_cap(orch, db):
     await ready(db, "t2")
 
     await orch._reconcile_pools()
+    await orch.wait_for_pool_launches()
 
     assert len(await db.list_sessions(lifecycle="pool")) == 1
 
@@ -753,9 +789,11 @@ async def test_starvation_is_reported_once_per_condition_not_once_per_tick(orch,
 
     with caplog.at_level(logging.WARNING, logger="src.orchestrator.pools"):
         await orch._reconcile_pools()
+        await orch.wait_for_pool_launches()
         first = [r.getMessage() for r in caplog.records if r.name == "src.orchestrator.pools"]
         caplog.clear()
         await orch._reconcile_pools()
+        await orch.wait_for_pool_launches()
         second = [r.getMessage() for r in caplog.records if r.name == "src.orchestrator.pools"]
 
     assert len(first) == 1
@@ -771,6 +809,7 @@ async def test_all_quarantined_starvation_does_not_re_warn_over_the_quarantine(o
 
     with caplog.at_level(logging.WARNING, logger="src.orchestrator.pools"):
         await orch._reconcile_pools()
+        await orch.wait_for_pool_launches()
 
     assert [r for r in caplog.records if r.name == "src.orchestrator.pools"] == []
     assert await db.list_sessions(lifecycle="pool") == []
@@ -786,6 +825,7 @@ async def test_min_per_project_parks_a_warm_worker_in_every_eligible_project(
     await db.update_profile("worker", min_active=0, max_active=4, min_per_project=1)
 
     await orch._reconcile_pools()
+    await orch.wait_for_pool_launches()
 
     sessions = await db.list_sessions(lifecycle="pool")
     assert sorted(s.project_id for s in sessions) == ["proj", "second"]
@@ -821,6 +861,7 @@ async def test_reconcile_relocates_idle_capacity_without_raising_global_cap(orch
     await ready(db, "old-demand")
     await db.update_task("old-demand", project_id="second")
     await orch._reconcile_pools()
+    await orch.wait_for_pool_launches()
     sessions = await db.list_sessions(lifecycle="pool")
     assert len(sessions) == 1
     old = sessions[0]
@@ -830,13 +871,249 @@ async def test_reconcile_relocates_idle_capacity_without_raising_global_cap(orch
     await ready(db, "new-demand")
 
     await orch._reconcile_pools()
+    await orch.wait_for_pool_launches()
 
     assert (await db.get_session(old.id)).desired_state == "stopped"
     assert len(await db.list_sessions(lifecycle="pool")) == 1
     # A later sizing pass, after retirement, may launch in the demanding project.
     await db.update_session(old.id, state="stopped")
     await orch._reconcile_pools()
+    await orch.wait_for_pool_launches()
     successors = [s for s in await db.list_sessions(lifecycle="pool") if s.id != old.id]
     assert len(successors) == 1
     assert successors[0].project_id == PROJECT_ID
     assert (await db.get_task("new-demand")).status is TaskStatus.READY
+
+
+async def test_slow_launch_does_not_block_other_project_or_oversubscribe(orch, db, tmp_path, monkeypatch):
+    import asyncio
+    from src.scheduler import PoolKey
+
+    await ready(db, "slow-task")
+    await db.create_project(Project(id="second", name="Second"))
+    await db.create_workspace(Workspace(id="second-ws", project_id="second",
+        workspace_path=str(tmp_path / "second"), source_type=RepoSourceType.LINK,
+        kind_id="project-repo"))
+    await db.create_task(Task(id="fast-task", project_id="second", title="Fast",
+        description="", status=TaskStatus.READY, profile_id="worker"))
+    provider = orch.session_providers.create("fake", orch.config)
+    original = provider.start
+    entered, release, fast_started = asyncio.Event(), asyncio.Event(), asyncio.Event()
+
+    async def start(spec):
+        if "--proj--" in spec.session_name:
+            entered.set()
+            await release.wait()
+        result = await original(spec)
+        if "--second--" in spec.session_name:
+            fast_started.set()
+        return result
+
+    monkeypatch.setattr(provider, "start", start)
+    await asyncio.wait_for(orch._reconcile_pools(), timeout=5)
+    await asyncio.wait_for(entered.wait(), timeout=5)
+    await asyncio.wait_for(fast_started.wait(), timeout=5)
+    # The slow launch holds no session row yet, but its capacity is reserved.
+    measurement = await orch._measure_pools()
+    supply = measurement.supply[PoolKey("worker")]
+    assert supply.starting + supply.running_idle + supply.running_busy == 2
+    for _ in range(3):
+        await orch._reconcile_pools()
+    assert len(provider.starts) == 1
+    assert len(orch._pool_launches) == 1
+    release.set()
+    await orch.wait_for_pool_launches()
+    rows = await db.list_sessions(lifecycle="pool")
+    assert {row.project_id for row in rows} == {PROJECT_ID, "second"}
+    assert len({row.agent_id for row in rows}) == 2
+    assert not orch._pool_launches
+
+
+async def test_cancelled_background_start_stops_process_and_releases_resources(orch, db, monkeypatch):
+    import asyncio
+
+    await ready(db, "task")
+    provider = orch.session_providers.create("fake", orch.config)
+    original = provider.start
+    entered = asyncio.Event()
+
+    async def start(spec):
+        result = await original(spec)
+        entered.set()
+        await asyncio.Event().wait()
+        return result
+
+    monkeypatch.setattr(provider, "start", start)
+    await orch._reconcile_pools()
+    await asyncio.wait_for(entered.wait(), timeout=5)
+    assert any(ws.locked_by_agent_id for ws in await db.list_workspaces(PROJECT_ID))
+    await orch.wait_for_pool_launches(cancel=True)
+    assert not orch._pool_launches
+    assert await db.list_sessions(lifecycle="pool") == []
+    assert all(ws.locked_by_agent_id is None for ws in await db.list_workspaces(PROJECT_ID))
+    assert all(agent.state == AgentState.IDLE for agent in await db.list_agents())
+    assert provider.sessions == {}
+
+
+async def test_cancelled_reservation_waits_for_commit_before_releasing(orch, db, monkeypatch):
+    import asyncio
+    from src.models import Agent
+
+    await db.create_agent(Agent(id="existing", name="Existing", profile_id="worker"))
+    original = db.reserve_idle_agent
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    async def reserve(agent_id):
+        result = await original(agent_id)
+        entered.set()
+        await release.wait()
+        return result
+
+    monkeypatch.setattr(db, "reserve_idle_agent", reserve)
+    task = asyncio.create_task(orch._launch_pool_session(
+        await db.get_project(PROJECT_ID), await db.get_profile("worker")))
+    await asyncio.wait_for(entered.wait(), timeout=5)
+    task.cancel()
+    await asyncio.sleep(0)
+    assert not task.done()
+    release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert (await db.get_agent("existing")).state == AgentState.IDLE
+    assert await db.list_sessions(lifecycle="pool") == []
+
+
+async def test_live_slow_launch_identity_survives_reconciler_reservation_timeout(orch, db, monkeypatch):
+    import asyncio
+
+    await ready(db, "task")
+    entered, release = asyncio.Event(), asyncio.Event()
+    provider = orch.session_providers.create("fake", orch.config)
+    original = provider.start
+
+    async def start(spec):
+        entered.set()
+        await release.wait()
+        return await original(spec)
+
+    monkeypatch.setattr(provider, "start", start)
+    await orch._reconcile_pools()
+    await asyncio.wait_for(entered.wait(), timeout=5)
+    agent_id = next(iter(orch._launching_pool_agent_ids()))
+    await db.update_agent(agent_id, last_heartbeat=time.time() - 300)
+    await orch._schedule()
+    assert (await db.get_agent(agent_id)).state == AgentState.BUSY
+    release.set()
+    await orch.wait_for_pool_launches()
+
+
+@pytest.mark.parametrize("constraint", ["global", "project", "workspace"])
+async def test_pending_launch_reserves_shared_capacity_across_profiles(orch, db, monkeypatch, constraint):
+    import asyncio
+
+    await db.create_profile(AgentProfile(id="other", name="Other", lifecycle="pool",
+        min_active=0, max_active=2, harness="claude"))
+    await ready(db, "task-a")
+    await ready(db, "task-b", profile_id="other")
+    if constraint == "global":
+        orch.config.resources.max_concurrent_agents = 1
+    elif constraint == "project":
+        await db.update_project(PROJECT_ID, max_concurrent_agents=1)
+    else:
+        await db.delete_workspace("ws1")
+    provider = orch.session_providers.create("fake", orch.config)
+    original = provider.start
+    entered, release = asyncio.Event(), asyncio.Event()
+    attempted = []
+
+    async def start(spec):
+        attempted.append(spec)
+        entered.set()
+        await release.wait()
+        return await original(spec)
+
+    monkeypatch.setattr(provider, "start", start)
+    await orch._reconcile_pools()
+    await asyncio.wait_for(entered.wait(), timeout=5)
+    for _ in range(3):
+        await orch._reconcile_pools()
+    assert len(attempted) == 1
+    assert len(orch._pool_launches) == 1
+    release.set()
+    await orch.wait_for_pool_launches()
+    assert len(await db.list_sessions(lifecycle="pool")) == 1
+
+
+async def test_slow_provider_does_not_hide_another_free_workspace(orch, db, monkeypatch):
+    import asyncio
+
+    await ready(db, "first")
+    provider = orch.session_providers.create("fake", orch.config)
+    original = provider.start
+    first, second, release = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    attempts = []
+
+    async def start(spec):
+        attempts.append(spec)
+        (first if len(attempts) == 1 else second).set()
+        await release.wait()
+        return await original(spec)
+
+    monkeypatch.setattr(provider, "start", start)
+    await orch._reconcile_pools()
+    await asyncio.wait_for(first.wait(), timeout=5)
+    await ready(db, "second")
+    await orch._reconcile_pools()
+    await asyncio.wait_for(second.wait(), timeout=5)
+    assert len(orch._pool_launches) == 2
+    release.set()
+    await orch.wait_for_pool_launches()
+    assert len(await db.list_sessions(lifecycle="pool")) == 2
+
+
+async def test_cancelled_start_keeps_resources_when_process_stop_is_unconfirmed(orch, db, monkeypatch):
+    import asyncio
+
+    await ready(db, "task")
+    provider = orch.session_providers.create("fake", orch.config)
+    original = provider.start
+    entered = asyncio.Event()
+
+    async def start(spec):
+        await original(spec)
+        entered.set()
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(provider, "start", start)
+    monkeypatch.setattr(provider, "stop", AsyncMock(side_effect=RuntimeError("unknown process state")))
+    await orch._reconcile_pools()
+    await asyncio.wait_for(entered.wait(), timeout=5)
+    await orch.wait_for_pool_launches(cancel=True)
+    assert provider.sessions
+    assert any(ws.locked_by_agent_id for ws in await db.list_workspaces(PROJECT_ID))
+    assert all(agent.state == AgentState.ERROR for agent in await db.list_agents())
+    assert not orch._pool_launches
+
+
+async def test_cancellation_after_session_insert_preserves_durable_owner(orch, db, monkeypatch):
+    import asyncio
+
+    await ready(db, "task")
+    entered = asyncio.Event()
+
+    async def emit(event, *args, **kwargs):
+        if event == "pool.session_started":
+            entered.set()
+            await asyncio.Event().wait()
+
+    monkeypatch.setattr(orch.bus, "emit", emit)
+    await orch._reconcile_pools()
+    await asyncio.wait_for(entered.wait(), timeout=5)
+    before = (await db.list_sessions(lifecycle="pool"))[0]
+    await orch.wait_for_pool_launches(cancel=True)
+    after = await db.get_session(before.id)
+    assert after.state == "running"
+    assert (await db.get_workspace_for_agent(after.agent_id)) is not None
+    provider = orch.session_providers.create("fake", orch.config)
+    assert len(provider.sessions) == 1
+    assert not orch._pool_launches

@@ -46,7 +46,7 @@ class AgentReconciler:
     async def reconcile(
         self, *, provider_cooldowns: dict[str, float] | None = None,
         harness_registry=None, intelligence_classes: dict | None = None,
-        ready_tasks=None,
+        ready_tasks=None, launching_agent_ids: set[str] | None = None,
     ) -> ReconcileReport:
         """Supply durable global workers without changing any existing definition."""
         import time
@@ -68,6 +68,7 @@ class AgentReconciler:
         catalog_ids = {profile.id for profile in shipped_profile_catalog()}
         live = await self._db.list_sessions(live_only=True)
         live_agents = {row.agent_id for row in live if row.agent_id}
+        live_agents.update(launching_agent_ids or ())
         # Legacy task sessions may not have been linked before adoption.
         live_tasks = {row.task_id for row in live if row.task_id}
         by_task = {task.id: task for task in tasks}
