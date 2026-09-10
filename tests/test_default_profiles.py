@@ -102,6 +102,11 @@ def test_seeded_supervisor_can_use_advertised_worker_message_surface(tmp_path):
 
     assert policy.allows_aq_command("agent_message")
     assert policy.allows_aq_command("message_status")
+    for command in (
+        "explain_task", "integration_status", "pool_status", "session_list",
+        "session_logs", "session_peek",
+    ):
+        assert policy.allows_aq_command(command)
 
 
 def test_seeded_planner_profile_is_task_lifecycle(tmp_path):

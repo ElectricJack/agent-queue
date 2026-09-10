@@ -47,6 +47,24 @@ async def test_collapsed_paste_keeps_evidence_without_submitting_or_clearing():
     assert provider._unsubmitted[handle().name] == record
     assert composer.mutations == []
 
+
+async def test_busy_footer_preserves_notification_until_idle_composer_is_observable():
+    text = "Read `aq message status msg-example --json`."
+    composer = Composer(draft=text, below=["", "  tab to queue message    91% context left"])
+    provider = provider_for(composer)
+    record = tmux_module._PendingSubmit(
+        instance_token=handle().instance_token, marker=_marker_for(text), text=text,
+    )
+    await provider._remember_pending(handle(), record)
+    composer.mutations.clear()
+    assert await provider.resubmit_pending(handle()) is False
+    assert provider._unsubmitted[handle().name] == record
+    assert composer.mutations == []
+    composer.below = ["", "  91% context left"]
+    assert await provider.resubmit_pending(handle()) is True
+    assert composer.submitted == [text]
+
+
 CLAUDE_LAYOUT = {
     "prefix": "❯ ",
     "row": "❯\N{NO-BREAK SPACE}",

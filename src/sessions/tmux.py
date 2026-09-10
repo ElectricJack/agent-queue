@@ -865,7 +865,12 @@ class TmuxProvider(SessionProvider):
             # only, never whitespace or any user-supplied text.
             while content and content[-1] == "":
                 content.pop()
-        return "\n".join(content) == _normalize(pending.text)
+        if "\n".join(content) == _normalize(pending.text):
+            return True
+        # The marker is still present, but a busy/changed footer or a draft
+        # edit prevents exact attribution. Retain evidence without pressing
+        # keys; a later idle capture may become fully observable again.
+        return None
 
     async def _submit(
         self,
