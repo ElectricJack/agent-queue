@@ -241,7 +241,7 @@ class Orchestrator(
         from src.orchestrator.agent_reconciler import AgentReconciler
 
         self._agent_reconciler = AgentReconciler(
-            self.db, worktrees_enabled=config.worktrees.enabled
+            self.db, worktrees_enabled=config.worktrees.enabled, data_dir=config.data_dir
         )
         from src.assignment_routing import ExplicitRouting
 
@@ -820,8 +820,12 @@ class Orchestrator(
         """
         from src.profiles.default_selection import select_default_profile_id
 
-        profiles = [p.id for p in await self.db.list_profiles()]
-        chosen = select_default_profile_id(profiles)
+        from src.profiles.catalog import active_catalog_profile_ids
+
+        profiles = await self.db.list_profiles()
+        chosen = select_default_profile_id(
+            profiles, eligible_profile_ids=active_catalog_profile_ids(self.config.data_dir)
+        )
         if not chosen:
             return None
         try:
