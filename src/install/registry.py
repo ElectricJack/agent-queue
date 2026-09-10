@@ -23,7 +23,9 @@ engine's own steps rather than nothing.
 
 from __future__ import annotations
 
+import shutil
 from collections.abc import Callable, Mapping
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -48,7 +50,9 @@ from .prerequisites import (
     python_step,
     tmux_step,
 )
-from .providers import provider_steps
+from .postgres_steps import STEP_PACKAGE as STEP_POSTGRES_PACKAGE, postgres_steps
+from .logins import login_steps
+from .providers import provider_installers, provider_steps
 from .steps import StepRegistry, StepSpec
 
 #: Host paths this build has a platform adapter for.
@@ -109,10 +113,27 @@ def build_registry(
             data_directory_step(environ=environ, path=state_dir),
         )
     )
+    # PostgreSQL's macOS package plan uses Homebrew.  Make that dependency
+    # explicit so a selected managed database cannot race the macOS bootstrap.
+    database_steps = postgres_steps(
+        environ=environ,
+        which=lookup or shutil.which,
+        state_dir=state_dir,
+    )
+    if macos:
+        database_steps = tuple(
+            replace(step, depends_on=(STEP_HOST, STEP_PACKAGES))
+            if step.id == STEP_POSTGRES_PACKAGE
+            else step
+            for step in database_steps
+        )
+    registry.extend(database_steps)
     # Provider adapters remain part of every CLI registry.  They are
     # capability-gated, so this preserves the normal install's behavior while
     # allowing a platform adapter to order the prerequisites they rely on.
+    installers = provider_installers()
     registry.extend(provider_steps(which=lookup))
+    registry.extend(login_steps(environ=environ, which=lookup or shutil.which, installers=installers))
     return registry
 
 

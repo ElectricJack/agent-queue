@@ -79,6 +79,11 @@ def _round_trip_yaml():
     yaml_rt = YAML(typ="rt")
     yaml_rt.preserve_quotes = True
     yaml_rt.indent(mapping=2, sequence=4, offset=2)
+    # ruamel wraps at 80 columns by default, which folds a long value — a
+    # database DSN, a URL — onto a continuation line.  That is valid YAML and
+    # round-trips, but it rewrites lines the writer never touched and is easy
+    # for a human editing the file afterwards to break.
+    yaml_rt.width = 4096
     return yaml_rt
 
 

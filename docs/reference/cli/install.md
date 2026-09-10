@@ -9,12 +9,11 @@ on every supported host.
 It is the only `aq` command that expects **no running daemon** — it runs the
 engine in-process and talks to nothing over the network.
 
-> **Status.** The engine, platform matrix, built-in prerequisite steps,
-> optional agent CLI steps, and the WSL2 and **macOS** bootstraps ship today.
-> PostgreSQL installation remains adapter work; `aq install --list-steps`
-> always prints what this build actually knows how to do **on the host you run
-> it on** — the registry is composed for the detected host, so a Mac lists the
-> `macos.*` steps and a WSL2 host does not.
+> **Status.** The engine, platform matrix, built-in prerequisite, PostgreSQL,
+> and optional agent CLI steps, plus the WSL2 and **macOS** bootstraps, ship
+> today. `aq install --list-steps` always prints what this build actually knows
+> how to do **on the host you run it on** — the registry is composed for the
+> detected host, so a Mac lists the `macos.*` steps and a WSL2 host does not.
 
 ## Usage
 
@@ -23,7 +22,8 @@ aq install                      # interactive: prompt before each change
 aq install --dry-run            # report the plan, run only read-only checks
 aq install --non-interactive --yes --json   # unattended, machine-readable
 aq install --list-steps         # what this build can do, in run order
-aq install --with provider.codex # select one optional agent CLI
+aq install --with provider.codex            # select one optional agent CLI
+aq install --with postgres-managed          # let AQ install and run PostgreSQL
 ```
 
 | Option | Meaning |
@@ -265,6 +265,139 @@ with the file and win where they overlap.
 An unattended run never prompts, never opens a browser and never invents an
 approval: a mutating step with no approval stops the run as `needs_user`
 (exit `10`) naming the flag that would authorise it.
+
+## PostgreSQL
+
+AQ needs one PostgreSQL database. `aq install` will either **use a server you
+already run** or, when you ask it to, **install and run a local one**. It never
+does the second without being asked: a server, a role and a database are things
+other software may already depend on.
+
+| Step | Mutating | What it does |
+| --- | --- | --- |
+| `postgres.package` | yes | Installs PostgreSQL with the platform's package manager — `apt-get install -y postgresql` on Ubuntu, `brew install postgresql@17` on macOS. Requires `--with postgres-managed`. |
+| `postgres.service` | yes | Starts the server and waits for it to accept connections. Requires `--with postgres-managed`. |
+| `postgres.server` | no | Confirms a PostgreSQL server answers on the configured host and port, and that it is PostgreSQL 14 or newer. |
+| `postgres.role` | yes | Creates the `agent_queue` login role with a generated password, if it does not already exist. |
+| `postgres.database` | yes | Creates the empty UTF-8 `agent_queue` database owned by that role, if it does not already exist. |
+| `postgres.rotate` | yes | Replaces the role's password. Requires `--with postgres-rotate`; see [recovery](#recovering-from-a-credential-or-connection-problem). |
+| `postgres.credentials` | yes | Writes the password to `~/.agent-queue/.env` (mode `0600`) and points `config.yaml` at it as `${AQ_DB_PASSWORD}`. |
+| `postgres.connection` | no | Connects as the AQ role and reports the server version. |
+| `postgres.boot` | yes | Makes the managed server start again after a restart. Requires `--with postgres-managed`. |
+
+Two capabilities select the optional behaviour:
+
+* `--with postgres-managed` — AQ may install, start and enable a local
+  PostgreSQL server. Without it the installer only ever *uses* a server that is
+  already reachable, which is what makes an unattended install against a
+  managed or remote database safe by default.
+* `--with postgres-rotate` — replace the AQ role's password on this run.
+
+### What is never touched
+
+* An **existing role** of the configured name keeps its password. The installer
+  does not reset a credential it did not create, because on a shared server
+  that role may be in use. It is recorded `reused`, with `owned: false`.
+* An **existing database** of the configured name is used as it is — never
+  dropped, re-owned or re-encoded.
+* **Unrelated roles and databases** are never read, altered or removed.
+* The **schema** is not the installer's. `postgres.connection` stops at "the
+  database is reachable and empty"; creating and migrating tables is the
+  daemon's or the operator's step (`aq db upgrade`), and no installer path runs
+  Alembic. See [migrations](../../guides/migrations.md).
+
+### Where the password lives
+
+The generated password is written to `~/.agent-queue/.env` as
+`AQ_DB_PASSWORD=…` with mode `0600`, and `config.yaml` refers to it:
+
+```yaml
+database:
+  url: postgresql+asyncpg://agent_queue:${AQ_DB_PASSWORD}@localhost:5432/agent_queue
+```
+
+The password is never written to `config.yaml`, the `--json` result, the resume
+record, or a command line — statements go to `psql` on standard input so they
+are not visible in `ps`. If `config.yaml` already exists, a numbered backup
+(`config.yaml.bak`, `config.yaml.bak.1`, …) is taken before it is changed, and
+every key the installer does not own is preserved.
+
+### Settings
+
+All of these live under `settings.postgres` in the `--config` input file. An
+unrecognised key is rejected by name before anything runs.
+
+| Setting | Default | Meaning |
+| --- | --- | --- |
+| `postgres.host` | `localhost` | Server host. |
+| `postgres.port` | `5432` | Server port. |
+| `postgres.database` | `agent_queue` | Database name. Lower-case SQL identifier. |
+| `postgres.role` | `agent_queue` | Login role name. Lower-case SQL identifier. |
+| `postgres.password_env` | `AQ_DB_PASSWORD` | Environment variable `config.yaml` refers to. |
+| `postgres.admin_url` | — | Administrator connection for an existing server, used instead of the local superuser route. |
+| `postgres.admin_user` | platform default | Local administrator identity (`postgres` on Ubuntu, the invoking user on Homebrew). |
+| `postgres.service_manager` | `auto` | `auto`, `systemd`, `sysv`, `brew` or `none`. `none` leaves the server's lifecycle alone. |
+| `postgres.version` | platform default | Major version for a managed install (`16`, `17`…). |
+| `postgres.connect_timeout` | `5` | Seconds to wait for a connection. |
+| `postgres.startup_timeout` | `60` | Seconds to wait for a freshly started server. |
+
+```yaml
+version: 1
+settings:
+  postgres:
+    host: db.internal
+    port: 5432
+    admin_url: postgresql://postgres@db.internal:5432/postgres
+approve: ["postgres.role", "postgres.database", "postgres.credentials"]
+```
+
+An unattended **first** run still needs an approval for each mutating step it
+reaches, including against a server that already has the role and the database
+— an unattended installer that provisioned a database nobody approved would be
+exactly the implicit mutation the contract forbids. Later reruns need no
+approval: a completed step is revalidated, not repeated.
+
+### Restarting the machine
+
+`postgres.boot` is the last step, so restart-persistence is never what blocks
+provisioning:
+
+* **systemd** (Ubuntu with systemd, macOS is covered below): `systemctl enable
+  postgresql`, verified with `systemctl is-enabled`.
+* **macOS/Homebrew**: `brew services start postgresql@NN`, which registers a
+  launchd agent that starts the server at login.
+* **WSL2 without systemd**: nothing can enable a service at boot, so the step
+  reports `needs_user` and gives the fix — add
+
+  ```ini
+  [boot]
+  systemd=true
+  ```
+
+  to `/etc/wsl.conf`, run `wsl --shutdown` from Windows, reopen the
+  distribution and rerun `aq install`.
+
+After a restart, `aq install` is also the check: it starts the managed service
+if it is not running, reconnects as the AQ role and reports what it found,
+without changing anything that is already correct.
+
+### Recovering from a credential or connection problem
+
+Every failure names the step and the fix. The common ones:
+
+| What you see | What to do |
+| --- | --- |
+| `no PostgreSQL server is reachable at localhost:5432` | Rerun with `--with postgres-managed` to install one, or set `postgres.host` / `postgres.port` / `postgres.admin_url` to the server you already run. |
+| `something that is not PostgreSQL is already listening` | Find the listener (`ss -ltnp 'sport = :5432'`, or `lsof -nP -iTCP:5432 -sTCP:LISTEN` on macOS) and stop it, or set `postgres.port`. |
+| `the role agent_queue already exists and was left unchanged`, then `no password is available` | The role predates AQ. Put its password in `~/.agent-queue/.env` as `AQ_DB_PASSWORD=…`, or run `aq install --with postgres-rotate` to replace it. |
+| `the server rejected the stored password` | Same two routes: correct `AQ_DB_PASSWORD`, or `aq install --with postgres-rotate`. |
+| `the database agent_queue does not exist` | `aq install --restart-from postgres.database`. |
+| `no PostgreSQL administrator connection is available` | Run `sudo -v` and rerun, run the installer as the `postgres` user, or set `postgres.admin_url`. |
+| `is older than the supported PostgreSQL 14` | Upgrade the server, or point AQ at a newer one. |
+
+Rotation changes the password on the server and then stores it, in that order
+and in adjacent steps: if storing fails, the run says so and says that the
+database is unreachable until a new password is stored.
 
 ## Supported hosts
 
