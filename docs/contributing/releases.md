@@ -5,15 +5,10 @@ today.
 
 ## Why this page exists
 
-The short version, stated up front so nobody goes looking for machinery that
-does not exist: **Agent Queue has no release process.** It is not published to
-PyPI or npm, there is no release workflow, no changelog file, and no semantic
-version tag. It is installed from a checkout, in editable mode, and updated by
-pulling `main`.
-
-That is a deliberate consequence of how the project is used — the daemon runs
-from a working checkout on the machine that develops it — but it is easy to
-mistake for something missing, so this page records what exists instead.
+AQ release artifacts are Python wheels. They contain the runtime, `aq` and
+`agent-queue` console scripts, required package resources, and a pre-built
+dashboard at `/dashboard`; an installed user neither builds the frontend nor
+keeps a development checkout. A source checkout remains the contributor path.
 
 ## Vocabulary
 
@@ -29,9 +24,9 @@ mistake for something missing, so this page records what exists instead.
 
 | Artefact | Built by | Output | Published? |
 |---|---|---|---|
-| The Python package | `setuptools>=83`, declared in [`pyproject.toml`](../../pyproject.toml) | An editable install providing `agent-queue`, `aq` and `agent-queue-mcp` entry points | No |
+| The Python package | `setuptools>=83`, declared in [`pyproject.toml`](../../pyproject.toml) | A wheel providing `agent-queue` and `aq` | Yes, release artifact |
 | The generated Python API client | `openapi-python-client`, pinned | `packages/aq-client/`, installed editable | No |
-| The dashboard | `tsc -b && vite build` | `dashboard/dist/`, gitignored | No |
+| The dashboard | `scripts/build_release_artifact.py` then `python -m build` | Verified package data served at `/dashboard` | Yes, inside the wheel |
 | The TypeScript client | `@hey-api/openapi-ts` | `packages/aq-ts-client/src/`, gitignored, consumed as source | No |
 
 ```bash
@@ -39,21 +34,20 @@ npm run build
 ```
 
 runs the TypeScript client's build script (a no-op — it is consumed as source)
-and then the dashboard's real build. The daemon serves the built dashboard when
-one exists; during development you run `npm run dev` instead and let Vite serve
-it.
+and then the dashboard's real development build. Release builds use the staging
+command below; development continues to use `npm run dev` and Vite.
 
-> **Note.** `pyproject.toml` declares an `agent-queue-mcp` entry point pointing
-> at `packages.mcp_server.mcp_server:main`, which is not in the tree — the MCP
-> server is embedded in the daemon
-> ([`src/embedded_mcp.py`](../../src/embedded_mcp.py)). Installing the package
-> creates the script, but running it fails. Use the embedded server.
+## Versioning, integrity, and updates
 
-## Versioning
+`project.version` in [`pyproject.toml`](../../pyproject.toml) is the release
+selector. Publish immutable wheels, install an explicit version such as
+`agent-queue==0.1.0`, and confirm it with `aq --version`. The dashboard
+manifest embedded in that wheel records the same version and a SHA-256 digest
+for every served asset; the daemon refuses to mount a missing or altered bundle.
 
-`version = "0.1.0"` in [`pyproject.toml`](../../pyproject.toml) has not moved
-and is not used to gate anything. Nothing reads it at runtime to make a
-decision, and no artefact is stamped with it.
+Publish a SHA-256 requirements lock beside each release and install it with
+pip's `--require-hashes` option. The package-data manifest protects the bundle
+after installation; pip's hash checking protects the downloaded wheel.
 
 The repository carries eight Git tags — `plan1-complete`, `plan2-complete`,
 `plan3-complete`, `e2e-kit-complete`, `pre-agent-merge`, `pre-mass-merge`,
@@ -107,16 +101,22 @@ with non-PEP-440 versions; see [scripts](scripts.md#supported-diagnostics-and-on
 Frontend dependencies are pinned by [`package-lock.json`](../../package-lock.json)
 at the repository root, which covers both npm workspaces.
 
-## Upgrading an installation
+## Building and upgrading an installation
 
-Because there is no release, "upgrading" is pulling and reinstalling:
+Build a release wheel only from a clean release checkout:
 
 ```bash
-git pull
-pip install -e ".[dev,cli]"
-pip install -e packages/aq-client
-npm install
+python scripts/build_release_artifact.py
+python -m build --wheel
 ```
+
+The first command runs the frontend with its production `/dashboard/` base and
+stages it in `src/dashboard_assets/dist/`; this is release-only generated
+output. The second command must run after staging so the wheel includes the
+manifest and assets. Users update by selecting another published immutable
+version and its matching hash lock, for example `pip install --upgrade
+--require-hashes -r requirements-aq-0.1.1.txt`. Do not use `git pull` as an
+update mechanism for a wheel installation.
 
 If the schema moved, the **operator** — never a worker, never from inside a
 worktree slot — applies migrations:
@@ -136,10 +136,10 @@ what to do when it fires.
 
 | Input | Output | Where |
 |---|---|---|
-| The checkout + `pip install -e` | `agent-queue`, `aq`, entry points | your virtualenv |
+| A selected, hash-verified wheel | `agent-queue`, `aq`, built dashboard | your virtualenv |
 | `openapi.json` + the pinned generator | `packages/aq-client/` | tracked in Git |
 | `openapi.json` + `@hey-api/openapi-ts` | `packages/aq-ts-client/src/` | gitignored |
-| `dashboard/src/` + Vite | `dashboard/dist/` | gitignored |
+| `dashboard/src/` + Vite | `src/dashboard_assets/dist/` + manifest | release staging, then wheel |
 
 ## State ownership
 
@@ -151,7 +151,7 @@ is owned by the operator's daemon, not by any build step.
 
 | Symptom | Cause | Recovery |
 |---|---|---|
-| `agent-queue-mcp: No module named 'packages.mcp_server'` | A stale entry point; the MCP server is embedded. | Use the daemon's embedded server. |
+| Dashboard missing from an installed wheel | Release staging was skipped or assets were altered. | Rebuild after `python scripts/build_release_artifact.py`; verify its SHA-256 lock. |
 | `npm run build` cannot resolve `@aq/ts-client` | The generated client is missing. | `./scripts/regenerate-ts-client.sh --from-file` |
 | A CVE scanner flags a transitive package | The pin may be out of date. | Update the pin *and* its comment in `pyproject.toml`. |
 | `schema behind code; ask the operator to upgrade` | The install moved ahead of the database. | The operator runs `aq db upgrade` outside a worktree slot. |

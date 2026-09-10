@@ -185,6 +185,12 @@ def create_app(
         orchestrator, config, token_store=deps._token_store,
     ))
 
+    # Release wheels contain a pre-built, integrity-checked SPA. Source
+    # checkouts have no generated output and continue to use Vite for dev.
+    from src.dashboard_assets.runtime import mount_dashboard
+
+    mount_dashboard(app)
+
     _add_binary_upload_format(app)
 
     # WebSocket event stream — forward notify.* events to connected clients

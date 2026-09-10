@@ -32,6 +32,18 @@ from .styles import AQ_THEME
 
 logger = logging.getLogger(__name__)
 
+
+def _installed_version() -> str:
+    """Prefer wheel metadata so ``aq --version`` identifies the artifact."""
+    try:
+        from importlib.metadata import version
+
+        return version("agent-queue")
+    except Exception:  # pragma: no cover - source-only checkout fallback
+        from . import __version__
+
+        return __version__
+
 # Create themed console
 console = Console(theme=AQ_THEME)
 
@@ -282,7 +294,7 @@ def _print_full_help(ctx: click.Context) -> None:
     default=False,
     help="Trim output to each entity's lite projection (composes with --json).",
 )
-@click.version_option(version="0.1.0", prog_name="aq")
+@click.version_option(version=_installed_version(), prog_name="aq")
 @click.pass_context
 def cli(
     ctx: click.Context,

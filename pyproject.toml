@@ -172,6 +172,12 @@ aq = "src.cli.app:main"
 [tool.setuptools.packages.find]
 where = ["."]
 
+[tool.setuptools.package-data]
+# Prompts, harnesses and reviewed artifacts are runtime resources, not
+# checkout-relative files. The release script stages Vite output here too.
+src = ["**/*.md", "**/*.json", "**/*.sha256"]
+"src.dashboard_assets" = ["dist/**"]
+
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 # ``packages/`` holds generated clients (aq-client) and a TypeScript package
