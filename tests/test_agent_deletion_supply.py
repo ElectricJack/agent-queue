@@ -118,6 +118,7 @@ async def test_remaining_global_worker_is_still_reused_after_deletion(db):
 async def test_fresh_registry_keeps_pool_bootstrap(orch, db):
     await demand(db, "pool-worker")
     await orch._reconcile_pools()
+    await orch.wait_for_pool_launches()
     sessions = await db.list_sessions(lifecycle="pool")
     assert len(sessions) == 1
     assert len(await db.list_agents()) == 1
@@ -127,7 +128,9 @@ async def test_pool_replenishes_deleted_same_profile_worker_with_new_identity(or
     await demand(db, "pool-worker")
     await deleted_worker(db, "pool-worker")
     await orch._reconcile_pools()
+    await orch.wait_for_pool_launches()
     await orch._reconcile_pools()
+    await orch.wait_for_pool_launches()
     assert len(await db.list_agents()) == 1
     assert len(await db.list_sessions(lifecycle="pool")) == 1
     assert (await db.get_agent("deleted")).deleted_at is not None
@@ -138,6 +141,7 @@ async def test_pool_reuses_remaining_definition_after_deletion(orch, db):
     await deleted_worker(db)
     await db.create_agent(Agent(id="remaining", name="Remaining", profile_id="personal"))
     await orch._reconcile_pools()
+    await orch.wait_for_pool_launches()
     sessions = await db.list_sessions(lifecycle="pool")
     assert len(sessions) == 1
     assert sessions[0].agent_id == "remaining"
@@ -179,6 +183,7 @@ async def test_deleted_unrelated_profile_does_not_block_pool_growth(orch, db):
     await demand(db, "pool-worker")
     await deleted_worker(db, "personal")
     await orch._reconcile_pools()
+    await orch.wait_for_pool_launches()
     sessions = await db.list_sessions(lifecycle="pool")
     assert len(sessions) == 1
     assert sessions[0].profile_id == "pool-worker"

@@ -2428,9 +2428,11 @@ class Orchestrator(
         background coroutines and the caller needs to wait for them to
         complete before inspecting results.
         """
-        if not self._running_tasks:
-            return
         tasks = list(self._running_tasks.values())
+        tasks.extend(launch.task for launch in getattr(self, "_pool_launches", {}).values()
+                     if launch.task is not None)
+        if not tasks:
+            return
         if timeout is not None:
             await asyncio.wait(tasks, timeout=timeout)
         else:
@@ -2451,6 +2453,7 @@ class Orchestrator(
         from src.integration.completion_recovery import stop_ready_owner_recovery
 
         await stop_ready_owner_recovery(self)
+        await self.wait_for_pool_launches(cancel=True)
         await self.wait_for_running_tasks(timeout=10)
         # A layout publish is one transaction; let an in-flight step land
         # rather than cancelling it mid-write.  Marks are durable either way.
@@ -3269,6 +3272,7 @@ class Orchestrator(
             harness_registry=self.harness_registry,
             intelligence_classes=classes,
             ready_tasks=routed_ready,
+            launching_agent_ids=self._launching_pool_agent_ids(),
         )
         if rep.created or rep.reassigned:
             logger.info(

@@ -99,6 +99,22 @@ def read_stderr_excerpt(path: str | None) -> str:
 
 
 @dataclass
+class PoolLaunch:
+    """Capacity reserved before Git or the provider can yield for a long time."""
+
+    project_id: str
+    profile_id: str
+    session_id: str = field(default_factory=lambda: str(uuid.uuid4()))
+    task: asyncio.Task | None = None
+    agent_id: str | None = None
+    reservation: asyncio.Task | None = None
+    provider: object | None = None
+    handle: object | None = None
+    token_attempted: bool = False
+    workspace_acquired: bool = False
+
+
+@dataclass
 class PoolMeasurement:
     """One tick's observation of every pool, as both halves of the pipeline see it.
 
@@ -210,6 +226,11 @@ class PoolsMixin:
         project's ``_pool_profiles`` lookup.
         """
         measurement = PoolMeasurement()
+        # Keep this snapshot even if a launch finishes during the DB reads.
+        # Its durable session is either in the rows below or counted here.
+        pending_launches = tuple(getattr(self, "_pool_launches", {}).values())
+        unacquired = {launch.session_id for launch in pending_launches
+                      if not launch.workspace_acquired}
         #: ``(started_at, session_id)`` per key, so the aggregate idle list
         #: can be ordered oldest-first across projects rather than by the
         #: order the project loop happened to visit them in.
@@ -240,6 +261,16 @@ class PoolsMixin:
                 ),
             )
             sessions = await self.db.list_sessions(lifecycle="pool", project_id=project.id)
+            session_ids = {s.id for s in sessions}
+            pending = [launch for launch in pending_launches
+                       if launch.project_id == project.id and launch.session_id not in session_ids]
+            # Once acquired, the DB already subtracts the workspace. Snapshot
+            # the flags before querying capacity: a concurrent acquisition may
+            # be counted twice for this tick, never missed or double-counted
+            # throughout a slow provider startup.
+            workspace_capacity = max(0, workspace_capacity - sum(
+                launch.session_id in unacquired for launch in pending
+            ))
             sessions_by_profile: dict[str, list] = {}
             for s in sessions:
                 sessions_by_profile.setdefault(s.profile_id, []).append(s)
@@ -251,7 +282,7 @@ class PoolsMixin:
                 1
                 for s in sessions
                 if s.state in ("starting", "running") and s.desired_state != "stopped"
-            )
+            ) + len(pending)
 
             for profile_id, profile in pool_profiles.items():
                 key = PoolKey(profile_id)
@@ -262,6 +293,7 @@ class PoolsMixin:
                 measurement.demand[key] = measurement.demand.get(key, 0) + ready
 
                 local = PoolProjectSupply()
+                local.starting = sum(launch.profile_id == profile_id for launch in pending)
                 rows = sorted(
                     sessions_by_profile.get(profile_id, []),
                     key=lambda s: s.started_at or 0.0,
@@ -388,18 +420,7 @@ class PoolsMixin:
         await self._report_pool_starvation(starvations)
 
         for start in starts:
-            executed = 0
-            for _ in range(start.count):
-                sid = await self._launch_pool_session(
-                    measurement.projects[start.project_id],
-                    measurement.profiles[start.key],
-                )
-                if sid is None:
-                    break
-                executed += 1
-            await self._emit_pool_scaled(
-                start.key, start.project_id, "start", executed, reason=start.reason
-            )
+            self._queue_pool_starts(start, measurement)
 
         for drain in drains:
             executed = 0
@@ -407,6 +428,55 @@ class PoolsMixin:
                 await self.db.update_session(sid, desired_state="stopped")
                 executed += 1
             await self._emit_pool_scaled(drain.key, drain.project_id, "drain", executed)
+
+    def _queue_pool_starts(self, start, measurement) -> None:
+        launches = self.__dict__.setdefault("_pool_launches", {})
+        remaining, executed = start.count, 0
+
+        async def run(launch):
+            nonlocal remaining, executed
+            try:
+                sid = await self._launch_pool_session(
+                    measurement.projects[start.project_id],
+                    measurement.profiles[start.key], launch=launch,
+                )
+                executed += sid is not None
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("pool background launch failed: %s", launch.session_id)
+            finally:
+                remaining -= 1
+                try:
+                    if remaining == 0:
+                        await self._emit_pool_scaled(
+                            start.key, start.project_id, "start", executed, reason=start.reason
+                        )
+                finally:
+                    launches.pop(launch.session_id, None)
+
+        for _ in range(start.count):
+            launch = PoolLaunch(start.project_id, measurement.profiles[start.key].id)
+            launches[launch.session_id] = launch
+            launch.task = asyncio.create_task(run(launch), name=f"pool-launch:{launch.session_id}")
+
+    async def wait_for_pool_launches(self, *, cancel: bool = False) -> None:
+        tasks = [launch.task for launch in getattr(self, "_pool_launches", {}).values()
+                 if launch.task is not None]
+        if cancel:
+            for task in tasks:
+                task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        # A task cancelled before its first instruction cannot run its finally.
+        launches = getattr(self, "_pool_launches", {})
+        for sid, launch in list(launches.items()):
+            if launch.task is not None and launch.task.done():
+                launches.pop(sid, None)
+
+    def _launching_pool_agent_ids(self) -> set[str]:
+        return {launch.agent_id for launch in getattr(self, "_pool_launches", {}).values()
+                if launch.agent_id}
 
     async def _report_pool_starvation(self, starvations: list) -> None:
         """Warn about starts no project could take — once per condition, not per tick.
@@ -592,7 +662,42 @@ class PoolsMixin:
             payload["placement_reason"] = reason
         await self.bus.emit("pool.scaled", payload)
 
-    async def _launch_pool_session(self, project, profile) -> str | None:
+    async def _launch_pool_session(self, project, profile, *, launch=None) -> str | None:
+        launch = launch or PoolLaunch(project.id, profile.id)
+        try:
+            return await self._launch_pool_session_inner(project, profile, launch)
+        except asyncio.CancelledError:
+            # Reservation is a small shielded DB operation: establish its
+            # outcome before releasing anything. Git/provider work is cancellable.
+            if launch.reservation is not None:
+                await asyncio.gather(launch.reservation, return_exceptions=True)
+            # Once a session row exists, normal session reconciliation owns
+            # it and any task it may already have claimed. Preserve that owner.
+            if await self.db.get_session(launch.session_id) is not None:
+                raise
+            stopped = launch.handle is None
+            if launch.handle is not None:
+                try:
+                    await launch.provider.stop(launch.handle, grace=2.0)
+                    stopped = not await launch.provider.is_running(launch.handle)
+                except Exception:
+                    logger.exception("could not confirm cancelled pool launch stopped")
+            token_store = getattr(self, "token_store", None)
+            if launch.token_attempted and token_store is not None:
+                try:
+                    await token_store.revoke_session(launch.session_id)
+                except Exception:
+                    logger.exception("could not revoke cancelled pool launch token")
+            if launch.agent_id:
+                if stopped:
+                    await self.db.release_workspaces_for_agent(launch.agent_id)
+                    await self.db.update_agent(launch.agent_id, state=AgentState.IDLE,
+                                               current_task_id=None)
+                else:
+                    await self.db.update_agent(launch.agent_id, state=AgentState.ERROR)
+            raise
+
+    async def _launch_pool_session_inner(self, project, profile, launch) -> str | None:
         """Start one pool worker session for *profile* in *project*.
 
         Mirrors ``ExecutionMixin._launch_session_for_task`` step for step —
@@ -636,6 +741,24 @@ class PoolsMixin:
         except ValueError as exc:
             self._quarantine_pool(project.id, profile.id, f"session provider unavailable: {exc}")
             return None
+        launch.provider = provider
+
+        async def reserve(agent_id, *, new_agent=None):
+            async def commit_reservation():
+                if new_agent is None:
+                    reserved = await self.db.reserve_idle_agent(agent_id)
+                else:
+                    # Publish a new identity already reserved; another
+                    # simultaneous launch must not steal it between inserts.
+                    new_agent.state = AgentState.BUSY
+                    new_agent.last_heartbeat = time.time()
+                    reserved = await self.db.create_automatic_agent(new_agent)
+                if reserved:
+                    launch.agent_id = agent_id
+                return reserved
+
+            launch.reservation = asyncio.create_task(commit_reservation())
+            return await asyncio.shield(launch.reservation)
 
         # Reserve the identity before any await that starts a process. A live
         # session owns its worker even while it has no currently claimed task.
@@ -658,7 +781,7 @@ class PoolsMixin:
                 harness_registry=self.harness_registry, intelligence_classes=classes,
             ):
                 continue
-            if await self.db.reserve_idle_agent(candidate.id):
+            if await reserve(candidate.id):
                 agent = candidate
                 worker_profile = own_profile
                 break
@@ -675,9 +798,7 @@ class PoolsMixin:
                 return None
             # Only the fallback grows the roster; compatible definitions were
             # tried above. Deleted identities do not constrain pool capacity.
-            if not await self.db.create_automatic_agent(agent):
-                return None
-            if not await self.db.reserve_idle_agent(agent.id):
+            if not await reserve(agent.id, new_agent=agent):
                 return None
         profile = apply_agent_overrides(profile, agent, agent_profile=worker_profile)
         harness_name = getattr(profile, "harness", "") or ""
@@ -691,7 +812,7 @@ class PoolsMixin:
         # Claude accepts only canonical UUIDs for ``--session-id``. Keep the
         # durable/session-token identity separate from the readable provider
         # name used to address this pool worker.
-        session_id = str(uuid.uuid4())
+        session_id = launch.session_id
         session_name = pool_session_name(profile.id, project.id, uuid.uuid4().hex[:8])
         minted_token = False
 
@@ -739,6 +860,7 @@ class PoolsMixin:
                 await _rollback("starved: no free workspace", quarantine=True)
                 return None
 
+            launch.workspace_acquired = True
             work_dir = workspace.workspace_path
 
             # An exclusive-clone pool bypasses slot setup, but may later write
@@ -762,6 +884,7 @@ class PoolsMixin:
             instance_token = uuid.uuid4().hex
 
             if token_store is not None:
+                launch.token_attempted = True
                 api_token = await token_store.mint(
                     session_id=session_id,
                     session_instance_token=instance_token,
@@ -787,6 +910,8 @@ class PoolsMixin:
             )
 
             launched_at = time.time()
+            launch.handle = SessionHandle(name=spec.session_name, provider=provider.name,
+                                          instance_token=instance_token)
             try:
                 await provider.start(spec)
             except SessionDiedDuringStartup as exc:

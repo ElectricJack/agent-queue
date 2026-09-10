@@ -508,6 +508,16 @@ and project concurrency budgets across all profiles in a tick. When unserved
 demand is blocked in one project, it does not launch workers into empty projects
 to satisfy that demand; explicit per-project warm floors still apply.
 
+Pool launches run in the background. A slow worktree operation or harness
+startup does not hold up other projects, drains, session reconciliation, or
+message delivery. Pending launches count as starting supply and reserve the
+profile, project, fleet, and workspace capacity they need. Once a launch locks
+its workspace, that lock replaces its workspace reservation so another free
+slot remains usable. Live launch identities are protected from orphan recovery
+even when preparation exceeds two minutes. Shutdown cancels unfinished launches
+and confirms their processes have stopped before releasing resources; sessions
+that already have durable rows remain owned by normal session reconciliation.
+
 Pool workers keep their claim loop alive during daemon restarts. `aq task claim
 --next --wait 60` retries connection failures within its wait window; if the
 daemon remains unavailable, it exits with code 3 and the worker retries the

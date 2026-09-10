@@ -17,6 +17,7 @@ async def test_pool_launch_timestamp_precedes_provider_start(orch, db, monkeypat
 
     monkeypatch.setattr(provider, "start", start)
     await orch._reconcile_pools()
+    await orch.wait_for_pool_launches()
     (row,) = await db.list_sessions(lifecycle="pool")
     assert row.started_at <= observed[0]
     assert row.session_key == row.id  # Claude's --session-id is already exact.
@@ -25,6 +26,7 @@ async def test_pool_launch_timestamp_precedes_provider_start(orch, db, monkeypat
 async def test_pool_termination_retains_specific_reason(orch, db):  # noqa: F811
     await ready(db, "task")
     await orch._reconcile_pools()
+    await orch.wait_for_pool_launches()
     (row,) = await db.list_sessions(lifecycle="pool")
     async with db.immediate() as conn:
         await db.record_holder(
