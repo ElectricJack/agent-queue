@@ -31,6 +31,8 @@ formatters.py      Rich table/panel formatters for all entity types
 formulas.py        `aq formula show` / `aq formula cook`
 global_options.py  Copies --json / --brief / --api-url onto commands so they parse anywhere
 integration.py     `aq integration` — hierarchical integration trains
+install.py         `aq install` — the daemon-free installer: builds the step registry,
+                   runs src/install's engine in-process, maps outcomes to exit codes
 inventory.py       Reproducible CLI command inventory and ownership classification
 logs.py            `aq logs` — tail/filter JSONL log file directly (no daemon needed)
 menus.py           Interactive prompts (task wizard, fuzzy select, confirm)

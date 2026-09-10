@@ -33,6 +33,7 @@ generation, transport, output and formatting layers they share.
 | [src/cli/formulas.py](../../../src/cli/formulas.py) | Implements `aq formula show` and `aq formula cook`, including repeatable `--var k=v`. | [cli/commands.md](../cli/commands.md) | `tests/test_formula_surface.py`, `tests/test_formula_commands.py` |
 | [src/cli/global_options.py](../../../src/cli/global_options.py) | Copies `--json`, `--brief` and `--api-url` onto every command so they parse at any position. | [cli/README.md](../cli/README.md) | `tests/test_cli_global_options.py`. Must run last in `app.py`. |
 | [src/cli/integration.py](../../../src/cli/integration.py) | Implements the `aq integration` control verbs with positional identities and compare-and-set fences. | [cli/commands.md](../cli/commands.md) | `tests/test_cli_integration.py` |
+| [src/cli/install.py](../../../src/cli/install.py) | Implements `aq install` — builds the step registry, runs the installer engine in-process with no daemon, and maps the outcome onto the documented exit codes. | [cli/install.md](../cli/install.md) | `tests/test_install_cli.py` |
 | [src/cli/inventory.py](../../../src/cli/inventory.py) | Walks the live Click tree to produce the command inventory, its alias and deprecation ledgers, and its validation. | [cli/README.md](../cli/README.md) | `tests/test_cli_inventory.py`; artifact at `docs/reference/cli-command-inventory.json`. |
 | [src/cli/logs.py](../../../src/cli/logs.py) | Implements `aq logs` — tails and filters the JSONL log file directly, with no daemon. | [cli/commands.md](../cli/commands.md) | `tests/test_cli_logs.py` |
 | [src/cli/menus.py](../../../src/cli/menus.py) | Provides the interactive prompts: the task wizard, fuzzy select, confirmations. | [cli/commands.md](../cli/commands.md) | `tests/test_cli_menus.py` |
@@ -120,6 +121,23 @@ supplies `_cmd_<name>` methods that `execute()` dispatches to.
 | [src/tools/definitions.py](../../../src/tools/definitions.py) | Holds every authored tool definition and the tool-to-category mapping. | [cli/agent-tools.md](../cli/agent-tools.md) | `tests/test_tool_registry.py`. Pure data, so the CLI can generate its tree offline. |
 | [src/tools/registry.py](../../../src/tools/registry.py) | Splits tools into core and on-demand categories, compresses schemas and merges plugin tools. | [cli/agent-tools.md](../cli/agent-tools.md) | `tests/test_tool_registry.py` |
 | [src/tools/tool_index.py](../../../src/tools/tool_index.py) | Embeds tool names and descriptions in memory so `find_applicable_tool` can search them. | [cli/agent-tools.md](../cli/agent-tools.md) | `tests/test_tool_index.py`. Degrades to empty when no embedding provider is available. |
+
+## Installer engine — `src/install/`
+
+The shared orchestration behind `aq install`. Platform, packaging, database and
+provider adapters register steps against this engine rather than shipping
+installers of their own.
+
+| Module | Purpose | Component | Notes |
+|---|---|---|---|
+| [src/install/\_\_init\_\_.py](../../../src/install/__init__.py) | Exposes the installer engine's public surface. | [cli/install.md](../cli/install.md) | — |
+| [src/install/platform.py](../../../src/install/platform.py) | Detects the host — OS, version, architecture, distro, WSL generation — and places it in the supported-platform matrix. | [cli/install.md](../cli/install.md) | `tests/test_install_platform.py`. Every reader is injectable, so the whole matrix is testable on one box. |
+| [src/install/results.py](../../../src/install/results.py) | Defines the four terminal step states, the run outcomes, the stable exit-code table and the machine-readable result. | [cli/install.md](../cli/install.md) | `tests/test_install_engine.py`. Exit codes are API: added, never reassigned. |
+| [src/install/steps.py](../../../src/install/steps.py) | Declares the step protocol and the ordered, validated registry adapters register into. | [cli/install.md](../cli/install.md) | `tests/test_install_engine.py`. Cycles and mistyped dependencies fail at plan time. |
+| [src/install/state.py](../../../src/install/state.py) | Reads and atomically writes the secret-free resume record, and refuses one written by another installer version. | [cli/install.md](../cli/install.md) | `tests/test_install_engine.py`. Mode `0600`; a leaked credential fails the write. |
+| [src/install/redaction.py](../../../src/install/redaction.py) | Redacts secret-shaped keys and values, and fences the record against anything it missed. | [cli/install.md](../cli/install.md) | `tests/test_install_engine.py`. Reuses the denylist in `src/env_scrub.py`. |
+| [src/install/engine.py](../../../src/install/engine.py) | Admits the host, orders and gates the steps, revalidates completed work instead of repeating it, collects consent, and stops at the first unsatisfied step. | [cli/install.md](../cli/install.md) | `tests/test_install_engine.py`. Clock-injectable; writes only the resume record. |
+| [src/install/prerequisites.py](../../../src/install/prerequisites.py) | Supplies the engine's own steps: host admission, interpreter, Git, tmux and the AQ data directory. | [cli/install.md](../cli/install.md) | `tests/test_install_engine.py`. Detection only — installing anything belongs to an adapter. |
 
 ## Startup context — `src/prime/`
 

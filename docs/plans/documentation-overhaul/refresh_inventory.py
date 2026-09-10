@@ -480,6 +480,8 @@ RULES: list[tuple[str, str, str, str, str]] = [
      "Command handler module — the single entry point for every state change."),
     ("src/cli/**", "cli", "docs/reference/cli/README.md", PRODUCTION,
      "`aq` command-line surface."),
+    ("src/install/**", "cli", "docs/reference/cli/install.md", PRODUCTION,
+     "Installer engine module behind `aq install`."),
     ("src/tools/**", "cli", "docs/reference/cli/agent-tools.md", PRODUCTION,
      "Agent-facing tool definitions and registry."),
     ("src/prime/**", "cli", "docs/reference/cli/prime.md", PRODUCTION,
