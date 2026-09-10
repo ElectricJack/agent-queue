@@ -12,6 +12,17 @@ from src.plugins.internal.inbox.auth import (
     extract_from_address,
     parse_authentication_results,
 )
+from src.plugins.internal.inbox.plugin import InboxPlugin
+
+
+class TestInboxPluginDiscovery:
+    def test_internal_discovery_loads_inbox_package_plugin(self):
+        """The direct-child discovery contract reaches the inbox implementation."""
+        from src.plugins.internal import discover_internal_plugins
+
+        discovered = dict(discover_internal_plugins())
+
+        assert discovered["src.plugins.internal.inbox"] is InboxPlugin
 
 
 # ---------------------------------------------------------------------------
