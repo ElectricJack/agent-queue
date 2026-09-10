@@ -65,6 +65,9 @@ def test_list_steps_reports_the_registered_steps_and_their_shape():
     ids = [step["id"] for step in steps]
     assert ids[0] == "host.supported"
     assert "prereq.data-dir" in ids
+    assert {"provider.claude-cli", "provider.codex-cli", "provider.gemini-cli"} <= set(ids)
+    capabilities = {step["capability"] for step in steps}
+    assert {"provider.claude", "provider.codex", "provider.gemini"} <= capabilities
     data_dir = next(step for step in steps if step["id"] == "prereq.data-dir")
     assert data_dir["mutating"] is True
     assert data_dir["depends_on"] == ["host.supported"]
