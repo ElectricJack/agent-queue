@@ -380,6 +380,22 @@ async def test_development_status_does_not_report_strict_policy_missing(setup):
     assert status["policy"]["validation"] == "focused"
 
 
+@pytest.mark.parametrize("repository", [None, "r", "other"])
+async def test_development_task_explanation_uses_publisher_repository_rules(setup, repository):
+    from src.integration.status import IntegrationStatusService
+
+    db, _service, _source, _remote, _repo = setup
+    await db.create_repo(RepoConfig(
+        id="other", project_id="p", source_type=RepoSourceType.CLONE, url="/other.git",
+    ))
+    await db.create_task(Task(
+        id="task", project_id="p", title="task", description="", repo_id=repository,
+    ))
+    result = await IntegrationStatusService(db).task_blockers("task")
+    codes = {item["code"] for item in result["blockers"]}
+    assert ("repository_not_designated" in codes) == (repository == "other")
+
+
 @pytest.mark.parametrize("confirmed", [True, False])
 @pytest.mark.parametrize("attachment", ["attached", "detached", "missing_attempt", "successor"])
 async def test_stopped_writer_preserves_dirty_checkout_before_unlock(setup, confirmed, attachment):

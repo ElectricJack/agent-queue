@@ -566,6 +566,25 @@ class TestReconcilerInterplay:
         detail = next(r["detail"] for r in res["reasons"] if r["code"] == "awaiting_pool_session")
         assert "worker" in detail
 
+    @pytest.mark.parametrize("status", [
+        TaskStatus.IN_PROGRESS, TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.PAUSED,
+    ])
+    async def test_explain_does_not_report_worker_wait_outside_claim_queue(
+        self, orch, db, handler, status,
+    ):
+        await db.create_task(Task(
+            id="not-waiting", project_id=PROJECT_ID, title="not waiting", description="",
+            status=status, profile_id="worker", intelligence_class="standard-medium",
+        ))
+        # Populate the scheduler's capacity snapshot as well as the pool path.
+        await orch._schedule()
+        result = await handler._cmd_explain_task({"task_id": "not-waiting"})
+        assert "awaiting_pool_session" not in result["reason_codes"]
+        assert "no_idle_agent" not in result["reason_codes"]
+        assert "workspace_locked" not in result["reason_codes"]
+        if status == TaskStatus.PAUSED:
+            assert "paused_manually" in result["reason_codes"]
+
     async def test_explain_uses_fleet_occupancy_for_global_pool_cap(self, orch, db, handler):
         from src.models import SessionRecord
 
