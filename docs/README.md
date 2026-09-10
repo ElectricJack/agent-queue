@@ -85,11 +85,6 @@ catalog entry.
 
 ## Historical material
 
-[Historical material](history/README.md) separates dated plans, specs, reports,
-reviews, and analysis from current instructions. When an old page conflicts
-with a current page or source, use the current page and record the discrepancy
-in the [known-inaccuracies ledger](plans/documentation-overhaul/known-inaccuracies.md).
-
 **Start here:** [Historical material](history/README.md) explains what is kept,
 why, and how to read a historical page without being misled. Every documentation
 file's disposition — `current`, `update`, `redirect`, `archive` or `historical` —

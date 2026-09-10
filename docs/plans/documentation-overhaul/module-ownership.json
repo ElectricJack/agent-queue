@@ -1,5 +1,5 @@
 {
-  "source_commit": "320b674183e9f733d5fc7d8c72bb12c16c58206d",
+  "source_commit": "f253f6db79fef6a6b16ca984a574301667939566",
   "generated_by": "docs/plans/documentation-overhaul/refresh_inventory.py",
   "note": "Assignment, not authored coverage.  Each entry's `purpose` is the rule-level description of the family the path belongs to; the per-module sentence is written by the owning shard's catalog page (`shards[<shard>].catalog`).  `component` is the prose page that explains the module.  There is no catch-all rule: a tracked path matching nothing is an error, not a default assignment.",
   "shards": {
@@ -147,13 +147,6 @@
       "purpose": "GitHub configuration or example payload.",
       "catalog": null
     },
-    ".github/workflows/docs.yml": {
-      "shard": "contributing",
-      "component": "docs/contributing/ci.md",
-      "category": "supporting",
-      "purpose": "GitHub Actions workflow.",
-      "catalog": null
-    },
     ".github/workflows/tests.yml": {
       "shard": "contributing",
       "component": "docs/contributing/ci.md",
@@ -180,6 +173,13 @@
       "component": "docs/contributing/setup.md",
       "category": "supporting",
       "purpose": "Pre-commit hook configuration.",
+      "catalog": null
+    },
+    ".superpowers/README.md": {
+      "shard": "legacy",
+      "component": "docs/history/README.md",
+      "category": "documentation",
+      "purpose": "Historical spec-driven-development evidence; preserved, not rewritten.",
       "catalog": null
     },
     ".superpowers/sdd/2026-09-01-playbook-v2-engine-executors/task-14-report.md": {
@@ -813,6 +813,13 @@
       "catalog": null
     },
     ".superpowers/sdd/2026-09-04-hierarchical-integration-trains-implementation/task-9b2-review.md": {
+      "shard": "legacy",
+      "component": "docs/history/README.md",
+      "category": "documentation",
+      "purpose": "Historical spec-driven-development evidence; preserved, not rewritten.",
+      "catalog": null
+    },
+    ".superpowers/sdd/README.md": {
       "shard": "legacy",
       "component": "docs/history/README.md",
       "category": "documentation",
@@ -3773,6 +3780,13 @@
       "purpose": "Existing page; the legacy ticket records its disposition.",
       "catalog": null
     },
+    "docs/analysis/README.md": {
+      "shard": "legacy",
+      "component": "docs/history/README.md",
+      "category": "documentation",
+      "purpose": "Existing page; the legacy ticket records its disposition.",
+      "catalog": null
+    },
     "docs/analysis/comparison-gascity-beads.md": {
       "shard": "legacy",
       "component": "docs/history/README.md",
@@ -3816,6 +3830,13 @@
       "catalog": null
     },
     "docs/breakdown.md": {
+      "shard": "legacy",
+      "component": "docs/history/README.md",
+      "category": "documentation",
+      "purpose": "Existing page; the legacy ticket records its disposition.",
+      "catalog": null
+    },
+    "docs/concepts/README.md": {
       "shard": "legacy",
       "component": "docs/history/README.md",
       "category": "documentation",
@@ -4109,7 +4130,21 @@
       "purpose": "Existing page; the legacy ticket records its disposition.",
       "catalog": null
     },
+    "docs/gates/README.md": {
+      "shard": "legacy",
+      "component": "docs/history/README.md",
+      "category": "documentation",
+      "purpose": "Existing page; the legacy ticket records its disposition.",
+      "catalog": null
+    },
     "docs/gates/wave1-1c-trust-ops.md": {
+      "shard": "legacy",
+      "component": "docs/history/README.md",
+      "category": "documentation",
+      "purpose": "Existing page; the legacy ticket records its disposition.",
+      "catalog": null
+    },
+    "docs/guides/README.md": {
       "shard": "legacy",
       "component": "docs/history/README.md",
       "category": "documentation",
@@ -4340,6 +4375,20 @@
       "purpose": "Overhaul page owned by the `legacy` ticket.",
       "catalog": null
     },
+    "docs/history/check_dispositions.py": {
+      "shard": "legacy",
+      "component": "docs/history",
+      "category": "documentation",
+      "purpose": "Overhaul page owned by the `legacy` ticket.",
+      "catalog": null
+    },
+    "docs/history/disposition-ledger.md": {
+      "shard": "legacy",
+      "component": "docs/history",
+      "category": "documentation",
+      "purpose": "Overhaul page owned by the `legacy` ticket.",
+      "catalog": null
+    },
     "docs/img/project-chat-00.png": {
       "shard": "legacy",
       "component": "docs/history/README.md",
@@ -4376,6 +4425,13 @@
       "catalog": null
     },
     "docs/index.md": {
+      "shard": "legacy",
+      "component": "docs/history/README.md",
+      "category": "documentation",
+      "purpose": "Existing page; the legacy ticket records its disposition.",
+      "catalog": null
+    },
+    "docs/plans/README.md": {
       "shard": "legacy",
       "component": "docs/history/README.md",
       "category": "documentation",
@@ -4439,6 +4495,13 @@
       "catalog": null
     },
     "docs/plans/install-onboarding/tasks.graph.json": {
+      "shard": "legacy",
+      "component": "docs/history/README.md",
+      "category": "documentation",
+      "purpose": "Existing page; the legacy ticket records its disposition.",
+      "catalog": null
+    },
+    "docs/playbooks/README.md": {
       "shard": "legacy",
       "component": "docs/history/README.md",
       "category": "documentation",
@@ -4823,6 +4886,13 @@
       "purpose": "Existing page; the legacy ticket records its disposition.",
       "catalog": null
     },
+    "docs/reports/README.md": {
+      "shard": "legacy",
+      "component": "docs/history/README.md",
+      "category": "documentation",
+      "purpose": "Existing page; the legacy ticket records its disposition.",
+      "catalog": null
+    },
     "docs/reports/cli-audit-2026-09-08/README.md": {
       "shard": "legacy",
       "component": "docs/history/README.md",
@@ -5061,6 +5131,13 @@
       "purpose": "Existing page; the legacy ticket records its disposition.",
       "catalog": null
     },
+    "docs/reviews/README.md": {
+      "shard": "legacy",
+      "component": "docs/history/README.md",
+      "category": "documentation",
+      "purpose": "Existing page; the legacy ticket records its disposition.",
+      "catalog": null
+    },
     "docs/specs/.obsidian/app.json": {
       "shard": "legacy",
       "component": "docs/history/README.md",
@@ -5153,6 +5230,13 @@
       "catalog": null
     },
     "docs/specs/.obsidian/workspace.json": {
+      "shard": "legacy",
+      "component": "docs/history/README.md",
+      "category": "documentation",
+      "purpose": "Existing page; the legacy ticket records its disposition.",
+      "catalog": null
+    },
+    "docs/specs/README.md": {
       "shard": "legacy",
       "component": "docs/history/README.md",
       "category": "documentation",
@@ -5453,6 +5537,13 @@
       "purpose": "Existing page; the legacy ticket records its disposition.",
       "catalog": null
     },
+    "docs/specs/messaging/README.md": {
+      "shard": "legacy",
+      "component": "docs/history/README.md",
+      "category": "documentation",
+      "purpose": "Existing page; the legacy ticket records its disposition.",
+      "catalog": null
+    },
     "docs/specs/messaging/base.md": {
       "shard": "legacy",
       "component": "docs/history/README.md",
@@ -5516,6 +5607,13 @@
       "purpose": "Existing page; the legacy ticket records its disposition.",
       "catalog": null
     },
+    "docs/specs/runtimes/README.md": {
+      "shard": "legacy",
+      "component": "docs/history/README.md",
+      "category": "documentation",
+      "purpose": "Existing page; the legacy ticket records its disposition.",
+      "catalog": null
+    },
     "docs/specs/runtimes/acpx.md": {
       "shard": "legacy",
       "component": "docs/history/README.md",
@@ -5566,6 +5664,13 @@
       "catalog": null
     },
     "docs/specs/tiered-tools.md": {
+      "shard": "legacy",
+      "component": "docs/history/README.md",
+      "category": "documentation",
+      "purpose": "Existing page; the legacy ticket records its disposition.",
+      "catalog": null
+    },
+    "docs/superpowers/README.md": {
       "shard": "legacy",
       "component": "docs/history/README.md",
       "category": "documentation",
@@ -5992,6 +6097,13 @@
       "purpose": "Existing page; the legacy ticket records its disposition.",
       "catalog": null
     },
+    "docs/superpowers/plans/README.md": {
+      "shard": "legacy",
+      "component": "docs/history/README.md",
+      "category": "documentation",
+      "purpose": "Existing page; the legacy ticket records its disposition.",
+      "catalog": null
+    },
     "docs/superpowers/reports/2026-09-01-playbook-v2-pkg5-scenarios/01-branching.png": {
       "shard": "legacy",
       "component": "docs/history/README.md",
@@ -6042,6 +6154,13 @@
       "catalog": null
     },
     "docs/superpowers/reports/2026-09-01-playbook-v2-pkg5-scenarios/README.md": {
+      "shard": "legacy",
+      "component": "docs/history/README.md",
+      "category": "documentation",
+      "purpose": "Existing page; the legacy ticket records its disposition.",
+      "catalog": null
+    },
+    "docs/superpowers/reports/README.md": {
       "shard": "legacy",
       "component": "docs/history/README.md",
       "category": "documentation",
@@ -6405,6 +6524,13 @@
       "purpose": "Existing page; the legacy ticket records its disposition.",
       "catalog": null
     },
+    "docs/superpowers/specs/README.md": {
+      "shard": "legacy",
+      "component": "docs/history/README.md",
+      "category": "documentation",
+      "purpose": "Existing page; the legacy ticket records its disposition.",
+      "catalog": null
+    },
     "docs/tutorials/README.md": {
       "shard": "quickstart",
       "component": "docs/tutorials/README.md",
@@ -6559,18 +6685,18 @@
       "purpose": "Alembic migration environment or revision.",
       "catalog": null
     },
-    "mkdocs.yml": {
-      "shard": "legacy",
-      "component": "docs/history/README.md",
-      "category": "supporting",
-      "purpose": "Legacy MkDocs configuration; the overhaul publishes GitHub-rendered Markdown.",
-      "catalog": null
-    },
     "notes.md": {
       "shard": "legacy",
       "component": "docs/history/README.md",
       "category": "documentation",
       "purpose": "Historical.",
+      "catalog": null
+    },
+    "notes/README.md": {
+      "shard": "legacy",
+      "component": "docs/history/README.md",
+      "category": "documentation",
+      "purpose": "Historical working notes.",
       "catalog": null
     },
     "notes/blocked-task-detection-procedure-2026-04-22.md": {
@@ -16786,6 +16912,13 @@
       "purpose": "Python package and tooling configuration.",
       "catalog": null
     },
+    "reports/README.md": {
+      "shard": "legacy",
+      "component": "docs/history/README.md",
+      "category": "documentation",
+      "purpose": "Historical reports.",
+      "catalog": null
+    },
     "reports/mcp-capabilities-workflow-2.md": {
       "shard": "legacy",
       "component": "docs/history/README.md",
@@ -16934,13 +17067,6 @@
       "catalog": null
     },
     "scripts/generate-config-schema-inventory.py": {
-      "shard": "contributing",
-      "component": "docs/contributing/scripts.md",
-      "category": "supporting",
-      "purpose": "Repository script.",
-      "catalog": null
-    },
-    "scripts/generate-docs.sh": {
       "shard": "contributing",
       "component": "docs/contributing/scripts.md",
       "category": "supporting",
