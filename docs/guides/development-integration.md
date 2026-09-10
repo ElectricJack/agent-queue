@@ -16,6 +16,10 @@ successor. Publication updates dependency state automatically; a later completio
 at a different revision needs its own delivery. Branchless tasks have no code
 artifact to publish.
 
+The publisher can assemble an already-completed dependency chain in one batch,
+in dependency order. It does not spend a separate batch interval on each link.
+Human gates and unfinished prerequisites still withhold publication.
+
 If you want to know *why* it behaves the way it does, read
 [the integration concept page](../concepts/integration.md) first — this guide
 assumes its vocabulary (batch, manifest, journal, parked).
