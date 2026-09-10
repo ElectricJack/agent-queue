@@ -8,16 +8,15 @@ authentication readiness are deliberately owned by the follow-up login flow.
 
 from __future__ import annotations
 
+import re
 import shutil
 import subprocess
-import re
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
 
 from .prerequisites import STEP_TMUX
 from .results import ResourceRecord, StepResult
 from .steps import StepContext, StepSpec
-
 
 CommandRunner = Callable[[Sequence[str]], subprocess.CompletedProcess[str]]
 CommandLookup = Callable[[str], str | None]
