@@ -33,6 +33,20 @@ REMINDER = (
 )
 MARKER = _marker_for(REMINDER)
 
+
+async def test_collapsed_paste_keeps_evidence_without_submitting_or_clearing():
+    composer = Composer(draft="[Pasted Content 4636 chars]")
+    provider = provider_for(composer)
+    record = tmux_module._PendingSubmit(
+        instance_token=handle().instance_token, marker=MARKER, text=REMINDER,
+    )
+    await provider._remember_pending(handle(), record)
+    composer.mutations.clear()
+    assert await provider.pending_submit(handle()) is None
+    assert await provider.resubmit_pending(handle()) is False
+    assert provider._unsubmitted[handle().name] == record
+    assert composer.mutations == []
+
 CLAUDE_LAYOUT = {
     "prefix": "❯ ",
     "row": "❯\N{NO-BREAK SPACE}",
