@@ -4,6 +4,12 @@ tags: [guide, ops, swarm, pools]
 
 # Worker pools — the operator's guide
 
+Read [Scheduling, worker pools and resource limits](../concepts/scheduling.md)
+first for the distinction between a READY task, fleet-wide desired capacity,
+and project-specific placement. This page is the operational procedure for an
+operator who has decided to use pull-based workers; it does not make pools the
+default lifecycle.
+
 A `lifecycle: task` profile is **pushed** work: the scheduler picks a READY
 task, launches a session for it, and that session dies with the task. A
 `lifecycle: pool` profile is **pulled**: the daemon keeps a small pool of
