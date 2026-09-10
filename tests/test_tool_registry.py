@@ -783,11 +783,13 @@ class TestCompressToolSchema:
 # Playbook category registration (Roadmap 5.5.7)
 # ------------------------------------------------------------------
 
-# Canonical list of playbook commands.  This must stay identical to
+# Canonical list of playbook commands.  It used to be duplicated as
 # ``TestAllPlaybookCommandsRegistered.EXPECTED_COMMANDS`` in
-# tests/test_playbook_commands.py -- the two drifted apart, each missing a
-# different command (this one had no ``cancel_playbook_run``, that one no
-# ``set_playbook_enabled``), which is how four drift tests sat red.
+# tests/test_playbook_commands.py; the two drifted apart, each missing a
+# different command, which is how four drift tests sat red.  That file is
+# gone and this is now the only copy -- keep it one entry per command, since
+# ``test_playbook_category_has_correct_count`` compares the registry against
+# ``len(_PLAYBOOK_COMMANDS)`` and a duplicate hides a missing tool.
 _PLAYBOOK_COMMANDS = [
     # Run management
     "run_playbook",
@@ -812,7 +814,6 @@ _PLAYBOOK_COMMANDS = [
     "playbook_v2_graph",
     "playbook_activation_health",
     "playbook_activate",
-    "playbook_delete",
     # Activation artifacts and the pending-event queue (Package 5).
     "playbook_artifacts",
     "playbook_artifact_diff",
