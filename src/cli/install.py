@@ -31,7 +31,7 @@ from src.install import (
     StepRegistry,
     StepSpec,
     StepState,
-    default_registry,
+    build_registry,
     default_state_path,
     describe_host,
     exit_code,
@@ -301,7 +301,8 @@ def install(
     stops at the first step that needs attention.  Exit codes: 0 ready,
     10 needs_user, 11 invalid_input, 12 unsupported_host, 20 failed.
     """
-    registry = default_registry()
+    support = describe_host()
+    registry = build_registry(support)
     if list_steps:
         _emit_steps(registry, as_json=as_json)
         return
@@ -327,7 +328,7 @@ def install(
     engine = InstallEngine(
         registry,
         options,
-        support=describe_host(),
+        support=support,
         consent=_consent() if interactive else None,
         progress=None if quiet else _progress(console),
     )
