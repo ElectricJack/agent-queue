@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import time
 from types import SimpleNamespace
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -206,6 +206,19 @@ class TestExplainCommand:
         reason = next(r for r in res["reasons"] if r["code"] == "integration_delegate_retired")
         assert reason["ref"] == "operation"
         assert "no longer required" in reason["detail"]
+
+    async def test_terminal_operation_explained_before_retirement_cleanup(self, handler, db):
+        await mktask(db, "t", status=TaskStatus.PAUSED)
+        await db.set_task_meta("t", "needs_attention", "slot_reset_failed")
+        db.get_terminal_integration_delegate_operation = AsyncMock(return_value={
+            "id": "cancelled-operation", "state": "cancelled",
+        })
+        res = await handler._cmd_explain_task({"task_id": "t"})
+        assert "integration_delegate_retired" in res["reason_codes"]
+        assert "paused_manually" not in res["reason_codes"]
+        assert "needs_attention" not in res["reason_codes"]
+        assert "cancelled" in res["reasons"][0]["detail"]
+        assert await db.get_task_meta("t", "needs_attention") == "slot_reset_failed"
 
     async def test_hold_label_reason(self, handler, db):
         await mktask(db, "t", status=TaskStatus.READY)

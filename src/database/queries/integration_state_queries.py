@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from sqlalchemy import and_, func, select
+from sqlalchemy import and_, func, or_, select
 
 from src.database.tables import (
     integration_batches,
@@ -19,6 +19,24 @@ from src.database.tables import (
 
 class IntegrationStateQueriesMixin:
     """Integration-state reads; state mutations stay caller-transaction owned."""
+
+    async def get_terminal_integration_delegate_operation(self, task_id: str, *, conn=None):
+        """Resolve obsolete repair/verifier work even while its owner is retained."""
+        operation = integration_repair_operations
+        stage = integration_repair_stages
+        statement = select(operation.c.id, operation.c.state).where(
+            operation.c.state.in_(("completed", "cancelled")),
+            or_(operation.c.verifier_task_id == task_id,
+                select(stage.c.operation_id).where(
+                    stage.c.operation_id == operation.c.id,
+                    stage.c.repair_task_id == task_id,
+                ).correlate(operation).exists()),
+        ).order_by(operation.c.updated_at.desc(), operation.c.id).limit(1)
+        if conn is None:
+            async with self._engine.connect() as owned:
+                return await self.get_terminal_integration_delegate_operation(task_id, conn=owned)
+        row = (await conn.execute(statement)).mappings().one_or_none()
+        return dict(row) if row else None
 
     async def get_integration_checkpoint(self, task_id: str) -> dict | None:
         statement = select(task_integration_checkpoints).where(
