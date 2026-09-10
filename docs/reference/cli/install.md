@@ -180,11 +180,13 @@ settings:
     credential_variable: DISCORD_BOT_TOKEN   # optional; this is the default
 ```
 
-The bot token is never asked for, printed, or written by the installer. Put it
-in `~/.agent-queue/.env` as `DISCORD_BOT_TOKEN=…` (mode `0600`); `config.yaml`
-only ever refers to `${DISCORD_BOT_TOKEN}`. Until it is there, the step reports
-`needs_user` (exit `10`) and says exactly where to put it. Add Discord later at
-any time by rerunning with `--with discord`.
+Both ids are numeric Discord IDs (17-20 digits), not names — a channel name
+where an id belongs is reported by the step rather than by the daemon at its
+next start. The bot token is never asked for, printed, or written by the
+installer. Put it in `~/.agent-queue/.env` as `DISCORD_BOT_TOKEN=…` (mode
+`0600`); `config.yaml` only ever refers to `${DISCORD_BOT_TOKEN}`. Until it is
+there, the step reports `needs_user` (exit `10`) and says exactly where to put
+it. Add Discord later at any time by rerunning with `--with discord`.
 
 ### Where AQ stores your data
 

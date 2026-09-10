@@ -498,6 +498,27 @@ def discord_step(
                 ),
                 detail={"missing": missing, "credential_source": token_env},
             )
+        from src.config import is_discord_snowflake
+
+        malformed = sorted(
+            name
+            for name, value in (("channel_id", channel_id), ("guild_id", guild_id))
+            if not is_discord_snowflake(value)
+        )
+        if malformed:
+            # The daemon refuses a channel *name* where an id belongs, and it
+            # would refuse it at the next start rather than here.  Catch it
+            # while the human is still looking at the installer.
+            return StepResult.needs_user(
+                STEP_DISCORD,
+                f"{' and '.join(malformed)} is not a Discord ID (17-20 digits)",
+                (
+                    "Use the numeric ID, not the channel or server name: turn on Developer "
+                    "Mode in Discord, right-click the channel or server and choose Copy ID. "
+                    "Then rerun `aq install --with discord`."
+                ),
+                detail={"malformed": malformed},
+            )
         if not _token_present(token_env):
             return StepResult.needs_user(
                 STEP_DISCORD,

@@ -670,3 +670,22 @@ def test_a_configured_worktree_directory_is_reported_as_configured(tmp_path):
         if entry["label"] == "Worktrees"
     )
     assert worktrees["path"] == str(tmp_path / "checkouts")
+
+
+def test_a_channel_name_where_an_id_belongs_is_caught_by_the_installer(tmp_path):
+    """The daemon refuses it at the next start; the installer says so now."""
+    home = configured(tmp_path)
+    daemon = FakeDaemon(up=True)
+
+    result = run(
+        registry_for(home, daemon),
+        tmp_path,
+        capabilities=(CAPABILITY_DISCORD,),
+        settings={"discord": {"channel_id": "#general", "guild_id": GUILD}},
+    )
+
+    discord = step(result, STEP_DISCORD)
+    assert discord.state is StepState.NEEDS_USER
+    assert discord.detail["malformed"] == ["channel_id"]
+    assert "Copy ID" in (discord.remediation or "")
+    assert "messaging_platform: none" in (home / "config.yaml").read_text(encoding="utf-8")
