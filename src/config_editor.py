@@ -82,6 +82,55 @@ def _round_trip_yaml():
     return yaml_rt
 
 
+# ruamel's round-trip emitter follows YAML 1.2, in which ``off`` is a plain
+# string, so it writes the Python string "off" bare.  Every reader here is
+# PyYAML, which follows YAML 1.1 and resolves bare ``off``/``on``/``yes``/
+# ``no`` (and sexagesimals like ``1:30``, octals like ``012``) as non-strings.
+# Values in that gap have to be quoted on write or they change type on the
+# next read.  The check asks PyYAML's own resolver rather than carrying a word
+# list, so it stays exactly as wide as the reader it is protecting.
+_PYYAML_RESOLVER = yaml.resolver.Resolver()
+
+
+def _reads_back_as_non_string(value: str) -> bool:
+    """True when PyYAML would resolve *value*, written bare, as a non-string."""
+    try:
+        tag = _PYYAML_RESOLVER.resolve(yaml.ScalarNode, value, (True, False))
+    except Exception:
+        # Unresolvable is the conservative case: quote it.
+        return True
+    return tag != "tag:yaml.org,2002:str"
+
+
+def _quote_yaml11_scalars(value: Any) -> Any:
+    """Force quoting on every string a PyYAML reader would not read back as one.
+
+    Applied to data on its way into the round-trip writer.  Quoting is always
+    safe for a string, so the check only has to be conservative in one
+    direction.
+    """
+    from ruamel.yaml.comments import CommentedMap, CommentedSeq
+    from ruamel.yaml.scalarstring import ScalarString, SingleQuotedScalarString
+
+    if isinstance(value, ScalarString):
+        # An explicit style is already attached; leave the caller's choice alone.
+        return value
+    if isinstance(value, str):
+        return SingleQuotedScalarString(value) if _reads_back_as_non_string(value) else value
+    if isinstance(value, CommentedMap | CommentedSeq):
+        # These carry comment attachments keyed by position, so fix the scalars
+        # in place rather than rebuilding the container.
+        items = value.items() if isinstance(value, CommentedMap) else enumerate(value)
+        for key, item in list(items):
+            value[key] = _quote_yaml11_scalars(item)
+        return value
+    if isinstance(value, dict):
+        return {_quote_yaml11_scalars(k): _quote_yaml11_scalars(v) for k, v in value.items()}
+    if isinstance(value, list | tuple):
+        return [_quote_yaml11_scalars(item) for item in value]
+    return value
+
+
 # ---------------------------------------------------------------------------
 # Raw YAML reader (preserves env placeholders)
 # ---------------------------------------------------------------------------
@@ -310,6 +359,11 @@ def write_section(path: str, section: str, new_data: Any) -> None:
 
     If ``new_data`` is ``None`` the section is deleted.
 
+    Strings that a YAML 1.1 reader would resolve as something else (``off``,
+    ``yes``, ``n``, ``1:30``, ...) are quoted, so the section reads back with
+    the types the caller wrote.  Untouched sections keep whatever the file
+    already said.
+
     The caller is responsible for validation; ``write_section`` is the dumb
     persistence layer.
     """
@@ -321,7 +375,7 @@ def write_section(path: str, section: str, new_data: Any) -> None:
         if section in doc:
             del doc[section]
     else:
-        doc[section] = new_data
+        doc[section] = _quote_yaml11_scalars(new_data)
 
     with open(path, "w", encoding="utf-8") as f:
         yaml_rt.dump(doc, f)
@@ -332,8 +386,9 @@ def write_full_config(path: str, new_data: dict[str, Any]) -> None:
 
     Used by ``aq system config edit`` after the user closes their editor.
     Comments inside replaced sections are NOT preserved (the user
-    presumably saw them while editing).
+    presumably saw them while editing).  Strings are quoted on the same terms
+    as :func:`write_section`.
     """
     yaml_rt = _round_trip_yaml()
     with open(path, "w", encoding="utf-8") as f:
-        yaml_rt.dump(new_data, f)
+        yaml_rt.dump(_quote_yaml11_scalars(new_data), f)
