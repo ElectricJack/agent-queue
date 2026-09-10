@@ -124,6 +124,28 @@ async def test_successor_waits_for_default_branch_delivery(setup):
     assert (await db.get_task("successor")).is_blocked
 
 
+async def test_deleted_delivered_branch_does_not_strand_later_batches(setup):
+    db, service, source, remote, _repo = setup
+    previous = await feature(setup, "previous")
+    await db.save_task_completion(TaskCompletion(
+        id="previous-close", task_id="previous", outcome="pass",
+        commits=[previous], completed_at=time.time(),
+    ))
+    # Simulate a historical merge and normal source-branch cleanup, before
+    # this publisher had a delivery receipt for it.
+    git(source, "push", "origin", f"{previous}:main")
+    git(source, "push", "origin", "--delete", "previous")
+    later = await feature(setup, "later")
+    await db.add_dependency("later", "previous")
+    assert (await db.get_task("later")).is_blocked
+    # First pass records ancestry for the cleaned-up predecessor; the next
+    # pass can collect its already-completed dependent.
+    assert (await service.sweep("p"))["outcome"] == "delivered"
+    assert not (await db.get_task("later")).is_blocked
+    assert (await service.sweep("p"))["outcome"] == "delivered"
+    assert git(remote, "merge-base", "--is-ancestor", later, "main") == ""
+
+
 async def test_failed_validation_parks_and_preserves_candidate(setup):
     _db, service, _source, remote, _repo = setup
     before = git(remote, "rev-parse", "main")

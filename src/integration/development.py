@@ -497,6 +497,19 @@ class DevelopmentIntegration:
                 source = source_heads.get(
                     "refs/remotes/origin/" + task["branch_name"].removeprefix("refs/heads/")
                 )
+                if not source:
+                    # Branch cleanup after merge must not strand every later
+                    # batch. A durable completion plus default-branch ancestry
+                    # proves delivery even after the source ref is deleted.
+                    completion = await self.db.get_task_completion(task["id"])
+                    recorded_head = (
+                        completion.commits[-1] if completion and completion.commits else None
+                    )
+                    if (
+                        recorded_head and is_valid_git_oid(recorded_head)
+                        and await self.git.ais_ancestor(str(store), recorded_head, base)
+                    ):
+                        source = recorded_head
                 key = (task["id"], source)
                 if not source:
                     unavailable.add(task["id"])
