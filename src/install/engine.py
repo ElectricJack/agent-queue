@@ -24,13 +24,14 @@ network I/O, and writes exactly one file: the resume record.
 
 from __future__ import annotations
 
+import time
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from .platform import SupportVerdict, describe_host, evaluate_support
+from .platform import SupportVerdict, describe_host
 from .results import (
     InstallOutcome,
     InstallResult,
@@ -122,6 +123,7 @@ class InstallEngine:
         consent: ConsentCallback | None = None,
         progress: ProgressCallback | None = None,
         clock: Callable[[], str] = _utc_now,
+        timer: Callable[[], float] = time.monotonic,
     ) -> None:
         self.registry = registry
         self.options = options or InstallOptions()
@@ -129,6 +131,7 @@ class InstallEngine:
         self._consent = consent
         self._progress = progress
         self._clock = clock
+        self._timer = timer
 
     # -- host ---------------------------------------------------------------
     @property
@@ -270,7 +273,9 @@ class InstallEngine:
             self._emit(
                 ProgressEvent(index, len(ordered), step.id, step.title, "start", action=row.action)
             )
+            started = self._timer()
             result = self._execute(step, row, satisfied, support, resources, state)
+            result = result.with_duration(int((self._timer() - started) * 1000))
             results.append(result)
             self._emit(
                 ProgressEvent(
@@ -527,6 +532,5 @@ __all__ = [
     "InstallOptions",
     "ProgressCallback",
     "ProgressEvent",
-    "evaluate_support",
     "run_install",
 ]

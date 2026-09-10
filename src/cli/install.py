@@ -183,7 +183,7 @@ def build_options(
     )
 
 
-def _consent(target: Console) -> Any:
+def _consent() -> Any:
     def ask(step: StepSpec) -> bool:
         # Prompts go to stderr: a caller that combines --interactive with
         # --json is parsing stdout, and a consent question printed there would
@@ -328,7 +328,7 @@ def install(
         registry,
         options,
         support=describe_host(),
-        consent=_consent(console) if interactive else None,
+        consent=_consent() if interactive else None,
         progress=None if quiet else _progress(console),
     )
     result = engine.run()

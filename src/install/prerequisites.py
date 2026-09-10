@@ -24,10 +24,6 @@ from .results import ResourceRecord, StepResult
 from .state import default_state_dir
 from .steps import StepContext, StepRegistry, StepSpec
 
-#: Capability names the engine itself understands.  Adapters add their own
-#: (``postgres``, ``harness:claude``, …) alongside these.
-CAPABILITY_DASHBOARD = "dashboard"
-
 #: The interpreter floor, mirroring ``requires-python`` in ``pyproject.toml``.
 MINIMUM_PYTHON = (3, 12)
 

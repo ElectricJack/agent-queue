@@ -13,7 +13,7 @@ result in a test without a machine to install onto.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import Enum
 from typing import Any
 
@@ -75,7 +75,6 @@ class PlanAction(str, Enum):
     SKIP_NOT_SELECTED = "skip_not_selected"
     SKIP_COMPLETED = "skip_completed"
     BLOCKED = "blocked"
-    NOT_REACHED = "not_reached"
 
 
 @dataclass(frozen=True, slots=True)
@@ -142,7 +141,7 @@ class StepResult:
         return self.state in SATISFIED_STATES
 
     def with_duration(self, duration_ms: int) -> StepResult:
-        return replace_result(self, duration_ms=duration_ms)
+        return replace(self, duration_ms=duration_ms)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -225,13 +224,6 @@ class StepResult:
             retryable=retryable,
             resources=resources,
         )
-
-
-def replace_result(result: StepResult, **changes: Any) -> StepResult:
-    """``dataclasses.replace`` for a slotted frozen dataclass."""
-    from dataclasses import replace
-
-    return replace(result, **changes)
 
 
 @dataclass(frozen=True, slots=True)

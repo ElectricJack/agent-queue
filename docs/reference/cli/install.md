@@ -80,7 +80,7 @@ existing code is never reassigned.
     {"step_id": "prereq.data-dir", "state": "needs_user",
      "summary": "unattended run has no approval for the mutating step 'prereq.data-dir'",
      "detail": {}, "remediation": "Rerun with `--approve prereq.data-dir` …",
-     "retryable": true, "resources": [], "duration_ms": null}
+     "retryable": true, "resources": [], "duration_ms": 3}
   ],
   "resources": [
     {"kind": "directory", "id": "/home/you/.agent-queue", "owned": true, "reused": false, "detail": {}}
@@ -99,7 +99,7 @@ existing code is never reassigned.
 * **`steps[].remediation`** is present on every `failed` and `needs_user` step
   and says what to do; **`next_action`** repeats the first one.
 * **`plan[].action`** is `run`, `revalidate`, `would_run`, `skip_not_selected`,
-  `skip_completed`, `blocked` or `not_reached`.
+  `skip_completed` or `blocked`.
 * **`resources`** is what the installer owns (`owned: true`) or found and
   reused (`owned: false`). It is what repair and uninstall act on.
 

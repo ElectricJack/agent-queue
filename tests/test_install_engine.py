@@ -464,6 +464,19 @@ def test_a_dry_run_after_a_restart_shows_the_restart_without_changing_the_record
     assert (tmp_path / "install-state.json").read_text(encoding="utf-8") == before
 
 
+def test_each_executed_step_reports_how_long_it_took(tmp_path):
+    ticks = iter([0.0, 0.25, 0.25, 0.5])
+    registry = StepRegistry((StepSpec(id="a", title="a", run=_Counter("a")),))
+    result = InstallEngine(
+        registry,
+        _options(tmp_path),
+        support=SUPPORTED,
+        clock=_clock(),
+        timer=lambda: next(ticks),
+    ).run()
+    assert result.steps[0].duration_ms == 250
+
+
 # -- host admission ---------------------------------------------------------
 
 

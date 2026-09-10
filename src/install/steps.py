@@ -25,7 +25,7 @@ from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
-from .platform import SupportVerdict
+from .platform import PlatformFacts, SupportVerdict
 from .results import ResourceRecord, StepResult
 
 
@@ -54,7 +54,7 @@ class StepContext:
     completed: Mapping[str, str] = field(default_factory=dict)
 
     @property
-    def facts(self):
+    def facts(self) -> PlatformFacts:
         return self.support.facts
 
     def option(self, name: str, default: Any = None) -> Any:
@@ -219,21 +219,6 @@ class StepRegistry:
 
     def describe(self) -> list[dict[str, Any]]:
         return [step.to_dict() for step in self.ordered()]
-
-
-def command_exists(
-    name: str, *, path_lookup: Callable[[str], str | None] | None = None
-) -> str | None:
-    """Return the resolved path of *name*, or None.
-
-    Injectable so a prerequisite test does not depend on what happens to be
-    installed on the machine running the suite.
-    """
-    if path_lookup is not None:
-        return path_lookup(name)
-    import shutil
-
-    return shutil.which(name)
 
 
 def merge_resources(

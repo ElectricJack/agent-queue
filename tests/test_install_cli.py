@@ -233,6 +233,14 @@ def test_the_documented_exit_codes_are_the_ones_the_code_uses():
     assert documented == {outcome.value: code for outcome, code in EXIT_CODES.items()}
 
 
+def test_the_documented_plan_actions_are_the_ones_the_code_can_emit():
+    from src.install.results import PlanAction
+
+    text = DOC.read_text(encoding="utf-8")
+    documented = set(re.findall(r"`(run|revalidate|would_run|skip_\w+|blocked)`", text))
+    assert documented == {action.value for action in PlanAction}
+
+
 def test_the_documented_step_states_are_the_ones_the_code_reports():
     from src.install.results import StepState
 
