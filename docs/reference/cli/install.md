@@ -9,11 +9,10 @@ on every supported host.
 It is the only `aq` command that expects **no running daemon** — it runs the
 engine in-process and talks to nothing over the network.
 
-> **Status.** The engine, the platform matrix and the built-in prerequisite
-> steps ship today. The steps that install WSL, Homebrew, PostgreSQL and the
-> agent CLIs are being added by the remaining install-and-onboarding tasks;
-> `aq install --list-steps` always prints what this build actually knows how
-> to do.
+> **Status.** The engine, platform matrix, prerequisites, and optional agent
+> CLI steps ship today. WSL, Homebrew, and PostgreSQL installation remain
+> adapter work; `aq install --list-steps` always prints what this build
+> actually knows how to do.
 
 ## Usage
 
@@ -22,6 +21,7 @@ aq install                      # interactive: prompt before each change
 aq install --dry-run            # report the plan, run only read-only checks
 aq install --non-interactive --yes --json   # unattended, machine-readable
 aq install --list-steps         # what this build can do, in run order
+aq install --with provider.codex # select one optional agent CLI
 ```
 
 | Option | Meaning |
@@ -38,6 +38,26 @@ aq install --list-steps         # what this build can do, in run order
 | `--restart-from STEP` | Redo `STEP` and the steps that depend on it. Nothing else is re-executed. |
 | `--state-file PATH` | Where the resume record lives. Defaults to `~/.agent-queue/install-state.json`. |
 | `--list-steps` | Print the registered steps and exit. |
+
+## Agent CLI providers
+
+Agent CLIs are optional. Select one or more with `--with`; leave a provider
+unselected to record it as skipped without blocking AQ installation. A selected
+provider is first detected on `PATH`, including its `--version` result. A
+working existing executable is reused; otherwise the installer asks for
+consent (or requires `--approve` in unattended mode) before using the
+provider's documented installer. It never reads, writes, or exports provider
+credentials.
+
+| Capability | CLI | Installation route |
+| --- | --- | --- |
+| `provider.claude` | Claude Code | Claude's native macOS/Linux/WSL installer |
+| `provider.codex` | Codex CLI | Codex's standalone macOS/Linux installer |
+| `provider.gemini` | Gemini CLI | `npm install -g @google/gemini-cli` |
+
+For example, `aq install --with provider.claude --with provider.codex` selects
+two harnesses. `aq install --list-steps` includes the exact step ids for use
+with `--approve` and `--restart-from`.
 
 ## Exit codes
 
@@ -143,7 +163,7 @@ to start a new record beside the old one.
 
 ```yaml
 version: 1
-capabilities: [dashboard]
+capabilities: [provider.codex]
 approve: ["prereq.data-dir"]     # or ["*"] for every mutating step
 settings:
   some-adapter-option: value
