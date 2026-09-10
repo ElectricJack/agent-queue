@@ -838,24 +838,31 @@ class PoolsMixin:
                 return None
 
             worktrees_enabled = self._worktrees_enabled()
-            fresh_slot: str | None = None
-            if worktrees_enabled and kind.is_git_repo:
-                # Prefer the slot this launch just paid for, so a concurrent
-                # dispatch cannot take it out from under us (the pool launch
-                # has the same growth-then-lose race task dispatch had).
-                growth = await self._ensure_worktree_slots(project, kind.id)
-                fresh_slot = growth.created.get(kind.id)
+            # Growth only promises one free slot. Keep growth and acquisition
+            # together so another launch cannot consume that promise first.
+            # This lock is local to a project/kind; provider startup and other
+            # projects remain independent background work.
+            locks = self.__dict__.setdefault("_pool_workspace_locks", {})
+            lock = locks.setdefault((project.id, kind.id), asyncio.Lock())
+            async with lock:
+                fresh_slot: str | None = None
+                if worktrees_enabled and kind.is_git_repo:
+                    # Prefer the slot this launch just paid for, so a concurrent
+                    # dispatch cannot take it out from under us (the pool launch
+                    # has the same growth-then-lose race task dispatch had).
+                    growth = await self._ensure_worktree_slots(project, kind.id)
+                    fresh_slot = growth.created.get(kind.id)
 
-            workspace = await self.db.acquire_one_unlocked(
-                project_id=project.id,
-                kind_id=kind.id,
-                mode=kind.default_lock_mode,
-                locked_by_task_id=None,
-                locked_by_agent_id=agent.id,
-                prefer_workspace_id=fresh_slot,
-                kind_mode=(kind.mode if worktrees_enabled and kind.is_git_repo else None),
-                worktree_slot_cap=(self._project_slot_cap(project) if worktrees_enabled else None),
-            )
+                workspace = await self.db.acquire_one_unlocked(
+                    project_id=project.id,
+                    kind_id=kind.id,
+                    mode=kind.default_lock_mode,
+                    locked_by_task_id=None,
+                    locked_by_agent_id=agent.id,
+                    prefer_workspace_id=fresh_slot,
+                    kind_mode=(kind.mode if worktrees_enabled and kind.is_git_repo else None),
+                    worktree_slot_cap=(self._project_slot_cap(project) if worktrees_enabled else None),
+                )
             if workspace is None:
                 await _rollback("starved: no free workspace", quarantine=True)
                 return None
