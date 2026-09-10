@@ -78,6 +78,7 @@ docs/
     README.md
     setup.md
     testing.md
+    installer-testing.md
     repo-map.md
     scripts.md
     ci.md
