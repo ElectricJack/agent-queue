@@ -62,3 +62,34 @@ def test_setup_sh_does_not_resurrect_the_acpx_runtime() -> None:
         "setup.sh references the `runtime:` profile config key, which "
         "src/profiles/parser.py rejects. Point at `harness` instead."
     )
+
+
+def test_setup_sh_hands_machine_setup_to_the_one_installer() -> None:
+    """The contributor bootstrap prepares a checkout; ``aq install`` sets up the machine.
+
+    The legacy first-run wizard was a second installation flow with its own
+    prompts, its own configuration writer and a required Discord bot token.  It
+    was deleted in favour of ``aq install``, which is the entry point the
+    documentation describes; this asserts the split does not quietly return.
+    """
+    text = SETUP_SH.read_text()
+    assert "aq install" in text, "setup.sh must hand machine setup to `aq install`"
+    assert "setup_wizard" not in text, (
+        "setup.sh references the retired first-run wizard; machine setup belongs to "
+        "`aq install` (docs/reference/cli/install.md)."
+    )
+    assert not (ROOT / "src" / "setup_wizard.py").exists(), (
+        "src/setup_wizard.py is back. Onboarding lives in src/install/ — the engine, the "
+        "onboarding steps and the wizard front-end — behind the single `aq install` command."
+    )
+
+
+def test_setup_sh_carries_no_operator_specific_paths() -> None:
+    """A shipped installer must not default to whatever box wrote it.
+
+    ``AQ_MEMORY_PATH`` used to default to one developer's checkout under
+    ``/mnt/d``, which is neither portable nor discoverable.
+    """
+    text = SETUP_SH.read_text()
+    assert "/mnt/d" not in text
+    assert "AQ_MEMORY_PATH:-/" not in text

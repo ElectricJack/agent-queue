@@ -29,6 +29,7 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
+from .logins import login_steps
 from .macos import (
     DEFAULT_PREFIXES,
     STEP_PACKAGES,
@@ -36,13 +37,18 @@ from .macos import (
     brew_aware_which,
     macos_steps,
 )
+from .onboarding import onboarding_steps
 from .platform import (
     HOST_MACOS_ARM,
     HOST_MACOS_INTEL,
     SupportVerdict,
     describe_host,
 )
+from .postgres_steps import STEP_CONNECTION as STEP_POSTGRES_CONNECTION
+from .postgres_steps import STEP_PACKAGE as STEP_POSTGRES_PACKAGE
+from .postgres_steps import postgres_steps
 from .prerequisites import (
+    STEP_DATA_DIR,
     STEP_HOST,
     data_directory_step,
     git_step,
@@ -50,8 +56,6 @@ from .prerequisites import (
     python_step,
     tmux_step,
 )
-from .postgres_steps import STEP_PACKAGE as STEP_POSTGRES_PACKAGE, postgres_steps
-from .logins import login_steps
 from .providers import provider_installers, provider_steps
 from .steps import StepRegistry, StepSpec
 
@@ -139,6 +143,26 @@ def build_registry(
     installers = provider_installers()
     registry.extend(provider_steps(which=lookup))
     registry.extend(login_steps(environ=environ, which=lookup or shutil.which, installers=installers))
+    # The onboarding steps close the newcomer's path: a configuration with
+    # defaults for this box, a daemon that answers and the dashboard URL.  The
+    # daemon needs a database and a configuration that names it, so when the
+    # PostgreSQL adapter is present the dependency is stated rather than left
+    # to registration order — the engine's topological sort interleaves
+    # independent branches, and a daemon started before the credential was
+    # written would fail for a reason nobody could read.
+    onboarding_after = (
+        (STEP_POSTGRES_CONNECTION,)
+        if STEP_POSTGRES_CONNECTION in registry
+        else (STEP_DATA_DIR,)
+    )
+    registry.extend(
+        onboarding_steps(
+            environ=environ,
+            home=state_dir,
+            which=lookup or shutil.which,
+            depends_on=onboarding_after,
+        )
+    )
     return registry
 
 
