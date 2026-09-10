@@ -625,6 +625,8 @@ RULES: list[tuple[str, str, str, str, str]] = [
      "GitHub configuration or example payload."),
     ("pyproject.toml", "contributing", "docs/contributing/setup.md", SUPPORTING,
      "Python package and tooling configuration."),
+    ("LICENSE", "contributing", "docs/contributing/repo-map.md", SUPPORTING,
+     "MIT licence text; pyproject.toml carries the matching SPDX metadata."),
     ("package.json", "contributing", "docs/contributing/setup.md", SUPPORTING,
      "Repository-level npm manifest."),
     ("package-lock.json", "contributing", "docs/contributing/setup.md", SUPPORTING,

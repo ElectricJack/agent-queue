@@ -96,6 +96,7 @@ which is machine-checked and never guessed.
 | [`run_tests.sh`](../../run_tests.sh), [`test_suite.bat`](../../test_suite.bat) | **Historical.** Whole-suite runners that predate `aq test`; see [scripts](scripts.md#historical-and-unsupported). |
 | [`mkdocs.yml`](../../mkdocs.yml) | **Historical.** Configuration for a MkDocs site; this documentation set is GitHub-rendered Markdown with relative links and has no site build. |
 | [`README.md`](../../README.md) | The GitHub landing page. |
+| [`LICENSE`](../../LICENSE) | The MIT licence text. The matching SPDX expression and `license-files` pin live in `pyproject.toml`; change both together. |
 
 ## Agent-facing instruction files
 
