@@ -1301,6 +1301,20 @@ class SessionReconciler:
         if not idle_rows:
             return
         for row in idle_rows:
+            # Named supervisors have no task stall ladder. Recover an owned
+            # notification even if its message was consumed through the inbox
+            # and therefore no longer produces another delivery attempt.
+            provider = self._provider_for(row)
+            resubmit = getattr(provider, "resubmit_pending", None)
+            if callable(resubmit):
+                try:
+                    if await resubmit(self._handle(row)):
+                        # Submission starts fresh work even if the previous
+                        # activity sample had already crossed the idle limit.
+                        await self.db.touch_session_activity(row.id, now)
+                        continue
+                except Exception:
+                    logger.debug("pending supervisor submit remains recoverable", exc_info=True)
             profile = await self._profile_for(row)
             idle_timeout = int(getattr(profile, "idle_timeout", 0) or 0)
             if idle_timeout <= 0:

@@ -1352,6 +1352,21 @@ class TestDesiredState:
 
         monkeypatch.setattr(db, "get_profile", _get_profile)
 
+    async def test_named_session_recovers_owned_submit_without_a_task(
+        self, db, provider, reconciler, monkeypatch
+    ):
+        from unittest.mock import AsyncMock
+
+        await self._named(db, provider, started_at=NOW - 1000, last_activity=NOW - 1000)
+        provider.sessions["n-supervisor--p1"].activity = NOW - 1000
+        await self._idle_profile(db, monkeypatch, timeout=600)
+        provider.resubmit_pending = AsyncMock(return_value=True)
+        await reconciler.tick(now=NOW)
+        provider.resubmit_pending.assert_awaited_once()
+        assert provider.resubmit_pending.await_args.args[0].name == "n-supervisor--p1"
+        assert (await db.get_session("n1")).state == "running"
+        assert (await db.get_session("n1")).last_activity == NOW
+
     async def test_drain_writes_intent_as_well_as_state(
         self, db, provider, reconciler, monkeypatch
     ):
