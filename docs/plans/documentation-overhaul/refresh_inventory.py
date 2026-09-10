@@ -264,11 +264,19 @@ def _owned_page_rules() -> list[tuple[str, str, str, str, str]]:
 # First match wins, so narrower globs come first.
 RULES: list[tuple[str, str, str, str, str]] = [
     # ---------------------------------------------------------------- docs
+    ("LICENSE", "contributing", "docs/contributing/README.md", SUPPORTING,
+     "Repository license; explained with contributor and distribution policy."),
+    ("docs/plans/documentation-overhaul/final-coverage-report.md", "acceptance",
+     "docs/README.md", DOCUMENTATION,
+     "Final acceptance evidence for the documentation overhaul."),
     ("docs/plans/documentation-overhaul/*", "foundation",
      "docs/plans/documentation-overhaul/README.md", DOCUMENTATION,
      "This overhaul's own planning material."),
-    ("docs/README.md", "foundation", "docs/README.md", DOCUMENTATION,
-     "Documentation home; final navigation assembly owns it after foundation."),
+    ("docs/README.md", "acceptance", "docs/README.md", DOCUMENTATION,
+     "Documentation home and final navigation assembly."),
+    ("docs/reference/modules/README.md", "acceptance",
+     "docs/reference/modules/README.md", DOCUMENTATION,
+     "Shared module catalog index assembled at final acceptance."),
     ("docs/reference/glossary.md", "foundation", "docs/reference/glossary.md",
      DOCUMENTATION, "Shared vocabulary."),
     ("docs/contributing/documentation-style.md", "foundation",

@@ -37,11 +37,14 @@ that plugin's handler to a statement budget owned by the claim path.
 
 from __future__ import annotations
 
+import re
 import time
+from dataclasses import dataclass
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from sqlalchemy import event, text
+from sqlalchemy.dialects import postgresql
 
 from src.models import (
     Agent,
@@ -178,11 +181,58 @@ async def _seed_worker_scale(any_db):
     await seed_scale(any_db, profile_id="worker", intelligence_class="standard-medium")
 
 
+@dataclass(frozen=True)
+class _Plan:
+    """One ``EXPLAIN (ANALYZE, BUFFERS)`` output, reduced to what is asserted."""
+
+    text: str
+
+    @property
+    def buffers(self) -> int:
+        """Shared buffers the *root* node accounted for.
+
+        Buffer lines are cumulative up the plan tree, so the first one is the
+        whole statement's total; summing every line would count inner nodes
+        several times over.
+        """
+        found = re.search(r"shared hit=(\d+)", self.text)
+        return int(found.group(1)) if found else 0
+
+    @property
+    def sorted(self) -> bool:
+        return any(
+            line.strip().removeprefix("->").strip().startswith(("Sort", "Incremental Sort"))
+            for line in self.text.splitlines()
+        )
+
+
+class _ExplainingConn:
+    """Connection proxy that ``EXPLAIN``s every statement, then runs it.
+
+    Wrapping the connection rather than reconstructing the SQL is what makes
+    ``test_work_query_is_an_index_ordered_scan`` an assertion about the
+    statements production issues: the query builder is a closure inside
+    ``select_ready_for_profile`` and has no other seam.
+    """
+
+    def __init__(self, conn):
+        self._conn = conn
+        self.plans: list[_Plan] = []
+
+    async def execute(self, statement, *args, **kwargs):
+        compiled = statement.compile(
+            dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True}
+        )
+        explained = await self._conn.execute(text(f"EXPLAIN (ANALYZE, BUFFERS) {compiled}"))
+        self.plans.append(_Plan("\n".join(row[0] for row in explained)))
+        return await self._conn.execute(statement, *args, **kwargs)
+
+
 class TestClaimStatementBudgets:
     async def test_claim_happy_path_statement_budget(self, any_db, tmp_path):
         """Whole ``task_claim`` happy path (slot reset stubbed).
 
-        **Measured on PostgreSQL: 19.**  The trace, statement by statement:
+        **Measured on PostgreSQL: 20.**  The trace, statement by statement:
 
         *Outer admission loop (3).*  1 the session+profile join (one read
         for both — spec §15); 2 ``touch_session_activity``, the durable
@@ -192,13 +242,13 @@ class TestClaimStatementBudgets:
         skipped because ``wait == 0``.  All three share one pooled
         connection — see ``CLAIM_TRANSACTIONS``.
 
-        *The claim transaction (9, statements 4-12).*  Asserted separately
+        *The claim transaction (10, statements 4-13).*  Asserted separately
         by ``test_claim_transaction_statement_budget`` below, which
         subtracts exactly the three outer pre-reads above.
 
-        *Preparation and activation (7, statements 13-19).*  13
+        *Preparation and activation (7, statements 14-20).*  14
         ``claim_preparation_is_current`` — one join re-proving the task and
-        session fences before any filesystem work; 14
+        session fences before any filesystem work; 15
         ``_prepare_and_activate``'s project re-read, which decides whether
         the claim takes the hierarchical-integration branch path from the
         project's *current* ``hierarchical_integration_mode`` (the outer
@@ -206,15 +256,15 @@ class TestClaimStatementBudgets:
         connection; 15-16 ``activate_claim``'s two ``FOR UPDATE`` locks,
         taken session-then-task in the same order as claim and release so
         activation cannot deadlock against them, the task one also reading
-        ``branch_name``; 17 the activation CAS (``UPDATE sessions …
-        RETURNING``, so the caller needs no re-read); 18 the stale-metadata
+        ``branch_name``; 18 the activation CAS (``UPDATE sessions …
+        RETURNING``, so the caller needs no re-read); 19 the stale-metadata
         delete: the ``needs_attention`` warning an earlier prepare/release
         left — the *only* clear on the ``preparing`` retry path, which
         re-activates a task already IN_PROGRESS and so never reaches
-        ``_apply_transition``'s copy at statement 8 — together with the
+        ``_apply_transition``'s copy at statement 9 — together with the
         pause checkpoint and prepare-backoff ladder, which go stale at
         exactly this boundary (``activate_claim``'s
-        ``clear_preparation_metadata``); 19 ``tasks.branch_name``,
+        ``clear_preparation_metadata``); 20 ``tasks.branch_name``,
         publishing the branch the slot reset just created past every
         activation guard and under the task row lock already held (skipped
         when the row already names that branch — a resume, or a hierarchy
@@ -235,7 +285,22 @@ class TestClaimStatementBudgets:
         ``clear_claim_preparation_metadata``'s second, value-scoped
         ``needs_attention`` delete, which statement 18 had already made
         redundant.  Most recently that method itself: its remaining delete
-        is statement 18's ``IN`` list, inside the activation transaction.
+        is statement 19's ``IN`` list, inside the activation transaction.
+
+        What arrived: the §10 work query became two statements rather than
+        one on 2026-09-09.  See ``select_ready_for_profile`` for why — in
+        short, the affinity ``CASE`` it used to lead its ``ORDER BY`` with
+        cannot come from an index, so a ``LIMIT 1`` had to evaluate the whole
+        frontier predicate for every candidate row and top-N sort the result
+        (~10,100 shared buffers at this fixture's scale).  Split in two, each
+        half sorts by ``priority, created_at`` alone and is an index-ordered
+        scan that stops at row one: 13-15 buffers for the pair, and the
+        pinned half costs 1-2 of those when nothing is pinned to the claiming
+        agent.  A statement here buys back ~11 ms of query, and this file's
+        own accounting is why that is worth it rather than obviously so: one
+        statement on a held connection was 0.46-0.54 ms on the box
+        ``test_claim_release_latency_against_the_wire_floor`` was measured
+        on.
         """
         await _seed_worker_scale(any_db)
         sid, _wd = await pool_session(any_db, tmp_path)
@@ -244,7 +309,7 @@ class TestClaimStatementBudgets:
         async with count_statements(any_db) as c:
             res = await h._cmd_task_claim({"next": True})
         assert res["result"] == "claimed"
-        budget = 19  # keep in step with ``CLAIM_STATEMENTS`` below
+        budget = 20  # keep in step with ``CLAIM_STATEMENTS`` below
         print(f"\ntask_claim happy path: {c['n']} statements (budget {budget})")
         assert c["n"] <= budget, _over(c["n"], budget, c["statements"])
 
@@ -255,8 +320,12 @@ class TestClaimStatementBudgets:
         ``_attempt_claim``'s ``immediate()`` block plus the outer loop's
         three pre-reads, which are then subtracted.
 
-        **Measured on PostgreSQL: 9**, in order: the slot CAS
-        (``UPDATE sessions … RETURNING``); the §10 work query; the
+        **Measured on PostgreSQL: 10**, in order: the slot CAS
+        (``UPDATE sessions … RETURNING``); the §10 work query, which is two
+        statements — the affinity-pinned frontier and then, when nothing is
+        pinned to this agent, the frontier at large (``select_ready_for_profile``
+        explains why the preference cannot be a sort key and stay
+        index-ordered); the
         durable-worker eligibility guard, which reserves the agent and
         fences its soft delete in one ``UPDATE agents … RETURNING``; the
         fenced take (``UPDATE tasks SET status, assigned_agent_id,
@@ -292,20 +361,28 @@ class TestClaimStatementBudgets:
         # above: when a pre-read is added or removed there, this subtraction
         # moves with it, or the drift is silently charged to the transaction.
         n = c["n"] - _OUTER_PRE_READS
-        budget = 9
+        budget = 10
         print(f"\nclaim transaction only: {n} statements (budget {budget})")
         assert n <= budget, _over(n, budget, c["statements"][_OUTER_PRE_READS:])
 
     async def test_no_ready_work_statement_budget(self, any_db, tmp_path):
         """No matching ready task.
 
-        **Measured on PostgreSQL: 6** — the three outer-loop pre-reads
+        **Measured on PostgreSQL: 7** — the three outer-loop pre-reads
         (session+profile join, ``touch_session_activity``, project) plus the
-        3-statement ``_attempt_claim`` transaction: the slot CAS
-        (``UPDATE … RETURNING`` — no re-read), the ready-task SELECT that
-        finds nothing, and the release-slot UPDATE.  This is the statement
-        cost of an *idle* worker's poll, so it is the one budget here a long
+        4-statement ``_attempt_claim`` transaction: the slot CAS
+        (``UPDATE … RETURNING`` — no re-read), the two ready-task SELECTs
+        that find nothing (affinity-pinned first, then the frontier at
+        large), and the release-slot UPDATE.  This is the statement cost of
+        an *idle* worker's poll, so it is the one budget here a long
         ``--wait`` loop pays repeatedly; keep it tight.
+
+        The affinity half is the cheapest statement on this path — one or
+        two shared buffers against a partial index holding only pinned tasks
+        — and it is what lets the other half drop its affinity sort key and
+        become an index-ordered scan.  Before that split an idle poll walked
+        the entire frontier: at this fixture's scale, ~10,100 buffers for a
+        query whose answer is "nothing".
         """
         await any_db.create_profile(
             AgentProfile(id="worker", name="w", lifecycle="pool", needs_workspace=False)
@@ -320,9 +397,71 @@ class TestClaimStatementBudgets:
         async with count_statements(any_db) as c:
             res = await h._cmd_task_claim({"next": True})
         assert res["result"] == "no_ready_work"
-        budget = 6
+        budget = 7
         print(f"\nno_ready_work: {c['n']} statements (budget {budget})")
         assert c["n"] <= budget, _over(c["n"], budget, c["statements"])
+
+    async def test_work_query_is_an_index_ordered_scan(self, any_db, tmp_path):
+        """Both halves of the §10 work query stop at the first row.
+
+        The statement budgets above count statements; this counts what one
+        of them *touches*, which is the property the 2026-09-09 split and
+        the three ``idx_tasks_claim_frontier*`` indexes exist for.  A
+        statement count cannot see the difference between a ``LIMIT 1`` that
+        reads one index entry and one that materialises 2,500 frontier rows,
+        evaluates six correlated sub-plans against each and top-N sorts the
+        result -- and the latter is what this path did until the affinity
+        ``CASE`` came out of the ``ORDER BY``.
+
+        Two assertions, both plan-shape rather than wall-clock, so this needs
+        no ``perf_strict`` gate:
+
+        * **no ``Sort`` node.**  A sort means the planner could not get
+          ``priority, created_at`` from an index and had to read the whole
+          frontier first.  That is the regression, exactly.
+        * **a shared-buffer bound.**  Measured on PostgreSQL 18 at this
+          fixture's scale: 1-2 buffers for the affinity half (a partial
+          index holding only pinned tasks) and 11-13 for the other, so
+          13-15 for the pair against ~10,100 before.  The budget is 64:
+          loose enough for a planner that costs the two halves slightly
+          differently, ten times tighter than one correlated sub-plan
+          evaluated per frontier row.
+
+        The plans are taken from the statements ``select_ready_for_profile``
+        actually builds -- ``_ExplainingConn`` runs each through ``EXPLAIN
+        (ANALYZE, BUFFERS)`` on the way past -- so a rewrite that keeps the
+        budget by moving work into a sub-plan is still caught.
+        """
+        await _seed_worker_scale(any_db)
+        # ``profile_id`` == the project default takes the widened
+        # ``profile_id = :p OR profile_id IS NULL`` branch, which is the half
+        # that cannot use a leading index column and needs the profile-free
+        # ``idx_tasks_claim_frontier``.  Assert both branches.
+        for default_profile in ("worker", "other"):
+            async with any_db._engine.begin() as conn:
+                explaining = _ExplainingConn(conn)
+                tid = await any_db.select_ready_for_profile(
+                    explaining,
+                    project_id=PROJECT_ID,
+                    profile_id="worker",
+                    default_profile_id=default_profile,
+                    agent_id="agent-1",
+                )
+            assert tid is not None
+            budget = 64
+            total = sum(plan.buffers for plan in explaining.plans)
+            print(
+                f"\n§10 work query (default_profile={default_profile!r}): "
+                f"{len(explaining.plans)} statements, {total} shared buffers "
+                f"(budget {budget})"
+            )
+            for plan in explaining.plans:
+                assert not plan.sorted, (
+                    "the §10 work query sorted the frontier instead of reading it "
+                    f"in index order:\n{plan.text}"
+                )
+            joined = "\n\n".join(plan.text for plan in explaining.plans)
+            assert total <= budget, f"{total} shared buffers > budget {budget}:\n{joined}"
 
     async def test_release_claim_statement_budget(self, any_db, tmp_path):
         """``release_claim`` on an active claim.
@@ -429,7 +568,7 @@ class TestClaimStatementBudgets:
 #: ratchet in its own right: a query moved onto a caller's open connection
 #: is free, and a query given its own ``begin()`` costs six statements'
 #: worth of wire without moving a single statement budget.
-CLAIM_STATEMENTS = 19
+CLAIM_STATEMENTS = 20
 CLAIM_TRANSACTIONS = 4
 RELEASE_STATEMENTS = 9
 RELEASE_TRANSACTIONS = 2
@@ -645,10 +784,15 @@ class TestClaimLatency:
         milliseconds that is a 2x spread with the claim path unchanged; as a
         multiple of the floor the median is 2.6-3.2x throughout, which is
         the whole point.  Of the ~50 ms above the floor at the median,
-        ~19 ms is the §10 work query alone: it walks the 2,499-row frontier
-        and top-N sorts it because the ``ORDER BY`` leads with the affinity
-        ``CASE``, and it costs ~30 ms rather than ~19 ms once the planner
-        has real statistics for the seeded rows.
+        ~19 ms used to be the §10 work query alone: it walked the 2,499-row
+        frontier and top-N sorted it because the ``ORDER BY`` led with the
+        affinity ``CASE``, and it cost ~30 ms rather than ~19 ms once the
+        planner had real statistics for the seeded rows.  Since 2026-09-09
+        that query is two index-ordered scans that stop at the first
+        admissible row (``select_ready_for_profile``), sub-millisecond
+        together, so what remains above the floor here is the rest of the
+        path -- which is also why the *multiple* moved down without any of
+        the count budgets moving down with it.
 
         Still ``perf_strict``-gated: normalising by the wire floor removes
         the machine, not the neighbours, and ``xdist`` makes any wall-clock

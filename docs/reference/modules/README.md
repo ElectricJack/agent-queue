@@ -9,36 +9,37 @@ The catalog is split into **shards**, one per subject area, so that the people
 documenting different subsystems never edit the same file. Each shard lists its
 own modules; this page is only the index.
 
-> **Status.** The overhaul is in progress. A shard whose file name is a link
-> has been written; the rest are not yet. The module counts are already fixed
-> by the
-> [coverage manifest](../../plans/documentation-overhaul/module-ownership.json),
-> so you can see how much of each area is outstanding.
+> **Coverage status.** Every subject-area shard below is present. The
+> [coverage manifest](../../plans/documentation-overhaul/module-ownership.json)
+> assigns each tracked path to one documentation owner, and the local checker
+> verifies that every production path has a linked catalog entry. Generated
+> clients and reviewed playbook bundles are intentionally represented by their
+> resource family rather than by one row per generated file.
 
 ## Shards
 
 | Shard | Ticket | Production modules | Generated files | Component pages |
 |---|---|---|---|---|
-| `architecture.md` | `architecture` | 6 | — | `concepts/architecture.md` |
-| `tasks.md` | `tasks` | 23 | — | `concepts/tasks.md` |
-| `scheduler.md` | `scheduler` | 25 | — | `concepts/scheduling.md`, `guides/resource-gating.md` |
-| [`routing.md`](routing.md) | `routing` | 23 | — | `concepts/agents-and-routing.md`, `reference/profiles-and-classes.md` |
-| `sessions.md` | `sessions` | 30 | — | `concepts/sessions.md` |
-| `workspaces.md` | `workspaces` | 22 | — | `concepts/projects-and-workspaces.md` |
-| `integration.md` | `integration` | 29 | — | `concepts/integration.md` |
-| [`playbooks.md`](playbooks.md) | `playbooks` | 42 | 5 | `concepts/playbooks.md` |
-| [`cli.md`](cli.md) | `cli` | 94 | — | `reference/cli/README.md`, `reference/cli/agent-tools.md`, `reference/cli/contracts.md`, `reference/cli/prime.md` |
+| [`architecture.md`](architecture.md) | `architecture` | 6 | — | [Architecture](../../concepts/architecture.md) |
+| [`tasks.md`](tasks.md) | `tasks` | 23 | — | [Tasks](../../concepts/tasks.md) |
+| [`scheduler.md`](scheduler.md) | `scheduler` | 25 | — | [Scheduling](../../concepts/scheduling.md), [resource gating](../../guides/resource-gating.md) |
+| [`routing.md`](routing.md) | `routing` | 23 | — | [Agents and routing](../../concepts/agents-and-routing.md), [profiles and classes](../profiles-and-classes.md) |
+| [`sessions.md`](sessions.md) | `sessions` | 30 | — | [Sessions](../../concepts/sessions.md) |
+| [`workspaces.md`](workspaces.md) | `workspaces` | 22 | — | [Projects and workspaces](../../concepts/projects-and-workspaces.md) |
+| [`integration.md`](integration.md) | `integration` | 29 | — | [Integration](../../concepts/integration.md) |
+| [`playbooks.md`](playbooks.md) | `playbooks` | 42 | 5 | [Playbooks](../../concepts/playbooks.md) |
+| [`cli.md`](cli.md) | `cli` | 94 | — | [CLI reference](../cli/README.md), [agent tools](../cli/agent-tools.md), [contracts](../cli/contracts.md), [prime](../cli/prime.md) |
 | [`api.md`](api.md) | `api` | 51 | 1442 | [`reference/api/README.md`](../api/README.md), [`conventions.md`](../api/conventions.md), [`events.md`](../api/events.md), [`models.md`](../api/models.md), [`python-client.md`](../api/python-client.md), [`typescript-client.md`](../api/typescript-client.md) |
-| `dashboard.md` | `dashboard` | 258 | — | `guides/dashboard.md` |
-| [`database.md`](database.md) | `database` | 61 | — | `reference/database/README.md`, `reference/database/tables.md`, `reference/database/queries.md`, `reference/database/migrations.md`, `reference/database/data-lifecycle.md` |
-| `vault.md` | `vault` | 19 | — | `concepts/configuration-and-vault.md`, `reference/configuration.md` |
-| `providers.md` | `providers` | 22 | — | `concepts/providers.md` |
-| `plugins.md` | `plugins` | 24 | — | `guides/plugins-and-mcp.md` |
-| [`communications.md`](communications.md) | `communications` | 38 | — | `concepts/messaging.md`, `guides/escalations.md` |
-| `operations.md` | `operations` | 24 | — | `guides/operations.md` |
-| [`contributing.md`](contributing.md) | `contributing` | 0 | — | `contributing/README.md`, `contributing/setup.md`, `contributing/testing.md`, `contributing/repo-map.md`, `contributing/codegen.md`, `contributing/checks.md`, `contributing/scripts.md`, `contributing/ci.md`, `contributing/pull-requests.md`, `contributing/releases.md` |
+| [`dashboard.md`](dashboard.md) | `dashboard` | 258 | — | [Dashboard](../../guides/dashboard.md) |
+| [`database.md`](database.md) | `database` | 61 | — | [Database](../database/README.md), [tables](../database/tables.md), [queries](../database/queries.md), [migrations](../database/migrations.md), [lifecycle](../database/data-lifecycle.md) |
+| [`vault.md`](vault.md) | `vault` | 19 | — | [Configuration and vault](../../concepts/configuration-and-vault.md), [configuration reference](../configuration.md) |
+| [`providers.md`](providers.md) | `providers` | 21 | — | [Providers](../../concepts/providers.md) |
+| [`plugins.md`](plugins.md) | `plugins` | 24 | — | [Plugins and MCP](../../guides/plugins-and-mcp.md) |
+| [`communications.md`](communications.md) | `communications` | 38 | — | [Messaging](../../concepts/messaging.md), [escalations](../../guides/escalations.md) |
+| [`operations.md`](operations.md) | `operations` | 24 | — | [Operations](../../guides/operations.md) |
+| [`contributing.md`](contributing.md) | `contributing` | 0 | — | [Contributing](../../contributing/README.md), [setup](../../contributing/setup.md), [testing](../../contributing/testing.md), [repository map](../../contributing/repo-map.md), [codegen](../../contributing/codegen.md), [checks](../../contributing/checks.md), [scripts](../../contributing/scripts.md), [CI](../../contributing/ci.md), [pull requests](../../contributing/pull-requests.md), [releases](../../contributing/releases.md) |
 
-`contributing` carries no production modules: it documents the 81 supporting
+`contributing` carries no production modules: it documents the 83 supporting
 files — scripts, CI workflows, packaging and build configuration — and the test
 layout, by purpose rather than symbol by symbol.
 

@@ -49,6 +49,25 @@ def test_check_links_reports_missing_anchor_and_ignores_fenced_examples(tmp_path
     ]
 
 
+def test_check_links_accepts_github_relative_directory_links_but_not_directory_anchors(
+    tmp_path,
+    monkeypatch,
+):
+    checker = _checker()
+    monkeypatch.setattr(checker, "ROOT", tmp_path)
+    docs = tmp_path / "docs"
+    (docs / "reference").mkdir(parents=True)
+    source = docs / "source.md"
+    source.write_text("[directory](reference/)\n", encoding="utf-8")
+
+    assert checker.check_links([source]) == []
+
+    source.write_text("[bad directory anchor](reference/#missing)\n", encoding="utf-8")
+    assert checker.check_links([source]) == [
+        "docs/source.md: reference/#missing: directory targets have no anchors",
+    ]
+
+
 def test_module_coverage_requires_linked_rows_and_exclusion_reasons(tmp_path, monkeypatch):
     checker = _checker()
     monkeypatch.setattr(checker, "ROOT", tmp_path)
