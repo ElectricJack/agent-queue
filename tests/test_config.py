@@ -160,6 +160,77 @@ def test_asyncpg_dsn_is_pooled_like_any_other_postgres_url():
     assert [e.field for e in cfg.validate()] == ["pool_min_size"]
 
 
+def test_the_liveness_keys_are_read_off_the_database_section(config_dir):
+    """The knobs exist so an operator can move them without a code change."""
+
+    config_file = config_dir / "config.yaml"
+    config_file.write_text(
+        yaml.dump(
+            {
+                "discord": {"bot_token": "x", "guild_id": "1"},
+                "database": {
+                    "url": "postgresql://u:p@localhost:5533/aq_cfg_test",
+                    "pre_ping": "wire",
+                    "pool_recycle_seconds": 90,
+                },
+            }
+        )
+    )
+    cfg = load_config(str(config_file))
+    assert cfg.database.pre_ping == "wire"
+    assert cfg.database.pool_recycle_seconds == 90
+
+
+def test_a_database_section_without_the_liveness_keys_keeps_the_defaults(config_dir):
+    config_file = config_dir / "config.yaml"
+    config_file.write_text(
+        yaml.dump(
+            {
+                "discord": {"bot_token": "x", "guild_id": "1"},
+                "database": {"url": "postgresql://u:p@localhost:5533/aq_cfg_test"},
+            }
+        )
+    )
+    cfg = load_config(str(config_file))
+    assert (cfg.database.pre_ping, cfg.database.pool_recycle_seconds) == ("local", 1800)
+
+
+def test_connection_liveness_defaults_are_the_cheap_ones():
+    """``pre_ping`` defaults to the free check, with recycling as its backstop.
+
+    The old unconditional ``pool_pre_ping=True`` was three asyncpg round trips
+    on every pooled checkout; ``local`` reads a flag asyncpg already maintains.
+    ``pool_recycle_seconds`` is the complement — retiring an old connection
+    locally is how a server-side idle reaper stops being raced at all.
+    """
+
+    cfg = DatabaseConfig(url="postgresql+asyncpg://u:p@h/db")
+    assert cfg.pre_ping == "local"
+    assert cfg.pool_recycle_seconds == 1800
+    assert cfg.validate() == []
+
+
+@pytest.mark.parametrize("mode", ["off", "local", "wire"])
+def test_every_named_liveness_mode_validates(mode):
+    assert DatabaseConfig(url="postgresql+asyncpg://u:p@h/db", pre_ping=mode).validate() == []
+
+
+def test_an_unknown_liveness_mode_is_a_validation_error_naming_the_choices():
+    """A typo has to be caught here — the engine falls back to ``local`` rather
+    than refusing to start, so config validation is the only place it shows."""
+
+    errors = DatabaseConfig(url="postgresql+asyncpg://u:p@h/db", pre_ping="ping").validate()
+    assert [e.field for e in errors] == ["pre_ping"]
+    assert "off, local, wire" in errors[0].message
+
+
+def test_a_negative_recycle_window_is_rejected():
+    errors = DatabaseConfig(
+        url="postgresql+asyncpg://u:p@h/db", pool_recycle_seconds=-1
+    ).validate()
+    assert [e.field for e in errors] == ["pool_recycle_seconds"]
+
+
 def test_psycopg2_dsn_is_rejected_at_load():
     """Recognized as PostgreSQL, but it cannot run this daemon.
 

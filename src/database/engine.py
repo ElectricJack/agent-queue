@@ -8,7 +8,7 @@ from __future__ import annotations
 import logging
 import os
 
-from sqlalchemy import inspect, select, text
+from sqlalchemy import event, exc, inspect, select, text
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 
 from src.database.migration_guard import VERIFY, migration_decision
@@ -56,22 +56,83 @@ _schema_cache_key = schema_key
 
 
 
-def create_postgres_engine(dsn: str, pool_min: int = 2, pool_max: int = 10) -> AsyncEngine:
+def _install_local_liveness_check(engine: AsyncEngine) -> None:
+    """Discard a pooled connection that asyncpg already knows is dead.
+
+    This is the ``local`` half of :data:`src.config.POOL_PRE_PING_MODES`, and
+    the reason the daemon does not pay for ``pool_pre_ping=True``.
+
+    When PostgreSQL drops a connection — a server bounce, an idle reaper, a
+    ``pg_terminate_backend`` — the socket delivers EOF (or a FATAL) while that
+    connection sits idle in the pool, and asyncpg's protocol marks it closed
+    from the event loop's own read.  ``Connection.is_closed()`` therefore
+    answers the question pre-ping asks without touching the wire at all.
+    Raising :class:`~sqlalchemy.exc.DisconnectionError` from the ``checkout``
+    event is SQLAlchemy's documented hook for pessimistic disconnect handling:
+    the pool invalidates the entry and retries the checkout with a fresh
+    connection, so the caller never sees the stale one.
+
+    What this does *not* cover, and ``wire`` does: a connection that died so
+    recently the loop has not processed the EOF yet, and a half-open socket
+    where no FIN ever arrives.  Both still surface as an ``InterfaceError`` on
+    first use.  Operators who cannot accept that — notably behind pgbouncer in
+    transaction mode — set ``database.pre_ping: wire``.
+    """
+    @event.listens_for(engine.sync_engine, "checkout")
+    def _discard_closed_connections(dbapi_connection, connection_record, connection_proxy):
+        # ``is_closed`` is a local read on the asyncpg connection -- no wire
+        # traffic, and nothing to fail.  The ``getattr`` is only there so a
+        # non-asyncpg driver connection (a test double) is a no-op rather than
+        # an AttributeError raised into every checkout.
+        driver_connection = connection_record.driver_connection
+        is_closed = getattr(driver_connection, "is_closed", None)
+        if is_closed is not None and is_closed():
+            raise exc.DisconnectionError(
+                "asyncpg connection is already closed; discarding it from the pool"
+            )
+
+
+def create_postgres_engine(
+    dsn: str,
+    pool_min: int = 2,
+    pool_max: int = 10,
+    *,
+    pre_ping: str = "local",
+    pool_recycle: int = 1800,
+) -> AsyncEngine:
     """Create an async PostgreSQL engine with connection pooling.
 
     Normalizes ``postgresql://`` or ``postgres://`` schemes to the
     ``postgresql+asyncpg://`` dialect required by SQLAlchemy async.
+
+    *pre_ping* selects the connection-liveness strategy — see
+    :data:`src.config.POOL_PRE_PING_MODES` for what each mode costs and
+    covers.  It is a string rather than a bool because ``wire`` (SQLAlchemy's
+    ``pool_pre_ping``) is three round trips per checkout on this dialect and
+    ``local`` is none, and the daemon takes eight pooled transactions in a
+    single ``task_claim``; an unknown value falls back to ``local`` rather
+    than failing engine creation, because config validation is where a typo
+    is supposed to be reported.
+
+    *pool_recycle* retires a connection older than that many seconds at its
+    next checkout (``0`` disables it).  The comparison is local, so unlike
+    ``wire`` it is free, and it is what keeps a server-side idle timeout from
+    being raced in the first place.
     """
     import re
 
     url = re.sub(r"^postgres(ql)?://", "postgresql+asyncpg://", dsn)
-    return create_async_engine(
+    engine = create_async_engine(
         url,
         pool_size=pool_max,
         max_overflow=pool_max,
-        pool_pre_ping=True,
+        pool_pre_ping=pre_ping == "wire",
+        pool_recycle=pool_recycle if pool_recycle > 0 else -1,
         pool_timeout=30,
     )
+    if pre_ping not in ("wire", "off"):
+        _install_local_liveness_check(engine)
+    return engine
 
 
 

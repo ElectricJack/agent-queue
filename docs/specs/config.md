@@ -104,6 +104,40 @@ Maps to `DatabaseConfig`. The YAML key is `database`. **PostgreSQL is the only s
 | `url` | `str` | `""` | PostgreSQL DSN (`postgresql://` or `postgres://`, driven by asyncpg). Anything else is a validation error — it used to be read as a SQLite file path, so a typo brought the daemon up on an empty database while the real one sat untouched. |
 | `pool_min_size` | `int` | `2` | Minimum connection pool size (PostgreSQL only). |
 | `pool_max_size` | `int` | `10` | Maximum connection pool size (PostgreSQL only). |
+| `pre_ping` | `str` | `"local"` | How a pooled connection is checked for liveness on checkout: `local`, `wire`, or `off`. See **Connection liveness** below. |
+| `pool_recycle_seconds` | `int` | `1800` | Retire a pooled connection older than this at its next checkout, so a server-side idle reaper is not raced. `0` disables it. The comparison is local, so it costs nothing on the wire. |
+
+**Connection liveness (`pre_ping`):** the pool has to decide whether a connection it
+kept is still usable, and on the asyncpg dialect that decision is priced very
+differently depending on how it is asked.
+
+- `wire` — SQLAlchemy's `pool_pre_ping=True`. Not one round trip but **three**:
+  `AsyncAdapt_asyncpg_connection._async_ping` opens an explicit transaction, runs
+  `;`, and rolls back, so the ping stays correct under pgbouncer transaction
+  pooling. Measured at 1.26–1.56 ms per pooled checkout on the reference box
+  (PostgreSQL 18 in Docker over localhost, WSL2, 2026-09-09): a pooled
+  `BEGIN; SELECT 1; COMMIT` costs 3.07 ms with it and 1.82 ms without. One
+  `task_claim` opens eight pooled transactions and `release_claim` two, so this
+  mode alone was ~15 ms of a ~120 ms claim+release round trip — and it is paid by
+  every transaction the daemon takes, not just the claim path.
+- `local` (default) — ask asyncpg whether the connection *already knows* it is
+  dead (`Connection.is_closed()`) and discard it if so, via a `checkout` event
+  that raises `DisconnectionError`; SQLAlchemy then invalidates the entry and
+  retries the checkout with a fresh connection. Zero round trips. When
+  PostgreSQL drops a connection — a restart, an idle timeout, a
+  `pg_terminate_backend` — the socket delivers EOF while the connection sits idle
+  in the pool and the event loop marks it closed, so the staleness cases an
+  operator actually hits are still handled transparently. Verified against a real
+  server: with `pre_ping: off` a terminated backend surfaces as an
+  `InterfaceError` to the caller; with `local` the next checkout comes back on a
+  new backend.
+- `off` — no liveness check at all.
+
+What `local` cannot catch, and `wire` can: a connection that died so recently the
+event loop has not processed the EOF yet, and a half-open socket where no FIN ever
+arrives. Both still raise `InterfaceError` on first use. Choose `wire` behind
+pgbouncer in transaction mode, or on a link where half-open sockets are a real
+concern; `pool_recycle_seconds` is the cheap complement in either mode.
 
 **Upgrading from a SQLite install:** `aq db import-sqlite <path>` copies an old database into PostgreSQL one way, and `aq doctor --check db.backend_is_postgres` names a config still pointing at a file.
 
@@ -116,6 +150,8 @@ database:
   url: postgresql://agent_queue:mypassword@localhost:5432/agent_queue
   pool_min_size: 2
   pool_max_size: 10
+  pre_ping: local          # local | wire | off
+  pool_recycle_seconds: 1800
 ```
 
 ### 4.2 `discord` Section

@@ -133,7 +133,15 @@ class PostgreSQLDatabaseAdapter(
     Connection pooling is managed by SQLAlchemy's default QueuePool.
     """
 
-    def __init__(self, dsn: str, pool_min: int = 2, pool_max: int = 10):
+    def __init__(
+        self,
+        dsn: str,
+        pool_min: int = 2,
+        pool_max: int = 10,
+        *,
+        pre_ping: str = "local",
+        pool_recycle: int = 1800,
+    ):
         try:
             import asyncpg  # noqa: F401
         except ImportError:
@@ -144,11 +152,19 @@ class PostgreSQLDatabaseAdapter(
         self._dsn = dsn
         self._pool_min = pool_min
         self._pool_max = pool_max
+        self._pre_ping = pre_ping
+        self._pool_recycle = pool_recycle
         self._engine = None
 
     async def initialize(self) -> None:
         """Create the engine, run migrations, and prepare the database."""
-        self._engine = create_postgres_engine(self._dsn, self._pool_min, self._pool_max)
+        self._engine = create_postgres_engine(
+            self._dsn,
+            self._pool_min,
+            self._pool_max,
+            pre_ping=self._pre_ping,
+            pool_recycle=self._pool_recycle,
+        )
         await run_schema_setup(self._engine)
         await run_startup_data_migrations(self._engine)
 
