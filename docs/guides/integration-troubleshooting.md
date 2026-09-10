@@ -343,6 +343,12 @@ stage evidence without claiming that an unused delegate passed. Active worker,
 claim, workspace and branch-owner attachments prevent retirement. Active
 operations and operations waiting for a human decision are unchanged.
 
+The terminal operation also governs a delegate whose owner has not detached
+yet: explain reports that it is no longer required, rather than suggesting a
+manual resume. Resume/restart cannot make a terminal operation's paused or
+finished delegate runnable, and orphan-pause recovery leaves it held. Retained
+attachments and the original failure metadata remain available for cleanup.
+
 Every integration command wraps its internal error as
 `{"success": false, "outcome": "blocked", "error": "<message>"}`
 ([`src/commands/integration_commands.py`](../../src/commands/integration_commands.py)),

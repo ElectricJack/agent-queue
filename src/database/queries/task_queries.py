@@ -9,19 +9,23 @@ import uuid
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
-from sqlalchemy import delete, insert, literal, null, select, update, func, and_
+from sqlalchemy import and_, delete, func, insert, literal, null, select, update
 
+from src.database.queries.blocked_state import (
+    PROJECTION_INPUT_COLUMNS,
+    apply_label_filters,
+)
 from src.database.tables import (
     agents,
-    events,
     archived_tasks,
+    events,
     gates,
     integration_repair_operations,
     integration_repair_stages,
     sessions,
-    task_context,
     task_comments,
     task_completion_records,
+    task_context,
     task_criteria,
     task_dependencies,
     task_gates,
@@ -34,13 +38,9 @@ from src.database.tables import (
     tasks,
     workspaces,
 )
-from src.database.queries.blocked_state import (
-    PROJECTION_INPUT_COLUMNS,
-    apply_label_filters,
-)
 from src.models import (
-    AgentState,
     HOLD_LABEL_PREFIX,
+    AgentState,
     Task,
     TaskStatus,
     TaskType,
@@ -647,6 +647,8 @@ class TaskQueryMixin:
                 return None
             if await self._read_manual_pause(conn, task_id) is not None:
                 return None
+            if await self.get_terminal_integration_delegate_operation(task_id, conn=conn):
+                return None
             managed_episode = (
                 await conn.execute(
                     select(task_integration_checkpoints.c.task_id).where(
@@ -916,6 +918,16 @@ class TaskQueryMixin:
             current_status = TaskStatus(row[0])
             pre_blocked = bool(row[1])
 
+        if (
+            current_status not in {TaskStatus.READY, TaskStatus.IN_PROGRESS}
+            and new_status in {TaskStatus.DEFINED, TaskStatus.READY, TaskStatus.ASSIGNED, TaskStatus.IN_PROGRESS}
+        ):
+            operation = await self.get_terminal_integration_delegate_operation(task_id, conn=conn)
+            if operation:
+                raise ValueError(
+                    f"Integration operation {operation['id']} is {operation['state']}; "
+                    "its delegate is no longer required and cannot be resumed or restarted"
+                )
         was_frontier = current_status == TaskStatus.READY and not pre_blocked
         if (
             current_status.value in self._TERMINAL_TASK_STATUSES

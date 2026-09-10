@@ -290,6 +290,40 @@ async def test_terminal_delegate_retirement_preserves_outcomes(db, operation_sta
     assert await service.retire_terminal_delegates(201.0) == []
 
 
+@pytest.mark.parametrize("operation_state", ["completed", "cancelled"])
+@pytest.mark.parametrize("delegate_kind", ["repair", "verifier"])
+async def test_terminal_delegate_cannot_resume_even_before_owner_cleanup(db, operation_state, delegate_kind):
+    from src.integration.repair import RepairService
+
+    await _seed_parent_operation(db)
+    await RepairService(db).start("operation", STARTING_SHA, "failed-check", now=100.0)
+    await db.create_task(Task(id="delegate", project_id="p", title="Delegate", description="", status=TaskStatus.PAUSED))
+    async with db.immediate() as conn:
+        await conn.execute(update(integration_repair_operations).values(state=operation_state))
+        if delegate_kind == "repair":
+            await conn.execute(update(integration_repair_stages).values(
+                repair_task_id="delegate", writer_kind="repair_delegate"))
+        else:
+            await conn.execute(update(integration_repair_operations).values(verifier_task_id="delegate"))
+    await db.create_session(SessionRecord(
+        id="retained", task_id="delegate", project_id="p", profile_id="repairer",
+        harness="fake", provider="fake", name="retained", lifecycle="task",
+        state="stopped", desired_state="stopped", work_dir="/tmp/retained", epoch="epoch",
+        instance_token="instance", started_at=100.0,
+    ))
+    assert await db.get_task_meta("delegate", "integration_retirement") is None
+    assert await db.get_terminal_integration_delegate_operation("delegate") == {
+        "id": "operation", "state": operation_state,
+    }
+    with pytest.raises(ValueError, match="delegate is no longer required"):
+        await db.resume_task("delegate")
+    with pytest.raises(ValueError, match="delegate is no longer required"):
+        await db.transition_task("delegate", TaskStatus.READY, context="restart_task", force=True)
+    assert await db.recover_orphaned_pause("delegate") is None
+    assert (await db.get_task("delegate")).status == TaskStatus.PAUSED
+    assert (await db.get_session("retained")).task_id == "delegate"
+
+
 @pytest.mark.parametrize("state", ["running", "stopped"])
 async def test_terminal_delegate_retirement_waits_for_session_detachment(db, state):
     from src.integration.repair import RepairService

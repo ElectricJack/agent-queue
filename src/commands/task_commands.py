@@ -10,37 +10,6 @@ from collections.abc import Callable
 from dataclasses import asdict
 from pathlib import PurePosixPath, PureWindowsPath
 
-from src.models import (
-    BLOCKING_DEP_TYPES,
-    INTEGRATION_MODES,
-    DepType,
-    Task,
-    TaskStatus,
-    TaskType,
-    VerificationType,
-    WorkspaceMode,
-    DEP_TYPE_VALUES,
-    TASK_TYPE_VALUES,
-    WORKSPACE_MODE_VALUES,
-)
-from src.discord.embeds import STATUS_EMOJIS, progress_bar
-from src.discord.notifications import classify_error
-from src.state_machine import (
-    CyclicDependencyError,
-    validate_dag_with_new_edge,
-    validate_waits_for,
-)
-from src.database.queries.hierarchy_queries import HierarchyError
-from src.database.queries.task_queries import TERMINAL_BLOCKED_META_KEY
-from src.task_names import (
-    MAX_NAMING_DEPTH,
-    MAX_STRUCTURAL_DEPTH,
-    child_task_id,
-    fresh_root_id,
-    generate_task_id,
-    naming_depth,
-)
-
 from src.commands.helpers import (
     _collect_tree_task_ids,
     _collect_tree_tasks,
@@ -50,7 +19,37 @@ from src.commands.helpers import (
     format_dependency_list,
 )
 from src.commands.principal import matches_session_instance
+from src.database.queries.hierarchy_queries import HierarchyError
+from src.database.queries.task_queries import TERMINAL_BLOCKED_META_KEY
+from src.discord.embeds import STATUS_EMOJIS, progress_bar
+from src.discord.notifications import classify_error
+from src.models import (
+    BLOCKING_DEP_TYPES,
+    DEP_TYPE_VALUES,
+    INTEGRATION_MODES,
+    TASK_TYPE_VALUES,
+    WORKSPACE_MODE_VALUES,
+    DepType,
+    Task,
+    TaskStatus,
+    TaskType,
+    VerificationType,
+    WorkspaceMode,
+)
 from src.review_keys import REVIEW_PROFILE_IDS, is_review_completion, reviewed_task_id
+from src.state_machine import (
+    CyclicDependencyError,
+    validate_dag_with_new_edge,
+    validate_waits_for,
+)
+from src.task_names import (
+    MAX_NAMING_DEPTH,
+    MAX_STRUCTURAL_DEPTH,
+    child_task_id,
+    fresh_root_id,
+    generate_task_id,
+    naming_depth,
+)
 from src.task_summary import write_task_summary
 
 logger = logging.getLogger(__name__)
@@ -3962,6 +3961,13 @@ class TaskCommandsMixin:
             return out_of_scope
         reasons: list[Reason] = []
         retirement = await self.db.get_task_meta(str(task_id), "integration_retirement")
+        if not retirement:
+            operation = await self.db.get_terminal_integration_delegate_operation(str(task_id))
+            if operation:
+                retirement = {
+                    "operation_id": operation["id"],
+                    "reason": f"integration operation {operation['id']} is {operation['state']}",
+                }
         if retirement:
             reasons.append(Reason(
                 code="integration_delegate_retired",
@@ -3969,7 +3975,7 @@ class TaskCommandsMixin:
                 ref=retirement["operation_id"],
             ))
         needs_attention = await self.db.get_task_meta(str(task_id), "needs_attention")
-        if needs_attention:
+        if needs_attention and not retirement:
             detail = str(needs_attention)
             if needs_attention == "slot_reset_failed":
                 failure = await self.db.get_task_meta(str(task_id), "slot_reset_failure")
@@ -3986,7 +3992,7 @@ class TaskCommandsMixin:
         # it even once the graph is clear; only a restart/reopen brings it
         # back, so say so rather than answer with an empty graph.
         blocked_terminal = await self.db.get_task_meta(str(task_id), TERMINAL_BLOCKED_META_KEY)
-        if blocked_terminal:
+        if blocked_terminal and not retirement:
             reasons.append(Reason(
                 code="blocked_terminal",
                 detail=f"{blocked_terminal}; not auto-recovered, restart or reopen to retry",
