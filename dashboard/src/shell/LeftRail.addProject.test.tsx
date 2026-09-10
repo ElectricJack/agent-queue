@@ -4,6 +4,7 @@ import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter } from "react-router-dom";
 import LeftRail from "./LeftRail";
+import { createFakeDashboardStateServer, TestDashboardState } from "../testUtils/dashboardState";
 
 vi.mock("../api/hooks", () => ({
   useProjects: () => ({ data: [{ id: "p1", name: "Project one" }] }),
@@ -25,9 +26,11 @@ function renderRail() {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <QueryClientProvider client={client}>
-      <MemoryRouter initialEntries={["/command-center"]}>
-        <LeftRail />
-      </MemoryRouter>
+      <TestDashboardState server={createFakeDashboardStateServer()}>
+        <MemoryRouter initialEntries={["/command-center"]}>
+          <LeftRail />
+        </MemoryRouter>
+      </TestDashboardState>
     </QueryClientProvider>,
   );
 }

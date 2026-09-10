@@ -1,5 +1,5 @@
 import { Link, NavLink, useLocation } from "react-router-dom";
-import { useRef, useState } from "react";
+import { useCallback, useRef, useState } from "react";
 import {
   Squares2X2Icon,
   ChartBarIcon,
@@ -17,6 +17,7 @@ import { useListNav } from "./hotkeys/useListNav";
 import { workspaceNavigation, workspaceHref } from "./projectNavigation";
 import ProjectTree from "./ProjectTree";
 import { useNavOrganization } from "./useNavOrganization";
+import { useShellPreferences } from "./useShellPreferences";
 import { linkClass } from "./railStyles";
 
 export default function LeftRail() {
@@ -24,7 +25,15 @@ export default function LeftRail() {
   const location = useLocation();
   const { projectId, tab, isWorkspace, search } = workspaceNavigation(location);
   const navRef = useListNav<HTMLElement>({ axis: "vertical" });
-  const [projectsOpen, setProjectsOpen] = useState(true);
+  // The Projects disclosure is the user's roaming preference on the daemon.
+  const { prefs, update: updatePreferences } = useShellPreferences();
+  const projectsOpen = prefs.projects_section_open;
+  const setProjectsOpen = useCallback(
+    (open: boolean) => {
+      void updatePreferences((current) => ({ ...current, projects_section_open: open }));
+    },
+    [updatePreferences],
+  );
   const [creatingFolder, setCreatingFolder] = useState(false);
   const [wizardOpen, setWizardOpen] = useState(false);
   const addProjectRef = useRef<HTMLButtonElement>(null);
@@ -32,7 +41,8 @@ export default function LeftRail() {
   const roots = useProjectRoots();
   const { organization, update } = useNavOrganization();
   // Design §4.6: refresh the rail, expand Projects, select and open the new project.
-  const onProjectCreated = useProjectCreatedNavigation(() => setProjectsOpen(true));
+  const expandProjects = useCallback(() => setProjectsOpen(true), [setProjectsOpen]);
+  const onProjectCreated = useProjectCreatedNavigation(expandProjects);
   return (
     <aside className="col-start-1 row-start-2 flex h-full w-64 shrink-0 lg:w-72 flex-col overflow-hidden border-r border-gray-800 bg-gray-900">
       <nav ref={navRef} className="dashboard-scrollbar flex-1 space-y-6 overflow-y-auto p-3">
@@ -49,7 +59,7 @@ export default function LeftRail() {
                 data-listnav="1"
                 aria-expanded={projectsOpen}
                 aria-controls="project-links"
-                onClick={() => setProjectsOpen((open) => !open)}
+                onClick={() => setProjectsOpen(!projectsOpen)}
                 className="flex min-w-0 flex-1 items-center gap-2 rounded-lg px-3 py-2 text-xs font-medium uppercase tracking-wide text-gray-500 hover:bg-gray-800 hover:text-gray-300"
               >
                 <ChevronDownIcon className={`h-4 w-4 transition-transform ${projectsOpen ? "" : "-rotate-90"}`} />

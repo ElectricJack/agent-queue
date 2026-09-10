@@ -771,10 +771,13 @@ revisions; the hook carries them.
 
 ### 10.3 Loading and unavailable states
 
-- `loading`: the bootstrap has not answered. Render the default. Writes on `lww`
-  namespaces are sent immediately (unconditional); writes on `cas` namespaces are
-  **deferred** until the document is ready, then applied as `update` against the loaded
-  value. Nothing is persisted in the browser meanwhile.
+- `loading`: the bootstrap has not answered. Render the default. Writes on every
+  namespace are **deferred** until the document is ready, then applied as `update`
+  against the loaded value. (As implemented by `amber-stone.5`: an unconditional `lww`
+  write sent before the load would carry the defaults of every field it did not change
+  and overwrite the stored document with them — the first navigation writes
+  `last_project_id` before the bootstrap answers.) Nothing is persisted in the browser
+  meanwhile.
 - `unavailable`: the bootstrap failed (network, 5xx). Render the default, surface the
   condition in the shell's existing connection indicator, retry with the query's
   backoff. Writes are refused with an error to the caller; they are not queued, because
@@ -785,11 +788,15 @@ revisions; the hook carries them.
 ### 10.4 Write policy
 
 - `lww` namespaces (`shell_preferences`, `command_center_preferences`): optimistic. The
-  hook sets the cached value immediately, sends `put` without `base_revision`, and on
-  response adopts the returned document under R6. High-frequency sources (pane resize,
-  right-surface resize) debounce to one write per settled gesture; the value shown
-  during the gesture is component state. On error the cached value is refetched, not
-  rolled back to a client-side snapshot.
+  hook shows the new value immediately and sends it the same way as a `cas` `update`:
+  the operation is applied to the loaded value and sent with its `base_revision`, and a
+  `revision_conflict` re-applies it to `current`. Consumers pass field patches, so a
+  change to one field on one dashboard never overwrites a different field changed on
+  another (§6.2 permits `base_revision` on `lww` namespaces). `write(next)` is
+  `update(() => next)`. High-frequency sources (pane resize, right-surface resize)
+  debounce to one write per settled gesture; the value shown during the gesture is
+  component state. On error the optimistic value is dropped and the document refetched:
+  the confirmed server document is shown, never a client-side snapshot.
 - `cas` namespaces (`nav_organization`, `command_center_project_view`,
   `playbook_graph_view`): `update(op)` applies `op` to the cached value optimistically,
   sends `put` with the cached revision as `base_revision`, and on `revision_conflict`
@@ -822,6 +829,17 @@ out-of-order events.
 | `command_center_preferences` | `layout-v2/density.ts`, `LayoutCanvas.tsx` | `aq.command-center.graph-density` |
 | `command_center_project_view` | `useGraphHierarchy.ts`, `layout-v2/manualPositions.ts`, `LayoutCanvas.tsx`, `api/graphLayout.ts` (tidy clears positions via `update`) | `aq:command-center:expanded-task-ids:v1`, `aq:command-center:expanded-finished-task-ids:v1`, project scopes of `aq.command-center.graph-positions` |
 | `playbook_graph_view` | `layout-v2/manualPositions.ts`, playbook canvases | the `__playbooks__` scope of `aq.command-center.graph-positions` |
+
+The store is `dashboard/src/state/dashboardState.tsx` (provider mounted in
+`dashboard/src/main.tsx`); `shell/useShellPreferences.ts` is the `shell_preferences`
+wrapper, and `testUtils/dashboardState.tsx` is an in-memory server for component tests.
+Within `shell_preferences`, widths, the Projects disclosure, the flock collapse, the theme
+(published as `data-theme` on the root element) and `last_project_id` render the
+server's value. `right_surface.kind`, `.activity_tab` and `.pane` are **restore-on-load**:
+the surface open right now is page state, written to the server on every change and
+restored once when the document first becomes ready — unless a shortcut, a URL command or
+an agent push already chose one — so opening a pane on one machine never pops it open on
+another. The palette's "Reset shell preferences" action resets the document.
 
 Each module keeps its pure operations and loses its storage functions; the storage seam
 becomes `useDashboardDocument`. `useGraphHierarchy.ts` stops re-reading storage on every

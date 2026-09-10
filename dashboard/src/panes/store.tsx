@@ -2,42 +2,39 @@ import {
   createContext,
   useCallback,
   useContext,
+  useEffect,
   useMemo,
   useRef,
   useSyncExternalStore,
   type ReactNode,
 } from "react";
 import { PANE_REGISTRY as DEFAULT_REGISTRY, type PaneEntry } from "./registry";
+import { useShellPreferences, withPaneWidth, withRightSurface } from "../shell/useShellPreferences";
+import { useSettledWidth } from "../shell/useSettledWidth";
 
 export type PaneState =
   | { kind: "closed" }
   | { kind: "open"; view: string; args: unknown; width: number };
 
+type OpenPane = { kind: "closed" } | { kind: "open"; view: string; args: unknown };
+
 const DEFAULT_WIDTH = 480;
 const MIN_WIDTH = 200;
 const MAX_WIDTH = 800;
 
-function widthKey(viewId: string): string {
-  return `aq:shellpane:width:${viewId}`;
+const INVALID = Symbol("invalid pane args");
+
+function parseArgs(entry: PaneEntry, args: unknown): unknown {
+  if (!entry.manifest.args_schema) return args;
+  const parsed = entry.manifest.args_schema.safeParse(args);
+  return parsed.success ? parsed.data : INVALID;
 }
 
-function loadWidth(viewId: string): number {
-  try {
-    const raw = localStorage.getItem(widthKey(viewId));
-    const n = raw ? Number.parseInt(raw, 10) : NaN;
-    if (Number.isFinite(n) && n >= MIN_WIDTH && n <= MAX_WIDTH) return n;
-  } catch {
-    /* localStorage unavailable */
-  }
-  return DEFAULT_WIDTH;
-}
-
-function persistWidth(viewId: string, width: number): void {
-  try {
-    localStorage.setItem(widthKey(viewId), String(width));
-  } catch {
-    /* localStorage unavailable */
-  }
+/** The server stores pane args as an object; anything else restores as `{}`. */
+function storedArgs(args: unknown): Record<string, unknown> {
+  return typeof args === "object" && args !== null && !Array.isArray(args)
+    ? (args as Record<string, unknown>)
+    : {};
 }
 
 interface StoreShape {
@@ -57,12 +54,24 @@ interface Props {
   registryOverride?: Record<string, PaneEntry>;
 }
 
+/**
+ * The open shell pane and its per-view widths. Both are the user's roaming
+ * `shell_preferences` on the daemon: the last open pane (manifest-validated
+ * `view`/`args`) is restored when the dashboard loads, and each view's width
+ * is read from and written to the server. Toolbar callbacks and pane component
+ * state stay in memory.
+ */
 export function ShellPaneProvider({ children, registryOverride }: Props) {
   const registry = registryOverride ?? DEFAULT_REGISTRY;
-  const stateRef = useRef<PaneState>({ kind: "closed" });
+  const { prefs, status, update } = useShellPreferences();
+  const stateRef = useRef<OpenPane>({ kind: "closed" });
   const listeners = useRef(new Set<() => void>());
+  // Once the user, a URL or an agent has chosen a pane, a restore that
+  // arrives later must not replace it.
+  const touched = useRef(false);
+  const restored = useRef(false);
 
-  const emit = () => listeners.current.forEach((l) => l());
+  const emit = useCallback(() => listeners.current.forEach((l) => l()), []);
 
   const subscribe = useCallback((l: () => void) => {
     listeners.current.add(l);
@@ -71,7 +80,28 @@ export function ShellPaneProvider({ children, registryOverride }: Props) {
     };
   }, []);
   const getSnapshot = useCallback(() => stateRef.current, []);
-  const state = useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
+  const pane = useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
+
+  const persistPane = useCallback(
+    (next: { view: string; args: Record<string, unknown> } | null) => {
+      void update(withRightSurface({ pane: next }));
+    },
+    [update],
+  );
+
+  useEffect(() => {
+    if (status !== "ready" || restored.current) return;
+    restored.current = true;
+    const saved = prefs.right_surface;
+    if (touched.current || saved.kind !== "pane" || !saved.pane) return;
+    const entry = registry[saved.pane.view];
+    const args = entry ? parseArgs(entry, saved.pane.args ?? {}) : INVALID;
+    // An unregistered view or args its manifest now rejects: stay closed, and
+    // the next pane change overwrites the stale value.
+    if (args === INVALID) return;
+    stateRef.current = { kind: "open", view: saved.pane.view, args };
+    emit();
+  }, [status, prefs.right_surface, registry, emit]);
 
   const open = useCallback(
     (view: string, args: unknown) => {
@@ -91,49 +121,58 @@ export function ShellPaneProvider({ children, registryOverride }: Props) {
         }
         args = parsed.data;
       }
-      stateRef.current = {
-        kind: "open",
-        view,
-        args,
-        width: loadWidth(view),
-      };
+      touched.current = true;
+      stateRef.current = { kind: "open", view, args };
       emit();
+      persistPane({ view, args: storedArgs(args) });
     },
-    [registry],
+    [registry, emit, persistPane],
   );
 
   const close = useCallback(() => {
+    touched.current = true;
     stateRef.current = { kind: "closed" };
     emit();
-  }, []);
+    persistPane(null);
+  }, [emit, persistPane]);
 
   const setArgs = useCallback(
     (next: unknown) => {
-      if (stateRef.current.kind !== "open") return;
-      const entry = registry[stateRef.current.view];
+      const current = stateRef.current;
+      if (current.kind !== "open") return;
+      const entry = registry[current.view];
       if (!entry) return;
       if (entry.manifest.args_schema) {
         const parsed = entry.manifest.args_schema.safeParse(next);
         if (!parsed.success) {
-          throw new Error(
-            `setArgs validation failed for view ${stateRef.current.view}`,
-          );
+          throw new Error(`setArgs validation failed for view ${current.view}`);
         }
         next = parsed.data;
       }
-      stateRef.current = { ...stateRef.current, args: next };
+      touched.current = true;
+      stateRef.current = { ...current, args: next };
       emit();
+      persistPane({ view: current.view, args: storedArgs(next) });
     },
-    [registry],
+    [registry, emit, persistPane],
   );
 
-  const setWidth = useCallback((n: number) => {
-    if (stateRef.current.kind !== "open") return;
-    const clamped = Math.max(MIN_WIDTH, Math.min(MAX_WIDTH, n));
-    persistWidth(stateRef.current.view, clamped);
-    stateRef.current = { ...stateRef.current, width: clamped };
-    emit();
-  }, []);
+  const view = pane.kind === "open" ? pane.view : null;
+  const persistWidth = useCallback(
+    (id: string, width: number) => update(withPaneWidth(id, width)),
+    [update],
+  );
+  const [width, setWidth] = useSettledWidth(
+    view,
+    (view !== null ? prefs.pane_widths[view] : undefined) ?? DEFAULT_WIDTH,
+    persistWidth,
+    MIN_WIDTH,
+    MAX_WIDTH,
+  );
+  const state = useMemo<PaneState>(
+    () => (pane.kind === "open" ? { ...pane, width } : pane),
+    [pane, width],
+  );
 
   const value = useMemo<StoreShape>(
     () => ({ state, open, close, setArgs, setWidth, registry }),

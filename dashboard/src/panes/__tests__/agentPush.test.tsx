@@ -4,6 +4,12 @@ import type { ReactNode } from "react";
 import { ShellPaneProvider, useShellPaneStore } from "../store";
 import { useAgentPushBridge } from "../agentPush";
 import type { PaneEntry } from "../registry";
+import { QueryClientProvider } from "@tanstack/react-query";
+import {
+  createFakeDashboardStateServer,
+  TestDashboardState,
+  testQueryClient,
+} from "../../testUtils/dashboardState";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 let fakeEventCb: ((e: any) => void) | null = null;
@@ -47,10 +53,14 @@ function BridgeHost() {
 }
 
 const wrapper = ({ children }: { children: ReactNode }) => (
-  <ShellPaneProvider registryOverride={registry}>
-    <BridgeHost />
-    {children}
-  </ShellPaneProvider>
+  <QueryClientProvider client={testQueryClient()}>
+    <TestDashboardState server={createFakeDashboardStateServer()}>
+      <ShellPaneProvider registryOverride={registry}>
+        <BridgeHost />
+        {children}
+      </ShellPaneProvider>
+    </TestDashboardState>
+  </QueryClientProvider>
 );
 
 test("valid pane_open frame opens the pane", () => {

@@ -10,6 +10,7 @@ import { boundsOf, scaleRequest, validateBounds } from "../PoolScaleFields";
 import { poolEntries, poolPlacement, poolProfileIds, isPoolAgent, formatIdle, splitBusyPoolEntries, useDebouncedBusyPoolEntries } from "../pools";
 import { parseAgentSelection, poolSelectionKey, selectionAddress } from "../useAgentSelection";
 import { TerminalMock, FitAddonMock, TerminalSocketMock } from "../../../testUtils/terminal";
+import { createFakeDashboardStateServer, TestDashboardState } from "../../../testUtils/dashboardState";
 
 vi.mock("@xterm/xterm", async () => ({ Terminal: (await import("../../../testUtils/terminal")).TerminalMock }));
 vi.mock("@xterm/addon-fit", async () => ({ FitAddon: (await import("../../../testUtils/terminal")).FitAddonMock }));
@@ -82,10 +83,12 @@ function renderAgents(initial = "/agents") {
   clients.push(client);
   return render(
     <QueryClientProvider client={client}>
-      <MemoryRouter initialEntries={[initial]}>
-        <LeftRail />
-        <Routes><Route path="/agents" element={<AgentWorkspace />} /><Route path="*" element={null} /></Routes>
-      </MemoryRouter>
+      <TestDashboardState server={createFakeDashboardStateServer()}>
+        <MemoryRouter initialEntries={[initial]}>
+          <LeftRail />
+          <Routes><Route path="/agents" element={<AgentWorkspace />} /><Route path="*" element={null} /></Routes>
+        </MemoryRouter>
+      </TestDashboardState>
     </QueryClientProvider>,
   );
 }
