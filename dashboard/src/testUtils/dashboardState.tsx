@@ -10,19 +10,17 @@
 import { QueryClient } from "@tanstack/react-query";
 import type { ReactNode } from "react";
 import type { DashboardStatePutRequest } from "../api/client";
+import { DashboardStateProvider } from "../api/DashboardStateProvider";
 import {
-  DashboardStateProvider,
-  DEFAULT_VALUES,
-  PROJECT_KEYED_NAMESPACES,
-  type DashboardDocument,
-  type DashboardStateTransport,
-  type Namespace,
-} from "../state/dashboardState";
+  DASHBOARD_STATE_NAMESPACES,
+  type DashboardStateDocument,
+  type DashboardStateNamespace,
+} from "../api/dashboardState";
+import { DEFAULT_VALUES, type DashboardStateTransport } from "../api/dashboardStateStore";
 
 export const LOCAL_OPERATOR = "human:local-operator";
 
-const WORKSPACE_NAMESPACES = new Set<Namespace>(["nav_organization"]);
-const NAMESPACES = Object.keys(DEFAULT_VALUES) as Namespace[];
+const NAMESPACES = Object.keys(DASHBOARD_STATE_NAMESPACES) as DashboardStateNamespace[];
 
 interface Row {
   revision: number;
@@ -51,8 +49,8 @@ export interface FakeDashboardStateServer {
   /** Hold every response until the returned function is called. */
   hold(): () => void;
   /** A write from another dashboard of `owner` (unconditional). */
-  write<N extends Namespace>(namespace: N, value: unknown, at?: Address): DashboardDocument;
-  document(namespace: Namespace, at?: Address): DashboardDocument;
+  write(namespace: DashboardStateNamespace, value: unknown, at?: Address): DashboardStateDocument;
+  document(namespace: DashboardStateNamespace, at?: Address): DashboardStateDocument;
 }
 
 const clone = <T,>(value: T): T => JSON.parse(JSON.stringify(value)) as T;
@@ -64,14 +62,16 @@ export function createFakeDashboardStateServer(): FakeDashboardStateServer {
   let gate: Promise<void> | null = null;
   let clock = 1_000;
 
-  const scopeOf = (namespace: Namespace) =>
-    WORKSPACE_NAMESPACES.has(namespace) ? ("workspace" as const) : ("user" as const);
-  const ownerOf = (namespace: Namespace, owner: string) =>
+  const scopeOf = (namespace: DashboardStateNamespace) => DASHBOARD_STATE_NAMESPACES[namespace].scope;
+  const ownerOf = (namespace: DashboardStateNamespace, owner: string) =>
     scopeOf(namespace) === "workspace" ? "" : owner;
-  const rowKey = (namespace: Namespace, owner: string, subject: string | null) =>
+  const rowKey = (namespace: DashboardStateNamespace, owner: string, subject: string | null) =>
     [scopeOf(namespace), ownerOf(namespace, owner), namespace, subject ?? ""].join("|");
 
-  function document(namespace: Namespace, { owner = LOCAL_OPERATOR, subject = null }: Address = {}) {
+  function document(
+    namespace: DashboardStateNamespace,
+    { owner = LOCAL_OPERATOR, subject = null }: Address = {},
+  ): DashboardStateDocument {
     const row = rows.get(rowKey(namespace, owner, subject));
     return {
       scope: scopeOf(namespace),
@@ -82,10 +82,15 @@ export function createFakeDashboardStateServer(): FakeDashboardStateServer {
       exists: row !== undefined && row.value !== null,
       value: clone(row && row.value !== null ? row.value : DEFAULT_VALUES[namespace]),
       updated_at: row ? row.updated_at : null,
-    } as DashboardDocument;
+    } as DashboardStateDocument;
   }
 
-  function commit(namespace: Namespace, owner: string, subject: string | null, value: unknown) {
+  function commit(
+    namespace: DashboardStateNamespace,
+    owner: string,
+    subject: string | null,
+    value: unknown,
+  ) {
     const key = rowKey(namespace, owner, subject);
     const revision = (rows.get(key)?.revision ?? 0) + 1;
     rows.set(key, { revision, value: value === null ? null : clone(value), updated_at: ++clock });
@@ -121,14 +126,14 @@ export function createFakeDashboardStateServer(): FakeDashboardStateServer {
       return {
         async list() {
           await receive("list", owner);
-          const globals = NAMESPACES.filter((ns) => !PROJECT_KEYED_NAMESPACES.has(ns)).map((ns) =>
-            document(ns, { owner }),
-          );
+          const globals = NAMESPACES.filter((ns) => DASHBOARD_STATE_NAMESPACES[ns].subject === "none")
+            .map((ns) => document(ns, { owner }));
           const projectViews = [...rows.keys()]
-            .map((key) => key.split("|"))
+            .map((key) => key.split("|") as [string, string, DashboardStateNamespace, string])
             .filter(([scope, rowOwner, ns]) =>
-              PROJECT_KEYED_NAMESPACES.has(ns as Namespace) && (scope === "workspace" || rowOwner === owner))
-            .map(([, , ns, subject]) => document(ns as Namespace, { owner, subject }));
+              DASHBOARD_STATE_NAMESPACES[ns].subject === "project"
+              && (scope === "workspace" || rowOwner === owner))
+            .map(([, , ns, subject]) => document(ns, { owner, subject }));
           return { success: true, owner_id: owner, documents: [...globals, ...projectViews] };
         },
         async get(namespace, subject) {

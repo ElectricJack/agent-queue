@@ -3,6 +3,7 @@ import { useLocation, useParams, useSearchParams } from "react-router-dom";
 import { useProjects } from "../../api/hooks";
 import { projectNavigation } from "../../shell/projectNavigation";
 import { useGraphLive } from "./useGraphLive";
+import { GraphStateProvider } from "./useGraphHierarchy";
 import { FINISHED_STATUSES, readTaskFilters, writeTaskFilters, type TaskFilters } from "./taskFilters";
 
 type Projects = NonNullable<ReturnType<typeof useProjects>["data"]>;
@@ -76,7 +77,7 @@ export function TaskWorkspaceProvider({ children }: { children: ReactNode }) {
   const value = useMemo(() => ({ projectId, projectIds, projects, isLoadingProjects, projectsError,
     filters, focusId, setFocus, setQuery, setStatus, setShowCompleted, setWindow, clearFilters }),
   [projectId, projectIds, projects, isLoadingProjects, projectsError, filters, focusId, setFocus, setQuery, setStatus, setShowCompleted, setWindow, clearFilters]);
-  return <TaskWorkspaceContext.Provider value={value}>{children}</TaskWorkspaceContext.Provider>;
+  return <TaskWorkspaceContext.Provider value={value}><GraphStateProvider projectIds={projectIds}>{children}</GraphStateProvider></TaskWorkspaceContext.Provider>;
 }
 
 // A paired provider/hook module follows the existing pane-store convention.

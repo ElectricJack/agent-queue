@@ -398,6 +398,22 @@ export interface MetricsTickEvent extends BaseEvent, MetricsSample {
   event_type: "metrics.tick";
 }
 
+// --- Durable dashboard state ---
+
+/** A value-free invalidation frame. Persisted replay may wrap these fields in
+ * `payload`; useEventStream normalizes both wire shapes before acting on it. */
+export interface DashboardStateChangedEvent extends BaseEvent {
+  event_type: "dashboard_state.changed.v1";
+  version: 1;
+  scope: "workspace" | "user";
+  owner_id: string;
+  namespace: string;
+  subject: string | null;
+  revision: number;
+  change: "write" | "reset";
+  updated_at: number;
+}
+
 // --- Union type ---
 
 export type NotifyEvent =
@@ -443,4 +459,5 @@ export type NotifyEvent =
   | AgentWaitingQuestionEvent
   | CommandInvokedEvent
   | ProposalStatusChangedEvent
-  | MetricsTickEvent;
+  | MetricsTickEvent
+  | DashboardStateChangedEvent;

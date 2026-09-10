@@ -1,6 +1,10 @@
 import { useCallback, useMemo } from "react";
 import type { RightSurface, ShellPreferences } from "../api/client";
-import { DEFAULT_VALUES, useDashboardDocument, type DocumentStatus } from "../state/dashboardState";
+import {
+  DEFAULT_VALUES,
+  useDashboardDocumentState,
+  type DocumentStatus,
+} from "../api/dashboardStateStore";
 
 /**
  * The signed-in user's roaming shell preferences (`shell_preferences`, one
@@ -36,7 +40,7 @@ export interface ShellPreferencesState {
 }
 
 export function useShellPreferences(): ShellPreferencesState {
-  const document = useDashboardDocument("shell_preferences");
+  const document = useDashboardDocumentState("shell_preferences");
   const prefs = useMemo(() => complete(document.value), [document.value]);
   const { update: updateDocument, reset: resetDocument } = document;
   // Changes are field patches over the loaded document rather than blind

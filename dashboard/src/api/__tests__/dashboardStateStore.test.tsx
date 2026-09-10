@@ -2,17 +2,17 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { QueryClientProvider } from "@tanstack/react-query";
 import type { ReactNode } from "react";
-import type { NavOrganization } from "../../api/client";
+import type { NavOrganization } from "../client";
+import { DashboardStateProvider } from "../DashboardStateProvider";
+import { dashboardStateDocumentKey } from "../dashboardState";
+import { useDashboardStateStatus } from "../dashboardStateContext";
 import {
   DashboardStateConflictError,
-  DashboardStateProvider,
   DEFAULT_VALUES,
-  dashboardDocumentKey,
   MAX_CONFLICTS,
-  useDashboardDocument,
-  useDashboardStateOwner,
+  useDashboardDocumentState,
   type DashboardStateTransport,
-} from "../dashboardState";
+} from "../dashboardStateStore";
 import {
   createFakeDashboardStateServer,
   LOCAL_OPERATOR,
@@ -42,12 +42,12 @@ const baseRevisions = (server: FakeDashboardStateServer) =>
 
 afterEach(() => vi.restoreAllMocks());
 
-describe("useDashboardDocument", () => {
+describe("useDashboardDocumentState", () => {
   it("renders the namespace default while loading, then the server's document", async () => {
     const server = createFakeDashboardStateServer();
     server.write("command_center_preferences", { density: "compact" });
     const release = server.hold();
-    const { result } = renderHook(() => useDashboardDocument("command_center_preferences"), {
+    const { result } = renderHook(() => useDashboardDocumentState("command_center_preferences"), {
       wrapper: dashboard(server).wrapper,
     });
     expect(result.current).toMatchObject({
@@ -63,7 +63,7 @@ describe("useDashboardDocument", () => {
 
   it("serves a never-written document as the default at revision 0", async () => {
     const server = createFakeDashboardStateServer();
-    const { result } = renderHook(() => useDashboardDocument("shell_preferences"), {
+    const { result } = renderHook(() => useDashboardDocumentState("shell_preferences"), {
       wrapper: dashboard(server).wrapper,
     });
     await waitFor(() => expect(result.current.status).toBe("ready"));
@@ -77,7 +77,7 @@ describe("useDashboardDocument", () => {
   it("reports unavailable, keeps the default and refuses writes while the server cannot answer", async () => {
     const server = createFakeDashboardStateServer();
     server.failWith(new Error("API 503: daemon unavailable"));
-    const { result } = renderHook(() => useDashboardDocument("shell_preferences"), {
+    const { result } = renderHook(() => useDashboardDocumentState("shell_preferences"), {
       wrapper: dashboard(server).wrapper,
     });
     await waitFor(() => expect(result.current.status).toBe("unavailable"));
@@ -107,7 +107,7 @@ describe("useDashboardDocument", () => {
 
   it("shows a change at once and adopts the revision the server gives it", async () => {
     const server = createFakeDashboardStateServer();
-    const { result } = renderHook(() => useDashboardDocument("command_center_preferences"), {
+    const { result } = renderHook(() => useDashboardDocumentState("command_center_preferences"), {
       wrapper: dashboard(server).wrapper,
     });
     await waitFor(() => expect(result.current.status).toBe("ready"));
@@ -130,7 +130,7 @@ describe("useDashboardDocument", () => {
 
   it("shows the server's value again when a write fails, and reports why", async () => {
     const server = createFakeDashboardStateServer();
-    const { result } = renderHook(() => useDashboardDocument("command_center_preferences"), {
+    const { result } = renderHook(() => useDashboardDocumentState("command_center_preferences"), {
       wrapper: dashboard(server).wrapper,
     });
     await waitFor(() => expect(result.current.status).toBe("ready"));
@@ -151,7 +151,7 @@ describe("useDashboardDocument", () => {
 
   it("re-applies an operation to the newer document when another dashboard wrote first", async () => {
     const server = createFakeDashboardStateServer();
-    const { result } = renderHook(() => useDashboardDocument("nav_organization"), {
+    const { result } = renderHook(() => useDashboardDocumentState("nav_organization"), {
       wrapper: dashboard(server).wrapper,
     });
     await waitFor(() => expect(result.current.status).toBe("ready"));
@@ -187,7 +187,7 @@ describe("useDashboardDocument", () => {
         return direct.put(body);
       },
     };
-    const { result } = renderHook(() => useDashboardDocument("playbook_graph_view"), {
+    const { result } = renderHook(() => useDashboardDocumentState("playbook_graph_view"), {
       wrapper: dashboard(server, { transport: racing }).wrapper,
     });
     await waitFor(() => expect(result.current.status).toBe("ready"));
@@ -205,7 +205,7 @@ describe("useDashboardDocument", () => {
 
   it("serialises a burst of changes into a chain of revisions instead of conflicts", async () => {
     const server = createFakeDashboardStateServer();
-    const { result } = renderHook(() => useDashboardDocument("shell_preferences"), {
+    const { result } = renderHook(() => useDashboardDocumentState("shell_preferences"), {
       wrapper: dashboard(server).wrapper,
     });
     await waitFor(() => expect(result.current.status).toBe("ready"));
@@ -232,7 +232,7 @@ describe("useDashboardDocument", () => {
       pane_widths: { "task-detail": 640 },
     });
     const release = server.hold();
-    const { result } = renderHook(() => useDashboardDocument("shell_preferences"), {
+    const { result } = renderHook(() => useDashboardDocumentState("shell_preferences"), {
       wrapper: dashboard(server).wrapper,
     });
     let pending!: Promise<void>;
@@ -252,7 +252,7 @@ describe("useDashboardDocument", () => {
 
   it("skips the write when a change leaves the value as it is", async () => {
     const server = createFakeDashboardStateServer();
-    const { result } = renderHook(() => useDashboardDocument("shell_preferences"), {
+    const { result } = renderHook(() => useDashboardDocumentState("shell_preferences"), {
       wrapper: dashboard(server).wrapper,
     });
     await waitFor(() => expect(result.current.status).toBe("ready"));
@@ -262,7 +262,7 @@ describe("useDashboardDocument", () => {
 
   it("resets to the default at a higher revision", async () => {
     const server = createFakeDashboardStateServer();
-    const { result } = renderHook(() => useDashboardDocument("command_center_preferences"), {
+    const { result } = renderHook(() => useDashboardDocumentState("command_center_preferences"), {
       wrapper: dashboard(server).wrapper,
     });
     await waitFor(() => expect(result.current.status).toBe("ready"));
@@ -291,10 +291,13 @@ describe("useDashboardDocument", () => {
       },
     };
     const { client, wrapper } = dashboard(server, { transport });
-    const { result } = renderHook(() => useDashboardDocument("command_center_preferences"), { wrapper });
+    const { result } = renderHook(() => useDashboardDocumentState("command_center_preferences"), { wrapper });
     await waitFor(() => expect(result.current.status).toBe("ready"));
     await act(() =>
-      client.invalidateQueries({ queryKey: dashboardDocumentKey("command_center_preferences") }),
+      client.invalidateQueries({
+        queryKey: dashboardStateDocumentKey("command_center_preferences"),
+        exact: true,
+      }),
     );
     expect(served).toBe(1);
     expect(result.current).toMatchObject({ revision: 2, value: { density: "spacious" } });
@@ -305,8 +308,8 @@ describe("useDashboardDocument", () => {
     const { wrapper } = dashboard(server);
     const { result } = renderHook(
       () => ({
-        p1: useDashboardDocument("command_center_project_view", "p1"),
-        p2: useDashboardDocument("command_center_project_view", "p2"),
+        p1: useDashboardDocumentState("command_center_project_view", "p1"),
+        p2: useDashboardDocumentState("command_center_project_view", "p2"),
       }),
       { wrapper },
     );
@@ -326,7 +329,7 @@ describe("useDashboardDocument", () => {
       vi.spyOn(Storage.prototype, "removeItem"),
     ];
     const server = createFakeDashboardStateServer();
-    const { result } = renderHook(() => useDashboardDocument("shell_preferences"), {
+    const { result } = renderHook(() => useDashboardDocumentState("shell_preferences"), {
       wrapper: dashboard(server).wrapper,
     });
     await waitFor(() => expect(result.current.status).toBe("ready"));
@@ -339,13 +342,13 @@ describe("useDashboardDocument", () => {
 describe("ownership", () => {
   it("follows the same user to another dashboard and never crosses to another user", async () => {
     const server = createFakeDashboardStateServer();
-    const probe = () => ({
-      prefs: useDashboardDocument("shell_preferences"),
-      organization: useDashboardDocument("nav_organization"),
-      owner: useDashboardStateOwner(),
+    const useProbe = () => ({
+      prefs: useDashboardDocumentState("shell_preferences"),
+      organization: useDashboardDocumentState("nav_organization"),
+      owner: useDashboardStateStatus().ownerId,
     });
 
-    const laptop = renderHook(probe, { wrapper: dashboard(server, { owner: "human:ada" }).wrapper });
+    const laptop = renderHook(useProbe, { wrapper: dashboard(server, { owner: "human:ada" }).wrapper });
     await waitFor(() => expect(laptop.result.current.prefs.status).toBe("ready"));
     await act(() =>
       laptop.result.current.prefs.update((prefs) => ({
@@ -361,7 +364,7 @@ describe("ownership", () => {
       })),
     );
 
-    const desktop = renderHook(probe, { wrapper: dashboard(server, { owner: "human:ada" }).wrapper });
+    const desktop = renderHook(useProbe, { wrapper: dashboard(server, { owner: "human:ada" }).wrapper });
     await waitFor(() => expect(desktop.result.current.prefs.status).toBe("ready"));
     expect(desktop.result.current.owner).toBe("human:ada");
     expect(desktop.result.current.prefs).toMatchObject({
@@ -369,7 +372,7 @@ describe("ownership", () => {
       value: { theme: "light", agent_flock_collapsed: true },
     });
 
-    const colleague = renderHook(probe, { wrapper: dashboard(server, { owner: "human:grace" }).wrapper });
+    const colleague = renderHook(useProbe, { wrapper: dashboard(server, { owner: "human:grace" }).wrapper });
     await waitFor(() => expect(colleague.result.current.prefs.status).toBe("ready"));
     expect(colleague.result.current.owner).toBe("human:grace");
     expect(colleague.result.current.prefs).toMatchObject({

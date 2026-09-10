@@ -830,9 +830,11 @@ out-of-order events.
 | `command_center_project_view` | `useGraphHierarchy.ts`, `layout-v2/manualPositions.ts`, `LayoutCanvas.tsx`, `api/graphLayout.ts` (tidy clears positions via `update`) | `aq:command-center:expanded-task-ids:v1`, `aq:command-center:expanded-finished-task-ids:v1`, project scopes of `aq.command-center.graph-positions` |
 | `playbook_graph_view` | `layout-v2/manualPositions.ts`, playbook canvases | the `__playbooks__` scope of `aq.command-center.graph-positions` |
 
-The store is `dashboard/src/state/dashboardState.tsx` (provider mounted in
-`dashboard/src/main.tsx`); `shell/useShellPreferences.ts` is the `shell_preferences`
-wrapper, and `testUtils/dashboardState.tsx` is an in-memory server for component tests.
+The write path is `dashboard/src/api/dashboardStateStore.ts`
+(`useDashboardDocumentState`, the §10.2 hook), owned by the single
+`DashboardStateProvider` (`api/DashboardStateProvider.tsx`) that also runs the bootstrap;
+`shell/useShellPreferences.ts` is the `shell_preferences` wrapper, and
+`testUtils/dashboardState.tsx` is an in-memory server for component tests.
 Within `shell_preferences`, widths, the Projects disclosure, the flock collapse, the theme
 (published as `data-theme` on the root element) and `last_project_id` render the
 server's value. `right_surface.kind`, `.activity_tab` and `.pane` are **restore-on-load**:

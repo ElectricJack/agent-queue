@@ -4,7 +4,27 @@ import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter } from "react-router-dom";
 import LeftRail from "./LeftRail";
-import { createFakeDashboardStateServer, TestDashboardState } from "../testUtils/dashboardState";
+import type { DashboardStatePutRequest } from "../api/client";
+import type { DashboardStateNamespace } from "../api/dashboardState";
+import {
+  createFakeDashboardStateServer,
+  TestDashboardState,
+  type FakeDashboardStateServer,
+} from "../testUtils/dashboardState";
+
+const daemon = vi.hoisted(() => ({ server: null as FakeDashboardStateServer | null }));
+
+// useNavOrganization reads and writes the shared folders through the SDK
+// directly; answer it from the same fake daemon the shell preferences use.
+vi.mock("../api/client", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../api/client")>()),
+  dashboardStateGet: async ({ body }: { body: { namespace: DashboardStateNamespace; subject?: string | null } }) => ({
+    data: { success: true, document: await daemon.server!.transport().get(body.namespace, body.subject ?? null) },
+  }),
+  dashboardStatePut: async ({ body }: { body: DashboardStatePutRequest }) => ({
+    data: { success: true, document: await daemon.server!.transport().put(body) },
+  }),
+}));
 
 vi.mock("../api/hooks", () => ({
   useProjects: () => ({ data: [{ id: "p1", name: "Project one" }] }),
@@ -24,9 +44,10 @@ afterEach(() => {
 
 function renderRail() {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  daemon.server = createFakeDashboardStateServer();
   return render(
     <QueryClientProvider client={client}>
-      <TestDashboardState server={createFakeDashboardStateServer()}>
+      <TestDashboardState server={daemon.server}>
         <MemoryRouter initialEntries={["/command-center"]}>
           <LeftRail />
         </MemoryRouter>

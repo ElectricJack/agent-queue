@@ -4,11 +4,11 @@ import userEvent from "@testing-library/user-event";
 import { useState } from "react";
 import { MemoryRouter } from "react-router-dom";
 import ProjectTree from "./ProjectTree";
-import { useNavOrganization } from "./useNavOrganization";
 import {
+  EMPTY_ORGANIZATION,
   FOLDER_DRAG_TYPE,
   PROJECT_DRAG_TYPE,
-  storedOrganization,
+  type NavOrganization,
   type NavProject,
 } from "./navOrganization";
 
@@ -18,9 +18,16 @@ const PROJECTS: NavProject[] = [
   { id: "gamma", name: "Gamma" },
 ];
 
+let organizationSnapshot: NavOrganization;
+
 function Harness({ projects = PROJECTS }: { projects?: NavProject[] }) {
-  const { organization, update } = useNavOrganization();
+  const [organization, setOrganization] = useState<NavOrganization>(EMPTY_ORGANIZATION);
   const [creatingFolder, setCreatingFolder] = useState(false);
+  const update = (next: (current: NavOrganization) => NavOrganization) => {
+    const updated = next(organization);
+    organizationSnapshot = updated;
+    setOrganization(updated);
+  };
   return (
     <>
       <button type="button" onClick={() => setCreatingFolder(true)}>New folder</button>
@@ -93,8 +100,8 @@ function projectOrder(container: HTMLElement): string[] {
   );
 }
 
-beforeEach(() => window.localStorage.clear());
-afterEach(() => { cleanup(); window.localStorage.clear(); });
+beforeEach(() => { organizationSnapshot = EMPTY_ORGANIZATION; });
+afterEach(cleanup);
 
 describe("ProjectTree without folders", () => {
   it("renders every project as a link in API order", () => {
@@ -115,7 +122,7 @@ describe("creating, renaming and deleting folders", () => {
     renderTree();
     await addFolder("Clients");
     expect(screen.getByRole("button", { name: /^Clients/ })).toBeInTheDocument();
-    expect(storedOrganization().folders.map((f) => f.name)).toEqual(["Clients"]);
+    expect(organizationSnapshot.folders.map((f) => f.name)).toEqual(["Clients"]);
   });
 
   it("cancels the inline form with Escape without creating anything", async () => {
@@ -124,7 +131,7 @@ describe("creating, renaming and deleting folders", () => {
     await user.click(screen.getByRole("button", { name: "New folder" }));
     await user.type(screen.getByRole("textbox", { name: "Folder name" }), "Nope{Escape}");
     expect(screen.queryByRole("textbox", { name: "Folder name" })).not.toBeInTheDocument();
-    expect(storedOrganization().folders).toEqual([]);
+    expect(organizationSnapshot.folders).toEqual([]);
   });
 
   it("renames a folder in place", async () => {
@@ -136,7 +143,7 @@ describe("creating, renaming and deleting folders", () => {
     await user.clear(input);
     await user.type(input, "Clients");
     await user.click(screen.getByRole("button", { name: "Save folder name" }));
-    expect(storedOrganization().folders.map((f) => f.name)).toEqual(["Clients"]);
+    expect(organizationSnapshot.folders.map((f) => f.name)).toEqual(["Clients"]);
   });
 
   it("collapses and expands a folder", async () => {
@@ -149,7 +156,7 @@ describe("creating, renaming and deleting folders", () => {
     await user.click(toggle);
     expect(screen.getByRole("button", { name: /^Work/ })).toHaveAttribute("aria-expanded", "false");
     expect(projectOrder(container)).toEqual(["alpha", "gamma"]);
-    expect(storedOrganization().folders[0]!.collapsed).toBe(true);
+    expect(organizationSnapshot.folders[0]!.collapsed).toBe(true);
   });
 
   it("returns a deleted folder's projects to the root", async () => {
@@ -160,7 +167,7 @@ describe("creating, renaming and deleting folders", () => {
     await user.click(screen.getByRole("button", { name: "Delete folder Work" }));
     expect(screen.queryByRole("button", { name: /^Work/ })).not.toBeInTheDocument();
     expect(projectOrder(container)).toContain("beta");
-    expect(storedOrganization().assignments).toEqual({});
+    expect(organizationSnapshot.assignments).toEqual({});
   });
 });
 
@@ -171,7 +178,7 @@ describe("dragging projects", () => {
     dragTo(row(container, "gamma"), folderRow(container, 0), PROJECT_DRAG_TYPE, "gamma");
     const section = screen.getByRole("region", { name: "Folder Work" });
     expect(within(section).getByRole("link", { name: "Gamma" })).toBeInTheDocument();
-    expect(storedOrganization().assignments).toEqual({ gamma: expect.any(String) });
+    expect(organizationSnapshot.assignments).toEqual({ gamma: expect.any(String) });
   });
 
   it("reorders projects when dropped on another row", async () => {
@@ -185,9 +192,9 @@ describe("dragging projects", () => {
     const { container } = renderTree();
     await addFolder("Work");
     dragTo(row(container, "beta"), folderRow(container, 0), PROJECT_DRAG_TYPE, "beta");
-    expect(storedOrganization().assignments.beta).toBeDefined();
+    expect(organizationSnapshot.assignments.beta).toBeDefined();
     dragTo(row(container, "beta"), screen.getByTestId("rail-root-dropzone"), PROJECT_DRAG_TYPE, "beta");
-    expect(storedOrganization().assignments).toEqual({});
+    expect(organizationSnapshot.assignments).toEqual({});
   });
 
   it("expands a collapsed folder that receives a drop", async () => {
@@ -195,9 +202,9 @@ describe("dragging projects", () => {
     const { container } = renderTree();
     await addFolder("Work");
     await user.click(screen.getByRole("button", { name: /^Work/ }));
-    expect(storedOrganization().folders[0]!.collapsed).toBe(true);
+    expect(organizationSnapshot.folders[0]!.collapsed).toBe(true);
     dragTo(row(container, "beta"), folderRow(container, 0), PROJECT_DRAG_TYPE, "beta");
-    expect(storedOrganization().folders[0]!.collapsed).toBe(false);
+    expect(organizationSnapshot.folders[0]!.collapsed).toBe(false);
   });
 
   it("ignores a drop that carries no recognised payload", async () => {
@@ -206,7 +213,7 @@ describe("dragging projects", () => {
     const dt = dataTransfer({ "text/uri-list": "https://example.test" });
     fireEvent.drop(screen.getByTestId("rail-root-dropzone"), { dataTransfer: dt });
     expect(projectOrder(container)).toEqual(["alpha", "beta", "gamma"]);
-    expect(storedOrganization().assignments).toEqual({});
+    expect(organizationSnapshot.assignments).toEqual({});
   });
 
   it("only allows a drop for payloads the target accepts", async () => {
@@ -225,18 +232,18 @@ describe("dragging folders", () => {
     const { container } = renderTree();
     await addFolder("A");
     await addFolder("B");
-    const id = storedOrganization().folders[1]!.id;
+    const id = organizationSnapshot.folders[1]!.id;
     dragTo(folderRow(container, 1), folderRow(container, 0), FOLDER_DRAG_TYPE, id);
-    expect(storedOrganization().folders.map((f) => f.name)).toEqual(["B", "A"]);
+    expect(organizationSnapshot.folders.map((f) => f.name)).toEqual(["B", "A"]);
   });
 
   it("sends a folder to the end through the root drop zone", async () => {
     const { container } = renderTree();
     await addFolder("A");
     await addFolder("B");
-    const id = storedOrganization().folders[0]!.id;
+    const id = organizationSnapshot.folders[0]!.id;
     dragTo(folderRow(container, 0), screen.getByTestId("rail-root-dropzone"), FOLDER_DRAG_TYPE, id);
-    expect(storedOrganization().folders.map((f) => f.name)).toEqual(["B", "A"]);
+    expect(organizationSnapshot.folders.map((f) => f.name)).toEqual(["B", "A"]);
   });
 });
 
@@ -250,7 +257,7 @@ describe("keyboard equivalents", () => {
     const section = screen.getByRole("region", { name: "Folder Work" });
     expect(within(section).getByRole("link", { name: "Beta" })).toBeInTheDocument();
     await user.selectOptions(screen.getByRole("combobox", { name: "Move Beta to folder" }), "No folder");
-    expect(storedOrganization().assignments).toEqual({});
+    expect(organizationSnapshot.assignments).toEqual({});
   });
 
   it("reorders folders with the up and down buttons", async () => {
@@ -261,8 +268,8 @@ describe("keyboard equivalents", () => {
     expect(screen.getByRole("button", { name: "Move folder A up" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Move folder B down" })).toBeDisabled();
     await user.click(screen.getByRole("button", { name: "Move folder A down" }));
-    expect(storedOrganization().folders.map((f) => f.name)).toEqual(["B", "A"]);
+    expect(organizationSnapshot.folders.map((f) => f.name)).toEqual(["B", "A"]);
     await user.click(screen.getByRole("button", { name: "Move folder A up" }));
-    expect(storedOrganization().folders.map((f) => f.name)).toEqual(["A", "B"]);
+    expect(organizationSnapshot.folders.map((f) => f.name)).toEqual(["A", "B"]);
   });
 });
