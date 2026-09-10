@@ -79,6 +79,11 @@ worker environment:
   `aq start`, database migration, and changes to the configured database.
 * Reboot/resume cannot be performed because `wsl --shutdown` or a Windows
   reboot would terminate the shared worker and other active sessions.
+* The daemon-supplied `aq` executable in this worker accepts the dry-run
+  planner but reports `No such option '--repair'` for `aq install --repair`.
+  The checked-out source documents that repair flow, but exercising it needs a
+  dedicated installed AQ environment; therefore native repair/rerun evidence
+  remains unmet here.
 * An interactive browser login was not initiated. The existing Codex login was
   verified non-secretly; provider login and browser completion remain human
   actions.
