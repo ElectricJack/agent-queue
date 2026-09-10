@@ -171,6 +171,76 @@ class TestWriteSection:
         assert "rolling_window_hours: 99" in after
         assert before != after
 
+    def test_yaml_11_boolean_words_round_trip_as_strings(self, tmp_path):
+        """``off`` is a documented merge_ci_policy value, not a boolean.
+
+        ruamel writes YAML 1.2 (where ``off`` is a plain string); every reader
+        here is PyYAML, which reads YAML 1.1 (where it is ``False``).  The
+        writer has to quote across that gap or a supported value comes back as
+        the wrong type and fails validation.
+        """
+        from src.config_editor import read_raw_config, write_section
+
+        cfg = tmp_path / "config.yaml"
+        cfg.write_text("integration:\n  merge_ci_policy: required\n")
+
+        for value in ("off", "on", "yes", "no", "true", "false", "null"):
+            write_section(str(cfg), "integration", {"merge_ci_policy": value})
+            assert read_raw_config(str(cfg))["integration"]["merge_ci_policy"] == value
+
+    def test_number_like_strings_round_trip_as_strings(self, tmp_path):
+        """The YAML 1.1 gap is wider than the boolean words."""
+        from src.config_editor import read_raw_config, write_section
+
+        cfg = tmp_path / "config.yaml"
+        cfg.write_text("integration: {}\n")
+
+        # Sexagesimal int, octal int, and the empty string all resolve to
+        # non-strings for a PyYAML reader when written bare.
+        for value in ("1:30", "012", "0x1f", ""):
+            write_section(str(cfg), "integration", {"merge_ci_policy": value})
+            assert read_raw_config(str(cfg))["integration"]["merge_ci_policy"] == value
+
+    def test_quoting_reaches_nested_values_and_keys(self, tmp_path):
+        from src.config_editor import read_raw_config, write_section
+
+        cfg = tmp_path / "config.yaml"
+        cfg.write_text("existing: keep\n")
+        write_section(
+            str(cfg),
+            "pricing",
+            {"models": {"no": {"policy": "off"}}, "tiers": ["on", "keep"]},
+        )
+
+        raw = read_raw_config(str(cfg))["pricing"]
+        assert raw == {"models": {"no": {"policy": "off"}}, "tiers": ["on", "keep"]}
+        # Unambiguous strings are left bare — no gratuitous requoting.
+        assert "- keep" in cfg.read_text()
+
+    def test_genuine_booleans_are_not_stringified(self, tmp_path):
+        """Only strings get quoted; real bools/ints keep their type."""
+        from src.config_editor import read_raw_config, write_section
+
+        cfg = tmp_path / "config.yaml"
+        cfg.write_text("existing: keep\n")
+        write_section(str(cfg), "memory", {"enabled": False, "top_k": 5, "ratio": 0.5})
+
+        assert read_raw_config(str(cfg))["memory"] == {
+            "enabled": False,
+            "top_k": 5,
+            "ratio": 0.5,
+        }
+
+    def test_untouched_sections_keep_their_bare_words(self, tmp_path):
+        """Quoting applies to what the caller writes, not to the whole file."""
+        from src.config_editor import write_section
+
+        cfg = tmp_path / "config.yaml"
+        cfg.write_text("integration:\n  merge_ci_policy: off\nscheduling:\n  hours: 12\n")
+        write_section(str(cfg), "scheduling", {"hours": 24})
+
+        assert "merge_ci_policy: off\n" in cfg.read_text()
+
 
 class TestGetConfigCommand:
     """End-to-end tests for the _cmd_get_config handler via CommandHandler."""
