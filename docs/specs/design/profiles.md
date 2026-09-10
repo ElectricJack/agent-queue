@@ -4,9 +4,17 @@ tags: [design, profiles, agents, markdown]
 
 # Agent Profiles as Markdown
 
+<!-- aq:historical -->
+> **Design record — not current documentation.** A spec states the behaviour
+> intended when it was approved; it is written before the code and is not
+> revised to track it. Where this page and the code disagree, the code is right.
+> Start at [the documentation home](../../README.md) for what AQ does today, and
+> see [historical material](../../history/README.md) for how this material is
+> organised.
+
 **Status:** Draft
-**Principles:** [[guiding-design-principles]] (#1 files as source of truth, #9 simple interfaces)
-**Related:** [[vault]], [[memory-scoping]], [[specs/agent-profiles]], [[agent-coordination]]
+**Principles:** [guiding-design-principles](guiding-design-principles.md) (#1 files as source of truth, #9 simple interfaces)
+**Related:** [vault](vault.md), [memory-scoping](memory-scoping.md), [specs/agent-profiles](../agent-profiles.md), [agent-coordination](agent-coordination.md)
 
 ---
 
@@ -23,7 +31,7 @@ one project was a contradiction — project-scoped profiles
 (`project:<pid>:<id>`, sourced from `vault/projects/<pid>/agent-types/`) were
 retired. Pool `lifecycle` and sizing therefore live on the system profile and
 apply everywhere; sizing still happens per project at runtime, under each
-project's own `max_concurrent_agents` (see [[guides/worker-pools]] §2-3).
+project's own `max_concurrent_agents` (see [guides/worker-pools](../../guides/worker-pools.md) §2-3).
 `src/profiles/project_override_migration.py` promotes anything an older vault
 still carries into its system profile — automatically at startup, or on demand
 via `aq doctor --check profiles.project_overrides --fix`.

@@ -1,5 +1,11 @@
 # Assignment routing as an authored playbook
 
+<!-- aq:historical -->
+> **Historical design record.** This spec describes one feature as it was
+> designed, not as the code stands today. Start at [the documentation
+> home](../../README.md) for current behaviour; see [historical
+> material](../../history/README.md).
+
 **Status:** in progress · **Date:** 2026-09-06 · **Supersedes:** the coordinator half of
 `2026-08-31-playbook-intelligence-routing-design.md`
 

@@ -4,6 +4,14 @@ tags: [design, overview, index]
 
 # Next-Generation Design Specs
 
+<!-- aq:historical -->
+> **Design record — not current documentation.** A spec states the behaviour
+> intended when it was approved; it is written before the code and is not
+> revised to track it. Where this page and the code disagree, the code is right.
+> Start at [the documentation home](../../README.md) for what AQ does today, and
+> see [historical material](../../history/README.md) for how this material is
+> organised.
+
 These specs describe the automation and knowledge systems of Agent Queue.
 They are **design documents** that serve as the architectural reference for the current implementation.
 
@@ -16,32 +24,32 @@ Each has a paired implementation spec in [`docs/specs/implementation/`](../imple
 
 | Spec | Workstream | Summary |
 |---|---|---|
-| [[session-runtime]] | A | tmux-first session providers, harness profiles, task/named lifecycles, close→drain-ack completion, adoption, stall ladder, transcript readers |
-| [[worktree-execution]] | W | Per-agent-slot worktrees under `<repo>/.aq/worktrees/`, branch-per-task, merge slot, slot reaper (amends [[workspaces-v2]]) |
-| [[work-graph]] | D | Typed dependency edges, persisted `is_blocked`, gates as records, labels, outcome metadata, `task explain`, state-machine enforcement |
-| [[supervisor-agent]] | B | Supervisor as a configured per-project agent; `messages` table; chat relay; spec→task-graph |
-| [[aq-surface]] | C | `aq` CLI as primary surface, `aq prime`/handoff/inbox, JSON envelope, session tokens, task-scoped MCP allowlist |
-| [[messaging-rework]] | F | Historical messaging rework, superseded for Discord by [[../messaging/discord]] |
-| [[feature-pauses]] | E/P | Memory & playbooks paused (flags off, code frozen, data preserved, clean re-enable) |
-| [[trust-and-ops]] | G | Trust boundaries, env scrubbing, `aq doctor`, `aq costs`, invariant tests |
+| [session-runtime](session-runtime.md) | A | tmux-first session providers, harness profiles, task/named lifecycles, close→drain-ack completion, adoption, stall ladder, transcript readers |
+| [worktree-execution](worktree-execution.md) | W | Per-agent-slot worktrees under `<repo>/.aq/worktrees/`, branch-per-task, merge slot, slot reaper (amends [workspaces-v2](workspaces-v2.md)) |
+| [work-graph](work-graph.md) | D | Typed dependency edges, persisted `is_blocked`, gates as records, labels, outcome metadata, `task explain`, state-machine enforcement |
+| [supervisor-agent](supervisor-agent.md) | B | Supervisor as a configured per-project agent; `messages` table; chat relay; spec→task-graph |
+| [aq-surface](aq-surface.md) | C | `aq` CLI as primary surface, `aq prime`/handoff/inbox, JSON envelope, session tokens, task-scoped MCP allowlist |
+| [messaging-rework](messaging-rework.md) | F | Historical messaging rework, superseded for Discord by [../messaging/discord](../messaging/discord.md) |
+| [feature-pauses](feature-pauses.md) | E/P | Memory & playbooks paused (flags off, code frozen, data preserved, clean re-enable) |
+| [trust-and-ops](trust-and-ops.md) | G | Trust boundaries, env scrubbing, `aq doctor`, `aq costs`, invariant tests |
 
-> While the overhaul lands, [[playbooks]], [[memory-plugin]], [[memory-scoping]],
-> [[self-improvement]] and [[agent-coordination]] describe **paused** subsystems — kept for
-> the comeback (see [[feature-pauses]]); [[workspaces-v2]] is amended by [[worktree-execution]].
+> While the overhaul lands, [playbooks](playbooks.md), [memory-plugin](memory-plugin.md), [memory-scoping](memory-scoping.md),
+> [self-improvement](self-improvement.md) and [agent-coordination](agent-coordination.md) describe **paused** subsystems — kept for
+> the comeback (see [feature-pauses](feature-pauses.md)); [workspaces-v2](workspaces-v2.md) is amended by [worktree-execution](worktree-execution.md).
 
 ### Pre-overhaul specs
 
 | Spec | Status | Summary |
 |---|---|---|
-| [[guiding-design-principles]] | Active | The 10 core principles behind all design decisions |
-| [[playbooks]] | Paused | Agent workflow graphs — directed graphs of LLM decision points, replaced rules + hooks |
-| [[vault]] | Active | Vault directory structure, what lives where, reference stubs, Obsidian integration |
-| [[memory-plugin]] | Active | Memory plugin v2 architecture, memsearch fork, Milvus backend with KV storage |
-| [[memory-scoping]] | Active | Scope hierarchy, overrides, multi-scope query, agent MCP tools, deduplication |
-| [[profiles]] | Active | Agent profiles as markdown, hybrid format, sync model, starter knowledge packs |
-| [[self-improvement]] | Active | Self-improvement loop, orchestrator memory, reflection, health & observability |
-| [[agent-coordination]] | Active | Playbook-driven multi-agent coordination, workflows, agent affinity, workspace strategies |
-| [[roadmap]] | Active | 196-task implementation roadmap across 8 phases with dependencies and test checkpoints |
+| [guiding-design-principles](guiding-design-principles.md) | Active | The 10 core principles behind all design decisions |
+| [playbooks](playbooks.md) | Paused | Agent workflow graphs — directed graphs of LLM decision points, replaced rules + hooks |
+| [vault](vault.md) | Active | Vault directory structure, what lives where, reference stubs, Obsidian integration |
+| [memory-plugin](memory-plugin.md) | Active | Memory plugin v2 architecture, memsearch fork, Milvus backend with KV storage |
+| [memory-scoping](memory-scoping.md) | Active | Scope hierarchy, overrides, multi-scope query, agent MCP tools, deduplication |
+| [profiles](profiles.md) | Active | Agent profiles as markdown, hybrid format, sync model, starter knowledge packs |
+| [self-improvement](self-improvement.md) | Active | Self-improvement loop, orchestrator memory, reflection, health & observability |
+| [agent-coordination](agent-coordination.md) | Active | Playbook-driven multi-agent coordination, workflows, agent affinity, workspace strategies |
+| [roadmap](roadmap.md) | Active | 196-task implementation roadmap across 8 phases with dependencies and test checkpoints |
 
 ## How They Relate
 
@@ -66,15 +74,15 @@ vault + memory-plugin + memory-scoping          playbooks
                      agent affinity + memory reduce context loss
 ```
 
-All specs share the same [[guiding-design-principles|design principles]].
-The [[vault]] is the prerequisite for [[playbooks|playbook]] storage.
-[[playbooks|Playbooks]] are the mechanism for the
-[[self-improvement|self-improvement loop]].
-[[agent-coordination|Coordination playbooks]] extend the playbook model to
-multi-agent workflows. [[memory-plugin]] and [[memory-scoping]] define how
+All specs share the same [design principles](guiding-design-principles.md).
+The [vault](vault.md) is the prerequisite for [playbook](playbooks.md) storage.
+[Playbooks](playbooks.md) are the mechanism for the
+[self-improvement loop](self-improvement.md).
+[Coordination playbooks](agent-coordination.md) extend the playbook model to
+multi-agent workflows. [memory-plugin](memory-plugin.md) and [memory-scoping](memory-scoping.md) define how
 all memory operations work.
 
-### Prerequisite Refactors (in [[playbooks]] Section 17)
+### Prerequisite Refactors (in [playbooks](playbooks.md) Section 17)
 
 Several existing subsystems need changes before playbooks can be implemented:
 - **EventBus payload filtering** — needed for cross-playbook composition
@@ -86,8 +94,8 @@ Several existing subsystems need changes before playbooks can be implemented:
 
 ## End-to-End Trace
 
-A concrete walkthrough showing [[playbooks]], [[memory-scoping]], and
-[[agent-coordination]] working together:
+A concrete walkthrough showing [playbooks](playbooks.md), [memory-scoping](memory-scoping.md), and
+[agent-coordination](agent-coordination.md) working together:
 
 **Scenario:** A coding agent commits code, vibecop finds issues, the system creates
 fix tasks, and the experience is remembered for next time.
@@ -154,6 +162,6 @@ fix tasks, and the experience is remembered for next time.
 ## Supersedes
 
 These specs have replaced (deprecated spec files removed):
-- ~~`specs/rule-system.md`~~ — rules are now [[playbooks]] or [[vault|vault memory]]
-- ~~`specs/hooks.md`~~ — hook engine replaced by [[playbooks|playbook executor]]
-- Parts of `specs/agent-profiles.md` — profiles now stored as [[vault|vault markdown]]
+- ~~`specs/rule-system.md`~~ — rules are now [playbooks](playbooks.md) or [vault memory](vault.md)
+- ~~`specs/hooks.md`~~ — hook engine replaced by [playbook executor](playbooks.md)
+- Parts of `specs/agent-profiles.md` — profiles now stored as [vault markdown](vault.md)

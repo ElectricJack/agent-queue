@@ -5,9 +5,15 @@ date: 2026-08-26
 
 # Session Runtime vs. Gas City — tmux, Hooks, and Scanning
 
+<!-- aq:historical -->
+> **Historical analysis.** A point-in-time comparison or assessment. Its
+> conclusions were acted on elsewhere and its numbers were measured on the day
+> it was written. Start at [the documentation home](../README.md); see
+> [historical material](../history/README.md).
+
 **Purpose.** A focused re-analysis of *how Agent Queue runs agents inside tmux*
 against Gas City's equivalent machinery. Supersedes the session-runtime portions of
-[[comparison-gascity-beads]] (2026-08-19), which predates `src/sessions/` entirely —
+[comparison-gascity-beads](comparison-gascity-beads.md) (2026-08-19), which predates `src/sessions/` entirely —
 that document still describes our runtimes as `claude_sdk`/`acpx`/`supervisor` and
 lists tmux sessions as a *recommendation*.
 
@@ -109,7 +115,7 @@ Ours does not do this. Task sessions launch imperatively from `_execute_task`
 `_step_named` says so in its own docstring:
 
 > v1 scope: *drain idle* sessions to `sleeping`. Starting and recycling named
-> sessions needs the message routing that [[design/supervisor-agent]] owns, so this
+> sessions needs the message routing that [design/supervisor-agent](../specs/design/supervisor-agent.md) owns, so this
 > deliberately converges in one direction only rather than half-implementing wake
 > semantics.
 

@@ -1,3 +1,11 @@
+# Primitive map
+
+<!-- aq:historical -->
+> **Historical map.** A snapshot of the system's shape when it was drawn, kept
+> for the record. [System architecture](concepts/architecture.md) is the page
+> that is maintained. Start at [the documentation home](README.md); see
+> [historical material](history/README.md).
+
 ```mermaid
 graph TB
     %% ===== CONFIG / IDENTITY =====

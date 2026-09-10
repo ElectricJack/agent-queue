@@ -4,13 +4,21 @@ tags: [spec, command-handler, core]
 
 # CommandHandler Specification
 
+<!-- aq:historical -->
+> **Design record — not current documentation.** A spec states the behaviour
+> intended when it was approved; it is written before the code and is not
+> revised to track it. Where this page and the code disagree, the code is right.
+> Start at [the documentation home](../README.md) for what AQ does today, and
+> see [historical material](../history/README.md) for how this material is
+> organised.
+
 ## 1. Overview
 
 `CommandHandler` is the unified execution layer for operational commands in AgentQueue. CLI, API, and MCP callers delegate business logic here. Discord is deliberately not a general command transport: it only accepts replies in durable escalation threads. Presentation and formatting are handled by the callers; this layer concerns itself only with execution and returning structured results.
 
-The handler holds a reference to an [[specs/orchestrator|Orchestrator]] instance (which provides database access and git operations) and an `AppConfig`. It also maintains a small amount of conversational state, including an optional `_active_project_id` (the currently focused project).
+The handler holds a reference to an [Orchestrator](orchestrator.md) instance (which provides database access and git operations) and an `AppConfig`. It also maintains a small amount of conversational state, including an optional `_active_project_id` (the currently focused project).
 
-See [[design/playbooks]] Section 15 for playbook management commands.
+See [design/playbooks](design/playbooks.md) Section 15 for playbook management commands.
 
 The `db` property is a convenience accessor that returns `self.orchestrator.db`.
 
@@ -42,7 +50,7 @@ Commands are registered implicitly: any instance method named `_cmd_<command_nam
 ```python
 CommandHandler(orchestrator: Orchestrator, config: AppConfig)
 ```
-See [[specs/models-and-state-machine]] for the domain models referenced throughout these commands.
+See [specs/models-and-state-machine](models-and-state-machine.md) for the domain models referenced throughout these commands.
 
 The retired Discord project-channel commands and project-deletion channel callback are not part of the handler surface. Historical sections below that describe those operations are retained only as implementation history and must not be treated as current API behavior.
 
@@ -2013,13 +2021,13 @@ vault watcher pick the change up.
 - `git_pull` — pull (fetch + merge) from remote
 - `create_github_repo` — create a GitHub repo via `gh` CLI
 - `generate_readme` — generate and commit a README.md
-- `set_default_branch` — set/change a project's default branch. A branch missing on origin is created under the exact-OID push contract (see [[git#operator-initiated-pushes]]); a workspace `HEAD` that tracks reserved daemon paths refuses the switch
+- `set_default_branch` — set/change a project's default branch. A branch missing on origin is created under the exact-OID push contract (see [git#operator-initiated-pushes](git.md#operator-initiated-pushes)); a workspace `HEAD` that tracks reserved daemon paths refuses the switch
 
 ### System Extensions
 - `reload_config` — manual config hot-reload
 - `claude_usage` — Claude Code usage stats from session data
 - `shutdown` — graceful/force shutdown
-- `get_config` — current YAML grouped by section, env-var refs preserved as `${VAR}` (see [[config#7-runtime-editing]])
+- `get_config` — current YAML grouped by section, env-var refs preserved as `${VAR}` (see [config#7-runtime-editing](config.md#7-runtime-editing))
 - `get_config_schema` — JSON schema generated from `AppConfig`, used by the dashboard editor
 - `update_config` — partial update by section; validates via temp-file `load_config()`, writes a `.bak` on success, response indicates whether the change is live or restart-required
 

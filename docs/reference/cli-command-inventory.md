@@ -1,5 +1,12 @@
 # CLI command inventory
 
+> **Looking for prose?** This page explains the generated artifact and its
+> acceptance statuses. The written reference for the same surface is
+> [the CLI reference](cli/README.md) — start with
+> [Commands](cli/commands.md) for what each group does,
+> [Command contracts](cli/contracts.md) for what a playbook may call, and
+> [Agent-facing tools](cli/agent-tools.md) for the tool presentation of it.
+
 The maintained machine-readable inventory is
 [`cli-command-inventory.json`](cli-command-inventory.json). It is generated from the live
 Click command tree, so its totals follow the current source rather than pinning the 318-command

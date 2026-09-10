@@ -7,6 +7,12 @@ tags: [spec, runtimes, platforms, acp, refactor]
 
 # Runtime Rename + ACP Adoption — Combined Design
 
+<!-- aq:historical -->
+> **Historical design record.** This spec describes one feature as it was
+> designed, not as the code stands today. Start at [the documentation
+> home](../../README.md) for current behaviour; see [historical
+> material](../../history/README.md).
+
 ## Status update (2026-04-28)
 
 All phases consolidated by this spec are now **landed** on
@@ -146,7 +152,8 @@ sweep so this phase could ship in isolation.
 
 ### Phase 1.4 — supervisor-as-runtime port (LANDED)
 5 commits ported the supervisor-as-runtime branch onto platforms-impl
-(see [`2026-04-27-supervisor-as-runtime.md`](../plans/2026-04-27-supervisor-as-runtime.md)).
+(the plan file `2026-04-27-supervisor-as-runtime.md` was never committed to this
+repository; the port is described in this section).
 Net effect:
 - `src/supervisor.py` → `src/platforms/supervisor.py`
 - `Supervisor` inherits `Platform`; registered as singleton in

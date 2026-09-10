@@ -1,5 +1,11 @@
 # Playbooks in Command Center
 
+<!-- aq:historical -->
+> **Historical design record.** This spec describes one feature as it was
+> designed, not as the code stands today. Start at [the documentation
+> home](../../README.md) for current behaviour; see [historical
+> material](../../history/README.md).
+
 Status: proposal only. This audit changes navigation, not playbook execution or authoring behavior.
 
 ## Recommendation

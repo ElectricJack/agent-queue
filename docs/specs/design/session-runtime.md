@@ -4,9 +4,17 @@ tags: [design, sessions, runtime, tmux, harnesses, lifecycle]
 
 # Session Runtime — tmux-First Provider Model
 
+<!-- aq:historical -->
+> **Design record — not current documentation.** A spec states the behaviour
+> intended when it was approved; it is written before the code and is not
+> revised to track it. Where this page and the code disagree, the code is right.
+> Start at [the documentation home](../../README.md) for what AQ does today, and
+> see [historical material](../../history/README.md) for how this material is
+> organised.
+
 **Status:** Draft — approved direction (2026-08-19)
-**Principles:** [[guiding-design-principles]] (#1 files as source of truth, #7 events not coupling, #9 simple interfaces, #10 fewer moving parts)
-**Related:** [[worktree-execution]], [[supervisor-agent]], [[aq-surface]], [[trust-and-ops]], [[feature-pauses]], [[workspaces-v2]], [[specs/orchestrator]], `docs/analysis/framework-overhaul-todo.md` (Workstream A, D1)
+**Principles:** [guiding-design-principles](guiding-design-principles.md) (#1 files as source of truth, #7 events not coupling, #9 simple interfaces, #10 fewer moving parts)
+**Related:** [worktree-execution](worktree-execution.md), [supervisor-agent](supervisor-agent.md), [aq-surface](aq-surface.md), [trust-and-ops](trust-and-ops.md), [feature-pauses](feature-pauses.md), [workspaces-v2](workspaces-v2.md), [specs/orchestrator](../orchestrator.md), `docs/analysis/framework-overhaul-todo.md` (Workstream A, D1)
 
 ---
 
@@ -59,9 +67,9 @@ existing ~5 s cascade.
 - Windows-native sessions. The daemon targets Linux/WSL2; tmux is POSIX-only. The
   `subprocess` provider is the degraded fallback, not a Windows story.
 - Print-mode execution (`claude -p`, `stream-json`). Task sessions are always interactive.
-- Worktree lifecycle (owned by [[worktree-execution]]), message routing and nudge-delivery
-  policy (owned by [[supervisor-agent]]), the CLI envelope and hook payload content (owned
-  by [[aq-surface]]), env scrubbing and trust boundaries (owned by [[trust-and-ops]]).
+- Worktree lifecycle (owned by [worktree-execution](worktree-execution.md)), message routing and nudge-delivery
+  policy (owned by [supervisor-agent](supervisor-agent.md)), the CLI envelope and hook payload content (owned
+  by [aq-surface](aq-surface.md)), env scrubbing and trust boundaries (owned by [trust-and-ops](trust-and-ops.md)).
 
 ## 3. Concepts
 
@@ -72,7 +80,7 @@ existing ~5 s cascade.
 | **SessionSpec** | Immutable launch description built from profile + harness + task: name, work_dir, argv, env, prompt, readiness hints, dialogs, lifecycle. |
 | **Harness** | A markdown profile in `vault/harnesses/<name>.md` describing one CLI agent: command, prompt delivery, resume flags, readiness prompt, process names, hooks, transcript paths, dialogs. |
 | **Lifecycle** | `task` — one session per task, killed after drain-ack; `named` — persistent (supervisor, warm workers), sleeps and wakes. |
-| **Session name** | Task sessions `s-<task_id>`; named sessions `n-<profile>[--<project>]`. Charset `^[a-zA-Z0-9_-]+$` (profile/project ids are sanitized into it). Consumers address named sessions by a *logical name* (e.g. `supervisor-<project_id>`, see [[supervisor-agent]]); the session manager maps logical names to provider names — other specs never construct provider names directly. |
+| **Session name** | Task sessions `s-<task_id>`; named sessions `n-<profile>[--<project>]`. Charset `^[a-zA-Z0-9_-]+$` (profile/project ids are sanitized into it). Consumers address named sessions by a *logical name* (e.g. `supervisor-<project_id>`, see [supervisor-agent](supervisor-agent.md)); the session manager maps logical names to provider names — other specs never construct provider names directly. |
 | **Epoch / instance token** | `AQ_DAEMON_EPOCH` identifies the daemon run that launched a session; `AQ_INSTANCE_TOKEN` uniquely fences one launch so kills never hit a same-named successor. |
 
 **Identity and liveness.** Every session's environment carries `AQ_SESSION_ID`,
@@ -82,7 +90,7 @@ stripped (today's `isolated_env` in `src/runtimes/_subprocess.py`). Liveness and
 are decided by scanning the process table for these markers (`/proc/<pid>/environ`) — never
 PID files, never tmux session names alone (names get reused; PIDs get recycled). The
 `AQ_API_URL`/`AQ_API_TOKEN` pair is how `aq` inside the session reaches the daemon; token
-scoping is specified in [[trust-and-ops]].
+scoping is specified in [trust-and-ops](trust-and-ops.md).
 
 ## 4. Behavioral Model
 
@@ -96,9 +104,9 @@ and human-readable; prompts larger than ~1 KB are written to a temp file and del
 The bootstrap prompt is deliberately short: *"You are running task `<id>` in `<work_dir>`.
 Run `aq prime` and follow it. When done: `aq task close …` then `aq session drain-ack`."*
 The full prompt (role, project override, task, attachments, workspaces block — L1/L2 slots
-reserved while memory is paused per [[feature-pauses]]) renders to `<work_dir>/.aq/prompt.md`
-and is returned by `aq prime` (envelope: [[aq-surface]]). `work_dir` is the task's slot
-worktree, prepared before launch per [[worktree-execution]].
+reserved while memory is paused per [feature-pauses](feature-pauses.md)) renders to `<work_dir>/.aq/prompt.md`
+and is returned by `aq prime` (envelope: [aq-surface](aq-surface.md)). `work_dir` is the task's slot
+worktree, prepared before launch per [worktree-execution](worktree-execution.md).
 
 **Completion is explicit, and only explicit:**
 
@@ -126,7 +134,7 @@ the ladder survives daemon restarts.
 
 Named sessions (`lifecycle: named` on the profile — the supervisor, warm pool workers) are
 persistent interactive CLIs. Work arrives as nudges and inbox injections (delivery policy:
-[[supervisor-agent]]). Behavior knobs live on the profile:
+[supervisor-agent](supervisor-agent.md)). Behavior knobs live on the profile:
 
 - `wake_mode: resume | fresh` — wake a sleeping session with `--resume <session_key>` or a
   clean start.
@@ -168,7 +176,7 @@ See `docs/superpowers/specs/2026-08-27-session-desired-state-design.md`.
 
 Still deferred: profile-declared session *pools* (starting a session that has no row at
 all) and recycle-on-drift. Both are writable now that intent is representable; both need
-the [[supervisor-agent]] routing story settled first.
+the [supervisor-agent](supervisor-agent.md) routing story settled first.
 
 ### 4.3 Heartbeats, leases, and the stall ladder
 
@@ -230,7 +238,7 @@ tails it, falling back to peek diffs for transcript-less harnesses.
 ### 4.6 Hooks
 
 Hook **wiring** is owned here (which events, when installed, suppression rules); payload
-**content** is owned by [[aq-surface]]. Per-harness hook file templates are written into the
+**content** is owned by [aq-surface](aq-surface.md). Per-harness hook file templates are written into the
 work_dir (or merged via Claude's `--settings <path>`) at spec-build time when the harness
 declares `supports_hooks`:
 
@@ -380,7 +388,7 @@ new hash to the manifest; a test fails otherwise.
 `state_cache_ttl_seconds`, `transcript_poll_seconds`, `adopt_on_start`. Per-profile knobs
 (lifecycle, wake_mode, timeouts) live in profile markdown, not config.yaml.
 
-**CLI** (semantics here; envelope and plumbing in [[aq-surface]]):
+**CLI** (semantics here; envelope and plumbing in [aq-surface](aq-surface.md)):
 
 | Command | Semantics |
 |---|---|
@@ -411,7 +419,7 @@ digest to task activity alone, and the reconciler never calls them.
   `stark-journey-63`: one manual `tmux send-keys Enter` cleared a nudge that had been
   stuck for hours while the log said "will retry" at info level).
 - **Nudging a busy agent** can interleave with its typing. Nudges are debounced, locked
-  per-session, and policy (when to deliver vs. queue) belongs to [[supervisor-agent]];
+  per-session, and policy (when to deliver vs. queue) belongs to [supervisor-agent](supervisor-agent.md);
   the provider only guarantees inject-and-confirm or a typed failure.
 - **Readiness timeout with a live pane** is non-fatal — some harnesses paint slowly; the
   nudge/dialog machinery recovers. Only a dead pane fails the launch (with
@@ -435,20 +443,20 @@ digest to task activity alone, and the reconciler never calls them.
 
 ## 9. Interactions with Other Specs
 
-- **[[worktree-execution]]** owns worktree slots, branches, the reaper, and the merge slot.
+- **[worktree-execution](worktree-execution.md)** owns worktree slots, branches, the reaper, and the merge slot.
   This spec consumes `work_dir` (the slot worktree) in SessionSpec and records it on the
   session row; the reaper's liveness guard queries this spec's process-table scan.
-- **[[supervisor-agent]]** owns the `messages` table, reply protocol, and when a message
+- **[supervisor-agent](supervisor-agent.md)** owns the `messages` table, reply protocol, and when a message
   becomes a nudge vs. an inbox injection. It consumes `nudge`, named-session wake, and the
   SSE stream.
-- **[[aq-surface]]** owns the `aq` CLI envelope, `aq prime`/`handoff`/`inbox` content, hook
+- **[aq-surface](aq-surface.md)** owns the `aq` CLI envelope, `aq prime`/`handoff`/`inbox` content, hook
   payload formats, and REST auth. This spec owns which hooks fire and the session/task
   state transitions those commands cause.
-- **[[trust-and-ops]]** owns env scrubbing rules, API token scoping, and the
+- **[trust-and-ops](trust-and-ops.md)** owns env scrubbing rules, API token scoping, and the
   skip-permissions-inside-worktree trust argument that `permission_flag` relies on.
-- **[[feature-pauses]]** owns the memory/playbooks pause switches; `aq prime` keeps L1/L2
+- **[feature-pauses](feature-pauses.md)** owns the memory/playbooks pause switches; `aq prime` keeps L1/L2
   slots empty-but-present so memory plugs back in without touching this spec.
-- **[[workspaces-v2]]** remains the workspace kind/instance model; sessions attach to
+- **[workspaces-v2](workspaces-v2.md)** remains the workspace kind/instance model; sessions attach to
   acquired workspaces, they do not change acquisition semantics.
 
 ## 10. Deferred
@@ -459,7 +467,7 @@ digest to task activity alone, and the reconciler never calls them.
   markdown once the first four are certified.
 - `RELAUNCH` capability use (`respawn-pane -k`) for command-drift-only recycling — the ABC
   reserves the capability; v1 always does full kill + start (respawn-pane drops env).
-- Warm pool workers (named sessions pre-claimed for task work) — needs [[supervisor-agent]]
+- Warm pool workers (named sessions pre-claimed for task work) — needs [supervisor-agent](supervisor-agent.md)
   routing first.
 - fsnotify transcript watching (poll ~2 s is sufficient and portable in v1).
 - Windows-native provider; per-session resource limits (cgroup/systemd scopes).

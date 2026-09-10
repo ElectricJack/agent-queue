@@ -6,6 +6,12 @@ status: analysis — companion to 2026-08-28-beads-swarm-migration-evaluation
 
 # What makes beads work for agent swarms — and can Agent Queue match it?
 
+<!-- aq:historical -->
+> **Historical analysis.** A point-in-time comparison or assessment. Its
+> conclusions were acted on elsewhere and its numbers were measured on the day
+> it was written. Start at [the documentation home](../README.md); see
+> [historical material](../history/README.md).
+
 **Question.** Strip beads down to the *properties* that make it succeed as the work ledger
 for a swarm (as opposed to its features or its storage choice), then check each property
 against what this codebase has, what it lacks, and what it would take to close the gap on
@@ -13,7 +19,7 @@ our own store.
 
 **Sources.** beads `engdocs/PROJECT_CHARTER.md`, `docs/core-concepts/*`, `AGENTS.md`
 ("landing the plane"), `issueops/{claim,blocked_state}.go` as read in
-[[comparison-gascity-beads]] §3; Gas Town polecat lifecycle and Gas City `work_query`
+[comparison-gascity-beads](comparison-gascity-beads.md) §3; Gas Town polecat lifecycle and Gas City `work_query`
 routing; current code on `main@aff5547c`. Property numbering is used in the scorecard (§3).
 
 ---

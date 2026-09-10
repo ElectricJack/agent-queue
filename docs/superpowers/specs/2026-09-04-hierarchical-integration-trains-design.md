@@ -1,5 +1,11 @@
 # Hierarchical Delivery and Integration Trains
 
+<!-- aq:historical -->
+> **Historical design record.** This spec describes one feature as it was
+> designed, not as the code stands today. Start at [the documentation
+> home](../../README.md) for current behaviour; see [historical
+> material](../../history/README.md).
+
 **Status:** Revised after adversarial review, pending written approval
 **Date:** 2026-09-04
 **Scope:** Task-branch delivery, recursive child consolidation, root integration, and CI policy

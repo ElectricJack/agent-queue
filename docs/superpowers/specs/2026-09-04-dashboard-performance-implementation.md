@@ -1,5 +1,11 @@
 # Dashboard Performance Implementation Plan
 
+<!-- aq:historical -->
+> **Historical design record.** This spec describes one feature as it was
+> designed, not as the code stands today. Start at [the documentation
+> home](../../README.md) for current behaviour; see [historical
+> material](../../history/README.md).
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Make the dashboard and the orchestrator cycle stay fast with 5,000–10,000 tasks by removing the N+1 query paths, taking layout re-flow out of the cycle's critical path, and rendering the task list virtually.

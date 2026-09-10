@@ -1,5 +1,12 @@
 # Playbook V2 cutover report
 
+<!-- aq:historical -->
+> **Retired guide.** The procedure below no longer matches AQ and is kept only
+> so existing links resolve. The V1 runtime it reports on was deleted in the
+> 2026-09-04 cutover; [Playbooks V2](../concepts/playbooks.md) is the current
+> page. Start at [the documentation home](../README.md); see [historical
+> material](../history/README.md).
+
 Generate the current evidence with `aq playbook cutover-report --json`; paste
 the result below without editing hashes or counters. A non-empty
 `blocking_reasons` list means cutover is not approved.

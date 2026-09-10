@@ -1,5 +1,11 @@
 # Blocked-task escalation playbook
 
+<!-- aq:historical -->
+> **Historical design record.** This spec describes one feature as it was
+> designed, not as the code stands today. Start at [the documentation
+> home](../../README.md) for current behaviour; see [historical
+> material](../../history/README.md).
+
 **Date:** 2026-09-06
 **Status:** shipped (default playbook, enabled)
 **Source:** `src/prompts/default_playbooks/blocked-task-escalation.md`

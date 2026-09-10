@@ -1,5 +1,11 @@
 # Blocked-Task Detection — Procedure Using Existing Tools
 
+<!-- aq:historical -->
+> **Historical working note.** Dated scratch material, kept for the record and
+> never revised. Not instructions. Start at [the documentation
+> home](../docs/README.md); see [historical
+> material](../docs/history/README.md).
+
 **Task:** `wise-harbor` — Investigate missing `system_monitor.get_blocked_tasks`
 tool and identify problematic blocked tasks
 **Date:** 2026-04-22

@@ -1,5 +1,11 @@
 # Playbook V2 fresh-cutover design
 
+<!-- aq:historical -->
+> **Historical design record.** This spec describes one feature as it was
+> designed, not as the code stands today. Start at [the documentation
+> home](../../README.md) for current behaviour; see [historical
+> material](../../history/README.md).
+
 ## Goal
 
 Move the live Agent Queue installation to the typed Playbook V2 runtime, replace

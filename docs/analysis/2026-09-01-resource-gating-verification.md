@@ -5,6 +5,12 @@ date: 2026-09-01
 
 # Resource gating — manual verification, before and after
 
+<!-- aq:historical -->
+> **Historical analysis.** A point-in-time comparison or assessment. Its
+> conclusions were acted on elsewhere and its numbers were measured on the day
+> it was written. Start at [the documentation home](../README.md); see
+> [historical material](../history/README.md).
+
 Measurements taken on the box the gating was built for, while it was
 running its normal agent load. Implementation and configuration are
 documented in [resource gating](../guides/resource-gating.md).

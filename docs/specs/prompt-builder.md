@@ -4,9 +4,17 @@ tags: [spec, prompts, context]
 
 # Prompt Builder
 
+<!-- aq:historical -->
+> **Design record — not current documentation.** A spec states the behaviour
+> intended when it was approved; it is written before the code and is not
+> revised to track it. Where this page and the code disagree, the code is right.
+> Start at [the documentation home](../README.md) for what AQ does today, and
+> see [historical material](../history/README.md) for how this material is
+> organised.
+
 ## Purpose
 
-Single entry point for all prompt assembly in the system. Replaces scattered string concatenation across orchestrator, [[specs/platforms/claude_sdk]], chat agent, and agent_prompting.
+Single entry point for all prompt assembly in the system. Replaces scattered string concatenation across orchestrator, [specs/platforms/claude_sdk](runtimes/claude_sdk.md), chat agent, and agent_prompting.
 
 ## Concepts
 
@@ -15,16 +23,16 @@ Single entry point for all prompt assembly in the system. Replaces scattered str
 Every prompt is assembled from up to 5 ordered layers:
 
 1. **Identity** — Who is the LLM acting as? Loaded from a prompt template file in `src/prompts/`.
-   - `supervisor` — the Discord-facing [[specs/supervisor|Supervisor]] (from `chat_agent_system.md`)
+   - `supervisor` — the Discord-facing [Supervisor](supervisor.md) (from `chat_agent_system.md`)
    - `task-agent` — a Claude Code agent executing a task
-   - `hook-executor` — the [[specs/supervisor|Supervisor]] reasoning about a hook result (from `hook_context.md`)
+   - `hook-executor` — the [Supervisor](supervisor.md) reasoning about a hook result (from `hook_context.md`)
 
 2. **Project Context** — What project is this for? Pulled from the memory system:
    - Project profile (from `profile.md`)
    - Project documentation (CLAUDE.md, README.md)
    - Falls back to empty string if memory unavailable
 
-3. **Relevant Rules** — Removed. Rules were replaced by [[design/playbooks|playbooks]] and vault memory; nothing is loaded at this step.
+3. **Relevant Rules** — Removed. Rules were replaced by [playbooks](design/playbooks.md) and vault memory; nothing is loaded at this step.
 
 4. **Specific Context** — What is the LLM doing right now? Arbitrary named context blocks:
    - `task` — task description

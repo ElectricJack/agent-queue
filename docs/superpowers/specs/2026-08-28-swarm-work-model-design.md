@@ -12,6 +12,12 @@ related:
 
 # Swarm work model — hierarchy, claims, pools, formulas
 
+<!-- aq:historical -->
+> **Historical design record.** This spec describes one feature as it was
+> designed, not as the code stands today. Start at [the documentation
+> home](../../README.md) for current behaviour; see [historical
+> material](../../history/README.md).
+
 ## 1. Purpose
 
 Turn Agent Queue's push-assigned task queue into a work model that supports **agent
@@ -19,7 +25,7 @@ swarms**: many concurrent sessions that pull their own work from a graph-decided
 frontier, file the work they discover, and run multi-step methods encoded as data — while
 keeping the existing store, projects, dashboard, and `aq` CLI.
 
-The companion analysis ([[2026-08-28-beads-properties-and-parity]]) established that the
+The companion analysis ([2026-08-28-beads-properties-and-parity](../../analysis/2026-08-28-beads-properties-and-parity.md)) established that the
 codebase already has eleven of the fifteen properties that make beads work as a swarm
 ledger. This spec closes the load-bearing gaps: a **claim** primitive, **worker pools**
 with a bounded worker loop, **worker-filed work** with playbook-owned policy, a

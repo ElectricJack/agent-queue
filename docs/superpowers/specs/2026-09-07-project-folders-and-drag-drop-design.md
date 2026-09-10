@@ -1,5 +1,11 @@
 # Project folders and drag/drop in the left rail
 
+<!-- aq:historical -->
+> **Historical design record.** This spec describes one feature as it was
+> designed, not as the code stands today. Start at [the documentation
+> home](../../README.md) for current behaviour; see [historical
+> material](../../history/README.md).
+
 **Task:** `calm-grove` — "I want to be able to organize my projects in the nav
 bar on the left. Need to be able to add folders and drag projects around."
 

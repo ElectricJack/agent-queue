@@ -4,9 +4,17 @@ tags: [design, work-graph, dependencies, gates, labels, state-machine, explain, 
 
 # Work Graph — Typed Edges, Blocked State, Gates, Explain
 
+<!-- aq:historical -->
+> **Design record — not current documentation.** A spec states the behaviour
+> intended when it was approved; it is written before the code and is not
+> revised to track it. Where this page and the code disagree, the code is right.
+> Start at [the documentation home](../../README.md) for what AQ does today, and
+> see [historical material](../../history/README.md) for how this material is
+> organised.
+
 **Status:** Draft — approved direction (2026-08-19)
-**Principles:** [[guiding-design-principles]] (#2 visible and editable, #7 events over coupling, #9 simple interfaces, #10 fewer moving parts)
-**Related:** [[workspaces-v2]], [[agent-coordination]], [[session-runtime]], [[worktree-execution]], [[supervisor-agent]], [[messaging-rework]], `docs/analysis/framework-overhaul-todo.md` §6 (Workstream D), `docs/analysis/comparison-gascity-beads.md` §7
+**Principles:** [guiding-design-principles](guiding-design-principles.md) (#2 visible and editable, #7 events over coupling, #9 simple interfaces, #10 fewer moving parts)
+**Related:** [workspaces-v2](workspaces-v2.md), [agent-coordination](agent-coordination.md), [session-runtime](session-runtime.md), [worktree-execution](worktree-execution.md), [supervisor-agent](supervisor-agent.md), [messaging-rework](messaging-rework.md), `docs/analysis/framework-overhaul-todo.md` §6 (Workstream D), `docs/analysis/comparison-gascity-beads.md` §7
 
 ---
 
@@ -180,8 +188,8 @@ A new deterministic step `_sweep_gates()` runs each cycle between approvals and 
 ### 5.5 Consumers and producers (cross-spec)
 
 - The dashboard gates inbox invokes `gate_resolve`. Discord gate buttons and task-thread approval paths are retired; Discord only carries durable escalation replies to the supervisor.
-- **[[supervisor-agent]]**: `aq ask` creates a `human` gate attached to the asking task; the reply resolves it (and is delivered as a nudge).
-- **[[worktree-execution]]**: "PR merged" / "CI green" completion gates replace bespoke polling states in the merge pipeline.
+- **[supervisor-agent](supervisor-agent.md)**: `aq ask` creates a `human` gate attached to the asking task; the reply resolves it (and is delivered as a nudge).
+- **[worktree-execution](worktree-execution.md)**: "PR merged" / "CI green" completion gates replace bespoke polling states in the merge pipeline.
 - The gates table is the substrate the later status collapse (§12) lands on.
 
 ## 6. Labels
@@ -200,7 +208,7 @@ No new columns — typed `task_metadata` keys (the sanctioned extension point):
 | `work_commit`, `work_branch` | sha / branch name | task close |
 | `verification` | free-form evidence string | task close |
 | `close_notes` | "Done: …" summary | task close |
-| `work_dir`, `branch`, `pr_url`, `rejection_reason`, `merged_at` | work-state contract | orchestrator/worktree pipeline per [[worktree-execution]] (recorded early, for crash recovery and rejection-aware resume) |
+| `work_dir`, `branch`, `pr_url`, `rejection_reason`, `merged_at` | work-state contract | orchestrator/worktree pipeline per [worktree-execution](worktree-execution.md) (recorded early, for crash recovery and rejection-aware resume) |
 
 `branch` and `pr_url` currently exist as `tasks` columns; while both exist a single write helper keeps column and key in sync, with the metadata contract canonical for agents (the columns retire with the collapse migration).
 
@@ -236,7 +244,7 @@ Each reason is `{code, detail, ref}` — `code` from a closed enum, `detail` hum
 | `affinity_wait` | waiting for the preferred agent within `affinity_wait_seconds` |
 | `provider_cooldown` | rate-limit cooldown on the profile |
 | `retry_backoff` | PAUSED with `resume_after` in the future |
-| `lease_stalled` | heartbeat/lease overdue (once [[session-runtime]] lands) |
+| `lease_stalled` | heartbeat/lease overdue (once [session-runtime](session-runtime.md) lands) |
 | `hold_label` | `hold:*` label present |
 
 Graph reasons come straight from the projection queries; scheduler reasons come from the same reason builder that replaces the string heuristics in `_describe_task_blocker`, so the log line, the CLI, and the dashboard can never disagree.
@@ -249,7 +257,7 @@ Graph reasons come straight from the projection queries; scheduler reasons come 
 
 ### 10.1 `after_seq` replay
 
-`events.id` is already monotonic. The REST list-events command gains `after` (exclusive lower bound, ascending order, capped page size); the websocket accepts `?after_seq=N` and replays persisted events from the DB before switching to live tail. External adapters (the out-of-process Discord adapter in [[messaging-rework]], the dashboard) resume after a disconnect without loss — GC's `--after-cursor` semantics.
+`events.id` is already monotonic. The REST list-events command gains `after` (exclusive lower bound, ascending order, capped page size); the websocket accepts `?after_seq=N` and replays persisted events from the DB before switching to live tail. External adapters (the out-of-process Discord adapter in [messaging-rework](messaging-rework.md), the dashboard) resume after a disconnect without loss — GC's `--after-cursor` semantics.
 
 ### 10.2 Payload registry, test-enforced
 

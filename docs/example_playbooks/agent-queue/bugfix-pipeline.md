@@ -9,6 +9,12 @@ scope: agent-type:supervisor
 
 # Bugfix Pipeline
 
+<!-- aq:historical -->
+> **Historical sample.** Illustrative content that nothing installs or loads. It
+> was written for an earlier runtime, so copying it will not reproduce the
+> behaviour it describes. Start at [the documentation home](../../README.md);
+> see [historical material](../../history/README.md).
+
 Coordinate a streamlined code-then-QA workflow when a bugfix task is created.
 Unlike the feature pipeline, this skips the code review stage — bugfixes are
 typically small, targeted changes where the cost of a full review cycle

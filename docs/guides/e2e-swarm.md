@@ -242,8 +242,8 @@ reload.*
 **S7 — the PostgreSQL race.** Two workers claim `--next` concurrently, as two
 real processes, against one READY task. Exactly one gets `claimed`; the other
 gets `no_ready_work` or `claim_conflict`. *Regression it catches: the
-`FOR UPDATE SKIP LOCKED` work query losing its exclusivity — the failure that
-unit tests on SQLite cannot see.*
+`FOR UPDATE SKIP LOCKED` work query losing its exclusivity, which only two
+real processes against one real database can demonstrate.*
 
 **S8 — project onboarding.** The real `aq project onboard` CLI links a seeded
 repository beneath the configured disposable root and initializes a second

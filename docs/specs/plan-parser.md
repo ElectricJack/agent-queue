@@ -4,6 +4,14 @@ tags: [spec, plans, tasks]
 
 # Specification: Plan Parser
 
+<!-- aq:historical -->
+> **Design record — not current documentation.** A spec states the behaviour
+> intended when it was approved; it is written before the code and is not
+> revised to track it. Where this page and the code disagree, the code is right.
+> Start at [the documentation home](../README.md) for what AQ does today, and
+> see [historical material](../history/README.md) for how this material is
+> organised.
+
 > **Superseded.** Everything below this notice describes the pre-llm-direct-path
 > design: automatic plan discovery during the completion pipeline, regex parsing
 > into `PlanStep`/`ParsedPlan`, an LLM fallback parser (`src/plan_parser_llm.py`,
@@ -37,7 +45,7 @@ tags: [spec, plans, tasks]
 
 ## 1. Overview (historical)
 
-The plan parser converts markdown implementation plan files into structured task definitions that the [[specs/orchestrator]] can schedule as follow-up work.
+The plan parser converts markdown implementation plan files into structured task definitions that the [specs/orchestrator](orchestrator.md) can schedule as follow-up work.
 
 When an agent completes a task, it may write a plan file (e.g. `.claude/plan.md`) to its workspace describing the steps required to carry out that work. The plan parser reads this file, identifies the actionable steps, and returns them as an ordered list of `PlanStep` objects wrapped in a `ParsedPlan`. The orchestrator then creates one child task per step, chaining them with dependencies.
 

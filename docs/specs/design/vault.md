@@ -4,9 +4,17 @@ tags: [design, vault, obsidian, structure]
 
 # Vault Structure & Obsidian Integration
 
+<!-- aq:historical -->
+> **Design record — not current documentation.** A spec states the behaviour
+> intended when it was approved; it is written before the code and is not
+> revised to track it. Where this page and the code disagree, the code is right.
+> Start at [the documentation home](../../README.md) for what AQ does today, and
+> see [historical material](../../history/README.md) for how this material is
+> organised.
+
 **Status:** Draft
-**Principles:** [[guiding-design-principles]] (#1 files as source of truth, #2 visible and editable)
-**Related:** [[memory-plugin]], [[memory-scoping]], [[profiles]], [[self-improvement]], [[playbooks]]
+**Principles:** [guiding-design-principles](guiding-design-principles.md) (#1 files as source of truth, #2 visible and editable)
+**Related:** [memory-plugin](memory-plugin.md), [memory-scoping](memory-scoping.md), [profiles](profiles.md), [self-improvement](self-improvement.md), [playbooks](playbooks.md)
 
 ---
 
@@ -126,7 +134,7 @@ else — runtime artifacts, raw data, infrastructure — lives outside.
 ### 3.1 The `specs/` directory
 
 `vault/projects/<pid>/specs/<slug>.md` is where the supervisor and planner agents write
-the specs they author ([[supervisor-agent]] §8, decision S8).  The convention:
+the specs they author ([supervisor-agent](supervisor-agent.md) §8, decision S8).  The convention:
 
 - **One spec per slug**, ordinary Obsidian-editable markdown.  Frontmatter carries at
   least `tags: [spec, project]`, the `project` id, and a `status`
@@ -258,14 +266,14 @@ The vault and memory system migration is phased to allow incremental adoption.
 - Move existing rule files from `memory/*/rules/` to vault playbook locations
 - Move existing notes from `notes/` to `vault/projects/*/notes/`
 - Symlink or copy existing project memory files during transition
-- Implement the [[playbooks#17. Prerequisite Refactors|unified vault file watcher]]
+- Implement the [unified vault file watcher](playbooks.md#17-prerequisite-refactors)
 
 ### Phase 2: memsearch Fork + Plugin v2
 
 - Fork memsearch, add KV storage (scalar-only entries in Milvus collections)
 - Add multi-collection query with weighted merging
 - Add scope-aware collection naming and routing
-- Build [[memory-plugin|MemoryPlugin v2]] as internal plugin using the fork
+- Build [MemoryPlugin v2](memory-plugin.md) as internal plugin using the fork
 - Plugin exposes unified tool set (`memory_search`, `memory_recall`, `memory_save`,
   `memory_store`, `memory_get`, `memory_list`, `memory_list_facts`)
 - v2 plugin coexists with v1 during transition; both register via plugin system
@@ -274,25 +282,25 @@ The vault and memory system migration is phased to allow incremental adoption.
 ### Phase 3: Memory Scoping + KV
 
 - Create per-agent-type and system-level collections
-- Implement [[memory-scoping|scope resolution]] (project → agent-type → system)
+- Implement [scope resolution](memory-scoping.md) (project → agent-type → system)
 - Create fact files (`facts.md`) per scope in the vault
 - Implement fact file → Milvus KV sync via file watcher
 - Remove v1 memory plugin and `src/memory.py` MemoryManager
 
 ### Phase 4: Profile Migration
 
-- Convert DB-stored profiles to [[profiles|markdown files]] in the vault
+- Convert DB-stored profiles to [markdown files](profiles.md) in the vault
 - Implement file watcher → DB sync for hybrid profile format
 - Update chat/dashboard profile commands to write markdown
 - Validate JSON block parsing and DB sync
 
 ### Phase 5: Self-Improvement Loop
 
-- Implement [[self-improvement|reflection playbook]] for agent-type insight extraction
+- Implement [reflection playbook](self-improvement.md) for agent-type insight extraction
 - Implement log analysis playbook for operational insights
 - Implement reference stub indexer for workspace specs
 - Implement memory consolidation (dedup, merge, archive)
-- Implement [[self-improvement|memory health metrics]] and audit trail
+- Implement [memory health metrics](self-improvement.md) and audit trail
 
 ---
 

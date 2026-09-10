@@ -6,6 +6,12 @@ topic: aq-memory plugin extraction
 
 # Extracting the Memory Plugin to `aq-memory` (External Plugin)
 
+<!-- aq:historical -->
+> **Historical design record.** This spec describes one feature as it was
+> designed, not as the code stands today. Start at [the documentation
+> home](../../README.md) for current behaviour; see [historical
+> material](../../history/README.md).
+
 ## 1. Goal
 
 Move the memory plugin (currently `src/plugins/internal/memory_v2/`) out of agent-queue2 and into a standalone repository at `/mnt/d/Dev/aq/aq-memory`, dropping the vestigial `V2`/`v2` suffix from all names along the way (V1 was deleted in roadmap 8.6 — there is no V1 to disambiguate from). After extraction:

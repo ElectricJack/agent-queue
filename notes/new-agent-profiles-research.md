@@ -1,5 +1,11 @@
 # New Agent Profile Configurations — Research Document
 
+<!-- aq:historical -->
+> **Historical working note.** Dated scratch material, kept for the record and
+> never revised. Not instructions. Start at [the documentation
+> home](../docs/README.md); see [historical
+> material](../docs/history/README.md).
+
 > **Date:** 2026-03-14
 > **Status:** Research / Proposal
 > **Context:** Extends the agent profiles system defined in `specs/agent-profiles.md`

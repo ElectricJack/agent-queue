@@ -1,5 +1,11 @@
 # Command Center task workspace
 
+<!-- aq:historical -->
+> **Historical design record.** This spec describes one feature as it was
+> designed, not as the code stands today. Start at [the documentation
+> home](../../README.md) for current behaviour; see [historical
+> material](../../history/README.md).
+
 The sidebar is the single project selector for the main workspace. `/command-center/graph` and `/command-center/tasks` show all projects; `/projects/:projectId/graph` and `/projects/:projectId/tasks` use the same layout and controls for one project. Project selection retains the current compatible tab and filters. Project overview, sessions, workspaces, profiles, playbooks, and config remain accessible as tabs in that layout. Project Chat disappears; old chat links lead to the flock.
 
 Graph and Tasks share title/ID/project/agent search, a status filter, a completed toggle, and an Add task action. `N` opens creation outside editable controls; `/` focuses search. Creation defaults to the selected project, reports errors, and refreshes graph and task data immediately. Existing table edit and action functionality remains available. A task card or table row opens its detail pane; blank workspace clicks clear task selection without closing unrelated panes.

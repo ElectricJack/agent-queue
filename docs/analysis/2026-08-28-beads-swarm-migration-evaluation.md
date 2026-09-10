@@ -6,6 +6,12 @@ status: evaluation — no decision taken
 
 # Moving to beads + a Gas Town–style pull swarm — what it would actually take
 
+<!-- aq:historical -->
+> **Historical analysis.** A point-in-time comparison or assessment. Its
+> conclusions were acted on elsewhere and its numbers were measured on the day
+> it was written. Start at [the documentation home](../README.md); see
+> [historical material](../history/README.md).
+
 **Question asked.** What would it take to retire Agent Queue's task system and push
 orchestrator, adopt **beads** as the work store, and run **agent swarms** that *pull*
 work Gas Town–style — while keeping projects, the dashboard, and the `aq` CLI?
@@ -14,8 +20,8 @@ work Gas Town–style — while keeping projects, the dashboard, and the `aq` CL
 sessions/workspaces/messaging; CLI/API/dashboard/MCP; playbooks/reflection/vault/specs;
 current state of `gastownhall/beads` and `gastownhall/gastown` as of 2026-08-29), read
 against the three prior analyses this repo already holds:
-[[comparison-gascity-beads]] (2026-08-19), [[framework-overhaul-todo]] (decisions D1–D9),
-[[ecosystem-positioning]] §2, and [[2026-08-26-session-runtime-vs-gascity]]. File:line
+[comparison-gascity-beads](comparison-gascity-beads.md) (2026-08-19), [framework-overhaul-todo](framework-overhaul-todo.md) (decisions D1–D9),
+[ecosystem-positioning](ecosystem-positioning.md) §2, and [2026-08-26-session-runtime-vs-gascity](2026-08-26-session-runtime-vs-gascity.md). File:line
 references are to this repo unless noted.
 
 ---

@@ -4,15 +4,23 @@ tags: [platforms, development-guide]
 
 # Platform Development Guide
 
+<!-- aq:historical -->
+> **Retired guide.** The procedure below no longer matches AQ and is kept only
+> so existing links resolve. There are no in-tree runtimes: every agent is a CLI
+> in a tmux session, chosen by a profile's `harness` field, which [System
+> architecture](../concepts/architecture.md) explains. Start at [the
+> documentation home](../README.md); see [historical
+> material](../history/README.md).
+
 How to add a new AI agent backend to Agent Queue.
 
-> See also: [[specs/platforms/claude_sdk|Claude SDK platform spec]] and [[specs/platforms/development-guide|Platform Development Guide spec]] for detailed reference.
+> See also: [Claude SDK platform spec](../specs/runtimes/claude_sdk.md) and [Platform Development Guide spec](../specs/runtimes/development-guide.md) for detailed reference.
 >
-> See also: [[specs/design/agent-coordination]] for how platforms interact with coordination playbooks.
+> See also: [specs/design/agent-coordination](../specs/design/agent-coordination.md) for how platforms interact with coordination playbooks.
 
 ## Architecture Overview
 
-Agent platforms are the bridge between the [[specs/orchestrator|orchestrator]] and external AI coding
+Agent platforms are the bridge between the [orchestrator](../specs/orchestrator.md) and external AI coding
 agents. Each platform implements a minimal 4-method interface that the
 orchestrator calls during the task execution pipeline. The platform is
 responsible for launching the agent process, streaming its output, and
@@ -383,7 +391,7 @@ async def test_stop():
 
 ## Reference: ClaudeSDKPlatform
 
-The existing [[specs/platforms/claude_sdk|ClaudeSDKPlatform]] (`src/runtimes/claude_sdk.py`) is the reference
+The existing [ClaudeSDKPlatform](../specs/runtimes/claude_sdk.md) (`src/runtimes/claude_sdk.py`) is the reference
 implementation. Key patterns to follow:
 
 - **Profile-bound construction**: `__init__(self, profile=None, llm_logger=None)` with

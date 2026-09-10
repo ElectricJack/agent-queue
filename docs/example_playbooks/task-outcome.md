@@ -8,6 +8,12 @@ scope: system
 
 # Task Outcome
 
+<!-- aq:historical -->
+> **Historical sample.** Illustrative content that nothing installs or loads. It
+> was written for an earlier runtime, so copying it will not reproduce the
+> behaviour it describes. Start at [the documentation home](../README.md); see
+> [historical material](../history/README.md).
+
 When a task completes or fails, evaluate it and take follow-up action.
 
 If the task completed:

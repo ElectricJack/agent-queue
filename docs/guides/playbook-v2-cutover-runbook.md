@@ -1,5 +1,12 @@
 # Playbook V1 → V2 cutover runbook
 
+<!-- aq:historical -->
+> **Retired guide.** The procedure below no longer matches AQ and is kept only
+> so existing links resolve. The V1 runtime it drains was deleted in the
+> 2026-09-04 cutover; [Playbooks V2](../concepts/playbooks.md) is the current
+> page. Start at [the documentation home](../README.md); see [historical
+> material](../history/README.md).
+
 Operator guide for the commands that move a fleet off the V1 playbook runtime.
 
 > **Scope.** This covers the **drain** (Package 7 commit 1) and the **rollback

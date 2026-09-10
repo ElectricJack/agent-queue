@@ -4,11 +4,19 @@ tags: [design, playbooks, automation, workflows]
 
 # Playbooks — Agent Workflow Graphs
 
-**Status:** Active — **Paused** ([[feature-pauses]]; `playbooks.enabled=false`)
+<!-- aq:historical -->
+> **Design record — not current documentation.** A spec states the behaviour
+> intended when it was approved; it is written before the code and is not
+> revised to track it. Where this page and the code disagree, the code is right.
+> Start at [the documentation home](../../README.md) for what AQ does today, and
+> see [historical material](../../history/README.md) for how this material is
+> organised.
+
+**Status:** Active — **Paused** ([feature-pauses](feature-pauses.md); `playbooks.enabled=false`)
 **Supersedes:** `rule-system.md`, `hooks.md` (migration complete, deprecated spec files removed)
 **Source files:** TBD
-**Principles:** [[guiding-design-principles]] (#1 files as source of truth, #3 structure guides intelligence, #7 events not coupling)
-**Related:** [[vault]], [[agent-coordination]], [[specs/event-bus]], [[specs/supervisor]], [[specs/plugin-system]]
+**Principles:** [guiding-design-principles](guiding-design-principles.md) (#1 files as source of truth, #3 structure guides intelligence, #7 events not coupling)
+**Related:** [vault](vault.md), [agent-coordination](agent-coordination.md), [specs/event-bus](../event-bus.md), [specs/supervisor](../supervisor.md), [specs/plugin-system](../plugin-system.md)
 
 ---
 
@@ -172,7 +180,7 @@ The only structured portion. Kept minimal:
 | `enabled` | no | Default `true`. Set `false` to disable without deleting |
 | `cooldown` | no | Minimum seconds between executions. Default varies by trigger |
 | `version` | no | Auto-incremented on each compilation |
-| `profile_id` | no | Sandbox the run to this profile's `allowed_tools` and `mcp_servers`. Capability inheritance and runtime tool gating are described in [[sandboxed-playbooks]]. The compiler **drops** any `profile_id` injected from the markdown body during merge so attacker-influenced text can't widen scope past what the frontmatter author wrote. |
+| `profile_id` | no | Sandbox the run to this profile's `allowed_tools` and `mcp_servers`. Capability inheritance and runtime tool gating are described in [sandboxed-playbooks](sandboxed-playbooks.md). The compiler **drops** any `profile_id` injected from the markdown body during merge so attacker-influenced text can't widen scope past what the frontmatter author wrote. |
 
 ### Referencing Resources
 
@@ -738,7 +746,7 @@ behavioral rules. Behavioral rules ("always run tests before committing") live i
 the agent's `profile.md` under `## Rules` and are injected into the agent's prompt
 as trust-based guidance. Agent-type playbooks are event-driven workflows that run
 alongside agents, not instructions injected into them. See
-[[profiles|profiles as markdown]] for the profile model.
+[profiles as markdown](profiles.md) for the profile model.
 
 ### Scope Resolution
 
@@ -754,7 +762,7 @@ sequencing.
 
 ### Storage
 
-Playbooks live inside the [[vault|vault]].
+Playbooks live inside the [vault](vault.md).
 Compiled JSON lives outside the vault in `~/.agent-queue/compiled/`.
 
 ```
@@ -915,7 +923,7 @@ for the initial implementation.
 
 ## 11. Memory Integration
 
-Playbooks interact with the [[memory-scoping|vault memory system]] in two
+Playbooks interact with the [vault memory system](memory-scoping.md) in two
 directions: reading memories for context, and writing insights as output.
 
 ### Reading: Memory via Tools
@@ -959,7 +967,7 @@ object references in async SQLAlchemy sessions...
 
 ### Playbook-Driven Self-Improvement
 
-Two categories of playbooks directly drive the [[self-improvement|self-improvement loop]]:
+Two categories of playbooks directly drive the [self-improvement loop](self-improvement.md):
 
 **Reflection playbooks** (agent-type scoped) run after task completion and extract
 insights from the agent's work into its type memory. These live at
@@ -1095,7 +1103,7 @@ inspector reads them before creating duplicate tasks).
 ## 13. Migration Path
 
 The transition from rules + hooks to playbooks is incremental, not a big bang. This
-migration runs in parallel with the vault migration described in [[vault]].
+migration runs in parallel with the vault migration described in [vault](vault.md).
 
 ### Phase 1: Vault Structure + Playbook Runtime
 
@@ -1182,11 +1190,11 @@ unloaded while a playbook run is in progress, tool calls to that plugin's tools
 will fail. The playbook's error handling (fail the node, preserve context) applies.
 
 **Plugins do NOT register playbooks.** Playbooks are user/system-authored artifacts
-in the [[vault|vault]]. A plugin that wants to provide
+in the [vault](vault.md). A plugin that wants to provide
 automation ships a default playbook markdown in its package, which gets installed to
 the vault via `install_defaults()` — the same pattern as current default rules.
 
-[[agent-coordination|Coordination playbooks]] are a special case — they use the same
+[Coordination playbooks](agent-coordination.md) are a special case — they use the same
 playbook execution model but their purpose is orchestrating multi-agent workflows
 rather than single-agent automation.
 

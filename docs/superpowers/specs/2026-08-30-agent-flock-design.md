@@ -1,5 +1,11 @@
 # Global Agent flock
 
+<!-- aq:historical -->
+> **Historical design record.** This spec describes one feature as it was
+> designed, not as the code stands today. Start at [the documentation
+> home](../../README.md) for current behaviour; see [historical
+> material](../../history/README.md).
+
 The user's requested model is a global roster of defined, shared workers. The supervisor is one member. Projects own tasks and workspaces, never agent identity. Existing agents already have global IDs; make these records durable instead of introducing a second identity table.
 
 ## Identity and execution

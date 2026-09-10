@@ -9,6 +9,12 @@ scope: agent-type:supervisor
 
 # Parallel Exploration
 
+<!-- aq:historical -->
+> **Historical sample.** Illustrative content that nothing installs or loads. It
+> was written for an earlier runtime, so copying it will not reproduce the
+> behaviour it describes. Start at [the documentation home](../../README.md);
+> see [historical material](../../history/README.md).
+
 Coordinate a multi-agent investigation when an exploration task is created.
 Instead of assigning the exploration to a single agent, fan out into multiple
 parallel research tracks, then converge through review and synthesis.

@@ -4,6 +4,14 @@ tags: [spec, setup, cli]
 
 # Setup Wizard Specification
 
+<!-- aq:historical -->
+> **Design record — not current documentation.** A spec states the behaviour
+> intended when it was approved; it is written before the code and is not
+> revised to track it. Where this page and the code disagree, the code is right.
+> Start at [the documentation home](../README.md) for what AQ does today, and
+> see [historical material](../history/README.md) for how this material is
+> organised.
+
 ## 1. Overview
 
 The setup wizard is an interactive CLI tool that guides a first-time user through configuring all required services (Discord, Claude) and writing the config files needed to run agent-queue. It is idempotent — running it again pre-fills all prompts from existing config, skipping steps that are already satisfied.
@@ -16,7 +24,7 @@ The setup wizard is an interactive CLI tool that guides a first-time user throug
 
 ## 2. Entry Point
 
-The wizard runs via `./setup.sh` (which handles venv and dependencies) or directly via `python src/setup_wizard.py`. The `main()` function orchestrates seven sequential steps that produce a [[specs/config]] file:
+The wizard runs via `./setup.sh` (which handles venv and dependencies) or directly via `python src/setup_wizard.py`. The `main()` function orchestrates seven sequential steps that produce a [specs/config](config.md) file:
 
 1. Load existing configuration (pre-fill defaults)
 2. Step 1: Workspace & Database directories
@@ -180,7 +188,7 @@ Prompts for model name with default from existing config or `claude-sonnet-4-202
 > `step_write_config` (§11 below) writes a fixed `llm:` block
 > (`provider: anthropic`, `default_class: fast-medium`); provider/model/`base_url`
 > tuning — including pointing it at Ollama via `openai` + `base_url` — is a
-> manual edit to `config.yaml`, documented in [[specs/config]] §4.6.
+> manual edit to `config.yaml`, documented in [specs/config](config.md) §4.6.
 
 `step_scheduling(existing)` configures token budgets and retry behavior.
 
