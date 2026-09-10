@@ -27,6 +27,8 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
+from src.projects.roots import RootFacts, assess_project_roots
+
 from .logins import AuthProbe
 from .onboarding import (
     CAPABILITY_DAEMON,
@@ -291,16 +293,6 @@ def _step_succeeded(result: InstallResult, step_id: str) -> bool:
     return any(step.step_id == step_id and step.state is StepState.SUCCEEDED for step in result.steps)
 
 
-#: Where an operator adds the first project root.  Named in one place because
-#: the check's detail, its remediation and the closing next step all point at
-#: the same page, and a newcomer should not have to reconcile three spellings.
-PROJECT_ROOT_REMEDIATION = (
-    "Add one under Settings → Project Roots in the dashboard, or put a `project_roots:` "
-    "entry (`id`, `label`, `path`) in config.yaml with `aq system config edit`; then rerun "
-    "`aq install` to recheck it."
-)
-
-
 def _project_root_check(result: InstallResult) -> ReadinessCheck:
     """Readiness condition 6's second half: a root project creation can use.
 
@@ -309,41 +301,35 @@ def _project_root_check(result: InstallResult) -> ReadinessCheck:
     and the contract keeps project selection out of the installation wizard —
     so the honest installer behaviour is to *measure* the gap and name the page
     that closes it, not to write a directory into someone's home.
+
+    The measurement itself lives in :mod:`src.projects.roots`, shared with the
+    ``projects.roots`` doctor check: an operator who meets this gap on either
+    surface is told the same thing about the same configuration.  Only the
+    closing "and rerun `aq install`" belongs to the installer.
     """
-    roots = _detail(result, STEP_CHECK).get("project_roots")
-    if not isinstance(roots, list) or not roots:
-        return ReadinessCheck(
-            "project_root",
-            "Project root",
-            False,
-            "No project root is configured, so `aq project onboard` has no `--root-id` to "
-            "onboard into.",
-            PROJECT_ROOT_REMEDIATION,
+    recorded = _detail(result, STEP_CHECK).get("project_roots")
+    rows = recorded if isinstance(recorded, list) else []
+    entries = [entry for entry in rows if isinstance(entry, Mapping)]
+    assessment = assess_project_roots(
+        RootFacts(
+            id=str(entry.get("id") or "?"),
+            path=str(entry.get("path") or "?"),
+            readable=bool(entry.get("readable")),
+            writable=bool(entry.get("writable")),
         )
-    entries = [entry for entry in roots if isinstance(entry, Mapping)]
-    usable = [
-        entry for entry in entries if bool(entry.get("readable")) and bool(entry.get("writable"))
-    ]
-    if usable:
-        named = ", ".join(str(entry.get("id") or "?") for entry in usable)
-        return ReadinessCheck(
-            "project_root",
-            "Project root",
-            True,
-            f"{len(usable)} of {len(entries)} configured project root(s) are readable and "
-            f"writable: {named}.",
-            None,
-        )
-    named = ", ".join(
-        f"{entry.get('id') or '?'} ({entry.get('path') or '?'})" for entry in entries
+        for entry in entries
+    )
+    remediation = (
+        None
+        if assessment.remediation is None
+        else f"{assessment.remediation} Then rerun `aq install` to recheck it."
     )
     return ReadinessCheck(
         "project_root",
         "Project root",
-        False,
-        f"No configured project root is both readable and writable: {named}.",
-        "Create the directory (or fix its permissions) on the daemon host, or correct the path "
-        "under Settings → Project Roots, then rerun `aq install`.",
+        assessment.ok,
+        assessment.detail,
+        remediation,
     )
 
 
@@ -528,7 +514,6 @@ class WizardChoices:
 
 
 __all__ = [
-    "PROJECT_ROOT_REMEDIATION",
     "FirstTaskReadiness",
     "OnboardingSummary",
     "Question",
