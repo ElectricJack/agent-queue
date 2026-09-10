@@ -227,6 +227,8 @@ OWNED_PAGES: list[tuple[str, str]] = [
     ("docs/guides/operations.md", "operations"),
     ("docs/contributing/**", "contributing"),
     ("docs/reference/README.md", "reference"),
+    ("docs/reference/reference-maintenance.md", "reference"),
+    ("docs/reference/configuration-schema.json", "reference"),
     ("docs/history/**", "legacy"),
 ]
 
