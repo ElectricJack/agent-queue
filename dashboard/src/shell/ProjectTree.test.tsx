@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { useState } from "react";
 import { MemoryRouter } from "react-router-dom";
 import ProjectTree from "./ProjectTree";
 import { useNavOrganization } from "./useNavOrganization";
@@ -19,15 +20,21 @@ const PROJECTS: NavProject[] = [
 
 function Harness({ projects = PROJECTS }: { projects?: NavProject[] }) {
   const { organization, update } = useNavOrganization();
+  const [creatingFolder, setCreatingFolder] = useState(false);
   return (
-    <ProjectTree
-      projects={projects}
-      organization={organization}
-      update={update}
-      activeProjectId="alpha"
-      tab="graph"
-      search=""
-    />
+    <>
+      <button type="button" onClick={() => setCreatingFolder(true)}>New folder</button>
+      <ProjectTree
+        projects={projects}
+        organization={organization}
+        update={update}
+        creatingFolder={creatingFolder}
+        onCloseFolderForm={() => setCreatingFolder(false)}
+        activeProjectId="alpha"
+        tab="graph"
+        search=""
+      />
+    </>
   );
 }
 

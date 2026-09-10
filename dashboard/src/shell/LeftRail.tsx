@@ -5,6 +5,7 @@ import {
   ChartBarIcon,
   Cog6ToothIcon,
   ChevronDownIcon,
+  FolderPlusIcon,
   PlusIcon,
 } from "@heroicons/react/24/outline";
 import AgentFlock from "./AgentFlock";
@@ -24,8 +25,10 @@ export default function LeftRail() {
   const { projectId, tab, isWorkspace, search } = workspaceNavigation(location);
   const navRef = useListNav<HTMLElement>({ axis: "vertical" });
   const [projectsOpen, setProjectsOpen] = useState(true);
+  const [creatingFolder, setCreatingFolder] = useState(false);
   const [wizardOpen, setWizardOpen] = useState(false);
   const addProjectRef = useRef<HTMLButtonElement>(null);
+  const newFolderRef = useRef<HTMLButtonElement>(null);
   const roots = useProjectRoots();
   const { organization, update } = useNavOrganization();
   // Design §4.6: refresh the rail, expand Projects, select and open the new project.
@@ -52,6 +55,21 @@ export default function LeftRail() {
                 <ChevronDownIcon className={`h-4 w-4 transition-transform ${projectsOpen ? "" : "-rotate-90"}`} />
                 <span>Projects</span>
               </button>
+              {/* Keep project-management actions compact and separate from the disclosure. */}
+              <button
+                ref={newFolderRef}
+                type="button"
+                data-listnav="1"
+                aria-label="New folder"
+                title="New folder"
+                onClick={() => {
+                  setProjectsOpen(true);
+                  setCreatingFolder(true);
+                }}
+                className="shrink-0 rounded-md p-1.5 text-gray-500 hover:bg-gray-800 hover:text-gray-200 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-indigo-400"
+              >
+                <FolderPlusIcon className="h-4 w-4" />
+              </button>
               {/* Design §4.1: a separate control so opening the wizard never toggles the disclosure. */}
               <button
                 ref={addProjectRef}
@@ -69,6 +87,11 @@ export default function LeftRail() {
                 projects={projects ?? []}
                 organization={organization}
                 update={update}
+                creatingFolder={creatingFolder}
+                onCloseFolderForm={() => {
+                  setCreatingFolder(false);
+                  newFolderRef.current?.focus();
+                }}
                 activeProjectId={projectId}
                 tab={tab}
                 search={search}
