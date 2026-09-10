@@ -909,11 +909,11 @@ class PoolsMixin:
         That reuse is what bounds the roster.  Retiring unconditionally would
         add one ``agents`` row per pool session — one per *task* under
         ``fresh_context_per_task`` — with no sweep able to reclaim them:
-        ``soft_delete_agent`` cannot, because ``create_automatic_agent``
-        refuses to grow the roster while any worker tombstone exists, and a
-        hard delete drops history the task ledger still points at.  See
-        swarm-work-model §11.2.1 and ``src/doctor/pool_checks``, which
-        polices the rows that fall outside this loop.
+        ``soft_delete_agent`` cannot, because it only takes an identity *out*
+        of the reuse pool, and a hard delete drops history the task ledger
+        still points at.  See swarm-work-model §11.2.1 and
+        ``src/doctor/pool_checks``, which polices the rows that fall outside
+        this loop.
         """
         # Callers may hold an old in-memory row after its worker has already
         # been reserved for a new launch. Completed teardown is idempotent.
