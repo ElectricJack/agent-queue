@@ -2,25 +2,26 @@
 
 from __future__ import annotations
 
-from dataclasses import replace
 import hashlib
+import json
+from dataclasses import replace
 from types import SimpleNamespace
 from typing import Any
 
 from src.commands.contracts.registry import ContractRegistry
-from src.commands.principal import ExecutionPrincipal, PrincipalKind, TRUSTED_LOCAL
+from src.commands.principal import TRUSTED_LOCAL, ExecutionPrincipal, PrincipalKind
 from src.config import LLMConfig
 from src.intelligence_classes import IntelligenceClass
 from src.llm import LLMClient
 from src.llm.fake import FakeProvider
 from src.llm.types import TokenUsage
 from src.playbooks.definition import LlmStep
+from src.playbooks.executors.base import EngineServices, StepContext, StepControl
 from src.playbooks.executors.llm import (
     LiveLlmExecutor,
     SymbolicLlmExecutor,
     _published_tools,
 )
-from src.playbooks.executors.base import EngineServices, StepContext, StepControl
 from src.playbooks.expressions import ResolutionScope
 from src.profiles.capabilities import CapabilityPolicy
 from tests.fixtures.contracts.engine_contracts import ENSURE_TASK, LIST_TASKS, registry_with
@@ -221,6 +222,41 @@ async def test_prompt_inputs_are_rendered_but_not_exposed_in_receipts() -> None:
     assert result.receipt_inputs == {
         "prompt_digest": hashlib.sha256(provider.calls[0].messages[0]["content"].encode()).hexdigest()
     }
+
+
+async def test_single_call_routing_model_receives_reason_length_constraint() -> None:
+    """The routing model must see the 400-character limit before its only call."""
+    provider = FakeProvider()
+    provider.add_text('{"reason":"Preserve the explicitly selected profile."}',
+                      usage=TokenUsage(100, 12, True))
+    schema = {
+        "type": "object",
+        "properties": {"reason": {"type": "string", "minLength": 1, "maxLength": 400}},
+        "required": ["reason"],
+        "additionalProperties": False,
+    }
+    step = llm_step(output_schema=schema, outcome_field=None,
+                    budget={"max_calls": 1, "max_output_tokens": 256, "max_total_tokens": 8000, "timeout_seconds": 60},
+                    transitions={"completed": "done", "runtime_error": "failed"})
+    result = await LiveLlmExecutor().execute(step, context(provider))
+    assert result.outcome == "completed"
+    assert len(provider.calls) == 1
+    prompt = provider.calls[0].messages[0]["content"]
+    sent_schema = json.loads(prompt.split("output JSON Schema:\n", 1)[1])
+    assert sent_schema == schema
+
+
+async def test_schema_is_visible_alongside_inputs_and_still_enforced() -> None:
+    provider = FakeProvider()
+    provider.add_text('{"risk":"unknown"}', usage=TokenUsage(100, 10, True))
+    provider.add_text('{"risk":"unknown"}', usage=TokenUsage(100, 10, True))
+    step = llm_step(retry={"max_attempts": 1, "retry_on": []})
+    ctx = replace(context(provider), inputs={"title": "route this task"})
+    result = await LiveLlmExecutor().execute(step, ctx)
+    assert result.outcome == "invalid_output"
+    prompt = provider.calls[0].messages[0]["content"]
+    assert "route this task" in prompt
+    assert json.loads(prompt.split("output JSON Schema:\n", 1)[1]) == step.output_schema
 
 
 def test_published_tools_exclude_commands_denied_to_the_step_principal() -> None:
