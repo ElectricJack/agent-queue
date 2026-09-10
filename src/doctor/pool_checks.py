@@ -26,9 +26,9 @@ the whole rule, and both halves matter:
   still be alive is never handed to a second session.
 
 ``RETIRED`` rows are therefore rare, and nothing reaps them automatically:
-``soft_delete_agent`` cannot, because ``create_automatic_agent`` refuses to
-grow the roster while *any* worker tombstone exists, and a hard delete would
-drop history the task ledger still references.
+``soft_delete_agent`` cannot, because it only takes an identity *out* of the
+reuse pool, and a hard delete would drop history the task ledger still
+references.
 
 ``pools.orphan_agents`` polices the rows that fall outside that loop — a
 pool-profile agent with no session row at all, stale by ``2 x prepare_timeout``

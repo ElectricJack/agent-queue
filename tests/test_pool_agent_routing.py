@@ -43,6 +43,10 @@ async def pool_routing(tmp_path):
             id="saved-claude", name="Saved Claude worker",
             harness="claude", default_class="deep-high",
         ),
+        AgentProfile(
+            id="deep-gemini-pool", name="Deep Gemini pool", lifecycle="pool",
+            harness="gemini", default_class="deep-high",
+        ),
     ):
         await db.create_profile(profile)
     await db.create_workspace(Workspace(
@@ -84,11 +88,6 @@ async def pool_routing(tmp_path):
     await db.close()
 
 
-async def freeze_roster(db):
-    await db.create_agent(Agent(id="deleted", name="Deleted", profile_id="triage"))
-    assert await db.soft_delete_agent("deleted")
-
-
 async def launch(orch, db, profile_id="deep-codex-pool"):
     return await orch._launch_pool_session(
         await db.get_project("p"), await db.get_profile(profile_id),
@@ -112,11 +111,35 @@ async def test_pool_start_selects_compatible_worker_before_reserving(pool_routin
     assert await db.get_workspace_for_agent("claude") is None
 
 
-async def test_pool_start_waits_without_growing_manual_roster_or_using_triage(pool_routing):
+async def test_pool_start_grows_the_roster_rather_than_using_triage(pool_routing):
     orch, db = pool_routing
     await db.create_agent(Agent(id="triage", name="Triage", profile_id="triage"))
-    await freeze_roster(db)
-    assert await launch(orch, db) is None
+    sid = await launch(orch, db)
+    assert sid is not None
+    # Deleting a worker is not a scaling policy, so growth is allowed here --
+    # but only into a *fresh* identity for the requested pool profile.  The
+    # incompatible triage worker is neither reused nor reprofiled.
+    row = await db.get_session(sid)
+    assert row.agent_id != "triage"
+    assert (row.harness, row.model, row.intelligence_class) == (
+        "codex", "gpt-5.6-sol", "deep-high",
+    )
+    assert (await db.get_agent(row.agent_id)).profile_id == "deep-codex-pool"
+    assert sorted(agent.id for agent in await db.list_agents()) == sorted(
+        ["triage", row.agent_id]
+    )
+    assert (await db.get_agent("triage")).profile_id == "triage"
+    assert await db.get_workspace_for_agent("triage") is None
+    assert (await db.get_workspace("ws")).locked_by_agent_id == row.agent_id
+
+
+async def test_pool_start_waits_rather_than_growing_into_an_unrunnable_worker(pool_routing):
+    orch, db = pool_routing
+    await db.create_agent(Agent(id="triage", name="Triage", profile_id="triage"))
+    # ``deep-high`` maps a model for anthropic and codex only, so a fresh
+    # gemini identity would fail the same execution check push assignment
+    # applies.  Growth is permitted; growing into an unusable worker is not.
+    assert await launch(orch, db, "deep-gemini-pool") is None
     assert await db.list_sessions(lifecycle="pool") == []
     assert [agent.id for agent in await db.list_agents()] == ["triage"]
     assert (await db.get_workspace("ws")).locked_by_agent_id is None
@@ -139,13 +162,23 @@ async def test_pool_start_does_not_steal_an_interactive_sol_or_fall_back_to_tria
     orch, db = pool_routing
     await db.create_agent(Agent(id="triage", name="Triage first", profile_id="triage"))
     await db.create_agent(Agent(id="sol", name="Codex", profile_id="saved-codex"))
-    await freeze_roster(db)
     await db.create_session(SessionRecord(
         id="interactive", project_id=None, profile_id="saved-codex", harness="codex",
         provider="fake", name="interactive-sol", lifecycle="named", state="running",
         work_dir="/tmp", epoch="e", instance_token="test", started_at=1, agent_id="sol",
     ))
-    assert await launch(orch, db) is None
-    assert await db.list_sessions(lifecycle="pool") == []
+    sid = await launch(orch, db)
+    assert sid is not None
+    row = await db.get_session(sid)
+    # The only compatible saved worker is held by a live interactive session,
+    # so the pool grows instead of stealing it -- and still never falls back
+    # to the incompatible triage worker.
+    assert row.agent_id not in ("sol", "triage")
+    assert (row.harness, row.model, row.intelligence_class) == (
+        "codex", "gpt-5.6-sol", "deep-high",
+    )
     assert (await db.get_session("interactive")).state == "running"
-    assert (await db.get_workspace("ws")).locked_by_agent_id is None
+    assert (await db.get_agent("sol")).profile_id == "saved-codex"
+    assert await db.get_workspace_for_agent("sol") is None
+    assert await db.get_workspace_for_agent("triage") is None
+    assert (await db.get_workspace("ws")).locked_by_agent_id == row.agent_id
