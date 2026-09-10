@@ -3,6 +3,7 @@ import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { BrowserRouter } from "react-router-dom";
 import App from "./App";
+import { DashboardStateProvider } from "./api/DashboardStateProvider";
 import { EventStreamProvider } from "./ws/EventStreamProvider";
 import "./index.css";
 
@@ -20,7 +21,9 @@ createRoot(document.getElementById("root")!).render(
     <QueryClientProvider client={queryClient}>
       <BrowserRouter basename={import.meta.env.BASE_URL}>
         <EventStreamProvider>
-          <App />
+          <DashboardStateProvider>
+            <App />
+          </DashboardStateProvider>
         </EventStreamProvider>
       </BrowserRouter>
     </QueryClientProvider>
