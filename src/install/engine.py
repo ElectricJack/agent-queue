@@ -26,7 +26,7 @@ from __future__ import annotations
 
 import time
 from collections.abc import Callable, Iterable, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -520,14 +520,20 @@ class InstallEngine:
 
         if row.action is PlanAction.REVALIDATE:
             verified = self._verify(step, context)
+            if isinstance(verified, StepResult):
+                # A verifier that returns the result it verified keeps the
+                # step's ``detail`` alive across reruns.  Without it the only
+                # thing a rerun could say about a completed step is "it is
+                # still true", and every reader of that detail — the closing
+                # summary's locations and dashboard among them — would go
+                # empty on the second install.
+                return self._revalidated(step, verified)
             if verified is True:
                 return StepResult.succeeded(
                     step.id,
                     "already satisfied; verified without repeating the step",
                     detail={"revalidated": True},
                 )
-            if isinstance(verified, StepResult):
-                return verified
             # The observable condition is gone (a package was removed, a
             # directory deleted).  Fall through and run the step again.
 
@@ -542,13 +548,38 @@ class InstallEngine:
         if step.verify is None:
             return True
         try:
-            return bool(step.verify(context))
+            verdict = step.verify(context)
         except Exception as error:  # noqa: BLE001 - a broken verifier is not success
             return StepResult.failed(
                 step.id,
                 f"verification of the completed step raised {type(error).__name__}: {error}",
                 f"Rerun with `--restart-from {step.id}` to redo this step and its dependents.",
             )
+        # A read-only step may verify itself by running: returning the
+        # ``StepResult`` it observed is how the detail a rerun's readers need
+        # survives.  Anything else is the historical boolean condition.
+        if isinstance(verdict, StepResult):
+            return verdict
+        return bool(verdict)
+
+    def _revalidated(self, step: StepSpec, result: StepResult) -> StepResult:
+        """Adopt a verifier-returned result, keeping the revalidate marker.
+
+        The result comes from an adapter, so it gets the same shape check
+        :meth:`_invoke` applies to a step's own return value.
+        """
+        if result.step_id != step.id:
+            return StepResult.failed(
+                step.id,
+                f"verifier reported results for '{result.step_id}'",
+                f"This is a bug in the adapter that owns '{step.id}' ({step.owner}).",
+                retryable=False,
+            )
+        if not result.satisfied:
+            # An explicit failure or human checkpoint from the verifier is the
+            # step's answer; re-running would only reach the same place.
+            return result
+        return replace(result, detail={**result.detail, "revalidated": True})
 
     def _check_consent(self, step: StepSpec) -> StepResult | None:
         options = self.options

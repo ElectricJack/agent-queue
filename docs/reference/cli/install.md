@@ -195,7 +195,8 @@ it. Add Discord later at any time by rerunning with `--with discord`.
 ### Where AQ stores your data
 
 `config.check` reports these, and so does the closing summary — they are
-computed from the resolved configuration rather than repeated in prose:
+computed from the resolved configuration rather than repeated in prose, on
+every run including a rerun, a `--repair` and an `--upgrade`:
 
 | What | Where |
 | --- | --- |
@@ -376,6 +377,11 @@ Rerunning `aq install` is the normal recovery path, and it is safe:
   package or recreate a directory.
 * If the observable condition is gone — the directory was deleted, the package
   was removed — the step runs again.
+* A step that is itself read-only — `config.check` and `daemon.dashboard` —
+  revalidates by observing the host again and reports what it found, so a
+  rerun's summary and JSON say exactly what a first install said. It is the
+  *current* answer, not a replay: edit `workspace_dir` and the next run's
+  "Where AQ stores your data" names the directory you edited it to.
 * Resources are recorded by `(kind, id)`, so repeating a step cannot grow the
   owned-resource list.
 * The run stops at the first step that fails or needs a human, and the next run
