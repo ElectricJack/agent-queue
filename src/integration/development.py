@@ -882,7 +882,22 @@ class DevelopmentIntegration:
             repo = await self.db.get_repo(project.integration_repository_id)
         else:
             repositories = await self.db.list_repos(project_id)
-            if not repositories and project.repo_url:
+            repository_url = project.repo_url
+            if not repositories and not repository_url:
+                # Initialized/local projects can gain an origin after
+                # onboarding. Discover it from their registered checkout
+                # when the operator explicitly enables delivery.
+                workspace = await self.db.get_project_workspace_path(project_id)
+                if workspace:
+                    try:
+                        repository_url = await self.run_git(workspace, "remote", "get-url", "origin")
+                        if repository_url and ":" not in repository_url:
+                            # Relative filesystem origins are relative to the
+                            # source checkout, not the publisher's clone.
+                            repository_url = str((Path(workspace) / Path(repository_url).expanduser()).resolve())
+                    except GitError:
+                        pass
+            if not repositories and repository_url:
                 from src.database.tables import repos
 
                 identity = "development-" + hashlib.sha256(project_id.encode()).hexdigest()[:20]
@@ -892,7 +907,7 @@ class DevelopmentIntegration:
                         .values(
                             id=identity,
                             project_id=project_id,
-                            url=project.repo_url,
+                            url=repository_url,
                             default_branch=project.repo_default_branch,
                             source_type="clone",
                             source_path="",
@@ -942,6 +957,7 @@ class DevelopmentIntegration:
                 .where(projects.c.id == project_id)
                 .values(
                     integration_repository_id=repo.id,
+                    repo_url=project.repo_url or repo.url,
                     hierarchical_integration_mode="development",
                     hierarchical_integration_desired_mode="development",
                     hierarchical_integration_draining=False,

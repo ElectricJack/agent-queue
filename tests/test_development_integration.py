@@ -856,3 +856,39 @@ async def test_delivered_repair_resolves_rewritten_repair_chain(setup):
     assert rows[original["id"]]["evidence"]["resolved_by_delivered_repair"]["task_id"] == first
     assert not (await db.get_task("next")).is_blocked
     assert git(remote, "show", "main:shared") == "resolved one, two and concurrent main"
+
+
+@pytest.mark.parametrize("has_origin", [True, False, "relative"])
+async def test_configure_discovers_origin_added_after_local_onboarding(setup, has_origin):
+    from src.models import Workspace
+
+    db, service, source, remote, _repo = setup
+    await db.create_project(Project(id="local", name="Local initialized project"))
+    await db.create_workspace(Workspace(
+        id="local-base", project_id="local", workspace_path=str(source),
+        source_type=RepoSourceType.INIT,
+    ))
+    if not has_origin:
+        git(source, "remote", "remove", "origin")
+        with pytest.raises(ValueError, match="designate a repository"):
+            await service.configure(
+                "local", {"validation": "advisory"}, reason="enable delivery", operator_id="local"
+            )
+        assert await db.list_repos("local") == []
+        assert not (await db.get_project("local")).repo_url
+        return
+    if has_origin == "relative":
+        git(source, "remote", "set-url", "origin", "../remote.git")
+    result = await service.configure(
+        "local", {"validation": "advisory"}, reason="enable delivery", operator_id="local"
+    )
+    repository = await db.get_repo(result["repository_id"])
+    assert repository.url == str(remote)
+    assert (await db.get_project("local")).repo_url == str(remote)
+    head = await feature(setup, "local-delivery")
+    await db.create_task(Task(
+        id="local-source", project_id="local", title="local delivery", description="",
+        status=TaskStatus.COMPLETED, branch_name="local-delivery",
+    ))
+    assert (await service.sweep("local"))["outcome"] == "delivered"
+    assert git(remote, "merge-base", "--is-ancestor", head, "main") == ""
