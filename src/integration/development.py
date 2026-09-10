@@ -696,30 +696,91 @@ class DevelopmentIntegration:
         a worker mid-assembly spends tokens repairing work this batch already fixes.
         Parked rows are durable, so a subsequent sweep resumes dispatch after a crash.
         """
-        for row in await self.rows(repo.project_id):
-            if row["state"] != "parked" or not row["manifest"]:
+        history = await self.rows(repo.project_id)
+        pending = {r["id"]: r for r in history if r["state"] == "parked" and r["manifest"]
+                   and r["repository_id"] == repo.id}
+        # Resolve repair-of-repair chains before dispatching any more work.
+        # Each successful pass removes at least one row, so this is bounded.
+        while pending:
+            progress = False
+            for identity, row in list(pending.items()):
+                contained = True
+                for member in row["manifest"]:
+                    source = member.get("source_sha")
+                    if not source or not await self.git.ais_ancestor(str(store), source, accepted_head):
+                        contained = False
+                        break
+                proof = None if contained else await self._delivered_repair(
+                    repo, store, accepted_head, row["manifest"], history,
+                )
+                if not contained and proof is None:
+                    continue
+                evidence = {**row["evidence"], **(
+                    {"resolved_by_main_ancestry": accepted_head} if contained else
+                    {"resolved_by_delivered_repair": proof}
+                )}
+                await self.change(identity, state="adopted", prepared_sha=accepted_head, evidence=evidence)
+                history.append({**row, "state": "adopted", "prepared_sha": accepted_head,
+                                "evidence": evidence, "updated_at": time.time()})
+                del pending[identity]
+                progress = True
+            if not progress:
+                break
+        for row in pending.values():
+            await self.ensure_repair(
+                repo.project_id, repo.id, row["manifest"],
+                row["prepared_sha"] or accepted_head, reason=row["reason"],
+            )
+
+    async def _delivered_repair(self, repo, store, accepted_head, manifest, history):
+        """A passing resolution delivered to main can replace the original source.
+
+        A cherry-pick or rewritten conflict resolution need not retain source
+        ancestry. Its exact repair contract, completion and publication are
+        the evidence; a task merely marked completed is insufficient.
+        """
+        identity = self._repair_identity(manifest)
+        task = await self.db.get_task(identity)
+        if (
+            task is None or task.status != TaskStatus.COMPLETED
+            or task.project_id != repo.project_id or task.repo_id != repo.id
+            or task.branch_name != "aq/" + identity
+        ):
+            return None
+        contract = await self.db.get_task_meta(identity, "development_repair_sources")
+        if contract != manifest:
+            # Compatibility for existing server-created repair tasks. Require
+            # the exact generated source block, not just a repair-looking ID.
+            sources = "\n".join(f"- {m['task_id']}: {m.get('source_sha')}" for m in manifest)
+            if contract is not None or (
+                f"The development batch parked these source revisions:\n{sources}\nCandidate/base: "
+                not in task.description
+            ):
+                return None
+        completion = await self.db.get_task_completion(identity)
+        if completion is None or completion.outcome != "pass":
+            return None
+        for delivery in history:
+            if (
+                delivery["state"] not in {"delivered", "adopted"}
+                or delivery["repository_id"] != repo.id
+                or delivery["target_ref"] != "refs/heads/" + repo.default_branch
+                or float(delivery["created_at"]) < completion.completed_at
+                or not any(m["task_id"] == identity and (
+                    not completion.commits or m.get("source_sha") == completion.commits[-1]
+                ) for m in delivery["manifest"])
+            ):
                 continue
-            contained = True
-            for member in row["manifest"]:
-                source = member.get("source_sha")
-                if not source or not await self.git.ais_ancestor(str(store), source, accepted_head):
-                    contained = False
-                    break
-            if contained:
-                await self.change(
-                    row["id"],
-                    state="adopted",
-                    prepared_sha=accepted_head,
-                    evidence={**row["evidence"], "resolved_by_main_ancestry": accepted_head},
-                )
-            else:
-                await self.ensure_repair(
-                    repo.project_id,
-                    repo.id,
-                    row["manifest"],
-                    row["prepared_sha"] or accepted_head,
-                    reason=row["reason"],
-                )
+            head = delivery.get("prepared_sha")
+            if head and await self.git.ais_ancestor(str(store), head, accepted_head):
+                return {"task_id": identity, "completion_id": completion.id,
+                        "delivery_id": delivery["id"], "accepted_head": accepted_head}
+        return None
+
+    @staticmethod
+    def _repair_identity(manifest):
+        digest = hashlib.sha256(json.dumps(manifest, sort_keys=True).encode()).hexdigest()[:20]
+        return "development-repair-" + digest
 
     async def tick(self, now):
         async with self.db._engine.connect() as conn:
@@ -1298,12 +1359,9 @@ class DevelopmentIntegration:
 
     async def ensure_repair(self, project_id, repository_id, manifest, candidate_sha, *, reason):
         """One ordinary resumable task per failed content set, with no wall-clock ladder."""
-        import json
-
         from src.models import Task, TaskType
 
-        digest = hashlib.sha256(json.dumps(manifest, sort_keys=True).encode()).hexdigest()[:20]
-        identity = "development-repair-" + digest
+        identity = self._repair_identity(manifest)
         if await self.db.get_task(identity) is not None:
             return identity
         generation = 1
@@ -1330,6 +1388,8 @@ class DevelopmentIntegration:
                     f"Candidate/base: {candidate_sha}. Preserve their intended changes, resolve against current main, "
                     "and publish the repair on your own task branch. Ordinary merge commits are allowed. "
                     "Run focused local checks and close with actual evidence; no parent verifier or PR is required. "
+                    "A passing close attests that every listed source revision is resolved; once your repair "
+                    "is delivered to main, that delivery also satisfies those sources for their successors. "
                     "Do not push main. The development publisher will collect your branch. "
                     "This is one resumable repair task; queue and provider waits do not expire it."
                 ),
@@ -1339,4 +1399,5 @@ class DevelopmentIntegration:
                 max_retries=3,
             )
         )
+        await self.db.set_task_meta(identity, "development_repair_sources", manifest)
         return identity

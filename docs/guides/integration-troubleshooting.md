@@ -294,6 +294,15 @@ A parked content set that the batch did not resolve produces one ordinary task:
 * at most **three** generations of repair are chained. Past that, the content
   stays parked for a human rather than starting an unbounded chain.
 
+A repair may merge, cherry-pick or rewrite the parked changes. Its source
+manifest identifies the exact revisions it is responsible for. A passing close
+alone does not release their successors: the repair must also have an accepted
+delivery to the project's default branch. AQ then records the repair task,
+completion and delivery IDs as resolution evidence for the parked sources.
+This also reconciles repair-of-repair chains without requiring the original
+source SHA to survive a cherry-pick. Missing completion evidence, mismatched
+source contracts and unpublished repairs keep the source parked.
+
 If you would rather not have a repair episode run at all:
 
 ```bash
