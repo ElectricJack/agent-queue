@@ -516,6 +516,10 @@ RULES: list[tuple[str, str, str, str, str]] = [
      PRODUCTION, "Round-trip configuration writer."),
     ("src/setup_wizard.py", "vault", "docs/reference/configuration.md", PRODUCTION,
      "First-run setup wizard."),
+    ("src/config_tuning.py", "vault", "docs/guides/default-tuning.md", PRODUCTION,
+     "Resource-aware default tuning a fresh install is given."),
+    ("src/portable_config.py", "vault", "docs/guides/default-tuning.md", PRODUCTION,
+     "Portable config bundles: the allowlisted sections and profiles an `.aqbundle` carries."),
     ("src/vault*.py", "vault", "docs/concepts/configuration-and-vault.md",
      PRODUCTION, "Vault storage, indexing and watching."),
     ("src/file_watcher.py", "vault", "docs/concepts/configuration-and-vault.md",
@@ -615,6 +619,9 @@ RULES: list[tuple[str, str, str, str, str]] = [
      "Static asset served with the dashboard."),
     ("dashboard/**", "dashboard", "docs/guides/dashboard.md", SUPPORTING,
      "Frontend build or dev-server configuration."),
+    ("src/dashboard_assets/**", "contributing", "docs/contributing/releases.md",
+     SUPPORTING,
+     "Dashboard bundle staged into a release wheel and located at startup."),
 
     # ------------------------------------------------------- database schema
     ("migrations/**", "database", "docs/reference/database/migrations.md",
