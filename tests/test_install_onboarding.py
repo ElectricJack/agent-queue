@@ -316,7 +316,9 @@ def test_a_rerun_still_reports_where_data_lives_and_which_url_to_open(tmp_path):
     assert action[STEP_CHECK] == "revalidate"
     assert action[STEP_DASHBOARD] == "revalidate"
     assert step(second, STEP_CHECK).detail["revalidated"] is True
-    assert daemon.commands == [("/usr/bin/aq", "start")], "a rerun must not restart the daemon"
+    assert daemon.commands == [
+        ("/usr/bin/aq", "start", "--no-dashboard")
+    ], "a rerun must not restart the daemon"
 
     before, after = summarize(first), summarize(second)
     assert after.locations == before.locations != ()
