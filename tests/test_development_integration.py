@@ -92,10 +92,16 @@ async def test_successor_waits_for_default_branch_delivery(setup):
     head = await feature(setup, "prerequisite")
     await db.create_task(Task(
         id="successor", project_id="p", title="successor", description="",
-        status=TaskStatus.DEFINED,
+        status=TaskStatus.READY,
     ))
     await db.add_dependency("successor", "prerequisite")
     assert (await db.get_task("successor")).is_blocked
+    notifications = []
+
+    async def on_ready(entries):
+        notifications.extend(entries)
+
+    db.set_ready_listener(on_ready)
 
     await service.configure(
         "p", {"commands": ["exit 7"]}, reason="test candidate only", operator_id="local"
@@ -111,6 +117,7 @@ async def test_successor_waits_for_default_branch_delivery(setup):
     assert (await service.sweep("p", retry=True))["outcome"] == "delivered"
     assert git(remote, "rev-parse", "main") == head
     assert not (await db.get_task("successor")).is_blocked
+    assert notifications == [("successor", "unblocked")]
 
     await db.save_task_completion(TaskCompletion(
         id="same-revision", task_id="prerequisite", outcome="pass",

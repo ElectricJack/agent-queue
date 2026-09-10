@@ -95,7 +95,9 @@ class DevelopmentIntegration:
             flipped = await self.db.recompute_blocked(
                 {member["task_id"] for member in row["manifest"]}, conn=conn
             )
+            ready = await self.db._note_frontier_entry(conn, flipped, reason="unblocked")
         await self.db.log_blocked_flips(flipped)
+        await self.db._notify_ready([(task_id, "unblocked") for task_id in ready])
 
     async def change(self, identity, **values):
         async with self.db._engine.begin() as conn:
@@ -109,7 +111,9 @@ class DevelopmentIntegration:
             flipped = await self.db.recompute_blocked(
                 {member["task_id"] for member in manifest}, conn=conn
             )
+            ready = await self.db._note_frontier_entry(conn, flipped, reason="unblocked")
         await self.db.log_blocked_flips(flipped)
+        await self.db._notify_ready([(task_id, "unblocked") for task_id in ready])
 
     async def rows(self, project_id):
         async with self.db._engine.connect() as conn:
@@ -131,7 +135,9 @@ class DevelopmentIntegration:
                 select(tasks.c.id).where(tasks.c.project_id == project_id)
             )).scalars())
             flipped = await self.db.recompute_blocked(ids, conn=conn)
+            ready = await self.db._note_frontier_entry(conn, flipped, reason="unblocked")
         await self.db.log_blocked_flips(flipped)
+        await self.db._notify_ready([(task_id, "unblocked") for task_id in ready])
 
     async def reconcile(self, repo, store):
         for row in await self.rows(repo.project_id):
