@@ -53,6 +53,16 @@ class DevelopmentIntegration:
         self.next_due = {}
         self.confirm_stopped = confirm_stopped
 
+    async def on_task_completed(self, event):
+        """Wake delivery without doing Git or validation in the completion path.
+
+        The next integration cycle coalesces completions into one batch. Removing
+        the deadline also preserves a wake arriving during an in-flight sweep:
+        tick sets the next deadline before awaiting the publisher, not after it.
+        Periodic sweeps remain the recovery path for missed events and restarts.
+        """
+        self.next_due.pop(event.get("project_id"), None)
+
     @asynccontextmanager
     async def exclusion(self, repository_id):
         # Dedicated connection owns a session advisory lock across short DB commits.

@@ -497,6 +497,7 @@ class Orchestrator(
         self.integration_scheduler = None
         self.integration_outbox = None
         self.integration_service = None
+        self._development_completion_unsub = None
         self.integration_attestation_service = None
         self.integration_attestation_resolver = None
         self.integration_app_client_factory = None
@@ -1726,6 +1727,11 @@ class Orchestrator(
             self.db, data_dir=self.config.data_dir, git=self.git,
             confirm_stopped=development_confirm_stopped,
         )
+        if self._development_completion_unsub is not None:
+            self._development_completion_unsub()
+        self._development_completion_unsub = self.bus.subscribe(
+            "task.completed", self.development_integration.on_task_completed,
+        )
         self.integration_service = IntegrationService(
             self.db,
             self.integration_scheduler,
@@ -2442,6 +2448,9 @@ class Orchestrator(
             await self.workspace_spec_watcher.stop()
         if self.integration_service:
             await self.integration_service.stop()
+        if self._development_completion_unsub is not None:
+            self._development_completion_unsub()
+            self._development_completion_unsub = None
         if self.vault_watcher:
             try:
                 await self.vault_watcher.stop()

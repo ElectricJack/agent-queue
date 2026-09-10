@@ -8,6 +8,7 @@ from sqlalchemy import insert, select, update
 
 from src.database import Database
 from src.database.tables import gates, projects, task_gates
+from src.event_bus import EventBus
 from src.integration.development import DevelopmentBusy, DevelopmentIntegration, DevelopmentPolicy
 from src.models import Project, RepoConfig, RepoSourceType, Task, TaskCompletion, TaskStatus
 from tests.db_fixtures import lease_dsn
@@ -85,6 +86,53 @@ async def test_batch_publishes_exact_validated_sha_and_replay_is_idle(setup):
     assert root[0]["evidence"]["conclusion"] == "passed"
     assert root[0]["evidence"]["head_sha"] == head
     assert (await service.sweep("p"))["outcome"] == "idle"
+
+
+async def test_completion_wakes_delivery_before_periodic_deadline(setup):
+    db, service, _source, remote, _repo = setup
+    head = await feature(setup, "one")
+    await db.create_task(Task(id="two", project_id="p", title="successor", description=""))
+    await db.add_dependency("two", "one", "blocks")
+    assert (await db.get_task("two")).is_blocked
+    bus = EventBus()
+    bus.subscribe("task.completed", service.on_task_completed)
+    now = time.time()
+    service.next_due.update(p=now + 300, other=now + 300)
+    await service.tick(now)
+    assert git(remote, "rev-parse", "main") != head
+
+    # Duplicate events coalesce; unrelated projects keep their deadlines.
+    await bus.emit("task.completed", {"project_id": "p", "task_id": "one"})
+    await bus.emit("task.completed", {"project_id": "p", "task_id": "one"})
+    assert service.next_due["other"] == now + 300
+    await service.tick(now + 5)
+    assert git(remote, "rev-parse", "main") == head
+    assert not (await db.get_task("two")).is_blocked
+    assert service.next_due["p"] == now + 305
+
+
+async def test_completion_during_sweep_is_not_lost_and_timer_remains_backstop(setup):
+    from unittest.mock import AsyncMock
+
+    _db, service, _source, _remote, _repo = setup
+    now = time.time()
+    service.next_due.clear()
+    service.preserve_stopped_owners = AsyncMock()
+
+    async def completing_sweep(project_id):
+        await service.on_task_completed({"project_id": project_id})
+
+    service.sweep = AsyncMock(side_effect=completing_sweep)
+    await service.tick(now)
+    assert "p" not in service.next_due
+    service.sweep.side_effect = None
+    await service.tick(now + 5)
+    assert service.sweep.await_count == 2
+    await service.tick(now + 10)
+    assert service.sweep.await_count == 2
+    # An absent event still gets a periodic reconciliation.
+    await service.tick(now + 305)
+    assert service.sweep.await_count == 3
 
 
 async def test_successor_waits_for_default_branch_delivery(setup):
