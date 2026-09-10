@@ -387,4 +387,4 @@ def _message_sent_payload(msg: Message) -> dict[str, Any]:
 
 def _render_nudge(batch: list[Message]) -> str:
     """A single-line reference to the full, durable message body."""
-    return f"Read `aq message status {shlex.quote(batch[0].id)} --json`."
+    return f"Handle body: `aq message status {shlex.quote(batch[0].id)} --json`"
