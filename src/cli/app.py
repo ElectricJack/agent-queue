@@ -114,11 +114,13 @@ def _handle_errors(func):
       formatting and **no interactive prompt** — agent-facing commands
       (``aq reply``, ``aq inbox``) must never hang on a ``[Y/n]`` or return
       human text into a stream something is parsing.
-    - human: Rich output, and an offer to start the daemon when it is down.
+    - human: Rich output, and an offer to start the daemon when it is down,
+      except inside an AQ worker/session where starting it is operator-only.
 
     Exit codes: 1 command error, 3 daemon unreachable, 4 auth/scope denied.
     """
     import functools
+
     from .envelope import emit_error
     from .exceptions import CommandError, DaemonNotRunningError
 
@@ -143,6 +145,15 @@ def _handle_errors(func):
         except DaemonNotRunningError as exc:
             if as_json:
                 emit_error(exc.code, str(exc))
+                raise SystemExit(exc.exit_code)
+            import os
+
+            if os.environ.get("AQ_SESSION_ID") or os.environ.get("AQ_DB_SCOPE") == "worker":
+                console.print(
+                    "[bold red]Daemon temporarily unavailable.[/] "
+                    "Pool workers: retry `aq task claim --next --wait 60`; "
+                    "do not exit the pool loop or start the daemon."
+                )
                 raise SystemExit(exc.exit_code)
             console.print("[bold red]Daemon is not running.[/]")
             if console.input("[bold]Start the daemon? [Y/n] [/]").strip().lower() in (

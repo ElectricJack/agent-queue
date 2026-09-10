@@ -508,6 +508,13 @@ and project concurrency budgets across all profiles in a tick. When unserved
 demand is blocked in one project, it does not launch workers into empty projects
 to satisfy that demand; explicit per-project warm floors still apply.
 
+Pool workers keep their claim loop alive during daemon restarts. `aq task claim
+--next --wait 60` retries connection failures within its wait window; if the
+daemon remains unavailable, it exits with code 3 and the worker retries the
+claim loop. AQ sessions never receive an interactive offer to start the daemon.
+An ambiguous response failure is not automatically replayed: after a lost close
+response, inspect the current claim and task status before attempting another close.
+
 Zero measured workspace capacity prevents placement without a backoff. If
 capacity was advertised but acquisition fails, the key backs off for 60 seconds
 so another project can use the next launch opportunity. Disabled worktree slots
