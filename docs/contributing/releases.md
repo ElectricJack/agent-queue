@@ -83,7 +83,7 @@ pre-worktree-migration
 and both are intentional. Most entries beyond the handful AQ actually imports
 are **security pins on transitive dependencies**, each carrying the advisory it
 addresses in a comment above it: `aiohttp` via discord.py, `cryptography` and
-`pyjwt` via google-auth, `pillow` via mkdocs-material, and so on.
+`pyjwt` via google-auth, `pillow` via the imaging stack, and so on.
 
 Two rules follow:
 

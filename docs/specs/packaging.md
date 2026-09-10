@@ -144,7 +144,6 @@ Extras group features that aren't needed for the minimal install:
 | `sqlite-import` | `aiosqlite` for the one-way `aq db import-sqlite` path                  |
 | `mcp`           | MCP server dependencies (`mcp>=1.28.1,<2`)                              |
 | `cli`           | `aq` CLI (`click`, `prompt-toolkit`, `agent-queue-api-client`)          |
-| `docs`          | `mkdocs` + `mkdocs-material` + `mkdocstrings[python]`                   |
 | `dev`           | Test + lint tools — see §3.4                                            |
 
 There is no `gemini` extra (the Google one is `google`) and no `memory` extra —

@@ -65,7 +65,8 @@ dependencies = [
     "setuptools>=83.0.0",
     # --- Additional 2026 CVE remediation pins (all transitive) ---
     # Pillow — 20 CVEs (PYSEC-2026-2253..2257, 3451..3454, 3493..3496).
-    # Comes in via mkdocs-material (docs) and other transitive paths.
+    # Transitive. Its most direct route in was mkdocs-material, which left with
+    # the `docs` extra; the pin stays because other transitive paths remain.
     "pillow>=12.3.0",
     # PyJWT — 8 CVEs (PYSEC-2026-175..179). Comes in via google-auth /
     # cryptography-adjacent tooling in inbox extras.
@@ -93,7 +94,7 @@ dependencies = [
     # Twisted — PYSEC-2024-75, PYSEC-2026-160, PYSEC-2026-1992. Transitive.
     "twisted>=26.4.0",
     # Click — PYSEC-2026-2132. Also pinned in [cli] extras; hoisted here so
-    # transitive pulls (mkdocs, uvicorn, etc.) resolve to a safe version.
+    # transitive pulls (uvicorn, etc.) resolve to a safe version.
     "click>=8.3.3",
     # mcp — PYSEC-2026-3481, 3482, 3483. Also pinned in [mcp] extras; hoisted
     # here so transitive pulls (claude-agent-sdk, etc.) resolve to a safe
@@ -157,14 +158,6 @@ dev = [
     "openapi-python-client==0.29.0",
     # CVE-2022-40898: wheel <0.38.1 has a ReDoS in the wheel CLI
     "wheel>=0.38.1",
-]
-docs = [
-    "mkdocs>=1.6",
-    "mkdocs-material>=9.5",
-    "mkdocstrings[python]>=0.27",
-    # 11.0.1 addresses PYSEC-2026-2999, 3609, 3654 (transitive via
-    # mkdocs-material).
-    "pymdown-extensions>=11.0.1",
 ]
 
 [project.scripts]

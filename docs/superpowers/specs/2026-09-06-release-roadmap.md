@@ -212,7 +212,10 @@ one line in the docs.
 
 - Docs are MkDocs (`mkdocs.yml`, `scripts/generate-docs.sh`), with
   `docs/specs/` as the source of truth and `docs/guides/` as the operator
-  layer. Several guides are visibly out of date: `getting-started.md` treats
+  layer. *(Superseded 2026-09-09: the MkDocs site and its GitHub Pages deploy
+  were retired — 49 of its 77 nav pages did not exist. Documentation is
+  GitHub-rendered Markdown; see
+  [CI](../../contributing/ci.md#there-is-no-documentation-build).)* Several guides are visibly out of date: `getting-started.md` treats
   Discord as required, `docs/specs/database.md` §1 still describes a single
   `aiosqlite` connection with no pooling, and `docs/guides/discord-commands.md`
   documents a deprecated hooks section and chat-only file/shell capabilities.

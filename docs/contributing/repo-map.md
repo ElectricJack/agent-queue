@@ -94,7 +94,6 @@ which is machine-checked and never guessed.
 | [`openapi.json`](../../openapi.json) | The committed API schema both clients are generated from. Generated — see [codegen](codegen.md). |
 | [`setup.sh`](../../setup.sh), [`uninstall.sh`](../../uninstall.sh) | Operator install and teardown. Not the contributor path — see [setup](setup.md#install). |
 | [`run_tests.sh`](../../run_tests.sh), [`test_suite.bat`](../../test_suite.bat) | **Historical.** Whole-suite runners that predate `aq test`; see [scripts](scripts.md#historical-and-unsupported). |
-| [`mkdocs.yml`](../../mkdocs.yml) | **Historical.** Configuration for a MkDocs site; this documentation set is GitHub-rendered Markdown with relative links and has no site build. |
 | [`README.md`](../../README.md) | The GitHub landing page. |
 
 ## Agent-facing instruction files

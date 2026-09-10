@@ -44,7 +44,7 @@ def _run(name: str, conclusion: str | None, *, job_id: int, status: str = "compl
 RED_RUNS = [
     _run("Tests (default)", "failure", job_id=11),
     _run("Tests (postgres-integration)", "success", job_id=12),
-    _run("Deploy Documentation to GitHub Pages", "success", job_id=13),
+    _run("Lint", "success", job_id=13),
 ]
 GREEN_RUNS = [_run("Tests (default)", "success", job_id=21)]
 FAILED_TESTS = ["tests/test_a.py::test_one", "tests/test_b.py::TestX::test_two"]
