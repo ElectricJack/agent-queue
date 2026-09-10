@@ -152,6 +152,23 @@ def data_locations(home: Path, config: Mapping[str, Any] | None = None) -> tuple
     return tuple(locations)
 
 
+def describe_project_root(root: Any) -> dict[str, Any]:
+    """One configured project root as non-secret, JSON-safe facts.
+
+    ``readable`` and ``writable`` are properties on :class:`~src.config.ProjectRoot`
+    that query the filesystem when read, so they are resolved here — at the
+    moment the installer observed them — rather than left as live callables in
+    a result payload.
+    """
+    return {
+        "id": str(getattr(root, "id", "")),
+        "label": str(getattr(root, "label", "")),
+        "path": str(getattr(root, "path", "")),
+        "readable": bool(getattr(root, "readable", False)),
+        "writable": bool(getattr(root, "writable", False)),
+    }
+
+
 def config_path_for(environ: Mapping[str, str] | None = None, home: Path | None = None) -> Path:
     return (home or default_state_dir(environ)) / "config.yaml"
 
@@ -414,6 +431,13 @@ def check_step(
         ]
         detail["messaging_platform"] = config.messaging_platform
         detail["api_url"] = api_base_url(raw, environ)
+        # Readiness condition 6 asks whether "configured project roots are
+        # readable and writable where project creation needs them".  This step
+        # is the one place that already holds a loaded ``AppConfig``, so it
+        # records the non-secret facts and the wizard judges them; an install
+        # that configured none records an empty list, which is the honest
+        # answer rather than an absent key.
+        detail["project_roots"] = [describe_project_root(root) for root in config.project_roots]
         return StepResult.succeeded(
             STEP_CHECK,
             f"{path} parses and its references resolve",
@@ -805,6 +829,7 @@ __all__ = [
     "daemon_step",
     "dashboard_step",
     "data_locations",
+    "describe_project_root",
     "discord_step",
     "http_status",
     "inspect_dashboard",

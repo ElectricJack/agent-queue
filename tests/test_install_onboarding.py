@@ -242,6 +242,49 @@ def test_the_check_step_reports_where_every_kind_of_data_lives(tmp_path):
     assert {"Configuration", "Secrets", "Vault", "Worktrees", "Daemon log", "Database"} <= labels
 
 
+def test_a_fresh_install_records_that_no_project_root_is_configured(tmp_path):
+    """`project_roots` is a fact of the run, not an absent key.
+
+    Nothing in AQ's default tuning invents a filesystem location, so a clean
+    install has none.  The wizard turns this list into the first-task
+    readiness answer, and it can only do that if the step reports the empty
+    case as explicitly as the populated one.
+    """
+    home = configured(tmp_path)
+    daemon = FakeDaemon(up=True)
+
+    result = run(registry_for(home, daemon), tmp_path)
+
+    assert step(result, STEP_CHECK).detail["project_roots"] == []
+
+
+def test_a_configured_project_root_is_reported_with_its_live_capabilities(tmp_path):
+    projects = tmp_path / "projects"
+    projects.mkdir()
+    home = home_with_config(
+        tmp_path,
+        body=(
+            f"messaging_platform: none\ndatabase:\n  url: {VALID_DSN}\n"
+            f"project_roots:\n  - id: home\n    label: Home projects\n"
+            f"    path: {projects}\n"
+        ),
+    )
+    env_with_password(home)
+    daemon = FakeDaemon(up=True)
+
+    result = run(registry_for(home, daemon), tmp_path)
+
+    assert step(result, STEP_CHECK).detail["project_roots"] == [
+        {
+            "id": "home",
+            "label": "Home projects",
+            "path": str(projects),
+            "readable": True,
+            "writable": True,
+        }
+    ]
+
+
 def test_the_reported_database_location_carries_no_password(tmp_path):
     locations = data_locations(
         tmp_path,
