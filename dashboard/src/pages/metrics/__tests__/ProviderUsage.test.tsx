@@ -4,7 +4,7 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import ProviderUsage from "../ProviderUsage";
 import {
@@ -209,6 +209,42 @@ describe("<ProviderUsage />", () => {
     expect(barOf("provider-card-claude-session-").className).toContain("bg-indigo-400");
     expect(barOf("provider-card-claude-week-").className).toContain("bg-amber-500");
     expect(barOf("provider-card-codex-primary-").className).toContain("bg-red-500");
+  });
+
+  it("shows that Claude is unavailable beside a Codex reading without fabricating a percentage", async () => {
+    api.response = {
+      now: NOW,
+      snapshots: [snap({ provider: "codex", window: "primary", used_percent: 88 })],
+      series: {},
+    };
+    page();
+
+    expect(await screen.findByTestId("provider-card-codex-primary-")).toBeInTheDocument();
+    const unavailable = screen.getByTestId("provider-unavailable-claude");
+    expect(within(unavailable).getByText("Usage unavailable")).toBeInTheDocument();
+    expect(within(unavailable).getByText("No current Claude usage report is available.")).toBeInTheDocument();
+    expect(within(unavailable).queryByRole("progressbar")).toBeNull();
+    expect(within(unavailable).queryByText(/%/)).toBeNull();
+  });
+
+  it("refreshes provider readings on demand", async () => {
+    api.response = {
+      now: NOW,
+      snapshots: [snap({ id: 12, provider: "claude", used_percent: 46 })],
+      series: {},
+    };
+    page();
+
+    expect(await screen.findByText("46%")).toBeInTheDocument();
+    api.response = {
+      now: NOW + 60,
+      snapshots: [snap({ id: 12, provider: "claude", used_percent: 47 })],
+      series: {},
+    };
+    fireEvent.click(screen.getByRole("button", { name: "Refresh provider usage" }));
+
+    await waitFor(() => expect(screen.getByText("47%")).toBeInTheDocument());
+    expect(api.calls).toBeGreaterThanOrEqual(2);
   });
 
   it("renders an explicit empty state, never a 0% bar", async () => {
