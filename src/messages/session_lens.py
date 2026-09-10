@@ -475,7 +475,19 @@ class SessionLens:
         provider = self._providers.create(row.provider)
         try:
             await provider.nudge(handle, text)
-        except (NotSubmitted, CapabilityUnsupported):
+        except NotSubmitted as exc:
+            # The delivery engine deliberately leaves its rows pending until
+            # the provider confirms Enter took.  Keep this visible: a
+            # terminal that accepted the paste but not the submit otherwise
+            # looks exactly like an ordinary, transient delivery retry.
+            logger.warning(
+                "message nudge to %s (%s) was not submitted; delivery remains pending%s",
+                row.name,
+                row.id,
+                "; AQ text remains in the composer" if exc.composer_dirty else "",
+            )
+            return False
+        except CapabilityUnsupported:
             # Row stays pending. The delivery engine retries with backoff.
             return False
         except Exception:
