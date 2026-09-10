@@ -634,7 +634,17 @@ def daemon_step(
                 ),
                 detail={"api_url": base},
             )
-        output: CommandOutput = execute([executable, "start"], timeout=DAEMON_START_TIMEOUT)
+        # `--no-dashboard` is not a preference here, it is what makes the step
+        # runnable at all: plain `aq start` asks `click.confirm` whether to
+        # launch the Vite dev server when it is run from a source checkout, and
+        # a confirmation with no terminal behind it raises click's Abort. An
+        # unattended `aq install` therefore failed with "the daemon did not
+        # come up: Aborted!" *after* the daemon had actually started (observed
+        # natively on macOS 14 and 15, aq/noble-apex.18). The dashboard belongs
+        # to `daemon.dashboard`, which reports it without asking anybody.
+        output: CommandOutput = execute(
+            [executable, "start", "--no-dashboard"], timeout=DAEMON_START_TIMEOUT
+        )
         if not output.ok or not _healthy():
             return StepResult.failed(
                 STEP_DAEMON,

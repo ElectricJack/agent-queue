@@ -714,6 +714,12 @@ def _maybe_prompt_dashboard(no_dashboard: bool) -> None:
     """If the dashboard isn't running, prompt the user to launch it."""
     if no_dashboard:
         return
+    if not sys.stdin.isatty():
+        # There is nobody to ask. `click.confirm` raises Abort at end of input,
+        # which turned a perfectly healthy `aq start` into a failure for every
+        # caller that is not a terminal — a script, a CI job, and `aq install`'s
+        # own daemon step before it learned to pass `--no-dashboard`.
+        return
     if _dashboard_running():
         return
     if _repo_root() is None:

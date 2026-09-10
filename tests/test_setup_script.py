@@ -93,3 +93,41 @@ def test_setup_sh_carries_no_operator_specific_paths() -> None:
     text = SETUP_SH.read_text()
     assert "/mnt/d" not in text
     assert "AQ_MEMORY_PATH:-/" not in text
+
+
+def test_setup_sh_asks_no_question_it_cannot_survive_the_answer_to() -> None:
+    """`read` fails at end of input, and `set -e` turns that into a silent exit.
+
+    `setup.sh` runs under `set -euo pipefail` and asked four questions with
+    `read -rp`. With no terminal behind stdin -- a piped run, a `nohup`, a
+    non-tty ssh command, CI -- `read` returns non-zero at EOF and the script
+    died with a bare exit 1, always at the first question and always after real
+    work had already been done. Every question now goes through `ask`, which
+    takes the documented default when there is nobody to ask.
+    """
+    text = SETUP_SH.read_text()
+    assert "\nask() {" in text, "setup.sh no longer defines the ask helper -- update this test"
+    stray = [line.strip() for line in text.splitlines() if "read -rp" in line]
+    assert stray == ['read -rp "$prompt $suffix " answer || answer=""'], (
+        "setup.sh reads a prompt outside the ask helper: "
+        f"{stray}. Under `set -e` that exits 1 whenever stdin is not a terminal."
+    )
+
+
+def test_the_ask_helper_takes_the_default_with_no_terminal() -> None:
+    """Run the helper itself, the way a piped `setup.sh` runs it."""
+    import subprocess
+
+    helper = SETUP_SH.read_text().split("# --- Detect Python 3.12+ ---")[0]
+    script = helper + '\nif ask "Add it?" Y; then echo YES; else echo NO; fi\n'
+    for default, expected in (("Y", "YES"), ("N", "NO")):
+        body = script.replace('ask "Add it?" Y', f'ask "Add it?" {default}')
+        result = subprocess.run(
+            ["bash", "-c", body],
+            capture_output=True,
+            text=True,
+            stdin=subprocess.DEVNULL,
+            check=False,
+        )
+        assert result.returncode == 0, result.stderr
+        assert expected in result.stdout, result.stdout

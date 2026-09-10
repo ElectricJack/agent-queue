@@ -111,6 +111,7 @@ def command_step(
     capability: str | None = None,
     which: Callable[[str], str | None] | None = None,
     depends_on: tuple[str, ...] = (STEP_HOST,),
+    provisioned_by: tuple[str, ...] = (),
 ) -> StepSpec:
     """Build a read-only "is this executable on PATH?" prerequisite step.
 
@@ -157,6 +158,7 @@ def command_step(
         run=run,
         depends_on=depends_on,
         capability=capability,
+        provisioned_by=provisioned_by,
         verify=lambda context: lookup(command) is not None,
     )
 
@@ -165,6 +167,7 @@ def git_step(
     *,
     which: Callable[[str], str | None] | None = None,
     depends_on: tuple[str, ...] = (STEP_HOST,),
+    provisioned_by: tuple[str, ...] = (),
 ) -> StepSpec:
     return command_step(
         STEP_GIT,
@@ -177,6 +180,7 @@ def git_step(
         },
         which=which,
         depends_on=depends_on,
+        provisioned_by=provisioned_by,
     )
 
 
@@ -184,6 +188,7 @@ def tmux_step(
     *,
     which: Callable[[str], str | None] | None = None,
     depends_on: tuple[str, ...] = (STEP_HOST,),
+    provisioned_by: tuple[str, ...] = (),
 ) -> StepSpec:
     return command_step(
         STEP_TMUX,
@@ -197,6 +202,7 @@ def tmux_step(
         },
         which=which,
         depends_on=depends_on,
+        provisioned_by=provisioned_by,
     )
 
 

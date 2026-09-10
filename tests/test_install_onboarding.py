@@ -86,7 +86,7 @@ class FakeDaemon:
     def run(self, argv, **kwargs) -> CommandOutput:
         command = tuple(str(part) for part in argv)
         self.commands.append(command)
-        if command[1:] == ("start",):
+        if command[1] == "start":
             if not self.starts:
                 return CommandOutput(argv=command, returncode=1, stderr="database is unreachable")
             self.up = True
@@ -195,7 +195,12 @@ def test_a_default_run_reaches_a_ready_daemon_and_a_dashboard_url(tmp_path):
     assert step(result, STEP_CONFIG).state is StepState.SUCCEEDED
     assert step(result, STEP_CHECK).state is StepState.SUCCEEDED
     assert step(result, STEP_DAEMON).state is StepState.SUCCEEDED
-    assert daemon.commands == [("/usr/bin/aq", "start")]
+    # `--no-dashboard` is load-bearing, not cosmetic: plain `aq start` asks
+    # `click.confirm` whether to launch the Vite dev server from a source
+    # checkout, and a confirmation with no terminal raises click's Abort. An
+    # unattended install then reported "the daemon did not come up: Aborted!"
+    # after the daemon had actually started (native macOS 14/15, noble-apex.18).
+    assert daemon.commands == [("/usr/bin/aq", "start", "--no-dashboard")]
     board = step(result, STEP_DASHBOARD).detail["dashboard"]
     assert board["reachable"] is True
     assert board["url"].endswith("/dashboard")
@@ -401,7 +406,7 @@ def test_a_rerun_revalidates_the_daemon_instead_of_restarting_it(tmp_path):
 
     assert second.outcome is InstallOutcome.READY
     # One start across two runs: the second run revalidated /health.
-    assert daemon.commands == [("/usr/bin/aq", "start")]
+    assert daemon.commands == [("/usr/bin/aq", "start", "--no-dashboard")]
 
 
 def test_the_daemon_is_not_started_unless_it_was_selected(tmp_path):
@@ -526,7 +531,7 @@ def test_a_run_stopped_at_a_login_resumes_into_the_daemon_step(tmp_path):
     # A third run repeats nothing: no second backup, no second `aq start`.
     assert third.outcome is InstallOutcome.READY
     assert list(home.glob("config.yaml.bak*")) == backups
-    assert daemon.commands == [("/usr/bin/aq", "start")]
+    assert daemon.commands == [("/usr/bin/aq", "start", "--no-dashboard")]
 
 
 def test_skipping_every_provider_still_reaches_ready(tmp_path):

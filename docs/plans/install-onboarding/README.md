@@ -174,4 +174,12 @@ Assemble shipped installers, portable defaults, profiles and GitHub documentatio
 - All required platform journeys have evidence, and published commands resolve to the intended artifacts.
 - Release includes discoverable upgrade/repair instructions and explicit supported-platform limitations.
 
+## Acceptance evidence
+
+Native platform evidence is recorded per platform, not asserted:
+
+* macOS — [acceptance/macos.md](acceptance/macos.md), produced by
+  `scripts/acceptance/macos_acceptance.py` and
+  `.github/workflows/macos-acceptance.yml`.
+
 The authoritative creation graph is [tasks.graph.json](tasks.graph.json). Third-party installation and login methods must be verified against current official documentation during implementation.

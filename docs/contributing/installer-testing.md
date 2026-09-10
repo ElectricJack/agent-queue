@@ -115,6 +115,15 @@ Everything below is invisible to the seams above by construction. These are the
 rows a platform acceptance run has to fill in with real versions, real commands
 and real output; a cross-platform mock is not evidence for any of them.
 
+macOS now has a harness for exactly that. `scripts/acceptance/macos_acceptance.py`
+runs the documented journey unattended on a Mac and writes one JSON evidence
+record plus its Markdown rendering; `.github/workflows/macos-acceptance.yml`
+runs it on GitHub's hosted macOS runners on both architectures the matrix names
+and uploads the record. The rows it filled in, and the ones it could not, are in
+[the macOS acceptance evidence](../plans/install-onboarding/acceptance/macos.md).
+The script refuses to run anywhere but Darwin: a run on Linux is not evidence
+for the macOS row and the harness will not pretend otherwise.
+
 ### Windows and WSL2
 
 * WSL2 itself: the Windows entry point, `wsl --install`, distribution detection,
@@ -154,7 +163,9 @@ and real output; a cross-platform mock is not evidence for any of them.
 
 Record what was run, the OS and tool versions, and the observed result. An
 environment that was not available is recorded as *unmet evidence* — never as a
-pass by analogy from another platform.
+pass by analogy from another platform. The macOS harness does this itself: every
+row above that one unattended run cannot produce is written into its record as
+`unmet` with the reason, so the gap stays visible instead of disappearing.
 
 ## Known gaps this coverage found
 
@@ -171,6 +182,14 @@ pass by analogy from another platform.
 aq test tests/test_install_integration.py
 aq test tests/test_install_engine.py tests/test_install_postgres.py \
         tests/test_install_onboarding.py tests/test_install_cli.py
+```
+
+And on a Mac you are willing to have changed — a disposable machine, a fresh VM
+or a CI runner, because the journey installs Homebrew formulae, starts a
+PostgreSQL service and writes `~/.agent-queue`:
+
+```bash
+python3 scripts/acceptance/macos_acceptance.py --output ./macos-acceptance
 ```
 
 Neither needs PostgreSQL, a network or a provider account. If a test in this
