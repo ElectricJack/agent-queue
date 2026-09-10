@@ -42,7 +42,6 @@ from src.integration.models import HierarchicalIntegrationPolicy
 from src.integration.preflight import daemon_functional_preflight
 from src.integration.scheduler import IntegrationScheduler
 
-
 ExternalPreflight = Callable[[str, str], Awaitable[tuple[str, ...]] | tuple[str, ...]]
 
 _ACTIVE_BATCH_STATES = (
@@ -154,6 +153,16 @@ class IntegrationControlService:
         status = await IntegrationStatusService(self.db, clock=self.clock).status(project_id)
         if status is None:
             return {"outcome": "not_found", "project_id": project_id}
+        if status["effective_mode"] == "development":
+            # Development publishes with ordinary Git, including local origins.
+            # GitHub App, attestation and train-route wiring are prerequisites
+            # for the strict rollout path, not this publisher. Its projection
+            # already carries publication blockers and delivery receipts.
+            return {
+                "outcome": "status",
+                **status,
+                "blocker_digest": _blocker_digest(status["blockers"]),
+            }
         observed = await self.preflight(project_id)
         database_keys = {
             (item["code"], item["ref"], item["detail"])
