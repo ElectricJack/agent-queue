@@ -149,7 +149,10 @@ POOL_BOOTSTRAP_PROMPT = (
     "work, then `aq task close --outcome pass|fail --summary \"...\" --claim-next --wait 60`.\n"
     "On `no_ready_work`, claim again. On `session_exhausted` or `drain_requested`, exit 0.\n"
     "On `not_admissible`, wait as instructed and claim again. Never touch tasks you do not\n"
-    "hold; .aq/claim.json in your workspace is the proof of what you hold."
+    "hold; .aq/claim.json in your workspace is the proof of what you hold.\n"
+    "Daemon restarts are temporary: on daemon_unreachable / exit code 3, keep retrying "
+    "`aq task claim --next --wait 60`. Do not start the daemon or end your pool loop. "
+    "After an ambiguous close response, inspect your claim and task status before retrying close."
 )
 
 #: The ``sh -c`` script used for oversized prompts.  ``$1`` is the prompt

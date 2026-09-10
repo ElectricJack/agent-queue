@@ -15,13 +15,16 @@ the caller must pass ``--task-id`` explicitly (or export the env var).
 
 from __future__ import annotations
 
+import asyncio
 import os
+import time
 
 import click
 
-from .app import cli, console, _run, _get_client, _handle_errors
+from .app import _get_client, _handle_errors, _run, cli, console
 from .claim_epoch import claim_epoch_option, read_claim_epoch, resolve_claim_epoch  # noqa: F401
 from .envelope import emit
+from .exceptions import DaemonNotRunningError
 from .tasks import task
 
 
@@ -227,8 +230,19 @@ def task_claim(ctx: click.Context, task_id, claim_next, wait) -> None:
         args["wait"] = wait
 
     async def _claim():
-        async with _get_client(api_url) as client:
-            return await client.execute("task_claim", args)
+        # Pool workers survive daemon upgrades. Connection refusal means no
+        # request was sent, so retrying is safe; ambiguous response failures
+        # still propagate without replaying the command.
+        deadline = time.monotonic() + max(wait or 0, 0)
+        while True:
+            try:
+                async with _get_client(api_url) as client:
+                    return await client.execute("task_claim", args)
+            except DaemonNotRunningError:
+                remaining = deadline - time.monotonic()
+                if not claim_next or remaining <= 0:
+                    raise
+                await asyncio.sleep(min(2.0, remaining))
 
     result = _run(_claim())
 
