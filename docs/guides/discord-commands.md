@@ -24,5 +24,5 @@ Operator control lives in the dashboard Command Center and the `aq` CLI.
 |---|---|
 | What AQ posts, and when it stays quiet | [Messaging](../concepts/messaging.md) |
 | Configuring the channel, digest and mentions | [Escalations and the hourly digest](escalations.md) |
-| Approving something | The dashboard Gates drawer, or `aq gate resolve` |
+| Approving something | The dashboard Gates drawer, or `aq task gate-resolve` |
 | The cutover that removed the old controls | [Discord migration](discord-migration.md) (historical) |
