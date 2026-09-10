@@ -82,6 +82,7 @@ from src.commands.git_commands import GitCommandsMixin
 from src.commands.ci_commands import CiCommandsMixin
 from src.commands.provider_commands import ProviderCommandsMixin
 from src.commands.digest_commands import DigestCommandsMixin
+from src.commands.dashboard_state_commands import DashboardStateCommandsMixin
 from src.commands.escalation_commands import EscalationCommandsMixin
 
 # -- dv2 phase 6 mixins ---------------------------------------------------
@@ -260,9 +261,9 @@ def _summarize_args(command: str, args: dict | None) -> str:
             # Server-injected trust envelope — never on the wire.
             continue
         key_lower = key.lower()
-        if (
-            command == "task_set" and key_lower in {"description", "expected_description"}
-        ) or any(needle in key_lower for needle in _ARGS_SUMMARY_REDACT_KEYS):
+        if (command == "task_set" and key_lower in {"description", "expected_description"}) or any(
+            needle in key_lower for needle in _ARGS_SUMMARY_REDACT_KEYS
+        ):
             n = len(value) if isinstance(value, (str, bytes, list, dict)) else 0
             parts.append(f"{key}=<redacted len={n}>")
             continue
@@ -359,6 +360,7 @@ class CommandHandler(
     GitCommandsMixin,
     CiCommandsMixin,
     ProviderCommandsMixin,
+    DashboardStateCommandsMixin,
     DigestCommandsMixin,
     EscalationCommandsMixin,
     # -- dv2 phase 6 mixins -----------------------------------------------
@@ -766,9 +768,7 @@ class CommandHandler(
         }
 
         def _closed(reason: str):
-            logger.warning(
-                "principal_fail_closed reason=%s session_id=%s", reason, session_id
-            )
+            logger.warning("principal_fail_closed reason=%s session_id=%s", reason, session_id)
             return ExecutionPrincipal(policy=DENY_ALL, provenance=(reason,), **common)
 
         if not session_id:
@@ -819,9 +819,7 @@ class CommandHandler(
             cache[session_id] = ((profile_id, policy, reason), now + self._PRINCIPAL_CACHE_TTL)
 
         if reason is not None:
-            logger.warning(
-                "principal_fail_closed reason=%s session_id=%s", reason, session_id
-            )
+            logger.warning("principal_fail_closed reason=%s session_id=%s", reason, session_id)
             return ExecutionPrincipal(
                 policy=DENY_ALL, profile_id=profile_id, provenance=(reason,), **common
             )
@@ -859,9 +857,7 @@ class CommandHandler(
                 payload=json.dumps(
                     {
                         "command": name,
-                        "principal_kind": getattr(
-                            getattr(principal, "kind", None), "value", None
-                        ),
+                        "principal_kind": getattr(getattr(principal, "kind", None), "value", None),
                         "profile_id": getattr(principal, "profile_id", None),
                         "namespace": getattr(decision, "namespace", None),
                         "shadow": bool(getattr(decision, "shadow", False)),
@@ -1040,7 +1036,9 @@ class CommandHandler(
                             _emit_error = f"Plugin command failed: {e.__class__.__name__}"
                             return {"error": f"Plugin command failed: {e}"}
 
-                logger.warning("Unknown command requested: %s args=%s", name, self._preview(log_args))
+                logger.warning(
+                    "Unknown command requested: %s args=%s", name, self._preview(log_args)
+                )
                 _emit_ok = False
                 _emit_error = f"Unknown command: {name}"
                 return {"error": f"Unknown command: {name}"}
@@ -1064,14 +1062,14 @@ class CommandHandler(
                 # any failure is swallowed so a broken bus never breaks
                 # command execution (spec constraint).
                 try:
-                    if name != "session_input" and getattr(self.config, "events", None) and (
-                        self.config.events.command_invoked_enabled
+                    if (
+                        name != "session_input"
+                        and getattr(self.config, "events", None)
+                        and (self.config.events.command_invoked_enabled)
                     ):
                         bus = getattr(self.orchestrator, "bus", None)
                         if bus is not None:
-                            duration_ms = int(
-                                (time.monotonic() - _emit_started_at) * 1000
-                            )
+                            duration_ms = int((time.monotonic() - _emit_started_at) * 1000)
                             payload = {
                                 "command": name,
                                 "ok": _emit_ok,
@@ -1090,6 +1088,4 @@ class CommandHandler(
                             }
                             await bus.emit("command.invoked", payload)
                 except Exception:  # pragma: no cover -- defensive
-                    logger.debug(
-                        "command.invoked emit failed for %s", name, exc_info=True
-                    )
+                    logger.debug("command.invoked emit failed for %s", name, exc_info=True)

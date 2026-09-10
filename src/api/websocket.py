@@ -45,6 +45,7 @@ def _dumps(obj: dict[str, Any]) -> str:
     """
     return json.dumps(obj, separators=(",", ":"), ensure_ascii=False)
 
+
 # Event-type prefixes forwarded to WebSocket clients.  The dashboard uses
 # these to invalidate live gates, sessions, tasks, and pool-management views.
 _FORWARDED_PREFIXES: tuple[str, ...] = (
@@ -56,6 +57,7 @@ _FORWARDED_PREFIXES: tuple[str, ...] = (
     "task.",
     "pool.",
     "metrics.",
+    "dashboard_state.",
     # Run lifecycle from the V2 engine ("playbook.v2.run.started" and
     # friends).  Without this the dashboard's playbook views only changed
     # when their 30s poll happened to land inside a run, so the fleet's
@@ -81,9 +83,13 @@ def _question_invalidation(data, scope):
         except (ValueError, TypeError):
             return None
     nested = nested if isinstance(nested, dict) else {}
-    fields = {key: data.get(key) if data.get(key) is not None else nested.get(key)
-              for key in _QUESTION_INVALIDATION_FIELDS}
-    if not all(isinstance(fields[key], str) and fields[key] for key in ("id", "session_id", "project_id")):
+    fields = {
+        key: data.get(key) if data.get(key) is not None else nested.get(key)
+        for key in _QUESTION_INVALIDATION_FIELDS
+    }
+    if not all(
+        isinstance(fields[key], str) and fields[key] for key in ("id", "session_id", "project_id")
+    ):
         return None
     kind = getattr(scope, "kind", None)
     if kind == "local":
@@ -92,8 +98,11 @@ def _question_invalidation(data, scope):
         project = scope.project_id
         allowed = project is None or project == fields["project_id"]
         if not scope.elevated:
-            allowed = (allowed and scope.session_id == fields["session_id"]
-                       and (scope.task_id is None or scope.task_id == fields["task_id"]))
+            allowed = (
+                allowed
+                and scope.session_id == fields["session_id"]
+                and (scope.task_id is None or scope.task_id == fields["task_id"])
+            )
     else:
         allowed = False
     if not allowed:
@@ -143,6 +152,27 @@ def _pool_event_allowed(data, scope) -> bool:
     if scope.project_id is not None and scope.project_id != project_id:
         return False
     return bool(scope.elevated or (session_id and session_id == scope.session_id))
+
+
+def _dashboard_state_event_allowed(data, scope) -> bool:
+    """Keep shared/user dashboard invalidations on human connections only."""
+    if getattr(scope, "kind", None) != "local":
+        return False
+    nested = data.get("payload")
+    if isinstance(nested, str):
+        try:
+            nested = json.loads(nested)
+        except (ValueError, TypeError):
+            return False
+    payload = nested if isinstance(nested, dict) else data
+    document_scope = payload.get("scope")
+    owner_id = payload.get("owner_id")
+    if document_scope == "workspace":
+        return owner_id == ""
+    if document_scope == "user":
+        # PrincipalKind.LOCAL currently resolves to this sole human identity.
+        return owner_id == "human:local-operator"
+    return False
 
 
 class WebSocketManager:
@@ -210,6 +240,10 @@ class WebSocketManager:
             if event_type.startswith("metrics.") and not _metrics_event_allowed(scope):
                 continue
             if event_type.startswith("pool.") and not _pool_event_allowed(data, scope):
+                continue
+            if event_type.startswith("dashboard_state.") and not _dashboard_state_event_allowed(
+                data, scope
+            ):
                 continue
             if is_question:
                 filtered = _question_invalidation(data, scope)
@@ -332,11 +366,13 @@ class WebSocketManager:
                             "payload": row.get("payload"),
                             "timestamp": row.get("timestamp"),
                         }
-                        if event_type.startswith(
-                            "metrics."
-                        ) and not _metrics_event_allowed(scope):
+                        if event_type.startswith("metrics.") and not _metrics_event_allowed(scope):
                             continue
                         if event_type.startswith("pool.") and not _pool_event_allowed(frame, scope):
+                            continue
+                        if event_type.startswith(
+                            "dashboard_state."
+                        ) and not _dashboard_state_event_allowed(frame, scope):
                             continue
                         if event_type in _QUESTION_EVENTS:
                             frame = _question_invalidation(frame, scope)

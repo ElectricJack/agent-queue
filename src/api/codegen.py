@@ -24,7 +24,11 @@ from pydantic import BaseModel, Field, create_model
 
 from src.api.auth import LOCAL_SCOPE, RequestScope
 from src.api.dependencies import get_command_handler
-from src.api.models import get_all_response_models
+from src.api.models import get_all_request_models, get_all_response_models
+from src.api.models.dashboard import (
+    DashboardStateConflictResponse,
+    DashboardStateErrorResponse,
+)
 from src.api.models.escalation import EscalationErrorResponse
 from src.api.models.system import EditIntelligenceClassConflictResponse
 from src.api.scope import check_request_scope
@@ -69,6 +73,22 @@ API_EXCLUDED = {
 # dashboard's node inspector with empty rows (design spec §3.4).
 RESPONSE_EXCLUDE_NONE: frozenset[str] = frozenset({"playbook_graph_view"})
 
+DASHBOARD_STATE_COMMANDS: frozenset[str] = frozenset(
+    {
+        "dashboard_state_list",
+        "dashboard_state_get",
+        "dashboard_state_put",
+        "dashboard_state_reset",
+    }
+)
+
+# Non-default statuses keyed by the command and its stable command error code.
+ERROR_STATUS: dict[tuple[str, str], int] = {
+    ("edit_intelligence_class", "revision_conflict"): 409,
+    **{(command, "human_required"): 403 for command in DASHBOARD_STATE_COMMANDS},
+    ("dashboard_state_put", "revision_conflict"): 409,
+}
+
 
 def _category_to_api_path(cat_name: str) -> str:
     """Derive API path segment from category name.
@@ -96,7 +116,8 @@ def _json_schema_type_to_python(prop_schema: dict) -> type:
     if "$ref" in prop_schema:
         return dict
     branches = [
-        b for b in prop_schema.get("anyOf") or prop_schema.get("oneOf") or []
+        b
+        for b in prop_schema.get("anyOf") or prop_schema.get("oneOf") or []
         if b.get("type") != "null"
     ]
     if branches:
@@ -205,7 +226,10 @@ def _make_route_handler(cmd_name: str, input_model: type[BaseModel]):
             getattr(request.state, "scope", LOCAL_SCOPE) if request is not None else LOCAL_SCOPE
         )
         scope_err = await check_request_scope(
-            cmd_name, args, scope, db=getattr(ch, "db", None),
+            cmd_name,
+            args,
+            scope,
+            db=getattr(ch, "db", None),
         )
         if scope_err is not None:
             return JSONResponse({"error": scope_err}, status_code=403)
@@ -222,12 +246,18 @@ def _make_route_handler(cmd_name: str, input_model: type[BaseModel]):
         }
 
         result = await ch.execute(cmd_name, args)
-        if cmd_name == "edit_intelligence_class" and result.get("error_code") == "revision_conflict":
+        status = ERROR_STATUS.get((cmd_name, result.get("error_code", "")))
+        if cmd_name == "edit_intelligence_class" and status == 409:
             return JSONResponse(
-                {"error": result["error"], "error_code": "revision_conflict",
-                 "current_revision": result["current_revision"]},
+                {
+                    "error": result["error"],
+                    "error_code": "revision_conflict",
+                    "current_revision": result["current_revision"],
+                },
                 status_code=409,
             )
+        if status is not None:
+            return JSONResponse(result, status_code=status)
         if "error" in result:
             if result.get("error_code") == "capability_denied":
                 return JSONResponse(
@@ -240,23 +270,27 @@ def _make_route_handler(cmd_name: str, input_model: type[BaseModel]):
             # that data and made the generated client incapable of rendering
             # a useful retry state.  JSONResponse deliberately bypasses the
             # success response model for this non-2xx payload.
-            if cmd_name in {
-                "list_project_roots",
-                "browse_project_root",
-                "get_github_auth_status",
-                "list_github_owners",
-                "search_github_repositories",
-                "onboard_project",
-                "get_project_onboarding",
-                "escalation_create",
-                "escalation_list",
-                "escalation_get",
-                "escalation_reply",
-                "escalation_update",
-                "escalation_apply_reply",
-                "digest_preview",
-                "digest_status",
-            }:
+            if (
+                cmd_name
+                in {
+                    "list_project_roots",
+                    "browse_project_root",
+                    "get_github_auth_status",
+                    "list_github_owners",
+                    "search_github_repositories",
+                    "onboard_project",
+                    "get_project_onboarding",
+                    "escalation_create",
+                    "escalation_list",
+                    "escalation_get",
+                    "escalation_reply",
+                    "escalation_update",
+                    "escalation_apply_reply",
+                    "digest_preview",
+                    "digest_status",
+                }
+                | DASHBOARD_STATE_COMMANDS
+            ):
                 return JSONResponse(result, status_code=422)
             return JSONResponse(
                 {"error": result["error"]},
@@ -277,6 +311,7 @@ def build_category_routers() -> list[APIRouter]:
     Returns a list of routers ready to be included in the FastAPI app.
     """
     response_models = get_all_response_models()
+    request_models = get_all_request_models()
 
     # Build complete tool map
     tool_map: dict[str, dict] = {t["name"]: t for t in _ALL_TOOL_DEFINITIONS}
@@ -337,7 +372,9 @@ def build_category_routers() -> list[APIRouter]:
         for cmd_name, defn in sorted(tools):
             try:
                 input_schema = defn.get("input_schema", {})
-                input_model = _make_input_model(cmd_name, input_schema)
+                input_model = request_models.get(cmd_name) or _make_input_model(
+                    cmd_name, input_schema
+                )
                 response_model = response_models.get(cmd_name)
 
                 stripped = _strip_category_prefix(cmd_name, cat_name)
@@ -355,20 +392,54 @@ def build_category_routers() -> list[APIRouter]:
                     description=defn.get("description", ""),
                     operation_id=cmd_name,
                     responses={
-                        **({409: {
-                            "description": "Intelligence class changed since it was loaded",
-                            "model": EditIntelligenceClassConflictResponse,
-                        }} if cmd_name == "edit_intelligence_class" else {}),
+                        **(
+                            {
+                                409: {
+                                    "description": "Intelligence class changed since it was loaded",
+                                    "model": EditIntelligenceClassConflictResponse,
+                                }
+                            }
+                            if cmd_name == "edit_intelligence_class"
+                            else {}
+                        ),
+                        **(
+                            {
+                                409: {
+                                    "description": "Dashboard state changed since it was loaded",
+                                    "model": DashboardStateConflictResponse,
+                                }
+                            }
+                            if cmd_name == "dashboard_state_put"
+                            else {}
+                        ),
+                        **(
+                            {
+                                403: {
+                                    "description": "A human principal is required",
+                                    "model": DashboardStateErrorResponse,
+                                }
+                            }
+                            if cmd_name in DASHBOARD_STATE_COMMANDS
+                            else {}
+                        ),
                         422: {
                             "description": "Command error",
-                            **({"model": EscalationErrorResponse} if cmd_name.startswith(("escalation_", "digest_")) else {"content": {
-                                "application/json": {
-                                    "schema": {
-                                        "type": "object",
-                                        "properties": {"error": {"type": "string"}},
+                            **(
+                                {"model": DashboardStateErrorResponse}
+                                if cmd_name in DASHBOARD_STATE_COMMANDS
+                                else {"model": EscalationErrorResponse}
+                                if cmd_name.startswith(("escalation_", "digest_"))
+                                else {
+                                    "content": {
+                                        "application/json": {
+                                            "schema": {
+                                                "type": "object",
+                                                "properties": {"error": {"type": "string"}},
+                                            }
+                                        }
                                     }
                                 }
-                            }}),
+                            ),
                         },
                     },
                 )

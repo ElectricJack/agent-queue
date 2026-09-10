@@ -149,6 +149,10 @@ CATEGORIES: dict[str, CategoryMeta] = {
             "configured schedule's destination, generation and delivery health"
         ),
     ),
+    "dashboard": CategoryMeta(
+        name="dashboard",
+        description="Durable shared workspace state and per-user roaming preferences",
+    ),
     "discord": CategoryMeta(
         name="discord",
         description=(

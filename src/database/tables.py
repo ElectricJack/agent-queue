@@ -95,6 +95,35 @@ projects = Table(
     ),
 )
 
+dashboard_state_documents = Table(
+    "dashboard_state_documents",
+    metadata,
+    Column("scope", Text, nullable=False, primary_key=True),
+    Column("owner_id", Text, nullable=False, primary_key=True),
+    Column("namespace", Text, nullable=False, primary_key=True),
+    # SQL NULL cannot participate in the natural primary key, so global
+    # namespaces store the API's null subject as the empty string.
+    Column("subject", Text, nullable=False, primary_key=True),
+    Column("revision", Integer, nullable=False, server_default="0"),
+    # ``none_as_null`` is required: JSON's literal null would make a reset
+    # indistinguishable in Python while still satisfying SQL ``IS NOT NULL``.
+    Column("value", JSON(none_as_null=True), nullable=True),
+    Column("created_at", Float, nullable=False),
+    Column("updated_at", Float, nullable=False),
+    CheckConstraint(
+        "scope IN ('workspace','user')",
+        name="ck_dashboard_state_scope",
+    ),
+    CheckConstraint(
+        "(scope = 'workspace' AND owner_id = '') OR (scope = 'user' AND owner_id <> '')",
+        name="ck_dashboard_state_owner",
+    ),
+    CheckConstraint(
+        "revision >= 1",
+        name="ck_dashboard_state_revision",
+    ),
+)
+
 repos = Table(
     "repos",
     metadata,
@@ -2150,8 +2179,7 @@ task_branch_origins = Table(
         name="ck_task_branch_origins_materialized_reserved",
     ),
     CheckConstraint(
-        "discard_state IS NULL OR discard_state IN "
-        "('pending', 'complete', 'conflict', 'failed')",
+        "discard_state IS NULL OR discard_state IN ('pending', 'complete', 'conflict', 'failed')",
         name="ck_task_branch_origins_discard_state",
     ),
     CheckConstraint(
@@ -3809,7 +3837,8 @@ integration_outbox_artifact_pins = Table(
 
 # Development integration keeps executed Git facts separate from task episodes.
 development_deliveries = Table(
-    "development_deliveries", metadata,
+    "development_deliveries",
+    metadata,
     Column("id", Text, primary_key=True),
     Column("project_id", Text, nullable=False),
     Column("repository_id", Text, nullable=False),
@@ -3822,8 +3851,13 @@ development_deliveries = Table(
     Column("reason", Text, nullable=False),
     Column("created_at", Float, nullable=False),
     Column("updated_at", Float, nullable=False),
-    CheckConstraint("state IN ('prepared', 'publishing', 'delivered', 'parked', 'adopted', 'cancelled')",
-                    name="ck_development_delivery_state"),
+    CheckConstraint(
+        "state IN ('prepared', 'publishing', 'delivered', 'parked', 'adopted', 'cancelled')",
+        name="ck_development_delivery_state",
+    ),
 )
-Index("idx_development_delivery_project", development_deliveries.c.project_id,
-      development_deliveries.c.state)
+Index(
+    "idx_development_delivery_project",
+    development_deliveries.c.project_id,
+    development_deliveries.c.state,
+)

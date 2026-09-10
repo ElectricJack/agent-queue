@@ -100,7 +100,11 @@ _TASK_SCHEMAS: dict[str, EventSchema] = {
     "task.route_needed": {
         "required": ["task_id", "project_id", "title"],
         "optional": [
-            "description", "priority", "task_type", "intelligence_class", "profile_id",
+            "description",
+            "priority",
+            "task_type",
+            "intelligence_class",
+            "profile_id",
         ],
     },
     "task.completed": {
@@ -231,9 +235,9 @@ _TASK_SCHEMAS: dict[str, EventSchema] = {
 
 _ASSIGNMENT_SCHEMAS: dict[str, EventSchema] = {}
 
-CONTRACTED_EVENT_TYPES: frozenset[str] = frozenset({
-    "task.completed", "spec.approved", "proposal.ready", "gate.resolved"
-})
+CONTRACTED_EVENT_TYPES: frozenset[str] = frozenset(
+    {"task.completed", "spec.approved", "proposal.ready", "gate.resolved"}
+)
 
 # ---------------------------------------------------------------------------
 # Work-graph events  (docs/specs/design/work-graph.md §10.2)
@@ -650,8 +654,14 @@ _CHAT_SCHEMAS: dict[str, EventSchema] = {
 _ESCALATION_SCHEMAS: dict[str, EventSchema] = {
     "escalation.created.v1": {
         "required": [
-            "version", "escalation_id", "project_id", "source_kind",
-            "source_identity", "incident_key", "state", "revision",
+            "version",
+            "escalation_id",
+            "project_id",
+            "source_kind",
+            "source_identity",
+            "incident_key",
+            "state",
+            "revision",
         ],
         "optional": ["task_id"],
         "types": {
@@ -668,8 +678,14 @@ _ESCALATION_SCHEMAS: dict[str, EventSchema] = {
     },
     "escalation.reply_received.v1": {
         "required": [
-            "version", "escalation_id", "project_id", "reply_id", "state",
-            "revision", "terminal", "supervisor_enqueued",
+            "version",
+            "escalation_id",
+            "project_id",
+            "reply_id",
+            "state",
+            "revision",
+            "terminal",
+            "supervisor_enqueued",
         ],
         "optional": ["task_id"],
         "types": {
@@ -687,7 +703,10 @@ _ESCALATION_SCHEMAS: dict[str, EventSchema] = {
     "escalation.updated.v1": {
         "required": ["version", "escalation_id", "project_id", "state", "revision"],
         "optional": [
-            "task_id", "terminal_outcome", "action_id", "action_outcome",
+            "task_id",
+            "terminal_outcome",
+            "action_id",
+            "action_outcome",
         ],
         "types": {
             "version": int,
@@ -703,8 +722,13 @@ _ESCALATION_SCHEMAS: dict[str, EventSchema] = {
     },
     "escalation.delivery_status.v1": {
         "required": [
-            "version", "escalation_id", "project_id", "delivery_id", "status",
-            "attempt_count", "generation",
+            "version",
+            "escalation_id",
+            "project_id",
+            "delivery_id",
+            "status",
+            "attempt_count",
+            "generation",
         ],
         "optional": ["task_id"],
         "types": {
@@ -922,24 +946,86 @@ _SESSION_SCHEMAS: dict[str, EventSchema] = {
     # subsequent ticks so a healthy session with a slow-arriving transcript
     # does not spam the bus.
     "agent.question": {
-        "required": ["id", "session_id", "session_name", "instance_token", "task_id",
-                     "project_id", "agent_id", "turn_id", "question", "requires_human",
-                     "state", "created_at", "updated_at"],
-        "optional": ["answer", "answered_by", "discord_channel_id", "discord_message_id",
-                     "claim_epoch", "source_ts", "supervisor_routed_at", "notification_next_at",
-                     "notification_attempts", "delivery_token", "delivery_lease_until", "delivered_at", "reason"],
-        "types": {"id": str, "session_id": str, "instance_token": str, "task_id": str,
-                  "question": str, "state": str, "requires_human": bool},
+        "required": [
+            "id",
+            "session_id",
+            "session_name",
+            "instance_token",
+            "task_id",
+            "project_id",
+            "agent_id",
+            "turn_id",
+            "question",
+            "requires_human",
+            "state",
+            "created_at",
+            "updated_at",
+        ],
+        "optional": [
+            "answer",
+            "answered_by",
+            "discord_channel_id",
+            "discord_message_id",
+            "claim_epoch",
+            "source_ts",
+            "supervisor_routed_at",
+            "notification_next_at",
+            "notification_attempts",
+            "delivery_token",
+            "delivery_lease_until",
+            "delivered_at",
+            "reason",
+        ],
+        "types": {
+            "id": str,
+            "session_id": str,
+            "instance_token": str,
+            "task_id": str,
+            "question": str,
+            "state": str,
+            "requires_human": bool,
+        },
     },
     "agent.question.updated": {
-        "required": ["id", "session_id", "session_name", "instance_token", "task_id",
-                     "project_id", "agent_id", "turn_id", "question", "requires_human",
-                     "state", "created_at", "updated_at"],
-        "optional": ["answer", "answered_by", "discord_channel_id", "discord_message_id",
-                     "claim_epoch", "source_ts", "supervisor_routed_at", "notification_next_at",
-                     "notification_attempts", "delivery_token", "delivery_lease_until", "delivered_at", "reason"],
-        "types": {"id": str, "session_id": str, "instance_token": str, "task_id": str,
-                  "question": str, "state": str, "requires_human": bool},
+        "required": [
+            "id",
+            "session_id",
+            "session_name",
+            "instance_token",
+            "task_id",
+            "project_id",
+            "agent_id",
+            "turn_id",
+            "question",
+            "requires_human",
+            "state",
+            "created_at",
+            "updated_at",
+        ],
+        "optional": [
+            "answer",
+            "answered_by",
+            "discord_channel_id",
+            "discord_message_id",
+            "claim_epoch",
+            "source_ts",
+            "supervisor_routed_at",
+            "notification_next_at",
+            "notification_attempts",
+            "delivery_token",
+            "delivery_lease_until",
+            "delivered_at",
+            "reason",
+        ],
+        "types": {
+            "id": str,
+            "session_id": str,
+            "instance_token": str,
+            "task_id": str,
+            "question": str,
+            "state": str,
+            "requires_human": bool,
+        },
     },
     "session.transcript_missing": {
         "required": ["session_id"],
@@ -1096,7 +1182,11 @@ _SWARM_SCHEMAS: dict[str, EventSchema] = {
     },
     "pool.bounds_changed": {
         "required": [
-            "project_id", "profile_id", "min_active", "max_active", "project_cap",
+            "project_id",
+            "profile_id",
+            "min_active",
+            "max_active",
+            "project_cap",
             "effective_max_active",
         ],
         "optional": [],
@@ -1467,6 +1557,33 @@ for _event_type, _payload_fields in _INTEGRATION_PAYLOAD_FIELDS.items():
 # Combined registry
 # ---------------------------------------------------------------------------
 
+_DASHBOARD_STATE_SCHEMAS: dict[str, EventSchema] = {
+    "dashboard_state.changed.v1": {
+        "required": [
+            "version",
+            "scope",
+            "owner_id",
+            "namespace",
+            "subject",
+            "revision",
+            "change",
+            "updated_at",
+        ],
+        "optional": ["seq"],
+        "types": {
+            "version": int,
+            "scope": str,
+            "owner_id": str,
+            "namespace": str,
+            "subject": (str, type(None)),
+            "revision": int,
+            "change": str,
+            "updated_at": float,
+            "seq": int,
+        },
+    }
+}
+
 EVENT_SCHEMAS: dict[str, EventSchema] = {
     "agent.created": {"required": ["agent_id"], "optional": ["event_type"]},
     "agent.updated": {"required": ["agent_id"], "optional": ["event_type"]},
@@ -1496,6 +1613,7 @@ EVENT_SCHEMAS: dict[str, EventSchema] = {
     **_FORMULA_SCHEMAS,
     **_METRICS_SCHEMAS,
     **_INTEGRATION_SCHEMAS,
+    **_DASHBOARD_STATE_SCHEMAS,
 }
 """Master registry of all event schemas.
 
