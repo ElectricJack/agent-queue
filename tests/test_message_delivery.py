@@ -150,6 +150,25 @@ async def _seed_irrelevant_history(db, count: int = 201) -> None:
 
 
 class TestDeliveryPolicy:
+    async def test_oversized_batch_leaves_omitted_messages_pending(self, db):
+        sessions = FakeSessionManager(activity_map={("session", "supervisor-p1", "p1"): "idle"})
+        engine = make_engine(db, sessions)
+        engine._config.max_inject_per_prompt = 30
+        sent = [await _send(db, body="dossier " * 1000) for _ in range(20)]
+        result = await engine.run_delivery_pass()
+        assert 0 < result["delivered"] < len(sent)
+        text = sessions.nudges[0][3]
+        assert len(text.encode()) <= 1000
+        for msg in sent:
+            stored = await db.get_message(msg.id)
+            assert (stored.delivered_at is not None) == (msg.id in text)
+        total = result["delivered"]
+        for _ in range(len(sent)):
+            total += (await engine.run_delivery_pass())["delivered"]
+            if total == len(sent):
+                break
+        assert total == len(sent)
+
     async def test_large_message_uses_retrievable_notification(self, db):
         sessions = FakeSessionManager(activity_map={("session", "supervisor-p1", "p1"): "idle"})
         engine = make_engine(db, sessions)
