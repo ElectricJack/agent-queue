@@ -12,8 +12,22 @@ from __future__ import annotations
 import json
 import time
 from collections.abc import Callable
+from dataclasses import dataclass
 
-from sqlalchemy import and_, case, delete, exists, func, insert, literal, or_, select, update
+from sqlalchemy import (
+    and_,
+    case,
+    delete,
+    exists,
+    false,
+    func,
+    insert,
+    literal,
+    or_,
+    select,
+    true,
+    update,
+)
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from src.database.queries.task_queries import TransitionResult
@@ -23,12 +37,12 @@ from src.database.tables import (
     integration_batches,
     integration_branch_owners,
     integration_repair_operations,
-    sessions,
     projects,
+    sessions,
     task_branch_origins,
     task_delivery_receipts,
-    task_integration_checkpoints,
     task_dependencies,
+    task_integration_checkpoints,
     task_metadata,
     tasks,
     workspaces,
@@ -70,16 +84,87 @@ def container_flag_exists():
     )
 
 
-def materialized_origin_when_hierarchical():
-    """Correlated predicate requiring an exact origin only in enabled projects."""
+#: Project ``hierarchical_integration_mode`` values that gate the two claim
+#: predicates below.  ``disabled`` (and anything unrecognised) does not.
+HIERARCHY_MODES = ("hierarchy", "train")
+
+
+@dataclass(frozen=True)
+class ProjectIntegrationMode:
+    """The two per-project constants the hierarchy claim predicates need.
+
+    Both predicates below ask one question of the ``projects`` row —
+    "is this project in hierarchy/train mode, and against which
+    repository?" — and both used to ask it as a *correlated* subquery keyed
+    by ``tasks.project_id``.  In a single-project frontier scan that is one
+    ``projects_pkey`` lookup **per candidate row** (2,499 index searches and
+    ~5,000 buffer hits at the §15.2 scale) for an answer that is constant
+    across the whole scan and that the caller already holds in a Python
+    object.  A caller that has read the project row passes this in and the
+    subqueries collapse to a constant.
+
+    Callers whose statement spans more than one project (see
+    :meth:`HierarchyQueryMixin.hierarchy_runnable_task_ids`) pass ``None``
+    and keep the correlated form, which is why both predicates still build
+    it.
+    """
+
+    hierarchical: bool
+    integration_repository_id: str | None
+
+    @classmethod
+    def of(cls, project) -> ProjectIntegrationMode | None:
+        """Read the mode off a project row; ``None`` when there is no row.
+
+        ``None`` means "ask the database per row" — the safe fallback, not
+        "not hierarchical".
+        """
+        if project is None:
+            return None
+        return cls(
+            hierarchical=getattr(project, "hierarchical_integration_mode", None)
+            in HIERARCHY_MODES,
+            integration_repository_id=getattr(project, "integration_repository_id", None),
+        )
+
+
+def materialized_origin_when_hierarchical(mode: ProjectIntegrationMode | None = None):
+    """Correlated predicate requiring an exact origin only in enabled projects.
+
+    With *mode* supplied the ``projects`` lookup is folded away at compile
+    time: a non-hierarchical project admits every task, and a hierarchical
+    one with no ``integration_repository_id`` admits none (no origin row can
+    equal a NULL repository, so the correlated form rejected them too).
+    """
+    if mode is not None:
+        if not mode.hierarchical:
+            return true()
+        if mode.integration_repository_id is None:
+            return false()
+        return exists(
+            select(literal(1)).where(
+                task_branch_origins.c.task_id == tasks.c.id,
+                task_branch_origins.c.repository_id == mode.integration_repository_id,
+                task_branch_origins.c.retired_at.is_(None),
+                task_branch_origins.c.materialized.is_(True),
+            )
+        )
     return ~exists(
         select(literal(1))
         .select_from(projects)
         .where(
             projects.c.id == tasks.c.project_id,
-            projects.c.hierarchical_integration_mode.in_(("hierarchy", "train")),
+            projects.c.hierarchical_integration_mode.in_(HIERARCHY_MODES),
             ~exists(
-                select(literal(1)).where(
+                select(literal(1))
+                # SQLAlchemy auto-correlates only against the *immediately*
+                # enclosing SELECT, whose FROM is ``projects`` alone.  Without
+                # this, ``tasks`` joins this subquery's own FROM and the
+                # predicate silently asks "does *any* task have a materialized
+                # origin", which admits an unmaterialized child as soon as one
+                # sibling materialises.  Correlate both levels explicitly.
+                .correlate(tasks, projects)
+                .where(
                     task_branch_origins.c.task_id == tasks.c.id,
                     task_branch_origins.c.repository_id == projects.c.integration_repository_id,
                     task_branch_origins.c.retired_at.is_(None),
@@ -90,14 +175,21 @@ def materialized_origin_when_hierarchical():
     )
 
 
-def delivered_same_parent_prerequisites_when_hierarchical():
+def delivered_same_parent_prerequisites_when_hierarchical(
+    mode: ProjectIntegrationMode | None = None,
+):
     """Require a direct sibling prerequisite to reach the shared parent first.
 
     Graph blockedness intentionally releases a ``blocks`` dependent when its
     predecessor completes.  In a hierarchy project that is too early: the
     predecessor's reviewed head still belongs to its feature branch until a
     receipt proves it was incorporated into their common parent branch.
+
+    *mode*, when supplied, folds the two ``projects`` lookups away exactly as
+    in :func:`materialized_origin_when_hierarchical`.
     """
+    if mode is not None and not mode.hierarchical:
+        return true()
     dependency = task_dependencies.alias("hierarchy_prerequisite")
     prerequisite = tasks.alias("hierarchy_prerequisite_task")
     parent = tasks.alias("hierarchy_prerequisite_parent")
@@ -106,7 +198,11 @@ def delivered_same_parent_prerequisites_when_hierarchical():
     origin = task_branch_origins.alias("hierarchy_prerequisite_origin")
 
     delivered = exists(
-        select(literal(1)).where(
+        select(literal(1))
+        # As above: ``tasks`` is two levels out, so name every correlated
+        # FROM explicitly (``correlate`` replaces auto-correlation).
+        .correlate(tasks, prerequisite, parent, checkpoint)
+        .where(
             receipt.c.source_task_id == prerequisite.c.id,
             receipt.c.target_task_id == tasks.c.parent_task_id,
             receipt.c.repository_id == checkpoint.c.repository_id,
@@ -135,25 +231,40 @@ def delivered_same_parent_prerequisites_when_hierarchical():
         )
     )
     preserved_parent_origin = exists(
-        select(literal(1)).where(
+        select(literal(1))
+        .correlate(tasks, parent)
+        .where(
             origin.c.task_id == tasks.c.id,
             origin.c.retired_at.is_(None),
             origin.c.parent_task_id == tasks.c.parent_task_id,
             origin.c.parent_ref == parent.c.branch_name,
         )
     )
+    if mode is not None:
+        # ``mode.hierarchical`` is true here (the other branch returned
+        # above), so the project row is a known constant: both ``exists``
+        # clauses reduce to their non-``projects`` remainder.
+        return ~exists(
+            select(literal(1))
+            .select_from(parent)
+            .where(
+                parent.c.id == tasks.c.parent_task_id,
+                tasks.c.parent_task_id.is_not(None),
+                ~preserved_parent_origin,
+            )
+        ) & ~prerequisite_is_undelivered
     return ~exists(
         select(literal(1))
         .select_from(projects.join(parent, parent.c.id == tasks.c.parent_task_id))
         .where(
             projects.c.id == tasks.c.project_id,
-            projects.c.hierarchical_integration_mode.in_(("hierarchy", "train")),
+            projects.c.hierarchical_integration_mode.in_(HIERARCHY_MODES),
             tasks.c.parent_task_id.is_not(None),
             ~preserved_parent_origin,
         )
     ) & (~exists(select(literal(1)).where(
         projects.c.id == tasks.c.project_id,
-        projects.c.hierarchical_integration_mode.in_(("hierarchy", "train")),
+        projects.c.hierarchical_integration_mode.in_(HIERARCHY_MODES),
     )) | ~prerequisite_is_undelivered)
 
 
