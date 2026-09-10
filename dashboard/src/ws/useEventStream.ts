@@ -235,6 +235,11 @@ export function useEventStream(options: UseEventStreamOptions = {}) {
         return;
       }
 
+      if ((type as string) === "dashboard_state.changed.v1") {
+        queryClient.invalidateQueries({ queryKey: ["dashboard-state"] });
+        return;
+      }
+
       // Prefix-based invalidation for the wave-4 event families (gate.*,
       // message.*, session.*, task.blocked/unblocked). Handled *before* the
       // notify.* switch so the union type stays simple.
