@@ -35,7 +35,7 @@ from src.profiles.capabilities import HARNESS_TOOL_NAMES
 from src.resources.limits import session_env_caps, wrap_session_argv
 from src.sessions.env import build_session_env
 from src.sessions.harness_parser import Harness
-from src.sessions.provider import SessionSpec
+from src.sessions.provider import DialogRule, SessionSpec
 
 logger = logging.getLogger(__name__)
 
@@ -434,6 +434,11 @@ class SessionSpecBuilder:
 
         class_config = self._resolve_class_config(profile, harness, task_intelligence_class)
         hook_files = self._hook_files(harness)
+        if harness.hook_trust_flag and not allow_skip_permissions:
+            # Do not manufacture a trust prompt for optional telemetry when
+            # policy deliberately withholds hook trust (notably supervisors
+            # running in the vault). Existing user hooks remain untouched.
+            hook_files = []
         prompt = None if harness.prompt_mode == "none" else bootstrap
         argv = self._compose_argv(
             harness=harness,
@@ -498,6 +503,24 @@ class SessionSpecBuilder:
             extra_env=launch_env,
         )
 
+        dialogs = harness.dialogs
+        if harness.hook_trust_flag:
+            # A persisted or user-supplied hook file can still need review.
+            # Its menu uses the composer glyph, so it must never be accepted
+            # as readiness, including with an older customized harness file.
+            dialogs = (DialogRule(
+                name="hook-review-skip-optional",
+                pattern=(r"(?m)^\s*Hooks need review\s*$[\s\S]*"
+                         r"^\s*(?:›\s*)?3\. Continue without trusting \(hooks won't run\)\s*$"),
+                is_regex=True,
+                keys=("3",),
+            ), DialogRule(
+                name="hook-review-required",
+                pattern="Hooks need review",
+                keys=(),
+                quarantine=True,
+            ), *dialogs)
+
         return SessionSpec(
             session_name=session_name,
             work_dir=work_dir,
@@ -509,7 +532,7 @@ class SessionSpecBuilder:
             ready_prompt_prefix=harness.ready_prompt_prefix,
             process_names=harness.process_names,
             lifecycle=lifecycle,
-            dialogs=harness.dialogs,
+            dialogs=dialogs,
             skip_escape_before_enter=harness.skip_escape_before_enter,
             composer_clear_keys=harness.composer_clear_keys,
             files=tuple(files),

@@ -9,6 +9,13 @@ daemon collects finished branches, merges them, validates the result once, and
 publishes it. There is no pull request, no hosted-CI receipt chain, no
 per-parent verifier and no squash in this path.
 
+A `blocks` dependency on a completed code task stays blocked until the delivery
+journal confirms its completion revision on the configured default branch.
+Preserving a candidate or publishing a parent aggregate does not release the
+successor. Publication updates dependency state automatically; a later completion
+at a different revision needs its own delivery. Branchless tasks have no code
+artifact to publish.
+
 If you want to know *why* it behaves the way it does, read
 [the integration concept page](../concepts/integration.md) first — this guide
 assumes its vocabulary (batch, manifest, journal, parked).

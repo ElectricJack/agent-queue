@@ -23,7 +23,12 @@ import pytest
 
 import src.sessions as sessions_pkg
 from src.sessions.harness_parser import parse_harness_markdown
-from src.sessions.provider import DialogRule, SessionHandle, SessionSpec
+from src.sessions.provider import (
+    DialogRule,
+    SessionDiedDuringStartup,
+    SessionHandle,
+    SessionSpec,
+)
 from src.sessions.tmux import TmuxProvider
 
 NBSP = " "
@@ -196,3 +201,31 @@ class TestReadyPrefixFalsePositives:
         await _await_ready(provider, _spec(prefix, rule))
 
         assert pane.sent == []
+
+
+@pytest.mark.parametrize("late_after", [0, 3])
+async def test_hook_review_requires_intervention_even_with_composer_glyph(late_after):
+    rule = DialogRule(
+        name="hook-review-required", pattern="Hooks need review", keys=(), quarantine=True
+    )
+    pane = _Pane(lambda p: (
+        f"welcome\n{CODEX_COMPOSER}\n" if p.captures <= late_after else
+        "Hooks need review\n› 1. Review hooks\n  2. Trust all\n"
+    ))
+    with pytest.raises(SessionDiedDuringStartup, match="hook-review-required"):
+        await _await_ready(_provider(pane), _spec(CODEX_COMPOSER, rule))
+    assert pane.sent == [], "startup must not approve hooks"
+
+
+async def test_once_answer_that_does_not_clear_dialog_is_not_ready():
+    pane = _Pane(lambda p: CODEX_TRUST)
+    with pytest.raises(SessionDiedDuringStartup, match="remains unresolved"):
+        await _await_ready(_provider(pane, budget=0.3), _spec(CODEX_COMPOSER, CODEX_RULE))
+    assert pane.sent == [("Enter",)]
+
+
+async def test_exhausted_dialog_budget_does_not_accept_menu_as_ready():
+    pane = _Pane(lambda p: CODEX_TRUST)
+    with pytest.raises(SessionDiedDuringStartup, match="remains unresolved"):
+        await _await_ready(_provider(pane, budget=0), _spec(CODEX_COMPOSER, CODEX_RULE))
+    assert pane.sent == []

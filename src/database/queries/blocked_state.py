@@ -23,11 +23,16 @@ from __future__ import annotations
 import logging
 import time
 
-from sqlalchemy import and_, case, false, insert, literal, not_, or_, select, update
+from sqlalchemy import and_, case, cast, false, func, insert, literal, not_, or_, select, update
+from sqlalchemy.dialects.postgresql import JSONB
 
 from src.database.tables import (
+    development_deliveries,
     events,
     gates,
+    projects,
+    repos,
+    task_completion_records,
     task_dependencies,
     task_gates,
     task_labels,
@@ -54,7 +59,9 @@ __all__ = [
 # ``conditional-blocks`` clause reads ``retry_count >= max_retries`` to tell a
 # transient failure from a terminal one, so bumping a retry counter alone can
 # flip a contingency task.
-PROJECTION_INPUT_COLUMNS = frozenset({"status", "retry_count", "max_retries"})
+PROJECTION_INPUT_COLUMNS = frozenset({
+    "status", "retry_count", "max_retries", "branch_name", "repo_id",
+})
 
 
 # Statuses of a ``parent-child`` container that keep its children withheld.
@@ -76,6 +83,57 @@ _WITHHOLDING_PARENT_STATUSES = (
 # every edge as ``status != COMPLETED``.
 
 
+def _development_delivery_pending(task):
+    """Completed code is usable only after publication to the configured default ref.
+
+    Candidate preservation and parent aggregates are not worker checkout bases.
+    A delivery of an older revision cannot release a new completion revision.
+    Branchless tasks have no repository artifact to publish.
+    """
+    project = projects.alias()
+    repo = repos.alias()
+    delivery = development_deliveries.alias()
+    completion = task_completion_records.alias()
+    source_sha = (
+        select(cast(completion.c.commits, JSONB).op("->>")(-1))
+        .where(completion.c.task_id == task.c.id)
+        .order_by(completion.c.completed_at.desc(), completion.c.id.desc())
+        .limit(1)
+        .correlate(task)
+        .scalar_subquery()
+    )
+    delivered = (
+        select(literal(1))
+        .where(
+            delivery.c.project_id == project.c.id,
+            delivery.c.repository_id == repo.c.id,
+            delivery.c.target_ref == literal("refs/heads/") + repo.c.default_branch,
+            delivery.c.state.in_(("delivered", "adopted")),
+            delivery.c.created_at >= task.c.created_at,
+            cast(delivery.c.manifest, JSONB).contains(
+                func.jsonb_build_array(func.jsonb_strip_nulls(func.jsonb_build_object(
+                    "task_id", task.c.id, "source_sha", source_sha,
+                )))
+            ),
+        )
+        .correlate(task, project, repo)
+        .exists()
+    )
+    return (
+        select(literal(1))
+        .select_from(project.join(repo, repo.c.id == project.c.integration_repository_id))
+        .where(
+            project.c.id == task.c.project_id,
+            project.c.hierarchical_integration_mode == "development",
+            task.c.branch_name.is_not(None),
+            or_(task.c.repo_id.is_(None), task.c.repo_id == repo.c.id),
+            ~delivered,
+        )
+        .correlate(task)
+        .exists()
+    )
+
+
 def unmet_dependency_predicate(dependency, depends_on, *, dep_types=None):
     """Return whether one typed dependency edge is currently unsatisfied.
 
@@ -92,7 +150,10 @@ def unmet_dependency_predicate(dependency, depends_on, *, dep_types=None):
         clauses.append(
             and_(
                 dependency.c.dep_type == DepType.BLOCKS.value,
-                depends_on.c.status != TaskStatus.COMPLETED.value,
+                or_(
+                    depends_on.c.status != TaskStatus.COMPLETED.value,
+                    _development_delivery_pending(depends_on),
+                ),
             )
         )
 
@@ -161,7 +222,7 @@ def unmet_dependency_predicate(dependency, depends_on, *, dep_types=None):
 
 
 def _blocks_unsat():
-    """``blocks`` — satisfied when the dependency is COMPLETED."""
+    """``blocks`` — completion plus development publication when applicable."""
     bd = task_dependencies.alias()
     bt = tasks.alias()
     return (
@@ -255,8 +316,7 @@ def blocked_predicate():
 
     Correlates against the ``tasks`` table itself, so it can be dropped into
     a ``CASE`` inside an ``UPDATE tasks`` or into a ``SELECT ... WHERE``.
-    Built from ``EXISTS`` subqueries only — identical SQL on SQLite and
-    PostgreSQL.
+    Built from correlated ``EXISTS`` subqueries.
 
     One clause per blocking rule, in the order of design §3.1.
     """

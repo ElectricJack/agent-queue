@@ -1,6 +1,7 @@
 """Real Git + private PostgreSQL coverage for the development delivery path."""
 
 import subprocess
+import time
 
 import pytest
 from sqlalchemy import select, update
@@ -8,7 +9,7 @@ from sqlalchemy import select, update
 from src.database import Database
 from src.database.tables import projects
 from src.integration.development import DevelopmentBusy, DevelopmentIntegration, DevelopmentPolicy
-from src.models import Project, RepoConfig, RepoSourceType, Task, TaskStatus
+from src.models import Project, RepoConfig, RepoSourceType, Task, TaskCompletion, TaskStatus
 from tests.db_fixtures import lease_dsn
 
 
@@ -84,6 +85,72 @@ async def test_batch_publishes_exact_validated_sha_and_replay_is_idle(setup):
     assert root[0]["evidence"]["conclusion"] == "passed"
     assert root[0]["evidence"]["head_sha"] == head
     assert (await service.sweep("p"))["outcome"] == "idle"
+
+
+async def test_successor_waits_for_default_branch_delivery(setup):
+    db, service, _source, remote, _repo = setup
+    head = await feature(setup, "prerequisite")
+    await db.create_task(Task(
+        id="successor", project_id="p", title="successor", description="",
+        status=TaskStatus.READY,
+    ))
+    await db.add_dependency("successor", "prerequisite")
+    assert (await db.get_task("successor")).is_blocked
+    notifications = []
+
+    async def on_ready(entries):
+        notifications.extend(entries)
+
+    db.set_ready_listener(on_ready)
+
+    await service.configure(
+        "p", {"commands": ["exit 7"]}, reason="test candidate only", operator_id="local"
+    )
+    assert (await service.sweep("p"))["outcome"] == "parked"
+    assert head in git(remote, "show-ref"), "candidate was preserved"
+    assert (await db.get_task("successor")).is_blocked
+
+    await service.configure(
+        "p", {"commands": ["test -f prerequisite.txt"]},
+        reason="publish prerequisite", operator_id="local",
+    )
+    assert (await service.sweep("p", retry=True))["outcome"] == "delivered"
+    assert git(remote, "rev-parse", "main") == head
+    assert not (await db.get_task("successor")).is_blocked
+    assert notifications == [("successor", "unblocked")]
+
+    await db.save_task_completion(TaskCompletion(
+        id="same-revision", task_id="prerequisite", outcome="pass",
+        commits=[head], completed_at=time.time(),
+    ))
+    assert not (await db.get_task("successor")).is_blocked
+    await db.save_task_completion(TaskCompletion(
+        id="new-revision", task_id="prerequisite", outcome="pass",
+        commits=["a" * 40], completed_at=time.time(),
+    ))
+    assert (await db.get_task("successor")).is_blocked
+
+
+async def test_deleted_delivered_branch_does_not_strand_later_batches(setup):
+    db, service, source, remote, _repo = setup
+    previous = await feature(setup, "previous")
+    await db.save_task_completion(TaskCompletion(
+        id="previous-close", task_id="previous", outcome="pass",
+        commits=[previous], completed_at=time.time(),
+    ))
+    # Simulate a historical merge and normal source-branch cleanup, before
+    # this publisher had a delivery receipt for it.
+    git(source, "push", "origin", f"{previous}:main")
+    git(source, "push", "origin", "--delete", "previous")
+    later = await feature(setup, "later")
+    await db.add_dependency("later", "previous")
+    assert (await db.get_task("later")).is_blocked
+    # First pass records ancestry for the cleaned-up predecessor; the next
+    # pass can collect its already-completed dependent.
+    assert (await service.sweep("p"))["outcome"] == "delivered"
+    assert not (await db.get_task("later")).is_blocked
+    assert (await service.sweep("p"))["outcome"] == "delivered"
+    assert git(remote, "merge-base", "--is-ancestor", later, "main") == ""
 
 
 async def test_failed_validation_parks_and_preserves_candidate(setup):

@@ -92,14 +92,28 @@ class DevelopmentIntegration:
     async def save(self, row):
         async with self.db._engine.begin() as conn:
             await conn.execute(insert(deliveries).values(**row))
+            flipped = await self.db.recompute_blocked(
+                {member["task_id"] for member in row["manifest"]}, conn=conn
+            )
+            ready = await self.db._note_frontier_entry(conn, flipped, reason="unblocked")
+        await self.db.log_blocked_flips(flipped)
+        await self.db._notify_ready([(task_id, "unblocked") for task_id in ready])
 
     async def change(self, identity, **values):
         async with self.db._engine.begin() as conn:
-            await conn.execute(
+            result = await conn.execute(
                 update(deliveries)
                 .where(deliveries.c.id == identity)
                 .values(**values, updated_at=time.time())
+                .returning(deliveries.c.manifest)
             )
+            manifest = result.scalar_one_or_none() or []
+            flipped = await self.db.recompute_blocked(
+                {member["task_id"] for member in manifest}, conn=conn
+            )
+            ready = await self.db._note_frontier_entry(conn, flipped, reason="unblocked")
+        await self.db.log_blocked_flips(flipped)
+        await self.db._notify_ready([(task_id, "unblocked") for task_id in ready])
 
     async def rows(self, project_id):
         async with self.db._engine.connect() as conn:
@@ -113,6 +127,17 @@ class DevelopmentIntegration:
                     )
                 ).mappings()
             ]
+
+    async def refresh_dependencies(self, project_id):
+        """Repair projections from before delivery-aware readiness was installed."""
+        async with self.db._engine.begin() as conn:
+            ids = set((await conn.execute(
+                select(tasks.c.id).where(tasks.c.project_id == project_id)
+            )).scalars())
+            flipped = await self.db.recompute_blocked(ids, conn=conn)
+            ready = await self.db._note_frontier_entry(conn, flipped, reason="unblocked")
+        await self.db.log_blocked_flips(flipped)
+        await self.db._notify_ready([(task_id, "unblocked") for task_id in ready])
 
     async def reconcile(self, repo, store):
         for row in await self.rows(repo.project_id):
@@ -379,6 +404,7 @@ class DevelopmentIntegration:
             raise ValueError("project is not in development mode")
         policy = DevelopmentPolicy.model_validate(project.hierarchical_integration_policy).checked()
         repo = await self.db.get_repo(project.integration_repository_id)
+        await self.refresh_dependencies(project_id)
         async with self.exclusion(repo.id):
             store = await self.store(repo)
             await self.reconcile(repo, store)
@@ -477,6 +503,19 @@ class DevelopmentIntegration:
                 source = source_heads.get(
                     "refs/remotes/origin/" + task["branch_name"].removeprefix("refs/heads/")
                 )
+                if not source:
+                    # Branch cleanup after merge must not strand every later
+                    # batch. A durable completion plus default-branch ancestry
+                    # proves delivery even after the source ref is deleted.
+                    completion = await self.db.get_task_completion(task["id"])
+                    recorded_head = (
+                        completion.commits[-1] if completion and completion.commits else None
+                    )
+                    if (
+                        recorded_head and is_valid_git_oid(recorded_head)
+                        and await self.git.ais_ancestor(str(store), recorded_head, base)
+                    ):
+                        source = recorded_head
                 key = (task["id"], source)
                 if not source:
                     unavailable.add(task["id"])
