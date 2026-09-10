@@ -172,7 +172,7 @@ class ClaimQueryMixin:
         return "not_found", record
 
     async def claim_preparation_is_current(
-        self, session_id: str, task_id: str, claim_epoch: int
+        self, session_id: str, task_id: str, claim_epoch: int, *, conn=None
     ) -> bool:
         """Verify the task and pool-session fences before filesystem work.
 
@@ -180,6 +180,9 @@ class ClaimQueryMixin:
         transaction, so this read must prove both rows are still current.
         Joining their two predicates avoids two independent round trips on
         every successful pool claim.
+
+        *conn* lets the caller pair this with its ``get_project`` re-read on
+        one checkout — the two run back to back under the task control lock.
         """
         stmt = (
             select(literal(1))
@@ -193,31 +196,10 @@ class ClaimQueryMixin:
                 sessions.c.desired_state == "running",
             )
         )
-        async with self._engine.connect() as conn:
+        if conn is not None:
             return (await conn.execute(stmt)).scalar_one_or_none() is not None
-
-    async def clear_claim_preparation_metadata(self, task_id: str) -> None:
-        """Clear successful-preparation state with one metadata delete.
-
-        The pause checkpoint and prepare-backoff keys all become stale at the
-        same activation boundary.  Clearing them together preserves that
-        invariant without opening one short transaction for each key.
-
-        ``needs_attention`` is deliberately *not* cleared here.  The only
-        caller reaches this line after :meth:`activate_claim` returned a row,
-        and that activation already deleted every ``needs_attention`` row for
-        the task in the transaction that just committed -- so a second,
-        value-scoped delete of the same key was pure round trip on the claim
-        hot path (see the happy-path budget in
-        ``tests/perf/test_claim_statements.py``).
-        """
-        async with self._engine.begin() as conn:
-            await conn.execute(
-                delete(task_metadata).where(
-                    task_metadata.c.task_id == task_id,
-                    task_metadata.c.key.in_(CLAIM_PREPARATION_METADATA_KEYS),
-                )
-            )
+        async with self._engine.connect() as owned:
+            return (await owned.execute(stmt)).scalar_one_or_none() is not None
 
     async def release_claim_slot(self, conn, session_id: str) -> None:
         await conn.execute(
@@ -474,6 +456,7 @@ class ClaimQueryMixin:
     async def activate_claim(
         self, session_id, task_id, *, epoch: int, now: float, conn=None,
         branch_name: str | None = None,
+        clear_preparation_metadata: bool = False,
     ) -> SessionRecord | None:
         """Flip ``preparing`` -> ``active``; the updated row, or ``None``.
 
@@ -492,6 +475,18 @@ class ClaimQueryMixin:
         discard it, which left ``branch_name`` NULL on every development-mode
         pool task and made its close refuse forever in
         ``resolve_workspace_checkpoint``.
+
+        *clear_preparation_metadata* folds the successful-preparation
+        cleanup — the pause checkpoint and prepare-backoff keys in
+        ``CLAIM_PREPARATION_METADATA_KEYS``, which all go stale at exactly
+        this boundary — into the ``needs_attention`` delete below.  It used
+        to be a separate ``clear_claim_preparation_metadata`` call after this
+        transaction committed, which cost a whole extra pooled checkout (~6
+        statements' worth of wire) *and* a second delete on the same table
+        for the same task.  Riding along here also makes the two atomic:
+        there is no longer a window in which a claim is active while its
+        backoff ladder still says the last preparation failed.  It is inside
+        every activation guard, so an activation that bails clears nothing.
         """
 
         async def _run(c):
@@ -557,11 +552,16 @@ class ClaimQueryMixin:
             # A claim only becomes usable after preparation has succeeded and
             # this session row has atomically moved to ``active``.  Clear an
             # earlier prepare/release warning at that exact point so it never
-            # shadows a live task in the dashboard or recovery logic.
+            # shadows a live task in the dashboard or recovery logic, and --
+            # when the caller asks -- the preparation ladder that became
+            # stale at the same boundary, in the same statement.
+            stale_keys = ["needs_attention"]
+            if clear_preparation_metadata:
+                stale_keys.extend(CLAIM_PREPARATION_METADATA_KEYS)
             await c.execute(
                 delete(task_metadata).where(
                     task_metadata.c.task_id == task_id,
-                    task_metadata.c.key == "needs_attention",
+                    task_metadata.c.key.in_(stale_keys),
                 )
             )
             if branch_name and claim.branch_name != branch_name:
