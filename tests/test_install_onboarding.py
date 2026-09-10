@@ -290,6 +290,66 @@ def test_a_configured_project_root_is_reported_with_its_live_capabilities(tmp_pa
     ]
 
 
+def test_a_rerun_still_reports_where_data_lives_and_which_url_to_open(tmp_path):
+    """The summary is built from this run's detail, so a rerun must carry it.
+
+    ``config.check`` and ``daemon.dashboard`` only read, so the engine
+    revalidates them by running them and records what they observed.  Answering
+    "still true" instead is what printed an empty "Where AQ stores your data"
+    on every second ``aq install``, ``--repair`` and ``--upgrade``.
+    """
+    from src.install.wizard import summarize
+
+    home = configured(tmp_path)
+    daemon = FakeDaemon()
+    state = tmp_path / "install-state.json"
+
+    first = run(
+        registry_for(home, daemon), tmp_path, capabilities=(CAPABILITY_DAEMON,), state=state
+    )
+    second = run(
+        registry_for(home, daemon), tmp_path, capabilities=(CAPABILITY_DAEMON,), state=state
+    )
+
+    assert second.outcome is InstallOutcome.READY
+    action = {row.step_id: row.action.value for row in second.plan}
+    assert action[STEP_CHECK] == "revalidate"
+    assert action[STEP_DASHBOARD] == "revalidate"
+    assert step(second, STEP_CHECK).detail["revalidated"] is True
+    assert daemon.commands == [("/usr/bin/aq", "start")], "a rerun must not restart the daemon"
+
+    before, after = summarize(first), summarize(second)
+    assert after.locations == before.locations != ()
+    assert after.dashboard == before.dashboard
+    assert after.dashboard is not None and after.dashboard.reachable is True
+    assert after.readiness is not None
+    assert {check.id for check in after.readiness.checks if check.ready} == {
+        check.id for check in before.readiness.checks if check.ready
+    }
+
+
+def test_a_rerun_reports_the_configuration_as_it_now_stands(tmp_path):
+    """Revalidation observes the box, so an edited setting is reported, not replayed."""
+    from src.install.wizard import summarize
+
+    home = configured(tmp_path)
+    daemon = FakeDaemon(up=True)
+    state = tmp_path / "install-state.json"
+
+    run(registry_for(home, daemon), tmp_path, state=state)
+    config = home / "config.yaml"
+    config.write_text(
+        config.read_text(encoding="utf-8") + f"workspace_dir: {tmp_path / 'elsewhere'}\n",
+        encoding="utf-8",
+    )
+    second = run(registry_for(home, daemon), tmp_path, state=state)
+
+    worktrees = next(
+        location for location in summarize(second).locations if location.label == "Worktrees"
+    )
+    assert worktrees.path == str(tmp_path / "elsewhere")
+
+
 def test_the_reported_database_location_carries_no_password(tmp_path):
     locations = data_locations(
         tmp_path,

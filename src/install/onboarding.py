@@ -364,15 +364,6 @@ def check_step(
     """
     path = config_path_for(environ, home)
 
-    def _loads() -> bool:
-        from src.config import load_config
-
-        try:
-            load_config(str(path))
-        except Exception:  # noqa: BLE001 - the reason is reported by run()
-            return False
-        return True
-
     def run(context: StepContext) -> StepResult:
         from src.config import ConfigValidationError, load_config
 
@@ -453,7 +444,12 @@ def check_step(
         ),
         run=run,
         depends_on=depends_on,
-        verify=lambda context: _loads(),
+        # The step only reads, so revalidating it *is* running it, and the
+        # result it returns is the one the engine records.  A bare boolean
+        # would answer "the configuration still parses" and throw away
+        # ``locations`` — which is why every rerun, repair and upgrade used to
+        # print an empty "Where AQ stores your data".
+        verify=run,
         owner="onboarding",
     )
 
@@ -793,6 +789,11 @@ def dashboard_step(
         ),
         run=run,
         depends_on=depends_on,
+        # Read-only, like config.check: a rerun re-probes and reports the URL
+        # it observed rather than carrying a previous run's word forward with
+        # no detail, which is what left the summary's Dashboard block — and
+        # the first-task dashboard check — empty on a second install.
+        verify=run,
         owner="onboarding",
     )
 
