@@ -34,6 +34,20 @@ def install_home(tmp_path, monkeypatch):
     return home
 
 
+@pytest.fixture
+def without_database_steps(monkeypatch):
+    """Run the CLI over the engine's own steps only.
+
+    A test about a flag, an exit code or a rerun should not depend on whether
+    the box running it happens to have PostgreSQL listening; the database
+    adapter's own behaviour is covered in ``tests/test_install_postgres.py``.
+    """
+    from src.cli import install as install_cli
+    from src.install.prerequisites import default_registry
+
+    monkeypatch.setattr(install_cli, "default_registry", lambda: default_registry(adapters=()))
+
+
 def _cli():
     from src.cli.app import cli
 
@@ -98,7 +112,7 @@ def test_an_unattended_run_without_approval_stops_at_needs_user(install_home):
     assert "--approve prereq.data-dir" in payload["next_action"]
 
 
-def test_approving_every_step_completes_and_records_state(install_home):
+def test_approving_every_step_completes_and_records_state(install_home, without_database_steps):
     result = _invoke("--non-interactive", "--yes", "--json")
     assert result.exit_code == 0
     payload = _payload(result)
@@ -110,7 +124,9 @@ def test_approving_every_step_completes_and_records_state(install_home):
     assert "directory" in kinds
 
 
-def test_a_rerun_is_safe_and_reports_the_same_single_owned_directory(install_home):
+def test_a_rerun_is_safe_and_reports_the_same_single_owned_directory(
+    install_home, without_database_steps
+):
     first = _payload(_invoke("--non-interactive", "--yes", "--json"))
     second = _payload(_invoke("--non-interactive", "--yes", "--json"))
     assert second["outcome"] == "ready"
@@ -122,7 +138,9 @@ def test_a_rerun_is_safe_and_reports_the_same_single_owned_directory(install_hom
 # -- interactive ------------------------------------------------------------
 
 
-def test_declining_a_prompt_skips_the_step_without_failing_the_run(install_home):
+def test_declining_a_prompt_skips_the_step_without_failing_the_run(
+    install_home, without_database_steps
+):
     """A decline is a choice, not an error, and it claims no ownership.
 
     The resume record itself still lands under the AQ home — that is the

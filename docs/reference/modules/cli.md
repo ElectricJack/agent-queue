@@ -124,9 +124,9 @@ supplies `_cmd_<name>` methods that `execute()` dispatches to.
 
 ## Installer engine — `src/install/`
 
-The shared orchestration behind `aq install`. Platform, packaging, database and
-provider adapters register steps against this engine rather than shipping
-installers of their own.
+The shared orchestration behind `aq install`, plus the database adapter that
+registers into it. Platform, packaging and provider adapters register steps the
+same way rather than shipping installers of their own.
 
 | Module | Purpose | Component | Notes |
 |---|---|---|---|
@@ -138,6 +138,8 @@ installers of their own.
 | [src/install/redaction.py](../../../src/install/redaction.py) | Redacts secret-shaped keys and values, and fences the record against anything it missed. | [cli/install.md](../cli/install.md) | `tests/test_install_engine.py`. Reuses the denylist in `src/env_scrub.py`. |
 | [src/install/engine.py](../../../src/install/engine.py) | Admits the host, orders and gates the steps, revalidates completed work instead of repeating it, collects consent, and stops at the first unsatisfied step. | [cli/install.md](../cli/install.md) | `tests/test_install_engine.py`. Clock-injectable; writes only the resume record. |
 | [src/install/prerequisites.py](../../../src/install/prerequisites.py) | Supplies the engine's own steps: host admission, interpreter, Git, tmux and the AQ data directory. | [cli/install.md](../cli/install.md) | `tests/test_install_engine.py`. Detection only — installing anything belongs to an adapter. |
+| [src/install/postgres.py](../../../src/install/postgres.py) | PostgreSQL mechanism: settings, connection classification, the administrator route, package and service plans, and the protected credential store. | [cli/install.md](../cli/install.md) | `tests/test_install_postgres.py`. Every host reader is injectable; passwords go to `psql` on stdin, never in argv. |
+| [src/install/postgres_steps.py](../../../src/install/postgres_steps.py) | The nine `postgres.*` steps: install, start, admit, role, database, rotate, credentials, connection, boot. | [cli/install.md](../cli/install.md) | `tests/test_install_postgres.py`. Existing roles and databases are reused untouched; the schema stays the daemon's. |
 
 ## Startup context — `src/prime/`
 

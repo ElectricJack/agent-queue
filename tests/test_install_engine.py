@@ -113,6 +113,16 @@ class _Counter:
         return self._result or StepResult.succeeded(self.step_id, f"ran {self.calls}x")
 
 
+def prerequisites_only(**kwargs):
+    """The engine's own steps, without the PostgreSQL adapter.
+
+    The database steps have their own suite (``tests/test_install_postgres.py``);
+    a test about consent, resume or redaction should not need a server to be
+    reachable to say what it is about.
+    """
+    return default_registry(adapters=(), **kwargs)
+
+
 # -- registry ---------------------------------------------------------------
 
 
@@ -624,7 +634,9 @@ def test_a_step_that_leaks_a_credential_fails_the_write_instead_of_persisting_it
 
 
 def test_the_record_written_by_a_real_run_contains_no_secrets(tmp_path):
-    registry = default_registry(which=lambda name: f"/usr/bin/{name}", state_dir=tmp_path / "data")
+    registry = prerequisites_only(
+        which=lambda name: f"/usr/bin/{name}", state_dir=tmp_path / "data"
+    )
     result = _run(registry, tmp_path)
     assert result.outcome is InstallOutcome.READY
     payload = json.loads((tmp_path / "install-state.json").read_text(encoding="utf-8"))
@@ -648,15 +660,17 @@ def test_the_record_is_written_atomically_and_owner_only(tmp_path):
 def test_the_built_in_registry_admits_the_host_before_it_checks_anything_else():
     registry = default_registry()
     assert registry.ordered()[0].id == STEP_HOST
-    # Every other step waits on host admission, directly or through the step
-    # it extends: a provider login waits on its CLI, which waits on the host.
+    # Adapters chain onto each other rather than all naming the host step — a
+    # provider login waits on its CLI, a PostgreSQL step on the one before it —
+    # so the invariant is that every step depends on admission *transitively*,
+    # which is exactly what ``dependents_of`` computes.
     assert set(registry.dependents_of(STEP_HOST)) == set(registry.ids())
     assert registry.get(STEP_DATA_DIR).mutating is True
     assert registry.get(STEP_PYTHON).mutating is False
 
 
 def test_a_missing_prerequisite_command_gives_platform_specific_instructions(tmp_path):
-    registry = default_registry(which=lambda name: None, state_dir=tmp_path / "data")
+    registry = prerequisites_only(which=lambda name: None, state_dir=tmp_path / "data")
     result = _run(registry, tmp_path)
     assert result.outcome is InstallOutcome.FAILED
     failure = result.blocking_step
@@ -667,7 +681,7 @@ def test_a_missing_prerequisite_command_gives_platform_specific_instructions(tmp
 def test_the_data_directory_step_reuses_an_existing_directory_rather_than_owning_it(tmp_path):
     existing = tmp_path / "data"
     existing.mkdir()
-    registry = default_registry(which=lambda name: f"/usr/bin/{name}", state_dir=existing)
+    registry = prerequisites_only(which=lambda name: f"/usr/bin/{name}", state_dir=existing)
     result = _run(registry, tmp_path)
     record = next(item for item in result.resources if item.kind == "directory")
     assert (record.owned, record.reused) == (False, True)
@@ -675,7 +689,7 @@ def test_the_data_directory_step_reuses_an_existing_directory_rather_than_owning
 
 def test_the_data_directory_step_owns_a_directory_it_created(tmp_path):
     target = tmp_path / "data"
-    registry = default_registry(which=lambda name: f"/usr/bin/{name}", state_dir=target)
+    registry = prerequisites_only(which=lambda name: f"/usr/bin/{name}", state_dir=target)
     result = _run(registry, tmp_path)
     record = next(item for item in result.resources if item.kind == "directory")
     assert (record.owned, record.reused) == (True, False)
@@ -686,7 +700,7 @@ def test_an_unwritable_data_directory_names_the_path_and_the_fix(tmp_path):
     target = tmp_path / "data"
     target.mkdir(mode=0o500)
     try:
-        registry = default_registry(which=lambda name: f"/usr/bin/{name}", state_dir=target)
+        registry = prerequisites_only(which=lambda name: f"/usr/bin/{name}", state_dir=target)
         result = _run(registry, tmp_path)
     finally:
         target.chmod(0o700)

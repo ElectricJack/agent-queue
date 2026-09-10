@@ -39,7 +39,19 @@ from .platform import (
     detect_platform,
     evaluate_support,
 )
-from .prerequisites import default_registry
+from .postgres import (
+    MINIMUM_SERVER_VERSION,
+    ConnectionCheck,
+    PostgresSettings,
+    PostgresSettingsError,
+)
+from .postgres_steps import (
+    CAPABILITY_MANAGED,
+    CAPABILITY_ROTATE,
+    PostgresAdapter,
+    postgres_steps,
+)
+from .prerequisites import default_registry, prerequisite_steps
 from .providers import (
     ExecutableProbe,
     ProviderInstaller,
@@ -74,10 +86,14 @@ from .state import (
 from .steps import InstallPlanError, StepContext, StepRegistry, StepSpec
 
 __all__ = [
+    "CAPABILITY_MANAGED",
+    "CAPABILITY_ROTATE",
     "EXIT_CODES",
+    "MINIMUM_SERVER_VERSION",
     "RESULT_SCHEMA_VERSION",
     "STATE_SCHEMA_VERSION",
     "AuthProbe",
+    "ConnectionCheck",
     "ConsentCallback",
     "CredentialStore",
     "EnvironmentCredential",
@@ -92,6 +108,9 @@ __all__ = [
     "PlanAction",
     "PlannedStep",
     "PlatformFacts",
+    "PostgresAdapter",
+    "PostgresSettings",
+    "PostgresSettingsError",
     "ProgressCallback",
     "ProgressEvent",
     "ProviderInstaller",
@@ -116,6 +135,8 @@ __all__ = [
     "load_state",
     "login_step",
     "login_steps",
+    "postgres_steps",
+    "prerequisite_steps",
     "probe_all",
     "probe_executable",
     "probe_login",
