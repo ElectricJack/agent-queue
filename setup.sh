@@ -4,6 +4,27 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
+# --- Prompting ---
+#
+# Every question here has a safe default, so a run with no terminal answers it
+# rather than dying.  `read` returns non-zero at end of input, and under
+# `set -e` that aborted the whole script with a bare exit 1 and no message:
+# `curl … | bash`, `nohup ./setup.sh &`, a non-tty ssh command and CI all hit
+# it, always at the first question and always after real work had been done.
+#
+#   ask "Add it to ~/.zshrc?" Y   -> the default when there is nobody to ask
+ask() {
+    local prompt="$1" default="${2:-Y}" answer=""
+    local suffix="[Y/n]"
+    [[ "$default" =~ ^[Yy]$ ]] || suffix="[y/N]"
+    if [[ -t 0 ]]; then
+        read -rp "$prompt $suffix " answer || answer=""
+    else
+        echo "$prompt $suffix $default (no terminal; using the default)"
+    fi
+    [[ "${answer:-$default}" =~ ^[Yy]$ ]]
+}
+
 # --- Detect Python 3.12+ ---
 PYTHON=""
 for candidate in python3.13 python3.12 python3 python; do
@@ -91,13 +112,11 @@ if ! command -v npm &>/dev/null; then
     echo "npm is not installed. The web dashboard needs Node.js."
     OS="$(uname -s)"
     if [[ "$OS" == "Darwin" ]] && command -v brew &>/dev/null; then
-        read -rp "Install Node.js via Homebrew? [Y/n] " ans
-        if [[ "${ans:-Y}" =~ ^[Yy]$ ]]; then
+        if ask "Install Node.js via Homebrew?" Y; then
             brew install node
         fi
     elif [[ "$OS" == "Linux" ]] && command -v apt-get &>/dev/null; then
-        read -rp "Install Node.js via apt? [Y/n] " ans
-        if [[ "${ans:-Y}" =~ ^[Yy]$ ]]; then
+        if ask "Install Node.js via apt?" Y; then
             sudo apt-get install -y nodejs npm
         fi
     fi
@@ -147,8 +166,7 @@ if ! echo ":$PATH:" | grep -q ":$LOCAL_BIN:"; then
     if [[ -n "$PATH_RC" ]] && ! grep -qF '# agent-queue setup.sh' "$PATH_RC" 2>/dev/null; then
         echo ""
         echo "$LOCAL_BIN is not on your PATH."
-        read -rp "Add it to $PATH_RC? [Y/n] " answer
-        if [[ "${answer:-Y}" =~ ^[Yy]$ ]]; then
+        if ask "Add it to $PATH_RC?" Y; then
             echo 'export PATH="$HOME/.local/bin:$PATH"  # agent-queue setup.sh' >> "$PATH_RC"
             echo "Added to $PATH_RC. Restart your shell or run: source $PATH_RC"
         else
@@ -192,8 +210,7 @@ if [[ -n "$COMP_FILE" && -s "$COMP_FILE" ]]; then
         if ! grep -qF "$SOURCE_LINE" "$RC_FILE" 2>/dev/null; then
             echo ""
             echo "Shell completion for 'aq' is available."
-            read -rp "Add tab-completion to $RC_FILE? [Y/n] " answer
-            if [[ "${answer:-Y}" =~ ^[Yy]$ ]]; then
+            if ask "Add tab-completion to $RC_FILE?" Y; then
                 echo "$SOURCE_LINE" >> "$RC_FILE"
                 echo "Added to $RC_FILE. Restart your shell or run: $SOURCE_LINE"
             else
@@ -247,10 +264,9 @@ for arg in "$@"; do
 done
 
 if [[ "$NO_PROMPT" -eq 0 && -t 0 && -n "${AQ_MEMORY_PATH:-}" ]]; then
-    read -rp "Install aq-memory plugin from $AQ_MEMORY_PATH? (y/N) " yn
-    case "$yn" in
-        [Yy]*) INSTALL_MEMORY=1 ;;
-    esac
+    if ask "Install aq-memory plugin from $AQ_MEMORY_PATH?" N; then
+        INSTALL_MEMORY=1
+    fi
 fi
 
 if [[ "$INSTALL_MEMORY" -eq 1 ]]; then
