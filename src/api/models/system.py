@@ -124,6 +124,16 @@ class UpdateConfigResponse(BaseModel):
     error: str | None = None
 
 
+class PortableConfigResponse(BaseModel):
+    """Preview/export/import receipt. Fields vary by operation."""
+
+    model_config = {"extra": "allow"}
+    error: str | None = None
+    applied: bool = False
+    dry_run: bool | None = None
+    validation_errors: list[str] = []
+
+
 class ReloadConfigResponse(BaseModel):
     message: str = ""
     changed_sections: list[str] | None = None
@@ -286,6 +296,9 @@ RESPONSE_MODELS: dict[str, type[BaseModel]] = {
     "get_config": GetConfigResponse,
     "get_config_schema": GetConfigSchemaResponse,
     "update_config": UpdateConfigResponse,
+    "preview_portable_config": PortableConfigResponse,
+    "export_portable_config": PortableConfigResponse,
+    "import_portable_config": PortableConfigResponse,
     "restart_daemon": RestartDaemonResponse,
     "shutdown": ShutdownResponse,
     "update_and_restart": UpdateAndRestartResponse,
