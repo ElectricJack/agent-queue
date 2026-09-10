@@ -291,7 +291,6 @@ class ClaimCommandsMixin:
             }
 
         cap = self._pool_context_claim_cap(profile)
-        default_profile = getattr(project, "default_profile_id", None)
         refresh_routing = False
 
         while True:
@@ -304,7 +303,6 @@ class ClaimCommandsMixin:
                     profile = await self.db.get_profile(session.profile_id, conn=conn)
                     project = await self.db.get_project(session.project_id, conn=conn)
                 cap = self._pool_context_claim_cap(profile)
-                default_profile = getattr(project, "default_profile_id", None)
             refresh_routing = True
             # An operator can disable a pool profile while a worker is
             # finishing its current task.  The task it already holds runs to
