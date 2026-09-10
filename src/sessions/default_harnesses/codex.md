@@ -105,8 +105,11 @@ enough — measured: a fully trusted scratch repo with a valid
 ("Intended only for automation that already vets hook sources"), and this
 daemon writes the file itself. It is emitted only alongside
 `permission_flag`, so it inherits the isolated-worktree argument in
-claude.md rather than widening it: in a linked checkout Codex keeps hook
-review and the session simply reports no native subagent telemetry.
+claude.md rather than widening it. When launch policy withholds hook trust
+(including a default supervisor in the vault), AQ does not write its optional
+telemetry hook file. Existing user hook files remain subject to review. If
+the review screen appears, startup fails explicitly instead of reporting the
+menu as a ready composer; AQ does not select a trust option automatically.
 
 The events wired today are `SubagentStart` / `SubagentStop`, both of which
 carry `session_id`, `turn_id`, `agent_id`, `agent_type`, `cwd`,

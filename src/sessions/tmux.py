@@ -453,11 +453,14 @@ class TmuxProvider(SessionProvider):
                     if await pane_dead():
                         await die("process died while waiting for the ready prompt")
                     raw = await capture()
-                    if first_match(spec.dialogs, raw, fired=fired) is not None:
+                    if first_match(spec.dialogs, raw) is not None:
                         # A dialog is up: answer it rather than mistaking one
                         # of its menu rows for the composer.
                         if (await dismiss()).budget_exhausted:
                             break
+                        # A once-only answer may not have cleared the menu
+                        # yet. Keep polling without resending or busy-spinning.
+                        await asyncio.sleep(0.2)
                         continue
                     text = _normalize(raw)
                     if any(line.lstrip().startswith(prefix) for line in text.splitlines()):
@@ -466,6 +469,9 @@ class TmuxProvider(SessionProvider):
                 # Timeout: non-fatal with a live pane.
 
             outcome = await dismiss(quiet_seconds=settle)
+            remaining_dialog = first_match(spec.dialogs, await capture()) if spec.dialogs else None
+            if remaining_dialog is not None:
+                await die(f"startup dialog {remaining_dialog.name!r} remains unresolved")
             if not outcome.fired or outcome.budget_exhausted:
                 break
             if not prefix or dialog_budget.exhausted():

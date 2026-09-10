@@ -338,6 +338,9 @@ class TestCodexHookTrust:
         # pre-trust that just to count sub-agents.
         assert "--dangerously-bypass-hook-trust" not in spec.command
         assert spec.hooks_provisioned is False
+        assert ".codex/hooks.json" not in dict(spec.files)
+        rule = next(r for r in spec.dialogs if r.name == "hook-review-required")
+        assert rule.quarantine and not rule.keys
 
     def test_hooks_provisioned_records_whether_the_launch_actually_wired_them(self, builder):
         assert _isolated(builder, harness=self.CODEX).hooks_provisioned is True
