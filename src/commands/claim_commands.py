@@ -16,6 +16,7 @@ from src.claim_file import (
     remove_claim_file_if_matches,
     write_claim_file,
 )
+from src.database.queries.hierarchy_queries import ProjectIntegrationMode
 from src.models import ClaimResult, TaskStatus
 
 logger = logging.getLogger(__name__)
@@ -261,7 +262,6 @@ class ClaimCommandsMixin:
 
         cap = self._pool_context_claim_cap(profile)
         project = await self.db.get_project(session.project_id)
-        default_profile = getattr(project, "default_profile_id", None)
         refresh_routing = False
 
         while True:
@@ -271,7 +271,6 @@ class ClaimCommandsMixin:
                 profile = await self.db.get_profile(session.profile_id)
                 cap = self._pool_context_claim_cap(profile)
                 project = await self.db.get_project(session.project_id)
-                default_profile = getattr(project, "default_profile_id", None)
             refresh_routing = True
             # An operator can disable a pool profile while a worker is
             # finishing its current task.  The task it already holds runs to
@@ -312,7 +311,7 @@ class ClaimCommandsMixin:
                 seq0 = await self.db.max_event_id() if wait else 0
                 routing = self._pool_claim_routing(session, profile)
                 outcome = await self._attempt_claim(
-                    session, want_id, cap, default_profile, routing=routing
+                    session, want_id, cap, project, routing=routing
                 )
                 result = outcome["result"]
                 if (
@@ -410,7 +409,7 @@ class ClaimCommandsMixin:
         )
 
     async def _attempt_claim(
-        self, session, want_id, cap, default_profile, *, routing=None, repaired=False
+        self, session, want_id, cap, project, *, routing=None, repaired=False
     ) -> dict:
         """Decide the outcome on one ``immediate()`` transaction, on *conn* only.
 
@@ -425,6 +424,16 @@ class ClaimCommandsMixin:
         ``async with`` block closes.
         """
         now = time.time()
+        default_profile = getattr(project, "default_profile_id", None)
+        # The frontier query asks the project row two constant questions
+        # (hierarchy/train mode, and against which repository).  Reduce the
+        # row the outer loop already read, rather than making the statement
+        # re-ask it once per candidate task.  This read only picks a
+        # *candidate*: the take is re-fenced under the task lock, and
+        # ``_prepare_and_activate_locked`` re-reads the project before acting
+        # on its mode, so a mode edit landing inside a long ``--wait`` window
+        # is never acted on from here.
+        hierarchy_mode = ProjectIntegrationMode.of(project)
         # What to do once the transaction has committed — set inside the
         # block, acted on outside it.
         active_claim: tuple | None = None  # (task, epoch, row) — already active
@@ -501,6 +510,7 @@ class ClaimCommandsMixin:
                     profile_id=session.profile_id,
                     default_profile_id=default_profile,
                     agent_id=row.agent_id,
+                    hierarchy_mode=hierarchy_mode,
                     task_id=want_id,
                     enforce_routing=routing is not None,
                     intelligence_class=routing[0] if routing else None,
@@ -535,7 +545,7 @@ class ClaimCommandsMixin:
                 row,
                 cap,
                 want_id=want_id,
-                default_profile=default_profile,
+                project=project,
                 routing=routing,
                 repaired=repaired,
             )
@@ -570,7 +580,7 @@ class ClaimCommandsMixin:
         return self._simple(ClaimResult.NO_READY_WORK, "", row, cap)
 
     async def _recover_stale_binding(
-        self, session, task, row, cap, *, want_id, default_profile, routing, repaired
+        self, session, task, row, cap, *, want_id, project, routing, repaired
     ) -> dict:
         """Unwind a claim binding whose task is no longer IN_PROGRESS.
 
@@ -661,7 +671,7 @@ class ClaimCommandsMixin:
             return self._simple(ClaimResult.NO_READY_WORK, "", row, cap)
         fresh = await self.db.get_session(session.id) or session
         return await self._attempt_claim(
-            fresh, want_id, cap, default_profile, routing=routing, repaired=True
+            fresh, want_id, cap, project, routing=routing, repaired=True
         )
 
     async def _prepare_and_activate(self, session, row, task, cap=None, *, slot=None) -> dict:

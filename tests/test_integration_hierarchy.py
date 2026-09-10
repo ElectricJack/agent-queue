@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import json
-from pathlib import Path
 import subprocess
 import time
+from pathlib import Path
 
 import pytest
 from sqlalchemy import insert, select, update
@@ -18,6 +18,7 @@ from src.database.tables import (
     integration_promotion_intents,
     integration_review_evidence,
     playbook_artifacts,
+    projects,
     task_branch_origins,
     task_delivery_receipts,
     task_integration_checkpoints,
@@ -991,7 +992,9 @@ async def test_collector_queues_only_current_approved_child_once(db, hierarchy, 
 @pytest.mark.parametrize('blocker', ['none', 'escalated', 'live_task', 'attached', 'pending', 'wrong_stage'])
 async def test_collector_recovers_only_completed_detached_delivered_repair(db, hierarchy, blocker):
     from src.database.tables import (
-        integration_branch_owners, integration_repair_operations, integration_repair_stages,
+        integration_branch_owners,
+        integration_repair_operations,
+        integration_repair_stages,
     )
     from src.integration.collection import CollectionService
     from src.integration.models import Fence
@@ -1071,6 +1074,157 @@ async def test_container_collection_ignores_old_attempt_but_refuses_current_one(
     assert result["outcome"] == ("waiting" if current else "checkpointed")
     if current:
         assert result["reason"] == "current_incarnation_attempt"
+
+
+async def _frontier_ids(db, mode=None) -> set[str]:
+    """Task ids the claim frontier admits, with or without the hoisted mode."""
+    from src.database.queries.claim_queries import _frontier_where
+
+    async with db._engine.connect() as conn:
+        rows = (
+            await conn.execute(select(tasks.c.id).where(_frontier_where("p", mode)))
+        ).scalars().all()
+    return set(rows)
+
+
+async def _hoisted_ids(db) -> set[str]:
+    from src.database.queries.hierarchy_queries import ProjectIntegrationMode
+
+    return await _frontier_ids(db, ProjectIntegrationMode.of(await db.get_project("p")))
+
+
+@pytest.mark.parametrize("mode_value", ["hierarchy", "train", "disabled"])
+async def test_hoisted_project_mode_admits_exactly_what_the_correlated_form_does(
+    db, hierarchy, mode_value
+):
+    """The frontier predicate is the same set with the ``projects`` lookup folded away.
+
+    ``materialized_origin_when_hierarchical`` and
+    ``delivered_same_parent_prerequisites_when_hierarchical`` used to re-ask
+    one constant question of the ``projects`` row for every candidate task.
+    A caller holding the project row passes it in instead; this pins that the
+    reduction is exact, at each of the three states the predicates
+    distinguish (no origin, origin but an undelivered sibling prerequisite,
+    and a delivered one), for both hierarchical modes and for ``disabled``.
+    """
+    await _create(db, "parent")
+    filed = await hierarchy.file_children("parent", [{"title": "first"}, {"title": "second"}], 0)
+    first, second = [row["task_id"] for row in filed["children"]]
+    await db.add_dependency(second, first, "blocks")
+    # A task with no origin row at all: admitted only when the project is not
+    # in a hierarchical mode.
+    await _create(db, "loose")
+    if mode_value == "disabled":
+        await db.update_project("p", hierarchical_integration_mode="disabled")
+    else:
+        await db.update_project("p", hierarchical_integration_mode=mode_value)
+    async with db.immediate() as conn:
+        await conn.execute(update(task_branch_origins).where(
+            task_branch_origins.c.task_id.in_((first, second))
+        ).values(materialized=True, materialized_at=1.0))
+        await conn.execute(update(tasks).where(tasks.c.id == first).values(
+            status="COMPLETED", updated_at=time.time()
+        ))
+        await conn.execute(update(tasks).where(tasks.c.id.in_((second, "loose"))).values(
+            status="READY", is_blocked=False
+        ))
+
+    correlated = await _frontier_ids(db)
+    assert await _hoisted_ids(db) == correlated
+    # The states the predicates actually distinguish, so the equality above is
+    # not just two empty sets agreeing.
+    assert correlated == ({"loose", second} if mode_value == "disabled" else set())
+
+    source = await db.get_integration_checkpoint(first)
+    async with db.immediate() as conn:
+        await conn.execute(insert(task_delivery_receipts).values(
+            id="receipt",
+            domain_key="receipt:parent.1",
+            source_task_id=first,
+            target_task_id="parent",
+            repository_id="repo",
+            target_branch="aq/parent",
+            reviewed_head_sha=source["checkpoint_sha"],
+            before_sha=BASE,
+            squash_sha=NEXT,
+            after_sha=NEXT,
+            disposition="code",
+            created_at=time.time() + 1,
+        ))
+
+    correlated = await _frontier_ids(db)
+    assert await _hoisted_ids(db) == correlated
+    assert correlated == ({"loose", second} if mode_value == "disabled" else {second})
+
+
+async def test_hoisted_hierarchy_mode_without_a_repository_admits_nothing(db, hierarchy):
+    """Hierarchy mode with no designated repository excludes every task.
+
+    ``update_project`` will not put a project here, but the reduction has to
+    agree with the correlated form for the state anyway: no origin row can
+    equal a NULL ``integration_repository_id``, so the correlated subquery
+    rejected these tasks too.
+    """
+    await _create(db, "parent")
+    filed = await hierarchy.file_children("parent", [{"title": "only"}], 0)
+    only = filed["children"][0]["task_id"]
+    async with db.immediate() as conn:
+        await conn.execute(update(task_branch_origins).where(
+            task_branch_origins.c.task_id == only
+        ).values(materialized=True, materialized_at=1.0))
+        await conn.execute(update(tasks).where(tasks.c.id == only).values(
+            status="READY", is_blocked=False
+        ))
+    assert await _frontier_ids(db) == {only}
+
+    async with db.immediate() as conn:
+        await conn.execute(
+            update(projects).where(projects.c.id == "p").values(integration_repository_id=None)
+        )
+    correlated = await _frontier_ids(db)
+    assert correlated == set()
+    assert await _hoisted_ids(db) == correlated
+
+
+async def test_a_sibling_materialization_does_not_admit_an_unmaterialized_child(db, hierarchy):
+    """The origin gate is per task, not "somebody in this repo has one".
+
+    ``materialized_origin_when_hierarchical``'s inner ``EXISTS`` used to
+    auto-correlate only one level out, so ``tasks`` landed in the subquery's
+    own ``FROM`` and it read as "does *any* task have a live materialized
+    origin in this repository".  One materialized sibling therefore opened
+    the frontier to every child of the project, including ones whose exact
+    branch had never been created — precisely what
+    ``src/integration/branch_materialization.py`` says this gate prevents.
+    """
+    await _create(db, "parent")
+    filed = await hierarchy.file_children("parent", [{"title": "first"}, {"title": "second"}], 0)
+    first, second = [row["task_id"] for row in filed["children"]]
+    async with db.immediate() as conn:
+        await conn.execute(update(task_branch_origins).where(
+            task_branch_origins.c.task_id == first
+        ).values(materialized=True, materialized_at=1.0))
+        await conn.execute(update(tasks).where(tasks.c.id.in_((first, second))).values(
+            status="READY", is_blocked=False
+        ))
+
+    assert await _frontier_ids(db) == {first}
+    assert await _hoisted_ids(db) == {first}
+    assert await db.hierarchy_runnable_task_ids([first, second]) == {first}
+
+
+@pytest.mark.parametrize("mode_value", ["hierarchy", "disabled"])
+def test_hoisted_frontier_never_names_the_projects_table(mode_value):
+    """The point of the hoist: no per-row ``projects`` lookup in the statement."""
+    from src.database.queries.claim_queries import _frontier_where
+    from src.database.queries.hierarchy_queries import ProjectIntegrationMode
+
+    mode = ProjectIntegrationMode(
+        hierarchical=mode_value == "hierarchy", integration_repository_id="repo"
+    )
+    hoisted = str(select(tasks.c.id).where(_frontier_where("p", mode)))
+    assert "projects" not in hoisted
+    assert "projects" in str(select(tasks.c.id).where(_frontier_where("p")))
 
 
 async def test_sibling_prerequisite_needs_current_delivery_receipt_before_claim(db, hierarchy):

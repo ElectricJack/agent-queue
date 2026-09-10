@@ -17,6 +17,7 @@ from sqlalchemy import Float, and_, case, cast, delete, exists, false, func, lit
 
 from src.database.queries.blocked_state import apply_label_filters
 from src.database.queries.hierarchy_queries import (
+    ProjectIntegrationMode,
     container_flag_exists,
     delivered_same_parent_prerequisites_when_hierarchical,
     materialized_origin_when_hierarchical,
@@ -41,15 +42,23 @@ from src.database.tables import (
 from src.models import AgentState, SessionRecord, Task, TaskEvent, TaskStatus, Workspace
 
 
-def _frontier_where(project_id: str):
+def _frontier_where(project_id: str, hierarchy_mode: ProjectIntegrationMode | None = None):
+    """The frontier predicate, for one project.
+
+    *hierarchy_mode* is this project's already-read
+    ``hierarchical_integration_mode`` / ``integration_repository_id`` pair.
+    Supplying it folds the two hierarchy predicates' ``projects`` lookups
+    into constants instead of re-asking the same one-row question once per
+    candidate row; ``None`` keeps the self-contained correlated form.
+    """
     return and_(
         tasks.c.project_id == project_id,
         tasks.c.status == TaskStatus.READY.value,
         tasks.c.is_blocked == 0,
         tasks.c.assigned_agent_id.is_(None),
         tasks.c.is_plan_subtask == 0,
-        materialized_origin_when_hierarchical(),
-        delivered_same_parent_prerequisites_when_hierarchical(),
+        materialized_origin_when_hierarchical(hierarchy_mode),
+        delivered_same_parent_prerequisites_when_hierarchical(hierarchy_mode),
         # A flagged container (spec §7) has no deliverable of its own: it is
         # released to IN_PROGRESS by the orchestrator and settles when its
         # children finish.  A worker holding it could never close it
@@ -239,8 +248,18 @@ class ClaimQueryMixin:
         intelligence_class=None,
         llm_provider=None,
         options_hash=None,
+        hierarchy_mode: ProjectIntegrationMode | None = None,
     ) -> str | None:
-        """The §10 work query.  Postgres takes the row FOR UPDATE SKIP LOCKED."""
+        """The §10 work query.  Postgres takes the row FOR UPDATE SKIP LOCKED.
+
+        *hierarchy_mode* is the caller's already-read project row, reduced to
+        the two constants the hierarchy predicates need (see
+        :class:`ProjectIntegrationMode`).  It is only ever a *frontier*
+        filter: whichever candidate this returns is re-fenced under the task
+        lock afterwards, and ``_prepare_and_activate_locked`` re-reads the
+        project before acting on its mode, so a mode edit that lands inside a
+        long ``--wait`` window cannot be acted on from a stale read here.
+        """
         profile_ok = tasks.c.profile_id == profile_id
         if default_profile_id == profile_id and not enforce_routing:
             profile_ok = (tasks.c.profile_id == profile_id) | tasks.c.profile_id.is_(None)
@@ -255,7 +274,7 @@ class ClaimQueryMixin:
         stmt = (
             select(tasks.c.id)
             .where(
-                _frontier_where(project_id),
+                _frontier_where(project_id, hierarchy_mode),
                 profile_ok,
                 ~exists(
                     select(literal(1)).where(
@@ -267,6 +286,22 @@ class ClaimQueryMixin:
                 ),
                 ~prepare_backoff_active,
             )
+            # The affinity preference leads the sort, and no index can
+            # satisfy it: the agent id is a runtime parameter, so PostgreSQL
+            # materialises every candidate row and top-N heapsorts them for
+            # the ``LIMIT 1``, evaluating the correlated ``NOT EXISTS`` above
+            # once per row.  That is the remaining cost of this statement
+            # (~15,100 buffers at the §15.2 scale, all of it after the
+            # ``projects`` hoist).  Stopping at the first admissible row
+            # instead needs three things that do not belong on a perf pass:
+            # dropping the affinity term from the sort key (a scheduling
+            # semantics decision), an index carrying ``priority,
+            # created_at``, and an answer for ``profile_ok``'s
+            # ``profile_id IS NULL`` widening, which turns a leading index
+            # column into an ``OR`` and loses the ordered scan again.
+            # Measured on the §15.2 fixture: with an
+            # exact ``profile_id`` and no affinity term, the same frontier
+            # returns in 0.09 ms / 3 buffers off such an index.
             .order_by(
                 case((tasks.c.affinity_agent_id == agent_id, 0), else_=1),
                 tasks.c.priority.asc(),
