@@ -527,17 +527,18 @@ async def test_new_commands_reject_session_principals_without_mutation():
 @pytest.mark.parametrize("verifier_writer", ["detached", "running", "unconfirmed", "confirmed"])
 async def test_cancel_retires_verifier_with_stop_proof(setup, operation_state, verifier_writer):
     from unittest.mock import AsyncMock
+
     from sqlalchemy import insert
 
     from src.database.tables import integration_branch_owners as owners
     from src.database.tables import (
         integration_parent_episodes,
+        sessions,
     )
     from src.database.tables import (
         integration_repair_operations as operations,
     )
     from src.database.tables import integration_repair_stages as stages
-    from src.database.tables import sessions
 
     db, service, _source, remote, _repo = setup
     await feature(setup, "parent")
@@ -711,3 +712,117 @@ async def test_later_consolidation_resolves_conflict_without_starting_repair(set
             is None
         )
     assert not [row for row in await service.rows("p") if row["state"] == "parked"]
+
+
+@pytest.mark.parametrize("proof", ["recorded", "legacy", "wrong_contract", "failed_close", "no_close"])
+async def test_delivered_rewritten_repair_unblocks_exact_source(setup, proof):
+    """A validated replacement can resolve a source without its Git ancestry."""
+    from src.database.tables import task_metadata
+
+    db, service, source, remote, _repo = setup
+    await feature(setup, "one", filename="shared", content="one")
+    original = await feature(setup, "two", filename="shared", content="two")
+    await db.create_task(Task(id="next", project_id="p", title="next", description=""))
+    await db.add_dependency("next", "two")
+    await service.sweep("p")
+    parked = next(r for r in await service.rows("p") if r["state"] == "parked")
+    identity = service._repair_identity(parked["manifest"])
+    repair = await db.get_task(identity)
+    assert repair is not None
+    if proof == "legacy":
+        async with db.immediate() as conn:
+            from sqlalchemy import delete
+            await conn.execute(delete(task_metadata).where(
+                task_metadata.c.task_id == identity,
+                task_metadata.c.key == "development_repair_sources",
+            ))
+    elif proof == "wrong_contract":
+        await db.set_task_meta(identity, "development_repair_sources", [])
+    git(source, "fetch", "origin")
+    git(source, "checkout", "-B", repair.branch_name, "origin/main")
+    (source / "shared").write_text("one and two resolved\n")
+    git(source, "add", "shared")
+    git(source, "commit", "-m", "resolve source without retaining its ancestry")
+    head = git(source, "rev-parse", "HEAD")
+    git(source, "push", "origin", repair.branch_name)
+    await db.transition_task(identity, TaskStatus.COMPLETED, context="test", force=True)
+    if proof != "no_close":
+        await db.save_task_completion(TaskCompletion(
+            id="repair-close", task_id=identity,
+            outcome="fail" if proof == "failed_close" else "pass",
+            commits=[head], completed_at=time.time(),
+        ))
+    assert (await db.get_task("next")).is_blocked, "completion alone is not delivery"
+    assert (await service.sweep("p"))["outcome"] == "delivered"
+    with pytest.raises(subprocess.CalledProcessError):
+        git(remote, "merge-base", "--is-ancestor", original, "main")
+    row = next(r for r in await service.rows("p") if r["id"] == parked["id"])
+    if proof in {"recorded", "legacy"}:
+        assert row["state"] == "adopted"
+        assert row["evidence"]["resolved_by_delivered_repair"]["completion_id"] == "repair-close"
+        assert not (await db.get_task("next")).is_blocked
+        assert (await service.sweep("p"))["outcome"] == "idle"
+        # A stale close, candidate-only publication, different source revision,
+        # or head absent from main must never establish replacement delivery.
+        history = await service.rows("p")
+        delivery = next(r for r in history if r["state"] == "delivered"
+                        and any(m["task_id"] == identity for m in r["manifest"]))
+        accepted = git(remote, "rev-parse", "main")
+        store = await service.store(_repo)
+        for invalid in (
+            {"created_at": 0},
+            {"target_ref": "refs/heads/candidate"},
+            {"state": "prepared"},
+            {"manifest": [{"task_id": identity, "source_sha": original}]},
+            {"prepared_sha": original},
+        ):
+            assert await service._delivered_repair(
+                _repo, store, accepted, parked["manifest"], [{**delivery, **invalid}],
+            ) is None, invalid
+    else:
+        assert row["state"] == "parked"
+        assert (await db.get_task("next")).is_blocked
+
+
+async def test_delivered_repair_resolves_rewritten_repair_chain(setup):
+    db, service, source, remote, _repo = setup
+    await feature(setup, "one", filename="shared", content="one")
+    await feature(setup, "two", filename="shared", content="two")
+    await db.create_task(Task(id="next", project_id="p", title="next", description=""))
+    await db.add_dependency("next", "two")
+    await service.sweep("p")
+    original = next(r for r in await service.rows("p") if r["state"] == "parked")
+
+    async def complete_repair(row, content):
+        identity = service._repair_identity(row["manifest"])
+        repair = await db.get_task(identity)
+        git(source, "fetch", "origin")
+        git(source, "checkout", "-B", repair.branch_name, "origin/main")
+        (source / "shared").write_text(content)
+        git(source, "add", "shared")
+        git(source, "commit", "-m", "rewritten repair")
+        head = git(source, "rev-parse", "HEAD")
+        git(source, "push", "origin", repair.branch_name)
+        await db.transition_task(identity, TaskStatus.COMPLETED, context="test", force=True)
+        await db.save_task_completion(TaskCompletion(
+            id=identity + "-close", task_id=identity, outcome="pass", commits=[head],
+            completed_at=time.time(),
+        ))
+        return identity
+
+    first = await complete_repair(original, "resolved one and two\n")
+    git(source, "checkout", "-B", "main", "origin/main")
+    (source / "shared").write_text("main changed concurrently\n")
+    git(source, "add", "shared")
+    git(source, "commit", "-m", "concurrent main change")
+    git(source, "push", "origin", "main")
+    await service.sweep("p")
+    nested = next(r for r in await service.rows("p") if r["state"] == "parked"
+                  and r["manifest"][0]["task_id"] == first)
+    second = await complete_repair(nested, "resolved one, two and concurrent main\n")
+    assert (await service.sweep("p"))["outcome"] == "delivered"
+    rows = {r["id"]: r for r in await service.rows("p")}
+    assert rows[nested["id"]]["evidence"]["resolved_by_delivered_repair"]["task_id"] == second
+    assert rows[original["id"]]["evidence"]["resolved_by_delivered_repair"]["task_id"] == first
+    assert not (await db.get_task("next")).is_blocked
+    assert git(remote, "show", "main:shared") == "resolved one, two and concurrent main"
