@@ -176,12 +176,59 @@ tasks = Table(
     Index("idx_tasks_project_dedup", "project_id", "dedup_key"),
     Column("created_at", Float, nullable=False),
     Column("updated_at", Float, nullable=False),
-    # Serves _check_defined_tasks, the scheduler filter, and `aq project ready`.
-    Index("idx_tasks_project_status_blocked", "project_id", "status", "is_blocked"),
+    # The §10 pool work query's three access paths.  All three carry
+    # ``priority, created_at`` as their trailing key columns so
+    # ``select_ready_for_profile``'s ``ORDER BY priority, created_at LIMIT 1``
+    # is an index-ordered scan that stops at the first admissible row, rather
+    # than a materialise-and-sort of the whole frontier: the correlated
+    # predicates in ``_frontier_where`` are then evaluated once instead of
+    # once per frontier row (2,500 rows -> 10 shared buffers at the §15.2
+    # scale).  Spec:
+    # ``docs/superpowers/specs/2026-09-09-claim-frontier-ordered-scan-design.md``.
+    #
+    # ``..._by_profile`` serves the narrow ``profile_id = :p`` predicate; the
+    # profile-free ``idx_tasks_claim_frontier`` serves the widened
+    # ``profile_id = :p OR profile_id IS NULL`` one, where the ``OR`` makes a
+    # leading index column unusable and PostgreSQL cannot produce sorted
+    # output from a middle-column ``= ANY (...)`` either (measured on
+    # PostgreSQL 18, both with and without ``coalesce``).  Each is a strict
+    # superset of an index it replaced -- ``idx_tasks_project_status_blocked``
+    # and ``idx_tasks_ready_by_profile`` respectively -- and serves that
+    # index's users (``_check_defined_tasks``, the scheduler filter,
+    # ``aq project ready``) on its leading columns.
+    Index(
+        "idx_tasks_claim_frontier",
+        "project_id",
+        "status",
+        "is_blocked",
+        "priority",
+        "created_at",
+    ),
+    Index(
+        "idx_tasks_claim_frontier_by_profile",
+        "project_id",
+        "profile_id",
+        "status",
+        "is_blocked",
+        "priority",
+        "created_at",
+    ),
+    # The affinity probe.  Partial because affinity is the exception: the
+    # index holds only the pinned tasks, so the probe that runs on every claim
+    # costs two buffers when (as usual) nothing is pinned to the claiming
+    # agent.
+    Index(
+        "idx_tasks_claim_frontier_by_affinity",
+        "affinity_agent_id",
+        "project_id",
+        "status",
+        "is_blocked",
+        "priority",
+        "created_at",
+        postgresql_where=text("affinity_agent_id IS NOT NULL"),
+    ),
     # Group progress and tree queries walk parent_task_id.
     Index("idx_tasks_parent", "parent_task_id"),
-    # Pool work query (swarm-work-model §10): ready tasks for a profile.
-    Index("idx_tasks_ready_by_profile", "project_id", "profile_id", "status", "is_blocked"),
     # Status-only lists (``list_tasks(status=...)`` in the monitoring cycle,
     # ``aq task list --status``) had no index leading with status and
     # seq-scanned ``tasks`` as completed history grew.

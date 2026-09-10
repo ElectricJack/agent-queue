@@ -366,9 +366,18 @@ branch-busy handling already exists. Graph-creator and formula nodes are
 `is_plan_subtask = 0` with their own branches and are pullable. Branch-per-child
 integration for plans remains the follow-up worktree-execution §4.4 named.
 
-Ordering: `CASE WHEN affinity_agent_id = :agent THEN 0 ELSE 1 END ASC, priority ASC,
-created_at ASC` (a bare boolean `DESC` sorts `NULL` affinity first on Postgres).
-Affinity is a preference under pull, not a hold; the 120 s affinity wait remains push-only.
+Ordering: affinity first, then `priority ASC, created_at ASC`. Affinity is a preference
+under pull, not a hold; the 120 s affinity wait remains push-only.
+
+Since 2026-09-09 that preference is *two statements* rather than a
+`CASE WHEN affinity_agent_id = :agent THEN 0 ELSE 1 END` leading the `ORDER BY` — the
+frontier restricted to tasks pinned to this agent, and then, only if that found nothing, the
+frontier at large. The agent id is a runtime parameter, so no index can supply the `CASE`'s
+order and a `LIMIT 1` had to read and sort the entire frontier (~10,100 shared buffers at
+the §15.2 scale). Ordering by `priority, created_at` alone comes from an index, so each half
+stops at the first admissible row. The split preserves the old ordering exactly, including
+the way `SKIP LOCKED` falls through from a held pinned row into unpinned work. See
+`docs/superpowers/specs/2026-09-09-claim-frontier-ordered-scan-design.md`.
 
 **The claim transaction — one transaction, holder included.** Everything that records
 *who holds what* commits together; the only thing outside is the git reset.
@@ -970,8 +979,15 @@ regenerate from it. `*` = new. Response models: add `src/api/models/task.py` ent
    statement-counting engine fixture asserting a fixed count per step.
 2. **Hot paths are one transaction, index-backed.** Claim, `set_parent`, container
    auto-complete, `is_blocked` recompute. Every predicate has a covering index
-   (`idx_tasks_project_status_blocked`, `idx_tasks_parent`, `uq_task_deps_single_parent`,
-   `idx_tasks_ready_by_profile`, `idx_task_deps_task_type`, `idx_task_deps_depson_type`).
+   (`idx_tasks_claim_frontier`, `idx_tasks_parent`, `uq_task_deps_single_parent`,
+   `idx_tasks_claim_frontier_by_profile`, `idx_task_deps_task_type`,
+   `idx_task_deps_depson_type`). The three `idx_tasks_claim_frontier*` indexes carry
+   `priority, created_at` as trailing key columns so the §10 work query's `ORDER BY … LIMIT
+   1` is an index-ordered scan that stops at the first admissible row rather than a
+   materialise-and-sort of the whole frontier — they replaced
+   `idx_tasks_project_status_blocked` and `idx_tasks_ready_by_profile`, of which they are
+   leading-column supersets. See
+   `docs/superpowers/specs/2026-09-09-claim-frontier-ordered-scan-design.md`.
 3. **Postgres semantics first, SQLite parity second.** `SKIP LOCKED`, `RETURNING`,
    partial indexes; SQLite gets `BEGIN IMMEDIATE` plus the select-and-CAS equivalent —
    the same transaction count and the same guarantees, with its own (exact, asserted)
