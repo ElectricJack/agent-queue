@@ -23,11 +23,14 @@ import tempfile
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from .platform import PlatformFacts
 from .redaction import assert_secret_free, redact
 from .results import ResourceRecord, StepResult, StepState
+
+if TYPE_CHECKING:  # pragma: no cover - import cycle: lifecycle reads this module
+    from .lifecycle import UpgradeRecord
 
 #: Bumped when the on-disk record changes shape.  A record written by a newer
 #: schema is never rewritten in place.
@@ -121,6 +124,11 @@ class InstallState:
     capabilities: list[str] = field(default_factory=list)
     steps: dict[str, StepRecord] = field(default_factory=dict)
     resources: dict[tuple[str, str], ResourceRecord] = field(default_factory=dict)
+    #: The version transition this record is in the middle of, if any.  It is
+    #: written *before* the first step of an upgrade runs and marked complete
+    #: only when the run reaches ``ready``, so an installer that is killed
+    #: halfway leaves an ``in_progress`` record the next run can resume from.
+    upgrade: UpgradeRecord | None = None
     created_at: str | None = None
     updated_at: str | None = None
 
@@ -178,6 +186,7 @@ class InstallState:
             "capabilities": list(self.capabilities),
             "steps": [record.to_dict() for record in self.steps.values()],
             "resources": [record.to_dict() for record in self.resources.values()],
+            "upgrade": self.upgrade.to_dict() if self.upgrade is not None else None,
             "created_at": self.created_at,
             "updated_at": self.updated_at,
         }
@@ -205,6 +214,11 @@ class InstallState:
         for row in payload.get("resources") or []:
             resource = ResourceRecord.from_dict(row)
             state.resources[resource.key] = resource
+        upgrade = payload.get("upgrade")
+        if isinstance(upgrade, Mapping):
+            from .lifecycle import UpgradeRecord
+
+            state.upgrade = UpgradeRecord.from_dict(upgrade)
         return state
 
 

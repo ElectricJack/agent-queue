@@ -32,7 +32,8 @@ formulas.py        `aq formula show` / `aq formula cook`
 global_options.py  Copies --json / --brief / --api-url onto commands so they parse anywhere
 integration.py     `aq integration` — hierarchical integration trains
 install.py         `aq install` — the daemon-free installer: builds the step registry,
-                   runs src/install's engine in-process, maps outcomes to exit codes
+                   runs src/install's engine in-process, maps outcomes to exit codes;
+                   `--repair` / `--upgrade` reconcile an existing installation
 inventory.py       Reproducible CLI command inventory and ownership classification
 logs.py            `aq logs` — tail/filter JSONL log file directly (no daemon needed)
 menus.py           Interactive prompts (task wizard, fuzzy select, confirm)
@@ -48,6 +49,8 @@ system_config.py   `aq system config` — YAML config editing
 tasks.py           Hand-crafted `aq task` commands needing interactive features
                    (create wizard, select, close, claim, comment)
 test_runner.py     `aq test` — pytest behind the box-wide test semaphore
+uninstall.py       `aq uninstall` — plans and removes installer-owned resources from the
+                   resume record; destructive scopes are opt-in and confirmed one by one
 vault.py           `aq vault {migrate,reset-harness}`
 ```
 
