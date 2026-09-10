@@ -31,7 +31,7 @@ vault watcher; no restart, no release.
     "supports_fork": true
   },
   "ready_delay_ms": 2000,
-  "ready_prompt_prefix": "\u276f ",
+  "ready_prompt_prefix": "❯ ",
   "process_names": [
     "claude",
     "node"
@@ -52,11 +52,26 @@ vault watcher; no restart, no release.
   "dialogs": [
     {
       "name": "trust-folder",
-      "pattern": "Do you trust the files in this folder|Is this a project you created or one you trust",
+      "pattern": "(?s)(?:Do you trust the files in this folder|Is this a project you created or one you trust).*?❯[ \\t]*No, exit",
+      "is_regex": true,
+      "keys": [
+        "Down",
+        "Enter"
+      ]
+    },
+    {
+      "name": "trust-folder-yes-selected",
+      "pattern": "(?s)(?:Do you trust the files in this folder|Is this a project you created or one you trust).*?❯[ \\t]*Yes, (?:proceed|I trust this folder)",
       "is_regex": true,
       "keys": [
         "Enter"
       ]
+    },
+    {
+      "name": "trust-folder-unrecognized",
+      "pattern": "(?:Do you trust the files in this folder|Is this a project you created or one you trust)",
+      "is_regex": true,
+      "keys": []
     },
     {
       "name": "theme",
