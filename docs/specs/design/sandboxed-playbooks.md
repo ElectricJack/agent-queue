@@ -1,5 +1,13 @@
 # Sandboxed Playbooks & Tasks — Capability Scoping
 
+<!-- aq:historical -->
+> **Design record — not current documentation.** A spec states the behaviour
+> intended when it was approved; it is written before the code and is not
+> revised to track it. Where this page and the code disagree, the code is right.
+> Start at [the documentation home](../../README.md) for what AQ does today, and
+> see [historical material](../../history/README.md) for how this material is
+> organised.
+
 > **Status:** v1 implemented on `feature/sandboxed-playbooks`.
 
 ## Threat model

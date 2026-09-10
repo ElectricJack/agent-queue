@@ -1,5 +1,11 @@
 # Proactive Codebase Inspector
 
+<!-- aq:historical -->
+> **Historical sample.** Illustrative content that nothing installs or loads. It
+> was written for an earlier runtime, so copying it will not reproduce the
+> behaviour it describes. Start at [the documentation home](../README.md); see
+> [historical material](../history/README.md).
+
 ## Intent
 Periodically inspect random sections of the project's source code, documentation,
 specs, tests, and configuration to identify potential improvements, issues, or risks

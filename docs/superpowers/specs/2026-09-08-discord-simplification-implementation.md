@@ -8,6 +8,12 @@ tags: [discord, messaging, supervisor, escalation, digest]
 
 # Discord simplification implementation spec
 
+<!-- aq:historical -->
+> **Historical design record.** This spec describes one feature as it was
+> designed, not as the code stands today. Start at [the documentation
+> home](../../README.md) for current behaviour; see [historical
+> material](../../history/README.md).
+
 ## 1. Decisions and scope
 
 Approved product behavior:

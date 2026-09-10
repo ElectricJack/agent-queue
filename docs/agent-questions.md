@@ -1,5 +1,10 @@
 # Questions from live agents
 
+> **Where this fits.** Question detection is one of the three lanes described in
+> [Messaging, digests and escalations](concepts/messaging.md); read that page
+> first for the vocabulary (message, escalation, supervisor). This page is the
+> detail of how a question is *noticed* in a live transcript and who it goes to.
+
 AQ watches native Codex and Claude transcripts for completed assistant turns
 that ask for input while a worker holds an active task. It records the question
 against the exact task claim and session instance. Named supervisor sessions and

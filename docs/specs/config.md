@@ -4,6 +4,14 @@ tags: [spec, config]
 
 # Config Module Specification
 
+<!-- aq:historical -->
+> **Design record — not current documentation.** A spec states the behaviour
+> intended when it was approved; it is written before the code and is not
+> revised to track it. Where this page and the code disagree, the code is right.
+> Start at [the documentation home](../README.md) for what AQ does today, and
+> see [historical material](../history/README.md) for how this material is
+> organised.
+
 ## 1. Overview
 
 The config module is responsible for loading, parsing, and structuring the application's runtime configuration. It reads a single YAML file from a caller-supplied path, loads an optional `.env` file from the same directory, performs environment variable substitution on all string values, and returns a fully populated `AppConfig` dataclass instance.
@@ -12,7 +20,7 @@ The module never writes configuration, never searches for the config file itself
 
 ## Source Files
 - `src/config.py` — read path: `load_config(path)` returns an `AppConfig`
-- `src/config_editor.py` — runtime write path (see [Runtime Editing](#runtime-editing))
+- `src/config_editor.py` — runtime write path (see [Runtime Editing](#7-runtime-editing))
 
 ---
 

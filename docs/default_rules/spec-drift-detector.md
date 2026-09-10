@@ -1,5 +1,11 @@
 # Spec Drift Detector
 
+<!-- aq:historical -->
+> **Historical sample.** Illustrative content that nothing installs or loads. It
+> was written for an earlier runtime, so copying it will not reproduce the
+> behaviour it describes. Start at [the documentation home](../README.md); see
+> [historical material](../history/README.md).
+
 ## Intent
 Detect when code changes diverge from specifications, keeping documentation
 and implementation in sync.

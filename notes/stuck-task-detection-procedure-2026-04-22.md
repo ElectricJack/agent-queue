@@ -1,5 +1,11 @@
 # Stuck-Task Detection — Procedure Using Existing Tools
 
+<!-- aq:historical -->
+> **Historical working note.** Dated scratch material, kept for the record and
+> never revised. Not instructions. Start at [the documentation
+> home](../docs/README.md); see [historical
+> material](../docs/history/README.md).
+
 **Task:** `vivid-cascade` — Investigate missing `system_monitor.get_stuck_tasks`
 tool and identify stuck tasks
 **Date:** 2026-04-22

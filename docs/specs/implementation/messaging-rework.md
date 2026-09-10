@@ -4,9 +4,17 @@ tags: [implementation, messaging, discord, dashboard, api, overhaul]
 
 # Messaging Rework — Implementation Plan
 
-**Status:** Superseded for Discord by [[../messaging/discord]] and the [Discord replacement checklist](../../guides/discord-replacement-checklist.md). The retained implementation history below must not be used to restore task threads, streaming, chat, buttons, or mirrored commands.
-**Design:** [[../design/messaging-rework]]
-**Related:** [[../design/session-runtime]] (event producers, transcripts), [[../design/supervisor-agent]] (messages, chat relay), [[../design/work-graph]] (gates, event log, `after_seq`), [[../design/aq-surface]] (command surface), [[../messaging/base]], `dashboard/CLAUDE.md`
+<!-- aq:historical -->
+> **Design record — not current documentation.** A spec states the behaviour
+> intended when it was approved; it is written before the code and is not
+> revised to track it. Where this page and the code disagree, the code is right.
+> Start at [the documentation home](../../README.md) for what AQ does today, and
+> see [historical material](../../history/README.md) for how this material is
+> organised.
+
+**Status:** Superseded for Discord by [../messaging/discord](../messaging/discord.md) and the [Discord replacement checklist](../../guides/discord-replacement-checklist.md). The retained implementation history below must not be used to restore task threads, streaming, chat, buttons, or mirrored commands.
+**Design:** [../design/messaging-rework](../design/messaging-rework.md)
+**Related:** [../design/session-runtime](../design/session-runtime.md) (event producers, transcripts), [../design/supervisor-agent](../design/supervisor-agent.md) (messages, chat relay), [../design/work-graph](../design/work-graph.md) (gates, event log, `after_seq`), [../design/aq-surface](../design/aq-surface.md) (command surface), [../messaging/base](../messaging/base.md), `dashboard/CLAUDE.md`
 
 ---
 
@@ -21,11 +29,11 @@ Hard prerequisites from other workstreams (tracked in their specs, gated in the 
 
 | Prerequisite | Owner | Needed by |
 |---|---|---|
-| Durable event log with `seq` + `GET /api/ws?after_seq=` replay (today: `/ws/events` in `src/api/app.py:91`, no seq, `notify.*` only) | [[../design/work-graph]] | M2 |
-| `gates` table, `gate_list` / `gate_resolve` commands, `gate.*` events | [[../design/work-graph]] | M3 |
-| Session lifecycle + transcript-streaming events (`session.started/.exited`, streamed output — names per [[../design/session-runtime]], fields per design §5) | [[../design/session-runtime]] | M3 |
-| `messages` table, `message_send`, `session_message_send` relay, `message.*` events | [[../design/supervisor-agent]] | M3 |
-| `session_list/peek/attach_command/nudge/logs` commands | [[../design/session-runtime]] / [[../design/aq-surface]] | M3, D1 |
+| Durable event log with `seq` + `GET /api/ws?after_seq=` replay (today: `/ws/events` in `src/api/app.py:91`, no seq, `notify.*` only) | [../design/work-graph](../design/work-graph.md) | M2 |
+| `gates` table, `gate_list` / `gate_resolve` commands, `gate.*` events | [../design/work-graph](../design/work-graph.md) | M3 |
+| Session lifecycle + transcript-streaming events (`session.started/.exited`, streamed output — names per [../design/session-runtime](../design/session-runtime.md), fields per design §5) | [../design/session-runtime](../design/session-runtime.md) | M3 |
+| `messages` table, `message_send`, `session_message_send` relay, `message.*` events | [../design/supervisor-agent](../design/supervisor-agent.md) | M3 |
+| `session_list/peek/attach_command/nudge/logs` commands | [../design/session-runtime](../design/session-runtime.md) / [../design/aq-surface](../design/aq-surface.md) | M3, D1 |
 
 Until a prerequisite lands, the interim in-process bot (M0) keeps the old wiring for that
 feature.
@@ -130,7 +138,7 @@ Ruff line-length 100, py312, fully async — same toolchain as the daemon.
   (`?token=` query param fallback for WS). `/health`, `/ready` stay open.
 - Token generation surfaced via `aq doctor` / setup; shared config key consumed by
   `aq-discord`, the dashboard dev proxy, and agent sessions (`AQ_API_TOKEN`,
-  [[../design/aq-surface]]).
+  [../design/aq-surface](../design/aq-surface.md)).
 
 ### 3.2 Messaging port and factory (interim period)
 
@@ -210,7 +218,7 @@ discord:
 
 | Key | Fate relative to this plan |
 |---|---|
-| `messaging_platform` | Removed. There is one transport port and one adapter ([[../messaging/base]]). |
+| `messaging_platform` | Removed. There is one transport port and one adapter ([../messaging/base](../messaging/base.md)). |
 | `discord.channels`, `discord.per_project_channels` | Removed. Old YAML is still *read* as migration input (`legacy_destination_names`, `legacy_inventory_names`) so the cutover pass can resolve a name to an ID, and is otherwise ignored with a startup warning. |
 | `discord.channel_id` | New, required. Empty means "not configured"; a name (rather than a snowflake) is refused at save time. |
 | `discord.authorized_users` | Kept unchanged — the migration preserves the list verbatim. |
@@ -262,8 +270,8 @@ rate_guard: {warn: 1000, critical: 5000, halt: 8000}
 | `src/discord/bot.py` (2400) | Channel routing, `_create_task_thread` (1295), `_handle_task_thread_message` (1492), `on_message` routing (1764) → ported into `aq_discord/bot.py`/`threads.py`/`chat.py`; notes/summarization/history deleted; **file deleted at M4** |
 | `src/discord/embeds.py` (749) / `notifications.py` (2068) | Formatters for kept features → `aq_discord/render.py`; the rest deleted at M4 |
 | `src/discord/adapter.py` (126) | Deleted at M4 (interim it remains the in-process `MessagingAdapter`) |
-| `src/messaging/` (base 131, port 249, factory 58, types 48) | **Stays**; factory loses telegram at M0, gains `none`; `MessagingPort.set_supervisor` removed with the Supervisor unwiring ([[../design/supervisor-agent]]) |
-| `src/notifications/events.py` (489) | Task/gate/session event models evolve under [[../design/session-runtime]] / [[../design/work-graph]]; playbook events pause; `TaskThreadOpen/Close` and `TaskMessageEvent.stream_id` plumbing retire when the interim bot does |
+| `src/messaging/` (base 131, port 249, factory 58, types 48) | **Stays**; factory loses telegram at M0, gains `none`; `MessagingPort.set_supervisor` removed with the Supervisor unwiring ([../design/supervisor-agent](../design/supervisor-agent.md)) |
+| `src/notifications/events.py` (489) | Task/gate/session event models evolve under [../design/session-runtime](../design/session-runtime.md) / [../design/work-graph](../design/work-graph.md); playbook events pause; `TaskThreadOpen/Close` and `TaskMessageEvent.stream_id` plumbing retire when the interim bot does |
 
 **Interim compatibility period (M0 → M4):** the stripped in-process bot and `aq-discord`
 are mutually exclusive — the daemon refuses to start the in-process adapter when
@@ -289,7 +297,7 @@ channel set**, never the same channels, to avoid duplicate posting.
 
 **M1 — Daemon prerequisites**
 - [ ] `api.auth_tokens` + bearer middleware (REST + WS handshake); `aq doctor` token check.
-- [ ] Event log + `/api/ws?after_seq=` replay landed ([[../design/work-graph]]); payload-registry test covers every event in design §5.
+- [ ] Event log + `/api/ws?after_seq=` replay landed ([../design/work-graph](../design/work-graph.md)); payload-registry test covers every event in design §5.
 - [ ] `gate_*`, `message_send`, `session_message_send`, `session_*` commands landed (owning workstreams) with response models registered.
 
 **M2 — Scaffold `packages/aq-discord/`**
@@ -381,7 +389,7 @@ Rollback at any point before M4 = stop `aq-discord`, set `messaging_platform: "d
 | Duplicate posting during dual-run | Separate guild/channels enforced by config check; daemon refuses in-process adapter when platform is `"none"` |
 | Catch-up storm after long bot outage re-triggers rate limits | Collapse rules + `max_age_s` + rate guard sheds non-critical renders; snapshot resync instead of replay when gap is large |
 | Event contract drift between daemon and bot | Payload-registry contract test in daemon CI; bot pins minimum daemon version via `/api/health` schema field |
-| Service token leakage (full-trust token in bot config) | File perms check in `aq doctor`; env-var override (`AQ_API_TOKEN`); scoped tokens are follow-up work with [[../design/aq-surface]] |
+| Service token leakage (full-trust token in bot config) | File perms check in `aq doctor`; env-var override (`AQ_API_TOKEN`); scoped tokens are follow-up work with [../design/aq-surface](../design/aq-surface.md) |
 | Thread registry divergence (manual thread deletion/rename) | Name-prefix rebuild + orphan sweep on boot; unknown threads ignored |
 | Losing "reopen on thread reply" ergonomics (old terminal-status path) | Covered by gates/messages: terminal-task replies produce a `message_send` the supervisor can act on; explicit reopen remains dashboard/`aq` |
 | WS backpressure on slow bot | Bot-side coalescing; server-side per-client queue already drops oldest (`src/api/websocket.py:56-66` pattern carried into the work-graph WS) |

@@ -7,6 +7,12 @@ scope: system
 
 # Codebase Inspector
 
+<!-- aq:historical -->
+> **Historical sample.** Illustrative content that nothing installs or loads. It
+> was written for an earlier runtime, so copying it will not reproduce the
+> behaviour it describes. Start at [the documentation home](../README.md); see
+> [historical material](../history/README.md).
+
 Inspect a random section of the codebase for quality issues,
 security risks, and documentation gaps. Follow weighted selection:
 source (40%), specs (20%), tests (15%), config (10%), recent

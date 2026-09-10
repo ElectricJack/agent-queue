@@ -4,9 +4,17 @@ tags: [implementation, workspaces, worktrees, git, merge-slot, alembic]
 
 # Worktree Execution — Implementation Spec
 
+<!-- aq:historical -->
+> **Design record — not current documentation.** A spec states the behaviour
+> intended when it was approved; it is written before the code and is not
+> revised to track it. Where this page and the code disagree, the code is right.
+> Start at [the documentation home](../../README.md) for what AQ does today, and
+> see [historical material](../../history/README.md) for how this material is
+> organised.
+
 **Status:** Draft — approved direction (2026-08-19)
-**Design:** [[design/worktree-execution]] (model, lifecycle, merge slot, reaping)
-**Related:** [[design/workspaces-v2]], `docs/analysis/framework-overhaul-todo.md` (Workstream W), session-runtime spec, work-graph spec, aq-surface spec
+**Design:** [design/worktree-execution](../design/worktree-execution.md) (model, lifecycle, merge slot, reaping)
+**Related:** [design/workspaces-v2](../design/workspaces-v2.md), `docs/analysis/framework-overhaul-todo.md` (Workstream W), session-runtime spec, work-graph spec, aq-surface spec
 
 ---
 

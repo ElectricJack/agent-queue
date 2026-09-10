@@ -4,12 +4,20 @@ tags: [spec, tools, context-management]
 
 # Tiered Tool System
 
+<!-- aq:historical -->
+> **Design record — not current documentation.** A spec states the behaviour
+> intended when it was approved; it is written before the code and is not
+> revised to track it. Where this page and the code disagree, the code is right.
+> Start at [the documentation home](../README.md) for what AQ does today, and
+> see [historical material](../history/README.md) for how this material is
+> organised.
+
 ## Purpose
 
 Reduce the LLM's per-interaction context by presenting only ~11 core tools by default.
 All other tools are organized into 6 named categories that can be loaded on demand.
 This affects only which tool **definitions** the LLM sees -- the execution path through
-[[specs/command-handler|CommandHandler]] is unchanged.
+[CommandHandler](command-handler.md) is unchanged.
 
 ## Concepts
 
@@ -89,8 +97,8 @@ The tool schemas themselves are NOT in this response -- they are injected into t
 ## Source Files
 
 - `src/tool_registry.py` -- ToolRegistry class, category metadata, all tool definitions
-- `src/chat_agent.py` -- chat() uses mutable tool set; TOOLS is backward-compat alias (see [[specs/supervisor]])
-- `src/command_handler.py` -- browse_tools, load_tools, send_message, rule stubs (see [[specs/command-handler]])
+- `src/chat_agent.py` -- chat() uses mutable tool set; TOOLS is backward-compat alias (see [specs/supervisor](supervisor.md))
+- `src/command_handler.py` -- browse_tools, load_tools, send_message, rule stubs (see [specs/command-handler](command-handler.md))
 
 ## Core Tool List
 

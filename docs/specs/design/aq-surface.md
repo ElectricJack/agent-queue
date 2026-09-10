@@ -4,9 +4,17 @@ tags: [design, cli, mcp, api, auth, prime, surface]
 
 # `aq` Surface — CLI-First Interface for Agents and Humans
 
+<!-- aq:historical -->
+> **Design record — not current documentation.** A spec states the behaviour
+> intended when it was approved; it is written before the code and is not
+> revised to track it. Where this page and the code disagree, the code is right.
+> Start at [the documentation home](../../README.md) for what AQ does today, and
+> see [historical material](../../history/README.md) for how this material is
+> organised.
+
 **Status:** Draft — approved direction (2026-08-19)
-**Principles:** [[guiding-design-principles]] (#2 visible and editable, #7 events not coupling, #9 simple interfaces, #10 fewer moving parts)
-**Related:** [[session-runtime]], [[supervisor-agent]], [[work-graph]], [[feature-pauses]], [[trust-and-ops]], [[workspaces-v2]], [[../analysis/framework-overhaul-todo]] (§5 Workstream C, §2 A.4, §7 Workstream E, §10 G.2)
+**Principles:** [guiding-design-principles](guiding-design-principles.md) (#2 visible and editable, #7 events not coupling, #9 simple interfaces, #10 fewer moving parts)
+**Related:** [session-runtime](session-runtime.md), [supervisor-agent](supervisor-agent.md), [work-graph](work-graph.md), [feature-pauses](feature-pauses.md), [trust-and-ops](trust-and-ops.md), [workspaces-v2](workspaces-v2.md), [../analysis/framework-overhaul-todo](../../analysis/framework-overhaul-todo.md) (§5 Workstream C, §2 A.4, §7 Workstream E, §10 G.2)
 
 ---
 
@@ -15,9 +23,9 @@ tags: [design, cli, mcp, api, auth, prime, surface]
 Agents today reach agent-queue through an auto-generated MCP registry of ~150 tools
 (`src/mcp_registration.py` exposes every `CommandHandler` command). Every task session pays
 for those tool schemas in its context window before doing any work. The overhaul analysis
-([[../analysis/framework-overhaul-todo]] §10 G.2, drawing on the Beads comparison) measured
+([../analysis/framework-overhaul-todo](../../analysis/framework-overhaul-todo.md) §10 G.2, drawing on the Beads comparison) measured
 full MCP tool schemas at **10–50k tokens per session versus 1–2k tokens for an equivalent
-CLI + hooks surface**. With the move to interactive CLI sessions ([[session-runtime]], D1/D6),
+CLI + hooks surface**. With the move to interactive CLI sessions ([session-runtime](session-runtime.md), D1/D6),
 the daemon no longer sits inside the agent's process — the natural, harness-agnostic way for
 any agent (Claude, Codex, Gemini, opencode, …) to act on the system is to shell out to a
 binary that already exists on `PATH`.
@@ -44,7 +52,7 @@ top of it:
 | MCP (trusted scope) | human-side MCP clients (Claude Code on the operator's machine, IDEs) | streamable-http `/mcp` | Full registry minus exclusions — unchanged behavior. |
 | MCP (task scope) | task sessions that prefer native tools over shelling out | streamable-http `/mcp-task` | ~9-tool allowlist; profiles may widen. |
 
-Agents inside sessions receive two environment variables from [[session-runtime]]:
+Agents inside sessions receive two environment variables from [session-runtime](session-runtime.md):
 `AQ_API_URL` (daemon base URL) and `AQ_API_TOKEN` (per-session bearer token, §7). The `aq`
 binary reads both automatically; no per-command flags are needed inside a session. Humans on
 the daemon host use `aq` unauthenticated exactly as today.
@@ -74,7 +82,7 @@ same data as Rich tables/panels.
 | `aq message send` | `<recipient> <body> [--task <id>]` | A/H | `{message_id}` |
 | `aq message inbox` | `[--unread]` | A/H | list of messages |
 | `aq message reply` | `<message_id> <body>` | A/H | `{message_id}` |
-| `aq memory save` | `<content> [--scope]` | A | paused: `{paused: true}` per [[feature-pauses]] (§9.3) |
+| `aq memory save` | `<content> [--scope]` | A | paused: `{paused: true}` per [feature-pauses](feature-pauses.md) (§9.3) |
 | `aq memory search` | `<query> [--scope]` | A | paused: `{paused: true, results: []}` |
 | `aq session drain-ack` | — | A | `{acknowledged: true}` — session may now be reaped |
 
@@ -95,16 +103,16 @@ same data as Rich tables/panels.
 | `aq session logs` | `<session_id> [-f]` | H | transcript entries (follow via SSE) |
 | `aq session kill` | `<session_id> [-y]` | H | `{killed: true}` |
 | `aq task list` | `[--project] [--status] [--label] [--brief]` | A/H | list of tasks |
-| `aq task explain` | `<task_id>` | H | blocker analysis per [[work-graph]] |
+| `aq task explain` | `<task_id>` | H | blocker analysis per [work-graph](work-graph.md) |
 | `aq task graph` | `[--project] [--format ascii\|dot\|json]` | H | dependency graph |
 | `aq project ready` | `[<project_id>]` | H | ready tasks + not-ready reasons |
 | `aq gate list` | `[--project] [--pending]` | H | list of gates |
 | `aq gate resolve` | `<gate_id> [--approve\|--reject] [--note]` | H | `{gate_id, resolution}` |
-| `aq workspace list` | `[--project]` | H | workspaces + worktree slots ([[workspaces-v2]]) |
+| `aq workspace list` | `[--project]` | H | workspaces + worktree slots ([workspaces-v2](workspaces-v2.md)) |
 | `aq workspace doctor` | `[--fix]` | H | orphan/stale findings |
 | `aq workspace reap` | `[--project] [-y]` | H | reaped slots/branches |
 | `aq doctor` | `[--fix]` | H | system health findings (G.1) |
-| `aq chat` | `<project>` | H | interactive REPL to the project supervisor session ([[supervisor-agent]]) |
+| `aq chat` | `<project>` | H | interactive REPL to the project supervisor session ([supervisor-agent](supervisor-agent.md)) |
 | `aq schema` | — | A/H | enum catalog (§4.3) |
 
 ### 3.3 Preserved existing commands
@@ -262,7 +270,7 @@ lifecycle values (`task`, `named`), outcome enums (`outcome`, `failure_class`,
 `work_outcome`), and session states. Backed by a `get_schema` command (so REST and MCP get
 it too); the CLI and command handler render the same pure code-owned catalog, so `aq schema`
 needs neither the daemon nor a database. The enum values themselves are owned by
-[[work-graph]] and [[session-runtime]] — `aq schema` is a projection with its own
+[work-graph](work-graph.md) and [session-runtime](session-runtime.md) — `aq schema` is a projection with its own
 `schema_version`.
 
 ---
@@ -276,7 +284,7 @@ consumers:
 
 1. **`aq prime`** — the CLI command, run by the agent (bootstrap instruction) or by the
    `SessionStart` hook; fetches the rendered document from the daemon.
-2. **The prompt-file writer** — [[session-runtime]] calls the same renderer at session start
+2. **The prompt-file writer** — [session-runtime](session-runtime.md) calls the same renderer at session start
    to write `<work_dir>/.aq/prompt.md` before the harness launches.
 
 `src/prime/` is chosen over `src/context/` because: (a) "prime" is the domain term across
@@ -300,7 +308,7 @@ LLM calls and no writes.
 | 4 | Task context | `task_context` rows incl. `spec_ref` sections + attachments | spec sections are inlined, not linked |
 | 5 | Workspaces block | task work-state + attachments | `work_dir`, `branch`, other attached kinds |
 | 6 | Pending messages + handoff note | `messages` table, latest `task_context(type=handoff)` | unread first; handoff verbatim |
-| 7 | *(slot)* L1 facts | — | **skipped while memory is paused** ([[feature-pauses]]) |
+| 7 | *(slot)* L1 facts | — | **skipped while memory is paused** ([feature-pauses](feature-pauses.md)) |
 | 8 | *(slot)* L2 topic context | — | skipped while memory is paused |
 | 9 | Tool guidance | static template | CLI-first: "use `aq …`"; one line noting the minimal MCP set exists |
 | 10 | Completion protocol | static template | "When done: `aq task close <id> --outcome … && aq session drain-ack`" |
@@ -313,7 +321,7 @@ Sections 1–2 render exactly the *prime-visible* profile headings —
 else; `## Config`, `## Tools`, `## MCP Servers` and `## Reflection` stay
 machine-only. Prime is the only channel a session-launched agent has for its
 Rules, since the DB `system_prompt_suffix` is read only by the legacy adapter
-path. See [[profiles]] §2 "Which headings reach the agent".
+path. See [profiles](profiles.md) §2 "Which headings reach the agent".
 
 ### 5.3 Per-project override: `.aq/PRIME.md`
 
@@ -339,13 +347,13 @@ edits a markdown file, not Python.
   requested, the body is suppressed (empty `additionalContext`) — the bootstrap argv prompt
   already pointed the agent at `.aq/prompt.md`, and double delivery would waste the exact
   tokens this design saves. Post-compaction `SessionStart` events do deliver the body:
-  [[session-runtime]] clears the variable's effect by design there (compaction is precisely
+  [session-runtime](session-runtime.md) clears the variable's effect by design there (compaction is precisely
   when re-priming pays for itself).
 
 ### 5.5 Hook file templates
 
 This spec owns the **contents** of the per-harness hook files; installation timing and the
-`--settings` merge mechanics belong to [[session-runtime]]. Canonical Claude template
+`--settings` merge mechanics belong to [session-runtime](session-runtime.md). Canonical Claude template
 (merged, never overwritten, into the session's settings):
 
 ```json
@@ -375,13 +383,13 @@ state survives compaction and session recycling while memory is paused (Workstre
   lesson: restarting on every compaction loops forever.
 - Non-auto: note **plus** a restart request (`session.restart_requested` event). Restart
   mechanics — whether to recycle now, with what `wake_mode` — are owned by
-  [[session-runtime]]; this command only records intent.
+  [session-runtime](session-runtime.md); this command only records intent.
 
 ### 6.2 `aq inbox --inject`
 
 The `UserPromptSubmit` hook body. Prints pending messages for this session's task/recipient,
 formatted as a plain-text injection block; marks them delivered; honors the
-`archive_after_inject` message policy (owned by [[supervisor-agent]]). Hard budget of
+`archive_after_inject` message policy (owned by [supervisor-agent](supervisor-agent.md)). Hard budget of
 **15 seconds** and **always exit 0** — a broken daemon must never block the human's prompt
 from reaching the agent. On any failure it prints nothing and exits 0.
 
@@ -391,10 +399,10 @@ from reaching the agent. On any failure it prints nothing and exits 0.
 
 ### 7.1 Mechanics (owned here)
 
-- **Mint at session start:** [[session-runtime]] asks the token store for a token bound to
+- **Mint at session start:** [session-runtime](session-runtime.md) asks the token store for a token bound to
   `(session_id, task_id, project_id)`; the plaintext (`aqs_<random>`) is returned once and
   injected as `AQ_API_TOKEN` (env injection owned by session-runtime; scrubbing rules by
-  [[trust-and-ops]]). Only a SHA-256 hash is stored.
+  [trust-and-ops](trust-and-ops.md)). Only a SHA-256 hash is stored.
 - **Validate per request:** middleware reads `Authorization: Bearer …`, resolves the hash to
   a scope, and attaches it to the request. Unknown/expired/revoked → 401.
 - **Revoke at session end:** drain-ack or the exit classifier triggers revocation. A TTL
@@ -411,7 +419,7 @@ task-addressed arguments must match the scope: `task_close` on someone else's ta
 scope's project. Requests **without** a token keep today's behavior: full local trust on the
 loopback interface (the daemon already binds `127.0.0.1` by default). Tokens therefore only
 ever *narrow* — they never grant anything a local caller lacks. Hardening the unauthenticated
-path for network exposure is [[trust-and-ops]] scope, with a `require_session_token` flag
+path for network exposure is [trust-and-ops](trust-and-ops.md) scope, with a `require_session_token` flag
 reserved here as the enforcement hook.
 
 ---
@@ -434,7 +442,7 @@ memory_save, memory_search`
 
 Rationale: these are the calls an agent makes *mid-turn* where a native tool call beats
 shelling out; everything else goes through the CLI, which costs ~1–2k tokens of learned
-usage instead of 10–50k tokens of schemas ([[../analysis/framework-overhaul-todo]] G.2).
+usage instead of 10–50k tokens of schemas ([../analysis/framework-overhaul-todo](../../analysis/framework-overhaul-todo.md) G.2).
 The exclusion model (`get_effective_exclusions`) is **not** reused here — task scope is an
 include-list (`DEFAULT_TASK_ALLOWLIST` ∪ widenings), because the failure mode of a
 forgotten exclusion is exposure, while the failure mode of a forgotten inclusion is an agent
@@ -473,7 +481,7 @@ today.
    presentation layer. The generated `packages/aq-client` continues to serve the dashboard.
 5. **MCP trusted scope** is bit-for-bit today's behavior; only task sessions move.
 6. **Paused memory commands** return `{success: false, error: "memory paused"}` from the
-   handler ([[feature-pauses]]); the CLI maps this specific error to exit 0 with
+   handler ([feature-pauses](feature-pauses.md)); the CLI maps this specific error to exit 0 with
    `{paused: true}` data so agent scripts and hooks don't fail loops on a deliberate pause.
 
 Known documentation drift to fix alongside: `src/cli/CLAUDE.md` still claims the CLI talks
@@ -511,14 +519,14 @@ not asserted. `LLMLogger` already maintains `logs/llm/prompt_analytics.jsonl`
 
 | Concern | Owner | This spec's boundary |
 |---|---|---|
-| `messages` table, reply protocol, `archive_after_inject` | [[supervisor-agent]] | `aq message *`, inbox formatting/delivery marking |
-| Gates, dep types, `explain`, state machine | [[work-graph]] | `aq gate *`, `aq task explain/graph/ask` projections |
-| Session lifecycle, env injection, hook installation, restarts, drain | [[session-runtime]] | token mint/revoke API, hook file *contents*, `aq session *` projections, prime renderer called by its prompt-file writer |
-| Pause semantics for memory/playbooks | [[feature-pauses]] | CLI presentation of paused results; L1/L2 prime slots |
-| Env scrubbing, trust boundaries, network exposure | [[trust-and-ops]] | token *mechanics*; `require_session_token` enforcement hook |
-| Worktrees, reaper, merge slot | [[workspaces-v2]] | `aq workspace *` projections |
+| `messages` table, reply protocol, `archive_after_inject` | [supervisor-agent](supervisor-agent.md) | `aq message *`, inbox formatting/delivery marking |
+| Gates, dep types, `explain`, state machine | [work-graph](work-graph.md) | `aq gate *`, `aq task explain/graph/ask` projections |
+| Session lifecycle, env injection, hook installation, restarts, drain | [session-runtime](session-runtime.md) | token mint/revoke API, hook file *contents*, `aq session *` projections, prime renderer called by its prompt-file writer |
+| Pause semantics for memory/playbooks | [feature-pauses](feature-pauses.md) | CLI presentation of paused results; L1/L2 prime slots |
+| Env scrubbing, trust boundaries, network exposure | [trust-and-ops](trust-and-ops.md) | token *mechanics*; `require_session_token` enforcement hook |
+| Worktrees, reaper, merge slot | [workspaces-v2](workspaces-v2.md) | `aq workspace *` projections |
 
 Everything else in this document — CLI inventory, envelope, `--brief`, `aq schema`,
 `src/prime/`, token store and scope middleware, MCP task scope, injection retargeting,
 backward compatibility, measurement — is owned here. Implementation details:
-[[../implementation/aq-surface]].
+[../implementation/aq-surface](../implementation/aq-surface.md).

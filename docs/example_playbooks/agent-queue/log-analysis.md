@@ -9,6 +9,12 @@ max_tokens: 30000
 
 # Log Analysis
 
+<!-- aq:historical -->
+> **Historical sample.** Illustrative content that nothing installs or loads. It
+> was written for an earlier runtime, so copying it will not reproduce the
+> behaviour it describes. Start at [the documentation home](../../README.md);
+> see [historical material](../../history/README.md).
+
 Periodically scan recent system logs and event history for anomalies,
 error patterns, performance issues, and resource waste. Write actionable
 operational insights to orchestrator memory so the system can self-correct

@@ -4,13 +4,21 @@ tags: [spec, database]
 
 # Database Specification
 
+<!-- aq:historical -->
+> **Design record — not current documentation.** A spec states the behaviour
+> intended when it was approved; it is written before the code and is not
+> revised to track it. Where this page and the code disagree, the code is right.
+> Start at [the documentation home](../README.md) for what AQ does today, and
+> see [historical material](../history/README.md) for how this material is
+> organised.
+
 ## 1. Overview
 
-`Database` (an alias for `PostgreSQLDatabaseAdapter`) is the sole persistence layer. **PostgreSQL is the only supported backend** — SQLite was removed on 2026-09-07, see [[superpowers/specs/2026-09-07-sqlite-removal-implementation]]. It wraps a SQLAlchemy async engine over `asyncpg`, exposed through async methods organized by domain (projects, repos, tasks, dependencies, agents, token ledger, task results, events, system config, rate limits).
+`Database` (an alias for `PostgreSQLDatabaseAdapter`) is the sole persistence layer. **PostgreSQL is the only supported backend** — SQLite was removed on 2026-09-07, see [superpowers/specs/2026-09-07-sqlite-removal-implementation](../superpowers/specs/2026-09-07-sqlite-removal-implementation.md). It wraps a SQLAlchemy async engine over `asyncpg`, exposed through async methods organized by domain (projects, repos, tasks, dependencies, agents, token ledger, task results, events, system config, rate limits).
 
 All database interaction is async. The `Database` object is constructed with a **PostgreSQL DSN** — anything else is a hard error, not a fall-through to a file — then explicitly initialized with `initialize()` before use. `initialize()` runs the Alembic chain, which returns immediately when the database is already stamped at this checkout's head.
 
-The class uses a convention of thin `_row_to_<model>` private methods to map result rows into typed dataclass instances from `src/models.py` (see [[specs/models-and-state-machine]]). Update methods accept arbitrary `**kwargs` and build parameterized `SET` clauses dynamically, converting enum values to their `.value` string automatically.
+The class uses a convention of thin `_row_to_<model>` private methods to map result rows into typed dataclass instances from `src/models.py` (see [specs/models-and-state-machine](models-and-state-machine.md)). Update methods accept arbitrary `**kwargs` and build parameterized `SET` clauses dynamically, converting enum values to their `.value` string automatically.
 
 ---
 

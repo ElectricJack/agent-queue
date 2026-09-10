@@ -1,9 +1,17 @@
 # Hierarchical integration trains: operator rollout
 
-This rollout is per project and defaults to disabled. It upgrades an existing
-SQLite installation on SQLite, or an existing PostgreSQL installation on
-PostgreSQL. It does not deploy, enable, or change GitHub configuration by
-itself.
+<!-- aq:optional-mode -->
+> **Optional strict mode, off by default.** This page documents a per-project
+> integration mode a project may opt into. It is **not** the shipped default and
+> it is not what this repository runs: AQ's configured policy here is
+> [development integration](development-integration.md) — batched delivery with
+> no pull request, no hosted-CI receipt chain and no per-parent verifier. Read
+> [the integration concept page](../concepts/integration.md) for how the modes
+> differ before following anything below.
+
+This rollout is per project and defaults to disabled. It performs an in-place
+schema upgrade on the PostgreSQL database the installation already uses. It does
+not deploy, enable, or change GitHub configuration by itself.
 
 The command synopsis used below is:
 
@@ -70,12 +78,14 @@ claim on that snapshot alone. Recovery is the integration recovery path's job,
 which takes those proofs; use this check to find the wedged refs and to confirm
 afterwards that they are gone.
 
-Do not change database backends during this release. Both
-`src/database/migrate_sqlite_to_pg.py` and `scripts/migrate_sqlite_to_pg.py`
-omit integration state. Pointing a populated SQLite installation at
-PostgreSQL after using either copier is unsupported and would lose that state.
-This limitation does not affect an in-place schema upgrade on the backend the
-installation already uses.
+Do not import another database during this release. PostgreSQL is the only
+backend; the one-way carry-over importer
+[`src/database/legacy_sqlite_import.py`](../../src/database/legacy_sqlite_import.py)
+(behind `aq db import-sqlite`) refuses a non-empty target, so it cannot be used
+to fold a populated installation into one that already holds integration state.
+The two `migrate_sqlite_to_pg` copiers this page used to warn about no longer
+exist. An in-place schema upgrade of the existing PostgreSQL database is
+unaffected.
 
 ## 2. Use the daemon user's existing GitHub login
 

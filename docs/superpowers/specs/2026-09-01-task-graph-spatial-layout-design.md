@@ -11,6 +11,12 @@ related:
 
 # Task graph: server-side stable layout, viewport paging, and focus mode
 
+<!-- aq:historical -->
+> **Historical design record.** This spec describes one feature as it was
+> designed, not as the code stands today. Start at [the documentation
+> home](../../README.md) for current behaviour; see [historical
+> material](../../history/README.md).
+
 ## 1. Outcome
 
 The Command Center **Graph** tab must stay readable and fast as a project accumulates

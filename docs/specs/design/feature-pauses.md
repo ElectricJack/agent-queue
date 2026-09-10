@@ -4,11 +4,19 @@ tags: [design, feature-pauses, memory, playbooks, overhaul, feature-flags]
 
 # Feature Pauses — Memory & Playbooks Off While the Core Is Retuned
 
+<!-- aq:historical -->
+> **Design record — not current documentation.** A spec states the behaviour
+> intended when it was approved; it is written before the code and is not
+> revised to track it. Where this page and the code disagree, the code is right.
+> Start at [the documentation home](../../README.md) for what AQ does today, and
+> see [historical material](../../history/README.md) for how this material is
+> organised.
+
 **Status:** Draft — approved direction (2026-08-19)
-**Principles:** [[guiding-design-principles]] (#2 everything is visible and editable, #5 reduce
+**Principles:** [guiding-design-principles](guiding-design-principles.md) (#2 everything is visible and editable, #5 reduce
 human effort not judgment, #10 favor fewer moving parts)
 **Related:** `docs/analysis/framework-overhaul-todo.md` (§0 D3/D4, §7 Workstream E, §8
-Workstream P), [[self-improvement]], [[playbooks]], [[memory-plugin]], [[memory-scoping]],
+Workstream P), [self-improvement](self-improvement.md), [playbooks](playbooks.md), [memory-plugin](memory-plugin.md), [memory-scoping](memory-scoping.md),
 `docs/specs/implementation/feature-pauses.md` (the paired implementation spec)
 
 ---
@@ -29,7 +37,7 @@ subsystems out of the signal path while that happens:
 
 This spec defines what "paused" means, the switch that implements it, and the exhaustive
 list of behaviors that change. It deliberately does **not** redesign either subsystem — the
-existing [[self-improvement]] and [[playbooks]] specs remain the design of record for the
+existing [self-improvement](self-improvement.md) and [playbooks](playbooks.md) specs remain the design of record for the
 frozen code and are annotated as paused, not superseded.
 
 ---

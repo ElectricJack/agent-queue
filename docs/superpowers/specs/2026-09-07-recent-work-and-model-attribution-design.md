@@ -1,5 +1,11 @@
 # Recent work and model attribution in the Tasks tab
 
+<!-- aq:historical -->
+> **Historical design record.** This spec describes one feature as it was
+> designed, not as the code stands today. Start at [the documentation
+> home](../../README.md) for current behaviour; see [historical
+> material](../../history/README.md).
+
 Status: implemented (2026-09-07) · Task: `nimble-current`
 
 ## Problem

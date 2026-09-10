@@ -4,9 +4,17 @@ tags: [design, workspaces, worktrees, git, parallelism, merge-slot]
 
 # Worktree Execution — Per-Slot Worktrees, Merge Slot, Branch Lifecycle
 
+<!-- aq:historical -->
+> **Design record — not current documentation.** A spec states the behaviour
+> intended when it was approved; it is written before the code and is not
+> revised to track it. Where this page and the code disagree, the code is right.
+> Start at [the documentation home](../../README.md) for what AQ does today, and
+> see [historical material](../../history/README.md) for how this material is
+> organised.
+
 **Status:** Draft — approved direction (2026-08-19)
-**Principles:** [[guiding-design-principles]] (#1 files as source of truth, #2 visible and editable, #5 human judgment, #7 events, #10 fewer moving parts)
-**Related:** [[workspaces-v2]] (this spec amends it), `docs/analysis/framework-overhaul-todo.md` (Workstream W, §3b), session-runtime spec (session env / `work_dir` wiring), work-graph spec (work-state metadata schema), aq-surface spec (CLI plumbing)
+**Principles:** [guiding-design-principles](guiding-design-principles.md) (#1 files as source of truth, #2 visible and editable, #5 human judgment, #7 events, #10 fewer moving parts)
+**Related:** [workspaces-v2](workspaces-v2.md) (this spec amends it), `docs/analysis/framework-overhaul-todo.md` (Workstream W, §3b), session-runtime spec (session env / `work_dir` wiring), work-graph spec (work-state metadata schema), aq-surface spec (CLI plumbing)
 
 ---
 
@@ -242,7 +250,7 @@ Full adoption is Phase 4. Phase 2 ships the half that makes the interim survivab
 
 ## 7. Amendments to Workspaces v2
 
-This spec amends [[workspaces-v2]] as follows; everything not listed is unchanged.
+This spec amends [workspaces-v2](workspaces-v2.md) as follows; everything not listed is unchanged.
 
 1. **§3.1** `workspace_kinds` gains `mode` and `worktree_setup` (§2.1, §3.6).
 2. **§3.2** `workspaces` gains `slot_index` and `base_workspace_id`; slot rows use `source_type=WORKTREE`.

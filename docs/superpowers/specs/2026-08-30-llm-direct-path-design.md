@@ -12,9 +12,15 @@ related:
 
 # The LLM direct path — replacing `Supervisor.chat()` and `chat_provider`
 
+<!-- aq:historical -->
+> **Historical design record.** This spec describes one feature as it was
+> designed, not as the code stands today. Start at [the documentation
+> home](../../README.md) for current behaviour; see [historical
+> material](../../history/README.md).
+
 ## 1. Purpose
 
-Finish decision S9 of [[supervisor-agent]]. Since the 2026-08-21 cutover every chat
+Finish decision S9 of [supervisor-agent](../../specs/design/supervisor-agent.md). Since the 2026-08-21 cutover every chat
 surface (Discord, dashboard, `aq chat`) talks to the *session-based* supervisor — a
 profile running in tmux. The in-process `Supervisor` class, its `chat()` tool loop,
 `src/chat_providers/`, and the `chat_provider:` config block were kept "dormant as

@@ -1,5 +1,11 @@
 # Deleting tasks that own a materialized branch
 
+<!-- aq:historical -->
+> **Historical design record.** This spec describes one feature as it was
+> designed, not as the code stands today. Start at [the documentation
+> home](../../README.md) for current behaviour; see [historical
+> material](../../history/README.md).
+
 **Date:** 2026-09-08
 **Status:** implemented
 **Supersedes:** the removal half of `2026-09-04-hierarchical-integration-trains-design.md` §6.8

@@ -1,5 +1,10 @@
 # Workspace Routing Bug Investigation: mech-fighters commit landed in agent-queue
 
+<!-- aq:historical -->
+> **Historical working note.** Dated scratch material, kept for the record and
+> never revised. Not instructions. Start at [the documentation
+> home](docs/README.md); see [historical material](docs/history/README.md).
+
 ## 1. Root Cause
 
 **The task was created under the wrong project.** The task `clear-orbit` ("Fix 2D brush raycasting when fill all depths is disabled") was assigned `project_id = "agent-queue"` instead of `"mech-fighters"`. Because workspace acquisition is project-scoped (`db.acquire_workspace(task.project_id, ...)`), the task was assigned an `agent-queue` workspace (`ws-agent-queue-1` at `/mnt/d/Dev/agent-queue2`) and the agent committed mech-fighters game code into the agent-queue repository.

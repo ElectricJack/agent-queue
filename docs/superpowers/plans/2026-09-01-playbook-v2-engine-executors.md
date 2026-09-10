@@ -1,5 +1,12 @@
 # Playbook V2 — Package 4: unified engine and typed executors
 
+<!-- aq:historical -->
+> **Historical implementation plan.** This is how one feature was planned before
+> it was built, kept as the record of the decision. It is not a description of
+> current behaviour and its checklists are not work to do. Start at [the
+> documentation home](../../README.md); see [historical
+> material](../../history/README.md).
+
 > **For agentic workers:** REQUIRED SUB-SKILL: use `superpowers:subagent-driven-development`. §5 is a task list with red/green boundaries; §3 is a **frozen interface contract** that the three specialist executor tasks (T-2 command, T-13/T-14 LLM, T-8 agent task) share. Do not renegotiate §3 inside a task — amend it in a dedicated commit that updates every dependent task in the same change.
 
 **Package:** 4 of 7 — *Unified engine and typed executors*

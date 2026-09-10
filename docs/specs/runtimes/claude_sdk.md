@@ -4,9 +4,17 @@ tags: [spec, platforms, claude-code]
 
 # Platforms Layer — Claude SDK Platform
 
+<!-- aq:historical -->
+> **Design record — not current documentation.** A spec states the behaviour
+> intended when it was approved; it is written before the code and is not
+> revised to track it. Where this page and the code disagree, the code is right.
+> Start at [the documentation home](../../README.md) for what AQ does today, and
+> see [historical material](../../history/README.md) for how this material is
+> organised.
+
 ## 1. Overview
 
-The platforms layer provides a pluggable interface between the [[specs/orchestrator]] and AI coding agents. All agent-specific behaviour is isolated behind a common abstract base class (`Runtime`). This allows the orchestrator to drive any supported agent type through the same four-method contract without knowing which agent is running underneath.
+The platforms layer provides a pluggable interface between the [specs/orchestrator](../orchestrator.md) and AI coding agents. All agent-specific behaviour is isolated behind a common abstract base class (`Runtime`). This allows the orchestrator to drive any supported agent type through the same four-method contract without knowing which agent is running underneath.
 
 Currently one concrete implementation exists: `ClaudeSDKPlatform`, which runs Claude Code via the `claude_agent_sdk` Python package. The `RuntimeRegistry` class handles instantiation by agent-type string.
 
@@ -255,4 +263,4 @@ MCP servers are passed through from `TaskContext.mcp_servers` (a `dict` mapping 
 
 If `TaskContext.mcp_servers` is empty (the default), no MCP configuration is applied to the session.
 
-See [[design/agent-coordination]] for how coordination playbooks manage agent assignment and affinity.
+See [design/agent-coordination](../design/agent-coordination.md) for how coordination playbooks manage agent assignment and affinity.

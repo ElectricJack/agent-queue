@@ -4,7 +4,15 @@ tags: [spec, mcp, api]
 
 # MCP Server Specification
 
-The MCP server exposes all [[specs/command-handler|CommandHandler]] commands as MCP tools via the
+<!-- aq:historical -->
+> **Design record — not current documentation.** A spec states the behaviour
+> intended when it was approved; it is written before the code and is not
+> revised to track it. Where this page and the code disagree, the code is right.
+> Start at [the documentation home](../README.md) for what AQ does today, and
+> see [historical material](../history/README.md) for how this material is
+> organised.
+
+The MCP server exposes all [CommandHandler](command-handler.md) commands as MCP tools via the
 [Model Context Protocol](https://modelcontextprotocol.io). Claude agents
 (or any MCP-compatible client) connect over stdio to the operational command
 surface. Discord is notification-only and intentionally does not mirror it.
@@ -385,6 +393,6 @@ client by hand:
 | `tests/test_mcp_server.py` | Tests -- registration, delegation, drift detection |
 | `tests/test_embedded_mcp.py` | Tests -- mount, lifespan, restart behaviour |
 | `src/tools/registry.py` | `_ALL_TOOL_DEFINITIONS` -- the source of truth for tool schemas |
-| `src/command_handler.py` | [[specs/command-handler|CommandHandler]].execute() -- the single execution layer |
+| `src/command_handler.py` | [CommandHandler](command-handler.md).execute() -- the single execution layer |
 
-MCP tools include [[design/memory-scoping|memory tools]] (memory_search, memory_recall, memory_save, memory_store, memory_get).
+MCP tools include [memory tools](design/memory-scoping.md) (memory_search, memory_recall, memory_save, memory_store, memory_get).

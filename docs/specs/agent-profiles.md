@@ -4,9 +4,17 @@ tags: [spec, agents, profiles]
 
 # Agent Profiles Specification
 
+<!-- aq:historical -->
+> **Design record — not current documentation.** A spec states the behaviour
+> intended when it was approved; it is written before the code and is not
+> revised to track it. Where this page and the code disagree, the code is right.
+> Start at [the documentation home](../README.md) for what AQ does today, and
+> see [historical material](../history/README.md) for how this material is
+> organised.
+
 ## Overview
 
-See [[design/profiles]] for the hybrid markdown profile format and vault storage.
+See [design/profiles](design/profiles.md) for the hybrid markdown profile format and vault storage.
 
 Agent Profiles are capability bundles that configure agents with specific tools, MCP servers, model overrides, and system prompt additions at task execution time. They allow task-level specialization (e.g., a code reviewer vs. a web developer) without changing the scheduler or agent pool.
 
@@ -102,7 +110,7 @@ Project-scoped profiles (`project:<pid>:<id>`, sourced from
 `vault/projects/<pid>/agent-types/`) were retired; see
 `src/profiles/project_override_migration.py` and the
 `profiles.project_overrides` doctor check for the upgrade path. See
-[[design/profiles]] for the markdown format. The vault watcher syncs changes
+[design/profiles](design/profiles.md) for the markdown format. The vault watcher syncs changes
 into the `agent_profiles` table at startup and on file change.
 
 `config.yaml` profiles are still accepted for backward compatibility — a
@@ -159,8 +167,8 @@ approval prompts while retaining its workspace sandbox.
 `--dangerously-skip-permissions` removes Claude's permission checks and does not
 confine the process. Neither option turns a git worktree into a filesystem or
 network sandbox; restrict the session environment and tools accordingly. See
-[[design/profiles#harness-automation-and-permission-opt-ins]] and
-[[design/trust-and-ops#4-permission-posture-skip-permissions-inside-worktrees]].
+[design/profiles, "Harness automation and permission opt-ins"](design/profiles.md) and
+[design/trust-and-ops#4-permission-posture-skip-permissions-inside-worktrees](design/trust-and-ops.md#4-permission-posture-skip-permissions-inside-worktrees).
 
 ### Tool Naming
 
@@ -195,7 +203,7 @@ system fallback). A startup migration moves legacy inline configs from
 config.yaml profiles and old `profile.md` `## MCP Servers` blocks into
 registry files. The embedded `agent-queue` server is a builtin registry
 entry computed in-process from CommandHandler tool definitions plus
-plugin tools. See [[mcp-server]] for the registry API and CRUD commands.
+plugin tools. See [mcp-server](mcp-server.md) for the registry API and CRUD commands.
 
 
 ## Discovery & Validation
@@ -312,7 +320,7 @@ Imports from YAML text or gist URL:
 - `import_profile` — import from gist URL or YAML text, auto-install dependencies
 
 ### MCP Server Registry
-See [[mcp-server]] for full details. Commands: `list_mcp_servers`,
+See [mcp-server](mcp-server.md) for full details. Commands: `list_mcp_servers`,
 `get_mcp_server`, `create_mcp_server`, `edit_mcp_server`,
 `delete_mcp_server`, `probe_mcp_server`, `list_mcp_tool_catalog`.
 `delete_mcp_server` refuses if any profile still references the name.

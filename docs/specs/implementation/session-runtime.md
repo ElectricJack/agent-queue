@@ -4,9 +4,17 @@ tags: [implementation, sessions, runtime, tmux, harnesses, database]
 
 # Session Runtime — Implementation Spec
 
+<!-- aq:historical -->
+> **Design record — not current documentation.** A spec states the behaviour
+> intended when it was approved; it is written before the code and is not
+> revised to track it. Where this page and the code disagree, the code is right.
+> Start at [the documentation home](../../README.md) for what AQ does today, and
+> see [historical material](../../history/README.md) for how this material is
+> organised.
+
 **Status:** Draft — approved direction (2026-08-19)
-**Related:** [[design/session-runtime]] (behavioral model), [[design/worktree-execution]],
-[[design/aq-surface]], [[specs/orchestrator]], [[specs/database]],
+**Related:** [design/session-runtime](../design/session-runtime.md) (behavioral model), [design/worktree-execution](../design/worktree-execution.md),
+[design/aq-surface](../design/aq-surface.md), [specs/orchestrator](../orchestrator.md), [specs/database](../database.md),
 `docs/analysis/framework-overhaul-todo.md` (Workstream A)
 
 Implements the design in `docs/specs/design/session-runtime.md`. This document names exact
@@ -270,7 +278,7 @@ def build_session_env(*, session_id: str, task_id: str | None, project_id: str,
 ```
 
 — sets the nine `AQ_*` markers, strips `CLAUDECODE`/`CLAUDE_CODE_ENTRYPOINT` (relocated
-from `src/runtimes/_subprocess.py::isolated_env`; further scrubbing per [[trust-and-ops]]).
+from `src/runtimes/_subprocess.py::isolated_env`; further scrubbing per [trust-and-ops](trust-and-ops.md)).
 Hook material (Claude `--settings <path>` merge; other harnesses' template files) is
 written into `work_dir` here, rendering the templates the harness profile declares.
 
@@ -422,7 +430,7 @@ worker it had just asked to open the PR. The reopen-to-READY path
 (`_reopen_with_verification_feedback`) remains for closes with no live session behind them
 (local/elevated callers). The retry budget (`auto_task.max_verification_retries`, counted
 from `verification_feedback` task contexts) is shared by both paths. CLI
-argument envelopes for all of these are owned by [[aq-surface]]; auto-exposure over MCP
+argument envelopes for all of these are owned by [aq-surface](aq-surface.md); auto-exposure over MCP
 follows the existing `_cmd_*` convention.
 
 ## 4. Integration Points (verified against current code)
@@ -523,7 +531,7 @@ round-trip) without additions. Per-profile keys (`harness`, `lifecycle`, `wake_m
 5. Deletion phase: remove `src/runtimes/claude_sdk.py`, `src/runtimes/acpx.py`,
    `src/runtimes/_subprocess.py`, the `claude-agent-sdk`/`acpx` deps (pyproject + `setup.sh`),
    and `VALID_RUNTIMES` entries; `src/runtimes/supervisor.py` stays dormant
-   ([[design/feature-pauses]] owns its fate). `Runtime` ABC + registry shrink to the
+   ([design/feature-pauses](../design/feature-pauses.md) owns its fate). `Runtime` ABC + registry shrink to the
    supervisor singleton until the playbook comeback decides.
 
 Rollback at any point before step 5 is `sessions.enabled: false` (or removing `harness:`
@@ -558,10 +566,10 @@ from one profile); live sessions drain naturally — `aq session kill` cleans st
       does not call it yet. Wiring it is a small, self-contained follow-up.
 - [x] `SessionSpecBuilder` (names, argv, prompt delivery incl. >1 KB temp file, env markers,
       hook material). **`permission_flag` is gated, not unconditional**: per
-      [[trust-and-ops]] §4 the flag rides argv only when the workspace is an isolated
+      [trust-and-ops](trust-and-ops.md) §4 the flag rides argv only when the workspace is an isolated
       worktree (`RepoSourceType.WORKTREE`) or the profile sets
       `permission_mode: bypassPermissions` — see `spec.skip_permissions_allowed`. Until
-      [[worktree-execution]] lands most workspaces are `LINK`s to a real checkout, which is
+      [worktree-execution](worktree-execution.md) lands most workspaces are `LINK`s to a real checkout, which is
       precisely the case §4 excludes. `settings_flag` (`--settings`) is emitted whenever
       `hook_files` render, so the hook payload is read rather than merely written.
       Provider-specific profile booleans add the softer Codex `--full-auto` mode or
@@ -580,7 +588,7 @@ from one profile); live sessions drain naturally — `aq session kill` cleans st
       Failed starts spend the `max_restarts` budget and quarantine. Still deferred:
       profile-declared session *pools* (a wanted session with no row at all) and
       recycle-via-handoff on config drift — both need the message routing
-      [[supervisor-agent]] owns. Design:
+      [supervisor-agent](supervisor-agent.md) owns. Design:
       `docs/superpowers/specs/2026-08-27-session-desired-state-design.md`.
       - Every terminal verdict runs the same cleanup tail as the happy path
         (`ExecutionMixin.release_session_task_resources`: agent → IDLE, workspace lock
@@ -689,7 +697,7 @@ Each row is a test in the suites above or an explicit non-goal.
 | Slow socket → tmux unlink/rebind orphans sessions | `_probe_server` before create | tmux integration (probe refusal) |
 | systemd moving panes into `tmux-spawn-*.scope` | pane discovery by `process_names` descendants, never `pane_current_command` alone | pane-discovery unit test |
 | "Peek is not free" | 2 s `TmuxStateCache`; reconciler does ≤ 1 list-panes + 1 ps per tick | state-cache unit test |
-| Nudge input collision / interrupting mid-turn work (open upstream) | per-session lock + debounce; delivery policy deferred to [[design/supervisor-agent]] | documented limitation |
+| Nudge input collision / interrupting mid-turn work (open upstream) | per-session lock + debounce; delivery policy deferred to [design/supervisor-agent](../design/supervisor-agent.md) | documented limitation |
 
 ## 10. Risks and Mitigations
 

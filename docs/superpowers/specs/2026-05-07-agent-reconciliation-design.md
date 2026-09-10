@@ -11,6 +11,12 @@ related:
 
 # Agent Reconciliation Design
 
+<!-- aq:historical -->
+> **Historical design record.** This spec describes one feature as it was
+> designed, not as the code stands today. Start at [the documentation
+> home](../../README.md) for current behaviour; see [historical
+> material](../../history/README.md).
+
 ## 1. Problem Statement
 
 The recent workspace-as-agent rewrite (the merge that introduced

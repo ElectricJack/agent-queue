@@ -6,6 +6,12 @@ status: opinion — written to be argued with, not filed
 
 # Ecosystem Positioning — agent-queue vs. the Agent Flywheel
 
+<!-- aq:historical -->
+> **Historical analysis.** A point-in-time comparison or assessment. Its
+> conclusions were acted on elsewhere and its numbers were measured on the day
+> it was written. Start at [the documentation home](../README.md); see
+> [historical material](../history/README.md).
+
 **What this is.** A decision document for the project owner, grounded in seven investigation
 reports on the Agent Flywheel collection (~39 tools, almost all by Jeffrey Emanuel /
 `Dicklesworthstone`) and re-verified against this repo's source. It answers one question —
@@ -407,7 +413,7 @@ real install immediately, and it makes transcript readers the *second* writer (f
 sessions) rather than the first. This is the highest value-per-line item in the entire document.
 
 **Correct `trust-and-ops.md` §7**, which currently states "the transcript readers from
-[[session-runtime]] are the first writer that populates model + split." That is only true if we
+[session-runtime](../specs/design/session-runtime.md) are the first writer that populates model + split." That is only true if we
 choose not to widen `AgentOutput`, and widening it is strictly cheaper than the alternative it
 recommends.
 

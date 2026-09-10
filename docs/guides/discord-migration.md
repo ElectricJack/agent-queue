@@ -4,6 +4,13 @@ tags: [discord, migration, operations, runbook]
 
 # Discord simplification: migration and rollout runbook
 
+<!-- aq:historical -->
+> **Retired guide.** The procedure below no longer matches AQ and is kept only
+> so existing links resolve. The cutover completed on 2026-09-08; [Escalations
+> and the hourly digest](escalations.md) is the current operator page. Start at
+> [the documentation home](../README.md); see [historical
+> material](../history/README.md).
+
 This is the operator procedure for moving an existing install from the old
 Discord surface — per-project channels, per-task execution threads, gate and
 task buttons, the `question_answer` modal and six slash commands — to the

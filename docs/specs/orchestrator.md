@@ -4,6 +4,14 @@ tags: [spec, orchestrator, core]
 
 # Orchestrator Specification
 
+<!-- aq:historical -->
+> **Design record — not current documentation.** A spec states the behaviour
+> intended when it was approved; it is written before the code and is not
+> revised to track it. Where this page and the code disagree, the code is right.
+> Start at [the documentation home](../README.md) for what AQ does today, and
+> see [historical material](../history/README.md) for how this material is
+> organised.
+
 This document describes the design and behaviour of the orchestrator subsystem in sufficient
 detail to reimplement it from scratch.  It covers the event bus, task-name generation,
 orchestrator initialisation, the scheduling cycle, every major internal operation, and the
@@ -27,7 +35,7 @@ scheduling or coordination.  All promotion, assignment, and retry decisions are 
 and derive purely from database state.  LLM calls occur only inside agent adapters (doing
 real work) and, optionally, inside the plan parser when `use_llm_parser` is enabled.
 
-See [[design/playbooks]] and [[design/agent-coordination]] for the extended orchestration model.
+See [design/playbooks](design/playbooks.md) and [design/agent-coordination](design/agent-coordination.md) for the extended orchestration model.
 
 **Concurrency model.**  Everything runs inside a single asyncio event loop.  Each executing
 task is launched as an `asyncio.Task` background coroutine.  The orchestrator keeps a
@@ -461,7 +469,7 @@ The full task description is appended as `## Task\n{task.description}`.
 
 ### Task Context Assembly
 
-Task execution context is assembled using `PromptBuilder` (see [[specs/prompt-builder]]).
+Task execution context is assembled using `PromptBuilder` (see [specs/prompt-builder](prompt-builder.md)).
 The orchestrator calls `_build_task_context_with_prompt_builder()` which uses PromptBuilder
 to compose system metadata, execution rules, upstream dependency summaries, agent role
 instructions, and the task description into a single prompt string.
@@ -603,7 +611,7 @@ Executed in a `finally` block so it runs regardless of success or failure:
 ### Design Invariants
 
 The workspace sync workflow preserves these invariants across all code paths.
-See [[specs/git]] §10 for the full design principles reference.
+See [specs/git](git.md) §10 for the full design principles reference.
 
 | Invariant | Guarantee |
 |---|---|
@@ -617,7 +625,7 @@ See [[specs/git]] §10 for the full design principles reference.
 ### Resolved Gaps
 
 Most previously identified workspace sync gaps have been resolved. See
-[[specs/git]] §11 for the full gap catalogue.
+[specs/git](git.md) §11 for the full gap catalogue.
 
 | Gap | Location in this spec | Resolution |
 |-----|----------------------|------------|
@@ -1100,7 +1108,7 @@ where `sync_and_merge()` applies its rebase-before-merge fallback.
 ## 18. Automation Initialization
 
 Automation is owned entirely by the playbook subsystem — see
-[[design/playbooks|Playbooks]].  The former `HookEngine` and `RuleManager` were removed in
+[Playbooks](design/playbooks.md).  The former `HookEngine` and `RuleManager` were removed in
 playbooks spec §13 Phase 3; the `hooks` / `hook_runs` tables, their commands, and the
 `hook_engine` config section no longer exist.
 

@@ -1,5 +1,12 @@
 # Discord replacement capability checklist
 
+<!-- aq:historical -->
+> **Retired guide.** The procedure below no longer matches AQ and is kept only
+> so existing links resolve. [Messaging, digests and
+> escalations](../concepts/messaging.md) describes the surface that replaced
+> these controls. Start at [the documentation home](../README.md); see
+> [historical material](../history/README.md).
+
 The Discord simplification implementation spec (§2 and §9) removes
 Discord's operational controls only once something else genuinely does the job.
 This is the ledger the cutover task (§10) works from: one row per Discord surface

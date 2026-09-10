@@ -4,11 +4,19 @@ tags: [design, supervisor, sessions, messages, planning, multi-project]
 
 # Supervisor as a Configured Agent
 
-**Status:** Approved direction (2026-08-19), amended by [[../messaging/discord]]:
+<!-- aq:historical -->
+> **Design record — not current documentation.** A spec states the behaviour
+> intended when it was approved; it is written before the code and is not
+> revised to track it. Where this page and the code disagree, the code is right.
+> Start at [the documentation home](../../README.md) for what AQ does today, and
+> see [historical material](../../history/README.md) for how this material is
+> organised.
+
+**Status:** Approved direction (2026-08-19), amended by [../messaging/discord](../messaging/discord.md):
 Discord now reaches the supervisor only through durable escalation threads;
 the project-channel chat and task-thread routes described below are retired.
-**Principles:** [[guiding-design-principles]] (#1 files as source of truth, #2 visible and editable, #3 structure guides / intelligence decides, #5 reduce effort not judgment, #7 events not coupling)
-**Related:** [[session-runtime]] (owns session mechanics), [[work-graph]] (owns ids, gates, dep types), [[aq-surface]] (owns `aq prime` assembly), [[profiles]], [[workspaces-v2]], `docs/analysis/framework-overhaul-todo.md` (§4 Workstream B, §3b, §1)
+**Principles:** [guiding-design-principles](guiding-design-principles.md) (#1 files as source of truth, #2 visible and editable, #3 structure guides / intelligence decides, #5 reduce effort not judgment, #7 events not coupling)
+**Related:** [session-runtime](session-runtime.md) (owns session mechanics), [work-graph](work-graph.md) (owns ids, gates, dep types), [aq-surface](aq-surface.md) (owns `aq prime` assembly), [profiles](profiles.md), [workspaces-v2](workspaces-v2.md), `docs/analysis/framework-overhaul-todo.md` (§4 Workstream B, §3b, §1)
 
 ---
 
@@ -173,7 +181,7 @@ profile fields (parser change in the implementation spec). Their runtime semanti
 what "named", "on_demand" and "resume" actually do to a tmux session — are defined by the
 session-runtime spec; this spec only selects values. `workspaces` declares the named
 session's attachments: the project vault (writable) and the project's base checkout
-mounted via the `readonly-dir` kind ([[workspaces-v2]]).
+mounted via the `readonly-dir` kind ([workspaces-v2](workspaces-v2.md)).
 
 ---
 
@@ -181,7 +189,7 @@ mounted via the `readonly-dir` kind ([[workspaces-v2]]).
 
 There is one supervisor session per project. Its **logical name** — used in APIs, the
 CLI, and `messages.to_id` — is **`supervisor-<project_id>`**; the provider-level session
-name is derived by [[session-runtime]]'s naming scheme (`n-supervisor--<project_id>` in
+name is derived by [session-runtime](session-runtime.md)'s naming scheme (`n-supervisor--<project_id>` in
 tmux). All name resolution and sanitization is owned by session-runtime; this spec only
 uses the logical name. The session carries `AQ_PROJECT_ID` in its environment; every `aq` command it runs defaults to
 that project, and its slim MCP surface is scoped the same way.

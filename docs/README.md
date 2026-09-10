@@ -119,15 +119,21 @@ AQ has been through several designs. The evidence is kept rather than deleted,
 because it explains why the current design is shaped the way it is — but it is
 **not** a description of current behaviour.
 
+**Start here:** [Historical material](history/README.md) explains what is kept,
+why, and how to read a historical page without being misled. Every documentation
+file's disposition — `current`, `update`, `redirect`, `archive` or `historical` —
+is recorded in [the disposition ledger](history/disposition-ledger.md).
+
 | Directory | What it is |
 |---|---|
-| [`docs/specs/`](specs/) | Design and implementation specifications, including superseded ones. |
-| [`docs/superpowers/`](superpowers/) | Dated design and implementation specs for individual features. |
-| [`docs/reports/`](reports/), [`docs/reviews/`](reviews/), [`docs/analysis/`](analysis/) | Point-in-time audits and reviews. |
-| [`docs/plans/`](plans/) | Work plans, including [this documentation overhaul](plans/documentation-overhaul/README.md). |
+| [`docs/specs/`](specs/README.md) | Design and implementation specifications, including superseded ones. |
+| [`docs/superpowers/`](superpowers/README.md) | Dated design and implementation specs for individual features. |
+| [`docs/reports/`](reports/README.md), [`docs/reviews/`](reviews/README.md), [`docs/analysis/`](analysis/README.md) | Point-in-time audits and reviews. |
+| [`docs/plans/`](plans/README.md) | Work plans, including [this documentation overhaul](plans/documentation-overhaul/README.md). |
+| [`notes/`](../notes/README.md), [`reports/`](../reports/README.md), [`.superpowers/`](../.superpowers/README.md) | Working notes and per-task evidence kept at the repository root. |
 
-`docs/history/README.md` — **planned** — will index this material with the
-disposition of every page.
+Retired guides keep their old paths and carry a banner naming the replacement;
+[the guides index](guides/README.md) lists which are which.
 
 ## Conventions used on every page
 

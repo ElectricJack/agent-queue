@@ -1,5 +1,12 @@
 # Playbook V2 Implementation Roadmap
 
+<!-- aq:historical -->
+> **Historical implementation plan.** This is how one feature was planned before
+> it was built, kept as the record of the decision. It is not a description of
+> current behaviour and its checklists are not work to do. Start at [the
+> documentation home](../../README.md); see [historical
+> material](../../history/README.md).
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this roadmap work-package by work-package. Each work package requires its named child implementation plan before code changes begin. Checkboxes in this roadmap track package-level gates, not individual coding steps.
 
 **Goal:** Replace the current loosely typed playbook implementations with one secure, durable, typed semantic graph that preserves explicit branching, makes every node's behavior understandable, and guarantees that displayed intent is derived from the same contracts used at execution time.

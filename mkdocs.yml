@@ -1,3 +1,21 @@
+# RETIRED — recorded decision, 2026-09-09 (documentation overhaul, ticket `legacy`).
+#
+# Agent Queue's documentation is published as GitHub-rendered Markdown with
+# relative links, starting at docs/README.md.  This MkDocs Material site is a
+# second publication format that predates that decision and is no longer
+# maintained: 49 of the 77 pages in the `nav:` block below do not exist, most of
+# them the mkdocstrings `api/` tree for modules that were renamed or deleted.
+# `.github/workflows/docs.yml` still builds and deploys it to GitHub Pages on
+# every push to `main` that touches docs/**, so the deployed site is stale.
+#
+# The file is kept, rather than deleted, so the decision is visible instead of
+# being silently reversed by someone who finds a Pages deploy with no config.
+# Removing the deploy touches `.github/workflows/docs.yml` and the `docs` extra
+# in `pyproject.toml`, which this documentation ticket does not own; that is
+# tracked as separate work.  Do not add pages here — add them to the tree in
+# docs/documentation-map.md.
+#
+# Disposition: docs/history/disposition-ledger.md
 site_name: Agent Queue Documentation
 site_description: Documentation for Agent Queue — a self-improving orchestration platform for AI coding agents
 site_url: https://electricjack.github.io/agent-queue/

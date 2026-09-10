@@ -1,5 +1,12 @@
 # Comment project identity repair
 
+<!-- aq:historical -->
+> **Historical implementation plan.** This is how one feature was planned before
+> it was built, kept as the record of the decision. It is not a description of
+> current behaviour and its checklists are not work to do. Start at [the
+> documentation home](../../README.md); see [historical
+> material](../../history/README.md).
+
 **Goal:** Restore comments and description edits for active tasks whose IDs collide with old archived tasks in other projects, without disclosing or deleting another project's comments.
 **Architecture:** Add nullable internal project_id to task_comments. Backfill only when the active/archive identity resolves to one project; preserve unresolvable rows as NULL and never display them. New writes capture the locked active task project, reads filter by that project and revalidate identity in SQL, permanent cleanup targets the same project. Public comment response fields stay unchanged.
 **Scope:** User-reported comments 422 on six legacy collisions. Existing worker claim, scope, CAS, archive restoration, and pagination contracts remain intact. Do not change task IDs, statuses, pauses, or recovery counters. Do not modify or remove historical tasks.

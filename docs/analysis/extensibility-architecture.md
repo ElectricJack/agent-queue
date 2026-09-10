@@ -2,17 +2,23 @@
 tags: [analysis, design, extensibility, platform, ecosystem]
 date: 2026-08-20
 status: opinionated design — written to be argued with, then turned into specs
-related: "[[ecosystem-positioning]], [[../specs/design/aq-surface]], [[../specs/design/work-graph]], [[../specs/design/trust-and-ops]], [[../specs/plugin-system]], [[../specs/design/guiding-design-principles]]"
+related: "[ecosystem-positioning](ecosystem-positioning.md), [../specs/design/aq-surface](../specs/design/aq-surface.md), [../specs/design/work-graph](../specs/design/work-graph.md), [../specs/design/trust-and-ops](../specs/design/trust-and-ops.md), [../specs/plugin-system](../specs/plugin-system.md), [../specs/design/guiding-design-principles](../specs/design/guiding-design-principles.md)"
 ---
 
 # Extensibility Architecture — agent-queue as the Thing Others Plug Into
+
+<!-- aq:historical -->
+> **Historical analysis.** A point-in-time comparison or assessment. Its
+> conclusions were acted on elsewhere and its numbers were measured on the day
+> it was written. Start at [the documentation home](../README.md); see
+> [historical material](../history/README.md).
 
 **The question.** In eighteen months there will be many more tools in this space — the
 Agent Flywheel alone is thirty-nine of them, written by one person, in nine months. What
 makes agent-queue the thing those tools *compose with* rather than the thing they route
 around? This document answers that with a specific architecture, grounded in what is
 actually in the tree today, and it protects the one thing
-[[ecosystem-positioning]] established is the product: **the readiness predicate — "what
+[ecosystem-positioning](ecosystem-positioning.md) established is the product: **the readiness predicate — "what
 should run next, and why isn't it running?" — evaluated across dependencies, gates,
 workspace locks, caps and budget at once, and then acted on without a human.**
 
@@ -171,7 +177,7 @@ schema is a self-modifying contract); and command definitions (same reason).
 The headline: **a first-class participant is anything that can speak two HTTP endpoints.**
 
 - **Inbound:** `POST /api/execute` — the versioned JSON envelope from
-  [[../specs/design/aq-surface]] §4.1, with a scoped bearer token (§3.2 below).
+  [../specs/design/aq-surface](../specs/design/aq-surface.md) §4.1, with a scoped bearer token (§3.2 below).
 - **Outbound:** `GET /api/events?after_id=…` — durable, cursor-paged, replayable event
   feed (§4), plus optional webhook push.
 
@@ -205,7 +211,7 @@ build on a database or a message bus, except this one schedules.
 
 ### 3.1 The command half (inbound)
 
-Already 90% designed in [[../specs/design/aq-surface]]; this section adds the
+Already 90% designed in [../specs/design/aq-surface](../specs/design/aq-surface.md); this section adds the
 integration-specific deltas.
 
 - **Envelope:** the §4.1 versioned JSON envelope, unchanged. `schema_version` integer,
