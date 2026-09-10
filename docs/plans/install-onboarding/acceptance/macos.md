@@ -41,9 +41,8 @@ image's own PostgreSQL was left linked or unlinked first. All three images
 turned out to ship no PostgreSQL at all (`brew list --versions | grep postgres`
 found only the `postgresql@17 17.11` AQ installed), so the two arms observed
 the same machine; the arm is kept because an image that starts shipping one
-again would otherwise silently hide the clean-machine path. Only one arm per
-runner is listed below — the other is identical and is in the same artifact
-set.
+again would otherwise silently hide the clean-machine path. All six runs are
+listed.
 
 | Host | macOS | Arch | Tier | Homebrew | Xcode CLT | Git | Python | Verdict |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -51,6 +50,7 @@ set.
 | `macos-14` (unlinked) | 14.8.9 (23J631) | arm64 | `macos-apple-silicon` / supported | 6.0.20 at `/opt/homebrew` | Xcode 15.4 | 2.55.0 | 3.12.10 | all phases pass except `first-task` |
 | `macos-15` (keep) | 15.7.9 (24G830) | arm64 | `macos-apple-silicon` / supported | 6.0.20 at `/opt/homebrew` | Xcode 16.4 | 2.55.0 | 3.12.10 | all phases pass except `first-task` |
 | `macos-15` (unlinked) | 15.7.9 (24G830) | arm64 | `macos-apple-silicon` / supported | 6.0.20 at `/opt/homebrew` | Xcode 16.4 | 2.55.0 | 3.12.10 | all phases pass except `first-task` |
+| `macos-15-intel` (keep) | 15.7.9 (24G830) | x86_64 | `macos-intel` / compatibility | 6.0.18 at `/usr/local` | Xcode 16.4 | 2.55.0 | 3.12.10 | all phases pass except `first-task` |
 | `macos-15-intel` (unlinked) | 15.7.9 (24G830) | x86_64 | `macos-intel` / compatibility | 6.0.18 at `/usr/local` | Xcode 16.4 | 2.55.0 | 3.12.10 | all phases pass except `first-task` |
 
 The harness's own rendering of each of those runs is kept beside this page, so
@@ -59,7 +59,8 @@ the evidence outlives the ninety-day artifact retention:
 ([`macos-14-unlinked`](records-2026-09-10/macos-14-unlinked.md),
 [`macos-15-keep`](records-2026-09-10/macos-15-keep.md),
 [`macos-15-unlinked`](records-2026-09-10/macos-15-unlinked.md),
-[`macos-15-intel-unlinked`](records-2026-09-10/macos-15-intel-unlinked.md)).
+[`macos-15-intel-unlinked`](records-2026-09-10/macos-15-intel-unlinked.md),
+[`macos-15-intel-keep`](records-2026-09-10/macos-15-intel-keep.md)).
 The JSON record each was rendered from stays in the run's artifacts.
 
 Every Apple-Silicon host reported `sysctl.proc_translated = 0` and
