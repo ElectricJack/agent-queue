@@ -527,6 +527,16 @@ claim loop. AQ sessions never receive an interactive offer to start the daemon.
 An ambiguous response failure is not automatically replayed: after a lost close
 response, inspect the current claim and task status before attempting another close.
 
+Busy workers receive queued feedback before completing their task: a session's
+close returns `messages.pending_before_close` if its task or session inbox has
+undelivered messages. The response gives the exact `aq message inbox --inject`
+commands. Read and handle those messages, recheck affected evidence, and retry
+close with the same claim and a corrected summary. The refusal leaves the task,
+claim, and messages intact; operator closes and disabled messaging are unaffected.
+This check prevents a worker from draining before it reads a correction sent
+while it was busy. Messages arriving after the check can still race completion;
+the check is not an atomic delivery guarantee.
+
 Zero measured workspace capacity prevents placement without a backoff. If
 capacity was advertised but acquisition fails, the key backs off for 60 seconds
 so another project can use the next launch opportunity. Disabled worktree slots

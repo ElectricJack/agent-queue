@@ -702,6 +702,83 @@ class TestSessionToken:
 
 
 class TestTaskClose:
+    @pytest.mark.parametrize("lifecycle", ["task", "pool"])
+    async def test_scoped_close_cannot_skip_feedback_by_omitting_session_argument(
+        self, handler, db, provider, orch, lifecycle
+    ):
+        task = await _make_task(db)
+        await _make_session(db, provider, lifecycle=lifecycle)
+        await db.create_message(
+            project_id="p1", from_kind="system", from_id="monitor",
+            to_kind="session", to_id="sess-1", body="New deployment evidence.",
+        )
+        result = await handler.execute("task_close", {
+            "task_id": "t1", "outcome": "pass", "summary": "Done.",
+            "claim_epoch": task.claim_epoch,
+            "_scope": {"kind": "session", "session_id": "sess-1", "project_id": "p1",
+                       "task_id": "t1", "elevated": False},
+        })
+        assert result["code"] == "messages.pending_before_close"
+        assert (await db.get_session("sess-1")).task_id == "t1"
+        assert not orch.closed_calls
+
+    @pytest.mark.parametrize("recipient_kind,recipient_id", [("task", "t1"), ("session", "sess-1")])
+    @pytest.mark.parametrize("outcome", ["pass", "fail"])
+    async def test_pending_feedback_preserves_claim_until_read(
+        self, handler, db, provider, orch, recipient_kind, recipient_id, outcome
+    ):
+        await _make_task(db)
+        await _make_session(db, provider)
+        message = await db.create_message(
+            project_id="p1", from_kind="user", from_id="operator",
+            to_kind=recipient_kind, to_id=recipient_id,
+            body="Deployment completed; recheck the running version before closing.",
+        )
+        args = {
+            "task_id": "t1", "session_id": "sess-1", "outcome": outcome,
+            "summary": "Evidence collected before deployment.",
+        }
+        result = await handler.execute("task_close", args)
+        assert result["code"] == "messages.pending_before_close"
+        assert f"--to {recipient_kind}:{recipient_id} --inject --limit 50" in result["error"]
+        assert (await db.get_task("t1")).status == TaskStatus.IN_PROGRESS
+        assert (await db.get_session("sess-1")).task_id == "t1"
+        assert (await db.get_session("sess-1")).state == "running"
+        assert (await db.get_message(message.id)).delivered_at is None
+        assert await db.get_task_meta("t1", "outcome") is None
+        assert not orch.closed_calls
+
+        # A repeated close cannot silently consume the feedback. The existing
+        # inbox command returns the actual body before the retry can proceed.
+        assert (await handler.execute("task_close", args))["code"] == result["code"]
+        inbox = await handler.execute("message_inbox", {
+            "to_kind": recipient_kind, "to_id": recipient_id, "inject": True, "limit": 50,
+        })
+        assert inbox["messages"][0]["body"] == message.body
+        args["summary"] = "Rechecked deployment and incorporated the correction."
+        assert (await handler.execute("task_close", args))["success"] is True
+        assert len(orch.closed_calls) == 1
+
+    @pytest.mark.parametrize("bypass", ["operator", "disabled", "other_recipient", "delivered"])
+    async def test_feedback_check_does_not_gate_unrelated_or_consumed_messages(
+        self, handler, db, provider, config, bypass
+    ):
+        await _make_task(db)
+        await _make_session(db, provider)
+        message = await db.create_message(
+            project_id="p1", from_kind="system", from_id="monitor",
+            to_kind="session", to_id="other-session" if bypass == "other_recipient" else "sess-1",
+            body="A correction.",
+        )
+        if bypass == "disabled":
+            config.messages.enabled = False
+        if bypass == "delivered":
+            await db.mark_delivered(message.id)
+        args = {"task_id": "t1", "outcome": "pass", "summary": "Done."}
+        if bypass != "operator":
+            args["session_id"] = "sess-1"
+        assert (await handler.execute("task_close", args))["success"] is True
+
     async def test_happy_path(self, handler, db, provider, orch):
         await _make_task(db)
         await _make_session(db, provider)
