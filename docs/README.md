@@ -1,143 +1,99 @@
 # Agent Queue documentation
 
-Agent Queue (**AQ**) is a background service that runs AI coding agents against
-your Git repositories. You describe work as *tasks*; AQ decides what is ready,
-gives each task an isolated Git worktree, starts a coding-agent CLI inside a
-terminal session, and carries the finished branch back into your repository.
-You watch and steer it from a web dashboard, the `aq` command line, or an MCP
-client.
-
-This page is the entry point for every AQ document. It is organised as a
-reading order, not an alphabetical list: sections near the top assume nothing,
-sections near the bottom assume you have read the ones above.
-
-> **Status.** The documentation set is being rewritten
-> ([plan](plans/documentation-overhaul/README.md)). Pages marked **planned**
-> below do not exist yet; the [documentation map](documentation-map.md) names
-> the ticket that owns each one. Until a page lands, the closest existing
-> material is under [Historical and existing material](#historical-and-existing-material)
-> — read it knowing that parts of it describe behaviour AQ no longer has, which
-> the [known-inaccuracies ledger](plans/documentation-overhaul/known-inaccuracies.md)
-> records.
+Agent Queue (**AQ**) runs coding-agent CLIs against Git repositories while it
+keeps tasks, workspaces, sessions, and delivery records durable in PostgreSQL.
+This is the documentation home: begin with the tutorial path, then use the
+concepts, guides, and reference pages when you need more detail. The repository
+[README](../README.md) links here from GitHub’s front page.
 
 ## Start here
 
-New to AQ? Read in this order. Each step takes you further from "what is this"
-and closer to "I run this every day".
+New to AQ? Read these in order. Each page defines the terms it introduces and
+links to the source and focused checks behind its claims.
 
-| # | Page | What you get |
-|---|---|---|
-| 1 | [Glossary](reference/glossary.md) | The twenty words the rest of the documentation uses without explaining. Skim it now, come back to it often. |
-| 2 | `docs/tutorials/install.md` — **planned** | Prerequisites, PostgreSQL, provider credentials, first start and shutdown. |
-| 3 | `docs/tutorials/first-task.md` — **planned** | Onboard a throwaway repository, create one task, watch a worker do it, read the result. |
-| 4 | [Core concepts](#core-concepts) | Why the system did what you just watched it do. |
+| # | Page | What you learn |
+| --- | --- | --- |
+| 1 | [Glossary](reference/glossary.md) | AQ’s durable-state, agent, and delivery vocabulary. |
+| 2 | [Install and start AQ](tutorials/install.md) | Prerequisites, PostgreSQL, a harness credential, first startup, and shutdown. |
+| 3 | [Run your first isolated task](tutorials/first-task.md) | Create a disposable project, follow one task, inspect its result, and clean up. |
+| 4 | [Tasks](concepts/tasks.md) and [scheduling](concepts/scheduling.md) | Why AQ changes task state and when a worker can start. |
+| 5 | [Integration](concepts/integration.md) and [operations](guides/operations.md) | The distinction between task completion and delivery, plus recovery paths. |
 
-## First task
-
-The one-paragraph version of what steps 2 and 3 above will walk you through:
-you install AQ and point it at a PostgreSQL database, register a Git
-repository as a *project*, and create a *task* describing a change. The
-orchestrator marks the task ready once nothing blocks it, reserves a *worktree
-slot* — an isolated checkout of your repository on its own branch — and starts
-a *worker session*: a coding-agent CLI running inside a terminal, primed with
-the task, the repository and the project's accumulated knowledge. The worker
-commits to its own branch and closes the task with a summary. Integration
-collects finished branches and publishes them. Nothing touches your default
-branch without going through that path.
+The newcomer example is deliberately disposable. It installs AQ, onboards a
+new repository, creates a task, monitors it, reads its durable result, and
+explains why a closed task is not automatically proof that a branch reached
+`main`. It also names the common failures—missing project root, unavailable
+profile, interrupted onboarding—and their recovery commands.
 
 ## Core concepts
 
-Read these when you want to know why AQ behaves the way it does. Each page
-explains the vocabulary, then the mechanism, then the failure modes.
+Concept pages explain purpose, vocabulary, state ownership, and failure modes
+before contributor internals.
 
 | Page | Covers |
-|---|---|
-| `docs/concepts/architecture.md` — **planned** | Daemon startup, the orchestrator cycle, service boundaries, who owns which state. |
-| `docs/concepts/tasks.md` — **planned** | Task states, hierarchies, dependencies, formulas, deliverables, the graph view. |
-| `docs/concepts/scheduling.md` — **planned** | How a ready task becomes a running worker: pools, claims, capacity, resource limits. |
-| [Agents and routing](concepts/agents-and-routing.md) | Agent profiles, intelligence classes, harnesses, and how a task is routed to one. |
-| `docs/concepts/sessions.md` — **planned** | Sessions, attempts, claims and epoch fencing; what survives a restart. |
-| `docs/concepts/projects-and-workspaces.md` — **planned** | Projects, repositories, workspace kinds, worktree slots, task branches. |
-| `docs/concepts/integration.md` — **planned** | Finishing work versus delivering it; validation, publication and recovery. |
-| [Playbooks V2](concepts/playbooks.md) | Events, rules, gates, authoring, activation, and what ships enabled. |
-| `docs/concepts/configuration-and-vault.md` — **planned** | Configuration file versus vault markdown versus database state. |
-| `docs/concepts/providers.md` — **planned** | LLM providers, model selection, token accounting and budgets. |
-| [Messaging, digests and escalations](concepts/messaging.md) | Messages to and from workers, the activity digest, escalation threads. |
+| --- | --- |
+| [Architecture](concepts/architecture.md) | Daemon startup, the orchestrator cycle, services, and state boundaries. |
+| [Tasks](concepts/tasks.md) | Lifecycle, hierarchy, dependencies, formulas, deliverables, and graph layout. |
+| [Scheduling](concepts/scheduling.md) | Readiness, pools, capacity, and resource limits. |
+| [Agents and routing](concepts/agents-and-routing.md) | Profiles, intelligence classes, harnesses, and assignment. |
+| [Sessions](concepts/sessions.md) | Attempts, terminals, claims, epochs, and recovery. |
+| [Projects and workspaces](concepts/projects-and-workspaces.md) | Repositories, workspace kinds, worktrees, and task branches. |
+| [Integration](concepts/integration.md) | Finished work versus published work, policy, and repair. |
+| [Playbooks](concepts/playbooks.md) | V2 event graphs, gates, activation, and shipped content. |
+| [Configuration and vault](concepts/configuration-and-vault.md) | Configured policy, editable Markdown, and database projections. |
+| [Providers](concepts/providers.md) | Provider settings, model selection, usage, and budgets. |
+| [Messaging](concepts/messaging.md) | Worker messages, the activity digest, and human escalation replies. |
 
-## How-to guides
+## Guides
 
-Task-shaped instructions for something you are trying to get done. The
-[`guides/`](guides/) directory holds today's guides; several are accurate and
-several predate the current design — see the ledger linked at the top of this
-page before trusting one.
+Guides are task-shaped instructions. They describe configured local policy as
+local policy, not as a universal default.
+
+| Need | Guide |
+| --- | --- |
+| Use the web UI | [Dashboard](guides/dashboard.md) |
+| Create and manage a project | [Project onboarding](guides/project-onboarding.md) |
+| Operate pull-based workers | [Worker pools](guides/worker-pools.md) |
+| Keep tests from exhausting the host | [Resource gating](guides/resource-gating.md) |
+| Configure plugins and MCP | [Plugins and MCP](guides/plugins-and-mcp.md) |
+| Configure digests and answer an escalation | [Escalations](guides/escalations.md) |
+| Diagnose a daemon, task, session, or delivery issue | [Operations](guides/operations.md) |
+| Deliver development branches | [Development integration](guides/development-integration.md) |
+| Understand database migration authority | [Migrations](guides/migrations.md) |
+
+## Reference
+
+The [reference index](reference/README.md) is the entry point for exhaustive
+look-up material. Its most-used pages are:
 
 | Page | Covers |
-|---|---|
-| `docs/guides/dashboard.md` — **planned** | A tour of the dashboard, page by page, with the labels the UI actually uses. |
-| `docs/guides/plugins-and-mcp.md` — **planned** | Installing plugins, configuring MCP servers, writing an extension. |
-| `docs/guides/operations.md` — **planned** | Symptom-to-command troubleshooting and recovery runbooks. |
-| [Worker pools](guides/worker-pools.md) | Operating the pull-based worker fleet. |
-| [Resource gating](guides/resource-gating.md) | Test slots, per-session CPU and memory caps. |
-| [Escalations and the hourly digest](guides/escalations.md) | Configuring the one Discord channel, reading the digest, answering an escalation. |
-| [Migrations](guides/migrations.md) | Who may run Alembic against which database. |
-
-## Reference and module catalog
-
-Look-up material: exhaustive, terse, and generated from source where it can be.
-
-| Page | Covers |
-|---|---|
-| [Glossary](reference/glossary.md) | Every term the documentation uses as jargon. |
-| [Module catalog](reference/modules/README.md) | Every production module, its purpose and its owning page. |
-| [CLI reference](reference/cli/README.md) | Every `aq` command group, its flags and its exit semantics. |
-| [HTTP API](reference/api/README.md) | REST endpoints, WebSocket events and the two generated clients. |
-| `docs/reference/configuration.md` — **planned** | Every configuration key, its default and when it is read. |
-| [Database reference](reference/database/README.md) | Tables, query modules, migrations and data lifecycle. |
-| [CLI command inventory](reference/cli-command-inventory.md) | Generated list of the current command surface. |
-| [Profile and class reference](reference/profiles-and-classes.md) | Every agent-profile and intelligence-class field, and the override precedence. |
+| --- | --- |
+| [Module catalog](reference/modules/README.md) | Every production source module, its purpose, component page, and test pointer. |
+| [CLI reference](reference/cli/README.md) | Current `aq` command groups, contracts, agent tools, and prime documents. |
+| [HTTP API](reference/api/README.md) | REST, WebSocket, and generated Python/TypeScript clients. |
+| [Configuration](reference/configuration.md) | Settings, defaults, and reload boundaries. |
+| [Database](reference/database/README.md) | PostgreSQL tables, queries, migrations, and lifecycle. |
+| [Profiles and intelligence classes](reference/profiles-and-classes.md) | Runtime role configuration and model-selection policy. |
 
 ## Contributing
 
-| Page | Covers |
-|---|---|
-| [Contributing](contributing/README.md) | The contributor loop: set up, find the code, check it, deliver it. Start here. |
-| [Documentation style](contributing/documentation-style.md) | How to write a page here, and the rules every runnable example must pass. |
-| [Documentation map](documentation-map.md) | Which page owns which subject, and the ownership rules that keep two authors out of the same file. |
-| [Development setup](contributing/setup.md) | Getting a development checkout running. |
-| [Testing](contributing/testing.md) | Running the focused tests for what you changed. |
-| [Repository map](contributing/repo-map.md) | Where things live in the repository. |
-| [Code generation](contributing/codegen.md) | The files written by a command, and the guards that catch a stale one. |
-| [Local checks](contributing/checks.md) | The shortest sufficient check list before you push. |
-| [Scripts](contributing/scripts.md) | Every script in `scripts/`, and which ones are historical. |
-| [Continuous integration](contributing/ci.md) | What CI runs, when, and what it does not run. |
-| [Pull requests and delivery](contributing/pull-requests.md) | How a change reaches `main`. |
-| [Builds and releases](contributing/releases.md) | What is built, how it is versioned, and why there is no release. |
+For a development checkout, begin with [Contributing](contributing/README.md).
+Use [local checks](contributing/checks.md) to choose a focused test command,
+[documentation style](contributing/documentation-style.md) for GitHub Markdown
+rules, and [repository map](contributing/repo-map.md) to find code and its
+catalog entry.
 
-## Historical and existing material
+## Historical material
 
-AQ has been through several designs. The evidence is kept rather than deleted,
-because it explains why the current design is shaped the way it is — but it is
-**not** a description of current behaviour.
+[Historical material](history/README.md) separates dated plans, specs, reports,
+reviews, and analysis from current instructions. When an old page conflicts
+with a current page or source, use the current page and record the discrepancy
+in the [known-inaccuracies ledger](plans/documentation-overhaul/known-inaccuracies.md).
 
-| Directory | What it is |
-|---|---|
-| [`docs/specs/`](specs/) | Design and implementation specifications, including superseded ones. |
-| [`docs/superpowers/`](superpowers/) | Dated design and implementation specs for individual features. |
-| [`docs/reports/`](reports/), [`docs/reviews/`](reviews/), [`docs/analysis/`](analysis/) | Point-in-time audits and reviews. |
-| [`docs/plans/`](plans/) | Work plans, including [this documentation overhaul](plans/documentation-overhaul/README.md). |
+## Documentation maintenance
 
-`docs/history/README.md` — **planned** — will index this material with the
-disposition of every page.
-
-## Conventions used on every page
-
-* Everything is GitHub-rendered Markdown with relative links. There is no
-  documentation site to build.
-* A statement about behaviour names the module or command it came from, so you
-  can check it.
-* Shipped defaults, configured local policy, optional compatibility modes and
-  proposed work are labelled as such and never blurred together.
-* Commands are shown as you would type them, with the output you should expect.
-
-See [documentation style](contributing/documentation-style.md) for the full
-rules.
+The [final coverage and disposition report](plans/documentation-overhaul/final-coverage-report.md)
+records the local inventory, link, catalog, and focused-test checks used for
+this navigation assembly. [Reference maintenance](reference/reference-maintenance.md)
+explains how contributors repeat those checks after a source or documentation
+change.

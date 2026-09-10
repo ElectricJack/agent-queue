@@ -80,10 +80,18 @@ def check_links(paths: Iterable[Path]) -> list[str]:
             target, fragment = resolve_target(source, destination)
             if target is None:
                 continue
-            if not target.is_file():
+            # GitHub renders a repository directory as a browsable relative
+            # link too (for example ``docs/specs/``).  It has no anchors, but
+            # it is a valid destination for a navigation page.
+            if not target.is_file() and not target.is_dir():
                 problems.append(f"{source.relative_to(ROOT)}: {destination}: target does not exist")
                 continue
             if fragment:
+                if not target.is_file():
+                    problems.append(
+                        f"{source.relative_to(ROOT)}: {destination}: directory targets have no anchors",
+                    )
+                    continue
                 target_anchors = anchors_by_path.setdefault(target, anchors(target))
                 if fragment not in target_anchors:
                     problems.append(
@@ -130,7 +138,14 @@ def check_module_coverage(manifest_path: Path, shard: str) -> list[str]:
         if not catalog.is_file():
             problems.append(f"{source}: catalog does not exist: {catalog_value}")
             continue
-        links = catalog_cache.setdefault(str(catalog), catalog_links(catalog))
+        # Do not use ``setdefault`` here: Python evaluates its default before
+        # the call, which reparses a large catalog once per module and makes
+        # the all-shard acceptance check unnecessarily slow.
+        cache_key = str(catalog)
+        links = catalog_cache.get(cache_key)
+        if links is None:
+            links = catalog_links(catalog)
+            catalog_cache[cache_key] = links
         if Path(source) not in links:
             problems.append(f"{source}: missing linked row in {catalog_value}")
     return problems

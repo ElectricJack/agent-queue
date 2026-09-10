@@ -101,7 +101,7 @@ machine-readable form of this table is
 
 | Ticket | Owns these pages | Module coverage shard |
 |---|---|---|
-| `foundation` | `docs/README.md`, `docs/documentation-map.md`, `docs/reference/glossary.md`, `docs/contributing/documentation-style.md`, `docs/reference/modules/README.md`, the overhaul's planning files | — |
+| `foundation` | `docs/documentation-map.md`, `docs/reference/glossary.md`, `docs/contributing/documentation-style.md`, the overhaul's planning files | — |
 | `quickstart` | `docs/tutorials/install.md`, `docs/tutorials/first-task.md`, `docs/tutorials/README.md` | — |
 | `readme` | `README.md` (repository root) | — |
 | `architecture` | `docs/concepts/architecture.md` | `docs/reference/modules/architecture.md` |
@@ -124,7 +124,7 @@ machine-readable form of this table is
 | `contributing` | `docs/contributing/**` except `documentation-style.md` | `docs/reference/modules/contributing.md` |
 | `reference` | `docs/reference/README.md`, generated reference indexes, the documentation checks | — |
 | `legacy` | `docs/history/README.md`, dispositions and link repairs across existing `docs/` | — |
-| `acceptance` | final assembly of every shared index listed below | — |
+| `acceptance` | final assembly of every shared index listed below, plus the final coverage report | — |
 
 ### Shared indexes
 
@@ -173,12 +173,12 @@ component page and one category:
 
 | Category | Count | Documentation obligation |
 |---|---|---|
-| `production` | 791 | A named row in the owning shard's catalog. |
+| `production` | 790 | A named row in the owning shard's catalog. |
 | `generated` | 1447 | Resource-family coverage plus a regeneration command. |
 | `prompt` | 49 | Explained where its behaviour is explained, as shipped content. |
-| `supporting` | 80 | Purpose, inputs, side effects and invocation, in a contributing page. |
-| `documentation` | 469 | A disposition recorded by the `legacy` ticket. |
-| `test` | 910 | Covered as a layout and a set of markers, not file by file. |
+| `supporting` | 83 | Purpose, inputs, side effects and invocation, in a contributing page. |
+| `documentation` | 503 | A disposition recorded by the `legacy` ticket. |
+| `test` | 916 | Covered as a layout and a set of markers, not file by file. |
 
 Counts are from the manifest at its recorded `source_commit`; regenerate rather
 than trusting the numbers above if the tree has moved.
