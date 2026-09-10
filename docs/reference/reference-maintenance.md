@@ -41,7 +41,7 @@ python scripts/generate-config-schema-inventory.py --check
 python scripts/check-docs.py docs/reference/reference-maintenance.md
 
 # Verify every production module assigned to one subject has a linked row.
-python scripts/check-docs.py --module-coverage vault
+python scripts/check-docs.py --module-coverage cli
 ```
 
 The final documentation acceptance owner may use `--all` and
