@@ -49,6 +49,11 @@ installer will either use a server you already run or, when you ask it to,
 install a local one. SQLite is not a runtime option; an existing SQLite
 database can only be imported (`aq db import-sqlite`).
 
+The [installation release record](../validation/installation-release-0.1.0.md)
+keeps the versioned artifact checks, native platform evidence, and known
+acceptance limits together. Read it before treating a source-checkout run as
+evidence for a published artifact.
+
 ## Platform quickstarts
 
 Choose one path below, then continue with [the first task](first-task.md).
