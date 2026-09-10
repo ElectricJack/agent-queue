@@ -78,16 +78,20 @@ class ProfileQueryMixin:
                 )
             )
 
-    async def get_profile(self, profile_id: str) -> AgentProfile | None:
-        """Fetch a single profile by ID."""
-        async with self._engine.begin() as conn:
-            result = await conn.execute(
-                select(agent_profiles).where(agent_profiles.c.id == profile_id)
-            )
-            row = result.mappings().fetchone()
-            if not row:
-                return None
-            return self._row_to_profile(row)
+    async def get_profile(self, profile_id: str, *, conn=None) -> AgentProfile | None:
+        """Fetch a single profile by ID.
+
+        *conn* lets a caller that already owns a transaction read the row on
+        it — the claim path's long-poll wake refreshes profile and project
+        together on one pooled connection.
+        """
+        stmt = select(agent_profiles).where(agent_profiles.c.id == profile_id)
+        if conn is not None:
+            row = (await conn.execute(stmt)).mappings().fetchone()
+            return self._row_to_profile(row) if row else None
+        async with self._engine.begin() as owned:
+            row = (await owned.execute(stmt)).mappings().fetchone()
+            return self._row_to_profile(row) if row else None
 
     async def list_profiles(self) -> list[AgentProfile]:
         """List all agent profiles ordered by name."""

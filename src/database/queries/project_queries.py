@@ -69,14 +69,20 @@ class ProjectQueryMixin:
                 )
             )
 
-    async def get_project(self, project_id: str) -> Project | None:
-        """Fetch a single project by ID."""
-        async with self._engine.begin() as conn:
-            result = await conn.execute(select(projects).where(projects.c.id == project_id))
-            row = result.mappings().fetchone()
-            if not row:
-                return None
-            return self._row_to_project(row)
+    async def get_project(self, project_id: str, *, conn=None) -> Project | None:
+        """Fetch a single project by ID.
+
+        *conn* lets a caller that already owns a transaction read the row on
+        it rather than paying another pooled checkout — the claim path's
+        three back-to-back pre-reads share one connection this way.
+        """
+        stmt = select(projects).where(projects.c.id == project_id)
+        if conn is not None:
+            row = (await conn.execute(stmt)).mappings().fetchone()
+            return self._row_to_project(row) if row else None
+        async with self._engine.begin() as owned:
+            row = (await owned.execute(stmt)).mappings().fetchone()
+            return self._row_to_project(row) if row else None
 
     async def list_projects(
         self,

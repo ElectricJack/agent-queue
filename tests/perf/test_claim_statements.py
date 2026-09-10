@@ -16,14 +16,14 @@ selected::
     aq test tests/perf/test_claim_statements.py -q -p no:xdist -s --aq-all-markers
 
 The one budget that is not a statement count is ``TestClaimLatency``.
-Statements are only half of what a round trip costs: this path opens ten
-pooled *transactions* per claim + release, and a pooled transaction is
-about six statements' worth of wire (``BEGIN``, ``COMMIT``, and a
-``pool_pre_ping`` that is itself three round trips on asyncpg).
-``test_claim_release_round_trip_budget`` pins both counts, and the latency
-budget is derived from them against a wire floor measured on the box the
-test is running on -- see its docstring for why a flat millisecond number
-stopped meaning anything.
+Statements are only half of what a round trip costs: this path opens
+``ROUND_TRIP_TRANSACTIONS`` pooled *transactions* per claim + release, and
+a pooled transaction is about six statements' worth of wire (``BEGIN``,
+``COMMIT``, and a ``pool_pre_ping`` that is itself three round trips on
+asyncpg).  ``test_claim_release_round_trip_budget`` pins both counts, and
+the latency budget is derived from them against a wire floor measured on
+the box the test is running on -- see its docstring for why a flat
+millisecond number stopped meaning anything.
 
 Scope note: every fixture below stubs ``orch.bus.emit = AsyncMock()``, so
 event fan-out (whatever a real subscriber -- a playbook trigger, message
@@ -182,41 +182,43 @@ class TestClaimStatementBudgets:
     async def test_claim_happy_path_statement_budget(self, any_db, tmp_path):
         """Whole ``task_claim`` happy path (slot reset stubbed).
 
-        **Measured on PostgreSQL: 20.**  The trace, statement by statement:
+        **Measured on PostgreSQL: 19.**  The trace, statement by statement:
 
         *Outer admission loop (3).*  1 the session+profile join (one read
         for both — spec §15); 2 ``touch_session_activity``, the durable
         proof that an idle worker's claim loop is alive when a long poll
         leaves the harness silent for its whole wait window; 3 the project
         read that ``_admission_reason`` judges.  ``max_event_id`` is
-        skipped because ``wait == 0``.
+        skipped because ``wait == 0``.  All three share one pooled
+        connection — see ``CLAIM_TRANSACTIONS``.
 
         *The claim transaction (9, statements 4-12).*  Asserted separately
         by ``test_claim_transaction_statement_budget`` below, which
         subtracts exactly the three outer pre-reads above.
 
-        *Preparation and activation (8, statements 13-20).*  13
+        *Preparation and activation (7, statements 13-19).*  13
         ``claim_preparation_is_current`` — one join re-proving the task and
         session fences before any filesystem work; 14
-        ``_prepare_and_activate_locked``'s project re-read, which decides
-        whether the claim takes the hierarchical-integration branch path
-        from the project's *current* ``hierarchical_integration_mode`` (the
-        outer loop's read may be a full ``--wait`` old by then); 15-16
-        ``activate_claim``'s two ``FOR UPDATE`` locks, taken session-then-
-        task in the same order as claim and release so activation cannot
-        deadlock against them, the task one also reading ``branch_name``;
-        17 the activation CAS (``UPDATE sessions … RETURNING``, so the
-        caller needs no re-read); 18 the ``needs_attention`` delete that
-        retires an earlier prepare/release warning at the instant the claim
-        becomes usable — the *only* clear on the ``preparing`` retry path,
-        which re-activates a task already IN_PROGRESS and so never reaches
-        ``_apply_transition``'s copy at statement 8; 19 ``tasks.branch_name``,
+        ``_prepare_and_activate``'s project re-read, which decides whether
+        the claim takes the hierarchical-integration branch path from the
+        project's *current* ``hierarchical_integration_mode`` (the outer
+        loop's read may be a full ``--wait`` old by then), taken on 13's
+        connection; 15-16 ``activate_claim``'s two ``FOR UPDATE`` locks,
+        taken session-then-task in the same order as claim and release so
+        activation cannot deadlock against them, the task one also reading
+        ``branch_name``; 17 the activation CAS (``UPDATE sessions …
+        RETURNING``, so the caller needs no re-read); 18 the stale-metadata
+        delete: the ``needs_attention`` warning an earlier prepare/release
+        left — the *only* clear on the ``preparing`` retry path, which
+        re-activates a task already IN_PROGRESS and so never reaches
+        ``_apply_transition``'s copy at statement 8 — together with the
+        pause checkpoint and prepare-backoff ladder, which go stale at
+        exactly this boundary (``activate_claim``'s
+        ``clear_preparation_metadata``); 19 ``tasks.branch_name``,
         publishing the branch the slot reset just created past every
         activation guard and under the task row lock already held (skipped
         when the row already names that branch — a resume, or a hierarchy
-        claim whose branch is pinned at filing); 20
-        ``clear_claim_preparation_metadata``'s single delete of the pause
-        checkpoint and prepare-backoff ladder.
+        claim whose branch is pinned at filing).
 
         What went, historically: the separate ``get_profile`` read;
         ``max_event_id``; ``take_claim_slot``'s re-read (now
@@ -229,10 +231,11 @@ class TestClaimStatementBudgets:
         (batched); ``get_workspace_for_agent`` (``record_holder`` returns
         the row); the post-activation session re-read; and
         ``_claimed_response``'s whole ``task_show`` payload build (~10 — it
-        now returns the task row; ``aq task show`` is the full view).  Most
-        recently, ``clear_claim_preparation_metadata``'s second, value-scoped
+        now returns the task row; ``aq task show`` is the full view).  Then
+        ``clear_claim_preparation_metadata``'s second, value-scoped
         ``needs_attention`` delete, which statement 18 had already made
-        redundant.
+        redundant.  Most recently that method itself: its remaining delete
+        is statement 18's ``IN`` list, inside the activation transaction.
         """
         await _seed_worker_scale(any_db)
         sid, _wd = await pool_session(any_db, tmp_path)
@@ -241,7 +244,7 @@ class TestClaimStatementBudgets:
         async with count_statements(any_db) as c:
             res = await h._cmd_task_claim({"next": True})
         assert res["result"] == "claimed"
-        budget = 20
+        budget = 19  # keep in step with ``CLAIM_STATEMENTS`` below
         print(f"\ntask_claim happy path: {c['n']} statements (budget {budget})")
         assert c["n"] <= budget, _over(c["n"], budget, c["statements"])
 
@@ -422,9 +425,12 @@ class TestClaimStatementBudgets:
 #: pre-ping is ``BEGIN``/``;``/``ROLLBACK`` (three round trips, ``asyncpg.py``
 #: ``_async_ping``) and the transaction itself adds ``BEGIN`` and ``COMMIT``,
 #: so one transaction costs about six times what one statement on an
-#: already-held connection costs.
-CLAIM_STATEMENTS = 20
-CLAIM_TRANSACTIONS = 8
+#: already-held connection costs.  That is why the transaction budget is a
+#: ratchet in its own right: a query moved onto a caller's open connection
+#: is free, and a query given its own ``begin()`` costs six statements'
+#: worth of wire without moving a single statement budget.
+CLAIM_STATEMENTS = 19
+CLAIM_TRANSACTIONS = 4
 RELEASE_STATEMENTS = 9
 RELEASE_TRANSACTIONS = 2
 ROUND_TRIP_STATEMENTS = CLAIM_STATEMENTS + RELEASE_STATEMENTS
@@ -545,15 +551,24 @@ class TestClaimLatency:
         so it is three round trips, not one.  Ten transactions is therefore
         ~34 ms of the round trip before any row is read.
 
-        The eight claim transactions, in order:
-        ``get_session_with_profile``, ``touch_session_activity`` and
-        ``get_project`` in the outer admission loop; ``_attempt_claim``'s
-        ``immediate()`` block; ``claim_preparation_is_current``;
-        ``_prepare_and_activate_locked``'s second ``get_project``;
-        ``activate_claim``'s ``immediate()`` block; and
-        ``clear_claim_preparation_metadata``.  Release is two:
-        ``release_claim``'s own block, and the ready listener's post-commit
-        ``get_task``.
+        The four claim transactions, in order: the outer admission loop's
+        pre-reads (``get_session_with_profile``, ``touch_session_activity``
+        and ``get_project`` on one connection — they run back to back with
+        nothing awaited between them, strictly before the long poll, so
+        nothing is held across a sleep); ``_attempt_claim``'s
+        ``immediate()`` block; ``_prepare_and_activate``'s block
+        (``claim_preparation_is_current`` and the project re-read, likewise
+        back to back, under the task control lock); and ``activate_claim``'s
+        ``immediate()`` block.  Release is two: ``release_claim``'s own
+        block, and the ready listener's post-commit ``get_task``.
+
+        This was eight before 2026-09-09: those first three were three
+        checkouts, the project re-read was its own, and
+        ``clear_claim_preparation_metadata`` was a fifth after activation
+        committed (it is now the ``IN`` list on the delete activation
+        already issued, which also makes the clear atomic with the claim
+        going active).  No statement moved except that merged delete, so
+        every statement budget above held across the change.
         """
         await _seed_worker_scale(any_db)
         sid, _wd = await pool_session(any_db, tmp_path)
@@ -602,11 +617,16 @@ class TestClaimLatency:
         statement on a held connection costs 0.46-0.54 ms and one pooled
         transaction costs 2.5-3.4 ms, so the ``ROUND_TRIP_TRANSACTIONS``
         transactions and ``ROUND_TRIP_STATEMENTS`` statements that
-        ``test_claim_release_round_trip_budget`` pins are a 34-44 ms wire
-        floor on their own: 60-73% of a 60 ms budget spent before a row is
-        read.  A number of milliseconds cannot separate that from a
-        regression, which is CLAUDE.md's standing objection to every
-        wall-clock budget in this suite.
+        ``test_claim_release_round_trip_budget`` pins were a 34-44 ms wire
+        floor on their own when the round trip took ten transactions: 60-73%
+        of a 60 ms budget spent before a row is read.  A number of
+        milliseconds cannot separate that from a regression, which is
+        CLAUDE.md's standing objection to every wall-clock budget in this
+        suite.  (Coalescing four of those checkouts on 2026-09-09 took the
+        floor down with it -- which is the point of deriving the budget from
+        the two constants rather than declaring it: the absolute
+        measurements quoted below are from before that change, and the
+        *multiples* are what this asserts.)
 
         So the budget is derived rather than declared.  ``measure_wire_floor``
         measures what a transaction and a statement cost on *this* box, on

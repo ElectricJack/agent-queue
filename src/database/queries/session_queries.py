@@ -245,13 +245,18 @@ class SessionQueryMixin:
             row = result.mappings().fetchone()
             return _row_to_session(row) if row else None
 
-    async def get_session_with_profile(self, session_id: str):
+    async def get_session_with_profile(self, session_id: str, *, conn=None):
         """``(session, profile)`` in one statement — the claim path's pre-read.
 
         ``sessions`` LEFT JOINs ``agent_profiles`` on ``profile_id``; the
         profile half is ``None`` when the session names no (or an unknown)
         profile.  Column names collide across the two tables, so the row is
         split by ``Column`` identity rather than by name (spec §15).
+
+        *conn* lets the claim path run this, ``touch_session_activity`` and
+        ``get_project`` on one pooled connection instead of three: a pooled
+        checkout costs roughly six statements' worth of wire (see
+        ``tests/perf/test_claim_statements.py``).
         """
         stmt = (
             select(sessions, agent_profiles)
@@ -260,8 +265,11 @@ class SessionQueryMixin:
             )
             .where(sessions.c.id == session_id)
         )
-        async with self._engine.begin() as conn:
+        if conn is not None:
             row = (await conn.execute(stmt)).fetchone()
+        else:
+            async with self._engine.begin() as owned:
+                row = (await owned.execute(stmt)).fetchone()
         if row is None:
             return None, None
         mapping = row._mapping
@@ -461,17 +469,21 @@ class SessionQueryMixin:
             row = result.fetchone()
             return int(row[0]) if row else 0
 
-    async def touch_session_activity(self, session_id: str, ts: float) -> None:
+    async def touch_session_activity(self, session_id: str, ts: float, *, conn=None) -> None:
         """Advance activity without allowing a delayed observer to rewind it."""
-        async with self._engine.begin() as conn:
-            await conn.execute(
-                update(sessions)
-                .where(
-                    sessions.c.id == session_id,
-                    or_(sessions.c.last_activity.is_(None), sessions.c.last_activity < ts),
-                )
-                .values(last_activity=ts)
+        stmt = (
+            update(sessions)
+            .where(
+                sessions.c.id == session_id,
+                or_(sessions.c.last_activity.is_(None), sessions.c.last_activity < ts),
             )
+            .values(last_activity=ts)
+        )
+        if conn is not None:
+            await conn.execute(stmt)
+            return
+        async with self._engine.begin() as owned:
+            await owned.execute(stmt)
 
     async def request_idle_pool_recycle(
         self, session_id: str, *, instance_token: str, stale_before: float

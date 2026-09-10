@@ -20,6 +20,9 @@ from src.models import ClaimResult, TaskStatus
 
 logger = logging.getLogger(__name__)
 
+#: "argument not supplied", for parameters whose ``None`` is a real value.
+_UNSET = object()
+
 __all__ = [
     "CLAIM_FILE",
     "ClaimCommandsMixin",
@@ -191,6 +194,36 @@ class ClaimCommandsMixin:
             return "budget_exhausted"
         return None
 
+    def _claim_precondition_refusal(self, session, scope, want_id, args) -> dict | None:
+        """Every refusal decidable from the session row alone, in order.
+
+        Split out of :meth:`_cmd_task_claim` so the session read, the
+        activity touch and the project read can share one transaction: the
+        touch must not fire for a claim that is about to be refused, and
+        these checks are exactly what decides that.  Pure — no I/O — so it
+        is safe to run with a connection held.
+        """
+        if session is None or session.lifecycle not in ("pool", "task"):
+            return {
+                "success": False,
+                "result": ClaimResult.OUT_OF_SCOPE.value,
+                "error": "not a claimable session",
+            }
+        if scope.get("project_id") and scope["project_id"] != session.project_id:
+            return {
+                "success": False,
+                "result": ClaimResult.OUT_OF_SCOPE.value,
+                "error": "project_id mismatch",
+            }
+        # A pool profile can be converted back to task lifecycle while a
+        # worker is finishing current work.  The conversion marks each live
+        # worker stopped; reject a fresh claim before it can take new work.
+        if session.lifecycle == "pool" and session.desired_state == "stopped":
+            return self._simple(ClaimResult.DRAIN_REQUESTED, "pool is draining", session)
+        if not want_id and not args.get("next"):
+            return {"success": False, "error": "task_id or next=true is required"}
+        return None
+
     # -- the command -----------------------------------------------------------
 
     async def _cmd_task_claim(self, args: dict) -> dict:
@@ -217,29 +250,32 @@ class ClaimCommandsMixin:
                 "result": ClaimResult.OUT_OF_SCOPE.value,
                 "error": "task_claim needs a session in scope",
             }
-        # One statement for both (spec §15): the profile is only needed on
-        # the pool path below, but reading it in the same join costs nothing.
-        session, profile = await self.db.get_session_with_profile(session_id)
-        if session is None or session.lifecycle not in ("pool", "task"):
-            return {
-                "success": False,
-                "result": ClaimResult.OUT_OF_SCOPE.value,
-                "error": "not a claimable session",
-            }
-        if scope.get("project_id") and scope["project_id"] != session.project_id:
-            return {
-                "success": False,
-                "result": ClaimResult.OUT_OF_SCOPE.value,
-                "error": "project_id mismatch",
-            }
-        # A pool profile can be converted back to task lifecycle while a
-        # worker is finishing current work.  The conversion marks each live
-        # worker stopped; reject a fresh claim before it can take new work.
-        if session.lifecycle == "pool" and session.desired_state == "stopped":
-            return self._simple(ClaimResult.DRAIN_REQUESTED, "pool is draining", session)
         want_id = args.get("task_id")
-        if not want_id and not args.get("next"):
-            return {"success": False, "error": "task_id or next=true is required"}
+        # The session read, the activity touch and the project read run back
+        # to back with nothing awaited between them, so they share one pooled
+        # connection: on the box the budgets in
+        # ``tests/perf/test_claim_statements.py`` were measured on a pooled
+        # checkout costs ~3.4 ms against ~0.5 ms for a statement on a held
+        # one, so the two saved checkouts are worth about six statements.
+        # The block is strictly *before* the admission loop — the connection
+        # is never held across the long poll's sleep.
+        project = None
+        async with self.db.immediate() as conn:
+            # One statement for both (spec §15): the profile is only needed
+            # on the pool path below, but reading it in the same join costs
+            # nothing.
+            session, profile = await self.db.get_session_with_profile(session_id, conn=conn)
+            refusal = self._claim_precondition_refusal(session, scope, want_id, args)
+            if refusal is None and session.lifecycle == "pool":
+                # This is the durable proof that an idle worker's claim loop
+                # is still alive.  A long poll may be silent in the harness
+                # for up to its whole wait window, so the reconciler cannot
+                # infer loop progress from transcript activity alone after a
+                # preparation failure.
+                await self.db.touch_session_activity(session.id, time.time(), conn=conn)
+                project = await self.db.get_project(session.project_id, conn=conn)
+        if refusal is not None:
+            return refusal
         wait = max(0, min(int(args.get("wait") or 0), int(self.config.swarm.claim_wait_max)))
         deadline = time.monotonic() + wait
 
@@ -253,24 +289,20 @@ class ClaimCommandsMixin:
                 "error": "task sessions cannot claim other work",
             }
 
-        # This is the durable proof that an idle worker's claim loop is still
-        # alive.  A long poll may be silent in the harness for up to its
-        # whole wait window, so the reconciler cannot infer loop progress from
-        # transcript activity alone after a preparation failure.
-        await self.db.touch_session_activity(session.id, time.time())
-
         cap = self._pool_context_claim_cap(profile)
-        project = await self.db.get_project(session.project_id)
         default_profile = getattr(project, "default_profile_id", None)
         refresh_routing = False
 
         while True:
             if refresh_routing:
                 # Long-poll wakes may follow profile/class edits. Keep the
-                # session's frozen launch settings but refresh its requirements.
-                profile = await self.db.get_profile(session.profile_id)
+                # session's frozen launch settings but refresh its
+                # requirements.  Both re-reads share one checkout for the
+                # same reason the pre-reads above do.
+                async with self.db.immediate() as conn:
+                    profile = await self.db.get_profile(session.profile_id, conn=conn)
+                    project = await self.db.get_project(session.project_id, conn=conn)
                 cap = self._pool_context_claim_cap(profile)
-                project = await self.db.get_project(session.project_id)
                 default_profile = getattr(project, "default_profile_id", None)
             refresh_routing = True
             # An operator can disable a pool profile while a worker is
@@ -666,23 +698,41 @@ class ClaimCommandsMixin:
 
     async def _prepare_and_activate(self, session, row, task, cap=None, *, slot=None) -> dict:
         async with self.orchestrator._task_control_lock(task.id):
-            if not await self.db.claim_preparation_is_current(
-                session.id, task.id, task.claim_epoch
-            ):
+            # The fence read and the project re-read run back to back with
+            # nothing awaited between them, so they share one checkout.  The
+            # project is still *re-read* rather than reused from the outer
+            # admission loop: that loop's copy can be a whole ``--wait``
+            # window old, and the value taken from it decides whether this
+            # claim attaches a hierarchy branch fence.  What this drops is
+            # the second pooled connection, not the freshness.
+            async with self.db.immediate() as conn:
+                current = await self.db.claim_preparation_is_current(
+                    session.id, task.id, task.claim_epoch, conn=conn
+                )
+                project = (
+                    await self.db.get_project(task.project_id, conn=conn) if current else _UNSET
+                )
+            if not current:
                 self._resolve_claim_waiters(session.id, task.claim_epoch, "prepare_failed")
                 return self._simple(
                     ClaimResult.PREPARE_FAILED, "claim changed before preparation", row, cap
                 )
-            return await self._prepare_and_activate_locked(session, row, task, cap, slot=slot)
+            return await self._prepare_and_activate_locked(
+                session, row, task, cap, slot=slot, project=project
+            )
 
     async def _prepare_and_activate_locked(
-        self, session, row, task, cap=None, *, slot=None
+        self, session, row, task, cap=None, *, slot=None, project=_UNSET
     ) -> dict:
         """Reset the slot, write the claim file, activate.
 
         *slot* is the workspace row ``record_holder`` already returned from
         inside the claim transaction (spec §15); it is only re-read here for
         callers that did not have one.
+
+        *project* is the row :meth:`_prepare_and_activate` read on the same
+        checkout as the fence, for the same reason; ``_UNSET`` (not
+        ``None`` — a missing project is a real answer) means read it here.
         """
         epoch = task.claim_epoch
         hierarchy_attached = False
@@ -693,7 +743,8 @@ class ClaimCommandsMixin:
                 slot = await self.db.get_workspace_for_agent(row.agent_id)
             if slot is None:
                 raise RuntimeError("session holds no workspace slot")
-            project = await self.db.get_project(task.project_id)
+            if project is _UNSET:
+                project = await self.db.get_project(task.project_id)
             hierarchy_enabled = getattr(project, "hierarchical_integration_mode", "disabled") in {
                 "hierarchy",
                 "train",
@@ -735,6 +786,12 @@ class ClaimCommandsMixin:
                     now=time.time(),
                     conn=conn,
                     branch_name=prepared_branch,
+                    # A successful preparation clears its pause checkpoint
+                    # and failure ladder together, so a later, unrelated
+                    # prepare starts at minimum.  Done inside the activation
+                    # transaction rather than after it: same guards, same
+                    # table, one fewer pooled checkout.
+                    clear_preparation_metadata=True,
                 )
 
             if hierarchy_enabled:
@@ -861,9 +918,10 @@ class ClaimCommandsMixin:
             # just wrote, so ``task.claimed`` / ``task.started`` and the
             # claim response name the branch the slot is actually on.
             task.branch_name = prepared_branch
-        # A successful preparation clears its pause checkpoint and failure
-        # ladder together, so a later, unrelated prepare starts at minimum.
-        await self.db.clear_claim_preparation_metadata(task.id)
+        # The successful preparation's pause checkpoint and failure ladder
+        # were cleared inside ``activate_claim``'s transaction (see its
+        # ``clear_preparation_metadata`` argument), so there is nothing left
+        # to clear here.
         self._resolve_claim_waiters(session.id, epoch, "claimed")
         await self.orchestrator._emit_task_event(
             "task.claimed",
