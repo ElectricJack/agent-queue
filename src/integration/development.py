@@ -9,6 +9,7 @@ import asyncio
 import hashlib
 import json
 import os
+import re
 import signal
 import time
 from contextlib import asynccontextmanager
@@ -522,9 +523,7 @@ class DevelopmentIntegration:
                     # batch. A durable completion plus default-branch ancestry
                     # proves delivery even after the source ref is deleted.
                     completion = await self.db.get_task_completion(task["id"])
-                    recorded_head = (
-                        completion.commits[-1] if completion and completion.commits else None
-                    )
+                    recorded_head = await self._completion_source(store, completion)
                     if (
                         recorded_head and is_valid_git_oid(recorded_head)
                         and await self.git.ais_ancestor(str(store), recorded_head, base)
@@ -731,6 +730,55 @@ class DevelopmentIntegration:
                 repo.project_id, repo.id, row["manifest"],
                 row["prepared_sha"] or accepted_head, reason=row["reason"],
             )
+        await self.reconcile_completion_sources(repo, store, history)
+
+    async def _completion_source(self, store, completion):
+        if completion is None or not completion.commits:
+            return None
+        reported = completion.commits[-1]
+        if is_valid_git_oid(reported):
+            return reported
+        if not isinstance(reported, str) or not re.fullmatch(r"[0-9a-f]{7,39}", reported):
+            return None
+        try:
+            return await self.run_git(
+                store, "rev-parse", "--verify", "--end-of-options", reported + "^{commit}",
+            )
+        except GitError:
+            return None
+
+    async def reconcile_completion_sources(self, repo, store, history):
+        """Bind unique abbreviated completion IDs to exact delivered revisions.
+
+        Keep the original completion evidence intact. Readiness consumes this
+        publisher proof, never a SQL prefix match that could accept ambiguity.
+        """
+        completions = {}
+        for row in history:
+            if (row["repository_id"] != repo.id
+                    or row["target_ref"] != "refs/heads/" + repo.default_branch
+                    or row["state"] not in {"delivered", "adopted"}):
+                continue
+            proofs = list(row["evidence"].get("completion_sources", []))
+            changed = False
+            for member in row["manifest"]:
+                identity = member["task_id"]
+                if identity not in completions:
+                    completion = await self.db.get_task_completion(identity)
+                    canonical = await self._completion_source(store, completion)
+                    completions[identity] = completion, canonical
+                completion, canonical = completions[identity]
+                if (completion is None or not completion.commits or canonical is None
+                        or canonical != member.get("source_sha")
+                        or canonical == completion.commits[-1]):
+                    continue
+                proof = {"task_id": identity, "completion_id": completion.id,
+                         "reported_sha": completion.commits[-1], "source_sha": canonical}
+                if proof not in proofs:
+                    proofs.append(proof)
+                    changed = True
+            if changed:
+                await self.change(row["id"], evidence={**row["evidence"], "completion_sources": proofs})
 
     async def _delivered_repair(self, repo, store, accepted_head, manifest, history):
         """A passing resolution delivered to main can replace the original source.
@@ -760,6 +808,7 @@ class DevelopmentIntegration:
         completion = await self.db.get_task_completion(identity)
         if completion is None or completion.outcome != "pass":
             return None
+        source = await self._completion_source(store, completion)
         for delivery in history:
             if (
                 delivery["state"] not in {"delivered", "adopted"}
@@ -767,7 +816,7 @@ class DevelopmentIntegration:
                 or delivery["target_ref"] != "refs/heads/" + repo.default_branch
                 or float(delivery["created_at"]) < completion.completed_at
                 or not any(m["task_id"] == identity and (
-                    not completion.commits or m.get("source_sha") == completion.commits[-1]
+                    not completion.commits or (source and m.get("source_sha") == source)
                 ) for m in delivery["manifest"])
             ):
                 continue

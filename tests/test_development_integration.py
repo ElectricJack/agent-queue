@@ -135,9 +135,15 @@ async def test_completion_during_sweep_is_not_lost_and_timer_remains_backstop(se
     assert service.sweep.await_count == 3
 
 
-async def test_successor_waits_for_default_branch_delivery(setup):
+@pytest.mark.parametrize("short_sha", [False, True])
+async def test_successor_waits_for_default_branch_delivery(setup, short_sha):
     db, service, _source, remote, _repo = setup
     head = await feature(setup, "prerequisite")
+    if short_sha:
+        await db.save_task_completion(TaskCompletion(
+            id="abbreviated-close", task_id="prerequisite", outcome="pass",
+            commits=[head[:9]], completed_at=time.time(),
+        ))
     await db.create_task(Task(
         id="successor", project_id="p", title="successor", description="",
         status=TaskStatus.READY,
@@ -179,12 +185,36 @@ async def test_successor_waits_for_default_branch_delivery(setup):
     assert (await db.get_task("successor")).is_blocked
 
 
-async def test_deleted_delivered_branch_does_not_strand_later_batches(setup):
+async def test_historical_delivery_resolves_short_completion_without_mutating_close(setup):
+    db, service, _source, _remote, _repo = setup
+    head = await feature(setup, "prerequisite")
+    await service.sweep("p")
+    await db.create_task(Task(id="successor", project_id="p", title="successor", description=""))
+    await db.add_dependency("successor", "prerequisite")
+    await db.save_task_completion(TaskCompletion(
+        id="short-close", task_id="prerequisite", outcome="pass",
+        commits=[head[:9]], completed_at=time.time(),
+    ))
+    assert (await db.get_task("successor")).is_blocked
+    await service.sweep("p")
+    assert not (await db.get_task("successor")).is_blocked
+    assert (await db.get_task_completion("prerequisite")).commits == [head[:9]]
+    # A newer unresolved close cannot borrow the old completion's proof.
+    await db.save_task_completion(TaskCompletion(
+        id="unresolved-close", task_id="prerequisite", outcome="pass",
+        commits=["abcdef123"], completed_at=time.time(),
+    ))
+    await service.sweep("p")
+    assert (await db.get_task("successor")).is_blocked
+
+
+@pytest.mark.parametrize("short_sha", [False, True])
+async def test_deleted_delivered_branch_does_not_strand_later_batches(setup, short_sha):
     db, service, source, remote, _repo = setup
     previous = await feature(setup, "previous")
     await db.save_task_completion(TaskCompletion(
         id="previous-close", task_id="previous", outcome="pass",
-        commits=[previous], completed_at=time.time(),
+        commits=[previous[:9] if short_sha else previous], completed_at=time.time(),
     ))
     # Simulate a historical merge and normal source-branch cleanup, before
     # this publisher had a delivery receipt for it.
@@ -714,7 +744,7 @@ async def test_later_consolidation_resolves_conflict_without_starting_repair(set
     assert not [row for row in await service.rows("p") if row["state"] == "parked"]
 
 
-@pytest.mark.parametrize("proof", ["recorded", "legacy", "wrong_contract", "failed_close", "no_close"])
+@pytest.mark.parametrize("proof", ["recorded", "short_sha", "legacy", "wrong_contract", "failed_close", "no_close"])
 async def test_delivered_rewritten_repair_unblocks_exact_source(setup, proof):
     """A validated replacement can resolve a source without its Git ancestry."""
     from src.database.tables import task_metadata
@@ -750,14 +780,14 @@ async def test_delivered_rewritten_repair_unblocks_exact_source(setup, proof):
         await db.save_task_completion(TaskCompletion(
             id="repair-close", task_id=identity,
             outcome="fail" if proof == "failed_close" else "pass",
-            commits=[head], completed_at=time.time(),
+            commits=[head[:9] if proof == "short_sha" else head], completed_at=time.time(),
         ))
     assert (await db.get_task("next")).is_blocked, "completion alone is not delivery"
     assert (await service.sweep("p"))["outcome"] == "delivered"
     with pytest.raises(subprocess.CalledProcessError):
         git(remote, "merge-base", "--is-ancestor", original, "main")
     row = next(r for r in await service.rows("p") if r["id"] == parked["id"])
-    if proof in {"recorded", "legacy"}:
+    if proof in {"recorded", "short_sha", "legacy"}:
         assert row["state"] == "adopted"
         assert row["evidence"]["resolved_by_delivered_repair"]["completion_id"] == "repair-close"
         assert not (await db.get_task("next")).is_blocked

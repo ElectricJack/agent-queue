@@ -102,6 +102,14 @@ def _development_delivery_pending(task):
         .correlate(task)
         .scalar_subquery()
     )
+    completion_id = (
+        select(completion.c.id)
+        .where(completion.c.task_id == task.c.id)
+        .order_by(completion.c.completed_at.desc(), completion.c.id.desc())
+        .limit(1)
+        .correlate(task)
+        .scalar_subquery()
+    )
     delivered = (
         select(literal(1))
         .where(
@@ -110,10 +118,20 @@ def _development_delivery_pending(task):
             delivery.c.target_ref == literal("refs/heads/") + repo.c.default_branch,
             delivery.c.state.in_(("delivered", "adopted")),
             delivery.c.created_at >= task.c.created_at,
-            cast(delivery.c.manifest, JSONB).contains(
-                func.jsonb_build_array(func.jsonb_strip_nulls(func.jsonb_build_object(
-                    "task_id", task.c.id, "source_sha", source_sha,
-                )))
+            or_(
+                cast(delivery.c.manifest, JSONB).contains(
+                    func.jsonb_build_array(func.jsonb_strip_nulls(func.jsonb_build_object(
+                        "task_id", task.c.id, "source_sha", source_sha,
+                    )))
+                ),
+                # The publisher resolves abbreviated SHAs with Git, rejecting
+                # ambiguous names, and binds the result to this exact close.
+                cast(delivery.c.evidence, JSONB)["completion_sources"].contains(
+                    func.jsonb_build_array(func.jsonb_build_object(
+                        "task_id", task.c.id, "completion_id", completion_id,
+                        "reported_sha", source_sha,
+                    ))
+                ),
             ),
         )
         .correlate(task, project, repo)

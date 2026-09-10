@@ -303,6 +303,12 @@ This also reconciles repair-of-repair chains without requiring the original
 source SHA to survive a cherry-pick. Missing completion evidence, mismatched
 source contracts and unpublished repairs keep the source parked.
 
+Completion records may contain abbreviated Git SHAs. The publisher resolves
+these with Git and records the full source SHA against the exact completion ID
+in delivery evidence. Ambiguous or missing objects do not qualify. A newer
+completion cannot borrow an older completion's resolution, and the original
+reported SHA remains intact in the completion record.
+
 If you would rather not have a repair episode run at all:
 
 ```bash
