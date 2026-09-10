@@ -124,8 +124,9 @@ def test_registry_has_categories(registry):
         "playbook",
         "mcp",
         "message",
-            "escalation",
-            "digest",
+        "escalation",
+        "digest",
+        "dashboard",
         "discord",
         "pool",
         "formula",
@@ -402,8 +403,8 @@ def test_plugin_may_explicitly_own_retired_ask_human_name():
     backend = AsyncMock(
         return_value={"question_id": "plugin-question-1", "destination": "fake-user"}
     )
-    handler.orchestrator.plugin_registry.get_command.side_effect = (
-        lambda name: backend if name == "ask_human" else None
+    handler.orchestrator.plugin_registry.get_command.side_effect = lambda name: (
+        backend if name == "ask_human" else None
     )
 
     result = asyncio.run(handler.execute("ask_human", {"question": "Continue?"}))

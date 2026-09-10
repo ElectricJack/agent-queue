@@ -146,6 +146,7 @@ CATEGORY_CLI_NAMES: dict[str, str] = {
     "message": "message",
     "escalation": "escalation",
     "digest": "digest",
+    "dashboard": "dashboard",
     "discord": "discord",
     "pool": "pool",
     "formula": "formula",
@@ -162,6 +163,7 @@ CATEGORY_CLI_DESCRIPTIONS: dict[str, str] = {
     "message": "Inter-agent and user message queue.",
     "escalation": "Durable human escalations and supervisor-owned resolution.",
     "digest": "Hourly activity digest — dry preview and schedule health.",
+    "dashboard": "Durable shared and roaming dashboard state.",
     "discord": "Explicit Discord historical-message housekeeping.",
     "pool": "Worker pool sizing — status and scale.",
     "formula": "Reusable task-graph templates — list, resolve, and cook.",
@@ -287,9 +289,7 @@ def _schema_to_click_type(prop_schema: dict) -> type | click.Choice | click.Para
         if "$ref" in prop_schema:
             schema_type = "object"
         elif branches:
-            schema_type = [
-                "object" if "$ref" in b else b.get("type", "string") for b in branches
-            ]
+            schema_type = ["object" if "$ref" in b else b.get("type", "string") for b in branches]
     type_names = set(schema_type) if isinstance(schema_type, list) else {schema_type}
 
     if "enum" in prop_schema:

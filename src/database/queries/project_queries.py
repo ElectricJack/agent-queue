@@ -116,8 +116,10 @@ class ProjectQueryMixin:
                 "integration_repository_id",
             } & values.keys():
                 current = (
-                    await conn.execute(select(projects).where(projects.c.id == project_id))
-                ).mappings().one_or_none()
+                    (await conn.execute(select(projects).where(projects.c.id == project_id)))
+                    .mappings()
+                    .one_or_none()
+                )
                 if current is None:
                     return
                 await self._validate_hierarchical_integration_project(
@@ -145,7 +147,9 @@ class ProjectQueryMixin:
             )
         if repository_id is None:
             if mode in {"hierarchy", "train"}:
-                raise ValueError("hierarchy/train mode requires a designated integration repository")
+                raise ValueError(
+                    "hierarchy/train mode requires a designated integration repository"
+                )
             return
         owner = (
             await conn.execute(select(repos.c.project_id).where(repos.c.id == repository_id))
@@ -173,9 +177,7 @@ class ProjectQueryMixin:
                 await self._assert_pause_cleanup_complete(tid, conn=conn)
                 await conn.execute(delete(task_results).where(task_results.c.task_id == tid))
                 await conn.execute(
-                    delete(task_completion_records).where(
-                        task_completion_records.c.task_id == tid
-                    )
+                    delete(task_completion_records).where(task_completion_records.c.task_id == tid)
                 )
                 await conn.execute(
                     delete(task_dependencies).where(
@@ -207,6 +209,7 @@ class ProjectQueryMixin:
             )
             await conn.execute(delete(workspaces).where(workspaces.c.project_id == project_id))
             await conn.execute(delete(repos).where(repos.c.project_id == project_id))
+            await self.delete_dashboard_documents_for_project(project_id, conn=conn)
             await conn.execute(delete(events).where(events.c.project_id == project_id))
             await conn.execute(
                 delete(project_constraints).where(project_constraints.c.project_id == project_id)
@@ -304,9 +307,7 @@ class ProjectQueryMixin:
             default_profile_id=row.get("default_profile_id"),
             assignment_playbook_id=row.get("assignment_playbook_id"),
             integration_mode=row.get("integration_mode"),
-            hierarchical_integration_mode=(
-                row.get("hierarchical_integration_mode") or "disabled"
-            ),
+            hierarchical_integration_mode=(row.get("hierarchical_integration_mode") or "disabled"),
             integration_repository_id=row.get("integration_repository_id"),
             hierarchical_integration_policy=row.get("hierarchical_integration_policy"),
             hierarchical_integration_desired_mode=(
